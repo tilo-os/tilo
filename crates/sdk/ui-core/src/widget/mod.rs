@@ -97,7 +97,7 @@ pub struct ControlBindingMetadata {
 impl ControlBindingMetadata {
     /// Declare that a custom control's stable semantic target is its native
     /// action route. The host publishes supported accessibility verbs through
-    /// the resource/action door, so no parallel callback registry is needed.
+    /// the resource/action API, so no parallel callback registry is needed.
     pub fn semantic(control_id: impl Into<String>) -> Self {
         let control_id = control_id.into();
         Self {

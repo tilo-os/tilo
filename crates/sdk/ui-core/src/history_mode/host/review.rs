@@ -1,4 +1,4 @@
-//! Review presentation and synchronous delivery to the sole restore admission door.
+//! Review presentation and synchronous delivery to the sole restore admission API.
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"
@@ -283,7 +283,7 @@ impl HistoryHost {
         )
     }
 
-    /// One forward write about the selected changes through the restore door: its authority, the live
+    /// One forward write about the selected changes through the restore API: its authority, the live
     /// frontier and the owner's writer.
     fn write_selected(
         &mut self,

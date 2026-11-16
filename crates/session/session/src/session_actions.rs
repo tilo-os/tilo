@@ -38,9 +38,9 @@ pub(crate) struct SessionActions {
     /// The rows the session's own door offered on its last pass: what the catalogue lists.
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the layout from off its thread.
-    rows: std::sync::RwLock<Vec<tilo_actions::door::PlacedAction>>,
+    rows: std::sync::RwLock<Vec<tilo_actions::api::PlacedAction>>,
     /// Where the door stood when the rows were last read
-    /// ([`tilo_session_core::door::Doors::revision`]).
+    /// ([`tilo_session_core::surfaces::Surfaces::revision`]).
     read_at: std::sync::Mutex<Vec<(usize, u64)>>,
 }
 
@@ -66,7 +66,7 @@ impl SessionActions {
     /// Publish the rows the session's own door offers now, as its pass read them: what the
     /// broker's catalogue lists from here on. Whether they are new: a pass that read the same
     /// rows again changes nothing, and no catalogue is rebuilt for it.
-    pub(crate) fn offer(&self, rows: Vec<tilo_actions::door::PlacedAction>) -> bool {
+    pub(crate) fn offer(&self, rows: Vec<tilo_actions::api::PlacedAction>) -> bool {
         let mut held = self.rows.write_recover();
         let changed = *held != rows;
         *held = rows;
@@ -74,7 +74,7 @@ impl SessionActions {
     }
 
     /// The rows offered now, as the last pass read them.
-    pub(crate) fn offered(&self) -> Vec<tilo_actions::door::PlacedAction> {
+    pub(crate) fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.rows.read_recover().clone()
     }
 }
@@ -95,7 +95,7 @@ impl HostStepServices for SessionActions {
             .collect()
     }
 
-    fn rows(&self) -> Vec<tilo_actions::door::PlacedAction> {
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.offered()
     }
 

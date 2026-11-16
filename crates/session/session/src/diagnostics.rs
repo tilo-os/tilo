@@ -14,10 +14,10 @@
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{
-    ActionAddress, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
+    ActionAddress, ActionOutput, ActionParam, ActionSpec, ApiError, EncodedAction, OperationKind,
     ParamType, ResourceSpec,
 };
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 use ui::host_operation::ResourceOperationStart;
 
 /// The resource the session's diagnostics are published under.
@@ -116,16 +116,16 @@ impl Published for Served {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         if address.resource != RESOURCE {
-            return Err(DoorError::Unknown(address.clone()));
+            return Err(ApiError::Unknown(address.clone()));
         }
         let answered = match address.action.as_str() {
             "profile-start" => profile_start(arguments)?,
             "profile-stop" => json!({ "profile": tilo_frame_metrics::profile::stop() }),
             "profile-status" => reading(),
-            _ => return Err(DoorError::Unknown(address.clone())),
+            _ => return Err(ApiError::Unknown(address.clone())),
         };
         Ok(ResourceOperationStart::Completed(ActionOutput {
             value: Some(answered),
@@ -139,7 +139,7 @@ impl Published for Served {
 }
 
 /// Start recording a profile of the session for `seconds` , into the session's profile directory.
-fn profile_start(arguments: &Map<String, Value>) -> Result<Value, DoorError> {
+fn profile_start(arguments: &Map<String, Value>) -> Result<Value, ApiError> {
     use tilo_frame_metrics::profile;
     let seconds = match arguments.get("seconds") {
         None => profile::DEFAULT_SECONDS,
@@ -147,20 +147,20 @@ fn profile_start(arguments: &Map<String, Value>) -> Result<Value, DoorError> {
             .as_u64()
             .filter(|seconds| (1..=profile::MAX_SECONDS).contains(seconds))
             .ok_or_else(|| {
-                DoorError::InvalidArguments(format!("`seconds` is 1 to {}", profile::MAX_SECONDS))
+                ApiError::InvalidArguments(format!("`seconds` is 1 to {}", profile::MAX_SECONDS))
             })?,
     };
-    let root = profile::default_root().ok_or_else(|| DoorError::Unavailable {
+    let root = profile::default_root().ok_or_else(|| ApiError::Unavailable {
         code: "no-state-dir".into(),
         reason: "there is no state directory to keep the profile in".into(),
     })?;
     let profile = profile::start(&root, std::time::Duration::from_secs(seconds)).map_err(
         |error| match error {
-            profile::StartError::AlreadyRecording(path) => DoorError::Unavailable {
+            profile::StartError::AlreadyRecording(path) => ApiError::Unavailable {
                 code: "already-recording".into(),
                 reason: format!("a profile is already recording into {}", path.display()),
             },
-            profile::StartError::Io(error) => DoorError::Failed(format!(
+            profile::StartError::Io(error) => ApiError::Failed(format!(
                 "the profile directory could not be created: {error}"
             )),
         },
@@ -199,7 +199,7 @@ mod tests {
                 .invoke(
                     &ActionAddress::new(RESOURCE, "profile-status"),
                     &Map::new(),
-                    &mut tilo_session_core::door::Look::none(),
+                    &mut tilo_session_core::surfaces::Look::none(),
                 )
                 .expect("the reading");
             let ResourceOperationStart::Completed(output) = status else {
@@ -215,7 +215,7 @@ mod tests {
                 assert!(
                     matches!(
                         profile_start(arguments.as_object().unwrap()),
-                        Err(DoorError::InvalidArguments(_))
+                        Err(ApiError::InvalidArguments(_))
                     ),
                     "{seconds}"
                 );
@@ -224,17 +224,17 @@ mod tests {
                 Served.invoke(
                     &ActionAddress::new(RESOURCE, "profile-elsewhere"),
                     &Map::new(),
-                    &mut tilo_session_core::door::Look::none()
+                    &mut tilo_session_core::surfaces::Look::none()
                 ),
-                Err(DoorError::Unknown(_))
+                Err(ApiError::Unknown(_))
             ));
             assert!(matches!(
                 Served.invoke(
                     &ActionAddress::new("session:devices", "profile-stop"),
                     &Map::new(),
-                    &mut tilo_session_core::door::Look::none()
+                    &mut tilo_session_core::surfaces::Look::none()
                 ),
-                Err(DoorError::Unknown(_))
+                Err(ApiError::Unknown(_))
             ));
         }
     }

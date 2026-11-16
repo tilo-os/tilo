@@ -128,7 +128,7 @@ impl<R: Resource> Publishes<R> {
     /// The resource's own actions that differ from their declaration right
     /// now, as the view's live state says (a mode switch unavailable while
     /// recording, with why). Read whenever the resource is published, so
-    /// the palette, agents and the door follow the view: an action
+    /// the palette, agents and the api follow the view: an action
     /// unavailable here is refused with its reason.
     #[must_use]
     pub fn availability(mut self, statuses: impl Fn() -> Vec<EffectStatus> + 'static) -> Self {

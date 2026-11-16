@@ -1301,15 +1301,15 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
     let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);
     std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)).unwrap();
     let door = session_dir.join(tilo_paths::login::AGENT_SOCKET_FILE);
-    let environment_door = session_dir
+    let environment_server = session_dir
         .join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)
         .join("e1.sock");
-    let session = fake_session(&door, environment_door.clone());
+    let session = fake_session(&door, environment_server.clone());
 
     let command = format!(
         "printf 'SOCK=%s\\n' \"$TILO_AGENT_SOCK\"; test -e '{}' || printf 'UNSEEN\\n'; \
          printf '{{\"hello\":1}}\\n' | tilo-runtime --connect",
-        environment_door.display()
+        environment_server.display()
     );
     let output = std::process::Command::new("timeout")
         .arg("--kill-after=5s")

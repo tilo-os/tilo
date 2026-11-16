@@ -1,7 +1,7 @@
 //! The published tree as a [`SharedResource`]: each version shares with the
 //! last every item child the change did not touch, so a keystroke in a field
 //! no item depends on neither builds nor copies an item, and what reads the
-//! tree (bound controls, accessibility, the door) skips what it has seen.
+//! tree (bound controls, accessibility, the api) skips what it has seen.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -922,7 +922,7 @@ mod tests {
         label: String,
         presentation: String,
         identity: String,
-        actions: Vec<tilo_actions::door::ActionDescriptor>,
+        actions: Vec<tilo_actions::api::ActionDescriptor>,
         views: String,
         children: Vec<Outline>,
     }
@@ -935,7 +935,7 @@ mod tests {
             label: resource.label.clone(),
             presentation: format!("{:?}", resource.presentation),
             identity: format!("{:?}", resource.semantic_identity),
-            actions: tilo_actions::door::survey(&[super::super::without_children(resource)]),
+            actions: tilo_actions::api::survey(&[super::super::without_children(resource)]),
             views: format!("{:?}", resource.views),
             children: resource.children.iter().map(outline).collect(),
         }

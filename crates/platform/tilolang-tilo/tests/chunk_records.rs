@@ -331,7 +331,7 @@ fn bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
 }
 
 /// The cards `ids` written into chunk `number` of the board `root`, as the items of its `left`
-/// collection, their order keys starting at `offset`: one action, as the door would have made
+/// collection, their order keys starting at `offset`: one action, as the API would have made
 /// them.
 fn insert(
     docs: &mut Docs,
@@ -1352,7 +1352,7 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
         Rc::new(app_state::FsStore::new(profile.path()));
     let mut record = opened_from_disk(&route, &documents, "ada");
 
-    // The board's root in the record's own chunk, then one card into chunk 2, as the door writes
+    // The board's root in the record's own chunk, then one card into chunk 2, as the API writes
     // them: nothing of this reaches another replica.
     let board_ty = meta
         .types
@@ -1479,7 +1479,7 @@ fn a_hundred_thousand_cards_open_over_their_index() {
     assert!(warm < Duration::from_secs(10), "opened in {warm:?}");
 }
 
-/// A field edited by its id alone, as the door's `edit-text` and a bound input write it: the
+/// A field edited by its id alone, as the API's `edit-text` and a bound input write it: the
 /// edit names the card, not the chunk it is in, and is written where the card is.
 #[test]
 fn a_direct_edit_of_a_card_in_a_chunk_is_written_in_that_chunk() {

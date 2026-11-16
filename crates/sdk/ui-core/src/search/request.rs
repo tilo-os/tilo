@@ -288,13 +288,13 @@ impl SearchRequest {
     }
 }
 
-/// Whether `address` names the host search door.
+/// Whether `address` names the host search API.
 #[must_use]
 pub fn is_search_address(address: &tilo_actions::ActionAddress) -> bool {
     address.resource == SEARCH_RESOURCE && address.action == SEARCH_ACTION
 }
 
-/// The host search door's address.
+/// The host search API's address.
 pub(crate) fn search_address() -> tilo_actions::ActionAddress {
     tilo_actions::ActionAddress::new(SEARCH_RESOURCE, SEARCH_ACTION)
 }

@@ -352,7 +352,7 @@ fn the_whole_selection_deletes_and_duplicates_as_one_step_each() {
 fn open(
     app: &mut HeadlessApp<VideoEditor>,
     anchor: &str,
-) -> Result<(), ui::tilo_actions::DoorError> {
+) -> Result<(), ui::tilo_actions::ApiError> {
     app.call("open", ui::serde_json::json!({ "anchor": anchor }))?;
     app.settle();
     Ok(())

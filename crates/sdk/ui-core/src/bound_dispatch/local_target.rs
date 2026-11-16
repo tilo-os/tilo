@@ -2,21 +2,21 @@
 //! Requests are toolkit-private and finite; no widget pointer or mutable document loan escapes a
 //! traversal.
 use super::{AutoCommit, BoundActionAddress, BoundActionTarget, CallbackBinding, Widget};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 
 #[allow(
     clippy::needless_pass_by_value,
     reason = "normalize owned and borrowed error types into a refusal"
 )]
-fn refused(code: &str, reason: impl ToString) -> DoorError {
+fn refused(code: &str, reason: impl ToString) -> ApiError {
     refusal(code, reason.to_string())
 }
 
 /// [`refused`] once its reason is text. The traversals that refuse are
 /// generic over the widget they visit, and apps compile them for the
 /// toolkit widgets, so building the error stays here.
-fn refusal(code: &str, reason: String) -> DoorError {
-    DoorError::Unavailable {
+fn refusal(code: &str, reason: String) -> ApiError {
+    ApiError::Unavailable {
         code: code.into(),
         reason,
     }
@@ -124,7 +124,7 @@ fn provider_at<W: Widget + ?Sized>(
     found
 }
 impl ResourceReadRequest<'_> {
-    pub(crate) fn visit<W: Widget + ?Sized>(&mut self, root: &W) -> Result<(), DoorError> {
+    pub(crate) fn visit<W: Widget + ?Sized>(&mut self, root: &W) -> Result<(), ApiError> {
         if let Some(binding) = root.callback_binding() {
             binding
                 .enter()
@@ -177,7 +177,7 @@ impl ResourceReadRequest<'_> {
         result
     }
     /// A tile's live content, hidden from dispatch while `interactive` is false.
-    pub(crate) fn tile(&mut self, interactive: bool, live: &dyn Widget) -> Result<(), DoorError> {
+    pub(crate) fn tile(&mut self, interactive: bool, live: &dyn Widget) -> Result<(), ApiError> {
         let old_hidden = self.hidden;
         self.hidden |= !interactive;
         let result = live.visit_resource_owners(self);
@@ -188,7 +188,7 @@ impl ResourceReadRequest<'_> {
 fn inventory(
     root: &dyn Widget,
     address: Option<&ActionAddress>,
-) -> Result<Vec<OwnerResources>, DoorError> {
+) -> Result<Vec<OwnerResources>, ApiError> {
     let mut request = ResourceReadRequest {
         address,
         owners: vec![],
@@ -218,7 +218,7 @@ pub(crate) fn select_local_target(
     root: &dyn Widget,
     doc: &AutoCommit,
     address: &ActionAddress,
-) -> Result<LocalResourceTarget, DoorError> {
+) -> Result<LocalResourceTarget, ApiError> {
     let mut resources = Vec::new();
     if !root.has_separate_document_owner() {
         owned_resources(root, doc, Some(address), &mut resources);
@@ -244,7 +244,7 @@ pub(crate) fn select_local_target(
         }
     }
     match count {
-        0 => Err(DoorError::Unknown(address.clone())),
+        0 => Err(ApiError::Unknown(address.clone())),
         1 if interactive => Ok(target),
         1 => Err(refused("hidden_document", "Live document is hidden")),
         _ => Err(refused(

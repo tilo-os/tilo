@@ -632,13 +632,13 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
 
 /// The broker's door to pairing: how Settings pairs a device, as the person using it, without
 /// starting any process itself.
-pub(crate) struct BrokerDoor {
+pub(crate) struct BrokerApi {
     pub(crate) layout: std::sync::Arc<crate::plane::LayoutAuthority>,
     pub(crate) fabric: Option<SharedLink>,
     pub(crate) pairing: &'static Pairing,
 }
 
-impl BrokerDoor {
+impl BrokerApi {
     /// Refuse unless `person` administers `workspace` 's identity: they may grant in the workspace,
     /// and it has an identity selected.
     fn authorize(&self, workspace: &str, person: &str) -> Result<(), String> {
@@ -721,7 +721,7 @@ fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcome {
         })
 }
 
-impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
+impl tilo_broker_core::steps::HostStepServices for BrokerApi {
     fn provider(&self) -> &'static str {
         tilo_actions::remote::device_pairing::PROVIDER
     }

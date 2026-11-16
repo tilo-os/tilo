@@ -2,7 +2,7 @@
 //!
 //! An app on the Tilo action model publishes a [`Resource`](tilo_actions::ResourceSpec) tree and the
 //! operations each resource exports, and
-//! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
+//! [`tilo_actions::api`] turns a live tree into inert, stably-addressed
 //! descriptors the agent can perform. The agent queries that tree each time,
 //! so it receives the operations the app currently publishes.
 //!
@@ -31,7 +31,7 @@
 use std::fmt::Write as _;
 
 use tilo_actions::ActionParam;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 
 /// Separator between a resource id and an action id in an address.
 ///
@@ -853,7 +853,7 @@ fn collects_a_value_said(offer: &Offer) -> bool {
 mod tests {
     use super::*;
     use tilo_actions::ActionContract;
-    use tilo_actions::door::ActionAddress;
+    use tilo_actions::api::ActionAddress;
 
     tilo_test_env::scenario! {
         fn offers_keep_distinct_addresses_per_publisher;

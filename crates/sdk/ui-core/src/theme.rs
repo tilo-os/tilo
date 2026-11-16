@@ -2190,7 +2190,7 @@ mod configured_theme {
         }
 
         // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`: the shell
-        // re-reads its theme through this door on every settings change, so flipping the
+        // re-reads its theme through this API on every settings change, so flipping the
         // switch must flip the chrome's motion.
         if !crate::host::environment().accessibility.reduce_motion {
             let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);

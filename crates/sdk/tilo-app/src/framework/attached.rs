@@ -5,7 +5,7 @@
 //! Nothing is drawn if no one is looking, but no action is performed out of
 //! sight. An [`AttachedView`] mounts the app's real component over the
 //! record exactly as a window does, lays it out and never paints it; every
-//! operation goes through the view's bound dispatcher, the door a person's
+//! operation goes through the view's bound dispatcher, the api a person's
 //! click takes, admitted for the participant as invoker and checked against
 //! its permissions. Where the action landed is where the participant's
 //! presence shows ([`AttachedView::landed`]), and the person's devices draw
@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
 use ui_core::application::{
     ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
@@ -446,7 +446,7 @@ impl AttachedView {
             // action elsewhere in the tree is not this address's.
             let mut alone = resource;
             alone.children.clear();
-            if let Some(descriptor) = tilo_actions::door::survey(&[alone])
+            if let Some(descriptor) = tilo_actions::api::survey(&[alone])
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
             {
@@ -455,7 +455,7 @@ impl AttachedView {
         }
         // A resource only the whole tree names (an accessibility or search
         // surface) is answered as it always was.
-        tilo_actions::door::survey(&self.resources())
+        tilo_actions::api::survey(&self.resources())
             .into_iter()
             .find(|descriptor| descriptor.address == *address)
     }
@@ -464,7 +464,7 @@ impl AttachedView {
     /// view now, with its typed parameters.
     #[must_use]
     pub fn operations(&self) -> Vec<ActionDescriptor> {
-        tilo_actions::door::survey(&self.resources())
+        tilo_actions::api::survey(&self.resources())
             .into_iter()
             .filter(|descriptor| descriptor.kind == tilo_actions::OperationKind::Document)
             .collect()
@@ -480,13 +480,13 @@ impl AttachedView {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_appearing(address, arguments, confirmed, None)
     }
 
-    /// [`Self::invoke`] showing `appearance`, which the door already admitted
+    /// [`Self::invoke`] showing `appearance`, which the api already admitted
     /// for this one invocation. `None` clears any appearance the view's
-    /// context carried: only a door sets one.
+    /// context carried: only an API sets one.
     ///
     /// # Errors
     /// As [`Self::invoke`].
@@ -496,7 +496,7 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         appearance: Option<tilo_actions::Appearance>,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let invoker = self.invoker_appearing(appearance);
         self.invoke_as(invoker, address, arguments, confirmed)
     }
@@ -531,7 +531,7 @@ impl AttachedView {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
         // It answers once what it caused in the app has landed: a reply the
         // app asked a worker for in turn is applied as part of it, not of
@@ -557,7 +557,7 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         within: ui_core::time::Duration,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
         if let Some(output) = started.completed() {
             self.frame.settle_owed();
@@ -580,15 +580,15 @@ impl AttachedView {
         match ended(&self.frame) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
-                Err(DoorError::Failed(error.message))
+                Err(ApiError::Failed(error.message))
             }
-            Some(_) => Err(DoorError::Failed(format!(
+            Some(_) => Err(ApiError::Failed(format!(
                 "{} was cancelled",
                 address.action
             ))),
             None => {
                 let _ = self.frame.cancel_job(invocation);
-                Err(DoorError::Failed(format!(
+                Err(ApiError::Failed(format!(
                     "{} did not finish within {} seconds",
                     address.action,
                     within.as_secs()
@@ -610,10 +610,10 @@ impl AttachedView {
             tilo_actions::InvocationId,
             ui_core::host_operation::ResourceOperationStart,
         ),
-        DoorError,
+        ApiError,
     > {
         if self.descriptor(address).is_none() {
-            return Err(DoorError::Unknown(address.clone()));
+            return Err(ApiError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();
         // History names the app the view is of, as its window does, within
@@ -645,9 +645,9 @@ impl AttachedView {
         &mut self,
         invoke: &tilo_resource::Invoke<R>,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+            return Err(ApiError::InvalidArguments(refusal.to_owned()));
         }
         // The record this view draws is the one its actions are published
         // under: one of another app's, kept here, is reached through the
@@ -657,7 +657,7 @@ impl AttachedView {
             .resources()
             .into_iter()
             .find(|resource| resource.kind == R::KIND && resource.app().is_none_or(|of| of == app))
-            .ok_or_else(|| DoorError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
+            .ok_or_else(|| ApiError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
         self.invoke(
             &ActionAddress::new(resource.id.as_str(), invoke.id),
             &invoke.arguments,
@@ -678,27 +678,24 @@ impl AttachedView {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let resources = self.resources();
-        let param = tilo_actions::door::survey(&resources)
+        let param = tilo_actions::api::survey(&resources)
             .into_iter()
             .find(|entry| &entry.address == address)
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?
             .params
             .iter()
             .find(|param| param.is_place())
             .map(|param| param.name.to_string())
             .ok_or_else(|| {
-                DoorError::InvalidArguments(format!(
-                    "`{}` takes no place to act at",
-                    address.action
-                ))
+                ApiError::InvalidArguments(format!("`{}` takes no place to act at", address.action))
             })?;
         let mut arguments = arguments.clone();
         arguments.insert(
             param,
             serde_json::to_value(place)
-                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?,
+                .map_err(|error| ApiError::InvalidArguments(error.to_string()))?,
         );
         self.invoke(address, &arguments, confirmed)
     }

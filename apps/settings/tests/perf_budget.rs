@@ -446,7 +446,7 @@ mod hosted {
                 let tree = app.harness().resources();
                 resources.push_per(&t, 1);
                 let t = Step::start();
-                let surveyed = ui::tilo_actions::door::survey(&tree);
+                let surveyed = ui::tilo_actions::api::survey(&tree);
                 let exported: Vec<ui::collaboration::ExportedAction> = surveyed
                     .iter()
                     .map(ui::collaboration::ExportedAction::from)

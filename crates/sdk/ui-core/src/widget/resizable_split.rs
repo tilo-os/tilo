@@ -1945,7 +1945,7 @@ mod tests {
                             .iter()
                             .any(|action| action.id == "set-value")
                     })
-                    .expect("named shared divider publishes its canonical resize door");
+                    .expect("named shared divider publishes its canonical resize API");
                 for verb in ["increment", "decrement", "set-value"] {
                     assert!(separator.actions.iter().any(|action| action.id == verb));
                 }

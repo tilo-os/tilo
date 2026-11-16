@@ -13,7 +13,7 @@ use crate::backend::Backend;
 use crate::locales::CATALOG;
 pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
-use ui::capability_door::Door;
+use ui::capability::Resolved;
 
 impl Firewall {
     /// What the record holds: the stored configuration — each zone's policy, members and
@@ -235,11 +235,15 @@ pub(crate) fn pending_apply(
 /// How one apply ended: how many commands ran, or why it failed.
 pub(crate) type Applied = Result<usize, String>;
 
-pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: bool) -> Applied {
-    if !door.is_granted() {
+pub(crate) fn apply_on_device(
+    config: &FirewallConfig,
+    resolved: &Resolved,
+    allow_host: bool,
+) -> Applied {
+    if !resolved.is_granted() {
         return Err(format!(
             "changing firewall rules needs the {} capability, which is not granted",
-            door.capability()
+            resolved.capability()
         ));
     }
     let mut backend = Backend::new();
@@ -534,7 +538,7 @@ mod tests {
         assert_eq!(action(&surface, "retry").unwrap()["operation"], "Effect");
         let retry = app.effect(&FirewallEffect::Retry).unwrap_err();
         assert!(
-            matches!(&retry, tilo_actions::DoorError::Unavailable { code, .. } if code == "connected"),
+            matches!(&retry, tilo_actions::ApiError::Unavailable { code, .. } if code == "connected"),
             "{retry:?}"
         );
 
@@ -730,7 +734,7 @@ mod tests {
         assert!(
             matches!(
                 app.call("field-edit", zone(ZoneKind::Home)),
-                Err(tilo_actions::DoorError::ConfirmationRequired)
+                Err(tilo_actions::ApiError::ConfirmationRequired)
             ),
             "a more trusted active zone weakens the firewall, so it asks"
         );

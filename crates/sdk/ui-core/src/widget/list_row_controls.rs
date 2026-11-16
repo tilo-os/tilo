@@ -75,7 +75,7 @@ impl ActionControls for ListRow {
                 ActionHandler::Bound(emitter) => {
                     bindings.push(emitter.metadata(format!("{id}/action/{index}")));
                 }
-                // A callback-only action reaches no door: the inventory lists what an agent can invoke.
+                // A callback-only action reaches no API: the inventory lists what an agent can invoke.
                 ActionHandler::Callback(_) => {}
             }
         }

@@ -22,7 +22,7 @@ pub struct WindowRequest {
 #[cfg(feature = "local-daemons")]
 pub use transport::*;
 
-/// Say on the door the launcher handed this process that it opens the windows the shell
+/// Say on the API the launcher handed this process that it opens the windows the shell
 /// asks for, before the launch's first window is made: the shell takes a mapped window as
 /// proof the app cannot, so an app that answers only once its loop runs keeps a process
 /// per window.
@@ -93,7 +93,7 @@ pub(crate) fn open_window(
 }
 
 /// The instance of the window being built for the shell's request, while one is; `None`
-/// while the process's first window is built, and where there is no window door.
+/// while the process's first window is built, and where there is no window API.
 #[must_use]
 pub fn requested_instance() -> Option<u64> {
     #[cfg(feature = "local-daemons")]
@@ -107,12 +107,12 @@ pub fn requested_instance() -> Option<u64> {
 }
 
 /// The variable a launch names the item its window opens on in, for a process the shell
-/// starts for that window rather than one it asks for it: a window door request cannot
+/// starts for that window rather than one it asks for it: a window API request cannot
 /// reach a window that is already being built.
 pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
 
 /// The variable the session sets on a launch it makes with no window: the app answers its
-/// actions and its door, and its first window is the first one the shell asks for here.
+/// actions and its API, and its first window is the first one the shell asks for here.
 pub const WINDOWLESS_ENV: &str = crate::host::WINDOWLESS_ENV;
 
 /// The item the window being built opens on: what the shell's request named for a window
@@ -205,7 +205,7 @@ mod transport {
         }
     }
 
-    /// Write `request` on the shell's end of `door`, with the connections it says it
+    /// Write `request` on the shell's end of `API`, with the connections it says it
     /// carries.
     pub fn send(
         door: &Descriptor,
@@ -223,7 +223,7 @@ mod transport {
         runtime_portal::windows::send_open(door, &encoded, &fds)
     }
 
-    /// The next request on the app's end of `door`; `None` once the shell closed it.
+    /// The next request on the app's end of `API`; `None` once the shell closed it.
     pub fn receive(door: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
         let Some((encoded, fds)) = runtime_portal::windows::receive_open(door)? else {
             return Ok(None);
@@ -297,7 +297,7 @@ mod transport {
         }
     }
 
-    /// The door the launcher handed this process, once (see
+    /// The API the launcher handed this process, once (see
     /// [`runtime_portal::windows::take_door`]), told this app serves windows: the shell
     /// routes an app's later windows to a process that said so before it mapped one.
     #[must_use]
@@ -309,7 +309,7 @@ mod transport {
 
     static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    /// The door, taken once and answered for once: whoever wants it first ([`announce`]
+    /// The API, taken once and answered for once: whoever wants it first ([`announce`]
     /// before the launch's first window, [`take_door`] to serve it) takes it and tells
     /// the shell so, and later callers get it until it is handed out.
     fn door() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
@@ -327,12 +327,12 @@ mod transport {
         slot
     }
 
-    /// Take the door and tell the shell about it, keeping it for serving.
+    /// Take the API and tell the shell about it, keeping it for serving.
     pub fn announce() {
         drop(door());
     }
 
-    /// Read `door` on a thread of its own, handing each request to `open`, until the
+    /// Read `API` on a thread of its own, handing each request to `open`, until the
     /// shell closes it or `open` refuses (its loop is gone). The thread could not be
     /// started.
     pub fn serve(
@@ -475,7 +475,7 @@ mod transport {
         }
 
         tilo_test_env::scenario! {
-            /// A window request sent over the door and received at the app's end.
+            /// A window request sent over the API and received at the app's end.
             /// Each phase was a test of its own and builds its own fixture.
             fn a_window_request_carries_exactly_the_connections_it_names;
 

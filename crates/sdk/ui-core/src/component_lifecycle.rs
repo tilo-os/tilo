@@ -170,7 +170,7 @@ pub trait WindowActivation {
     fn take_window_activation_intent(&self) -> bool;
 }
 
-/// Consume an activation request through the root's existing capability door.
+/// Consume an activation request through the root's existing capability API.
 pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
     capability::<dyn WindowActivation>(widget)
         .is_some_and(WindowActivation::take_window_activation_intent)
@@ -183,7 +183,7 @@ pub trait WindowTitle {
     fn window_title(&self) -> Option<&str>;
 }
 
-/// What `widget`'s window shows ([`WindowTitle`]), through its capability door.
+/// What `widget`'s window shows ([`WindowTitle`]), through its capability API.
 pub fn window_title(widget: &(impl Widget + ?Sized)) -> Option<&str> {
     capability::<dyn WindowTitle>(widget).and_then(WindowTitle::window_title)
 }
@@ -196,7 +196,7 @@ pub trait HostIntents {
     fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent>;
 }
 
-/// Consume one request `widget` has for the shell, through its capability door.
+/// Consume one request `widget` has for the shell, through its capability API.
 pub fn take_host_intent(
     widget: &mut (impl Widget + ?Sized),
 ) -> Option<crate::widget::AppHostIntent> {

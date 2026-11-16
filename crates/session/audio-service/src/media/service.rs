@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_service::{Service, Started, Wake, decode, reading};
 
 use crate::mpris::Mpris;
@@ -250,8 +250,8 @@ impl Service for MediaService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
-        let unknown = || DoorError::Unknown(ActionAddress::new(resource, action));
+    ) -> Result<Started, ApiError> {
+        let unknown = || ApiError::Unknown(ActionAddress::new(resource, action));
         let request = if resource == MEDIA {
             match decode::<MediaAction>(&self.resources(), resource, action, arguments)? {
                 MediaAction::Resume {

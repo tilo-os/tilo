@@ -73,7 +73,7 @@ impl ShellPart {
         // The runtime committed the record's change under a ticket: the part applies it to the
         // record its views read, as it does a change a press in the shell made, so the next
         // turn draws the shell as the action left it. The tickets are taken here rather than
-        // handed to the part's door, since the door's queue is what a press of the shell's own
+        // handed to the part's API, since the API's queue is what a press of the shell's own
         // views answers, and the part answers nothing on the person's behalf outside it.
         self.apply_committed(&host, first);
         self.again = true;

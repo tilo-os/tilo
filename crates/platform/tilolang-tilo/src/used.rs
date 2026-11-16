@@ -3,7 +3,7 @@
 //! A used package installed as an app keeps its records in that app's own record, never in the
 //! record of the app that uses it. The using app's runtime loads its package as another app's
 //! ([`Host::load_foreign_package`]): its views draw the resources from their readings, and what
-//! they change is asked of that app's door. Each used app is read here from its record, held
+//! they change is asked of that app's api. Each used app is read here from its record, held
 //! read-only, through its own package ([`UsedApp`]), and the readings the using app's views ask
 //! for are answered from it ([`answer`]), again whenever the record moves.
 

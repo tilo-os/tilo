@@ -3,7 +3,7 @@
 //! A [`ResourceRef`] names something another app keeps: a chat message's
 //! page, an issue's link, what an agent was asked about. Opening it
 //! is one action, the resource's `open` in its own app
-//! ([`ResourceRef::open_target`]), sent through the session's action door
+//! ([`ResourceRef::open_target`]), sent through the session's action api
 //! as the person who asked: the host launches the app on the record when no
 //! window shows it and admits the open under that person's grants. A chip
 //! ([`ViewCx::reference`](super::ViewCx::reference), or [`LEAD`] on a
@@ -154,14 +154,14 @@ pub fn workspace() -> Result<String, String> {
 
 /// A view's opens, and the actions of its own record it sends through the
 /// host ([`Dispatcher::through_host`](super::Dispatcher::through_host)), on
-/// their own client of the session's action door, which the window's root
+/// their own client of the session's action api, which the window's root
 /// carries to the host.
 #[derive(Clone, Default)]
 pub(crate) struct Opener(Rc<RefCell<Opening>>);
 
 #[derive(Default)]
 struct Opening {
-    door: Option<RemoteActions>,
+    api: Option<RemoteActions>,
     /// Each call, by the action it invokes.
     calls: Vec<(String, InvocationCall)>,
     /// The reads views follow ([`super::query::Query`]), each kept while
@@ -206,7 +206,7 @@ impl Opener {
         let action = target.address.action.clone();
         let mut opening = self.0.borrow_mut();
         let call = opening
-            .door
+            .api
             .get_or_insert_with(RemoteActions::current)
             .invoke(target, argument, None);
         opening.calls.push((action, call));
@@ -224,7 +224,7 @@ impl Opener {
     ) -> InvocationCall {
         self.0
             .borrow_mut()
-            .door
+            .api
             .get_or_insert_with(RemoteActions::current)
             .invoke_continuing(
                 parent,
@@ -236,7 +236,7 @@ impl Opener {
     }
 
     /// Read a record of the window's workspace through the host's record
-    /// door, continuing `parent` as [`Self::call`] does.
+    /// api, continuing `parent` as [`Self::call`] does.
     pub(crate) fn read_record(
         &self,
         parent: Option<tilo_actions::InvocationId>,
@@ -244,12 +244,12 @@ impl Opener {
     ) -> ui_core::remote_actions::RecordReadCall {
         self.0
             .borrow_mut()
-            .door
+            .api
             .get_or_insert_with(RemoteActions::current)
             .read_record(parent, read)
     }
 
-    /// Follow the result of the action at `target` on this view's door,
+    /// Follow the result of the action at `target` on this view's api,
     /// telling `then` each update ([`RemoteActions::follow_with`]).
     pub(crate) fn follow(
         &self,
@@ -259,7 +259,7 @@ impl Opener {
     ) -> ui_core::Followed {
         self.0
             .borrow_mut()
-            .door
+            .api
             .get_or_insert_with(RemoteActions::current)
             .follow_with(target, argument, then)
     }
@@ -297,8 +297,8 @@ impl Opener {
 
     /// The client, once anything was opened: the root carries its requests
     /// and answers.
-    pub(crate) fn door(&self) -> Option<RemoteActions> {
-        // A read whose scope is gone stops here, before the door carries
+    pub(crate) fn api(&self) -> Option<RemoteActions> {
+        // A read whose scope is gone stops here, before the api carries
         // its cancellation.
         let gone: Vec<_> = {
             let mut opening = self.0.borrow_mut();
@@ -309,6 +309,6 @@ impl Opener {
             gone
         };
         drop(gone);
-        self.0.borrow().door.clone()
+        self.0.borrow().api.clone()
     }
 }

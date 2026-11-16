@@ -80,7 +80,7 @@ mod tests {
             .action_address("read-text")
             .expect("the document publishes its read");
         let encoded =
-            tilo_actions::door::encode_json(&[resource], &address, request.as_object().unwrap())
+            tilo_actions::api::encode_json(&[resource], &address, request.as_object().unwrap())
                 .unwrap();
         assert_eq!(
             encoded.type_id,

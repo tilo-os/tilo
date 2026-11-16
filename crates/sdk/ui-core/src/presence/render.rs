@@ -1889,7 +1889,7 @@ pub fn draw_remote_presence(
         // Nobody is a peer of themselves. Already enforced where state
         // arrives (apply_remote_presence, upsert_remote_cursor_owned), but
         // those depend on knowing our own id, which has several spellings —
-        // checked again here as the one place that catches every door.
+        // checked again here as the one place that catches every API.
         if presence.is_own_identity(&cursor.member) {
             continue;
         }
@@ -3010,7 +3010,7 @@ mod tests {
 
     /// [`marker_band`] for an explicit colour, so a test can walk every
     /// entry in [`super::super::PEER_PALETTE`], not just the ids that hash
-    /// onto one. Goes in through `set_color_override`, the same door the
+    /// onto one. Goes in through `set_color_override`, the same API the
     /// shell uses, so this is still the production painter.
     fn marker_band_for(rgb: (u8, u8, u8), paper: Color, theme: &Theme) -> (u8, u8, u8) {
         let mut ctx = PresenceCtx::empty();

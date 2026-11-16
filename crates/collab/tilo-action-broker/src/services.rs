@@ -850,7 +850,7 @@ pub struct HostServices {
     pub published: Option<Arc<dyn PublishedResources>>,
     pub workspace_governance: Option<Arc<dyn WorkspaceGovernanceServices>>,
     pub shortcut_library: Option<Arc<dyn ShortcutLibraryServices>>,
-    /// The device's keyboard shortcuts on the action door; without it they are not offered.
+    /// The device's keyboard shortcuts on the action api; without it they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
     /// The steps the host runs itself, each under its own provider.
     pub host_steps: Vec<Arc<dyn HostStepServices>>,
@@ -860,7 +860,7 @@ pub struct HostServices {
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
     /// What the session hears of a record changing, so search reads it again.
     pub record_index_changes: Option<Arc<dyn RecordIndexChanges>>,
-    /// The device content store content puts go to; without it that door is not offered.
+    /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
@@ -882,7 +882,7 @@ pub struct HostServices {
     pub browser_service_sessions: Option<Arc<dyn BrowserServiceSessionServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     pub file_clipboard: Option<Arc<dyn FileClipboardServices>>,
-    /// What each application declared it may do on the door; without it none declared anything.
+    /// What each application declared it may do on the API; without it none declared anything.
     pub app_action_access: Option<crate::app_actions::AppActionAccessResolver>,
     /// The resource kinds each application declared; without it no app's reach is known.
     pub app_resource_kinds: Option<crate::app_actions::AppResourceKindsResolver>,

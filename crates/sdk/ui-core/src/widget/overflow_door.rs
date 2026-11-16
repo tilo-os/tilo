@@ -52,7 +52,7 @@ pub(crate) fn give_way(
 }
 
 /// How many of a row's items, `widths` wide in the row's order with `gap` between them, stand
-/// in `width` beside a door `door` wide ([`give_way`]); the rest are behind the door, in the
+/// in `width` beside an API `API` wide ([`give_way`]); the rest are behind the API, in the
 /// same order.
 #[must_use]
 pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> usize {
@@ -71,7 +71,7 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f
     hidden.iter().take_while(|hidden| !**hidden).count()
 }
 
-/// The trailing "More actions" door: a button holding the menu of what did not fit. The host
+/// The trailing "More actions" API: a button holding the menu of what did not fit. The host
 /// lays it out where the row ends and hides it ([`Self::set_shown`]) when nothing is behind it.
 #[crate::component::not_a_component(shell, "the strip's overflow")]
 pub struct OverflowDoor {
@@ -90,8 +90,8 @@ pub struct OverflowDoor {
 }
 
 impl OverflowDoor {
-    /// A shut door with `id` on its button, named by the toolkit's own
-    /// `window-toolbar-more` message, so the door reads in the window's
+    /// A shut API with `id` on its button, named by the toolkit's own
+    /// `window-toolbar-more` message, so the API reads in the window's
     /// language like the rest of the chrome and the commands behind it.
     #[must_use]
     pub fn new(id: &str) -> Self {
@@ -119,7 +119,7 @@ impl OverflowDoor {
         }
     }
 
-    /// Whether anything is behind the door: it shows, and takes its place in
+    /// Whether anything is behind the API: it shows, and takes its place in
     /// the row. `false` closes it and lays the button out at nothing.
     pub fn set_shown(&mut self, shown: bool) {
         self.shown = shown;
@@ -175,7 +175,7 @@ impl OverflowDoor {
     }
 
     /// The menu's labels, in order, while it is open: what the person can
-    /// reach behind the door.
+    /// reach behind the API.
     #[must_use]
     pub fn menu_labels(&self) -> Vec<String> {
         if !self.menu.is_open() {
@@ -189,7 +189,7 @@ impl OverflowDoor {
     }
 
     /// Choose `row`, as a click on it does. For a test (a capture, a drive)
-    /// that drives the door without a pointer.
+    /// that drives the API without a pointer.
     pub fn choose(&mut self, row: usize) {
         self.menu.close();
         self.chosen = self.pick_of(row, usize::MAX);
@@ -326,14 +326,14 @@ impl Widget for OverflowDoor {
         Some(node)
     }
 
-    /// The door's node is its button's, so the button is not exported again
+    /// The API's node is its button's, so the button is not exported again
     /// beside it: assistive technology hears "More actions" once.
     fn accessibility_represents_child(&self, child_index: usize) -> bool {
         child_index == 0
     }
 
     /// A command chosen from the menu by assistive technology, which sends no
-    /// pointer event: the row is the door's choice, as a click on it is.
+    /// pointer event: the row is the API's choice, as a click on it is.
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -373,7 +373,7 @@ impl Widget for OverflowDoor {
         }
     }
 
-    /// Laid out also while hidden: the row that hides the door still has to
+    /// Laid out also while hidden: the row that hides the API still has to
     /// know where the next control after it would stand.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.button);
@@ -435,7 +435,7 @@ mod tests {
         phase what_does_not_fit_is_named_behind_the_door_not_dropped;
         {
             // Four 40 px controls and their gaps want 184 px; a 170 px row has
-            // fits two of them beside the door's own 40 px, so the last two
+            // fits two of them beside the API's own 40 px, so the last two
             // move behind it.
             assert_eq!(plan(170.0, [40.0, 40.0, 40.0, 40.0], 8.0, 40.0), 2);
         }
@@ -456,9 +456,9 @@ mod tests {
             assert_eq!(plan(0.0, [], 8.0, 40.0), 0);
         }
 
-        // The rows a header keeps behind the door read as the menu of the run they came from:
+        // The rows a header keeps behind the API read as the menu of the run they came from:
         // a run of three stands as one row, and choosing its second member chooses the second
-        // action behind the door, not the row.
+        // action behind the API, not the row.
         phase a_run_behind_the_door_is_one_row_that_picks_its_own_member;
         {
             let mut door = OverflowDoor::new("more");

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use super::{
     AppBrokerState, InvocationCompletion, InvocationEnvelope, InvocationJob, PendingInvocation,
-    invocation_journal, offload_door,
+    invocation_journal, offload_api,
 };
 
 /// An invocation admitted in the journal, which nobody hears of (neither
@@ -218,7 +218,7 @@ impl AppBrokerState {
         self.invocation_changed();
         let envelope = match (offload, self.offloads.lock()) {
             (Some((route, request, invocation)), Ok(mut queued)) => {
-                queued.push(offload_door::QueuedOffload {
+                queued.push(offload_api::QueuedOffload {
                     id,
                     peer_id,
                     request,

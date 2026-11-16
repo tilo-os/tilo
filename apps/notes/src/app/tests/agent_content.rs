@@ -78,7 +78,7 @@ fn call_by(
     who: &str,
     action: &str,
     arguments: serde_json::Value,
-) -> Result<serde_json::Value, ui::tilo_actions::DoorError> {
+) -> Result<serde_json::Value, ui::tilo_actions::ApiError> {
     let answer = app.call_by(agent(who), "notes.notebook", action, arguments);
     app.settle();
     answer.map(|output| output.value.unwrap_or_default())

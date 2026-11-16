@@ -3,7 +3,7 @@
 //! The golden path is [`framework`]: declare a resource type and its actions
 //! with [`tilo_resource`], write views against a [`framework::ViewCx`], and
 //! [`framework::run`] provides storage, sync, collaboration, history, undo,
-//! permissions, the action palette, the agent and script door, and search.
+//! permissions, the action palette, the agent and script api, and search.
 //! The CRDT engine is not part of that surface.
 //!
 //! The rendering toolkit is re-exported unchanged for widgets, custom

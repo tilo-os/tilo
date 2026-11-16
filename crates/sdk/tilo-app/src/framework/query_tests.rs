@@ -25,11 +25,11 @@ fn target() -> RemoteActionTarget {
     }
 }
 
-/// What the view's door sends next.
+/// What the view's api sends next.
 fn sent(opener: &Opener) -> Vec<RemoteActionMessage> {
     opener
-        .door()
-        .map(|mut door| door.take_collab_requests())
+        .api()
+        .map(|mut api| api.take_collab_requests())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|request| match request {
@@ -50,8 +50,8 @@ fn invoked(messages: &[RemoteActionMessage]) -> InvocationId {
 }
 
 fn answer(opener: &Opener, invocation: InvocationId, update: InvocationUpdate) {
-    let mut door = opener.door().expect("the read has a door");
-    door.handle_collab_event(&CollabEvent::RemoteAction {
+    let mut api = opener.api().expect("the read has an API");
+    api.handle_collab_event(&CollabEvent::RemoteAction {
         message: RemoteActionMessage::Update {
             invocation,
             state: Some(InvocationState::new(invocation, update)),
@@ -85,8 +85,8 @@ tilo_test_env::scenario! {
             "nothing has answered yet"
         );
         let first = invoked(&sent(&opener));
-        let mut door = opener.door().unwrap();
-        door.handle_collab_event(&CollabEvent::RemoteAction {
+        let mut api = opener.api().unwrap();
+        api.handle_collab_event(&CollabEvent::RemoteAction {
             message: RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: first,
                 status: ReceiptStatus::Accepted,

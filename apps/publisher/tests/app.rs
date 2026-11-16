@@ -8,7 +8,7 @@ use ui::tilo_resource::Path;
 fn edit(field: &Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
     Invoke::edit(&field.replace(text)).expect("an edit")
 }
-use ui::tilo_actions::{ActionKind, Availability, ConfirmationPolicy, DoorError, RiskLevel};
+use ui::tilo_actions::{ActionKind, ApiError, Availability, ConfirmationPolicy, RiskLevel};
 
 /// A machine of its own: a home with no key the developer's environment names, and secrets
 /// kept in this test's memory.
@@ -120,7 +120,7 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
 
     let again = app.effect_confirmed(&KeyEffect::CreateKey);
     assert!(
-        matches!(&again, Err(DoorError::Unavailable { code, .. }) if code == "key-exists"),
+        matches!(&again, Err(ApiError::Unavailable { code, .. }) if code == "key-exists"),
         "an existing key is never replaced: {again:?}"
     );
     assert_eq!(
@@ -173,7 +173,7 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     }
     let refused = app.effect(&KeyEffect::CopyProof);
     assert!(
-        matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "no-key"),
+        matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "no-key"),
         "{refused:?}"
     );
 
@@ -211,7 +211,7 @@ fn applying_reports_what_the_registry_answered() {
         .expect("an unreachable registry");
     let nothing = app.effect(&KeyEffect::ApplyForNamespaces);
     assert!(
-        matches!(&nothing, Err(DoorError::Failed(message)) if message.contains("name a domain or a forge account")),
+        matches!(&nothing, Err(ApiError::Failed(message)) if message.contains("name a domain or a forge account")),
         "the job answers its caller: {nothing:?}"
     );
     let inspection = app.harness().inspection();

@@ -1,6 +1,6 @@
 //! Tasks in a hosted window: the palette and the form that make a task, the person's today, and
 //! Today over Tasks' own record on one broker, its cards reading that record and what it changes
-//! of it running at Tasks' door.
+//! of it running at Tasks' api.
 
 use super::*;
 
@@ -206,7 +206,7 @@ fn the_moment_picked_answers_the_reminder(
 }
 
 tilo_test_env::scenario! {
-    fn tasks_in_a_hosted_window_are_made_found_and_offered_at_the_door;
+    fn tasks_in_a_hosted_window_are_made_found_and_offered_at_the_api;
 
     phase the_palette_makes_a_task_and_asks_the_form_for_a_moment;
     // The palette runs an action whose arguments it does not give: "New task" takes a title whose
@@ -315,8 +315,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_fresh_tasks_offers_its_lists_actions_at_the_door_by_name;
-    // An agent at the door of a Tasks no one has written in yet finds the list's actions by name:
+    phase a_fresh_tasks_offers_its_lists_actions_at_the_api_by_name;
+    // An agent at the API of a Tasks no one has written in yet finds the list's actions by name:
     // `new_task` on the list, which the directory publishes at the app's top level.
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
@@ -613,7 +613,7 @@ impl Shell {
     }
 
     /// Run the host until it settles, the broker carrying between the two: Tasks' record to
-    /// Today, which joined it to read, and what Today asks of Tasks' door to Tasks.
+    /// Today, which joined it to read, and what Today asks of Tasks' api to Tasks.
     fn settle(&mut self) {
         let began = std::time::Instant::now();
         let mut handed = Vec::new();
@@ -651,7 +651,7 @@ impl Shell {
         }
     }
 
-    /// Deliver to Tasks what Today asked of its door since the last call, as the person's
+    /// Deliver to Tasks what Today asked of its API since the last call, as the person's
     /// invocation. Whether there was any.
     fn carry_asks(&mut self) -> bool {
         let asks: Vec<tilo_actions::remote::InvokeRequest> = self
@@ -748,10 +748,10 @@ impl Shell {
 
 /// Today's cards read Tasks' own record, joined read-only on Today's connection: a task due today
 /// that Tasks makes shows in Today, one checked off in Tasks leaves it, and Today's Morning
-/// cleanup clears the finished tasks at Tasks' door, in Tasks' record. Today's record holds none
+/// cleanup clears the finished tasks at Tasks' api, in Tasks' record. Today's record holds none
 /// of Tasks' resources.
 #[test]
-fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
+fn today_reads_tasks_from_its_record_and_clears_it_at_its_api() {
     let (mut shell, joined) = Shell::new();
     assert!(
         joined.borrow().contains(&shell.tasks_route),
@@ -825,7 +825,7 @@ fn today_reads_tasks_from_its_record_and_clears_it_at_its_door() {
         } if invoke.target.provider.ends_with(":so.tilo.lang.notes")
             && format!("{:?}", invoke.argument).contains("Morning: 1 done"))
     });
-    assert!(filed, "the morning's note is asked of Notes' door");
+    assert!(filed, "the morning's note is asked of Notes' api");
     let today = shell
         .host
         .instances()

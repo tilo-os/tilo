@@ -509,7 +509,7 @@ struct Inner {
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
     runs: HashMap<String, run::RunBegin>,
-    /// Handed to the host and not yet answered by the door.
+    /// Handed to the host and not yet answered by the API.
     handed: BTreeMap<u64, DynAction>,
     next_ticket: u64,
     journals: BTreeMap<RunId, Journal>,
@@ -998,7 +998,7 @@ impl TiloStore {
     }
 
     /// The actions the runtime committed since the host last took them, oldest first. They stay
-    /// available by ticket ([`Self::committed`]) until the door has answered ([`Self::take_ticket`]).
+    /// available by ticket ([`Self::committed`]) until the API has answered ([`Self::take_ticket`]).
     #[must_use]
     pub fn take_committed(&self) -> Vec<Committed> {
         let mut inner = self.changing();
@@ -1042,7 +1042,7 @@ impl TiloStore {
         })
     }
 
-    /// Forget the action committed under `ticket`: the door has answered for it.
+    /// Forget the action committed under `ticket`: the API has answered for it.
     pub fn take_ticket(&self, ticket: u64) -> Option<DynAction> {
         let mut inner = self.changing();
         if let Some(action) = inner.handed.remove(&ticket) {
@@ -1061,8 +1061,8 @@ impl TiloStore {
         self.held().next_ticket
     }
 
-    /// The store as it is now. A trial run (planning an action for the door) writes into the
-    /// mirror like any run; [`Self::rewind`] takes those writes back, since only the door's
+    /// The store as it is now. A trial run (planning an action for the API) writes into the
+    /// mirror like any run; [`Self::rewind`] takes those writes back, since only the API's
     /// commit makes a change.
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {

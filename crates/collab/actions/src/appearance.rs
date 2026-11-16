@@ -183,7 +183,7 @@ pub fn check_avatar_bytes(bytes: &[u8]) -> Result<(), AppearanceError> {
     }
 }
 
-/// For a door that cannot check that its caller is a bot allowed to show
+/// For an API that cannot check that its caller is a bot allowed to show
 /// other names: refuse a request carrying an appearance instead of running
 /// it under the caller's own name.
 ///
@@ -200,7 +200,7 @@ pub fn refuse_here(
     }
 }
 
-/// Admit `appearance` on a request from `caller`, for the workspace-action door:
+/// Admit `appearance` on a request from `caller`, for the workspace-action API:
 /// only a bot whose installation `allows_personas` may show another name, the
 /// appearance must be valid, and its avatar must be an image `avatar` finds
 /// in the workspace's content store under its own hash.
@@ -379,7 +379,7 @@ mod tests {
             );
         }
 
-        phase a_door_that_cannot_check_a_bot_refuses_an_appearance;
+        phase a_api_that_cannot_check_a_bot_refuses_an_appearance;
         {
             use crate::remote::{ActionHostError, InvokeArgument, InvokeRequest, RemoteActionTarget};
             let mut request = InvokeRequest {

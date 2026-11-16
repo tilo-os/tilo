@@ -28,18 +28,18 @@
 //! palette lists them, and choosing one
 //! [`dispatch`]es the underlying action.
 //!
-//! ## The door
+//! ## The action API
 //!
 //! A resource tree is only useful to the app that built it until someone
-//! else can reach it. [`door`] is that reach: [`door::survey`] turns a
+//! else can reach it. [`api`] is that reach: [`api::survey`] turns a
 //! live tree into inert, stably-addressed descriptors, and
-//! [`door::invoke`] performs one attributed to the caller — so another
+//! [`api::invoke`] performs one attributed to the caller — so another
 //! session acts on an app without the app growing a remote-control
 //! surface of its own.
 //!
 //! ## Remote use
 //!
-//! [`remote`] carries the door across machines: a versioned, transport-neutral
+//! [`remote`] carries the action API across machines: a versioned, transport-neutral
 //! vocabulary for listing, invoking, observing and cancelling another peer's
 //! actions, and the [`remote::ActionHost`] trait a peer implements to answer
 //! it. The caller is always the principal the transport authenticated, and
@@ -153,12 +153,12 @@ macro_rules! read_through_json_value {
 
 pub mod action;
 pub mod agent_disclosure;
+pub mod api;
 pub mod appearance;
 pub mod compact;
 pub mod content;
 pub mod context;
 pub mod contract;
-pub mod door;
 pub mod draft;
 pub mod entry;
 pub mod envelope;
@@ -192,6 +192,7 @@ pub use action::{
     OperationKind, asks_first, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
+pub use api::{ActionAddress, ActionDescriptor, ApiError, InputSpec, ResourceViewDescriptor};
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, current, register,
@@ -212,7 +213,6 @@ pub use contract::{
     REQUIRES_NATIVE_PATHS_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
     action_node, phrase_is_meaningful, resource_node,
 };
-pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
 pub use entry::{
     ActionItem, Described, Did, EditOp, FieldEdit, GroupOf, HistoryOp, HistoryStep, PathStep,

@@ -1,9 +1,9 @@
 //! The session's MCP server as the REPL speaks to it: newline-delimited MCP JSON-RPC on the
-//! door's socket (`docs/runtime-mcp.md`, "Inside a Tilo session").
+//! API's socket (`docs/runtime-mcp.md`, "Inside a Tilo session").
 //!
 //! The REPL acts as the person, once they admit it: every call passes the broker's gate as them,
 //! within their own authority, and its changes are theirs, attributed to them, in history and
-//! undo. The person admits it on the sheet the door puts up, or ahead of time by naming the
+//! undo. The person admits it on the sheet the API puts up, or ahead of time by naming the
 //! program when they start the session (`tilo-session --admit-repl PATH`); the REPL never
 //! answers that question for them.
 
@@ -46,7 +46,7 @@ impl Lines {
         line.push(b'\n');
         self.writer
             .write_all(&line)
-            .map_err(|error| format!("the door went away: {error}"))
+            .map_err(|error| format!("the API went away: {error}"))
     }
 
     fn receive(&mut self, timeout: Duration) -> Result<Json, String> {
@@ -56,10 +56,10 @@ impl Lines {
             .map_err(|error| error.to_string())?;
         let mut line = String::new();
         match self.reader.read_line(&mut line) {
-            Ok(0) => Err("the door closed the connection".to_owned()),
+            Ok(0) => Err("the API closed the connection".to_owned()),
             Ok(_) => serde_json::from_str(&line).map_err(|error| format!("not JSON: {error}")),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                Err("the door did not answer in time".to_owned())
+                Err("the API did not answer in time".to_owned())
             }
             Err(error) => Err(error.to_string()),
         }
@@ -72,14 +72,14 @@ pub struct Answer {
     pub failed: bool,
 }
 
-pub struct Door {
+pub struct Api {
     lines: Lines,
     next: u64,
     pub tools: Vec<String>,
 }
 
-impl Door {
-    /// Connect to the door at `socket` and be admitted: by the person in the session's own prompt,
+impl Api {
+    /// Connect to the API at `socket` and be admitted: by the person in the session's own prompt,
     /// or, when they named this program as they started the session (`tilo-session --admit-repl
     /// PATH`), by their decision made ahead of time.
     pub fn open(socket: &Path, say: &dyn Fn(&str)) -> Result<Self, String> {
@@ -101,25 +101,25 @@ impl Door {
         let initialized = lines.receive(ADMIT_TIMEOUT)?;
         if let Some(error) = initialized.get("error") {
             return Err(format!(
-                "the door did not admit the REPL: {}",
+                "the API did not admit the REPL: {}",
                 error["message"].as_str().unwrap_or("refused")
             ));
         }
         lines.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))?;
-        let mut door = Self {
+        let mut api = Self {
             lines,
             next: 1,
             tools: Vec::new(),
         };
-        let listed = door.request("tools/list", &json!({}))?;
-        door.tools = listed
+        let listed = api.request("tools/list", &json!({}))?;
+        api.tools = listed
             .get("tools")
             .and_then(Json::as_array)
             .into_iter()
             .flatten()
             .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
             .collect();
-        Ok(door)
+        Ok(api)
     }
 
     fn request(&mut self, method: &str, params: &Json) -> Result<Json, String> {
@@ -158,7 +158,7 @@ impl Door {
         })
     }
 
-    /// Whether the door serves the tool `name`.
+    /// Whether the API serves the tool `name`.
     #[must_use]
     pub fn serves(&self, name: &str) -> bool {
         self.tools.iter().any(|tool| tool == name)

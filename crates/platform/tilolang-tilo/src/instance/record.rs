@@ -1538,7 +1538,7 @@ impl InstanceRecord {
         Ok(())
     }
 
-    /// Apply `action`, which the door built for `invoker` (a person or an agent task the broker
+    /// Apply `action`, which the API built for `invoker` (a person or an agent task the broker
     /// admitted), to the workspace record as one step of its own, and send it on the record's route.
     /// `ambient` is the task or run it was invoked in. The instance is brought up to date.
     pub fn apply_invoked(
@@ -1782,7 +1782,7 @@ impl InstanceRecord {
         changed
     }
 
-    /// Apply `action`, which the door built for `invoker` (an agent task the broker admitted),
+    /// Apply `action`, which the API built for `invoker` (an agent task the broker admitted),
     /// to the workspace record as one step of its own in `ambient`, and send it on the record's
     /// route, with no instance: the record's origin applying a change.
     pub fn apply_change(

@@ -1,9 +1,9 @@
-//! Opt-in retention of the actual semantic door outcomes, never its input secrets.
+//! Opt-in retention of the actual semantic API outcomes, never its input secrets.
 use super::FrameHarness;
 use crate::widget::ResourceOperationStart;
 use serde::Serialize;
 use std::io::{self, Write};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError};
 
 const MAX_ENTRIES: usize = 4096;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -44,7 +44,7 @@ impl InvocationResults {
     fn record(
         &mut self,
         address: &ActionAddress,
-        result: &Result<ResourceOperationStart, DoorError>,
+        result: &Result<ResourceOperationStart, ApiError>,
     ) -> Result<(), String> {
         if let Some(error) = &self.retention_error {
             return Err(error.clone());
@@ -149,7 +149,7 @@ impl FrameHarness {
     pub(super) fn retain_invocation_outcome(
         &mut self,
         address: &ActionAddress,
-        result: &Result<ResourceOperationStart, DoorError>,
+        result: &Result<ResourceOperationStart, ApiError>,
     ) -> Result<(), String> {
         if let Some(results) = &mut self.invocation_results {
             results.record(address, result)?;
@@ -219,7 +219,7 @@ mod tests {
             crate::application_test_support::runner_inputs(),
         )
         .unwrap();
-        let address = tilo_actions::door::survey(&frame.resources())
+        let address = tilo_actions::api::survey(&frame.resources())
             .into_iter()
             .find(|action| action.address.action == "run")
             .expect("real component publishes its action")

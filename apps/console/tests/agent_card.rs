@@ -8,7 +8,7 @@
 
 //! An agent's card: the resource Console publishes for each client, the card its face in
 //! the workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching
-//! the MCP server once the card has read the door.
+//! the MCP server once the card has read it.
 
 use serde_json::json;
 use tilo_console::{App, ConsoleEffect};
@@ -91,7 +91,7 @@ fn run() -> wire::AgentSession {
     }
 }
 
-fn the_door() -> mcp_server::Server {
+fn the_server() -> mcp_server::Server {
     mcp_server::Server {
         endpoint: "https://mcp.example".into(),
         grants: vec![mcp_server::Grant {
@@ -107,7 +107,7 @@ fn the_door() -> mcp_server::Server {
     }
 }
 
-/// Console with its reads answered: the run, and the door that let it in.
+/// Console with its reads answered: the run, and the MCP server that let it in.
 fn opened() -> TestApp<App> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<App>::for_person("ada").expect("open");
@@ -125,7 +125,7 @@ fn opened() -> TestApp<App> {
         })
         .unwrap(),
     );
-    answer(&mut app, &read, serde_json::to_value(the_door()).unwrap());
+    answer(&mut app, &read, serde_json::to_value(the_server()).unwrap());
     app
 }
 

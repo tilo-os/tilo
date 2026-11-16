@@ -142,10 +142,10 @@ impl FrameHarness {
                 // Validate again after confirmation and before handing intent to
                 // the host. Revoked/replaced addresses never execute locally.
                 if pending.has_valid_input()
-                    && tilo_actions::door::resolve(&resources, &pending.address).is_some()
+                    && tilo_actions::api::resolve(&resources, &pending.address).is_some()
                 {
                     if pending.kind == tilo_actions::OperationKind::View
-                        && tilo_actions::door::resolve(&local, &pending.address).is_some()
+                        && tilo_actions::api::resolve(&local, &pending.address).is_some()
                     {
                         local_pending = Some(pending);
                     } else {

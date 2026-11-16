@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_sheets::lock::{LockEffect, Media, Shown, no_password};
 use zeroize::{Zeroize, Zeroizing};
@@ -194,9 +194,9 @@ impl Service for LockService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != LOCK {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         let published = self.resources();
         let effect = decode::<LockEffect>(&published, resource, action, arguments)?;

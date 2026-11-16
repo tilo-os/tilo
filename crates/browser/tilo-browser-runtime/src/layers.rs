@@ -291,7 +291,7 @@ impl Surfaces for Placing<'_> {
     /// so there is nothing to register beside it.
     fn publish(
         &mut self,
-        _published: Rc<std::cell::RefCell<dyn tilo_session_core::door::Published>>,
+        _published: Rc<std::cell::RefCell<dyn tilo_session_core::surfaces::Published>>,
     ) {
     }
 }

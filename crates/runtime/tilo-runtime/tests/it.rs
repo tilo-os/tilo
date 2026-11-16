@@ -17,5 +17,5 @@ mod device_host;
 mod device_mcp;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
-#[path = "session_door_connect.rs"]
-mod session_door_connect;
+#[path = "session_api_connect.rs"]
+mod session_api_connect;

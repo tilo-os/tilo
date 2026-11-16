@@ -57,8 +57,8 @@ pub struct WindowFrameProps {
     /// Whether it is the window in front, the one the keyboard goes to.
     pub focused: bool,
     /// The shell lists this window's actions where the person reaches them (the shell
-    /// bar's window menu): its header's actions that do not fit give way with no door of
-    /// their own. Without it what does not fit goes behind the header's door.
+    /// bar's window menu): its header's actions that do not fit give way with no API of
+    /// their own. Without it what does not fit goes behind the header's API.
     pub lists_actions: bool,
     /// The frame's controls (close, and what else the shell offers on the window), at the
     /// trailing end of the window's bar.

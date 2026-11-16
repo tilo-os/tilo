@@ -43,7 +43,7 @@ fn stale_control_bindings(app: &mut TestApp<SettingsShell>) -> Vec<(String, Stri
         .filter_map(|binding| match binding.kind {
             ui::widget::ControlBindingKind::Action(address)
                 if !address.resource.starts_with("tilo.host:")
-                    && ui::tilo_actions::door::resolve(&resources, &address).is_none() =>
+                    && ui::tilo_actions::api::resolve(&resources, &address).is_none() =>
             {
                 Some((
                     binding.control_id,

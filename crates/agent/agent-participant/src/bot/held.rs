@@ -12,19 +12,19 @@
 //!
 //! Each record held keeps a copy of its whole document, as the workspace
 //! has it with what the bot's runs changed since: what the bot's record reads
-//! answer ([`DoorParticipant::record`]), for any record the bot follows,
+//! answer ([`ApiParticipant::record`]), for any record the bot follows,
 //! whether or not it acts on it.
 
 use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
 use serde_json::{Map, Value};
-use tilo_actions::door::{ActionAddress, DoorError};
+use tilo_actions::api::{ActionAddress, ApiError};
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::door::{DoorParticipant, RunStep};
+use super::api::{ApiParticipant, RunStep};
 use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
@@ -241,7 +241,7 @@ impl HeldRecords {
     }
 }
 
-impl DoorParticipant for HeldRecords {
+impl ApiParticipant for HeldRecords {
     fn workspace(&self) -> &str {
         &self.workspace
     }
@@ -274,11 +274,11 @@ impl DoorParticipant for HeldRecords {
         invoker: &ActionInvoker,
         context: &ActionContext,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let replica = self
             .replicas
             .get(route)
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?;
         let output = replica.invoke_within(
             Some(invoker),
             Some(context),
@@ -287,7 +287,7 @@ impl DoorParticipant for HeldRecords {
             arguments,
             confirmed,
         )?;
-        let commit = |error: crate::apps::AppError| DoorError::Unavailable {
+        let commit = |error: crate::apps::AppError| ApiError::Unavailable {
             code: "commit".into(),
             reason: error.to_string(),
         };
@@ -314,7 +314,7 @@ impl DoorParticipant for HeldRecords {
             let (DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
                 &mutation;
             self.keep(&changed, bytes)
-                .map_err(|reason| DoorError::Unavailable {
+                .map_err(|reason| ApiError::Unavailable {
                     code: "commit".into(),
                     reason,
                 })?;
@@ -368,7 +368,7 @@ impl DoorParticipant for HeldRecords {
         field: &str,
     ) -> Vec<String> {
         self.replicas.get(route).map_or_else(Vec::new, |replica| {
-            replica.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
+            replica.read_history(|doc| super::api::queued_by_step(doc, step, actor, field))
         })
     }
 }

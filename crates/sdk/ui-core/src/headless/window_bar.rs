@@ -268,7 +268,7 @@ impl FrameHarness {
     }
 
     /// Press the window's History control as the bar hands the press over: it runs on the app's History
-    /// door, as the History shortcut does, and never reaches the app.
+    /// API, as the History shortcut does, and never reaches the app.
     pub fn press_window_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let control = self
@@ -640,7 +640,7 @@ impl FrameHarness {
     }
 
     /// The window's furniture in a row holding the bar, as the layout check reads the bar's controls:
-    /// the new-tab door and the window's own close/restore.
+    /// the new-tab API and the window's own close/restore.
     fn row_furniture_layout(
         &self,
         slot: crate::widget::WindowBarSlot,

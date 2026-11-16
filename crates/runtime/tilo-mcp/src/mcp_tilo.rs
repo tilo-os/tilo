@@ -5,7 +5,7 @@
 //! task, started by the session ([`TaskHosts`]) on the task's first `tilo` call and living as long
 //! as this connection. The host holds the task's `let`s and no records. It compiles each program
 //! against every installed app and runs it; what the program reads and changes comes back here on
-//! the task's program connection, and this door does it as the task, with the gate, attribution
+//! the task's program connection, and this API does it as the task, with the gate, attribution
 //! and grants of every other call:
 //!
 //! - a read is the app's own `read`, as the task, in the app; a resource that does not read
@@ -42,10 +42,10 @@ use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
 /// loses the step it was taking, so it holds on to the action's own answer instead.
 const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
 
-/// Where a door starts the tilolang host of a task: the session, which launches it as every
+/// Where an API starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
 pub trait TaskHosts: Send + Sync {
-    /// Start the host of the task `task` (the agent run) in `workspace`: the door's end of the task's
+    /// Start the host of the task `task` (the agent run) in `workspace`: the API's end of the task's
     /// program connection.
     fn start(&self, workspace: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd>;
 }
@@ -137,7 +137,7 @@ impl History {
     /// `undo`), where no app's process is asked.
     fn of_call(app: &str, history: Option<String>) -> Self {
         match history {
-            Some(resource) if app == crate::session_door::SESSION_PROVIDER => Self {
+            Some(resource) if app == crate::session_api::SESSION_PROVIDER => Self {
                 app: app.to_owned(),
                 resource,
                 published: true,
@@ -766,7 +766,7 @@ fn shown_line(line: &str, programs: &mut Programs) -> String {
 
 /// A program the person's line ran, as the task's host answered it: its text, its host answer
 /// (`{state, output, detail, lets, steps, changed, apps}`), and the references it showed
-/// (`t3`), each with the resource literal it names. The door records it as the run's step
+/// (`t3`), each with the resource literal it names. The API records it as the run's step
 /// (`tilo_reference::ProgramStep`), which lives in the runs and nowhere here.
 #[derive(Clone, Debug, Default)]
 pub struct PersonStep {
@@ -778,7 +778,7 @@ pub struct PersonStep {
 }
 
 impl PersonStep {
-    /// What the task's host answered with, as a step of the person's: what the door read the
+    /// What the task's host answered with, as a step of the person's: what the API read the
     /// answer as (`text`, the step's account of what it changed included), its output's lines,
     /// and whether it ran to its end.
     #[must_use]
@@ -869,7 +869,7 @@ fn preview(answer: &Value) -> String {
 /// what the program did, for the runner to show the person.
 #[derive(Clone, Debug, Default)]
 pub struct TaskProgram {
-    /// What the agent reads: the door's tilolang answer.
+    /// What the agent reads: the API's tilolang answer.
     pub text: String,
     pub failed: bool,
     /// The host's answer (`{state, output, detail, steps, changed, apps}`), when the program ran.
@@ -1092,9 +1092,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         asked
     }
 
-    /// How the task's programs write what a listing shows, when this door runs programs: each
-    /// action as it is called and each type by its name ([`ProgramForms`]). `None` for a door
-    /// that runs none, whose listing names actions as the door's own tools take them.
+    /// How the task's programs write what a listing shows, when this API runs programs: each
+    /// action as it is called and each type by its name ([`ProgramForms`]). `None` for an API
+    /// that runs none, whose listing names actions as the API's own tools take them.
     pub(super) async fn program_forms(&self) -> Option<ProgramForms> {
         self.task_hosts.as_ref()?;
         // optional-decode: a listing names actions by their ids when the catalogue is not there
@@ -1253,7 +1253,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the door answers record reads, listings, reads and invocations"})
+                json!({"err": "the API answers record reads, listings, reads and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1275,12 +1275,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Start this task's host.
     async fn start_task(&self) -> Result<TaskLink, String> {
         let hosts = self.task_hosts.clone().ok_or(
-            "this door runs no programs: it is no desktop session's, which starts a task's host",
+            "this API runs no programs: it is no desktop session's, which starts a task's host",
         )?;
         let task = self
             .agent_session()
             .map(|run| run.id)
-            .ok_or("this door's agent works in no run, which a task's programs are")?;
+            .ok_or("this API's agent works in no run, which a task's programs are")?;
         let workspace = self.workspace.clone();
         let fd = tokio::task::spawn_blocking(move || hosts.start(&workspace, &task))
             .await
@@ -1290,7 +1290,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The provider of the app `app` (an id) a task's invocation goes to, starting the app in
-    /// the workspace when none of it runs yet: the task invokes the app's own door, and the
+    /// the workspace when none of it runs yet: the task invokes the app's own API, and the
     /// workspace starts it without a window.
     async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
         if let Some(found) = known.get(app) {
@@ -1320,7 +1320,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let caller = self.execution_caller();
         // The owner captures the record on this thread's behalf; it may take a while, and the
-        // door's sessions share one runtime.
+        // API's sessions share one runtime.
         let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address)).await;
         match read {
             Ok(Ok(tilo_actions::remote::RecordCopy::Document(bytes))) => {
@@ -1408,8 +1408,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // to the session's own provider, as every other caller of the desktop reaches it.
         let provider = if call.get("published").and_then(Value::as_bool) == Some(true) {
             Addressed {
-                provider: crate::session_door::SESSION_PROVIDER.to_owned(),
-                app_id: Some(crate::session_door::SESSION_PROVIDER.to_owned()),
+                provider: crate::session_api::SESSION_PROVIDER.to_owned(),
+                app_id: Some(crate::session_api::SESSION_PROVIDER.to_owned()),
             }
         } else {
             match self.provider_of(app, providers).await {
@@ -1494,7 +1494,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 /// The instance that answers for each app, by app id.
 type Providers = BTreeMap<String, Addressed>;
 
-/// Whether the door's error `why` is the policy's refusal, not a failure of the action.
+/// Whether the API's error `why` is the policy's refusal, not a failure of the action.
 fn refusal(why: &str) -> bool {
     [
         "may not invoke",
@@ -1666,8 +1666,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             let provider = if at.published {
                 Addressed {
-                    provider: crate::session_door::SESSION_PROVIDER.to_owned(),
-                    app_id: Some(crate::session_door::SESSION_PROVIDER.to_owned()),
+                    provider: crate::session_api::SESSION_PROVIDER.to_owned(),
+                    app_id: Some(crate::session_api::SESSION_PROVIDER.to_owned()),
                 }
             } else {
                 self.provider_of(&at.app, &mut providers).await?

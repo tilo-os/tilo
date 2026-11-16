@@ -452,13 +452,13 @@ mod tests {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) {
-        tilo_actions::door::invoke_json_confirmed(
+        tilo_actions::api::invoke_json_confirmed(
             doc,
             resources,
-            &tilo_actions::door::published(resources, resource, action)
+            &tilo_actions::api::published(resources, resource, action)
                 .unwrap_or_else(|| panic!("{resource} publishes no {action}")),
             arguments,
-            tilo_actions::door::InvocationProvenance::caller(b"agent"),
+            tilo_actions::api::InvocationProvenance::caller(b"agent"),
             &registry(),
             &mut LocalTransport::new(),
         )
@@ -1720,12 +1720,12 @@ mod tests {
             let mut arguments = serde_json::Map::new();
             arguments.insert("text".into(), "".into());
             assert!(
-                tilo_actions::door::invoke_json(
+                tilo_actions::api::invoke_json(
                     &mut state.doc,
                     std::slice::from_ref(&root),
                     &crate::model::Document::APPEND_PARAGRAPH.on(DOCUMENT),
                     &arguments,
-                    tilo_actions::door::InvocationProvenance::caller(b"agent"),
+                    tilo_actions::api::InvocationProvenance::caller(b"agent"),
                     &registry(),
                     &mut LocalTransport::new(),
                 )

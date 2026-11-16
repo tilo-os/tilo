@@ -15,7 +15,7 @@
 use std::fmt::Write as _;
 
 use crate::common::{Driveable, LOCAL_STATE, catalogue, find_edit};
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_agent_participant::{Replica, ReplicaActor, Seed, StepAction};
 
 /// How many attempts an app gets before it is a gap.

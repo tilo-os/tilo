@@ -199,7 +199,7 @@ async fn post_with(
             arguments["attachments"] = serde_json::json!([attachment]);
         }
         page.invoke(
-            &tilo_actions::door::ActionAddress::new(
+            &tilo_actions::api::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),
@@ -242,7 +242,7 @@ fn flood(
     doc: &mut AutoCommit,
     ada: &str,
     mallory: &str,
-) -> Result<String, tilo_actions::door::DoorError> {
+) -> Result<String, tilo_actions::api::ApiError> {
     chat::demo::apply_as(
         doc,
         &hex::encode(governor().1.user_public_key),
@@ -1048,7 +1048,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         .unwrap();
         let arguments = serde_json::json!({ "channel": general, "text": "hello" });
         page.invoke(
-            &tilo_actions::door::ActionAddress::new(
+            &tilo_actions::api::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),

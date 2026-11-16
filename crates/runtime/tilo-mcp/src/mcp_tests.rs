@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
     {
         use schema_rows::Note;
         let resource = tilo_resource::publish::<Note>("test.note:1", "Note", &Note::default());
-        let descriptor = tilo_actions::door::survey(&[resource])
+        let descriptor = tilo_actions::api::survey(&[resource])
             .into_iter()
             .find(|descriptor| descriptor.address.action == tilo_resource::APPLY)
             .unwrap();
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
             .unwrap()["properties"]["action"]["enum"];
         assert!(named.as_array().unwrap().contains(&json!("rename")));
         assert!(named.as_array().unwrap().contains(&json!("pin")));
-        let rename = tilo_actions::door::survey(&[tilo_resource::publish::<Note>(
+        let rename = tilo_actions::api::survey(&[tilo_resource::publish::<Note>(
             "test.note:1",
             "Note",
             &Note::default(),

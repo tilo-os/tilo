@@ -209,18 +209,18 @@ impl Session {
         if !self.slot_views.has_asks(VIEW) {
             return Ok(());
         }
-        let doors = &self.shared.doors;
+        let published = &self.shared.published;
         self.slot_views.serve(VIEW, |ask| {
             let arguments: serde_json::Map<String, serde_json::Value> = ask
                 .arguments
                 .iter()
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect();
-            doors
+            published
                 .invoke(
                     &ActionAddress::new(&ask.resource, &ask.action),
                     &arguments,
-                    &mut tilo_session_core::door::Look::none(),
+                    &mut tilo_session_core::surfaces::Look::none(),
                 )
                 .map(drop)
                 .map_err(|error| error.to_string())

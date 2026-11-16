@@ -357,7 +357,7 @@ pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
 pub type ServedProvider = Box<
     dyn FnMut(
         &ProvidedInvocation<'_>,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError>,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 >;
 
 /// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
@@ -610,12 +610,12 @@ pub struct FrameHarness {
     /// Identity the driver's commits and undos are attributed to, mirroring [`crate::app::App`]'s
     /// `local_author`.
     author: crate::permissions::MemberId,
-    /// Same decoder and transport doors used by the live application host.
+    /// Same decoder and transport APIs used by the live application host.
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     /// The session this window's host serves it: where opening another app
-    /// goes ([`crate::session_door`]). `None` until the host installs one.
-    session_door: Option<crate::session_door::ClientDoor>,
+    /// goes ([`crate::session_api`]). `None` until the host installs one.
+    session_api: Option<crate::session_api::ClientApi>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     control_failures: Vec<String>,
     /// What takes the place of the providers whose actions the app's controls are bound to
@@ -1584,7 +1584,7 @@ impl FrameHarness {
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
-            session_door: None,
+            session_api: None,
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
@@ -1786,9 +1786,9 @@ impl FrameHarness {
     }
 
     /// Serve this window the session `client` is, in `workspace`: where opening another app goes.
-    pub fn set_session_door(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
+    pub fn set_session_api(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
         self.invalidate_local();
-        self.session_door = Some(crate::session_door::ClientDoor::new(client, workspace));
+        self.session_api = Some(crate::session_api::ClientApi::new(client, workspace));
     }
 
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
@@ -1817,13 +1817,13 @@ impl FrameHarness {
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
         request: crate::undo::UndoRequest,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
             None,
         )
-        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_api())?;
         let (resource, action) =
             crate::bound_dispatch::history_action_resource(&snapshots, binding, request)?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
@@ -2366,8 +2366,8 @@ impl FrameHarness {
             self.bound_resource_frames,
         )
         .unwrap_or_default();
-        let host_doors = self
-            .host_door_resources()
+        let host_apis = self
+            .host_api_resources()
             .iter()
             .flat_map(|resource| {
                 resource.actions.iter().map(|action| {
@@ -2378,7 +2378,7 @@ impl FrameHarness {
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root.as_mut(),
             &snapshots,
-            &host_doors,
+            &host_apis,
         );
         let embedded = crate::history_mode::embedded::has_surfaces(self.root.as_ref());
         // Preserve the legacy status boundary only outside managed History composition.
@@ -2578,9 +2578,9 @@ impl FrameHarness {
             || !self.pending_control_invocations.is_empty()
             || crate::widget::press_waiting()
             || self
-                .session_door
+                .session_api
                 .as_ref()
-                .is_some_and(crate::session_door::ClientDoor::is_busy)
+                .is_some_and(crate::session_api::ClientApi::is_busy)
             || self.wake_pending();
         let (slots_declared, slots_moving) = self.slot_row_wants_frame();
         let queued_work = queued_work || slots_declared;
@@ -3440,7 +3440,7 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(|history| history.captures_input())
         {
-            // These local intents have not crossed the execution door. Never
+            // These local intents have not crossed the execution API. Never
             // carry them into preview, or back out to run against the live doc.
             if let Some(history) = &mut self.history {
                 history.discard_pending_output(self.root.as_mut());
@@ -5787,7 +5787,7 @@ impl FrameHarness {
         self.drain_component_wakes();
 
         let mut resources = self.resources();
-        resources.extend(self.host_door_resources());
+        resources.extend(self.host_api_resources());
         let bindings = crate::widget::controls::control_action_bindings(self.root.as_ref());
         let inventoried_controls = bindings
             .iter()
@@ -5808,7 +5808,7 @@ impl FrameHarness {
             .into_iter()
             .filter_map(|binding| match binding.kind {
                 ControlBindingKind::Action(address) => {
-                    tilo_actions::door::resolve(&resources, &address)
+                    tilo_actions::api::resolve(&resources, &address)
                         .is_none()
                         .then(|| NativeAppIssue {
                             control: binding.control_id,
@@ -6599,11 +6599,11 @@ impl FrameHarness {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, false, None, None)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
     /// [`Self::invoke_bound_action`] within `ambient`, the context a caller's
@@ -6616,11 +6616,11 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         ambient: &tilo_actions::ActionContext,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, false, Some(ambient), None)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
     /// Invoke an action after the host caller explicitly confirmed this exact
@@ -6632,11 +6632,11 @@ impl FrameHarness {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, true, None, None)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)
     }
 
     /// Invoke the action `action` that the hosted component publishes on its
@@ -6652,7 +6652,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.call_on_as(resource, action, arguments, false)
     }
@@ -6667,7 +6667,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.call_on_as(resource, action, arguments, true)
     }
@@ -6678,9 +6678,9 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
         confirmed: bool,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let instance = self.component_instance_id().ok_or_else(|| {
-            tilo_actions::DoorError::Failed("no application component is hosted".into())
+            tilo_actions::ApiError::Failed("no application component is hosted".into())
         })?;
         self.call_on_instance_as(instance, resource, action, arguments, confirmed)
     }
@@ -6692,7 +6692,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.call_on_instance_as(instance, resource, action, arguments, false)
     }
@@ -6707,7 +6707,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.call_on_instance_as(instance, resource, action, arguments, true)
     }
@@ -6719,10 +6719,10 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
         confirmed: bool,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let _running = self.running();
         let serde_json::Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -6746,7 +6746,7 @@ impl FrameHarness {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         let _motions = crate::motion::owning(self.motions.0);
         self.invoke_action(
@@ -6770,7 +6770,7 @@ impl FrameHarness {
             tilo_actions::InvocationId,
             crate::widget::ResourceOperationStart,
         ),
-        tilo_actions::DoorError,
+        tilo_actions::ApiError,
     > {
         self.invalidate_local();
         self.start_bound_job_for(None, address, arguments, confirmed)
@@ -6796,7 +6796,7 @@ impl FrameHarness {
             tilo_actions::InvocationId,
             crate::widget::ResourceOperationStart,
         ),
-        tilo_actions::DoorError,
+        tilo_actions::ApiError,
     > {
         self.invalidate_local();
         self.start_bound_job_within(invoker, None, address, arguments, confirmed)
@@ -6816,7 +6816,7 @@ impl FrameHarness {
             tilo_actions::InvocationId,
             crate::widget::ResourceOperationStart,
         ),
-        tilo_actions::DoorError,
+        tilo_actions::ApiError,
     > {
         self.invalidate_local();
         self.pump_component_wakes();
@@ -6859,14 +6859,14 @@ impl FrameHarness {
                 Some((invocation, None)),
             ),
         };
-        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
+        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_api);
         if !matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted)) {
             self.dispatch_control_invocations();
             if let Some(continuation) = self.acting_for.remove(&invocation)
                 && let Some(refused) = continuation.refused
                 && started.is_ok()
             {
-                return Err(tilo_actions::DoorError::Unavailable {
+                return Err(tilo_actions::ApiError::Unavailable {
                     code: refused.code,
                     reason: refused.message,
                 });
@@ -6899,7 +6899,7 @@ impl FrameHarness {
                 .iter()
                 .filter(|snapshot| snapshot.binding.instance_id == address.instance_id)
                 .find_map(|snapshot| {
-                    tilo_actions::door::resolve(snapshot.resources(), &address.address)
+                    tilo_actions::api::resolve(snapshot.resources(), &address.address)
                         .map(|spec| spec.need_for(Some(arguments), None).kind)
                 })
         })
@@ -6971,7 +6971,7 @@ impl FrameHarness {
     pub fn bound_resources(
         &self,
         id: Option<&str>,
-    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::ApiError> {
         self.bound_resources_of(None, id)
     }
 
@@ -6984,7 +6984,7 @@ impl FrameHarness {
         &self,
         instance: Option<crate::application::InstanceId>,
         id: Option<&str>,
-    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::ApiError> {
         self.drain_component_wakes();
         let lazy = id.map(|id| tilo_actions::ActionAddress::new(id, ""));
         let resources = crate::bound_dispatch::discover_bound_resources(
@@ -6992,7 +6992,7 @@ impl FrameHarness {
             &self.state.doc,
             lazy.as_ref(),
         )
-        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_api())?
         .into_iter()
         .filter(|snapshot| instance.is_none_or(|instance| snapshot.binding.instance_id == instance))
         .flat_map(|snapshot| snapshot.into_resources())
@@ -7017,9 +7017,9 @@ impl FrameHarness {
     pub fn published_bound_resources_of(
         &self,
         instance: Option<crate::application::InstanceId>,
-    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ResourceSpec>, tilo_actions::ApiError> {
         crate::bound_dispatch::discover_bound_resources(self.root.as_ref(), &self.state.doc, None)
-            .map_err(|e| crate::bound_dispatch::BoundActionError::Dispatch(e).into_door())?
+            .map_err(|e| crate::bound_dispatch::BoundActionError::Dispatch(e).into_api())?
             .into_iter()
             .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
             .flat_map(|s| {
@@ -7030,7 +7030,7 @@ impl FrameHarness {
                     .map(move |r| {
                         self.bound_publication
                             .project(&binding, r)
-                            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                            .map_err(crate::bound_dispatch::BoundActionError::into_api)
                     })
             })
             .collect()
@@ -7045,7 +7045,7 @@ impl FrameHarness {
     }
 
     /// Stop answering `provider`'s actions in this process: what the app's controls invoke there goes
-    /// to the session this window is served by again ([`Self::set_session_door`]).
+    /// to the session this window is served by again ([`Self::set_session_api`]).
     pub fn stop_serving_provider(&mut self, provider: &str) {
         self.invalidate_local();
         self.providers.remove(provider);
@@ -7073,15 +7073,15 @@ impl FrameHarness {
             self.invalidate_local();
             return Ok(crate::widget::ResourceOperationStart::Completed(output));
         }
-        let Some(door) = self.session_door.as_mut() else {
+        let Some(door) = self.session_api.as_mut() else {
             tracing::warn!(provider = %hosted.provider, "no session serves this frame's provider");
-            return Err(tilo_actions::DoorError::Unavailable {
+            return Err(tilo_actions::ApiError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
                 reason: format!("no session serves `{}` to this frame", hosted.provider),
             }
             .into());
         };
-        let started = crate::session_door::SessionDoor::invoke(
+        let started = crate::session_api::SessionApi::invoke(
             door,
             operation,
             false,
@@ -7118,7 +7118,7 @@ impl FrameHarness {
         let answered =
             self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
         #[cfg(any(test, feature = "test-support"))]
-        if let Err(crate::bound_dispatch::BoundActionError::Door(tilo_actions::DoorError::Unknown(
+        if let Err(crate::bound_dispatch::BoundActionError::Api(tilo_actions::ApiError::Unknown(
             unknown,
         ))) = &answered
             && crate::bound_dispatch::any_resource_pending(self.root.as_ref(), &unknown.resource)
@@ -7151,7 +7151,7 @@ impl FrameHarness {
             .as_ref()
             .is_some_and(|target| target.address.instance_id != address.instance_id)
         {
-            return Err(tilo_actions::DoorError::Unknown(address.address.clone()).into());
+            return Err(tilo_actions::ApiError::Unknown(address.address.clone()).into());
         }
         let address = translated
             .as_ref()
@@ -7169,13 +7169,13 @@ impl FrameHarness {
             &address.address,
             Some(address.instance_id),
         )?
-        .ok_or_else(|| tilo_actions::DoorError::Unknown(address.address.clone()))?;
+        .ok_or_else(|| tilo_actions::ApiError::Unknown(address.address.clone()))?;
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
-            session_door(&mut self.session_door),
+            session_api(&mut self.session_api),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -7244,7 +7244,7 @@ impl FrameHarness {
         if let Some(pending) = pending {
             let result = (|| {
                 let request = pending.ordinary.as_ref().ok_or_else(|| {
-                    tilo_actions::DoorError::InvalidArguments(
+                    tilo_actions::ApiError::InvalidArguments(
                         "Missing original confirmation request".into(),
                     )
                 })?;
@@ -7254,12 +7254,12 @@ impl FrameHarness {
                         .history_witness
                         .as_ref()
                         .and_then(|w| w.as_ref().ok())
-                        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
                             code: "unsupported_continuation_identity".into(),
                             reason: "Original History continuation evidence is unavailable".into(),
                         })?;
                     let invocation = pending.control_invocation().ok_or_else(|| {
-                        tilo_actions::DoorError::InvalidArguments("Invalid retained request".into())
+                        tilo_actions::ApiError::InvalidArguments("Invalid retained request".into())
                     })?;
                     let current = crate::bound_dispatch::control_witness_with_arguments(
                         self.root.as_ref(),
@@ -7269,7 +7269,7 @@ impl FrameHarness {
                         &request.arguments,
                     )?;
                     if &current != captured {
-                        return Err(tilo_actions::DoorError::Unavailable {
+                        return Err(tilo_actions::ApiError::Unavailable {
                             code: "stale_pending_palette_action".into(),
                             reason: "History continuation changed".into(),
                         });
@@ -7431,9 +7431,9 @@ impl FrameHarness {
 
     fn poll_control_invocations(&mut self) {
         let finished = self
-            .session_door
+            .session_api
             .as_mut()
-            .map(crate::session_door::ClientDoor::take_finished)
+            .map(crate::session_api::ClientApi::take_finished)
             .unwrap_or_default();
         for (invocation, result) in finished {
             self.pending_control_invocations.remove(&invocation);
@@ -8043,7 +8043,7 @@ impl FrameHarness {
         match (result, invocation.expect_error.as_deref()) {
             (Ok(start), None) => Ok(start.completed()),
             (Ok(_), Some(code)) => Err(format!(
-                "expected the door to refuse with {code}, but the action ran"
+                "expected the API to refuse with {code}, but the action ran"
             )),
             (Err(error), Some(code)) if error.code() == code => Ok(None),
             (Err(error), _) => Err(format!("{}: {error}", error.code())),
@@ -8103,7 +8103,7 @@ impl FrameHarness {
     ///
     /// # Errors
     ///
-    /// Returns the door's refusal: unknown or hidden address, unavailable
+    /// Returns the API's refusal: unknown or hidden address, unavailable
     /// action, missing confirmation, invalid arguments, or a failed run.
     pub fn invoke_action(
         &mut self,
@@ -8111,17 +8111,17 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
         confirmation_phrase: Option<&str>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invalidate_local();
         self.pump_component_wakes();
         let _ = crate::widget::take_presses();
         let resources = self.resources();
-        let spec = tilo_actions::door::resolve(&resources, address)
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        let spec = tilo_actions::api::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
         if let tilo_actions::Availability::Unavailable { code, reason } =
             &spec.contract.availability
         {
-            return Err(tilo_actions::DoorError::Unavailable {
+            return Err(tilo_actions::ApiError::Unavailable {
                 code: code.clone(),
                 reason: reason.clone(),
             });
@@ -8136,17 +8136,17 @@ impl FrameHarness {
             }
             tilo_actions::ConfirmationPolicy::Confirm
             | tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-                return Err(tilo_actions::DoorError::ConfirmationRequired);
+                return Err(tilo_actions::ApiError::ConfirmationRequired);
             }
         };
         let result = if crate::search::request::is_search_address(address) {
             let encoded = spec
                 .build_json(arguments)
-                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+                .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
             let request = crate::search::SearchRequest::decode(&encoded.payload)
-                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+                .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
             self.open_search(&request)
-                .map_err(tilo_actions::DoorError::Failed)?;
+                .map_err(tilo_actions::ApiError::Failed)?;
             Ok(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
@@ -8246,7 +8246,7 @@ impl FrameHarness {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let selected = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
@@ -8254,7 +8254,7 @@ impl FrameHarness {
         )
         .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
         .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
-        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let argument = crate::host_core::json_argument(arguments);
         let author = self.author.key();
         let request = crate::host_core::ResourceInvocation::new(address, &author)
@@ -8476,11 +8476,11 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
     Ok(())
 }
 
-fn session_door(
-    door: &mut Option<crate::session_door::ClientDoor>,
-) -> Option<&mut dyn crate::session_door::SessionDoor> {
-    door.as_mut()
-        .map(|door| door as &mut dyn crate::session_door::SessionDoor)
+fn session_api(
+    api: &mut Option<crate::session_api::ClientApi>,
+) -> Option<&mut dyn crate::session_api::SessionApi> {
+    api.as_mut()
+        .map(|api| api as &mut dyn crate::session_api::SessionApi)
 }
 
 impl crate::host_core::HostCore for FrameHarness {
@@ -8638,7 +8638,7 @@ impl crate::host_core::HostCore for FrameHarness {
     fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_held_control(prepared)
     }
 }
@@ -8732,8 +8732,8 @@ impl crate::host_core::ControlHost for FrameHarness {
         _address: &tilo_actions::ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
         _context: Option<tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unavailable {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unavailable {
             code: "broker_unavailable".into(),
             reason: "No workspace broker serves this frame".into(),
         })
@@ -8744,7 +8744,7 @@ impl crate::host_core::ControlHost for FrameHarness {
         intent: &tilo_actions::ControlInvocation,
     ) -> Option<tilo_actions::ConfirmationPolicy> {
         let resources = self.outer_resources(&intent.address, true);
-        tilo_actions::door::resolve(&resources, &intent.address)
+        tilo_actions::api::resolve(&resources, &intent.address)
             .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
     }
 
@@ -8752,14 +8752,14 @@ impl crate::host_core::ControlHost for FrameHarness {
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: &str,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.run_local_history_action(address, Some(argument))
             .map(|()| {
                 crate::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 )
             })
-            .map_err(tilo_actions::DoorError::Failed)
+            .map_err(tilo_actions::ApiError::Failed)
     }
 
     fn take_search_invocation(
@@ -8787,14 +8787,14 @@ impl crate::host_core::ControlHost for FrameHarness {
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         request: &crate::host_core::ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let invocation = request.invocation.unwrap_or_default();
         let result = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
             target,
             self.action_transport.as_mut(),
-            session_door(&mut self.session_door),
+            session_api(&mut self.session_api),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: request.argument,
                 arguments: None,
@@ -8810,7 +8810,7 @@ impl crate::host_core::ControlHost for FrameHarness {
         );
         let started = self
             .run_hosted(invocation, result)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target.clone());
         }
@@ -8820,7 +8820,7 @@ impl crate::host_core::ControlHost for FrameHarness {
     fn invoke_outer_control(
         &mut self,
         request: &crate::host_core::ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let address = request.address;
         let argument = request.argument;
         let confirmed = request.confirmation_satisfied;
@@ -8867,7 +8867,7 @@ impl crate::host_core::ControlHost for FrameHarness {
                 source_invocation: None,
                 ambient: request.ambient_context,
                 scope: request.scope,
-                door: session_door(&mut self.session_door),
+                api: session_api(&mut self.session_api),
             },
         )?;
         if let Some(before) = before {
@@ -8902,7 +8902,7 @@ impl crate::host_core::ControlHost for FrameHarness {
     /// the control they used, as the window's host does: a click is never
     /// dropped unseen, and never opens search. With no control to stand at,
     /// it is said in the window's bar.
-    fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+    fn refuse_visibly(&mut self, error: &tilo_actions::ApiError) {
         self.control_failures.push(error.to_string());
         let reason = crate::bound_dispatch::refusal_reason(error);
         if let Some(anchor) = self.tree().acting_control_rect() {
@@ -8918,7 +8918,7 @@ impl crate::host_core::ControlHost for FrameHarness {
     }
 
     /// Kept for [`FrameHarness::control_failures`].
-    fn refused_unsaid(&mut self, error: &tilo_actions::DoorError) {
+    fn refused_unsaid(&mut self, error: &tilo_actions::ApiError) {
         self.control_failures.push(error.to_string());
     }
 }
@@ -8935,7 +8935,7 @@ impl FrameHarness {
             &self.state.doc,
             &mut resources,
         );
-        if tilo_actions::door::resolve(&resources, address).is_none()
+        if tilo_actions::api::resolve(&resources, address).is_none()
             && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
                 self.root.as_ref(),
                 &self.state.doc,
@@ -11455,7 +11455,7 @@ mod tests {
             assert_eq!(observed.calls.get(), 0);
             assert_eq!(
                 *observed.results.borrow(),
-                vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
+                vec![Err(tilo_actions::ApiError::ConfirmationRequired)]
             );
         }
 
@@ -11487,7 +11487,7 @@ mod tests {
                 assert_eq!(observed.calls.get(), 1);
                 assert!(matches!(
                     observed.results.borrow().last(),
-                    Some(Err(tilo_actions::DoorError::Unknown(_)))
+                    Some(Err(tilo_actions::ApiError::Unknown(_)))
                 ));
             }
         }
@@ -11519,7 +11519,7 @@ mod tests {
             );
             assert!(matches!(
                 observed.results.borrow().as_slice(),
-                [Err(tilo_actions::DoorError::Unknown(_))]
+                [Err(tilo_actions::ApiError::Unknown(_))]
             ));
             assert!(observed.pending.borrow().is_empty());
         }

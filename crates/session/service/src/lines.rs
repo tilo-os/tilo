@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 
 use crate::{Service, Started, Wake};
 
@@ -266,23 +266,23 @@ impl Service for Remote {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
         let address = ActionAddress::new(resource, action);
-        if tilo_actions::door::resolve(&published, &address).is_none() {
-            return Err(DoorError::Unknown(address));
+        if tilo_actions::api::resolve(&published, &address).is_none() {
+            return Err(ApiError::Unknown(address));
         }
-        tilo_actions::door::encode_json(&published, &address, arguments)?;
+        tilo_actions::api::encode_json(&published, &address, arguments)?;
         let request = Request::Invoke {
             resource: resource.into(),
             action: action.into(),
             arguments: arguments.clone(),
         };
-        let line = serde_json::to_string(&request)
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        let line =
+            serde_json::to_string(&request).map_err(|error| ApiError::Failed(error.to_string()))?;
         writeln!(self.requests, "{line}")
             .and_then(|()| self.requests.flush())
-            .map_err(|error| DoorError::Failed(format!("the service is gone: {error}")))?;
+            .map_err(|error| ApiError::Failed(format!("the service is gone: {error}")))?;
         Ok(Started::Accepted)
     }
 
@@ -353,7 +353,7 @@ impl Service for Process {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.remote.invoke(resource, action, arguments)
     }
 

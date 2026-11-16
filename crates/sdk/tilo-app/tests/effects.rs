@@ -385,7 +385,7 @@ tilo_test_env::scenario! {
         );
         let refused = app.effect(&MailEffect::Connect).unwrap_err();
         assert!(
-            matches!(&refused, tilo_actions::DoorError::Unavailable { code, .. } if code == "offline"),
+            matches!(&refused, tilo_actions::ApiError::Unavailable { code, .. } if code == "offline"),
             "{refused:?}"
         );
 
@@ -543,7 +543,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 &refused,
-                tilo_actions::DoorError::Unavailable { code, .. } if code == "permission_denied"
+                tilo_actions::ApiError::Unavailable { code, .. } if code == "permission_denied"
             ),
             "{refused:?}"
         );

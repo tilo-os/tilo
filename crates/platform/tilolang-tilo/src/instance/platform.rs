@@ -30,7 +30,7 @@ pub trait Platform {
         None
     }
 
-    /// A later build took over: what the package declares on the door is its now.
+    /// A later build took over: what the package declares on the API is its now.
     fn surface_changed(&self, app: &str, bundle: &Bundle) {
         let _ = (app, bundle);
     }

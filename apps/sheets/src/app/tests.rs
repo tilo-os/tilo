@@ -533,7 +533,7 @@ fn every_format_exports_to_a_path_and_imports_back_once() {
         assert!(
             matches!(
                 app.effect(&export),
-                Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+                Err(ui::tilo_actions::ApiError::ConfirmationRequired)
             ),
             "writing over a named path asks first"
         );
@@ -650,7 +650,7 @@ fn a_file_that_cannot_be_read_fails_its_import() {
         })
         .expect_err("a broken package fails");
     assert!(
-        matches!(error, tilo_actions::DoorError::Failed(_)),
+        matches!(error, tilo_actions::ApiError::Failed(_)),
         "{error:?}"
     );
     assert_eq!(app.state().sheets.len(), before);
@@ -1594,7 +1594,7 @@ fn commands_open_the_hosts_search_and_go_to_cells() {
         .resource_id
         .0;
     let spec =
-        tilo_actions::door::spec_of(&resources, &resource, "go-to-cell").expect("it resolves");
+        tilo_actions::api::spec_of(&resources, &resource, "go-to-cell").expect("it resolves");
     assert_eq!(spec.kind, tilo_actions::OperationKind::View);
     let encoded = spec
         .build_json(&prompt_arguments(spec, "B12"))
@@ -1632,7 +1632,7 @@ fn answer_asked(app: &mut SheetsApp, doc: &mut AutoCommit, prefill: Option<&str>
     assert_eq!(request.query.as_deref(), prefill);
     let address = request.asked().expect("the palette asks for an action");
     let resources = app.published();
-    let spec = tilo_actions::door::resolve(&resources, &address).expect("the address resolves");
+    let spec = tilo_actions::api::resolve(&resources, &address).expect("the address resolves");
     let encoded = spec
         .build_json(&prompt_arguments(spec, text))
         .expect("the arguments build");
@@ -2112,7 +2112,7 @@ fn a_notion_export_with_no_table_fails_its_import() {
         })
         .expect_err("an export with no table fails");
     assert!(
-        matches!(error, tilo_actions::DoorError::Failed(_)),
+        matches!(error, tilo_actions::ApiError::Failed(_)),
         "{error:?}"
     );
     assert_eq!(app.state().sheets.len(), before, "nothing was added");

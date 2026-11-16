@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
 use serde_json::{Map, Value};
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 
@@ -348,9 +348,9 @@ fn refresh(jobs: &Jobs<dyn Graph, Landed>) {
 }
 
 /// The level a `f64` argument names, from 0 to 1.
-fn level_of(level: f64) -> Result<f32, DoorError> {
+fn level_of(level: f64) -> Result<f32, ApiError> {
     if !(0.0..=1.0).contains(&level) {
-        return Err(DoorError::InvalidArguments(format!(
+        return Err(ApiError::InvalidArguments(format!(
             "a level is from 0 to 1, not {level}"
         )));
     }
@@ -375,7 +375,7 @@ impl Service for SoundService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let action = decode::<SoundAction>(&self.resources(), resource, action, arguments)?;
         let id = action.id();
         let change = match action {

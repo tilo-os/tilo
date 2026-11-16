@@ -11,7 +11,7 @@
 //! image, carries none of it.
 
 use serde_json::Value as Json;
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
 
@@ -37,7 +37,7 @@ impl RustApps {
     /// # Errors
     ///
     /// The demo chat could not be written.
-    pub fn new() -> Result<Self, tilo_actions::DoorError> {
+    pub fn new() -> Result<Self, tilo_actions::ApiError> {
         let mut apps = Self {
             model: tube::sample::model(),
             chat: chat::demo::Workspace::demo()?,
@@ -198,7 +198,7 @@ impl Service for RustApps {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         // The composer's send, read as Chat reads its own `send`: a message from the person
         // typing, in each conversation it goes to.
         if action == SEND
@@ -207,15 +207,15 @@ impl Service for RustApps {
         {
             let chat::effects::ChatEffect::Send { to, text, .. } =
                 chat::effects::ChatEffect::decode(SEND, arguments)
-                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?
+                    .map_err(|error| ApiError::Failed(format!("{error:?}")))?
             else {
-                return Err(DoorError::Failed(format!("`{SEND}` is not a send")));
+                return Err(ApiError::Failed(format!("`{SEND}` is not a send")));
             };
             if !text.trim().is_empty() {
                 for conversation in &to {
                     self.chat
                         .say(chat::model::ME, &conversation.id, &text)
-                        .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+                        .map_err(|error| ApiError::Failed(format!("{error:?}")))?;
                 }
             }
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));

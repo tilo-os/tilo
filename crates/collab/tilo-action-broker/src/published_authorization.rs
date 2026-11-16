@@ -93,9 +93,9 @@ mod tests {
         // way, for every role and every kind of action, a person's own clicks
         // on their own device and those reaching outside alike.
         {
-            use tilo_actions::{ActionKind, DoorError};
+            use tilo_actions::{ActionKind, ApiError};
 
-            // What a broker admission answers, as a window's door answers it.
+            // What a broker admission answers, as a window's api answers it.
             #[derive(Debug, PartialEq)]
             enum Answered {
                 Runs,
@@ -164,7 +164,7 @@ mod tests {
                     let windowed =
                         match ui::permissions::admit_in_window(answer, &spec, window.asker(), false) {
                             Ok(()) => Answered::Runs,
-                            Err(DoorError::ConfirmationRequired) => Answered::AsksFirst,
+                            Err(ApiError::ConfirmationRequired) => Answered::AsksFirst,
                             Err(_) => Answered::Refused,
                         };
                     assert_eq!(windowed, broker, "{role:?} {id}");

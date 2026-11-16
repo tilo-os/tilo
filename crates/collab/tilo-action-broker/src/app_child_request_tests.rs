@@ -421,7 +421,7 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
         .await;
 }
 
-/// The rig with the host's native seat, the door the person's own palette
+/// The rig with the host's native seat, the API the person's own palette
 /// and sheets invoke through.
 async fn native_person_rig(env: &Environment) -> Rig {
     Rig::with_services(
@@ -579,7 +579,7 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
 
             // The app holds no grant to Notes: the person is asked whether
             // it may, and the call runs as they allow it.
-            // Asked of the app by its id, as one app asks another's door.
+            // Asked of the app by its id, as one app asks another's api.
             let mut clear = call(NOTES_PEER, "notes.notebook", "clear-done", None);
             clear.target = tilo_actions::remote::application_action_target(
                 &env.route.cluster_id,

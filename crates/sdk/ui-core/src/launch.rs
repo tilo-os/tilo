@@ -822,7 +822,7 @@ fn run_parsed(
     tilo_startup_metrics::start_writer();
     // The shell asks a process whose app says it opens windows for them, and
     // takes a window that maps before it says so as proof it cannot: the
-    // launch's own window is made early, below, so the app answers the door
+    // launch's own window is made early, below, so the app answers the API
     // first.
     if opens_native_window(&args) {
         crate::window_door::announce();

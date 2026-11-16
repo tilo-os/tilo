@@ -15,7 +15,7 @@
 use crate::common::{Body as _, catalogue, pdf};
 use collab_types::DocumentMutation;
 use tilo_actions::OperationKind;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
 use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed};
 use tilo_content::ContentStore;
@@ -439,7 +439,7 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
 fn open_picture(
     agent: &ConfinedReplica,
     path: &str,
-) -> Result<tilo_actions::ActionOutput, DoorError> {
+) -> Result<tilo_actions::ActionOutput, ApiError> {
     let open = operation(agent, "open-picture");
     agent.invoke(
         &open.address,
@@ -597,7 +597,7 @@ fn an_agent_is_offered_the_effects_and_views_that_answer() {
         );
         let address = ActionAddress::new(kind.as_str(), effect);
         match calendar.invoke(&address, &serde_json::Map::new(), true) {
-            Err(DoorError::Unavailable { code: refused, .. }) => assert_eq!(refused, code),
+            Err(ApiError::Unavailable { code: refused, .. }) => assert_eq!(refused, code),
             other => panic!("{effect} is refused to an agent: {other:?}"),
         }
     }
@@ -696,7 +696,7 @@ fn an_agent_adds_a_local_event_unasked_and_is_asked_for_a_remote_one() {
         .expect("a local event is added unasked");
     assert!(calendar.take_mutation().unwrap().is_some());
     match calendar.invoke(&new_event.address, &event("work@caldav"), false) {
-        Err(DoorError::ConfirmationRequired | DoorError::Unavailable { .. }) => {}
+        Err(ApiError::ConfirmationRequired | ApiError::Unavailable { .. }) => {}
         other => panic!("an event for a server is not added unasked: {other:?}"),
     }
 }
@@ -751,7 +751,7 @@ fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing(
     let export = operation(&agent, "export").address;
     let to_path = arguments(serde_json::json!({ "path": target.to_string_lossy() }));
     match agent.invoke(&export, &to_path, true) {
-        Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "effect_path"),
+        Err(ApiError::Unavailable { code, .. }) => assert_eq!(code, "effect_path"),
         other => panic!("an export to a path is refused: {other:?}"),
     }
     assert!(!target.exists());
@@ -767,7 +767,7 @@ fn an_agent_may_not_write_where_an_effect_would_or_run_one_that_answers_nothing(
         .to_owned();
     let open = ActionAddress::new(kind.as_str(), "open-document");
     match writer.invoke(&open, &serde_json::Map::new(), true) {
-        Err(DoorError::Unavailable { code, .. }) => assert_eq!(code, "effect_not_offered"),
+        Err(ApiError::Unavailable { code, .. }) => assert_eq!(code, "effect_not_offered"),
         other => panic!("an effect that answers nothing is refused: {other:?}"),
     }
     assert!(writer.take_mutation().unwrap().is_none());

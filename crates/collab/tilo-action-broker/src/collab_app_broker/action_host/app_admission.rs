@@ -1,4 +1,4 @@
-//! What an app may reach the door with as the person using it, besides what it owns: the
+//! What an app may reach the API with as the person using it, besides what it owns: the
 //! view lookup that mints a link to its own record, the reference actions that show another
 //! resource, and the shell's invitation into the workspace it shows. None of them grants
 //! anything, so the person's own part decides them, where invoking another app's action is
@@ -314,9 +314,9 @@ mod invitation_request_tests {
             );
             let app = "so.tilo.file-explorer";
             let ask = invitation();
-            let door = |person: &Caller| {
+            let api = |person: &Caller| {
                 state
-                    .app_door(person, app, &RemoteActionMessage::Invoke(ask.clone()))
+                    .app_api(person, app, &RemoteActionMessage::Invoke(ask.clone()))
                     .expect("the app reaches the shell's invitation as the person")
             };
             let invoke = |caller: &Caller| {
@@ -331,14 +331,14 @@ mod invitation_request_tests {
 
             let reading = Caller::local_person(viewer).in_workspace(workspace_id.clone());
             assert_eq!(
-                invoke(&door(&reading)),
+                invoke(&api(&reading)),
                 Err(ActionHostError::NotPermitted),
                 "a viewer makes no invitation"
             );
             assert!(shell.started.lock().unwrap().is_empty());
 
             let owning = Caller::local_person(owner).in_workspace(workspace_id);
-            invoke(&door(&owning)).expect("the owner makes one");
+            invoke(&api(&owning)).expect("the owner makes one");
             assert_eq!(
                 *shell.started.lock().unwrap(),
                 [session_actions::ISSUE_INVITATION]

@@ -246,7 +246,7 @@ pub trait Action: std::fmt::Debug {
     }
 
     /// [`inverse_before`](Self::inverse_before) as an encoded action, so the
-    /// door can undo through `apply` after the concrete type has been erased.
+    /// API can undo through `apply` after the concrete type has been erased.
     ///
     /// The palette, an agent and a script apply a decoded `dyn Action`. That
     /// value cannot return `Self`. An action whose `apply` writes an outside

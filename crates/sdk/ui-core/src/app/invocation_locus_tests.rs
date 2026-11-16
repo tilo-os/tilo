@@ -1,4 +1,4 @@
-// These tests use the real bound action door and record loan. Removing capture
+// These tests use the real bound action API and record loan. Removing capture
 // from dispatch, substituting the outer document, or reusing another target's
 // basis must fail even if the action itself still succeeds.
 fn locus_scope(

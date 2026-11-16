@@ -1,4 +1,4 @@
-//! What the host's loop waits on between its frames: its door, its own wake, a stop signal, its
+//! What the host's loop waits on between its frames: its api, its own wake, a stop signal, its
 //! task's connection, and its instances' windows.
 //!
 //! Each descriptor is watched only for what the loop takes from it, so the wait ends only when
@@ -80,8 +80,8 @@ impl Wake {
     reason = "one readiness for each source the wait watches, each taken out by its owner"
 )]
 pub struct Ready {
-    /// The door has something, or closed.
-    pub door: bool,
+    /// The API has something, or closed.
+    pub api: bool,
     /// The host's wake was written: work off the frame has something for it.
     pub wake: bool,
     /// The host was asked to stop ([`crate::stop`]).
@@ -96,17 +96,17 @@ impl Ready {
     /// Whether anything ended the wait.
     #[must_use]
     pub fn any(self) -> bool {
-        self.door || self.wake || self.stop || self.task || self.windows
+        self.api || self.wake || self.stop || self.task || self.windows
     }
 }
 
-/// Wait until the door, the wake, a stop, the task or a window has something for the host, for at
+/// Wait until the API, the wake, a stop, the task or a window has something for the host, for at
 /// most `timeout_ms` (`-1`: as long as that takes; `0`: whether one has, without waiting).
 ///
 /// # Errors
 /// The wait itself failed (a signal's interruption is no failure: nothing is ready).
 pub fn wait(
-    door: Option<BorrowedFd<'_>>,
+    api: Option<BorrowedFd<'_>>,
     wake: BorrowedFd<'_>,
     stop: Option<BorrowedFd<'_>>,
     host: &TilolangHost,
@@ -123,9 +123,9 @@ pub fn wait(
         fds.push(watch(stop, libc::POLLIN));
         at
     });
-    let door_at = door.map(|door| {
+    let api_at = api.map(|api| {
         let at = fds.len();
-        fds.push(watch(door, libc::POLLIN));
+        fds.push(watch(api, libc::POLLIN));
         at
     });
     let task_at = host.task_fd().map(|task| {
@@ -165,7 +165,7 @@ pub fn wait(
     Ok(Ready {
         wake: at(Some(0)),
         stop: at(stop_at),
-        door: at(door_at),
+        api: at(api_at),
         task: at(task_at),
         windows: fds
             .get(windows_at..)

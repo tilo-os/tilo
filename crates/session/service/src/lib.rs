@@ -35,7 +35,7 @@ mod i18n {
 }
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_resource::Effect;
 
 pub use questions::{
@@ -54,7 +54,7 @@ pub enum Started {
     /// Its work is async (a signature, a commit into a workspace's record)
     /// and runs off the loop: the asker hears this answer when it lands,
     /// as it hears [`Self::Done`]'s at once.
-    Later(tilo_actions::remote::Pending<Result<ActionOutput, DoorError>>),
+    Later(tilo_actions::remote::Pending<Result<ActionOutput, ApiError>>),
 }
 
 impl std::fmt::Debug for Started {
@@ -124,7 +124,7 @@ pub trait Service {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError>;
+    ) -> Result<Started, ApiError>;
 
     /// [`Self::invoke`] as `invoker` (an agent, a script), which what the change makes is
     /// attributed to. The default runs it as the person seated here, as [`Self::invoke`] does.
@@ -137,7 +137,7 @@ pub trait Service {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.invoke(resource, action, arguments)
     }
 
@@ -154,7 +154,7 @@ pub trait Service {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let _ = run;
         self.invoke_as(invoker, resource, action, arguments)
     }
@@ -383,23 +383,23 @@ pub fn unavailable(resource: &mut ResourceSpec, action: &str, code: &str, reason
 /// network, an accessory) adds the item's arguments.
 ///
 /// # Errors
-/// [`DoorError::Unknown`] when nothing published names it,
-/// [`DoorError::Unavailable`], or the arguments' refusal.
+/// [`ApiError::Unknown`] when nothing published names it,
+/// [`ApiError::Unavailable`], or the arguments' refusal.
 pub fn decode<E: Effect>(
     published: &[ResourceSpec],
     resource: &str,
     action: &str,
     arguments: &Map<String, Value>,
-) -> Result<E, DoorError> {
+) -> Result<E, ApiError> {
     let address = ActionAddress::new(resource, action);
-    let (_, spec) = tilo_actions::door::locate(published, &address)
-        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
-    tilo_actions::door::encode_json(published, &address, arguments)?;
+    let (_, spec) = tilo_actions::api::locate(published, &address)
+        .ok_or_else(|| ApiError::Unknown(address.clone()))?;
+    tilo_actions::api::encode_json(published, &address, arguments)?;
     let mut all = arguments.clone();
     for (name, value) in spec.bound() {
         all.insert(name.clone(), value.clone());
     }
-    E::decode(&spec.id, &all).map_err(|error| DoorError::InvalidArguments(error.to_string()))
+    E::decode(&spec.id, &all).map_err(|error| ApiError::InvalidArguments(error.to_string()))
 }
 
 /// A reading as its JSON, for [`Service::read`].
@@ -603,7 +603,7 @@ impl Services {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.invoke_as_beside(invoker, run, resource, action, arguments, "")
     }
 
@@ -621,19 +621,19 @@ impl Services {
         action: &str,
         arguments: &Map<String, Value>,
         beside: &str,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let address = ActionAddress::new(resource, action);
         let index = self
             .started
             .iter()
             .position(|service| {
-                tilo_actions::door::resolve(&service.resources(), &address).is_some()
+                tilo_actions::api::resolve(&service.resources(), &address).is_some()
             })
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?;
         let service = self
             .started
             .get_mut(index)
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+            .ok_or_else(|| ApiError::Unknown(address.clone()))?;
         service.note_beside(beside);
         let started = match run {
             Some(run) => service.invoke_in_run(invoker, run, resource, action, arguments),
@@ -693,14 +693,14 @@ impl Services {
     /// Invoke `action` of `resource` on the service publishing it; `None`
     /// when no service does. An action whose contract asks for
     /// confirmation (restart, power off) is refused with
-    /// [`DoorError::ConfirmationRequired`]; once the person confirmed it,
+    /// [`ApiError::ConfirmationRequired`]; once the person confirmed it,
     /// the caller invokes it with [`Self::invoke_confirmed`].
     pub fn invoke(
         &mut self,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         self.route(resource, action, arguments, false, None)
     }
 
@@ -712,7 +712,7 @@ impl Services {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         self.route(resource, action, arguments, false, Some(invoker))
     }
 
@@ -722,7 +722,7 @@ impl Services {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         self.route(resource, action, arguments, true, None)
     }
 
@@ -733,7 +733,7 @@ impl Services {
         arguments: &Map<String, Value>,
         confirmed: bool,
         invoker: Option<&tilo_actions::ActionInvoker>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let address = ActionAddress::new(resource, action);
         let (index, asks) = self
             .started
@@ -741,7 +741,7 @@ impl Services {
             .enumerate()
             .find_map(|(index, service)| {
                 let published = service.resources();
-                let spec = tilo_actions::door::resolve(&published, &address)?;
+                let spec = tilo_actions::api::resolve(&published, &address)?;
                 let asks = !matches!(
                     spec.confirmation_for_json(arguments),
                     tilo_actions::ConfirmationPolicy::None
@@ -749,7 +749,7 @@ impl Services {
                 Some((index, asks))
             })?;
         if asks && !confirmed {
-            return Some(Err(DoorError::ConfirmationRequired));
+            return Some(Err(ApiError::ConfirmationRequired));
         }
         let service = self.started.get_mut(index)?;
         let started = match invoker {
@@ -814,9 +814,9 @@ impl Service for Services {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.invoke_confirmed(resource, action, arguments)
-            .unwrap_or_else(|| Err(DoorError::Unknown(ActionAddress::new(resource, action))))
+            .unwrap_or_else(|| Err(ApiError::Unknown(ActionAddress::new(resource, action))))
     }
 
     fn poll(&mut self) -> bool {

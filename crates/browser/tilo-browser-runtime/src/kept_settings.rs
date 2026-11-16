@@ -74,7 +74,7 @@ pub(crate) fn serve(frame: &mut FrameHarness, person: &str, document: SettingsDo
             let keeper =
                 SETTINGS_KEEPER
                     .get()
-                    .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                    .ok_or_else(|| tilo_actions::ApiError::Unavailable {
                         code: "settings_loading".to_owned(),
                         reason:
                             "the page is still fetching the code that keeps the person's settings"

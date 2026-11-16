@@ -406,7 +406,7 @@ impl Slots {
             }
         }
         // A row too narrow for the words keeps the window's main action and puts the rest
-        // behind its door, rather than showing unlabelled glyphs while width stands empty beside them.
+        // behind its API, rather than showing unlabelled glyphs while width stands empty beside them.
         let floor = main_action_floor(
             toolbar,
             toolbar
@@ -415,8 +415,8 @@ impl Slots {
         );
         if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
             // The main action keeps its words where the row has width for them once the rest
-            // are behind the door: a glyph with width to spare is a glyph nobody can
-            // name. Every other action goes behind the door unnamed, as before.
+            // are behind the API: a glyph with width to spare is a glyph nobody can
+            // name. Every other action goes behind the API unnamed, as before.
             let main = floor.saturating_sub(1);
             let mut below =
                 Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
@@ -546,7 +546,7 @@ impl Slots {
     }
 
     /// [`Self::arranged`] keeping at most `most` actions in the row: a bar too narrow for
-    /// the words keeps the window's main action and puts the rest behind its door. A row that
+    /// the words keeps the window's main action and puts the rest behind its API. A row that
     /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
     /// show: then the menu's row says what its glyph cannot.
     pub(super) fn arranged_below(

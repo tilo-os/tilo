@@ -3,11 +3,11 @@
 //! A task's programs run in a tilolang host of their own, whose code author is the task. The
 //! host holds the task's session (the `let`s its programs bound) and no records: it compiles each
 //! program against every installed app's package and runs it over a [`TaskStore`], which reads
-//! through the task's door, and sends every change the program makes back through the door as an
+//! through the task's api, and sends every change the program makes back through the API as an
 //! invocation of the action's own app ([`tilolang_runtime::delegate`]), decided there by the
 //! workspace's one policy as the task's. Nothing here decides anything or writes a record.
 //!
-//! The door ([`TaskDoor`]) is the task's connection: in the session the program connection to
+//! The API ([`TaskApi`]) is the task's connection: in the session the program connection to
 //! the MCP server (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
 //!
 //! **Packages that do not load.** A package the session cannot load here (a module that does not
@@ -15,15 +15,15 @@
 //! it once ([`TaskSession::could_not_load`], which the catalogue lists as `can't be reached:
 //! <why>`), and runs every other app as it would without it.
 //!
-//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). A tilolang app's the
-//! session's host answers itself from the app's record as the door hands it over, read with the
+//! **Reads** go to the API ([`TaskApi::read`], [`TaskApi::query`]). A tilolang app's the
+//! session's host answers itself from the app's record as the API hands it over, read with the
 //! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
 //! read once per program. A native app's record only the app knows how to read, so a read of it
-//! is the app's own `read` action through the door, as the task ([`crate::native`]).
+//! is the app's own `read` action through the API, as the task ([`crate::native`]).
 //!
 //! **Native apps.** A native app publishes what it offers, not how it runs: its verbs are actions
 //! of its catalogue, a field edit of its record is its own `field-edit` action, and both go to
-//! the app through the door as the task's invocation, which the broker decides as it decides
+//! the app through the API as the task's invocation, which the broker decides as it decides
 //! `tilo_do`'s and runs the app for when it is not running.
 //!
 //! **Steps.** One program is one step. Run without `confirm`, it first runs provisionally: its
@@ -60,8 +60,8 @@ use crate::publish::{package_resource_id, resource_id};
 /// More resources than this changed by one program are many: it answers with a preview first.
 pub const MANY_RESOURCES: usize = 3;
 
-/// What a task's host asks of its door. Each call waits for the door's answer.
-pub trait TaskDoor {
+/// What a task's host asks of its api. Each call waits for the API's answer.
+pub trait TaskApi {
     /// The fields of the resource `item` (its id in its record) of the app `app`, its type `ty`,
     /// as [`Host::read_values`] answers them. A native app's id names the item alone; `ty` says
     /// which of the app's collections a program holds it by ([`crate::native`]).
@@ -79,7 +79,7 @@ pub trait TaskDoor {
     fn begin_program(&self) {}
 }
 
-/// How an invocation the door made ended.
+/// How an invocation the API made ended.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Answered {
     /// It ran: its output, `{value, resources}`.
@@ -139,7 +139,7 @@ pub struct TaskSession {
     steps: Rc<RefCell<Steps>>,
     reads: Rc<RefCell<Reads>>,
     /// Where the task reaches the workspace.
-    door: Rc<dyn TaskDoor>,
+    api: Rc<dyn TaskApi>,
     /// The installed apps whose packages did not load here, each reported once: a program that
     /// names one reads that it can't be reached, and every other app is reached.
     unreachable: RefCell<Vec<Unreachable>>,
@@ -156,19 +156,19 @@ impl Authority for DecidesNothing {
 }
 
 impl TaskSession {
-    /// The session of a task reaching the workspace through `door`, with the packages `bundles`
+    /// The session of a task reaching the workspace through `api`, with the packages `bundles`
     /// (every tilolang app the session runs, each after the packages it uses), the native apps
     /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
     /// and the platform's own (the device's and the session's resources, Settings':
     /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
     /// them. A program names and type-checks every app of them; a native one it names the record
     /// of, invokes and assigns fields of, and reads what it holds through the app
-    /// ([`crate::native::NativeReads`]), which `door` carries too. A package that does not load
+    /// ([`crate::native::NativeReads`]), which `api` carries too. A package that does not load
     /// leaves only its app unreachable ([`Self::could_not_load`]): the session starts with every
     /// other app, and the failure is reported once.
     pub fn new(
         person: Option<&str>,
-        door: &Rc<dyn TaskDoor>,
+        api: &Rc<dyn TaskApi>,
         bundles: &[Bundle],
         native: Rc<Native>,
     ) -> Result<Self, String> {
@@ -176,7 +176,7 @@ impl TaskSession {
         let packages = Rc::new(RefCell::new(HashMap::new()));
         let schemas = Arc::new(crate::schema::Schemas::new());
         let store = TaskStore {
-            door: Rc::clone(door),
+            api: Rc::clone(api),
             reads: Rc::clone(&reads),
             packages: Rc::clone(&packages),
             schemas: Arc::clone(&schemas),
@@ -227,7 +227,7 @@ impl TaskSession {
         // resources, so they are read by no record read; their actions are invoked on the
         // resource the session publishes.
         // The session's own description is one of the platform's (`platform_packages`): its
-        // resources are read without a record, and its actions run at the session's door.
+        // resources are read without a record, and its actions run at the session's api.
         let platform = crate::platform_apps::platform_packages()?;
         let published: std::collections::HashSet<String> =
             load_apps(&runtime, &mut apps, platform, &mut failed)
@@ -238,15 +238,15 @@ impl TaskSession {
             .map(|(app, module)| (app.clone(), module.0.clone()))
             .collect();
         let steps = Rc::new(RefCell::new(Steps::default()));
-        runtime.set_invoker(DoorInvoker {
-            door: Rc::clone(door),
+        runtime.set_invoker(ApiInvoker {
+            api: Rc::clone(api),
             apps,
             published,
             addresses: crate::platform_apps::session_addresses()?,
             steps: Rc::clone(&steps),
             native,
         });
-        let asked = Rc::clone(door);
+        let asked = Rc::clone(api);
         runtime.set_reader(move |request| {
             let encoded = serde_json::to_value(request).map_err(|error| error.to_string())?;
             asked.query(request.app(), &encoded)
@@ -258,7 +258,7 @@ impl TaskSession {
             session: RefCell::new(Session::new()),
             steps,
             reads,
-            door: Rc::clone(door),
+            api: Rc::clone(api),
             unreachable: RefCell::new(Vec::new()),
         };
         // Each app no package loaded is reported: one that loaded from another package that
@@ -418,7 +418,7 @@ impl TaskSession {
             ..Steps::default()
         };
         self.reads.borrow_mut().known.clear();
-        self.door.begin_program();
+        self.api.begin_program();
         let inputs = tilolang_runtime::reads::ProgramInputs {
             me: self.person.clone(),
             ..Default::default()
@@ -493,9 +493,9 @@ fn first_param_type(text: &str) -> Option<&str> {
     (!ty.is_empty()).then_some(ty)
 }
 
-/// Sends a program's invocations through the door, or in a provisional run lists them.
-struct DoorInvoker {
-    door: Rc<dyn TaskDoor>,
+/// Sends a program's invocations through the API, or in a provisional run lists them.
+struct ApiInvoker {
+    api: Rc<dyn TaskApi>,
     apps: HashMap<String, Meta>,
     /// The native apps among them, which a program invokes on their own records.
     native: Rc<Native>,
@@ -506,7 +506,7 @@ struct DoorInvoker {
     steps: Rc<RefCell<Steps>>,
 }
 
-impl DoorInvoker {
+impl ApiInvoker {
     /// The id the session publishes the resource `r` under, as a published action takes it: a
     /// resource of one of the platform's apps (a window) by its own id, a tilolang app's by its
     /// app and its id in its record (`tl:so.tilo.lang.notes:<id>`). `r`'s type names the app:
@@ -528,7 +528,7 @@ impl DoorInvoker {
     }
 }
 
-impl Invoker for DoorInvoker {
+impl Invoker for ApiInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let app = invocation.app();
         let Some(meta) = self.apps.get(app) else {
@@ -575,7 +575,7 @@ impl Invoker for DoorInvoker {
         if provisional {
             return Invoked::Done(Value::Unit);
         }
-        match self.door.invoke(&call) {
+        match self.api.invoke(&call) {
             // An action that only reads or shows (`overview`, `search`) changes nothing of the
             // workspace: it is no step, and nothing of it is taken back. What it showed is
             // closed as it was opened, never undone.
@@ -656,10 +656,10 @@ fn reads_only(invocation: &Invocation) -> bool {
     )
 }
 
-/// The door's call for `invocation` of the platform's package `meta`: its declared verb on the
+/// The API's call for `invocation` of the platform's package `meta`: its declared verb on the
 /// resource the session publishes it as (`shell:layout`), with every other argument as the
 /// published action takes it, by name, a resource by the id `published_id` gives it. The call
-/// says it is the session's (`published`), which the door sends to the session's own provider. A
+/// says it is the session's (`published`), which the API sends to the session's own provider. A
 /// loose action (the session's `place`) goes to the resource `addresses` says it is published on.
 fn published_call(
     meta: &Meta,
@@ -723,7 +723,7 @@ fn published_call(
 }
 
 /// What the invocation is made from, when it is made from something, among the arguments the
-/// door takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
+/// api takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
 /// its source with.
 fn made_from(
     from: Option<&ResourceRef>,
@@ -739,7 +739,7 @@ fn made_from(
 }
 
 /// The `arguments` of the action `action` declared by `meta`: each of `args` (past the first
-/// one, when it is the resource the action is on) by its parameter's name, as the door takes it
+/// one, when it is the resource the action is on) by its parameter's name, as the API takes it
 /// ([`argument_json`]). `apps` holds every package an argument's type may name.
 fn arguments_of(
     apps: &HashMap<String, Meta>,
@@ -771,8 +771,8 @@ fn arguments_of(
     Ok(Json::Object(arguments))
 }
 
-/// The door's call for `invocation` of the native app `meta`: its declared verb, as the app's
-/// own door names it, on the resource the program named (the action's own record, or an item of
+/// The API's call for `invocation` of the native app `meta`: its declared verb, as the app's
+/// own api names it, on the resource the program named (the action's own record, or an item of
 /// it), with the arguments the app takes. A field assignment is the app's own `field-edit` of
 /// its record. Either is the task's invocation of the app, decided and undone as every other
 /// call of its actions: the app keeps the step.
@@ -796,7 +796,7 @@ fn native_call(
                     "{app} publishes no record a program names its actions on"
                 ));
             };
-            // The resource the app's own door takes: the one the program named the action on,
+            // The resource the app's own api takes: the one the program named the action on,
             // else the record the app publishes.
             let resource = subject
                 .as_ref()
@@ -857,7 +857,7 @@ fn native_call(
     }
 }
 
-/// The door's call for `invocation` of the package `meta`: a declared action on its subject
+/// The API's call for `invocation` of the package `meta`: a declared action on its subject
 /// (its first parameter, when it is one of the package's types) or on the package, its other
 /// arguments by name; a field edit on its resource.
 fn call_of(
@@ -891,7 +891,7 @@ fn call_of(
             Ok(json!({
                 "app": app,
                 "resource": resource,
-                // As the app's door publishes it: by its name.
+                // As the app's api publishes it: by its name.
                 "action": declared.name,
                 "arguments": arguments,
             }))
@@ -919,7 +919,7 @@ fn call_of(
                 "app": app,
                 "resource": resource_id(app, &target.id_string()),
                 "action": action,
-                // The field as its type names it, which the door's edit takes.
+                // The field as its type names it, which the API's edit takes.
                 "arguments": {"field": field, "value": value},
             }))
         }
@@ -1011,7 +1011,7 @@ fn load_apps(
     loaded
 }
 
-/// What the door read of resources, per program.
+/// What the API read of resources, per program.
 #[derive(Default)]
 struct Reads {
     /// Every app the task's session holds a package of.
@@ -1027,9 +1027,9 @@ struct Read {
     fields: HashMap<String, FieldValue>,
 }
 
-/// The store of a task's runtime: reads through the door, writes nothing.
+/// The store of a task's runtime: reads through the API, writes nothing.
 struct TaskStore {
-    door: Rc<dyn TaskDoor>,
+    api: Rc<dyn TaskApi>,
     reads: Rc<RefCell<Reads>>,
     /// The module hash of each app's package, by the app: which package version's schemas a
     /// record of it resolves by. Filled as the packages load, after the store is in the runtime.
@@ -1065,7 +1065,7 @@ impl TaskStore {
         let encoded = serde_json::to_value(&request)
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         let answered = self
-            .door
+            .api
             .query(&app, &encoded)
             .map_err(StoreError::Backend)?;
         serde_json::from_value(answered).map_err(|error| {
@@ -1095,7 +1095,7 @@ impl TaskStore {
         // A read that did not reach the app fails the program; one the app answered that it
         // holds no such resource is a resource that is not there.
         let answer = self
-            .door
+            .api
             .read(&app, &id, &at.ty)
             .map_err(StoreError::Backend)?;
         if answer.get("missing").is_some() {
@@ -1190,7 +1190,7 @@ impl Store for TaskStore {
         let encoded = serde_json::to_value(&request)
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         let found = self
-            .door
+            .api
             .query(&app, &encoded)
             .map_err(StoreError::Backend)?;
         Ok(found
@@ -1234,7 +1234,7 @@ impl Store for TaskStore {
         let encoded = serde_json::to_value(&request)
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         let answered = self
-            .door
+            .api
             .query(&app, &encoded)
             .map_err(StoreError::Backend)?;
         let unread =
@@ -1322,7 +1322,7 @@ fn read_of(answer: &Json) -> Result<Read, String> {
 impl Host {
     /// The resource `item` (its id in its record), as a task's host reads it: its type and
     /// every field as stored, by field id, or `{"missing": true}` when the workspace holds no such
-    /// resource. The app's half of a task's read; what the task may read the door decided
+    /// resource. The app's half of a task's read; what the task may read the API decided
     /// before it asked.
     ///
     /// # Errors
@@ -1395,7 +1395,7 @@ mod tests {
         phase a_catalogue_of_apps_names_each_ones_verbs_by_its_app;
         {
             // Chat and the session both publish a `share-window` verb: in one catalogue they are
-            // two actions, and each app's own door takes its verb back.
+            // two actions, and each app's own api takes its verb back.
             let chat = chat();
             let session = crate::platform_apps::session_package().expect("the session's reads");
             assert!(
@@ -1425,8 +1425,8 @@ mod tests {
         phase a_native_apps_field_is_its_own_field_edit;
         {
             let meta = chat();
-            let door = Rc::new(Asked::default());
-            let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
+            let api = Rc::new(Asked::default());
+            let (invoker, _) = invoker_of(meta, Rc::clone(&api) as Rc<dyn TaskApi>);
             let invocation = Invocation::Edit {
                 app: tilolang_runtime::ids::AppId::from("so.tilo.chat"),
                 target: ResourceRef {
@@ -1440,7 +1440,7 @@ mod tests {
             };
             assert!(matches!(invoker.invoke(&invocation), Invoked::Done(_)));
             assert_eq!(
-                door.0.borrow().as_slice(),
+                api.0.borrow().as_slice(),
                 [json!({
                     "app": "so.tilo.chat",
                     "resource": "chat.workspace",
@@ -1466,13 +1466,13 @@ mod tests {
         .expect("Chat's surface reads")
     }
 
-    /// A door that records the calls it is sent, and answers each as a done action.
+    /// An API that records the calls it is sent, and answers each as a done action.
     #[derive(Default)]
     struct Asked(RefCell<Vec<Json>>);
 
-    impl TaskDoor for Asked {
+    impl TaskApi for Asked {
         fn read(&self, _: &str, _: &str, _: &str) -> Result<Json, String> {
-            Err("no read reaches this door".to_owned())
+            Err("no read reaches this api".to_owned())
         }
 
         fn invoke(&self, call: &Json) -> Answered {
@@ -1481,17 +1481,17 @@ mod tests {
         }
 
         fn query(&self, _: &str, _: &Json) -> Result<Json, String> {
-            Err("no query reaches this door".to_owned())
+            Err("no query reaches this api".to_owned())
         }
     }
 
-    /// The door's invoker for the one native app `meta`, with the door `door`.
-    fn invoker_of(meta: Meta, door: Rc<dyn TaskDoor>) -> (DoorInvoker, Rc<RefCell<Steps>>) {
+    /// The API's invoker for the one native app `meta`, with the API `api`.
+    fn invoker_of(meta: Meta, api: Rc<dyn TaskApi>) -> (ApiInvoker, Rc<RefCell<Steps>>) {
         let steps = Rc::new(RefCell::new(Steps::default()));
         let native = Rc::new(Native::of(&[], std::slice::from_ref(&meta)));
         (
-            DoorInvoker {
-                door,
+            ApiInvoker {
+                api,
                 apps: HashMap::from([(meta.app.clone(), meta)]),
                 published: std::collections::HashSet::new(),
                 addresses: std::collections::BTreeMap::new(),
@@ -1506,8 +1506,8 @@ mod tests {
     fn a_native_apps_verb_is_its_own_on_the_record_it_publishes() {
         let meta = chat();
         let app = tilolang_runtime::ids::AppId::from(meta.app.as_str());
-        let door = Rc::new(Asked::default());
-        let (invoker, steps) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
+        let api = Rc::new(Asked::default());
+        let (invoker, steps) = invoker_of(meta, Rc::clone(&api) as Rc<dyn TaskApi>);
         let record = ResourceRef {
             doc: "chat.workspace".to_owned(),
             item: None,
@@ -1534,7 +1534,7 @@ mod tests {
             "Chat's verb runs: {answer:?}"
         );
         assert_eq!(
-            door.0.borrow().as_slice(),
+            api.0.borrow().as_slice(),
             [json!({
                 "app": "so.tilo.chat",
                 "resource": "chat.workspace",

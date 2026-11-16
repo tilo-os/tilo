@@ -835,7 +835,7 @@ mod tests {
             app.effect(&DisksEffect::Format {
                 device: "sdb1".into()
             }),
-            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+            Err(ui::tilo_actions::ApiError::ConfirmationRequired)
         ));
         let output = app
             .effect_confirmed(&DisksEffect::Format {

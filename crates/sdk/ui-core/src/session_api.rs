@@ -1,17 +1,17 @@
 //! Opening another app, the one way every host does it. An app offers to open another
 //! installed app as an action of its own ([`ApplicationLaunch`]). Run, that action
 //! becomes the workspace's `open` of the app ([`ApplicationLaunch::target`]), asked of
-//! the session's action door: the window never starts anything itself.
+//! the session's action API: the window never starts anything itself.
 
 use tilo_actions::remote::{ActionHostError, ApplicationLaunch, InvokeRequest};
-use tilo_actions::{ActionOutput, DoorError, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 use crate::arriving::Arrival;
 use crate::remote_actions::{InvocationCall, RemoteActions};
 use crate::widget::ResourceOperationStart;
 
 /// Where a host sends what an action asks of the session beyond its app.
-pub trait SessionDoor {
+pub trait SessionApi {
     /// The workspace this window was admitted to, which a request addresses when the
     /// action's own route names none.
     fn workspace(&self) -> Option<String>;
@@ -23,38 +23,38 @@ pub trait SessionDoor {
         operation: InvocationId,
         admitted: bool,
         request: InvokeRequest,
-    ) -> Result<ResourceOperationStart, DoorError>;
+    ) -> Result<ResourceOperationStart, ApiError>;
 }
 
 /// The launch `payload` encodes, checked. A payload that is not a launch, or names an app
 /// or content out of bounds.
-pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLaunch, DoorError> {
+pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLaunch, ApiError> {
     let launch: ApplicationLaunch = serde_json::from_slice(payload)
-        .map_err(|_| DoorError::Failed("invalid application launch payload".into()))?;
+        .map_err(|_| ApiError::Failed("invalid application launch payload".into()))?;
     if !launch.valid() {
-        return Err(DoorError::Failed(
+        return Err(ApiError::Failed(
             "application launch payload is out of bounds".into(),
         ));
     }
     Ok(launch)
 }
 
-/// Open the app `payload` names, through `door`, in the workspace of the action's `route`
-/// (else the door's own). The request continues the invocation the broker delivered for
+/// Open the app `payload` names, through `api`, in the workspace of the action's `route`
+/// (else the API's own). The request continues the invocation the broker delivered for
 /// it (`operation`, when `admitted`; else the one being handled here), so the session
 /// decides it as that invocation's caller; without one, only the person's own press in
-/// this app is behind it. An invalid launch, no door or workspace to open it in, or the
-/// door's refusal.
+/// this app is behind it. An invalid launch, no API or workspace to open it in, or the
+/// API's refusal.
 pub(crate) fn start_application_launch(
-    door: Option<&mut dyn SessionDoor>,
+    api: Option<&mut dyn SessionApi>,
     route: Option<&crate::collaboration::RouteSpec>,
     payload: &[u8],
     operation: InvocationId,
     admitted: bool,
-) -> Result<ResourceOperationStart, DoorError> {
+) -> Result<ResourceOperationStart, ApiError> {
     let launch = decode_application_launch(payload)?;
-    let Some(door) = door else {
-        return Err(DoorError::Unavailable {
+    let Some(api) = api else {
+        return Err(ApiError::Unavailable {
             code: "authoritative_host_unavailable".into(),
             reason: "Opening an application requires the workspace action broker".into(),
         });
@@ -62,9 +62,9 @@ pub(crate) fn start_application_launch(
     let Some(workspace) = route
         .filter(|route| !route.cluster_id.is_nil())
         .map(|route| route.cluster_id.to_string())
-        .or_else(|| door.workspace())
+        .or_else(|| api.workspace())
     else {
-        return Err(DoorError::Unavailable {
+        return Err(ApiError::Unavailable {
             code: "authoritative_host_unavailable".into(),
             reason: "Opening an application requires an admitted workspace route".into(),
         });
@@ -74,7 +74,7 @@ pub(crate) fn start_application_launch(
     } else {
         crate::invocation_scope::delivered_invocation()
     };
-    door.invoke(
+    api.invoke(
         operation,
         admitted,
         InvokeRequest {
@@ -93,20 +93,20 @@ pub(crate) fn start_application_launch(
 
 /// What a refusal from the session says to the person who asked.
 #[must_use]
-pub fn door_error(error: &ActionHostError) -> DoorError {
+pub fn api_error(error: &ActionHostError) -> ApiError {
     match error {
         ActionHostError::Unavailable { reason } | ActionHostError::Refused { reason } => {
-            DoorError::Unavailable {
+            ApiError::Unavailable {
                 code: error.code().into(),
                 reason: reason.clone(),
             }
         }
-        ActionHostError::ConfirmationRequired { .. } => DoorError::ConfirmationRequired,
-        ActionHostError::NotPermitted => DoorError::Unavailable {
+        ActionHostError::ConfirmationRequired { .. } => ApiError::ConfirmationRequired,
+        ActionHostError::NotPermitted => ApiError::Unavailable {
             code: error.code().into(),
             reason: "You may not do that here".into(),
         },
-        other => DoorError::Unavailable {
+        other => ApiError::Unavailable {
             code: other.code().into(),
             reason: "It isn't available to you here".into(),
         },
@@ -115,29 +115,29 @@ pub fn door_error(error: &ActionHostError) -> DoorError {
 
 fn finished(
     call: &Arrival<InvocationUpdate, ActionHostError>,
-) -> Option<Result<ActionOutput, DoorError>> {
+) -> Option<Result<ActionOutput, ApiError>> {
     match call {
-        Arrival::Failed(error) => Some(Err(door_error(error))),
+        Arrival::Failed(error) => Some(Err(api_error(error))),
         Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
         Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
-            Some(Err(DoorError::Failed(error.message.clone())))
+            Some(Err(ApiError::Failed(error.message.clone())))
         }
-        Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
-            DoorError::Failed(message.clone().unwrap_or_else(|| "It was cancelled".into())),
-        )),
+        Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => Some(Err(ApiError::Failed(
+            message.clone().unwrap_or_else(|| "It was cancelled".into()),
+        ))),
         Arrival::Pending { .. } | Arrival::Ready(_) => None,
     }
 }
 
-/// A [`SessionDoor`] served by a [`RemoteActions`] client: the session of a host that
+/// A [`SessionApi`] served by a [`RemoteActions`] client: the session of a host that
 /// serves its windows in process, such as a page.
-pub struct ClientDoor {
+pub struct ClientApi {
     client: RemoteActions,
     workspace: Option<String>,
     running: Vec<(InvocationId, InvocationCall)>,
 }
 
-impl ClientDoor {
+impl ClientApi {
     /// Requests go to `client`, addressed to `workspace` unless an action's route names
     /// its own.
     #[must_use]
@@ -156,7 +156,7 @@ impl ClientDoor {
     }
 
     /// The operations whose calls finished since this was last asked, and how each ended.
-    pub fn take_finished(&mut self) -> Vec<(InvocationId, Result<ActionOutput, DoorError>)> {
+    pub fn take_finished(&mut self) -> Vec<(InvocationId, Result<ActionOutput, ApiError>)> {
         let mut done = Vec::new();
         self.running
             .retain(|(operation, call)| match call.with(finished) {
@@ -170,7 +170,7 @@ impl ClientDoor {
     }
 }
 
-impl SessionDoor for ClientDoor {
+impl SessionApi for ClientApi {
     fn workspace(&self) -> Option<String> {
         self.workspace.clone()
     }
@@ -180,7 +180,7 @@ impl SessionDoor for ClientDoor {
         operation: InvocationId,
         _admitted: bool,
         request: InvokeRequest,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         let call = self.client.invoke_continuing(
             request.on_behalf_of,
             request.invocation,

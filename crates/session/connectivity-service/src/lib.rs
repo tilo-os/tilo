@@ -44,7 +44,7 @@ pub mod model;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
@@ -194,7 +194,7 @@ impl Connectivity {
         Started::Accepted
     }
 
-    fn network(&mut self, action: NetworkAction) -> Result<Started, DoorError> {
+    fn network(&mut self, action: NetworkAction) -> Result<Started, ApiError> {
         let id = action.id();
         let network = &self.readings.network;
         let change = match action {
@@ -204,7 +204,7 @@ impl Connectivity {
             NetworkAction::JoinWifi { network: name } => {
                 let known = network.wifi.networks.iter().find(|n| n.name == name);
                 if known.is_some_and(|n| n.secure && !n.known) {
-                    return Err(DoorError::Unavailable {
+                    return Err(ApiError::Unavailable {
                         code: "password_needed".into(),
                         reason: format!("{name} asks for a password: join it with connect-wifi"),
                     });
@@ -298,7 +298,7 @@ impl Connectivity {
         self.start(Part::Vpn, id, change)
     }
 
-    fn tethering(&mut self, action: TetheringAction) -> Result<Started, DoorError> {
+    fn tethering(&mut self, action: TetheringAction) -> Result<Started, ApiError> {
         let id = action.id();
         let change = match action {
             TetheringAction::SetHotspot { on } => Change::Hotspot(on),
@@ -311,7 +311,7 @@ impl Connectivity {
                 password,
                 band: band
                     .parse::<model::Band>()
-                    .map_err(DoorError::InvalidArguments)?,
+                    .map_err(ApiError::InvalidArguments)?,
             },
         };
         Ok(self.start(Part::Tethering, id, change))
@@ -336,7 +336,7 @@ fn child_id(kind: &str, key: &str) -> Option<String> {
 
 /// The proxy server as it is used: `host:port`, or nothing for no proxy. An
 /// empty entry is none.
-fn proxy(server: Option<String>) -> Result<Option<String>, DoorError> {
+fn proxy(server: Option<String>) -> Result<Option<String>, ApiError> {
     let Some(server) = server.map(|server| server.trim().to_owned()) else {
         return Ok(None);
     };
@@ -349,7 +349,7 @@ fn proxy(server: Option<String>) -> Result<Option<String>, DoorError> {
     if host_and_port {
         Ok(Some(server))
     } else {
-        Err(DoorError::InvalidArguments(format!(
+        Err(ApiError::InvalidArguments(format!(
             "{server} is not a proxy as host:port"
         )))
     }
@@ -364,14 +364,14 @@ fn given(value: Option<String>) -> Option<String> {
 
 /// The entry `field` demands, else a refusal naming it: an enterprise
 /// network has nothing to join without it.
-fn named(value: Option<String>, field: &str) -> Result<String, DoorError> {
+fn named(value: Option<String>, field: &str) -> Result<String, ApiError> {
     given(value).ok_or_else(|| {
-        DoorError::InvalidArguments(format!("an enterprise network joins with its {field}"))
+        ApiError::InvalidArguments(format!("an enterprise network joins with its {field}"))
     })
 }
 
 /// The 802.1X method `method` names, PEAP when it names none.
-fn eap_method(method: Option<String>) -> Result<os_actions::EnterpriseEapMethod, DoorError> {
+fn eap_method(method: Option<String>) -> Result<os_actions::EnterpriseEapMethod, ApiError> {
     let Some(method) = given(method) else {
         return Ok(os_actions::EnterpriseEapMethod::Peap);
     };
@@ -379,7 +379,7 @@ fn eap_method(method: Option<String>) -> Result<os_actions::EnterpriseEapMethod,
         "PEAP" => Ok(os_actions::EnterpriseEapMethod::Peap),
         "TTLS" => Ok(os_actions::EnterpriseEapMethod::Ttls),
         "TLS" => Ok(os_actions::EnterpriseEapMethod::Tls),
-        _ => Err(DoorError::InvalidArguments(format!(
+        _ => Err(ApiError::InvalidArguments(format!(
             "{method} is not an 802.1X method: PEAP, TTLS or TLS"
         ))),
     }
@@ -387,14 +387,14 @@ fn eap_method(method: Option<String>) -> Result<os_actions::EnterpriseEapMethod,
 
 /// The inner authentication `inner_auth` names, `MSCHAPv2` when it names
 /// none.
-fn phase2_auth(inner_auth: Option<String>) -> Result<Option<String>, DoorError> {
+fn phase2_auth(inner_auth: Option<String>) -> Result<Option<String>, ApiError> {
     let Some(inner_auth) = given(inner_auth) else {
         return Ok(Some("mschapv2".to_owned()));
     };
     let named = inner_auth.to_ascii_lowercase();
     match named.as_str() {
         "mschapv2" | "pap" | "chap" => Ok(Some(named)),
-        _ => Err(DoorError::InvalidArguments(format!(
+        _ => Err(ApiError::InvalidArguments(format!(
             "{inner_auth} is not an inner authentication: MSCHAPv2, PAP or CHAP"
         ))),
     }
@@ -698,7 +698,7 @@ impl Service for Connectivity {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
         // A child's action belongs to its parent's vocabulary.
         let parent = resource.split_once(':').map_or(resource, |(kind, _)| kind);
@@ -719,7 +719,7 @@ impl Service for Connectivity {
                 let action = decode::<TetheringAction>(&published, resource, action, arguments)?;
                 self.tethering(action)
             }
-            _ => Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+            _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
             ))),
         }

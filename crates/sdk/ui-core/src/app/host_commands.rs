@@ -1,4 +1,4 @@
-//! This app as the host chrome sees it: its commands, and the one local door
+//! This app as the host chrome sees it: its commands, and the one local API
 //! they enter.
 
 use super::App;
@@ -23,7 +23,7 @@ pub(crate) struct HostCommandsKey {
     minute: u64,
 }
 
-/// The Edit door: the one undo, reached by keyboard, menu and automation.
+/// The Edit API: the one undo, reached by keyboard, menu and automation.
 impl App {
     /// Run an `tilo.host:edit` operation: the same undo the keyboard does.
     pub(super) fn execute_edit_operation(
@@ -240,8 +240,8 @@ impl App {
         }
     }
 
-    /// Activate a host command through the same local door the palette and
-    /// assistive technology enter. Returns whether the door accepted it.
+    /// Activate a host command through the same local API the palette and
+    /// assistive technology enter. Returns whether the API accepted it.
     pub(crate) fn invoke_host_command(
         &mut self,
         invocation: &tilo_actions::ControlInvocation,

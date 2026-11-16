@@ -9,7 +9,7 @@
 )]
 
 use serde_json::json;
-use tilo_actions::door::{ActionDescriptor, InputSpec};
+use tilo_actions::api::{ActionDescriptor, InputSpec};
 use tilo_actions::{Availability, ConfirmationPolicy, OperationKind, PROMPTED_PARAM, ParamType};
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::{self, Answer, Revealed};
@@ -266,7 +266,7 @@ pub struct KeywordModel;
 pub fn scratchpad_body(
     text: &str,
 ) -> (
-    tilo_actions::door::ActionAddress,
+    tilo_actions::api::ActionAddress,
     serde_json::Map<String, serde_json::Value>,
 ) {
     let edit = scratchpad::Note::paths().body.replace(text.to_owned());
@@ -276,7 +276,7 @@ pub fn scratchpad_body(
         serde_json::to_value(&edit).expect("a field edit is JSON"),
     );
     (
-        tilo_actions::door::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
+        tilo_actions::api::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
         arguments,
     )
 }

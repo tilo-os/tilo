@@ -6,7 +6,7 @@
 )]
 
 use super::*;
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 
 fn reading() -> LayoutReading {
     LayoutReading {
@@ -144,7 +144,7 @@ fn the_scenarios_are_the_only_file_the_session_leaves_out() {
 }
 
 /// The shell reaches the session only by calling its actions (`session.focus(window(w))`): it
-/// compiles with no outside effect at all, so no press of it is a string the door reads.
+/// compiles with no outside effect at all, so no press of it is a string the API reads.
 #[test]
 fn the_shell_compiles_with_no_outside_effect() {
     compile_shell().expect("the shell compiles");
@@ -157,7 +157,7 @@ fn the_shell_compiles_with_no_outside_effect() {
 }
 
 /// No app names one of the session's actions as a string: each calls it on the session's
-/// package (`use so.tilo.session as session`), which the checker holds to what the door takes.
+/// package (`use so.tilo.session as session`), which the checker holds to what the API takes.
 #[test]
 fn no_app_hands_the_session_a_string() {
     let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
@@ -498,7 +498,7 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
 }
 
 /// A press on an app the person pinned to the dock asks the session to open that app
-/// (`session.open_app(app)`), named by its app id: the session's door gets it on the shell's
+/// (`session.open_app(app)`), named by its app id: the session's API gets it on the shell's
 /// chrome, and the app's place on the shell comes to the front.
 #[test]
 fn a_press_on_a_dock_app_asks_the_session_to_open_it() {

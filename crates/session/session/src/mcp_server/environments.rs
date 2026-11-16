@@ -436,7 +436,7 @@ fn where_it_works(
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
-        if asked.elapsed() > WAIT || !tilo_mcp::session_door::client_connected(stream) {
+        if asked.elapsed() > WAIT || !tilo_mcp::session_api::client_connected(stream) {
             return Err("the environment left before its door opened".to_owned());
         }
         std::thread::sleep(ASK_EVERY);

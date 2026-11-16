@@ -590,14 +590,14 @@ choice!(crate::widget::ControlSize, "ControlSize", {
 });
 
 /// What happens when one of a component's events happens. Data, never a closure: an action
-/// reference, invoked through the door, or a view intent its host applies (a view-state update,
+/// reference, invoked through the API, or a view intent its host applies (a view-state update,
 /// or the action reference the host's view attached to the event).
 #[derive(Clone, Default)]
 pub enum Event {
     /// Nothing happens.
     #[default]
     None,
-    /// An exported action, invoked through the door; the host resolves its policy first.
+    /// An exported action, invoked through the API; the host resolves its policy first.
     Action(tilo_actions::ActionBinding<()>),
     /// A view intent, queued for the host.
     View(Intent),

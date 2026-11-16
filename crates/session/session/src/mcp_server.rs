@@ -1,7 +1,7 @@
 //! The session's MCP server: how agents reach the action API. `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 //! (0600, in the session's 0700 directory) is where a program of this login reaches this desktop's
 //! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
-//! ([`tilo_mcp::session_door`]). Three gates stand between a connection and the desktop: its
+//! ([`tilo_mcp::session_api`]). Three gates stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
@@ -13,7 +13,7 @@
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's
 //! answers about it are remembered per environment. A client may ask for a workspace by id instead
-//! of the one in front ([`tilo_mcp::session_door::WORKSPACE`]); it is admitted there only if
+//! of the one in front ([`tilo_mcp::session_api::WORKSPACE`]); it is admitted there only if
 //! the person is one of its people.
 
 mod agent_key;
@@ -47,7 +47,7 @@ use tilo_actions::remote::{
 use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
-use tilo_mcp::session_door::{Consent, Hello};
+use tilo_mcp::session_api::{Consent, Hello};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
@@ -1340,7 +1340,7 @@ fn facts_of(pid: u32, launches: &Launches, entrance: Origin) -> Facts {
 /// Tell a refused client why, as a JSON-RPC error, then let it go.
 fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     use std::io::Write as _;
-    let reply = tilo_mcp::session_door::error_reply(&serde_json::Value::Null, refusal.message());
+    let reply = tilo_mcp::session_api::error_reply(&serde_json::Value::Null, refusal.message());
     let _ = stream.set_nonblocking(false);
     if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
         tracing::warn!(%error, "a refused client's connection has no write timeout");
@@ -1375,7 +1375,7 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
 
 /// What a connection asks of the session's own doors: answered on the loop's pass, the only place
 /// that may touch them.
-enum DoorAsk {
+enum ApiAsk {
     /// What the session's one search finds by `needle`: the same search the
     /// palette and text typed on the canvas run, answered here because the
     /// search lives on the loop's thread.
@@ -1426,7 +1426,7 @@ enum DoorAsk {
 
 /// The seam between the door's connections and the session's own doors.
 pub(crate) struct SessionDoors {
-    asks: std::sync::Mutex<Vec<DoorAsk>>,
+    asks: std::sync::Mutex<Vec<ApiAsk>>,
     wake: Wake,
     /// Who sits here: the person a program typed in a conversation runs as.
     person: String,
@@ -1492,7 +1492,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
             Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
         >,
     ) {
-        self.ask(DoorAsk::Step {
+        self.ask(ApiAsk::Step {
             actor,
             address,
             slot,
@@ -1640,7 +1640,7 @@ impl SessionDoors {
         self.actions.get().cloned()
     }
 
-    fn ask(&self, ask: DoorAsk) {
+    fn ask(&self, ask: ApiAsk) {
         self.asks.lock_recover().push(ask);
         (self.wake)();
     }
@@ -1653,14 +1653,14 @@ impl SessionDoors {
         workspace: Option<String>,
         done: crate::search::FoundSearch,
     ) {
-        self.ask(DoorAsk::Find {
+        self.ask(ApiAsk::Find {
             needle,
             workspace,
             done,
         });
     }
 
-    /// Answer what the connections asked since the last pass, from `doors`,
+    /// Answer what the connections asked since the last pass, from `surfaces`,
     /// the `services` the session runs, and the one `search`; `shows` names
     /// the resources a place can show, as the layout holds them, and
     /// `person` is whose calls are their own, not someone's for them.
@@ -1670,16 +1670,16 @@ impl SessionDoors {
     /// loop, and no borrow outlives a single answer.
     pub(crate) fn answer(
         &self,
-        doors: &tilo_session_core::door::Doors,
+        surfaces: &tilo_session_core::surfaces::Surfaces,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
         shows: &std::rc::Rc<dyn Fn(&str) -> bool>,
-        look: &mut tilo_session_core::door::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                DoorAsk::Find {
+                ApiAsk::Find {
                     needle,
                     workspace,
                     done,
@@ -1695,7 +1695,7 @@ impl SessionDoors {
                         done,
                     );
                 }
-                DoorAsk::Step {
+                ApiAsk::Step {
                     actor,
                     address,
                     slot,
@@ -1710,11 +1710,8 @@ impl SessionDoors {
                     // at any depth: a note in a notebook the session keeps is the service's as
                     // its notebook is.
                     Ok(arguments)
-                        if tilo_actions::door::resolve(
-                            &services.borrow().resources(),
-                            &address,
-                        )
-                        .is_some() =>
+                        if tilo_actions::api::resolve(&services.borrow().resources(), &address)
+                            .is_some() =>
                     {
                         invoke_service_step(
                             services,
@@ -1729,7 +1726,7 @@ impl SessionDoors {
                     // The system's `open` stands a place beside the conversation of the turn that
                     // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
                     Ok(arguments) => done.complete(
-                        doors
+                        surfaces
                             .invoke_as(
                                 &actor,
                                 &address,
@@ -1741,13 +1738,13 @@ impl SessionDoors {
                     ),
                     Err(why) => done.complete(Err(why)),
                 },
-                DoorAsk::Record { app, done } => {
+                ApiAsk::Record { app, done } => {
                     done.complete(services.borrow().record(&app));
                 }
-                DoorAsk::Apps(done) => {
+                ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
                 }
-                DoorAsk::Change {
+                ApiAsk::Change {
                     actor,
                     change,
                     done,
@@ -2431,7 +2428,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     } = serving;
     let (broker, device_agents) = (broker.clone(), device_agents.clone());
     let Opened { mut stream, from } = opened;
-    let first = match tilo_mcp::session_door::read_first_line(&mut stream) {
+    let first = match tilo_mcp::session_api::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => return left_before_asking(&error),
     };
@@ -2486,7 +2483,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         }
         return;
     }
-    if tilo_mcp::session_door::is_control_request(&first) {
+    if tilo_mcp::session_api::is_control_request(&first) {
         // Only a program inside an app this session started drives the control protocol: it acts as
         // that app, in the workspace the app was started into, and the broker's permissions decide
         // for it.
@@ -2566,7 +2563,7 @@ fn serve_admitted(
             None
         }
     };
-    let ended = tilo_mcp::session_door::serve_with(
+    let ended = tilo_mcp::session_api::serve_with(
         stream,
         Some(first),
         || {
@@ -2599,7 +2596,7 @@ fn serve_admitted(
                 }
             }
         },
-        tilo_mcp::session_door::Beside {
+        tilo_mcp::session_api::Beside {
             tasks: Some(tasks as Arc<dyn tilo_mcp::TaskHosts>),
             devices: device_agents
                 .map(|device_agents| device_agents as Arc<dyn tilo_mcp::devices::DeviceDirectory>),

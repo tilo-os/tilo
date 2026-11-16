@@ -1,5 +1,5 @@
 //! Why something the person just did did not run, said where they did it. A control the person pressed
-//! whose action the door refused (they may not do it, the thing changed meanwhile, a remote failed)
+//! whose action the API refused (they may not do it, the thing changed meanwhile, a remote failed)
 //! never fails with only a log line, and never opens search over the window: the reason is in a small
 //! floating chip at that control, marked in the danger colour, announced to assistive technology, and
 //! gone with the person's next press or key.

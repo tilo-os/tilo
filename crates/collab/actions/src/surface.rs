@@ -151,7 +151,7 @@ pub struct ReturnsSurface {
 
 /// The arguments of a call of `verb`, as `(name, value)`, with each argument of a parameter
 /// published as a field of another ([`ParamSurface::within`]) nested back under that
-/// parameter's name: what the action's door reads.
+/// parameter's name: what the action's API reads.
 #[must_use]
 pub fn nest_arguments(
     verb: &VerbSurface,

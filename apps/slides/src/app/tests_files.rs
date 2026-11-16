@@ -23,7 +23,7 @@ fn through_the_chooser(
     effect: &SlidesEffect,
 ) -> (
     Vec<PickRequest>,
-    Result<tilo_actions::ActionOutput, tilo_actions::DoorError>,
+    Result<tilo_actions::ActionOutput, tilo_actions::ApiError>,
 ) {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(chosen);

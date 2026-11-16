@@ -1,4 +1,4 @@
-//! Record reads outside their app: the door an agent reads a workspace's records through
+//! Record reads outside their app: the API an agent reads a workspace's records through
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
 //! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
@@ -24,7 +24,7 @@ use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, R
 use super::{AppBrokerState, CrdtRoute};
 
 impl AppBrokerState {
-    /// The record read door, when this host keeps a workspace's documents and knows its person's
+    /// The record read api, when this host keeps a workspace's documents and knows its person's
     /// device.
     pub fn record_reads(self: &Arc<Self>) -> Option<Arc<dyn RecordReads>> {
         self.services.committed_documents.as_ref()?;
@@ -60,7 +60,7 @@ impl AppBrokerState {
 pub const RECORD_CHANGE_REFUSED: &str = "not allowed to make this change";
 
 impl AppBrokerState {
-    /// The record change door, when this host has an origin for its workspaces' records.
+    /// The record change api, when this host has an origin for its workspaces' records.
     pub fn record_changes(self: &Arc<Self>) -> Option<Arc<dyn RecordChanges>> {
         self.services.record_changes.as_ref()?;
         Some(Arc::new(BrokerRecordChanges {

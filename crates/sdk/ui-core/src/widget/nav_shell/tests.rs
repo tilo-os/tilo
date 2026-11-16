@@ -1565,7 +1565,7 @@ tilo_test_env::scenario! {
     }
 
     // A bar no wider than a phone's is the app's row: the window keeps its own controls at the
-    // trailing end and gives up the places its search and its new-tab door hold in a wide bar, so
+    // trailing end and gives up the places its search and its new-tab API hold in a wide bar, so
     // the app's own controls stand there instead of folding into the row's menu.
     phase a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app;
     {

@@ -1,6 +1,6 @@
 //! macOS host chrome: the menu bar and a title-bar search field, drawn by AppKit from the host command
 //! model. Every item a person can choose is a [`HostCommand`]; choosing it hands the command's
-//! invocation back to the app, which enters the same door as the palette.
+//! invocation back to the app, which enters the same API as the palette.
 
 use std::cell::RefCell;
 

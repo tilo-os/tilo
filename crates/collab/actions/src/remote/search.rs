@@ -16,7 +16,7 @@ use super::ActionHostError;
 
 /// One resource a search found, as every caller of the one search reads a
 /// result: the resource it is about, what it is, and what it reads as. It
-/// crosses the wire as a host's answer to a search asked over its door
+/// crosses the wire as a host's answer to a search asked over its API
 /// ([`super::RemoteActionMessage::SearchRequest`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Found {

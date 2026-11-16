@@ -9,8 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::{ActionAddress, ActionDescriptor};
 use crate::contract::ActionContract;
-use crate::door::{ActionAddress, ActionDescriptor};
 use crate::resource::ResourcePresentation;
 
 use super::RemoteActionTarget;
@@ -242,9 +242,9 @@ impl CatalogueRow {
     pub fn for_placed_action(
         provider: impl Into<String>,
         app_id: impl Into<String>,
-        placed: crate::door::PlacedAction,
+        placed: crate::api::PlacedAction,
     ) -> Self {
-        let crate::door::PlacedAction {
+        let crate::api::PlacedAction {
             parent,
             has_children,
             action,

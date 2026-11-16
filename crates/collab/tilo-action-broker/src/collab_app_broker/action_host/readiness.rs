@@ -23,7 +23,7 @@ const WORKSPACE_OWNER_WAIT: Duration = Duration::from_secs(5);
 
 impl AppBrokerState {
     /// `workspace_id` as the shell names its owner, waiting at most [`WORKSPACE_OWNER_WAIT`] for the
-    /// shell to say whose it is, and `None` when it never does: a workspace joined through a door
+    /// shell to say whose it is, and `None` when it never does: a workspace joined through an API
     /// whose host has not said whose it is here is nobody's, and stays so.
     pub(super) fn workspace_naming_its_owner(
         &self,

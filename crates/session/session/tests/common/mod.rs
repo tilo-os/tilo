@@ -949,7 +949,7 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
     places(session)
         .iter()
         .filter_map(|place| {
-            tilo_actions::door::locate(
+            tilo_actions::api::locate(
                 &resources,
                 &tilo_actions::ActionAddress::new(&place.record, "open"),
             )

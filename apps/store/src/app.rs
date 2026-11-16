@@ -3925,7 +3925,7 @@ mod tests {
         // Admin effects are removed from a viewer's public door; unlike a
         // retained read effect submitting a forbidden edit, lookup itself refuses.
         assert!(
-            matches!(&refused, ui::tilo_actions::DoorError::Unknown(_)),
+            matches!(&refused, ui::tilo_actions::ApiError::Unknown(_)),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(

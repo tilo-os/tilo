@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
 use super::browser::{PROVIDER, RESOURCE};
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The app a hosted workspace opens its Linux apps through:
 /// `app.so.tilo.linux#open`, naming the app to start.

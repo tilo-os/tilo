@@ -60,7 +60,7 @@ fn projected_survey(
     } else {
         tree.refresh_bound(root, map, &admitted, None, &[]);
     }
-    tilo_actions::door::survey(&tree.action_resources())
+    tilo_actions::api::survey(&tree.action_resources())
 }
 tilo_test_env::scenario! {
     fn action_projection_keeps_the_exported_surface_and_its_rejections;

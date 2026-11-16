@@ -15,7 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_search::Target;
 use tilo_desktop_search::model::InvokeTarget;
 use tilo_resource::Effect;
@@ -76,7 +76,7 @@ struct Sending {
     asked: Option<u64>,
     /// The caller's answer: the pass completes it once the message is in the record, or says why
     /// it never landed.
-    answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, DoorError>>,
+    answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, ApiError>>,
 }
 
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
@@ -132,7 +132,7 @@ impl Sends {
         &self,
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.take(by, arguments, None)
     }
 
@@ -143,7 +143,7 @@ impl Sends {
     ///
     /// # Errors
     /// The arguments are not a send's, or the message has nothing to say or carry.
-    pub(crate) fn ask(&self, arguments: &Map<String, Value>) -> Result<u64, DoorError> {
+    pub(crate) fn ask(&self, arguments: &Map<String, Value>) -> Result<u64, ApiError> {
         let asked = self.asks.get().wrapping_add(1);
         self.asks.set(asked);
         self.take(None, arguments, Some(asked))?;
@@ -163,7 +163,7 @@ impl Sends {
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
         asked: Option<u64>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let SendToAction::Send {
             to,
             attached,
@@ -173,7 +173,7 @@ impl Sends {
         } = decode::<SendToAction>(&published(), RESOURCE, SEND, arguments)?;
         let attached = attached.unwrap_or_default();
         if text.trim().is_empty() && attached.is_empty() && item.is_none() {
-            return Err(DoorError::InvalidArguments(
+            return Err(ApiError::InvalidArguments(
                 "a message needs words or something to carry".into(),
             ));
         }
@@ -227,9 +227,9 @@ impl Service for SendToService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         self.sends.send(None, arguments)
     }
@@ -240,9 +240,9 @@ impl Service for SendToService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         self.sends.send(Some(invoker.clone()), arguments)
     }
@@ -307,7 +307,7 @@ impl Shared {
             // The send is in the record now, so the caller is answered: the receipt of an
             // invocation is what says the message landed, or why it did not.
             sending.answer.complete(match refused {
-                Some(reason) => Err(DoorError::Failed(reason)),
+                Some(reason) => Err(ApiError::Failed(reason)),
                 None => Ok(tilo_actions::ActionOutput::default()),
             });
         }
@@ -328,8 +328,8 @@ impl Shared {
     /// The resource `item` names, as a message carries it: the record of the app that publishes
     /// it, found in the catalogue every caller surveys.
     fn carried(&self, item: &str) -> Result<tilo_reference::Attached, String> {
-        let resources = self.doors.resources();
-        let resource = tilo_actions::door::find_resource(&resources, item)
+        let resources = self.published.resources();
+        let resource = tilo_actions::api::find_resource(&resources, item)
             .ok_or_else(|| format!("nothing is published as {item}"))?;
         let app = resource
             .app()
@@ -427,12 +427,13 @@ impl Shared {
         }
         self.search
             .perform(&workspace, target, &mut |own| {
-                let look = &mut tilo_session_core::door::Look::none();
+                let look = &mut tilo_session_core::surfaces::Look::none();
                 match agent {
-                    Some(by) => self
-                        .doors
-                        .invoke_as(&by.key(), &own.address, &own.arguments, look),
-                    None => self.doors.invoke(&own.address, &own.arguments, look),
+                    Some(by) => {
+                        self.published
+                            .invoke_as(&by.key(), &own.address, &own.arguments, look)
+                    }
+                    None => self.published.invoke(&own.address, &own.arguments, look),
                 }
                 .map(drop)
             })

@@ -25,7 +25,7 @@ static FRAME: std::sync::LazyLock<std::sync::Mutex<Option<Arc<std::sync::Mutex<F
 struct Frame {
     table: crate::collaboration::SurfaceTable,
     route: crate::collaboration::SurfaceTable,
-    offered: Option<Vec<tilo_actions::door::ActionDescriptor>>,
+    offered: Option<Vec<tilo_actions::api::ActionDescriptor>>,
     owed: bool,
 }
 
@@ -35,7 +35,7 @@ pub fn publish(resources: &[tilo_actions::ResourceSpec]) {
     let Some(frame) = FRAME.lock_recover().clone() else {
         return;
     };
-    let offered = tilo_actions::door::survey(resources);
+    let offered = tilo_actions::api::survey(resources);
     let mut frame = frame.lock_recover();
     if frame.offered.as_ref() == Some(&offered) {
         return;

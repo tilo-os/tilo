@@ -4,7 +4,7 @@
 //! clip placed on a taken track). A refusal that any plan would meet again,
 //! the same failure twice, or one step failing over and over still ends it.
 
-use tilo_actions::door::DoorError;
+use tilo_actions::api::ApiError;
 use tilo_actions::remote::ActionHostError;
 
 use super::running::step_brief;
@@ -160,7 +160,7 @@ fn step_key(step: &Step) -> String {
 /// permitted the app or workspace, or was paused or stopped.
 pub(super) fn is_final(error: &str) -> bool {
     [
-        DoorError::ConfirmationRequired.code(),
+        ApiError::ConfirmationRequired.code(),
         ActionHostError::NotPermitted.code(),
         "the agent is not delegated",
         "the agent is paused or stopped",

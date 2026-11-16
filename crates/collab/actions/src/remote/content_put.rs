@@ -22,7 +22,7 @@ pub const MAX_OPEN_CONTENT_PUTS: usize = 4;
 /// What a host without a content store answers.
 pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available here";
 
-/// A host's door for content puts.
+/// A host's API for content puts.
 pub trait ContentPuts: Send + Sync {
     /// Open an upload of exactly `size` bytes into the content store of
     /// `caller`'s workspace.

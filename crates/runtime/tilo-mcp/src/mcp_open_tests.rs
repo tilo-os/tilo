@@ -619,7 +619,7 @@ impl ActionHost for Writer {
                 (request.target.clone(), arguments)
             })?;
         let action = target.address.action.clone();
-        // As the app's door binds a read's arguments against the schema it
+        // As the app's API binds a read's arguments against the schema it
         // publishes (the document's read pages from its start when given
         // none), and refuses what it cannot find.
         let params = self
@@ -635,13 +635,13 @@ impl ActionHost for Writer {
         let refusal = if action == "read-text"
             && let Err(error) = tilo_actions::ActionArgs::bind_json(&params, &arguments)
         {
-            Some(tilo_actions::DoorError::from(error))
+            Some(tilo_actions::ApiError::from(error))
         } else if arguments
             .get("block")
             .and_then(Value::as_str)
             .is_some_and(|block| block.starts_with('r'))
         {
-            Some(tilo_actions::DoorError::InvalidArguments(
+            Some(tilo_actions::ApiError::InvalidArguments(
                 "no block has that id".into(),
             ))
         } else {

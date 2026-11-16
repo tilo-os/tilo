@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::Rule;
 use tilo_actions::ActionKey;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{

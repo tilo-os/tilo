@@ -54,7 +54,7 @@ impl Waiting {
                     .with_argument(INVOKE_PARAM, DEFAULT_ACTION),
             );
         }
-        let reply = tilo_actions::door::survey(std::slice::from_ref(notification))
+        let reply = tilo_actions::api::survey(std::slice::from_ref(notification))
             .into_iter()
             .find(|action| action.address.action == REPLY)?;
         let mut target = InvokeTarget::action(DESKTOP_APP, &self.workspace, id, REPLY);

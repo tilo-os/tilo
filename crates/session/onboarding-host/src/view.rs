@@ -987,8 +987,8 @@ impl OnboardingView {
     /// frame, before any desktop or broker exists. A host lists them in this
     /// device's own catalogue and nowhere else; what is invoked through it
     /// runs on the next `sync`, as a press of the matching control would.
-    pub fn device_local_door(&self) -> ui::device_local_door::SharedDoor {
-        self.app.door()
+    pub fn device_local_api(&self) -> ui::device_local_api::SharedApi {
+        self.app.api()
     }
 
     /// Whether the identity ceremony is under way, asked again on every
@@ -2027,7 +2027,7 @@ fn clear_secret(buffer: &Arc<Mutex<String>>) {
 impl Drop for OnboardingView {
     fn drop(&mut self) {
         self.first_use.set(false);
-        self.app.close_door();
+        self.app.close_api();
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
@@ -2073,7 +2073,7 @@ impl Widget for OnboardingView {
         // What the person asked through the setup app, before interpreting
         // the action keys of the same frame. Typed secrets are already in
         // this view's buffers.
-        self.app.serve_door();
+        self.app.serve_api();
         self.app.update(state, root);
         self.take_app_asks();
         if self.prepared_pending {
@@ -4778,15 +4778,15 @@ mod tests {
         });
     }
 
-    /// What setup's door offers now, after a frame published it.
+    /// What setup's API offers now, after a frame published it.
     fn published(view: &mut OnboardingView) -> Vec<tilo_actions::ActionDescriptor> {
         frame(view);
-        view.device_local_door().actions()
+        view.device_local_api().actions()
     }
 
-    /// Drive setup through its door as a script or an agent on this device
+    /// Drive setup through its API as a script or an agent on this device
     /// would: queue `effect`, then run frames until the view served it and
-    /// what it asked settled. Whether the door took it; what it means on the
+    /// what it asked settled. Whether the API took it; what it means on the
     /// page is the ceremony's.
     fn act(view: &mut OnboardingView, effect: &OnboardingEffect) -> bool {
         use tilo_resource::Effect as _;
@@ -4800,7 +4800,7 @@ mod tests {
             return false;
         };
         let answer = view
-            .device_local_door()
+            .device_local_api()
             .invoke(found.address, effect.arguments());
         frame(view);
         frame(view);
@@ -5087,7 +5087,7 @@ mod tests {
         sync_journaled(view, doc);
     }
 
-    /// Save a backup through setup's door as the person does: type the new
+    /// Save a backup through setup's API as the person does: type the new
     /// passphrase twice, open the chooser, pick where it goes.
     fn save_backup(
         view: &mut OnboardingView,

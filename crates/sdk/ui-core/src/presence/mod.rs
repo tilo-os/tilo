@@ -1824,8 +1824,8 @@ impl PresenceCtx {
         alpha: f32,
         owner: PointerOwner,
     ) {
-        // Second door into the same pill (`RemoteCursorMoved` bypasses
-        // `apply_remote_presence`); guarding only one door leaves the bug reachable.
+        // Second API into the same pill (`RemoteCursorMoved` bypasses
+        // `apply_remote_presence`); guarding only one API leaves the bug reachable.
         if self.is_own_identity(&member) {
             return;
         }
@@ -3098,7 +3098,7 @@ mod own_identity_tests {
             }
             // phase: the_cursor_stream_honours_the_same_rule
             // The cursor stream reaches the same pill without passing through
-            // `apply_remote_presence`. A guard on one door and not the other
+            // `apply_remote_presence`. A guard on one API and not the other
             // leaves the bug reachable.
             {
                 let mut ctx = mine();

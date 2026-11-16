@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
@@ -298,9 +298,9 @@ impl Service for Questions {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let effect: QuestionEffect = decode(&self.resources(), resource, action, arguments)?;
-        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let unknown = || ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         let handle = resource.strip_prefix(QUESTION_PREFIX).ok_or_else(unknown)?;
         let done = match effect {
             QuestionEffect::Answer {

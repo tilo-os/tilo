@@ -8,11 +8,11 @@
 //!   connection. Each change the runtime plans is committed to it as a step of the person at the
 //!   window and sent on the route; changes from the workspace come back into it.
 //! - **Actions:** the instance publishes the app's resources and actions on its connection, as
-//!   the toolkit publishes an app's ([`tilo_actions::door::survey`], deltas through
+//!   the toolkit publishes an app's ([`tilo_actions::api::survey`], deltas through
 //!   [`SurfacePublication`]), and runs what the broker delivers: an action the broker admitted for
 //!   its invoker is built through the published spec and applied as that invoker's step. It
 //!   offers an action directory on the connection too, answering it from what it published
-//!   ([`PublishedDirectory`]): what makes the instance one the door and agents can browse.
+//!   ([`PublishedDirectory`]): what makes the instance one the API and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`), `read`
 //!   (`tilo_resource::read`) and "Show this window" (`tilo_actions::remote::activate_spec`), and
@@ -438,7 +438,7 @@ type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
 type BuildsSlot = Rc<RefCell<Option<Arc<LaterBuilds>>>>;
 
-/// The person's formats, as the session handed them over the host's door: shared by every
+/// The person's formats, as the session handed them over the host's api: shared by every
 /// instance the host runs, so a change in Settings reaches them together.
 pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
 
@@ -785,14 +785,14 @@ pub struct Hosted {
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
     published: Option<(Vec<ActionDescriptor>, SurfacePublication)>,
     /// The directory the instance answers its connection's directory requests from: what it
-    /// last published, browsable by level and name, as the door and agents read it.
+    /// last published, browsable by level and name, as the API and agents read it.
     directory: PublishedDirectory,
     /// Whether the surface moved since [`Self::directory`] was built ([`Self::publish`],
     /// [`Self::relabel`]): it is built again when it is next asked, not on every change.
     directory_behind: bool,
     /// What [`Self::directory`] was built from ([`DirectoryInputs`]): a publication whose
     /// inputs it covers leaves the directory as it was, so a workspace of ten thousand items
-    /// surveys its door once, not once per row scrolled onto the screen.
+    /// surveys its api once, not once per row scrolled onto the screen.
     directory_from: Option<DirectoryInputs>,
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
@@ -829,7 +829,7 @@ pub struct Hosted {
     undo_ask: Option<InvocationId>,
     /// The other apps the app uses, each read from its own record ([`Used`]).
     used: Vec<Used>,
-    /// What the app's views and actions asked of the other apps' doors, waiting to be sent.
+    /// What the app's views and actions asked of the other apps' apis, waiting to be sent.
     asks: Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>,
     /// Whether the runtime sends what it changes of another app's resources to [`Self::asks`].
     asking: bool,
@@ -1605,7 +1605,7 @@ impl Hosted {
         // window shows: it is built from every resource when it is asked, and surveyed with
         // them. The surface the broker holds is the window's, which is not the same set.
         let resources = surface.resources(None);
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         self.directory.publish(&resources, &descriptors);
     }
 
@@ -1711,7 +1711,7 @@ impl Hosted {
         };
         let runtime = host.runtime();
         if !self.asking {
-            runtime.set_foreign_invoker(Doors(Rc::clone(&self.asks)));
+            runtime.set_foreign_invoker(Apis(Rc::clone(&self.asks)));
             self.asking = true;
         }
         let mut moved = false;
@@ -1732,11 +1732,11 @@ impl Hosted {
     }
 
     /// Send what the views and actions changed of the other apps' resources to those apps'
-    /// doors, each as that app's action on its resource: a change comes back as its next reading.
+    /// apis, each as that app's action on its resource: a change comes back as its next reading.
     fn send_asks(&mut self) {
         let asks = std::mem::take(&mut *self.asks.borrow_mut());
         for invocation in asks {
-            let Some((app, resource, action, argument)) = door_ask(&invocation) else {
+            let Some((app, resource, action, argument)) = api_ask(&invocation) else {
                 tracing::warn!(
                     app = self.spec.app,
                     ?invocation,
@@ -1766,7 +1766,7 @@ impl Hosted {
                 .manager_mut()
                 .try_send(CollabRequest::RemoteAction { message })
             {
-                tracing::warn!(app = self.spec.app, to = app, %error, "a change of another app did not reach its door");
+                tracing::warn!(app = self.spec.app, to = app, %error, "a change of another app did not reach its api");
             }
         }
     }
@@ -1866,10 +1866,7 @@ impl Hosted {
         shown: &[String],
         address: &ActionAddress,
         argument: Option<&str>,
-    ) -> (
-        ActionAddress,
-        Result<EncodedAction, tilo_actions::DoorError>,
-    ) {
+    ) -> (ActionAddress, Result<EncodedAction, tilo_actions::ApiError>) {
         let named_of = |address: &ActionAddress| {
             let named = address.item.as_deref().unwrap_or(&address.resource);
             surface.naming(surface.addressed(shown, named), address)
@@ -1878,7 +1875,7 @@ impl Hosted {
         let encoded = encode(&resources, &named, argument);
         if encoded
             .as_ref()
-            .is_err_and(|error| matches!(error, tilo_actions::DoorError::Unknown(_)))
+            .is_err_and(|error| matches!(error, tilo_actions::ApiError::Unknown(_)))
         {
             let edit = ActionAddress {
                 action: tilolang_tilo::action::EDIT_FLAG_ACTION.to_owned(),
@@ -1923,8 +1920,7 @@ impl Hosted {
             self.encode_named(&surface, &shown, address, argument)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);
-        let encoded =
-            encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
+        let encoded = encoded.map_err(|error| Refused::new(api_code(&error), error.to_string()))?;
         if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
             return Err(Refused::new(
                 "action_invalid_arguments",
@@ -2155,7 +2151,7 @@ impl Hosted {
             return;
         }
         self.refused.clear();
-        let mut descriptors = tilo_actions::door::survey(&resources);
+        let mut descriptors = tilo_actions::api::survey(&resources);
         self.answer_what_the_window_shows(&mut descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
@@ -2209,7 +2205,7 @@ impl Hosted {
         );
     }
 
-    /// Run the next action the person chose at the window as their own step: the same door an
+    /// Run the next action the person chose at the window as their own step: the same api an
     /// invocation the broker delivered for them takes, so the action runs for them however it
     /// reached the app. One a frame, so what a press opened is sent, and the window hears it
     /// ran, before the press after it ([`tilolang_tilo::instance::Instance::show_ran`]).
@@ -2418,9 +2414,9 @@ fn packages_of<'a>(
 
 /// Where the runtime sends what a view or an action changes of another app's resources: queued
 /// for [`Hosted::send_asks`], and done here; the change comes back as the resource's next reading.
-struct Doors(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
+struct Apis(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
 
-impl tilolang_tilo::runtime::delegate::Invoker for Doors {
+impl tilolang_tilo::runtime::delegate::Invoker for Apis {
     fn invoke(
         &self,
         invocation: &tilolang_tilo::runtime::delegate::Invocation,
@@ -2430,10 +2426,10 @@ impl tilolang_tilo::runtime::delegate::Invoker for Doors {
     }
 }
 
-/// `invocation` as its app's door takes it: the app, the resource, the action and its
+/// `invocation` as its app's api takes it: the app, the resource, the action and its
 /// arguments. An action is invoked on its subject, which its arguments leave out; an edit of a
 /// field is the resource's own field edit. `None` for an action that names no resource.
-fn door_ask(
+fn api_ask(
     invocation: &tilolang_tilo::runtime::delegate::Invocation,
 ) -> Option<(String, String, String, tilo_actions::remote::InvokeArgument)> {
     use tilolang_tilo::runtime::Value;
@@ -2446,7 +2442,7 @@ fn door_ask(
             from,
             ..
         } => {
-            let mut arguments = invocation.door_arguments();
+            let mut arguments = invocation.api_arguments();
             if let Some(from) = from {
                 arguments.insert(
                     tilo_actions::params::FROM_ARGUMENT.to_owned(),
@@ -2457,7 +2453,7 @@ fn door_ask(
                     .to_json(),
                 );
             }
-            // The app's door takes it by the name it publishes it under.
+            // The app's api takes it by the name it publishes it under.
             Some((
                 app.to_string(),
                 subject.id_string(),
@@ -2479,7 +2475,7 @@ fn door_ask(
             };
             let value = tilolang_tilo::runtime::value::to_argument(value).unwrap_or_default();
             let arguments = serde_json::Map::from_iter([
-                // The field as its type names it, which the door's edit takes.
+                // The field as its type names it, which the API's edit takes.
                 ("field".to_owned(), field.clone().into()),
                 ("value".to_owned(), value),
             ]);
@@ -2493,7 +2489,7 @@ fn door_ask(
     }
 }
 
-/// Say what another app's door answered of a change asked of it, when it refused or failed:
+/// Say what another app's api answered of a change asked of it, when it refused or failed:
 /// the change never came, and its resource reads as it did.
 fn said_back(app: &str, message: &tilo_actions::remote::RemoteActionMessage) {
     use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
@@ -2503,11 +2499,11 @@ fn said_back(app: &str, message: &tilo_actions::remote::RemoteActionMessage) {
                 tracing::warn!(
                     app,
                     ?error,
-                    "another app's door refused a change asked of it"
+                    "another app's api refused a change asked of it"
                 );
             }
             ReceiptStatus::Failed { error } => {
-                tracing::warn!(app, ?error, "a change asked of another app's door failed");
+                tracing::warn!(app, ?error, "a change asked of another app's api failed");
             }
             _ => {}
         }
@@ -2548,21 +2544,21 @@ fn encode(
     resources: &[tilo_actions::ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
-) -> Result<EncodedAction, tilo_actions::DoorError> {
+) -> Result<EncodedAction, tilo_actions::ApiError> {
     match argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)) {
         Some(json) => {
             let arguments: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json)
-                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
-            tilo_actions::door::encode_json(resources, address, &arguments)
+                .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
+            tilo_actions::api::encode_json(resources, address, &arguments)
         }
-        None => tilo_actions::door::encode(resources, address, argument),
+        None => tilo_actions::api::encode(resources, address, argument),
     }
 }
 
-fn door_code(error: &tilo_actions::DoorError) -> &'static str {
+fn api_code(error: &tilo_actions::ApiError) -> &'static str {
     match error {
-        tilo_actions::DoorError::Unknown(_) => "action_unknown",
-        tilo_actions::DoorError::Unavailable { .. } => "action_unavailable",
+        tilo_actions::ApiError::Unknown(_) => "action_unknown",
+        tilo_actions::ApiError::Unavailable { .. } => "action_unavailable",
         _ => "action_invalid_arguments",
     }
 }
@@ -2868,7 +2864,7 @@ impl Applier {
         // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
-            tilo_actions::door::encode_json(&resources, &address, &change.arguments)
+            tilo_actions::api::encode_json(&resources, &address, &change.arguments)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded = match encoded {

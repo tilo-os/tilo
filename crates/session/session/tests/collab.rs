@@ -21,7 +21,7 @@ use std::time::Duration;
 use collab_types::presence::{Payload, Presence};
 use iroh::EndpointId;
 use neighbour_wire::NeighbourMsg;
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
@@ -311,7 +311,7 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
+    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), ApiError> {
         self.invoked.borrow_mut().push((target, arguments));
         Ok(())
     }

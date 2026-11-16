@@ -109,14 +109,14 @@ mod tests {
             crate::permissions::MemberId::person("fixture"),
         );
         let address = crate::search::search_address();
-        assert!(tilo_actions::door::resolve(&frame.resources(), &address).is_some());
+        assert!(tilo_actions::api::resolve(&frame.resources(), &address).is_some());
         let bad = serde_json::json!({"query": 42})
             .as_object()
             .unwrap()
             .clone();
         assert!(matches!(
             frame.invoke_action(&address, &bad, false, None),
-            Err(tilo_actions::DoorError::InvalidArguments(_))
+            Err(tilo_actions::ApiError::InvalidArguments(_))
         ));
         assert!(frame.action_palette.is_none());
         let before = frame.dump_json();
@@ -142,7 +142,7 @@ mod tests {
         assert!(
             matches!(
                 frame.invoke_action(&address, &request.arguments(), false, None),
-                Err(tilo_actions::DoorError::Failed(_))
+                Err(tilo_actions::ApiError::Failed(_))
             ),
             "a busy host must refuse instead of silently reporting success"
         );

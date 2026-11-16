@@ -164,7 +164,7 @@ pub struct Options {
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
-    /// at the MCP server ([`tilo_mcp::session_door::AGENT_KEY_ENV`]) is admitted as that
+    /// at the MCP server ([`tilo_mcp::session_api::AGENT_KEY_ENV`]) is admitted as that
     /// grant's agent without asking them: what a session started for an agent, with no one to
     /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
     /// card, ends it.

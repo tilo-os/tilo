@@ -14,7 +14,7 @@
 )]
 
 use tilo_actions::ResourceSpec;
-use tilo_actions::door::{ActionDescriptor, survey};
+use tilo_actions::api::{ActionDescriptor, survey};
 use tilo_sheets::SheetState as _;
 
 use crate::common::{private_home, seeded_session};

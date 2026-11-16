@@ -1,10 +1,10 @@
-//! The bar's own door to another application, and a tab's chips, in the shell's language: a
+//! The bar's own API to another application, and a tab's chips, in the shell's language: a
 //! German window names them in German, as it names every other window control.
 
 use super::tests::lay_out_at_width_with;
 use super::*;
 
-/// A German shell names the bar's door, its tab's close chip and what a tab is doing in German,
+/// A German shell names the bar's API, its tab's close chip and what a tab is doing in German,
 /// and speaks them so: the bar's own words come from the catalogue like every other window
 /// control's.
 #[test]

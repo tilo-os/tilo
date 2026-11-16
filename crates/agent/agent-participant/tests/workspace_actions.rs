@@ -137,7 +137,7 @@ use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget};
 #[cfg(test)]
 use tilo_actions::{

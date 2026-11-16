@@ -106,7 +106,7 @@ thread_local! {
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
         let _background = crate::local_document_action::suspend();
-        // Document traffic enters only the exact custody-checked merge door.
+        // Document traffic enters only the exact custody-checked merge API.
         // A mutable widget callback is not a read-only notification boundary.
         if !matches!(
             event,
@@ -619,7 +619,7 @@ impl App {
             return;
         }
         // Signature/role/replay verification remains the SDK's responsibility.
-        // This door additionally checks deterministic artifact, attestation and
+        // This API additionally checks deterministic artifact, attestation and
         // encrypted channel against the actual installed route before decoding.
         if let Some(refused) = self
             .document_routes

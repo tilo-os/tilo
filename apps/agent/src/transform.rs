@@ -35,11 +35,11 @@ use ui::time::Duration;
 use agent_provider_config::Interaction;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::Rule;
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{
     ActionContract, ActionKind, Audience, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
 };
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
 use tilo_actions::{ActionContext, ExecutionLocus, OperationKind};

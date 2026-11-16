@@ -1,4 +1,4 @@
-//! The record read door against a document owner that hands out what it holds: an agent
+//! The record read api against a document owner that hands out what it holds: an agent
 //! acting for its person reads the records both may read, and nothing else, and a grant
 //! revoked in the middle of a read cuts the reads that follow and a capture under way.
 #![allow(
@@ -204,7 +204,7 @@ fn fixture_with(owner: Owner) -> Fixture {
 }
 
 impl Fixture {
-    /// The agent `agent` acting for the person, as the desktop's door admits it.
+    /// The agent `agent` acting for the person, as the desktop's api admits it.
     fn agent(&self, agent: &str) -> Caller {
         Caller::local_agent(agent)
             .acting_for(self.person.clone())

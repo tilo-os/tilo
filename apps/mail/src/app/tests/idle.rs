@@ -56,7 +56,7 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         if asked % 20 == 0 {
             match app.effect(&crate::actions::MailEffect::Refresh) {
                 Ok(_) => {}
-                Err(tilo_actions::DoorError::Failed(why)) if why.contains("already running") => {}
+                Err(tilo_actions::ApiError::Failed(why)) if why.contains("already running") => {}
                 Err(error) => panic!("the inbox is fetched: {error:?}"),
             }
         }

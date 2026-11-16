@@ -12,7 +12,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::LocalState;
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::capability_door::{Capability, Door};
+use ui::capability::{Capability, Resolved};
 use ui::theme::Theme;
 use ui::widget::data_table::TableSort;
 use ui::widget::toast::ToastKind;
@@ -117,7 +117,7 @@ pub(crate) struct Store {
     pending_delete: Option<RuleId>,
     adding: bool,
     pending_switch: Option<PendingSwitch>,
-    capability: Door,
+    capability: Resolved,
     blocked: Option<BlockedReport>,
     blocked_error: Option<String>,
     blocked_loading: bool,
@@ -315,7 +315,7 @@ impl Store {
         Firewall::paths().zones.key(self.selected_zone.name())
     }
 
-    /// Invoke one of the firewall's effects through the same door as the palette.
+    /// Invoke one of the firewall's effects through the same API as the palette.
     fn invoke(&self, effect: &FirewallEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -372,7 +372,7 @@ impl Store {
         else {
             return;
         };
-        let door = self.capability.clone();
+        let resolved = self.capability.clone();
         if self.applying.as_deref() == Some(canonical.as_str()) && jobs.is_running(APPLY_JOB) {
             return;
         }
@@ -381,7 +381,7 @@ impl Store {
         jobs.start::<()>(APPLY_JOB, move |cx| {
             Ok(cx.thread(
                 move |_| {
-                    let result = crate::resource::apply_on_device(&config, &door, app_writes);
+                    let result = crate::resource::apply_on_device(&config, &resolved, app_writes);
                     (config, result)
                 },
                 move |(), (config, result): (FirewallConfig, crate::resource::Applied), _| {
@@ -445,11 +445,11 @@ impl Store {
                 if config.zones.is_empty() {
                     return Err("Firewall service is unavailable".into());
                 }
-                let door = self.capability.clone();
+                let resolved = self.capability.clone();
                 let writes = self.host_writes;
                 Ok(cx.thread(
                     move |_| {
-                        let result = crate::resource::apply_on_device(&config, &door, writes);
+                        let result = crate::resource::apply_on_device(&config, &resolved, writes);
                         (config, result)
                     },
                     move |(), (config, result): (FirewallConfig, crate::resource::Applied), _| {
@@ -981,7 +981,7 @@ impl FirewallWindow {
         if store.available {
             let enabled = store.enabled_switch.with(|on| *on);
             let panic = store.panic_switch.with(|on| *on);
-            // Every privileged control comes through the door: an unavailable capability
+            // Every privileged control comes through the resolution: an unavailable capability
             // draws no switch, Apply or panic item.
             if let Some(actions) = store.capability.control(|| {
                 view::window_actions(enabled, panic, store.tab, store.applying.is_some())
@@ -1018,13 +1018,13 @@ pub(crate) fn window(cx: &ViewCx<Firewall>) -> Element {
 
 /// What this app may do on this device. The backend never infers this from `$PATH` or an
 /// environment variable.
-fn capability_for(readable: bool) -> Door {
+fn capability_for(readable: bool) -> Resolved {
     if readable {
-        Door::granted(Capability::FIREWALL)
+        Resolved::granted(Capability::FIREWALL)
     } else {
-        Door::new(
+        Resolved::new(
             Capability::FIREWALL,
-            ui::capability_door::Resolution::unavailable(
+            ui::capability::Resolution::unavailable(
                 "The firewall service isn\u{2019}t running, so no rule can be applied.",
             )
             .with_remedy("Start firewalld, then try again."),

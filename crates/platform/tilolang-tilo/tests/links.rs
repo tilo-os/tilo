@@ -75,7 +75,7 @@ fn root(replica: &Replica) -> ResourceRef {
     replica.host.root_of(APP).unwrap()
 }
 
-/// `action` as the door plans it, made from `from` when one is given.
+/// `action` as the API plans it, made from `from` when one is given.
 fn planned(
     replica: &Replica,
     action: &str,
@@ -114,7 +114,7 @@ fn board() -> (Replica, Vec<Package>) {
     (ada, packages)
 }
 
-/// Adds a note as the door does, from `from` when one is given, and answers its reference.
+/// Adds a note as the API does, from `from` when one is given, and answers its reference.
 fn add_note(replica: &mut Replica, title: &str, from: Option<&ResourceRef>) -> ResourceRef {
     let action = planned(replica, "add_note", json!({"title": title}), from);
     replica.apply(&action);

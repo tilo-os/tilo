@@ -12,8 +12,8 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::{
-    ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
-    ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
+    ActionAddress, ActionContract, ActionParam, ActionSpec, ApiError, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_compositor::Error;
 use tilo_desktop::osd::{Hint, OsdKind};
@@ -274,12 +274,12 @@ pub(crate) fn command_of(
     published: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<SessionCommand, DoorError> {
-    let encoded = tilo_actions::door::encode_json(published, address, arguments)?;
+) -> Result<SessionCommand, ApiError> {
+    let encoded = tilo_actions::api::encode_json(published, address, arguments)?;
     (encoded.type_id == OPERATION)
         .then(|| serde_json::from_slice::<SessionCommand>(&encoded.payload).ok())
         .flatten()
-        .ok_or_else(|| DoorError::Failed("not a session command".into()))
+        .ok_or_else(|| ApiError::Failed("not a session command".into()))
 }
 
 /// What the session's own resources read: the state of what only the session keeps, told to them by
@@ -410,7 +410,7 @@ impl Service for SessionControls {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let address = ActionAddress::new(resource, action);
         let command = command_of(&resources(), &address, arguments)?;
         self.commands.borrow_mut().push(command);

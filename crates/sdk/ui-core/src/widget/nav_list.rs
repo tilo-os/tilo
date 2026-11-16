@@ -1073,7 +1073,7 @@ impl NavList {
     }
 
     /// Bind places' selection and sections' adds to the actions a view bound to them: choosing
-    /// a place or pressing a heading's add runs that action through the list's control door, as
+    /// a place or pressing a heading's add runs that action through the list's control API, as
     /// a destination bound with [`Self::selection_actions`] does.
     fn bind_actions(
         &self,

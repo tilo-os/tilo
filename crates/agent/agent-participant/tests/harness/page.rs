@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,

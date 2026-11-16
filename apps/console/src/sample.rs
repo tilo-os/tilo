@@ -318,7 +318,7 @@ fn sessions() -> wire::Sessions {
     }
 }
 
-fn the_door() -> mcp_server::Server {
+fn the_server() -> mcp_server::Server {
     mcp_server::Server {
         endpoint: "https://mcp.tilo.sh".to_owned(),
         grants: vec![
@@ -388,7 +388,7 @@ pub(crate) fn fixture(fixture: &mut Fixture<Console>) {
     fixture.answer(&wire::target(wire::SESSIONS), &sessions());
     fixture.answer(&wire::target(wire::DETAIL), &detail());
     fixture.answer(&wire::target(wire::SESSION_OUTPUT), &whole_output());
-    fixture.answer(&mcp_server::target(mcp_server::SERVER), &the_door());
+    fixture.answer(&mcp_server::target(mcp_server::SERVER), &the_server());
 }
 
 /// The view state a scenario shows.

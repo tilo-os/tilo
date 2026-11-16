@@ -799,7 +799,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
         let snapshot = app.collect_resources();
         assert!(
-            tilo_actions::door::resolve(&snapshot, &address).is_none(),
+            tilo_actions::api::resolve(&snapshot, &address).is_none(),
             "the retained snapshot must omit the lazy action"
         );
         assert!(
@@ -826,7 +826,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
         let actor = app.collaboration.local_author.key();
         let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-        assert!(matches!(denied, Err(tilo_actions::DoorError::Unknown(_))));
+        assert!(matches!(denied, Err(tilo_actions::ApiError::Unknown(_))));
         assert_eq!(counter(&app), 0, "the denied fallback must not run");
 
         app.set_permission_ctx(PermissionContext::permissive());
@@ -1099,7 +1099,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.init_layout();
         app.collaboration.manager = admitted_delivery_manager();
         assert!(
-            tilo_actions::door::survey(&app.collect_resources())
+            tilo_actions::api::survey(&app.collect_resources())
                 .iter()
                 .all(|descriptor| descriptor.address.action != "reset"),
             "reset is unavailable before the counter changes"
@@ -1118,7 +1118,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
         assert_eq!(counter(&app), 1, "the directed document action ran");
         assert!(
-            tilo_actions::door::survey(&app.collect_resources())
+            tilo_actions::api::survey(&app.collect_resources())
                 .iter()
                 .any(|descriptor| descriptor.address.action == "reset"),
             "the post-mutation surface exposes the newly valid reset action"
@@ -1165,7 +1165,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.refresh_focus_order();
         assert_eq!(counter(&app), 1, "the later model pass applied the job");
         assert!(
-            tilo_actions::door::survey(&app.collect_resources())
+            tilo_actions::api::survey(&app.collect_resources())
                 .iter()
                 .any(|descriptor| descriptor.address.action == "reset"),
             "the terminal document now exposes reset"
@@ -1203,7 +1203,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let actor = app.collaboration.local_author.key();
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
-            matches!(result, Err(tilo_actions::DoorError::UnregisteredType(ref id))
+            matches!(result, Err(tilo_actions::ApiError::UnregisteredType(ref id))
         if id == "test.unregistered"),
             "unexpected result: {result:?}"
         );
@@ -1293,7 +1293,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert!(
             matches!(
                 error,
-                tilo_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
+                tilo_actions::ApiError::Unavailable { ref code, .. } if code == "private_view"
             ),
             "unexpected refusal: {error:?}"
         );
@@ -1327,7 +1327,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         };
         assert!(matches!(
             invoke(&mut app, "copy-local-folder", "person:guest"),
-            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "own_device"
+            Err(tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "own_device"
         ));
         assert!(
             invoke(&mut app, "count", "person:guest").is_ok(),
@@ -1438,7 +1438,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         assert_eq!(observed.calls.get(), 0);
         assert_eq!(
             *observed.results.borrow(),
-            vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
+            vec![Err(tilo_actions::ApiError::ConfirmationRequired)]
         );
         assert!(host.action_palette().is_some());
     }
@@ -1469,7 +1469,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             assert_eq!(observed.calls.get(), 1);
             assert!(matches!(
                 observed.results.borrow().last(),
-                Some(Err(tilo_actions::DoorError::Unknown(_)))
+                Some(Err(tilo_actions::ApiError::Unknown(_)))
             ));
         }
     }
@@ -1494,7 +1494,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         );
         assert!(matches!(
             observed.results.borrow().as_slice(),
-            [Err(tilo_actions::DoorError::Unknown(_))]
+            [Err(tilo_actions::ApiError::Unknown(_))]
         ));
         assert!(observed.pending.borrow().is_empty());
     }
@@ -2064,7 +2064,7 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
         assert!(matches!(
             app.take_broker_request_id(),
-            Err(tilo_actions::DoorError::Unavailable { code, .. })
+            Err(tilo_actions::ApiError::Unavailable { code, .. })
                 if code == "broker_request_identity_exhausted"
         ));
     }

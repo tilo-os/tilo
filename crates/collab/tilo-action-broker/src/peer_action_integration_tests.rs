@@ -1,5 +1,5 @@
 // The person's other device acting on this one: the engine's action plane
-// hands such a request to this broker's door as an `ActionHost`, and what it
+// hands such a request to this broker's api as an `ActionHost`, and what it
 // gets is the same durable ledger an application's own caller gets.
 
 use super::*;
@@ -25,7 +25,7 @@ fn a_device(fixture: &LocalDirectoryFixture, seed: u8) -> Caller {
     .in_workspace(fixture.cluster_id.clone())
 }
 
-fn device_door(
+fn device_api(
     fixture: &LocalDirectoryFixture,
 ) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
     crate::collab_app_broker::device_host(Arc::clone(&fixture.state))
@@ -53,12 +53,12 @@ async fn answered<T>(
     fixture: &LocalDirectoryFixture,
     mut pending: tilo_actions::remote::Pending<T>,
 ) -> T {
-    tilo_test_env::within("the broker door answers", async {
+    tilo_test_env::within("the broker api answers", async {
         loop {
             match pending.poll_ready() {
                 PendingPoll::Ready(value) => return Some(value),
                 PendingPoll::Waiting => {
-                    // What the door asks a live directory is answered on this
+                    // What the API asks a live directory is answered on this
                     // local set, as the shell's accept loop answers it.
                     fixture.state.take_turn(&fixture.directories);
                     tokio::task::yield_now().await;
@@ -68,18 +68,18 @@ async fn answered<T>(
         }
     })
     .await
-    .expect("the broker door keeps answering")
+    .expect("the broker api keeps answering")
 }
 
 /// The broker refused `request`: either the admission was refused as a
-/// receipt, or the door refused it outright.
+/// receipt, or the API refused it outright.
 async fn refused(
     fixture: &LocalDirectoryFixture,
-    door: &Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    api: &Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
     caller: &Caller,
     request: &InvokeRequest,
 ) {
-    match answered(fixture, door.invoke(caller, request.clone())).await {
+    match answered(fixture, api.invoke(caller, request.clone())).await {
         Err(_) => {}
         Ok(receipt) => assert!(
             matches!(receipt.status, ReceiptStatus::Rejected { .. }),
@@ -97,7 +97,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
             let (mut fixture, _, _) = durable_fixture(root.path(), None);
-            let door = device_door(&fixture);
+            let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             let other = a_device(&fixture, 53);
             let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID));
@@ -105,7 +105,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             // The catalogue this device is offered names the action it may take.
             let page = answered(
                 &fixture,
-                door.query(
+                api.query(
                     &caller,
                     CatalogueQuery {
                         provider: Some("71".into()),
@@ -138,22 +138,22 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
                     item_schema: serde_json::json!({"type": "string"}),
                 };
             }
-            refused(&fixture, &door, &caller, &request).await;
+            refused(&fixture, &api, &caller, &request).await;
             let mut wrong = request.clone();
             wrong.confirmation = Some(Confirmation::Phrase("wrong".into()));
-            refused(&fixture, &door, &caller, &wrong).await;
+            refused(&fixture, &api, &caller, &wrong).await;
             assert!(
                 fixture.invocation_rx.try_recv().is_err(),
                 "an unconfirmed or mis-confirmed phrase never reaches the application"
             );
             let mut confirmed = request.clone();
             confirmed.confirmation = Some(Confirmation::Phrase("DO IT".into()));
-            let first = answered(&fixture, door.invoke(&caller, confirmed)).await.unwrap();
+            let first = answered(&fixture, api.invoke(&caller, confirmed)).await.unwrap();
             assert_eq!(first.invocation, invocation);
             assert!(matches!(first.status, ReceiptStatus::Accepted));
             // The same id from the same device is the same invocation, whatever
             // confirmation the retry carries: the effect is not handed over twice.
-            let duplicate = answered(&fixture, door.invoke(&caller, request.clone())).await.unwrap();
+            let duplicate = answered(&fixture, api.invoke(&caller, request.clone())).await.unwrap();
             assert_eq!(duplicate, first);
             let delivered = fixture
                 .invocation_rx
@@ -205,7 +205,7 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
                 .await
                 .is_err()
             );
-            let observed = door
+            let observed = api
                 .observe(&caller, &invocation)
                 .expect("the invoker follows its own invocation");
             assert_eq!(
@@ -218,17 +218,17 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             );
             // Another of the person's devices neither sees this invocation nor
             // runs its own effect under the same id.
-            assert!(door.observe(&other, &invocation).is_none());
-            refused(&fixture, &door, &other, &request).await;
+            assert!(api.observe(&other, &invocation).is_none());
+            refused(&fixture, &api, &other, &request).await;
             // Cancelling is a request the application answers.
-            answered(&fixture, door.cancel(&caller, &invocation))
+            answered(&fixture, api.cancel(&caller, &invocation))
                 .await
                 .expect("a running invocation is cancellable");
-            answered(&fixture, door.cancel(&caller, &invocation))
+            answered(&fixture, api.cancel(&caller, &invocation))
                 .await
                 .expect("a repeated cancel is the same request");
             assert!(matches!(
-                door.observe(&caller, &invocation).unwrap().update,
+                api.observe(&caller, &invocation).unwrap().update,
                 InvocationUpdate::Item { sequence: 3, .. }
             ));
             effect(root.path());
@@ -239,10 +239,10 @@ async fn a_devices_action_runs_once_and_follows_its_own_owner() {
             update_app(&channel, delivered.id, &terminal).await.unwrap();
             // The id answers with what it finished as, on every later ask.
             assert_eq!(
-                door.observe(&caller, &invocation).unwrap().update,
+                api.observe(&caller, &invocation).unwrap().update,
                 terminal
             );
-            let replayed = answered(&fixture, door.invoke(&caller, request.clone())).await.unwrap();
+            let replayed = answered(&fixture, api.invoke(&caller, request.clone())).await.unwrap();
             assert_eq!(
                 replayed.status,
                 ReceiptStatus::Completed {
@@ -278,7 +278,7 @@ async fn a_resolved_target_that_is_gone_or_stale_is_refused() {
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
             let (mut fixture, _, _) = durable_fixture(root.path(), None);
-            let door = device_door(&fixture);
+            let api = device_api(&fixture);
             let caller = a_device(&fixture, 52);
             // What the caller names is resolved by the directory that publishes
             // it rather than answered from an eager surface.
@@ -293,13 +293,13 @@ async fn a_resolved_target_that_is_gone_or_stale_is_refused() {
             let mut request =
                 invoke_request(tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)));
             fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::NotFound;
-            refused(&fixture, &door, &caller, &request).await;
+            refused(&fixture, &api, &caller, &request).await;
             request.revision = Some("stale-directory".into());
             fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Stale;
-            refused(&fixture, &door, &caller, &request).await;
+            refused(&fixture, &api, &caller, &request).await;
             assert!(fixture.invocation_rx.try_recv().is_err());
             fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Found;
-            let admitted = answered(&fixture, door.invoke(&caller, request))
+            let admitted = answered(&fixture, api.invoke(&caller, request))
                 .await
                 .unwrap();
             assert!(matches!(admitted.status, ReceiptStatus::Accepted));
@@ -327,8 +327,8 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             let host = fixture.state.invocation_host().unwrap();
             let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID));
             let request = invoke_request(invocation);
-            let door = device_door(&fixture);
-            answered(&fixture, door.invoke(&caller, request.clone()))
+            let api = device_api(&fixture);
+            answered(&fixture, api.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
             let delivered = fixture.invocation_rx.try_recv().unwrap();
@@ -344,7 +344,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             // re-admitted as a new effect.
             let silent = tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID + 1));
             let silent_request = invoke_request(silent);
-            answered(&fixture, door.invoke(&caller, silent_request.clone()))
+            answered(&fixture, api.invoke(&caller, silent_request.clone()))
                 .await
                 .unwrap();
             let silent_wire = fixture.invocation_rx.try_recv().unwrap().id;
@@ -355,12 +355,12 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
                     Duration::ZERO,
                     Duration::ZERO,
                 );
-            let unknown = door.observe(&caller, &silent).unwrap().update;
+            let unknown = api.observe(&caller, &silent).unwrap().update;
             assert!(
                 matches!(&unknown, InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown"),
                 "{unknown:?}"
             );
-            let replayed = answered(&fixture, door.invoke(&caller, silent_request.clone()))
+            let replayed = answered(&fixture, api.invoke(&caller, silent_request.clone()))
                 .await
                 .unwrap();
             assert!(matches!(replayed.status, ReceiptStatus::Failed { .. }));
@@ -368,20 +368,20 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             let _ = silent_wire;
             // Restart on the same journal and workspace tree.
             let gone = Arc::downgrade(&fixture.state);
-            drop(door);
+            drop(api);
             drop(fixture);
             broker_gone(gone).await;
             let (mut reopened, _, _) = durable_fixture(root.path(), Some(membership));
             assert_eq!(reopened.state.invocation_host().unwrap(), host);
-            let door = device_door(&reopened);
+            let api = device_api(&reopened);
             assert_eq!(
-                answered(&reopened, door.invoke(&caller, request)).await.unwrap().status,
+                answered(&reopened, api.invoke(&caller, request)).await.unwrap().status,
                 ReceiptStatus::Completed {
                     output: tilo_actions::ActionOutput::default()
                 }
             );
             assert!(matches!(
-                answered(&reopened, door.invoke(&caller, silent_request)).await.unwrap().status,
+                answered(&reopened, api.invoke(&caller, silent_request)).await.unwrap().status,
                 ReceiptStatus::Failed { .. }
             ));
             assert!(reopened.invocation_rx.try_recv().is_err());
@@ -405,7 +405,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
 
                 tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID + 2)),
             );
-            refused(&reopened, &door, &caller, &blocked).await;
+            refused(&reopened, &api, &caller, &blocked).await;
             assert!(reopened.invocation_rx.try_recv().is_err());
             // A write that may be durable although unconfirmed withdraws the
             // broker: nothing more is admitted until the store is recovered.
@@ -423,7 +423,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
 
                 tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID + 3)),
             );
-            refused(&reopened, &door, &caller, &unconfirmed).await;
+            refused(&reopened, &api, &caller, &unconfirmed).await;
             assert!(
                 reopened.state.invocation_host().is_err(),
                 "a possibly-durable failed write withdraws the host until recovery"
@@ -432,7 +432,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
 
                 tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID + 4)),
             );
-            refused(&reopened, &door, &caller, &after).await;
+            refused(&reopened, &api, &caller, &after).await;
             assert!(reopened.invocation_rx.try_recv().is_err());
             assert_eq!(
                 std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),

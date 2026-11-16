@@ -178,7 +178,7 @@ fn private_group_membership_uses_registered_actions_and_never_mutates_workspace_
             service: "whatsapp".into(),
             account: "fixture-whatsapp".into()
         }),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     let list = app
         .effect_confirmed(&MessagesEffect::ListGroups {
@@ -389,7 +389,7 @@ fn scoped_live_selection_rejects_substituted_sender_scope_recipient_and_revision
     };
     assert!(matches!(
         app.effect(&effect),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     app.effect_confirmed(&effect)
         .expect("reviewed account forwards the exact shared action");
@@ -442,7 +442,7 @@ fn public_route_action_refuses_revoked_identity_until_a_new_association_is_revie
     };
     assert!(matches!(
         app.effect(&review),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     app.effect_confirmed(&review)
         .expect("review exact new association and revision");
@@ -692,7 +692,7 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
     };
     assert!(matches!(
         app.effect(&history),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     assert_eq!(
         app.effect_confirmed(&history)
@@ -711,7 +711,7 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
     };
     assert!(matches!(
         app.effect(&send),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 0);
     app.effect_confirmed(&send).expect("controlled group send");
@@ -725,7 +725,7 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
     };
     assert!(matches!(
         app.effect(&leave),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     app.effect_confirmed(&leave)
         .expect("controlled group leave");
@@ -774,7 +774,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     );
 
     let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-    harness.set_session_door(
+    harness.set_session_api(
         ui::RemoteActions::with_host(
             session.clone(),
             ui::tilo_actions::remote::Caller::local_app("so.tilo.messages")

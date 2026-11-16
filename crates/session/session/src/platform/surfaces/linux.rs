@@ -6,26 +6,30 @@ use std::rc::Rc;
 
 use tilo_compositor::Compositor;
 
-use tilo_session_core::door::{Doors, Published};
+use tilo_session_core::surfaces::Published;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::widget::Widget;
 
 use super::{Heard, Layer, Placement, Shell, Surfaces};
 
-/// What a Linux session places layers on: its compositor, and the door its surfaces publish
+/// What a Linux session places layers on: its compositor, and the published side its surfaces go
 /// through.
 pub struct Hosted<'a> {
     compositor: &'a mut Compositor,
-    doors: &'a mut Doors,
+    published: &'a mut tilo_session_core::surfaces::Surfaces,
     theme: ui::Theme,
 }
 
 impl<'a> Hosted<'a> {
-    /// The layers of the session that owns `compositor` and `doors`, drawn in `theme`.
-    pub fn new(compositor: &'a mut Compositor, doors: &'a mut Doors, theme: ui::Theme) -> Self {
+    /// The layers of the session that owns `compositor` and `published`, drawn in `theme`.
+    pub fn new(
+        compositor: &'a mut Compositor,
+        published: &'a mut tilo_session_core::surfaces::Surfaces,
+        theme: ui::Theme,
+    ) -> Self {
         Self {
             compositor,
-            doors,
+            published,
             theme,
         }
     }
@@ -51,7 +55,7 @@ impl Surfaces for Hosted<'_> {
     }
 
     fn publish(&mut self, published: Rc<RefCell<dyn Published>>) {
-        self.doors.add(published);
+        self.published.add(published);
     }
 }
 

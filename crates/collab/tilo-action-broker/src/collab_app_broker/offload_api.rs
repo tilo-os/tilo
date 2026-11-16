@@ -1,12 +1,12 @@
-//! Offloadable invocations at the action door.
+//! Offloadable invocations at the action api.
 //!
 //! An invocation of an action whose contract declares an offload is
 //! admitted exactly like any other: who may invoke, confirmation, journal
 //! and receipt are decided before this module sees it, the same for a
 //! person, a script and an agent. Then, instead of handing it to the app at
-//! once, the door asks the device's route
+//! once, the API asks the device's route
 //! ([`HostServices::action_offload`](crate::services::HostServices)) where it
-//! should run. When another device ran it, the door answers the invocation
+//! should run. When another device ran it, the API answers the invocation
 //! with that output, as the app would have. Otherwise — for whatever reason
 //! the route gives — the app gets the invocation as usual and its own
 //! handler answers it, and the route hears how long that took. A worker
@@ -38,7 +38,7 @@ pub(super) struct QueuedOffload {
 const MAX_OFFLOADED_HERE: usize = 256;
 
 impl AppBrokerState {
-    /// The route this broker's door asks where an admitted offloadable
+    /// The route this broker's api asks where an admitted offloadable
     /// invocation runs, as its host installed it; `None` runs every one
     /// through its app's own handler.
     #[must_use]

@@ -453,7 +453,7 @@ impl super::App {
     /// submits, plus the layout those effects address. Rendering and state
     /// are decoupled, so an app nobody is looking at (occluded on macOS, on
     /// another Space, behind a full-screen app) still answers the wakes its
-    /// workers, its engine and its action door send, and a deferred
+    /// workers, its engine and its action API send, and a deferred
     /// invocation is executed instead of waiting for a `RedrawRequested`
     /// that never comes.
     #[cfg(feature = "native")]

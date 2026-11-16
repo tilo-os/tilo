@@ -57,7 +57,7 @@ use render::{
 };
 use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
-/// (shell.md §8.1): what the door's `person_line` hands on.
+/// (shell.md §8.1): what the API's `person_line` hands on.
 pub use tilo::{PersonStep, literals_in};
 pub(super) use tilo::{ProgramForms, Programs, TaskLink};
 pub use tilo::{TaskHosts, TaskProgram};
@@ -2788,7 +2788,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// The provider of a running instance of the installed app `app_id`, starting the app in
     /// the workspace when none runs yet, without a window: where an invocation of the app's own
-    /// door goes. The step shows nothing, so nothing is opened for it.
+    /// API goes. The step shows nothing, so nothing is opened for it.
     async fn started_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
         match self.app_ref(app_id).await? {
             AppRef::Running { provider, .. } => Ok(provider),

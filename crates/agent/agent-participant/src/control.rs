@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState, InvokeArgument,

@@ -2,7 +2,7 @@
 //! The installer and the greeter run under `cage` straight from greetd, before any
 //! Tilo compositor exists, so this crate lets such an app answer the *same*
 //! semantic half of the `tilo-control` wire itself: `actions_enumerate`,
-//! `actions_invoke` (through the same resolve, availability and strict-binding door
+//! `actions_invoke` (through the same resolve, availability and strict-binding API
 //! every other caller uses, [`catalog::admit`]) and `state_dump`. Input injection
 //! is deliberately not served: the console surface is semantic only.
 //! [`server::Endpoint::discover`] names at most two local endpoints: a Unix socket

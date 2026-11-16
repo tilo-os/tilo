@@ -157,11 +157,11 @@ impl Continuation {
 
     /// Why the effect fails when the edit it submitted was refused with `error`: a refusal keeps its
     /// own code.
-    pub(crate) fn failure(error: &tilo_actions::DoorError) -> tilo_actions::ActionFailure {
+    pub(crate) fn failure(error: &tilo_actions::ApiError) -> tilo_actions::ActionFailure {
         let (code, message) = match error {
-            tilo_actions::DoorError::Unavailable { code, reason } => (code.clone(), reason.clone()),
+            tilo_actions::ApiError::Unavailable { code, reason } => (code.clone(), reason.clone()),
             error => (
-                crate::bound_dispatch::door_error_code(error).to_owned(),
+                crate::bound_dispatch::api_error_code(error).to_owned(),
                 error.to_string(),
             ),
         };
@@ -219,10 +219,10 @@ impl Drop for ContinuationScope {
 pub(crate) fn check_continuation(
     spec: &tilo_actions::ActionSpec,
     needed: tilo_actions::ActionKind,
-) -> Result<(), tilo_actions::DoorError> {
+) -> Result<(), tilo_actions::ApiError> {
     let admitted = CONTINUATION_BOUNDS.with_borrow(|bounds| bounds.last().copied());
     match admitted {
-        Some(admitted) if admitted < needed => Err(tilo_actions::DoorError::Unavailable {
+        Some(admitted) if admitted < needed => Err(tilo_actions::ApiError::Unavailable {
             code: "permission_denied".into(),
             reason: format!("the invoker may not {} here", spec.label.to_lowercase()),
         }),
@@ -575,8 +575,8 @@ impl ResourceInvocationScope {
     pub(crate) fn check_dispatch_spec(
         &self,
         current: &tilo_actions::ActionSpec,
-    ) -> Result<(), tilo_actions::DoorError> {
-        let refused = |reason: String| tilo_actions::DoorError::Unavailable {
+    ) -> Result<(), tilo_actions::ApiError> {
+        let refused = |reason: String| tilo_actions::ApiError::Unavailable {
             code: "published_invocation_contract_changed".into(),
             reason,
         };

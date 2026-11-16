@@ -33,7 +33,7 @@ impl AppBrokerState {
     ///
     /// The caller must be the person at this device, confined to a workspace
     /// they may act in (an application reaches this as its person only for
-    /// its own actions, which its door decides). The host's network then
+    /// its own actions, which its api decides). The host's network then
     /// decides whether the device is one of theirs and carries the request.
     /// The invocation answers `Accepted` at once and records the other
     /// device's outcome when it arrives; a retry under the same id observes
@@ -748,14 +748,14 @@ mod tests {
             let own = RemoteActionMessage::Invoke(request(&invocation(SETTINGS)));
             assert_eq!(
                 state
-                    .app_door(&person, SETTINGS, &own)
+                    .app_api(&person, SETTINGS, &own)
                     .map(|caller| caller.acting().clone())
                     .ok(),
                 Some(person.acting().clone())
             );
             let other = RemoteActionMessage::Invoke(request(&invocation("so.tilo.notes")));
-            assert!(state.app_door(&person, SETTINGS, &other).is_err());
-            assert!(state.app_door(&person, "so.tilo.notes", &own).is_err());
+            assert!(state.app_api(&person, SETTINGS, &other).is_err());
+            assert!(state.app_api(&person, "so.tilo.notes", &own).is_err());
         }
     }
 }

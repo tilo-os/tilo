@@ -190,7 +190,7 @@ pub(crate) trait RootControls {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     );
     fn has_pending_control_invocation(&self) -> bool;
 }
@@ -591,7 +591,7 @@ impl SearchSource for RootWidget {
 impl ActionControls for RootWidget {
     /// The root keeps its view's controls for itself when the session keeps
     /// its record: a press there is submitted over the app's connection, and
-    /// a host's local document door never runs it
+    /// a host's local document api never runs it
     /// (`docs/designs/app-language/one-app-model.md` §4).
     fn install_control_custody(
         &mut self,
@@ -620,7 +620,7 @@ impl ActionControls for RootWidget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.0.on_control_invocation_result(address, result);
     }

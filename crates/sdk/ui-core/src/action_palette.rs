@@ -247,24 +247,24 @@ impl PendingOperation {
     pub(crate) fn encode_at_local_owner(
         &self,
         resources: &[ResourceSpec],
-    ) -> Result<EncodedAction, tilo_actions::DoorError> {
-        let spec = tilo_actions::door::resolve(resources, &self.address)
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(self.address.clone()))?;
+    ) -> Result<EncodedAction, tilo_actions::ApiError> {
+        let spec = tilo_actions::api::resolve(resources, &self.address)
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(self.address.clone()))?;
         match &self.intent {
             PreparedActionIntent::Encoded(encoded) => Ok(encoded.clone()),
             PreparedActionIntent::Deferred(intent) => {
                 intent.validate(spec)?;
                 if spec.locus != tilo_actions::ExecutionLocus::ClientLocal {
-                    return Err(tilo_actions::DoorError::Failed(
-                        "Deferred server execution must use the address-based broker door".into(),
+                    return Err(tilo_actions::ApiError::Failed(
+                        "Deferred server execution must use the address-based broker API".into(),
                     ));
                 }
-                tilo_actions::door::encode(resources, &self.address, None)
+                tilo_actions::api::encode(resources, &self.address, None)
             }
         }
     }
 
-    /// Reconstruct the door argument collected by the palette.
+    /// Reconstruct the API argument collected by the palette.
     pub fn wire_argument(&self) -> Option<String> {
         match &self.input {
             PendingInput::Immediate | PendingInput::Invalid => None,
@@ -539,7 +539,7 @@ impl ActionPalette {
             .or_else(|| {
                 self.authority_for(&pending.address, pending.bound.as_ref())
                     .and_then(|resources| {
-                        tilo_actions::door::resolve(&resources, &pending.address)
+                        tilo_actions::api::resolve(&resources, &pending.address)
                             .map(|spec| (spec.label.clone(), spec.description.clone()))
                     })
             })
@@ -556,7 +556,7 @@ impl ActionPalette {
             .or_else(|| {
                 self.authority_for(&pending.address, pending.bound.as_ref())
                     .and_then(|resources| {
-                        tilo_actions::door::resolve(&resources, &pending.address)
+                        tilo_actions::api::resolve(&resources, &pending.address)
                             .map(|spec| spec.contract.risk)
                     })
             })
@@ -1457,7 +1457,7 @@ impl ActionPalette {
                         .resources()
                         .iter()
                         .find(|resource| {
-                            tilo_actions::door::resolve(std::slice::from_ref(resource), address)
+                            tilo_actions::api::resolve(std::slice::from_ref(resource), address)
                                 .is_some()
                         })
                         .cloned()
@@ -1465,7 +1465,7 @@ impl ActionPalette {
         });
         resource
             .and_then(|resource| crate::bound_dispatch::filter_resource(binding, resource))
-            .is_some_and(|resource| tilo_actions::door::resolve(&[resource], address).is_some())
+            .is_some_and(|resource| tilo_actions::api::resolve(&[resource], address).is_some())
     }
 
     fn checked_provider_hits(
@@ -1795,7 +1795,7 @@ impl ActionPalette {
         bound: Option<&crate::bound_dispatch::BoundActionTarget>,
     ) -> bool {
         self.authority_for(address, bound).is_some_and(|resources| {
-            tilo_actions::door::resolve(&resources, address)
+            tilo_actions::api::resolve(&resources, address)
                 .is_some_and(|spec: &tilo_actions::ActionSpec| !spec.reaches_people())
         })
     }
@@ -1916,7 +1916,7 @@ impl ActionPalette {
             return Some(pending);
         }
         let authority = self.authority_for(&pending.address, pending.bound.as_ref())?;
-        let spec = tilo_actions::door::resolve(&authority, &pending.address)?;
+        let spec = tilo_actions::api::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
             || spec.kind != pending.kind
             || effective_confirmation(spec, &pending.input) != pending.confirmation
@@ -1934,16 +1934,16 @@ impl ActionPalette {
         let encoded = pending.encoded()?;
         let current = match &pending.input {
             PendingInput::Immediate => {
-                tilo_actions::door::encode(&authority, &pending.address, None).ok()?
+                tilo_actions::api::encode(&authority, &pending.address, None).ok()?
             }
             PendingInput::Text(value) => {
-                tilo_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
+                tilo_actions::api::encode(&authority, &pending.address, Some(value)).ok()?
             }
             PendingInput::Json(value) => {
                 let arguments =
                     serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
                         .ok()?;
-                tilo_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
+                tilo_actions::api::encode_json(&authority, &pending.address, &arguments).ok()?
             }
             PendingInput::Invalid => encoded.clone(),
         };
@@ -1974,11 +1974,11 @@ impl ActionPalette {
                     crate::bound_dispatch::filter_resource(&target.binding, resource)
                 })
                 .collect::<Vec<_>>();
-            return tilo_actions::door::resolve(&resources, address)
+            return tilo_actions::api::resolve(&resources, address)
                 .is_some()
                 .then_some(resources);
         }
-        tilo_actions::door::resolve(&self.resources, address)
+        tilo_actions::api::resolve(&self.resources, address)
             .is_some()
             .then(|| self.resources.clone())
     }
@@ -2971,7 +2971,7 @@ impl ActionPalette {
         } else {
             self.authority_for(&pending.address, pending.bound.as_ref())
                 .and_then(|resources| {
-                    tilo_actions::door::resolve(&resources, &pending.address)
+                    tilo_actions::api::resolve(&resources, &pending.address)
                         .map(|spec| effective_confirmation(spec, &pending.input))
                 })
                 .unwrap_or(confirmation)
@@ -3001,7 +3001,7 @@ impl ActionPalette {
             None => self
                 .authority_for(&pending.address, pending.bound.as_ref())
                 .and_then(|resources| {
-                    tilo_actions::door::resolve(&resources, &pending.address)
+                    tilo_actions::api::resolve(&resources, &pending.address)
                         .map(|spec| spec.contract.can_be_undone())
                 })
                 .unwrap_or(false),

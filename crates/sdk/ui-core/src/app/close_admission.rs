@@ -205,7 +205,7 @@ impl App {
         let connected = self.collaboration.manager.is_connected();
         let actor = self.collaboration.local_author.key();
         // Do not supply an invocation or claim broker admission. This is the
-        // ordinary local canonical action door, including permissions/effects.
+        // ordinary local canonical action API, including permissions/effects.
         let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));
         match result {
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {
@@ -279,7 +279,7 @@ impl App {
         {
             let result = self
                 .invoke_history_address_local(&intent.address, None)
-                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
+                .unwrap_or_else(|| Err(tilo_actions::ApiError::Unknown(intent.address.clone())));
             if let Some(dialog) = self.close_admission.dialog.as_mut() {
                 crate::widget::controls::on_control_invocation_result(
                     dialog.as_mut(),
@@ -600,7 +600,7 @@ mod tests {
                 [0]
             .clone();
         assert!(
-            tilo_actions::door::resolve(
+            tilo_actions::api::resolve(
                 &crate::resources::resources(app.root_widget.as_ref(), &app.state.doc),
                 &document.save,
             )

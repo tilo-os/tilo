@@ -253,7 +253,7 @@ fn export_content_keeps_a_transcript_as_content_in_markdown_or_json() {
 
 #[test]
 fn the_conversations_are_read_only_to_field_edits() {
-    use ui::tilo_actions::door::survey;
+    use ui::tilo_actions::api::survey;
     let mut app = app();
     deliver(&mut app, json!({"from": "Ada", "body": "hi"}));
     let resources = app.harness().resources();

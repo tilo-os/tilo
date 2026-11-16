@@ -25,7 +25,7 @@ impl TileHost {
     }
 
     /// Run `invocation` in an app keeping its own document, through its own
-    /// door: it takes no controls through a binding of this tile's.
+    /// API: it takes no controls through a binding of this tile's.
     pub(super) fn run_in_own_document(
         &mut self,
         invocation: tilo_actions::ControlInvocation,

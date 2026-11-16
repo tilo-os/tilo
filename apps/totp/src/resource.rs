@@ -682,7 +682,7 @@ mod tests {
         assert!(
             matches!(
                 app.invoke(delete.clone()),
-                Err(tilo_actions::DoorError::ConfirmationRequired)
+                Err(tilo_actions::ApiError::ConfirmationRequired)
             ),
             "deleting an account asks first, however it is reached"
         );

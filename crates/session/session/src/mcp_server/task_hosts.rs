@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
 
-use super::{DoorAsk, SessionDoors, WAIT};
+use super::{ApiAsk, SessionDoors, WAIT};
 
 /// Every installed app a task's programs may name, besides the packages the session runs itself
 /// (`kept`): each tilolang app's own package, verified as a launch verifies it, which declares
@@ -95,7 +95,7 @@ impl tilo_mcp::TaskHosts for TaskHosts {
         // its package, every native app this device has, from its signed surface, and the
         // platform's own (the device and its arrangement, Settings).
         let (done, whole) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Apps(done));
+        self.session.ask(ApiAsk::Apps(done));
         let mut apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
         let kept = self.session.kept.lock_recover().clone();
         let (installed, records_under) = installed_apps(&kept);

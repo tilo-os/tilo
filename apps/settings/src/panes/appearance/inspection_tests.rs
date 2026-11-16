@@ -79,7 +79,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         serde_json::json!({}),
     );
     assert!(
-        matches!(refused, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view"),
+        matches!(refused, Err(ui::tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "private_view"),
         "{refused:?}"
     );
     assert!(

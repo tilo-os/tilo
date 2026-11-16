@@ -1662,7 +1662,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         let mut mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail");
         mailbox.actions = <mail::actions::MailEffect as ui::tilo_resource::Effect>::specs();
         let mail_roots = vec![mailbox];
-        let encoded = tilo_actions::door::encode_json(
+        let encoded = tilo_actions::api::encode_json(
             &mail_roots,
             &mail::actions::MailEffect::PREPARE_CALENDAR_INVITATION.on("mail.mailbox"),
             &arguments,

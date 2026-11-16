@@ -39,7 +39,7 @@ fn canonical_caller(workspace: &signed_worker::OriginalWorkspace) -> tilo_action
     .in_new_execution()
 }
 
-/// The workspace's own certified door, and the caller `workspace`'s device
+/// The workspace's own certified api, and the caller `workspace`'s device
 /// asks through it.
 fn canonical_host(
     workspace: &signed_worker::OriginalWorkspace,

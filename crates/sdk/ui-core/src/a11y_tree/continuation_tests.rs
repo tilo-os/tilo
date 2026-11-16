@@ -56,8 +56,8 @@ tilo_test_env::scenario! {
             .as_object()
             .unwrap()
             .clone();
-        let legacy = tilo_actions::door::encode(&resources, &address, Some(raw)).unwrap();
-        let typed = tilo_actions::door::encode_json(&resources, &address, &args).unwrap();
+        let legacy = tilo_actions::api::encode(&resources, &address, Some(raw)).unwrap();
+        let typed = tilo_actions::api::encode_json(&resources, &address, &args).unwrap();
         assert_eq!(legacy, typed);
         let operation: SemanticOperation = serde_json::from_slice(&legacy.payload).unwrap();
         assert_eq!(operation.node, id.0);

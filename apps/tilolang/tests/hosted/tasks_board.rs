@@ -796,7 +796,7 @@ fn agent_acting(
     action: &str,
 ) -> ui::tilo_actions::SemanticInteraction {
     let resources = app.harness().resources();
-    let descriptor = ui::tilo_actions::door::survey(&resources)
+    let descriptor = ui::tilo_actions::api::survey(&resources)
         .into_iter()
         .find(|descriptor| {
             descriptor.address.resource == resource && descriptor.address.action == action

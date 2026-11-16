@@ -1,4 +1,4 @@
-//! What History can honestly do with a resource type: one classification the panel, the read door and
+//! What History can honestly do with a resource type: one classification the panel, the read API and
 //! the restore review all read, so "no past version here" is never confused with "this text does not
 //! read", "written by a newer app" or "this type keeps no content history". The classification is
 //! derived from what the resource type itself declared, never guessed per app: the schema history
@@ -121,7 +121,7 @@ impl std::fmt::Display for HistoricalGap {
 }
 
 /// What the common historical surface of a resource type answers, whatever the app: the check run when
-/// a restore schema is registered, and the per-type classification the History panel and the read door
+/// a restore schema is registered, and the per-type classification the History panel and the read API
 /// read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeHistory {

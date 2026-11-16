@@ -1,5 +1,5 @@
 //! Capture: an app's create action with one `Text` parameter run from
-//! anywhere with one line a person typed. The door reads the words for the action's own field
+//! anywhere with one line a person typed. The API reads the words for the action's own field
 //! types — a day, a moment, a person, a record — fills them, and titles the rest, so a palette
 //! makes what the app's entry would. What it is made from, when it is made from something, is
 //! the change's.
@@ -28,7 +28,7 @@ const CHAT_APP: &str = "so.tilo.lang.chat";
 /// A Wednesday morning, so "fri" is a day still to come.
 const NOW: &str = "2026-11-04T09:00:00Z";
 
-/// `action` of `app` as the door plans it on the app's root, made from `from` when one is given.
+/// `action` of `app` as the API plans it on the app's root, made from `from` when one is given.
 fn planned(
     replica: &Replica,
     app: &str,
@@ -141,7 +141,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
     ada.commit();
     ada.host.set_clock(|| NOW.to_owned());
 
-    // The palette's one line, given to the action's entry parameter: the door reads the day and
+    // The palette's one line, given to the action's entry parameter: the API reads the day and
     // the moment out of it, and what is left titles the task.
     let line = "Call the landlord fri 10am";
     let made = planned(&ada, TASKS_APP, "new_task", json!({ "title": line }), None);
@@ -224,7 +224,7 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
     };
 
     // The palette's row names what it is made from with the arguments it sends (`$from`), and
-    // the door reads it as the invocation's origin.
+    // the API reads it as the invocation's origin.
     let mut arguments = serde_json::Map::new();
     arguments.insert("title".to_owned(), json!("Book the van"));
     arguments.insert(

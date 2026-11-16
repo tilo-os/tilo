@@ -2432,7 +2432,7 @@ fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String
         .clone()
 }
 
-/// The commands a page offers behind its `...` door.
+/// The commands a page offers behind its `...` api.
 pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
     let more = all(view.tree(), "ui.MenuButton")
         .into_iter()
@@ -2791,9 +2791,9 @@ tilo_test_env::scenario! {
         go_to(&mut home, "Inbox");
         let row = row_commands(&mut home, &booked);
         let page = task_page(&ada, &booked);
-        let behind_the_door = page_commands(&page);
-        assert_eq!(labels(&behind_the_door), spec_commands());
-        let mut offered = labels(&behind_the_door);
+        let behind_the_api = page_commands(&page);
+        assert_eq!(labels(&behind_the_api), spec_commands());
+        let mut offered = labels(&behind_the_api);
         offered.sort_unstable();
         // The row also offers its own way to the page, which a page has no need of: what the two
         // surfaces are held to is the commands the task takes.

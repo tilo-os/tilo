@@ -44,7 +44,7 @@ fn shared_menu_layout_matches_the_former_taffy_pass() {
 }
 
 /// A stand-in for the session's door: what Files asked for, and what it answers.
-pub(super) mod session_door {
+pub(super) mod session_api {
     use runtime_portal::tools::DocumentApp;
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -118,8 +118,8 @@ pub(super) mod session_door {
 }
 
 pub(super) fn asking_session(w: &FileExplorerWidget) {
-    w.state().open_request = session_door::record_open;
-    w.state().document_candidates = session_door::record_candidates;
+    w.state().open_request = session_api::record_open;
+    w.state().document_candidates = session_api::record_candidates;
 }
 
 pub(super) fn settle_opens(w: &FileExplorerWidget) {
@@ -130,7 +130,7 @@ pub(super) fn settle_opens(w: &FileExplorerWidget) {
 
 #[cfg(test)]
 mod open_with_tests {
-    use super::session_door::{self, asks, listings};
+    use super::session_api::{self, asks, listings};
     use super::*;
     use crate::model::Entry;
     use runtime_portal::tools::DocumentApp;
@@ -186,7 +186,7 @@ mod open_with_tests {
 
         phase activation_hands_every_file_to_the_session_to_open;
         {
-            session_door::start();
+            session_api::start();
             let w = FileExplorerWidget::new();
             asking_session(&w);
             w.state().entries = ["report.odt", "photo.png", "slides.pdf", "main.rs"]
@@ -213,8 +213,8 @@ mod open_with_tests {
 
         phase a_refused_open_is_shown_to_the_user;
         {
-            session_door::start();
-            session_door::refuse("no installed app opens .zzz files (thing.zzz)");
+            session_api::start();
+            session_api::refuse("no installed app opens .zzz files (thing.zzz)");
             let w = FileExplorerWidget::new();
             asking_session(&w);
             w.state().entries = vec![file_entry("thing.zzz")];
@@ -306,7 +306,7 @@ mod open_with_tests {
         phase a_type_no_app_opens_says_so_and_opens_nothing;
         {
             let mut w = pdf_widget();
-            session_door::listing(Vec::new());
+            session_api::listing(Vec::new());
             w.state().invalidate_open_with();
             w.state().open_open_with_submenu(Point::new(10.0, 10.0));
             assert_eq!(
@@ -315,13 +315,13 @@ mod open_with_tests {
             );
             w.state().open_app_chooser();
             assert_eq!(w.state().status, Some(t("files-open-with-none")));
-            assert!(session_door::opened().is_empty(), "nothing was launched");
+            assert!(session_api::opened().is_empty(), "nothing was launched");
         }
 
         phase a_listing_the_session_cannot_answer_offers_no_apps;
         {
             let mut w = pdf_widget();
-            session_door::refuse_listing("the session did not answer");
+            session_api::refuse_listing("the session did not answer");
             w.state().invalidate_open_with();
             w.state().open_open_with_submenu(Point::new(10.0, 10.0));
             assert_eq!(
@@ -336,7 +336,7 @@ mod open_with_tests {
             let mut doc = automerge::AutoCommit::new();
             let resources = crate::files_app::published::tree(&w, &doc);
             let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
-            let spec = ui::tilo_actions::door::spec_of(&resources, &entry_id, "open-with")
+            let spec = ui::tilo_actions::api::spec_of(&resources, &entry_id, "open-with")
                 .expect("file resources publish open-with");
             let app = spec
                 .params()
@@ -373,7 +373,7 @@ mod open_with_tests {
             assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);
             let folder = crate::search_provider::entry_resource_id(Path::new("/docs/notes.txt"));
             assert!(
-                ui::tilo_actions::door::spec_of(&resources, &folder, "open-with:so.tilo.pdf-viewer")
+                ui::tilo_actions::api::spec_of(&resources, &folder, "open-with:so.tilo.pdf-viewer")
                     .is_none(),
                 "per-app rows are only published for the chooser's file"
             );
@@ -426,7 +426,7 @@ mod open_with_tests {
                 ]
             );
             let mut doc = doc;
-            let spec = ui::tilo_actions::door::spec_of(
+            let spec = ui::tilo_actions::api::spec_of(
                 &resources,
                 &entry_id,
                 "open-with-app:org.gnome.Evince.desktop",
@@ -605,8 +605,8 @@ mod open_with_tests {
     }
 
     fn pdf_widget() -> FileExplorerWidget {
-        session_door::start();
-        session_door::listing(pdf_apps());
+        session_api::start();
+        session_api::listing(pdf_apps());
         let w = FileExplorerWidget::new();
         asking_session(&w);
         w.state().current_path = PathBuf::from("/docs");
@@ -630,7 +630,7 @@ mod open_with_tests {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(folder.path().join(name), name).unwrap();
         }
-        session_door::start();
+        session_api::start();
         let w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         asking_session(&w);
         w.state().navigate(folder.path().to_path_buf());
@@ -644,7 +644,7 @@ mod open_with_tests {
             settle_opens(&w);
         }
         assert_eq!(
-            session_door::opened().len(),
+            session_api::opened().len(),
             4,
             "the session opened every file"
         );
@@ -862,7 +862,7 @@ mod command_path_tests {
 
         phase go_to_move_to_and_copy_to_organise_files_by_absolute_path;
         {
-            use ui::tilo_actions::door;
+            use ui::tilo_actions::api;
             let root = tempfile::tempdir().unwrap();
             let downloads = root.path().join("in/downloads");
             let images = root.path().join("out/images");
@@ -884,8 +884,8 @@ mod command_path_tests {
                     arg.0.to_string(),
                     serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
                 )]);
-                let address = door::published(&resources, &resource, action).unwrap();
-                let encoded = door::encode_json(&resources, &address, &arguments)
+                let address = api::published(&resources, &resource, action).unwrap();
+                let encoded = api::encode_json(&resources, &address, &arguments)
                     .map_err(|error| error.to_string())?;
                 let kind = if action == "go-to" {
                     OperationKind::View
@@ -960,7 +960,7 @@ mod command_path_tests {
 
         phase showing_a_folder_answers_with_its_resource_and_entries;
         {
-            use ui::tilo_actions::door;
+            use ui::tilo_actions::api;
             let root = tempfile::tempdir().unwrap();
             let downloads = root.path().join("in/downloads");
             std::fs::create_dir_all(downloads.join("old")).unwrap();
@@ -973,8 +973,8 @@ mod command_path_tests {
             let mut show = |action: &str, path: &Path| {
                 let resources = crate::files_app::published::tree(&files, &doc);
                 let folder = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND;
-                let address = door::published(&resources, folder, action).unwrap();
-                let encoded = door::encode_json(
+                let address = api::published(&resources, folder, action).unwrap();
+                let encoded = api::encode_json(
                     &resources,
                     &address,
                     serde_json::json!({"path": path}).as_object().unwrap(),
@@ -2780,7 +2780,7 @@ mod command_path_tests {
     }
 
     fn entry_resource_uses_a_wire_safe_id_that_survives_a_rename() {
-        use ui::tilo_actions::{ActionAddress, door};
+        use ui::tilo_actions::{ActionAddress, api};
 
         let d = tempfile::tempdir().unwrap();
         // A control separator is a legal Unix filename byte but must not leak
@@ -2818,7 +2818,7 @@ mod command_path_tests {
             ActionAddress::parse(&address.encode()),
             Some(address.clone())
         );
-        assert!(door::resolve(&resources, &address).is_some());
+        assert!(api::resolve(&resources, &address).is_some());
         w.state().selection.select_only(0);
         w.state().begin_rename();
         w.state().set_rename_buffer("new.txt".into());
@@ -2832,7 +2832,7 @@ mod command_path_tests {
         w.state().entries[0].record_id = Some(*record_id.as_bytes());
         let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
-            door::resolve(&refreshed, &address).is_some(),
+            api::resolve(&refreshed, &address).is_some(),
             "the record action address survives a path rename and resolves its fresh path"
         );
     }
@@ -2963,16 +2963,16 @@ mod command_path_tests {
         source: Option<&Path>,
         action: &str,
     ) -> Result<bool, String> {
-        use ui::tilo_actions::door;
+        use ui::tilo_actions::api;
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(files, &doc);
         let resource = source.map_or_else(
             || resources.first().unwrap().id.as_str().to_owned(),
             crate::search_provider::entry_resource_id,
         );
-        let address = door::published(&resources, &resource, action)
+        let address = api::published(&resources, &resource, action)
             .expect("the current resource must export the transfer action");
-        let encoded = door::encode_json(&resources, &address, &serde_json::Map::new())
+        let encoded = api::encode_json(&resources, &address, &serde_json::Map::new())
             .expect("the current resource must export the transfer action");
         crate::files_app::published::start(
             files,
@@ -3110,7 +3110,7 @@ mod command_path_tests {
         let mut document = automerge::AutoCommit::new();
         let entry = crate::search_provider::entry_resource_id(&source);
         let resources = crate::files_app::published::tree(&widget, &document);
-        assert!(ui::tilo_actions::door::spec_of(&resources, &entry, "send-airdrop").is_none());
+        assert!(ui::tilo_actions::api::spec_of(&resources, &entry, "send-airdrop").is_none());
         widget
             .state()
             .nearby_send
@@ -3137,7 +3137,7 @@ mod command_path_tests {
                 result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
             });
         let resources = crate::files_app::published::tree(&widget, &document);
-        let action = ui::tilo_actions::door::spec_of(&resources, &entry, "send-airdrop")
+        let action = ui::tilo_actions::api::spec_of(&resources, &entry, "send-airdrop")
             .expect("lab host publishes file action");
         assert_eq!(
             action
@@ -4620,7 +4620,7 @@ mod command_path_tests {
             .iter()
             .position(|entry| entry.name == "Photos")
             .unwrap();
-        session_door::start();
+        session_api::start();
         asking_session(&files);
         files.state().open_entry(photos).unwrap();
         assert_eq!(files.state().entries_snapshot().len(), 1);
@@ -4628,7 +4628,7 @@ mod command_path_tests {
         assert!(files.state().open_entry(0).unwrap());
         files.state().wait_for_archive_members();
         settle_opens(&files);
-        let copy = session_door::opened()
+        let copy = session_api::opened()
             .pop()
             .expect("the member's copy is opened");
         assert_eq!(std::fs::read(&copy).unwrap(), b"one");
@@ -5057,13 +5057,13 @@ mod injected_startup_tests {
             startup(&child),
             absent_services(),
         );
-        session_door::start();
+        session_api::start();
         asking_session(&widget);
         assert!(widget.state().thumbs.is_none());
         crate::command::push(&widget.state().cmds, FileCommand::Activate(0));
         assert!(widget.state().drain_commands());
         settle_opens(&widget);
-        assert_eq!(session_door::opened(), vec![child.join("Welcome.txt")]);
+        assert_eq!(session_api::opened(), vec![child.join("Welcome.txt")]);
         assert_eq!(widget.state().notice_line(), None);
         assert_eq!(guard.attempts(), 0);
         assert_eq!(listings.observations(), vec![(child, false)]);
@@ -5129,7 +5129,7 @@ fn headless_f2_renames_fixture_without_opening_a_file() {
     std::fs::write(&original, b"preserved bytes").unwrap();
     let widget = FileExplorerWidget::with_persistence(None, None);
     asking_session(&widget);
-    session_door::start();
+    session_api::start();
     widget.state().navigate(directory.path().to_path_buf());
     let mut driver =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
@@ -5146,7 +5146,7 @@ fn headless_f2_renames_fixture_without_opening_a_file() {
         driver.type_text(name);
         driver.key("Enter");
         assert!(
-            session_door::opened().is_empty(),
+            session_api::opened().is_empty(),
             "F2 must enter rename before Enter is sent"
         );
         let destination = directory.path().join(name);

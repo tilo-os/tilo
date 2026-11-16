@@ -10,8 +10,8 @@ use std::rc::{Rc, Weak};
 use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 
-use super::record::{Held, RecordDoor};
-use super::section::{SectionDoor, SectionKind};
+use super::record::{Held, RecordApi};
+use super::section::{SectionApi, SectionKind};
 
 /// One typed settings value, kept current while the view lives: a write
 /// from this window, another window, the Settings app or another of the
@@ -101,12 +101,12 @@ where
         storage.0.section_held(&self.settings)
     }
 
-    fn door(
+    fn api(
         &self,
         storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Door> {
-        Some(super::record::sealed::Door(
-            storage.0.section(&self.settings) as Rc<dyn RecordDoor>,
+    ) -> Option<super::record::sealed::Api> {
+        Some(super::record::sealed::Api(
+            storage.0.section(&self.settings) as Rc<dyn RecordApi>,
         ))
     }
 }
@@ -122,11 +122,11 @@ pub(crate) struct ViewStorage {
     /// This device, in a live window.
     device: Option<String>,
     /// The settings sections views and surfaces edit as records, by kind.
-    sections: RefCell<HashMap<&'static str, Rc<SectionDoor>>>,
+    sections: RefCell<HashMap<&'static str, Rc<SectionApi>>>,
     /// Those a view part edits through its type, by type.
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
-    /// Those sections, as the door reaches them.
-    section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
+    /// Those sections, as the api reaches them.
+    section_apis: RefCell<Vec<Rc<dyn RecordApi>>>,
     /// The records another provider keeps, by id, with that provider
     /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
     /// bind to them, the window neither publishes nor runs their actions.
@@ -231,7 +231,7 @@ impl ViewStorage {
             device: hosted.device,
             sections: RefCell::default(),
             held_sections: RefCell::default(),
-            section_doors: RefCell::default(),
+            section_apis: RefCell::default(),
             kept_by: RefCell::default(),
             records: hosted.records,
             chains: super::chain::Chains::default(),
@@ -367,16 +367,15 @@ impl ViewStorage {
     /// What [`Self::record_resources`] publishes depends on: each record's
     /// id and revision, in publication order.
     pub(crate) fn records_key(&self) -> Vec<(String, u64)> {
-        let mut doors = self
+        let mut apis = self
             .person
             .as_ref()
-            .map(super::person::PersonState::doors)
+            .map(super::person::PersonState::apis)
             .unwrap_or_default();
-        doors.extend(self.section_doors.borrow().iter().cloned());
-        doors.extend(self.chains.doors());
-        doors
-            .iter()
-            .map(|door| (door.id().to_owned(), door.revision()))
+        apis.extend(self.section_apis.borrow().iter().cloned());
+        apis.extend(self.chains.apis());
+        apis.iter()
+            .map(|api| (api.id().to_owned(), api.revision()))
             .collect()
     }
 
@@ -395,13 +394,8 @@ impl ViewStorage {
             .as_ref()
             .map(super::person::PersonState::resources)
             .unwrap_or_default();
-        resources.extend(
-            self.section_doors
-                .borrow()
-                .iter()
-                .map(|door| door.publish()),
-        );
-        resources.extend(self.chains.doors().iter().map(|door| door.publish()));
+        resources.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
+        resources.extend(self.chains.apis().iter().map(|api| api.publish()));
         let kept_by = self.kept_by.borrow();
         if !kept_by.is_empty() {
             for resource in &mut resources {
@@ -436,7 +430,7 @@ impl ViewStorage {
             .as_ref()
             .map(super::person::PersonState::me)
             .or(me);
-        super::record::answer(&self.answering_doors(), me, payload)
+        super::record::answer(&self.answering_apis(), me, payload)
     }
 
     /// Answer a `read` of one of those records, named `record`
@@ -446,35 +440,35 @@ impl ViewStorage {
         record: &str,
         payload: &[u8],
     ) -> Result<tilo_actions::ActionOutput, String> {
-        let door = self
-            .answering_doors()
+        let api = self
+            .answering_apis()
             .into_iter()
-            .find(|door| door.id() == record)
+            .find(|api| api.id() == record)
             .ok_or_else(|| format!("no record `{record}` is open here"))?;
         Ok(tilo_actions::ActionOutput {
-            value: Some(door.read(payload)?),
+            value: Some(api.read(payload)?),
             resources: Vec::new(),
         })
     }
 
     /// The person's records and settings sections the window answers for:
     /// another provider runs what it keeps; the window never does.
-    fn answering_doors(&self) -> Vec<Rc<dyn RecordDoor>> {
-        let mut doors = self
+    fn answering_apis(&self) -> Vec<Rc<dyn RecordApi>> {
+        let mut apis = self
             .person
             .as_ref()
-            .map(super::person::PersonState::doors)
+            .map(super::person::PersonState::apis)
             .unwrap_or_default();
-        doors.extend(self.section_doors.borrow().iter().cloned());
+        apis.extend(self.section_apis.borrow().iter().cloned());
         let kept_by = self.kept_by.borrow();
-        doors.retain(|door| !kept_by.contains_key(door.id()));
-        doors
+        apis.retain(|api| !kept_by.contains_key(api.id()));
+        apis
     }
 
     /// The settings section `T` held as a record, opened on first use: with
     /// the undo and redo of the person's steps on it, unless the window
     /// keeps nothing of theirs (a private one).
-    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Rc<SectionDoor>
+    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Rc<SectionApi>
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
@@ -486,19 +480,19 @@ impl ViewStorage {
     }
 
     /// [`Self::section`] of the section `kind` describes.
-    fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionDoor> {
+    fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionApi> {
         let name = kind.kind;
-        let door = if let Some(person) = &self.person {
+        let api = if let Some(person) = &self.person {
             person.open_section(kind)
         } else {
-            let door = Rc::new(SectionDoor::new(kind, String::new(), Vec::new()));
-            self.section_doors
+            let api = Rc::new(SectionApi::new(kind, String::new(), Vec::new()));
+            self.section_apis
                 .borrow_mut()
-                .push(Rc::clone(&door) as Rc<dyn RecordDoor>);
-            door
+                .push(Rc::clone(&api) as Rc<dyn RecordApi>);
+            api
         };
-        self.sections.borrow_mut().insert(name, Rc::clone(&door));
-        door
+        self.sections.borrow_mut().insert(name, Rc::clone(&api));
+        api
     }
 
     /// The settings section `T` as a record a view part edits through its
@@ -580,7 +574,7 @@ impl ViewStorage {
     /// a frame's settle, where the store takes the writer opening it needs,
     /// so the views' next sync reads it.
     pub(crate) fn settle(&self) {
-        for chain in self.chains.doors() {
+        for chain in self.chains.apis() {
             let _ = chain.revision();
         }
     }
@@ -598,7 +592,7 @@ impl ViewStorage {
         if let Some(emoji) = &self.emoji {
             emoji.settle();
         }
-        for chain in self.chains.doors() {
+        for chain in self.chains.apis() {
             let _ = chain.revision();
         }
         // Take the list so a refresh that builds a view (a switch reacting

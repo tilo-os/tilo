@@ -67,14 +67,14 @@ impl SettingsSteps {
             .filter(|resource| tilo_settings_service::keeps(resource.id.as_str()))
             .collect();
         let mut held = self.resources.write_recover();
-        let changed = !tilo_actions::door::publishes_same(&held, &resources);
+        let changed = !tilo_actions::api::publishes_same(&held, &resources);
         *held = resources;
         changed
     }
 
     /// The rows the settings stand in now.
-    fn offered(&self) -> Vec<tilo_actions::door::PlacedAction> {
-        tilo_actions::door::survey_placed(&self.resources.read_recover())
+    fn offered(&self) -> Vec<tilo_actions::api::PlacedAction> {
+        tilo_actions::api::survey_placed(&self.resources.read_recover())
     }
 
     /// The published action at `address`, as one invocation with `argument` (its slot form) is:
@@ -86,9 +86,9 @@ impl SettingsSteps {
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
         let resources = self.resources.read_recover();
-        let spec: &ActionSpec = tilo_actions::door::resolve(&resources, address)?;
+        let spec: &ActionSpec = tilo_actions::api::resolve(&resources, address)?;
         let need = spec.need_for(None, argument);
-        let mut descriptor = tilo_actions::door::survey_placed(&resources)
+        let mut descriptor = tilo_actions::api::survey_placed(&resources)
             .into_iter()
             .map(|placed| placed.action)
             .find(|descriptor| &descriptor.address == address)?;
@@ -118,7 +118,7 @@ impl HostStepServices for SettingsSteps {
             .collect()
     }
 
-    fn rows(&self) -> Vec<tilo_actions::door::PlacedAction> {
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.offered()
     }
 

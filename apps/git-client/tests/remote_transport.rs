@@ -526,7 +526,7 @@ fn remote_failure_is_reported_to_the_caller_and_visible_status() {
             },
         )
         .expect_err("authentication fails");
-    let tilo_actions::DoorError::Failed(message) = error else {
+    let tilo_actions::ApiError::Failed(message) = error else {
         panic!("the transfer ran and failed, it was not refused: {error:?}");
     };
     assert!(message.contains("authentication failed"), "{message}");

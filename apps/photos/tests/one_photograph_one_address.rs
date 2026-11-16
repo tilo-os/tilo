@@ -31,7 +31,7 @@ fn published(doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         &library(doc),
     )]
 }
-use tilo_actions::door::{self, ActionAddress};
+use tilo_actions::api::{self, ActionAddress};
 
 fn photograph() -> Vec<u8> {
     photos::pixels::encode_png(&photos::shots_pattern(900, 600)).expect("the pattern encodes")
@@ -97,14 +97,10 @@ impl Session {
         shown[0].id.0.clone()
     }
 
-    fn perform(
-        &mut self,
-        address: &ActionAddress,
-        region: [f64; 4],
-    ) -> Result<(), door::DoorError> {
+    fn perform(&mut self, address: &ActionAddress, region: [f64; 4]) -> Result<(), api::ApiError> {
         let resources = published(&self.doc);
-        let spec = door::resolve(&resources, address)
-            .ok_or_else(|| door::DoorError::Unknown(address.clone()))?;
+        let spec = api::resolve(&resources, address)
+            .ok_or_else(|| api::ApiError::Unknown(address.clone()))?;
         let [x, y, w, h] = region;
         let encoded = spec
             .build_json(
@@ -112,7 +108,7 @@ impl Session {
                     .as_object()
                     .expect("an object"),
             )
-            .map_err(|error| door::DoorError::InvalidArguments(error.to_string()))?;
+            .map_err(|error| api::ApiError::InvalidArguments(error.to_string()))?;
         let mut registry = ActionRegistry::new();
         PhotoLibrary::register(&mut registry);
         registry

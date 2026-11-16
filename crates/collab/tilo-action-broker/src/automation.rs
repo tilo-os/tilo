@@ -1,7 +1,7 @@
-//! Shortcuts on the action door.
+//! Shortcuts on the action api.
 //!
 //! A workspace's saved [`Shortcut`]s are published by the action broker next
-//! to the workspace's own governance actions, so every caller of the door —
+//! to the workspace's own governance actions, so every caller of the API —
 //! the palette, `tilo-control`, the MCP bridge, an agent, a peer — finds and
 //! runs them the same way:
 //!
@@ -27,9 +27,9 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use settings_store::hardware::{ActionChord, ActionChordTarget, KeyChord, ShortcutConfig};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::context::ActionContext;
 use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RiskLevel};
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
 use tilo_actions::remote::workspace_provider;
@@ -60,7 +60,7 @@ pub const STOP_ACTION: &str = "stop";
 pub const STOP_ALL_ACTION: &str = "stop-all";
 
 /// How long a running step is left before it is observed again, when its
-/// host cannot say when it changes. The broker's own door can, so this is
+/// host cannot say when it changes. The broker's own api can, so this is
 /// only a fallback.
 const SETTLE_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -368,7 +368,7 @@ pub fn trigger_summary(trigger: &TriggerSpec) -> String {
     }
 }
 
-/// The action-door address a chord runs `shortcut_id` in `workspace` through.
+/// The action-api address a chord runs `shortcut_id` in `workspace` through.
 #[must_use]
 pub fn chord_target(workspace: &str, shortcut_id: &str) -> ActionChordTarget {
     ActionChordTarget {
@@ -841,7 +841,7 @@ pub fn stopped_output(stopped: &[RunningRun]) -> ActionOutput {
     }
 }
 
-/// How a run started through the door treats a person-shaped question.
+/// How a run started through the API treats a person-shaped question.
 ///
 /// Whoever invokes `run` answers for its confirmations up front: evidence
 /// supplied with the invocation is offered to each step that asks for
@@ -872,8 +872,8 @@ pub struct RunStart {
     pub parent: Option<tilo_actions::context::WorkGroup>,
 }
 
-/// [`RunHooks`] for a run started through the door.
-pub struct DoorHooks {
+/// [`RunHooks`] for a run started through the API.
+pub struct ApiHooks {
     confirmation: Option<Confirmation>,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
@@ -882,7 +882,7 @@ pub struct DoorHooks {
     run: RunId,
 }
 
-impl DoorHooks {
+impl ApiHooks {
     #[must_use]
     pub fn new(
         confirmation: Option<Confirmation>,
@@ -899,13 +899,13 @@ impl DoorHooks {
     }
 }
 
-impl RunHooks for DoorHooks {
+impl RunHooks for ApiHooks {
     fn confirm(&self, _request: ConfirmationRequest) -> Pending<Option<Confirmation>> {
         Pending::ready(self.confirmation.clone())
     }
 
     fn ask(&self, _request: AskRequest) -> Pending<Option<Value>> {
-        // Nobody on the door can be asked mid-run; declining stops the run
+        // Nobody on the API can be asked mid-run; declining stops the run
         // at the question instead of inventing an answer.
         Pending::ready(None)
     }
@@ -1065,7 +1065,7 @@ impl RunHooks for SheetHooks {
     }
 }
 
-/// The terminal update the door reports for a finished run.
+/// The terminal update the API reports for a finished run.
 #[must_use]
 pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpdate {
     match &report.outcome {
@@ -1094,7 +1094,7 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
     }
 }
 
-/// One run the door finished, waiting to be recorded in history.
+/// One run the API finished, waiting to be recorded in history.
 #[derive(Clone, Debug)]
 pub struct FinishedShortcutRun {
     /// The workspace the shortcut is saved in.

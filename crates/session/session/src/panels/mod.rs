@@ -6,14 +6,14 @@ pub(crate) mod mount;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::OutputInfo;
 use tilo_session_core::surface::HostKey;
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_desktop::overlays::Overlays;
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 
 use crate::platform::surfaces::{AppHost, Placement};
 use ui::host_operation::ResourceOperationStart;
@@ -230,8 +230,8 @@ impl Published for Banners {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.host.invoke(address, arguments, look)
     }
 
@@ -543,8 +543,8 @@ impl Published for ActivityLayer {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.host.invoke(address, arguments, look)
     }
 
@@ -783,8 +783,8 @@ impl Published for Readout {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         // A readout stands on the display whose key changed it, and keeps clear of the line the
         // person is typing on.
         if address.resource == tilo_desktop::osd::OSD_RESOURCE && address.action == "show" {

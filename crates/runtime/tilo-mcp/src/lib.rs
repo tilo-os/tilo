@@ -1,4 +1,4 @@
-//! The MCP projection of an action host, and the doors an MCP client reaches
+//! The MCP projection of an action host, and the servers an MCP client reaches
 //! a desktop or another device through. Headless: an agent's bridge, the
 //! `tilo` command and the API serve it without the app toolkit.
 
@@ -6,7 +6,7 @@ pub mod devices;
 pub mod enter;
 mod images;
 pub mod lines;
-pub mod session_door;
+pub mod session_api;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
 
@@ -106,7 +106,7 @@ pub struct McpServer<H> {
     /// The `tilo` tool's session: the references its answers showed, and the steps its
     /// programs made, for `undo` and `history task`.
     programs: std::sync::Mutex<agent::Programs>,
-    /// Where this door starts its task's tilolang host; `None` for a door that runs no
+    /// Where this server starts its task's tilolang host; `None` for a server that runs no
     /// programs (one outside a desktop session).
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
@@ -116,7 +116,7 @@ pub struct McpServer<H> {
     /// reaches none.
     devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     /// The record this session's last agent call worked in
-    /// ([`ActedRecord`]): where its agent is, for the presence its door
+    /// ([`ActedRecord`]): where its agent is, for the presence its server
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
     /// The record each of this session's changes still running is changing,
@@ -297,7 +297,7 @@ fn add_hint(value: &mut Value, note: &str) {
 
 /// What a failed update says about an argument out of its declared range,
 /// from the bound its failure carries as data
-/// ([`tilo_actions::DoorError::failure_details`]).
+/// ([`tilo_actions::ApiError::failure_details`]).
 fn range_hint(value: &Value) -> Option<String> {
     let details = value.pointer("/update/error/details")?;
     let param = details.get("param")?.as_str()?;
@@ -622,7 +622,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The host has already bound this exact authenticated run to its action
-    /// door. This constructor does not mint or replace the execution identity.
+    /// server. This constructor does not mint or replace the execution identity.
     pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
         let Some(actor) = caller.acting().person_id() else {
             return Err(std::io::Error::other(
@@ -1525,7 +1525,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             run.as_ref().map(|run| run.id.clone())
         };
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
-        // The agent this session is (a door connection's task agent), so it
+        // The agent this session is (a server connection's task agent), so it
         // can tell the person which agent to give access to.
         if let (Some(agent), Some(fields)) =
             (self.actor.strip_prefix("agent:"), server.as_object_mut())
@@ -3389,7 +3389,7 @@ fn tool_definitions() -> &'static [Value] {
 }
 
 /// Every tool a session offers: its surface's, then the ones its host and its
-/// door add.
+/// server add.
 fn definitions(
     surface: Surface,
     content_puts: bool,
@@ -3414,7 +3414,7 @@ fn definitions(
 
 /// The `tools/list` answer of an agent in a hosted workspace, which is what the
 /// developer documentation's tool reference is written from: a workspace stores
-/// and reads content, and its door reaches the person's other devices. No
+/// and reads content, and its server reaches the person's other devices. No
 /// session and no host are needed to name the tools, so a page can be written on
 /// a machine with neither.
 #[must_use]

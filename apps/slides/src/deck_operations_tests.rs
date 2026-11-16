@@ -8,7 +8,7 @@
 )]
 
 use serde_json::{Value, json};
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Invoke};
 
@@ -33,11 +33,11 @@ fn on_slide(
     slide: &str,
     action: &str,
     args: Value,
-) -> Result<Option<Value>, DoorError> {
+) -> Result<Option<Value>, ApiError> {
     app.call_on(&actions::slide_resource_id(slide), action, args)
 }
 
-fn field_edit(app: &mut TestApp<SlidesShell>, edit: &Edit<Deck>) -> Result<(), DoorError> {
+fn field_edit(app: &mut TestApp<SlidesShell>, edit: &Edit<Deck>) -> Result<(), ApiError> {
     app.call("field-edit", json!({ "edit": edit })).map(drop)
 }
 

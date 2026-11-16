@@ -25,7 +25,7 @@ use os_actions::brightness::{BrightnessService, MonitorLevel, SessionDisplays};
 use os_actions::{BrightnessKind, software_luminance, step_together};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, OutputChange, OutputInfo};
 
@@ -664,7 +664,7 @@ impl Displays {
 
     /// The display a level or step without one named is about: the one the person works on when it
     /// can be dimmed, else the first that can.
-    fn target(&self) -> Result<String, DoorError> {
+    fn target(&self) -> Result<String, ApiError> {
         let inner = self.inner.borrow();
         let levels = inner.levels();
         inner
@@ -678,7 +678,7 @@ impl Displays {
 
     /// Move the display the person works on by `delta` , or with `all` every display that can be
     /// dimmed, each keeping its share of the brightest one's level.
-    fn step(&self, delta: f32, all: bool) -> Result<(), DoorError> {
+    fn step(&self, delta: f32, all: bool) -> Result<(), ApiError> {
         let inner = self.inner.borrow();
         let levels = inner.levels();
         let Some(backlights) = &inner.backlights else {
@@ -709,7 +709,7 @@ impl Displays {
     }
 
     /// Set `connector` to `level` (`0.0..=1.0`).
-    fn set(&self, connector: &str, level: f32) -> Result<(), DoorError> {
+    fn set(&self, connector: &str, level: f32) -> Result<(), ApiError> {
         let inner = self.inner.borrow();
         let Some(backlights) = &inner.backlights else {
             return Err(nothing_dimmable());
@@ -717,7 +717,7 @@ impl Displays {
         if backlights.set(connector, level.clamp(0.0, 1.0) * 100.0) {
             Ok(())
         } else {
-            Err(DoorError::Unavailable {
+            Err(ApiError::Unavailable {
                 code: "unknown-display".into(),
                 reason: format!("{connector} cannot be dimmed here"),
             })
@@ -740,8 +740,8 @@ fn shared_colour(one: DisplayCapabilities, other: DisplayCapabilities) -> Displa
 }
 
 /// The refusal of a brightness key on a machine with nothing to dim.
-fn nothing_dimmable() -> DoorError {
-    DoorError::Unavailable {
+fn nothing_dimmable() -> ApiError {
+    ApiError::Unavailable {
         code: "no-backlight".into(),
         reason: "No display here can be dimmed".into(),
     }
@@ -752,11 +752,11 @@ fn nothing_dimmable() -> DoorError {
     clippy::cast_possible_truncation,
     reason = "a level from 0 to 1 fits an f32"
 )]
-fn level_of(level: f64) -> Result<f32, DoorError> {
+fn level_of(level: f64) -> Result<f32, ApiError> {
     if level.is_finite() && (0.0..=1.0).contains(&level) {
         Ok(level as f32)
     } else {
-        Err(DoorError::InvalidArguments(format!(
+        Err(ApiError::InvalidArguments(format!(
             "a brightness is from 0 to 1, not {level}"
         )))
     }
@@ -808,9 +808,9 @@ impl Service for Displays {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         match decode::<DisplaysAction>(&self.resources(), resource, action, arguments)? {
             DisplaysAction::NextMode => self.command(SessionCommand::Displays {
@@ -818,7 +818,7 @@ impl Service for Displays {
             }),
             DisplaysAction::SetMode { mode } => {
                 let mode = DisplayMode::named(&mode).ok_or_else(|| {
-                    DoorError::InvalidArguments(format!("`{mode}` is not an arrangement"))
+                    ApiError::InvalidArguments(format!("`{mode}` is not an arrangement"))
                 })?;
                 self.command(SessionCommand::Displays { mode });
             }
@@ -1142,7 +1142,7 @@ mod tests {
         displays: &mut Displays,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         displays.invoke(RESOURCE, action, arguments).map(drop)
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
             let mut service = showing(None, &[("HDMI-A-1", "HDMI-A-1")]);
             let error = invoke(&mut service, "brightness-down", &Map::new()).expect_err("nothing dims");
             assert!(
-                matches!(&error, DoorError::Unavailable { code, .. } if code == "no-backlight"),
+                matches!(&error, ApiError::Unavailable { code, .. } if code == "no-backlight"),
                 "{error:?}"
             );
             assert_eq!(reading(&service).brightness(), None);
@@ -1250,7 +1250,7 @@ mod tests {
                     &Map::from_iter([("level".to_owned(), Value::from(level))]),
                 )
                 .expect_err("not a level");
-                assert!(matches!(error, DoorError::InvalidArguments(_)), "{error:?}");
+                assert!(matches!(error, ApiError::InvalidArguments(_)), "{error:?}");
             }
         }
 
@@ -1290,7 +1290,7 @@ mod tests {
             )
             .expect_err("that display has nothing to dim");
             assert!(
-                matches!(&error, DoorError::Unavailable { code, .. } if code == "unknown-display"),
+                matches!(&error, ApiError::Unavailable { code, .. } if code == "unknown-display"),
                 "{error:?}"
             );
             assert!(

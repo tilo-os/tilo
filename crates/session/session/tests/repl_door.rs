@@ -712,7 +712,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
             .places
             .iter()
             .filter_map(|place| {
-                tilo_actions::door::locate(
+                tilo_actions::api::locate(
                     &resources,
                     &tilo_actions::ActionAddress::new(&place.record, "open"),
                 )
@@ -773,7 +773,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
             .places
             .iter()
             .filter_map(|place| {
-                tilo_actions::door::locate(
+                tilo_actions::api::locate(
                     &resources,
                     &tilo_actions::ActionAddress::new(&place.record, "open"),
                 )
@@ -1111,7 +1111,7 @@ impl tilo_service::Service for Withholding {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, tilo_actions::DoorError> {
+    ) -> Result<Started, tilo_actions::ApiError> {
         self.inner.invoke(resource, action, arguments)
     }
 

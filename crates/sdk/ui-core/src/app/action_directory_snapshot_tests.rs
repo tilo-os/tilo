@@ -27,7 +27,7 @@ tilo_test_env::scenario! {
         let row = app.directory_resource_row(&resource, "", true).unwrap();
         assert_eq!(row.visibility.as_ref().unwrap().action, "read");
         let resources = vec![resource];
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
             &resources,
             &descriptors,
@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
             assert_eq!(row.visibility.as_ref().unwrap().action, disclosed);
         }
         let resources = vec![session, readable];
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
             &resources,
             &descriptors,
@@ -293,7 +293,7 @@ fn publish_declared_directory(app: &mut App) {
         !resources.is_empty(),
         "fixture must pass real surface validation"
     );
-    let descriptors = tilo_actions::door::survey(&resources);
+    let descriptors = tilo_actions::api::survey(&resources);
     app.capture_action_directory_snapshot(&resources, &descriptors);
 }
 
@@ -351,7 +351,7 @@ fn directory_snapshot_estimate_bounds_its_measured_memory() {
         ("an app's directory", 40, 0, 12),
     ] {
         let resources = resources(count, label, extra);
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         let (snapshot, held) = allocations_only(|| {
             crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
                 &resources,
@@ -1116,7 +1116,7 @@ tilo_test_env::scenario! {
                 parent.children.push(nested);
                 nested = parent;
             }
-            let descriptors = tilo_actions::door::survey(std::slice::from_ref(&nested));
+            let descriptors = tilo_actions::api::survey(std::slice::from_ref(&nested));
             app.capture_action_directory_snapshot(std::slice::from_ref(&nested), &descriptors);
             let mut query = directory_query("", "depth:15", 8, 8192, 8);
             query.max_depth = u16::MAX;
@@ -1152,7 +1152,7 @@ tilo_test_env::scenario! {
                 ExecutionLocus::ClientLocal,
                 |_| panic!("discovery must not execute an action-input closure"),
             ));
-            let descriptors = tilo_actions::door::survey(&resources);
+            let descriptors = tilo_actions::api::survey(&resources);
             app.capture_action_directory_snapshot(&resources, &descriptors);
             let revision = app.action_directory_revision();
             app.action_directory_page(directory_query(&revision, "", 8, 8192, 8));
@@ -1249,10 +1249,10 @@ tilo_test_env::scenario! {
             publish_declared_directory(&mut app);
             let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
             let mut resources = app.publication_resources();
-            let descriptors = tilo_actions::door::survey(&resources);
+            let descriptors = tilo_actions::api::survey(&resources);
             let child = resources.pop().unwrap();
             resources[0].children.push(child);
-            assert_eq!(tilo_actions::door::survey(&resources), descriptors);
+            assert_eq!(tilo_actions::api::survey(&resources), descriptors);
             app.capture_action_directory_snapshot(&resources, &descriptors);
             assert_ne!(app.action_directory_revision(), page.revision);
             let mut query = directory_query(&page.revision, "", 1, 8192, 8);
@@ -1308,7 +1308,7 @@ tilo_test_env::scenario! {
             let error = app
                 .invoke_resource_action(ResourceInvocation::new(&address, &actor))
                 .unwrap_err();
-            assert_eq!(error, tilo_actions::DoorError::ConfirmationRequired);
+            assert_eq!(error, tilo_actions::ApiError::ConfirmationRequired);
         }
     }
 

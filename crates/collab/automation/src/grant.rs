@@ -12,7 +12,7 @@ use tilo_action_policy::{
     TreePath, decide,
 };
 use tilo_actions::ActionKey;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 
 use crate::{
     AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,

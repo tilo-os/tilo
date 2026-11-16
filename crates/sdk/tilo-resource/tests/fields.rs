@@ -709,11 +709,11 @@ tilo_test_env::scenario! {
         let mut lock = Replica::<Lock>::new();
         assert!(matches!(
             lock.apply(paths.minutes.set(0)),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         assert!(matches!(
             lock.apply(paths.shown_name.set("Ada".to_owned())),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         lock.apply(paths.label.set("Tower".to_owned())).unwrap();
         lock.apply_confirmed(paths.minutes.set(0)).unwrap();
@@ -855,17 +855,17 @@ tilo_test_env::scenario! {
         for weaker in [15, 0] {
             assert!(matches!(
                 screen.apply(paths.lock_minutes.set(weaker)),
-                Err(tilo_actions::DoorError::ConfirmationRequired)
+                Err(tilo_actions::ApiError::ConfirmationRequired)
             ));
         }
         assert!(matches!(
             screen.apply(paths.notifications_when_locked.set(true)),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         screen.apply(paths.guard.set("strict".to_owned())).unwrap();
         assert!(matches!(
             screen.apply(paths.guard.set("off".to_owned())),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         screen
             .apply_confirmed(paths.notifications_when_locked.set(true))

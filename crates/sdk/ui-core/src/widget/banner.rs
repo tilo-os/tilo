@@ -754,7 +754,7 @@ pub struct Banner {
     dismiss_requested: Rc<Cell<bool>>,
     on_dismiss: Option<Box<dyn FnMut()>>,
     /// What the view bound to the dismiss control: run when the person presses it, through the
-    /// same door as the banner's own controls.
+    /// same API as the banner's own controls.
     dismiss_press: crate::widget::Press,
     /// The body's node, then one per button, in [`Widget::children`] order.
     nodes: Vec<NodeId>,
@@ -930,7 +930,7 @@ impl Banner {
     }
 
     /// What pressing the dismiss control does: the action the view bound to it, run through
-    /// the banner's own control door. Implies [`Self::dismissible`].
+    /// the banner's own control API. Implies [`Self::dismissible`].
     #[must_use]
     pub fn with_dismiss_press(mut self, press: crate::widget::Press) -> Self {
         if self.dismiss.is_none() {

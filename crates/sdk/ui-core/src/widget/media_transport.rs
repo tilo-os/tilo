@@ -110,7 +110,7 @@ pub struct TransportState {
 }
 
 /// The app's actions the transport's controls invoke, each through the resource/action
-/// door.
+/// API.
 #[derive(Clone, Default)]
 pub struct TransportActions {
     pub play_pause: Option<ActionBinding<()>>,

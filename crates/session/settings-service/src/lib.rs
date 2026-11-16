@@ -25,8 +25,8 @@ mod i18n;
 use serde_json::{Map, Value};
 use settings_store::index::{self, Change, Setting};
 use tilo_actions::{
-    ActionAddress, ActionArgs, ActionInvoker, ActionParam, ActionSpec, ActionState,
-    ConfirmationPolicy, DoorError, ParamType, ResourceSpec, RiskLevel,
+    ActionAddress, ActionArgs, ActionInvoker, ActionParam, ActionSpec, ActionState, ApiError,
+    ConfirmationPolicy, ParamType, ResourceSpec, RiskLevel,
 };
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started};
@@ -305,8 +305,8 @@ impl SettingsService {
         &self,
         setting: &Setting,
         effect: SettingEffect,
-    ) -> Result<(ActionAddress, Map<String, Value>), DoorError> {
-        let refused = |reason: &str| DoorError::InvalidArguments(reason.to_owned());
+    ) -> Result<(ActionAddress, Map<String, Value>), ApiError> {
+        let refused = |reason: &str| ApiError::InvalidArguments(reason.to_owned());
         match effect {
             SettingEffect::Switch => {
                 let switch = setting.switch.ok_or_else(|| refused("not a switch"))?;
@@ -467,12 +467,12 @@ impl Service for SettingsService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         // What is changed here is the person's, under their own id: a host
         // that started the service without saying who sits here has none to
         // put on the change.
         let Some(invoker) = self.invoker.as_ref() else {
-            return Err(DoorError::Failed(
+            return Err(ApiError::Failed(
                 "the session has not said who sits here".to_owned(),
             ));
         };
@@ -482,7 +482,7 @@ impl Service for SettingsService {
             let setting = index::SETTINGS
                 .iter()
                 .find(|setting| setting.id == id)
-                .ok_or_else(|| DoorError::Unknown(ActionAddress::new(resource, action)))?;
+                .ok_or_else(|| ApiError::Unknown(ActionAddress::new(resource, action)))?;
             let effect = tilo_service::decode::<SettingEffect>(
                 &self.published,
                 resource,

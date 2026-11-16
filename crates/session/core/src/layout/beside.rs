@@ -143,7 +143,7 @@ impl LayoutActions {
         asked: &str,
         arguments: &serde_json::Map<String, Json>,
         action: &LayoutAction,
-    ) -> Result<bool, tilo_actions::DoorError> {
+    ) -> Result<bool, tilo_actions::ApiError> {
         let LayoutAction::Place { resource, view, .. } = action else {
             return Ok(false);
         };
@@ -163,7 +163,7 @@ impl LayoutActions {
         self.layout
             .borrow_mut()
             .open_place(asked, resource, view, &beside)
-            .map_err(|why| tilo_actions::DoorError::Unavailable {
+            .map_err(|why| tilo_actions::ApiError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: why,
             })?;
@@ -179,7 +179,7 @@ impl LayoutActions {
         place: u64,
         x: &mut i64,
         y: &mut i64,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         let named = |name: &str| arguments.get(name).is_some_and(|value| !value.is_null());
         if named("x") && named("y") {
             return Ok(());
@@ -190,7 +190,7 @@ impl LayoutActions {
             .map(str::trim)
             .filter(|beside| !beside.is_empty())
             .ok_or_else(|| {
-                tilo_actions::DoorError::InvalidArguments(
+                tilo_actions::ApiError::InvalidArguments(
                     "a place stands at an x and a y, or beside something".to_owned(),
                 )
             })?;
@@ -198,17 +198,17 @@ impl LayoutActions {
         let anchor =
             layout
                 .anchor_of(beside)
-                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                .ok_or_else(|| tilo_actions::ApiError::Unavailable {
                     code: "nowhere_to_place".to_owned(),
                     reason: format!("nothing on the canvas shows {beside}"),
                 })?;
         if anchor == place {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "a place cannot stand beside itself".to_owned(),
             ));
         }
         let (at_x, at_y) = layout.point_beside(anchor, Some(place)).ok_or_else(|| {
-            tilo_actions::DoorError::Unavailable {
+            tilo_actions::ApiError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: format!("{beside} stands on no canvas"),
             }

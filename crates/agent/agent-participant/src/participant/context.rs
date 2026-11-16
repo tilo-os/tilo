@@ -7,7 +7,7 @@ use tilo_session_client::{Cmd, Outbox};
 
 use automerge::ReadDoc as _;
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{
@@ -76,7 +76,7 @@ impl AgentParticipant {
         let mut open: Vec<(DocumentRoute, Vec<ActionDescriptor>)> = self
             .apps
             .iter()
-            .map(|(route, app)| (route.clone(), super::record_door::offered(route, app)))
+            .map(|(route, app)| (route.clone(), super::record_api::offered(route, app)))
             .collect();
         // The records the task names, by title or by app, are what it is
         // about, and only theirs are offered: a record open from an earlier
@@ -497,7 +497,7 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String> {
-        if super::record_door::reads(route, address) {
+        if super::record_api::reads(route, address) {
             return self.read_record(route);
         }
         let app = self
@@ -518,20 +518,20 @@ impl AgentParticipant {
         self.invoke_as(route, address, arguments, false)
             .map(Option::unwrap_or_default)
             .map_err(|refusal| match refusal {
-                actions::Refusal::Door(error) => format!("{}: {error}", error.code()),
+                actions::Refusal::Api(error) => format!("{}: {error}", error.code()),
                 actions::Refusal::Agent(reason) => reason,
             })
     }
 }
 
 impl AgentParticipant {
-    /// The open record `route` read through the record door, with what its app keeps beside it.
+    /// The open record `route` read through the record API, with what its app keeps beside it.
     pub(super) fn read_record(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
         let replica = self
             .apps
             .get(route)
             .ok_or_else(|| "that document is not open".to_string())?;
-        super::record_door::read(
+        super::record_api::read(
             route,
             replica,
             crate::control::agent_id(&self.identity.delegation),

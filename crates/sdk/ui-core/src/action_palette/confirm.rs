@@ -165,7 +165,7 @@ pub(super) fn confirmation_text(label: &str, description: Option<&str>) -> (Stri
     (question, detail)
 }
 
-/// The evidence the door expects for `policy`, given by the person's click.
+/// The evidence the API expects for `policy`, given by the person's click.
 pub(super) fn confirmation_evidence(policy: &ConfirmationPolicy) -> serde_json::Value {
     match policy {
         ConfirmationPolicy::None => serde_json::json!({}),

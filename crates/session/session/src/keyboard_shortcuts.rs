@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use tilo_actions::ActionAddress;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_actions::outcome::{ActionFailure, ActionOutput};
 use tilo_actions::remote::CatalogueRow;
 use tilo_broker_core::services::KeyboardShortcutServices;

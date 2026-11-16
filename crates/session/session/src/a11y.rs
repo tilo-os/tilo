@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use tilo_service::Wake;
-use tilo_session_core::door::{Doors, Shared};
+use tilo_session_core::surfaces::{Shared, Surfaces};
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
 };
@@ -156,7 +156,7 @@ impl Accessibility {
 
     /// Answer what assistive clients asked, publish every surface offering now whose tree moved,
     /// and mark the window holding the keyboard focused.
-    pub(crate) fn step(&mut self, doors: &Doors) {
+    pub(crate) fn step(&mut self, doors: &Surfaces) {
         let asked = {
             let mut asked = Vec::new();
             while let Ok(request) = self.requests.try_recv() {
@@ -183,7 +183,7 @@ impl Accessibility {
     }
 
     /// Carry out one request against the live surfaces.
-    fn answer(&mut self, doors: &Doors, request: Request) {
+    fn answer(&mut self, doors: &Surfaces, request: Request) {
         match request {
             Request::Tree(place) => {
                 if let Some(window) = self.windows.get_mut(&place) {
@@ -215,7 +215,7 @@ impl Accessibility {
     /// Perform `action` on `target` of the surface at `place` , on the loop that owns it: the one
     /// road a client's request takes. Answers whether the surface took it.
     pub(crate) fn perform(
-        doors: &Doors,
+        doors: &Surfaces,
         place: usize,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
@@ -227,7 +227,7 @@ impl Accessibility {
 
     /// The window the surface at `place` shows now, as an assistive client reads it: the name its
     /// window carries, and its tree. `None` while it shows nothing to read.
-    pub(crate) fn window_at(doors: &Doors, place: usize) -> Option<(String, TreeUpdate)> {
+    pub(crate) fn window_at(doors: &Surfaces, place: usize) -> Option<(String, TreeUpdate)> {
         Self::window_of(&doors.surface(place)?)
     }
 
@@ -310,7 +310,7 @@ impl Session {
     /// ([`ui::window_targets`]).
     #[must_use]
     pub fn controls(&self) -> Vec<ui::window_targets::WindowControl> {
-        self.shared.doors.controls()
+        self.shared.published.controls()
     }
 
     /// Act on the control `name` as `action` says, as an assistive technology
@@ -320,7 +320,7 @@ impl Session {
     /// No surface shows a control by that name, or it answers nothing of
     /// `action`.
     pub fn press_action(&self, name: &str, action: TargetAction) -> Result<(), String> {
-        self.shared.doors.press_action(name, action)
+        self.shared.published.press_action(name, action)
     }
 }
 
@@ -338,7 +338,7 @@ mod tests {
         keyboard: bool,
     }
 
-    impl tilo_session_core::door::Published for Face {
+    impl tilo_session_core::surfaces::Published for Face {
         fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
             Vec::new()
         }
@@ -347,10 +347,10 @@ mod tests {
             &mut self,
             address: &ui::tilo_actions::ActionAddress,
             _arguments: &serde_json::Map<String, serde_json::Value>,
-            _look: &mut tilo_session_core::door::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError>
+            _look: &mut tilo_session_core::surfaces::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
         {
-            Err(ui::tilo_actions::DoorError::Unknown(address.clone()))
+            Err(ui::tilo_actions::ApiError::Unknown(address.clone()))
         }
 
         fn accessible_labels(&mut self) -> Vec<String> {
@@ -394,7 +394,7 @@ mod tests {
         // What the shell's own screen stands in for draws nothing, so it reads as nothing: a client
         // finds the window that draws, not the one behind it.
         {
-            let mut doors = Doors::default();
+            let mut doors = Surfaces::default();
             let drawn = face("Drawn", false);
             let stood_aside = face("Stood aside", true);
             doors.add(Rc::clone(&drawn));
@@ -417,7 +417,7 @@ mod tests {
         // The topmost surface that would take the keys is the window a screen reader reads as focused,
         // as the compositor routes a key to it.
         {
-            let mut doors = Doors::default();
+            let mut doors = Surfaces::default();
             doors.add(face("Shell", false));
             doors.add(face("Question", true));
             let mut export = export(Vec::new());

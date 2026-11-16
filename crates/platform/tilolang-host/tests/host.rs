@@ -1391,9 +1391,9 @@ fn query() -> ActionDirectoryQuery {
 }
 
 tilo_test_env::scenario! {
-    fn the_instances_action_directory_is_browsed_by_the_door_and_agents;
+    fn the_instances_action_directory_is_browsed_by_the_api_and_agents;
 
-    phase the_instance_offers_an_action_directory_the_door_and_agents_browse;
+    phase the_instance_offers_an_action_directory_the_api_and_agents_browse;
     {
         let directory = Rc::new(RefCell::new(Directory::default()));
         let (mut host, mut window, _sent, _inbox, _route) =
@@ -2241,7 +2241,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         Some(&shell),
         "not the root the shell opens with"
     );
-    // As the door publishes it: by its name.
+    // As the API publishes it: by its name.
     let hide = "hide_app_menus";
     assert!(
         bundle.meta.actions.iter().any(|action| action.name == hide),
@@ -2508,7 +2508,7 @@ tilo_test_env::scenario! {
             "the 24-hour clock first: {before}"
         );
 
-        // The person picks the 12-hour clock in Settings: the host hears it on its door, and what
+        // The person picks the 12-hour clock in Settings: the host hears it on its api, and what
         // the instance already wrote reads in it.
         assert!(
             host.set_formats(with_clock(tilo_formats::TimeStyle::H12)),
@@ -2524,7 +2524,7 @@ tilo_test_env::scenario! {
 
     phase a_week_start_the_person_changes_is_written_again_in_the_window;
     // A person who starts their week on Sunday in Settings sees the week their window shows move
-    // with them: the session says so on the host's door, and the instance writes the day again.
+    // with them: the session says so on the host's api, and the instance writes the day again.
     {
         let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", WEEKS, weeks());
         host.instances_mut()
@@ -2539,9 +2539,9 @@ tilo_test_env::scenario! {
          Monday: {monday}"
         );
 
-        // Sunday in Settings, said on the host's door as the session says it: the same day stands in
+        // Sunday in Settings, said on the host's api as the session says it: the same day stands in
         // the week that began the Sunday before it, and the window shows that week.
-        let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
+        let (session, api) = runtime_portal::tilolang_host::pair().expect("an API");
         runtime_portal::tilolang_host::send_locale(
             &session,
             &runtime_portal::tilolang_host::Locale {
@@ -2549,11 +2549,11 @@ tilo_test_env::scenario! {
                 language: String::new(),
             },
         )
-        .expect("the formats cross the door");
+        .expect("the formats cross the API");
         let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) =
-            runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
+            runtime_portal::tilolang_host::receive(&api).expect("the API carries them")
         else {
-            panic!("the door carries the person's formats as formats");
+            panic!("the API carries the person's formats as formats");
         };
         assert!(host.set_locale(&locale), "another first day is a change");
         settle(&mut host, &mut window);

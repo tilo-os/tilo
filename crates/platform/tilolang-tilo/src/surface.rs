@@ -203,7 +203,7 @@ fn subject_schema() -> Json {
     json!({"type": "object", "oneOf": [one("person"), one("agent")]})
 }
 
-/// The parameter `param` of an action of `meta`, as the catalogue declares it: what the door
+/// The parameter `param` of an action of `meta`, as the catalogue declares it: what the API
 /// binds, a palette offers and the generated surface describes, one declaration for all three.
 #[must_use]
 pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
@@ -285,7 +285,7 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         // The action as the record names it, which is what a change's claim names too
         // ([`crate::action::DynAction::describe`]): its id, the one its words keep
-        // ([`crate::publish::action_type`]'s `label_of`), not the name the door offers it by.
+        // ([`crate::publish::action_type`]'s `label_of`), not the name the API offers it by.
         id: action.id.clone(),
         label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),

@@ -29,7 +29,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore, SpeakerChange, SpeakerServices,
     WifiContinuityServices, WorkspaceMemberships,
 };
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_broker_core::services::{
     ContentStoreServices, SearchIndexServices, WorkspaceAuthority, WorkspaceAuthorityHandle,
 };
@@ -1349,12 +1349,12 @@ fn seams(
             [
                 vec![
                     activity as std::sync::Arc<dyn HostStepServices>,
-                    std::sync::Arc::new(crate::pairing::BrokerDoor {
+                    std::sync::Arc::new(crate::pairing::BrokerApi {
                         layout: std::sync::Arc::clone(&layout_authority),
                         fabric: steps_fabric,
                         pairing: crate::pairing::Pairing::session(),
                     }),
-                    std::sync::Arc::new(crate::identity_admin::BrokerDoor {
+                    std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
                         hosting,
@@ -1424,7 +1424,7 @@ fn answer(
         Some(Ok(Started::Later(later))) => {
             later.then(move |landed| {
                 let _ = reply.send(receipt(landed.unwrap_or_else(|| {
-                    Err(DoorError::Failed("the action's work was given up".into()))
+                    Err(ApiError::Failed("the action's work was given up".into()))
                 })));
             });
             return;
@@ -1442,7 +1442,7 @@ fn answer(
 }
 
 /// What an action that finished answered, as the wire carries it.
-fn receipt(done: Result<tilo_actions::ActionOutput, DoorError>) -> Receipt {
+fn receipt(done: Result<tilo_actions::ActionOutput, ApiError>) -> Receipt {
     match done {
         Ok(output) => match serde_json::to_vec(&output) {
             Ok(output) => Receipt::Done(output),
@@ -2341,7 +2341,7 @@ mod tests {
             _resource: &str,
             _action: &str,
             _: &Map<String, serde_json::Value>,
-        ) -> Result<Started, DoorError> {
+        ) -> Result<Started, ApiError> {
             Ok(Started::Done(tilo_actions::ActionOutput::default()))
         }
     }

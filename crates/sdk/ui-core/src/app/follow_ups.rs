@@ -14,7 +14,7 @@ impl App {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         context: Option<tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let request_id = self.take_broker_request_id()?;
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: Some(running),

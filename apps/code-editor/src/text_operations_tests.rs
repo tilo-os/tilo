@@ -29,7 +29,7 @@ fn invoke(
     file: &str,
     action: &str,
     args: Value,
-) -> Result<Option<ui::tilo_actions::ActionOutput>, ui::tilo_actions::DoorError> {
+) -> Result<Option<ui::tilo_actions::ActionOutput>, ui::tilo_actions::ApiError> {
     let output = app
         .harness()
         .call_on(&file_resource_id(file), action, args)?;
@@ -60,7 +60,7 @@ fn edit(
     app: &mut TestApp<CodeEditorShell>,
     file: &str,
     op: Value,
-) -> Result<(), ui::tilo_actions::DoorError> {
+) -> Result<(), ui::tilo_actions::ApiError> {
     let edit = Project::paths()
         .buffers
         .key(file)

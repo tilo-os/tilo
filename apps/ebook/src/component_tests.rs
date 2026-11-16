@@ -154,7 +154,7 @@ fn invoke(
     resource: &str,
     action: &str,
     arguments: serde_json::Value,
-) -> Result<(), tilo_actions::DoorError> {
+) -> Result<(), tilo_actions::ApiError> {
     driver.call_on(resource, action, arguments).map(drop)
 }
 

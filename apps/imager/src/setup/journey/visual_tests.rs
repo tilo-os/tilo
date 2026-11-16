@@ -1861,7 +1861,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
         .unwrap_err();
     let expected = t("installer-preview-password-short");
     assert!(
-        matches!(refused, tilo_actions::DoorError::Failed(ref message) if message == &expected),
+        matches!(refused, tilo_actions::ApiError::Failed(ref message) if message == &expected),
         "the semantic caller must receive the original validation refusal: {refused}"
     );
     app.settle();
@@ -2048,7 +2048,7 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
             .unwrap_err();
         let expected = t(error);
         assert!(
-            matches!(refused, tilo_actions::DoorError::Failed(ref message) if message == &expected),
+            matches!(refused, tilo_actions::ApiError::Failed(ref message) if message == &expected),
             "the semantic refusal must explain the actual policy failure"
         );
         app.settle();
@@ -2205,7 +2205,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                     .effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap_err();
                 assert!(
-                    matches!(refused, tilo_actions::DoorError::Failed(ref message) if message == &t(error))
+                    matches!(refused, tilo_actions::ApiError::Failed(ref message) if message == &t(error))
                 );
             } else {
                 app.harness()

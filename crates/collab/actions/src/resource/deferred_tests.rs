@@ -52,7 +52,7 @@ fn invoke_deferred_document(
     actual_server: bool,
     json: bool,
 ) -> (
-    Result<crate::Dispatched, crate::DoorError>,
+    Result<crate::Dispatched, crate::ApiError>,
     usize,
     bool,
     usize,
@@ -87,22 +87,22 @@ fn invoke_deferred_document(
     let mut doc = automerge::AutoCommit::new();
     let mut transport = AcceptingDeferredTransport::default();
     let result = if json {
-        crate::door::invoke_json(
+        crate::api::invoke_json(
             &mut doc,
             &resources,
             &address,
             &serde_json::Map::new(),
-            crate::door::InvocationProvenance::caller(b"owner"),
+            crate::api::InvocationProvenance::caller(b"owner"),
             &registry,
             &mut transport,
         )
     } else {
-        crate::door::invoke(
+        crate::api::invoke(
             &mut doc,
             &resources,
             &address,
             None,
-            crate::door::InvocationProvenance::caller(b"owner"),
+            crate::api::InvocationProvenance::caller(b"owner"),
             &registry,
             &mut transport,
         )
@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
         let r = resource(spec(&calls));
         for _ in 0..3 {
             assert_eq!(
-                crate::door::survey(std::slice::from_ref(&r))[0].input,
+                crate::api::survey(std::slice::from_ref(&r))[0].input,
                 crate::InputSpec::None
             );
             let handlers = std::collections::HashSet::from(["test.create".to_owned()]);
@@ -151,9 +151,9 @@ tilo_test_env::scenario! {
         let address = crate::ActionAddress::new("test", "create");
         let mut values = Vec::new();
         for _ in 0..2 {
-            values.push(crate::door::encode(&resources, &address, None).unwrap());
+            values.push(crate::api::encode(&resources, &address, None).unwrap());
             values
-                .push(crate::door::encode_json(&resources, &address, &serde_json::Map::new()).unwrap());
+                .push(crate::api::encode_json(&resources, &address, &serde_json::Map::new()).unwrap());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 4);
         for (i, encoded) in values.iter().enumerate() {
@@ -169,9 +169,9 @@ tilo_test_env::scenario! {
         let calls = Arc::new(AtomicUsize::new(0));
         let resources = [resource(spec(&calls))];
         let address = crate::ActionAddress::new("test", "create");
-        assert!(crate::door::encode(&resources, &address, Some("")).is_err());
+        assert!(crate::api::encode(&resources, &address, Some("")).is_err());
         let args = serde_json::from_value(serde_json::json!({"x":1})).unwrap();
-        assert!(crate::door::encode_json(&resources, &address, &args).is_err());
+        assert!(crate::api::encode_json(&resources, &address, &args).is_err());
         assert!(ActionBinding::static_json(&resources[0], &resources[0].actions[0], args).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
@@ -192,8 +192,8 @@ tilo_test_env::scenario! {
         );
         let resources = [resource(wrong)];
         let address = crate::ActionAddress::new("test", "create");
-        assert!(crate::door::encode(&resources, &address, None).is_err());
-        assert!(crate::door::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
+        assert!(crate::api::encode(&resources, &address, None).is_err());
+        assert!(crate::api::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
@@ -207,8 +207,8 @@ tilo_test_env::scenario! {
         *type_id = "test.replaced".into();
         let resources = [resource(changed)];
         let address = crate::ActionAddress::new("test", "create");
-        assert!(crate::door::encode(&resources, &address, None).is_err());
-        assert!(crate::door::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
+        assert!(crate::api::encode(&resources, &address, None).is_err());
+        assert!(crate::api::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -219,8 +219,8 @@ tilo_test_env::scenario! {
         changed.type_mut().operation_type = Some("test.changed-handler".into());
         let resources = [resource(changed)];
         let address = crate::ActionAddress::new("test", "create");
-        assert!(crate::door::encode(&resources, &address, None).is_err());
-        assert!(crate::door::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
+        assert!(crate::api::encode(&resources, &address, None).is_err());
+        assert!(crate::api::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
             let (result, calls, effect, submitted) = invoke_deferred_document(true, true, json);
             assert!(
                 result.is_err(),
-                "remote creation requires the address-based owner door"
+                "remote creation requires the address-based owner API"
             );
             assert_eq!(calls, 0);
             assert!(!effect);

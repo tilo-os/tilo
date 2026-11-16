@@ -4,7 +4,7 @@
 //! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (the session's *MCP server*):
 //! the person admits each connection as an agent member of a workspace, and
 //! every call then passes the broker's ordinary gate as that agent. A
-//! `--connect` client inside the login relays to that door. It never starts
+//! `--connect` client inside the login relays to that server. It never starts
 //! a standalone runtime there: a second, empty authority beside the desktop
 //! would answer every question about the desktop wrongly, and silently.
 
@@ -20,33 +20,33 @@ pub fn agent_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::AGENT_SOCKET_FILE))
 }
 
-/// The desktop door this process belongs to, when it runs on a Tilo desktop: the one its
+/// The desktop server this process belongs to, when it runs on a Tilo desktop: the one its
 /// confined environment names, else its login's own. `Ok(None)` off a Tilo desktop; `Err` on one
-/// whose door is not there (yet), saying why.
+/// whose server is not there (yet), saying why.
 ///
 /// # Errors
-/// This is a Tilo desktop, and nothing listens where its door goes.
-pub fn desktop_door() -> io::Result<Option<PathBuf>> {
+/// This is a Tilo desktop, and nothing listens where its server goes.
+pub fn desktop_server() -> io::Result<Option<PathBuf>> {
     match route(
         false,
-        environment_door(std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)),
+        environment_server(std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)),
         tilo_paths::login::is_tilo_login(),
         agent_socket_path(tilo_paths::login::login_runtime_dir().map(Into::into)),
         Path::exists,
     )? {
-        Route::Session(door) => Ok(Some(door)),
+        Route::Session(server) => Ok(Some(server)),
         Route::Standalone => Ok(None),
     }
 }
 
-/// Carry this process's stdio to the desktop door at `door`, until either side closes: what an
+/// Carry this process's stdio to the desktop server at `server`, until either side closes: what an
 /// MCP client on a Tilo desktop talks to.
 ///
 /// # Errors
-/// Nothing answers at `door`, or the lines could not be carried.
-pub fn bridge(door: &Path) -> io::Result<()> {
-    let stream = tilo_files::native::socket::connect(door)
-        .map_err(|error| unreachable_door(door, &error))?;
+/// Nothing answers at `server`, or the lines could not be carried.
+pub fn bridge(server: &Path) -> io::Result<()> {
+    let stream = tilo_files::native::socket::connect(server)
+        .map_err(|error| unreachable_server(server, &error))?;
     bridge_stdio(
         stream,
         Asking {
@@ -58,7 +58,7 @@ pub fn bridge(door: &Path) -> io::Result<()> {
 
 /// The variable naming the file that holds the agent key this client presents: the key a person
 /// started their session with for an agent (`tilo-session --agent-key FILE`), which the session's
-/// door admits without asking them, as the agent the key's grant names.
+/// server admits without asking them, as the agent the key's grant names.
 pub const AGENT_KEY_ENV: &str = "TILO_AGENT_KEY";
 
 /// The agent key in the file [`AGENT_KEY_ENV`] names, when it names one.
@@ -109,25 +109,25 @@ pub enum Route {
     Standalone,
 }
 
-/// The door of the confined environment this process runs in, when its
+/// The server of the confined environment this process runs in, when its
 /// environment names one ([`tilo_paths::login::AGENT_SOCKET_ENV`]): an absolute
 /// path, as `ush` sets it.
 #[must_use]
-pub fn environment_door(named: Option<OsString>) -> Option<PathBuf> {
+pub fn environment_server(named: Option<OsString>) -> Option<PathBuf> {
     named.map(PathBuf::from).filter(|path| path.is_absolute())
 }
 
 /// Choose a `--connect` client's route. `standalone` is the client's own
 /// explicit choice of a profile (`--standalone`, `--profile` or
-/// `TILO_RUNTIME_PROFILE`); `environment` is [`environment_door`]'s answer,
-/// the door of the confined environment the client runs in, which it uses in
-/// place of the session's own; `door` is [`agent_socket_path`]'s answer and
+/// `TILO_RUNTIME_PROFILE`); `environment` is [`environment_server`]'s answer,
+/// the server of the confined environment the client runs in, which it uses in
+/// place of the session's own; `server` is [`agent_socket_path`]'s answer and
 /// `exists` whether something is there.
 pub fn route(
     standalone: bool,
     environment: Option<PathBuf>,
     tilo_login: bool,
-    door: Option<PathBuf>,
+    server: Option<PathBuf>,
     exists: impl Fn(&Path) -> bool,
 ) -> io::Result<Route> {
     if standalone {
@@ -137,8 +137,8 @@ pub fn route(
         return if exists(&path) {
             Ok(Route::Session(path))
         } else {
-            Err(missing_door(&format!(
-                "this environment's door, {}, is not there; the desktop opens it as the \
+            Err(missing_server(&format!(
+                "this environment's server, {}, is not there; the desktop opens it as the \
                  environment starts",
                 path.display()
             )))
@@ -147,20 +147,20 @@ pub fn route(
     if !tilo_login {
         return Ok(Route::Standalone);
     }
-    match door {
+    match server {
         Some(path) if exists(&path) => Ok(Route::Session(path)),
-        Some(path) => Err(missing_door(&format!(
+        Some(path) => Err(missing_server(&format!(
             "nothing listens at {}; the desktop serves it once first login is complete",
             path.display()
         ))),
-        None => Err(missing_door(
+        None => Err(missing_server(
             "this process has no XDG_RUNTIME_DIR and the account has no /run/user directory to \
              look in",
         )),
     }
 }
 
-fn missing_door(reason: &str) -> io::Error {
+fn missing_server(reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
         format!(
@@ -172,9 +172,9 @@ fn missing_door(reason: &str) -> io::Error {
     )
 }
 
-/// The error a client reads when the door is there but does not answer.
+/// The error a client reads when the server is there but does not answer.
 #[must_use]
-pub fn unreachable_door(path: &Path, error: &io::Error) -> io::Error {
+pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
         format!(
@@ -186,7 +186,7 @@ pub fn unreachable_door(path: &Path, error: &io::Error) -> io::Error {
     )
 }
 
-/// The most the door reads from a client before it is admitted: its
+/// The most the server reads from a client before it is admitted: its
 /// `initialize` and any discovery probe before it.
 const MAX_HELLO: usize = 64 * 1024;
 /// The most of a client's own name the person is shown.
@@ -231,7 +231,7 @@ pub const WORKSPACE: &str = "/params/capabilities/experimental/so.tilo/workspace
 pub const KEY: &str = "/params/capabilities/experimental/so.tilo/key";
 
 /// The provider the session's own resources (its shell, arrangement, windows and notices) are
-/// published under on its doors: what the catalogue lists them under and an invocation names.
+/// published under on its servers: what the catalogue lists them under and an invocation names.
 pub const SESSION_PROVIDER: &str = "so.tilo.session";
 
 /// What the person decided about one connection.
@@ -255,14 +255,14 @@ pub enum Consent {
     Refuse(String),
 }
 
-/// Why the door would not ask the person at all.
+/// Why the server would not ask the person at all.
 #[derive(Debug)]
 pub enum HelloError {
     /// The client sent something before, or instead of, `initialize`: it is
     /// answered with this JSON-RPC id, then the connection closes.
     NotInitialize(serde_json::Value),
     /// The client asked whether the server speaks a newer protocol before
-    /// it initializes (MCP's `server/discover`). The door does not, so this
+    /// it initializes (MCP's `server/discover`). The server does not, so this
     /// request with this id is answered "method not found", and the client
     /// goes on to `initialize` on the same connection, as the protocol has
     /// it fall back. Nothing is asked of the person and nothing runs.
@@ -287,7 +287,7 @@ fn bounded_text(value: Option<&serde_json::Value>) -> Option<String> {
 const DISCOVER: &str = "server/discover";
 
 /// Parse a line a connection sends before it is admitted. Only an
-/// `initialize` request opens the door; a `server/discover` probe is
+/// `initialize` request opens the server; a `server/discover` probe is
 /// answered as unsupported; anything else — a tool call, a notification,
 /// junk — is refused before the person is asked, and nothing it asked for
 /// runs.
@@ -377,7 +377,7 @@ fn not_found_reply(id: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// A JSON-RPC error reply the door sends before it closes.
+/// A JSON-RPC error reply the server sends before it closes.
 #[must_use]
 pub fn error_reply(id: &serde_json::Value, message: &str) -> serde_json::Value {
     serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32001,"message":message}})
@@ -424,7 +424,7 @@ pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
 /// checked: read its `initialize`, `ask` the person (with a probe that says
 /// whether the client is still there), and only once they admit it answer
 /// that `initialize` and every later request as the admitted agent, over
-/// `host`'s ordinary gate. Before then the door reads nothing more, so no
+/// `host`'s ordinary gate. Before then the server reads nothing more, so no
 /// request a client queued behind its `initialize` can run unadmitted. A
 /// refusal answers the `initialize` with a JSON-RPC error and closes.
 ///
@@ -448,7 +448,7 @@ fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
     }
 }
 
-/// The first line a client sends the door, read a byte at a time so nothing
+/// The first line a client sends the server, read a byte at a time so nothing
 /// after it is consumed, within the bound and time an `initialize` gets.
 /// What it says decides how the connection is served: [`is_control_request`].
 ///
@@ -474,7 +474,7 @@ pub fn is_control_request(line: &[u8]) -> bool {
     })
 }
 
-/// Serve one accepted session-door connection.
+/// Serve one accepted session-server connection.
 #[cfg(unix)]
 pub fn serve<H>(
     stream: std::os::unix::net::UnixStream,
@@ -513,7 +513,7 @@ where
     )
 }
 
-/// What a door's connection is served with beside its host: where its task's
+/// What a server's connection is served with beside its host: where its task's
 /// programs run, and the person's devices as the host reaches them.
 #[derive(Default)]
 pub struct Beside {
@@ -605,7 +605,7 @@ where
     // The connection is one task: its run, whose programs run in a tilolang host of the task's
     // own (docs/designs/app-language/agents.md, "How a program runs"). Each program is run as
     // whoever the connection acts as: the agent, or the person typing at a REPL.
-    let run = format!("door-{}", uuid::Uuid::new_v4().simple());
+    let run = format!("server-{}", uuid::Uuid::new_v4().simple());
     let server = match agent {
         Some((agent, name)) => crate::McpServer::for_agent(host, workspace, &agent, &person)
             .agent_named(&name)
@@ -656,7 +656,7 @@ impl Asking {
     }
 
     /// `line` with what this asks written in, when it is the client's `initialize`; `None` for
-    /// any other line, which goes to the door as it is.
+    /// any other line, which goes to the server as it is.
     fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
         let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
         if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
@@ -716,7 +716,7 @@ pub fn relay_asking(
     asking: &Asking,
 ) -> io::Result<u64> {
     /// The most the client sends before its `initialize` is through, as the
-    /// door reads it.
+    /// server reads it.
     const MOST: u64 = 64 * 1024;
     let mut total = 0_u64;
     loop {
@@ -769,9 +769,9 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_client_is_routed_to_its_logins_door_and_opens_it_with_initialize;
+        fn a_client_is_routed_to_its_logins_server_and_opens_it_with_initialize;
 
-        phase a_login_whose_door_is_missing_says_why_and_how_to_go_on;
+        phase a_login_whose_server_is_missing_says_why_and_how_to_go_on;
         {
             let nowhere = route(false, None, true, None, |_| true).unwrap_err();
             assert!(
@@ -809,7 +809,7 @@ mod tests {
             assert!(!is_control_request(b"op"));
         }
 
-        phase the_door_lives_in_the_private_session_directory;
+        phase the_server_lives_in_the_private_session_directory;
         {
             assert_eq!(
                 agent_socket_path(Some("/run/user/1000".into())),
@@ -819,42 +819,42 @@ mod tests {
             assert_eq!(agent_socket_path(None), None);
         }
 
-        phase a_tilo_login_relays_to_its_door_and_never_falls_back_to_a_standalone_runtime;
+        phase a_tilo_login_relays_to_its_server_and_never_falls_back_to_a_standalone_runtime;
         {
-            let door = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
+            let server = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
             assert_eq!(
-                route(false, None, true, Some(door.clone()), |_| true).unwrap(),
-                Route::Session(door.clone())
+                route(false, None, true, Some(server.clone()), |_| true).unwrap(),
+                Route::Session(server.clone())
             );
-            let missing = route(false, None, true, Some(door.clone()), |_| false).unwrap_err();
+            let missing = route(false, None, true, Some(server.clone()), |_| false).unwrap_err();
             assert_eq!(missing.kind(), io::ErrorKind::NotFound);
             assert!(missing.to_string().contains("--standalone"), "{missing}");
             assert!(route(false, None, true, None, |_| true).is_err());
             assert_eq!(
-                route(true, None, true, Some(door.clone()), |_| true).unwrap(),
+                route(true, None, true, Some(server.clone()), |_| true).unwrap(),
                 Route::Standalone
             );
             assert_eq!(
-                route(false, None, false, Some(door), |_| true).unwrap(),
+                route(false, None, false, Some(server), |_| true).unwrap(),
                 Route::Standalone
             );
         }
 
-        phase a_client_in_an_environment_uses_its_environments_door_in_any_login;
+        phase a_client_in_an_environment_uses_its_environments_server_in_any_login;
         {
             let own = PathBuf::from("/run/tilo/agent.sock");
             let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
             assert_eq!(
-                environment_door(Some(own.clone().into())),
+                environment_server(Some(own.clone().into())),
                 Some(own.clone()),
-                "the environment names its door"
+                "the environment names its server"
             );
             assert_eq!(
-                environment_door(Some("run/tilo/agent.sock".into())),
+                environment_server(Some("run/tilo/agent.sock".into())),
                 None,
                 "only an absolute path names one"
             );
-            assert_eq!(environment_door(None), None);
+            assert_eq!(environment_server(None), None);
             for login in [true, false] {
                 assert_eq!(
                     route(
@@ -866,7 +866,7 @@ mod tests {
                     )
                     .unwrap(),
                     Route::Session(own.clone()),
-                    "an environment's own door, not the session's"
+                    "an environment's own server, not the session's"
                 );
             }
             let gone = route(false, Some(own.clone()), true, Some(session), |path| {
@@ -896,7 +896,7 @@ mod tests {
             assert_eq!(anywhere.workspace, None, "the workspace in front");
         }
 
-        phase only_an_initialize_request_opens_the_door;
+        phase only_an_initialize_request_opens_the_server;
         {
             let refused = |line: &str| match parse_hello(line.as_bytes()) {
                 Err(HelloError::NotInitialize(id)) => id,
@@ -928,7 +928,7 @@ mod tests {
         }
     }
 
-    /// Every caller the door's host was asked to answer for.
+    /// Every caller the server's host was asked to answer for.
     #[derive(Clone, Default)]
     struct Recording(std::sync::Arc<std::sync::Mutex<Vec<tilo_actions::remote::Caller>>>);
 
@@ -977,9 +977,9 @@ mod tests {
     const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Claude Code","version":"2"}}}"#;
     const LIST_APPS: &str = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_ls","arguments":{}}}"#;
 
-    /// Run the door on one end of a socket pair, deciding with `consent`,
+    /// Run the server on one end of a socket pair, deciding with `consent`,
     /// with `client` written to the other end first.
-    fn door(
+    fn server(
         client: &str,
         consent: Consent,
     ) -> (
@@ -1016,11 +1016,11 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_door_serves_only_an_initialized_client_the_person_admitted;
+        fn the_server_serves_only_an_initialized_client_the_person_admitted;
 
         phase a_refused_client_reads_a_json_rpc_error_and_nothing_it_queued_runs;
         {
-            let (near, served, host, asked) = door(
+            let (near, served, host, asked) = server(
                 &format!("{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Refuse("the person said no".into()),
             );
@@ -1038,7 +1038,7 @@ mod tests {
 
         phase a_tool_call_before_initialize_is_refused_without_asking_anyone;
         {
-            let (near, served, host, asked) = door(
+            let (near, served, host, asked) = server(
                 &format!("{LIST_APPS}\n{INITIALIZE}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1063,7 +1063,7 @@ mod tests {
         // and closing on the probe left such a client unable to connect at all.
         {
             const DISCOVER_PROBE: &str = r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
-            let (near, served, host, asked) = door(
+            let (near, served, host, asked) = server(
                 &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1089,16 +1089,16 @@ mod tests {
             assert!(!host.0.lock().unwrap().is_empty());
         }
 
-        phase probes_alone_never_admit_and_cannot_keep_the_door_reading;
+        phase probes_alone_never_admit_and_cannot_keep_the_server_reading;
         {
             // Few enough probes to fit in a socket unread, so writing them never
-            // waits on a door that is answering them, and a client that answers
-            // none of it is what the budget is for: the door reads them out,
+            // waits on a server that is answering them, and a client that answers
+            // none of it is what the budget is for: the server reads them out,
             // answers each, and stops rather than going on to wait for the
             // fallback that never comes.
             let probes = 8;
             let flood = format!("{PROBE}\n").repeat(probes);
-            let (near, served, host, asked) = door(
+            let (near, served, host, asked) = server(
                 &flood,
                 Consent::Admit {
                     workspace: "workspace".into(),
@@ -1120,7 +1120,7 @@ mod tests {
                 replies
             });
             let replies = reader.join().unwrap();
-            // The door goes on to wait for the `initialize` a client falls back
+            // The server goes on to wait for the `initialize` a client falls back
             // to, which this one never sends.
             assert!(served.join().unwrap().is_err());
             assert!(!replies.is_empty(), "each probe was answered");
@@ -1133,7 +1133,7 @@ mod tests {
 
         phase an_admitted_client_is_served_as_its_agent_in_its_workspace;
         {
-            let (near, served, host, asked) = door(
+            let (near, served, host, asked) = server(
                 &format!("{INITIALIZE}\n{LIST_APPS}\n"),
                 Consent::Admit {
                     workspace: "workspace".into(),

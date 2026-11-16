@@ -629,7 +629,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
         .effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap_err();
     assert!(
-        matches!(refused, tilo_actions::DoorError::Failed(ref message)
+        matches!(refused, tilo_actions::ApiError::Failed(ref message)
         if message == &t("installer-review-usb-choice-required")),
         "fallback requires the explicitly named USB action, never an implicit install: {refused}"
     );

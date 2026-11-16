@@ -1,4 +1,4 @@
-//! The door a bot's runs act through.
+//! The API a bot's runs act through.
 //!
 //! Every step of a bot's run is an invocation here, as the bot: the caller
 //! must be this installation's `Caller::bot`. The change names the bot, its
@@ -9,7 +9,7 @@
 //! A step its run already took (the host restarted mid-run) is found in the
 //! record's history by its derived invocation id and observed instead of
 //! taken again. An outside step completes when the outbox entries it
-//! queued are settled: the door hands each entry to the connector's worker
+//! queued are settled: the API hands each entry to the connector's worker
 //! and settles it as the bot with what came back, so the request, its
 //! result and the settle are all the bot's, and the step's value is the
 //! result the next step reads. A refusal settles failed; an unavailable
@@ -20,8 +20,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
+use tilo_actions::api::{ActionAddress, ApiError};
 use tilo_actions::context::Cause;
-use tilo_actions::door::{ActionAddress, DoorError};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
@@ -33,11 +33,11 @@ use tilo_actions::{
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::item_json::OutboxRow;
-use crate::participant::actions::{door_status, record_of, record_provider};
+use crate::participant::actions::{api_status, record_of, record_provider};
 use tilo_lock::MutexRecover as _;
 
-/// What the door needs of the bot's session and replicas.
-pub trait DoorParticipant: Send {
+/// What the API needs of the bot's session and replicas.
+pub trait ApiParticipant: Send {
     fn workspace(&self) -> &str;
     /// The held records and what each offers the bot now.
     /// Every operation of each held record, each in the row of the resource
@@ -61,7 +61,7 @@ pub trait DoorParticipant: Send {
         invoker: &ActionInvoker,
         context: &ActionContext,
         confirmed: bool,
-    ) -> Result<ActionOutput, DoorError>;
+    ) -> Result<ActionOutput, ApiError>;
     /// The entry `actor` recorded for step `step` of run `run` in any held
     /// record.
     fn find_in_history(
@@ -177,18 +177,18 @@ pub struct OutboxSpec {
 }
 
 /// The `ActionHost` one installation's runs act through.
-pub struct BotDoor<P: DoorParticipant> {
+pub struct BotApi<P: ApiParticipant> {
     participant: Arc<Mutex<P>>,
     installation: String,
     installer: String,
     outboxes: Vec<OutboxSpec>,
     cause: Mutex<Option<Cause>>,
-    /// Steps taken since the door was made, by invocation.
+    /// Steps taken since the API was made, by invocation.
     ledger: Mutex<HashMap<InvocationId, ReceiptStatus>>,
 }
 
-impl<P: DoorParticipant> BotDoor<P> {
-    /// The door of installation `installation`, installed by `installer`.
+impl<P: ApiParticipant> BotApi<P> {
+    /// The API of installation `installation`, installed by `installer`.
     pub fn new(
         participant: Arc<Mutex<P>>,
         installation: String,
@@ -205,7 +205,7 @@ impl<P: DoorParticipant> BotDoor<P> {
         }
     }
 
-    /// Forget the steps this door took. For a run whose changes the workspace
+    /// Forget the steps this api took. For a run whose changes the workspace
     /// refused part of: run again, it finds the steps whose changes stand
     /// in the records' history and takes the others anew, reading the workspace
     /// as it now is, instead of answering every step from what it did the
@@ -330,7 +330,7 @@ impl<P: DoorParticipant> BotDoor<P> {
             request.confirmation.is_some(),
         ) {
             Ok(output) => output,
-            Err(error) => return status_or_rejection(door_status(&error)),
+            Err(error) => return status_or_rejection(api_status(&error)),
         };
         let Some(spec) = spec else {
             return Ok(ReceiptStatus::Completed { output });
@@ -481,14 +481,14 @@ fn is_bot(caller: &Caller, installation: &str) -> bool {
 }
 
 /// The bot's record reads: what its runs read of the records it follows,
-/// from the copies it holds ([`DoorParticipant::record`]). A run reads the
+/// from the copies it holds ([`ApiParticipant::record`]). A run reads the
 /// records as they were brought up to before it, with its own changes since.
-struct BotReads<P: DoorParticipant> {
+struct BotReads<P: ApiParticipant> {
     participant: Arc<Mutex<P>>,
     installation: String,
 }
 
-impl<P: DoorParticipant + 'static> RecordReads for BotReads<P> {
+impl<P: ApiParticipant + 'static> RecordReads for BotReads<P> {
     fn answer_read(
         self: Arc<Self>,
         caller: &Caller,
@@ -535,7 +535,7 @@ impl<P: DoorParticipant + 'static> RecordReads for BotReads<P> {
     }
 }
 
-/// A door refusal as what `invoke` answers: a rejection is the call's
+/// An API refusal as what `invoke` answers: a rejection is the call's
 /// error, a failure its receipt.
 fn status_or_rejection(status: ReceiptStatus) -> Result<ReceiptStatus, ActionHostError> {
     match status {
@@ -562,7 +562,7 @@ fn update_of(invocation: InvocationId, status: &ReceiptStatus) -> Option<Invocat
     }
 }
 
-impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
+impl<P: ApiParticipant + 'static> ActionHost for BotApi<P> {
     fn query(
         &self,
         caller: &Caller,
@@ -606,7 +606,7 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
             return None;
         }
         // Steps taken before a restart are found when the run invokes them
-        // again ([`RunStep`]); the ledger knows this door's own.
+        // again ([`RunStep`]); the ledger knows this API's own.
         let status = self.ledger.lock_recover().get(id).cloned()?;
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
@@ -633,5 +633,5 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
 }
 
 #[cfg(test)]
-#[path = "door_tests.rs"]
+#[path = "api_tests.rs"]
 mod tests;

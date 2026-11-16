@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use tilo_onboarding::{OnboardingEffect, OnboardingState, Page, Secrets, Step};
-use ui::device_local_door::SharedDoor;
+use ui::device_local_api::SharedApi;
 use ui::theme::Theme;
 use ui::widget::{AppModel, AppWidget, ModelPath, Widget};
 use vello::Scene;
@@ -34,7 +34,7 @@ pub(super) struct Hosted {
     app: Option<Box<dyn AppWidget>>,
     /// Mounting failed once: setup is not mounted again on every frame.
     refused: bool,
-    door: SharedDoor,
+    api: SharedApi,
     node: Option<NodeId>,
 }
 
@@ -50,7 +50,7 @@ impl Hosted {
             state: OnboardingState::new(secrets, Some(runtime_identity::unknown_recovery_words)),
             app: None,
             refused: false,
-            door: SharedDoor::default(),
+            api: SharedApi::default(),
             node: None,
         }
     }
@@ -60,7 +60,7 @@ impl Hosted {
     }
 
     /// Mount the app, once. It is this device's own: a private window whose
-    /// actions reach only the person at this device, through its door
+    /// actions reach only the person at this device, through its API
     /// ([`Self::device_local_resources`]), and no room publishes them.
     fn mount(&mut self) {
         if self.app.is_some() || self.refused {
@@ -85,28 +85,28 @@ impl Hosted {
 
     /// The setup app's actions for this device, shared with the catalogue
     /// a person searching, a script or an agent here drives setup through.
-    pub(super) fn door(&self) -> SharedDoor {
-        self.door.clone()
+    pub(super) fn api(&self) -> SharedApi {
+        self.api.clone()
     }
 
-    /// Run what was asked through the door, then publish what the app
+    /// Run what was asked through the API, then publish what the app
     /// offers now. Mounts the app first, so its actions are there from the
     /// first frame of setup.
-    pub(super) fn serve_door(&mut self) {
+    pub(super) fn serve_api(&mut self) {
         self.mount();
         match self.app.as_deref_mut() {
             Some(app) => {
-                self.door.serve(app);
+                self.api.serve(app);
             }
-            None => self.door.refuse_queued(),
+            None => self.api.refuse_queued(),
         }
-        self.door.publish(self.app.as_deref());
+        self.api.publish(self.app.as_deref());
     }
 
     /// Setup is gone: nothing more is offered or answered.
-    pub(super) fn close_door(&self) {
-        self.door.refuse_queued();
-        self.door.publish(None);
+    pub(super) fn close_api(&self) {
+        self.api.refuse_queued();
+        self.api.publish(None);
     }
 
     pub(super) fn build_layout(

@@ -20,7 +20,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use tilo_actions::ActionOutput;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use crate::control::AgentControl;

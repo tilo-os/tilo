@@ -26,7 +26,7 @@ const DEVICE_SURFACE: &str = include_str!("../../../session/session/device-surfa
 /// The app the session's own resources are described as: `use so.tilo.session`.
 pub const SESSION_APP: &str = "so.tilo.session";
 /// What the session publishes, described as a package (`tilo_session::session_package`, which
-/// a test holds to what its door publishes).
+/// a test holds to what its api publishes).
 const SESSION_DESCRIPTION: &str = include_str!("../../../../apps/tl/session/surface.toml");
 
 /// The session's package: its resources' types and actions, which a shell's views, an agent's

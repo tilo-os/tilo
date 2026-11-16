@@ -10,7 +10,7 @@ fn add(
     kind: &str,
     shape: &[u16],
     output: Option<u32>,
-) -> Result<Option<serde_json::Value>, ui::tilo_actions::DoorError> {
+) -> Result<Option<serde_json::Value>, ui::tilo_actions::ApiError> {
     let mut args = serde_json::json!({
         "node":id,"kind":kind,"shape":shape,
         "x":0,"y":0

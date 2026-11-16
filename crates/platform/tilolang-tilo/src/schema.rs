@@ -341,7 +341,7 @@ thread_local! {
     /// The schemas of each package this thread loaded, by the app it is of and the hash of its
     /// module: a record's type id names one package version, never another's. An action may be
     /// applied (`Action::apply`) or described outside the store that holds its records — a
-    /// receiver replaying it, a task's door — and resolves through its own package's table.
+    /// receiver replaying it, a task's api — and resolves through its own package's table.
     static PACKAGES: std::cell::RefCell<BTreeMap<(String, String), Arc<PackageSchemas>>> =
         const { std::cell::RefCell::new(BTreeMap::new()) };
 }

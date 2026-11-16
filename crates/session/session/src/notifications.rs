@@ -18,7 +18,7 @@ use chrono::{Datelike as _, Timelike as _};
 use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
     self, BannerAsk, ContinuityNotificationId, Notification, NotificationIconKind,
     NotificationPerson, QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
@@ -74,7 +74,7 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
 /// of its own would draw a second one and take its presses.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
-    doors: &mut tilo_session_core::door::Doors,
+    doors: &mut tilo_session_core::surfaces::Surfaces,
     notices: &DesktopNotifications,
     (shell, overlays): (
         &tilo_desktop_surface::DesktopHandle,
@@ -1287,9 +1287,9 @@ impl Service for Served {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         match decode::<CentreAction>(&self.resources(), resource, action, arguments)? {
             CentreAction::Dismiss {
@@ -1359,11 +1359,11 @@ impl crate::Shared {
                     fallback: None,
                 },
                 &mut |own| {
-                    self.doors
+                    self.published
                         .invoke(
                             &own.address,
                             &own.arguments,
-                            &mut tilo_session_core::door::Look::none(),
+                            &mut tilo_session_core::surfaces::Look::none(),
                         )
                         .map(drop)
                 },
@@ -1384,11 +1384,11 @@ impl crate::Shared {
                             place: tilo_desktop_search::LaunchPlace::Focus,
                         },
                         &mut |own| {
-                            self.doors
+                            self.published
                                 .invoke(
                                     &own.address,
                                     &own.arguments,
-                                    &mut tilo_session_core::door::Look::none(),
+                                    &mut tilo_session_core::surfaces::Look::none(),
                                 )
                                 .map(drop)
                         },

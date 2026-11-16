@@ -258,7 +258,7 @@ impl PermissionContext {
 
     /// The same context, run by a host that puts an ask to the person on
     /// their own devices when someone acts for them: such an invocation asks
-    /// first ([`tilo_actions::DoorError::ConfirmationRequired`]) where it
+    /// first ([`tilo_actions::ApiError::ConfirmationRequired`]) where it
     /// would otherwise be refused, as the shell's broker asks.
     #[must_use]
     pub fn reaching_person(mut self) -> Self {
@@ -806,7 +806,7 @@ impl PermissionContext {
     /// The answer for admitting one invocation of `action` on `resource`,
     /// published by the app `app_id` in a window on the record `record`,
     /// with these arguments, and the `Once` grants admitting it spends: the
-    /// door that runs it hands them to [`Self::spend_once`] first.
+    /// API that runs it hands them to [`Self::spend_once`] first.
     pub fn invocation_verdict(
         &self,
         (app_id, record): (&str, &str),
@@ -1310,20 +1310,20 @@ mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
 
-/// The shared admission ([`tilo_action_policy::admit`]) as a window's door
+/// The shared admission ([`tilo_action_policy::admit`]) as a window's API
 /// takes it, the decision a broker takes for a caller: `asker` is who the
 /// invocation asks ([`PermissionContext::asker`]), and `confirmed` is their
 /// confirmation, or the broker having admitted it.
 ///
 /// # Errors
-/// Refused, or [`tilo_actions::DoorError::ConfirmationRequired`] until
+/// Refused, or [`tilo_actions::ApiError::ConfirmationRequired`] until
 /// the person confirmed an ask.
 pub fn admit_in_window(
     answer: tilo_action_policy::Answer,
     action: &tilo_actions::ActionSpec,
     asker: tilo_action_policy::Asker,
     confirmed: bool,
-) -> Result<(), tilo_actions::DoorError> {
+) -> Result<(), tilo_actions::ApiError> {
     let admitted = tilo_action_policy::admit(
         tilo_action_policy::Invoked {
             answer,
@@ -1335,7 +1335,7 @@ pub fn admit_in_window(
     match admitted {
         Err(_) => Err(crate::bound_dispatch::denied(action)),
         Ok(tilo_action_policy::Admission::AsksFirst) if !confirmed => {
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         }
         Ok(_) => Ok(()),
     }

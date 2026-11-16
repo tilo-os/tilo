@@ -18,7 +18,7 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
     RemoteActionTarget, application_open_target, application_provider, provider_workspace,
 };
-use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
+use tilo_actions::{ActionDescriptor, ApiError, ExecutionLocus, InvocationId};
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
     Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
@@ -330,7 +330,7 @@ impl Apps {
 
     /// Refuse a launch of one of `workspace`'s apps while this device waits for its host to take it
     /// in: nothing of the app would take part there, so whoever asked hears why at once.
-    fn admitted(&self, workspace: &str) -> Result<(), DoorError> {
+    fn admitted(&self, workspace: &str) -> Result<(), ApiError> {
         let Some(reason) = self.awaited(workspace) else {
             return Ok(());
         };
@@ -339,7 +339,7 @@ impl Apps {
             %reason,
             "a launch was refused: this device is not admitted there yet"
         );
-        Err(DoorError::Failed(reason))
+        Err(ApiError::Failed(reason))
     }
 
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
@@ -361,7 +361,7 @@ impl Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         workspace: &str,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         self.deliver_answered(target, arguments, workspace, None)
     }
 
@@ -373,7 +373,7 @@ impl Apps {
         arguments: serde_json::Map<String, serde_json::Value>,
         workspace: &str,
         answered: Option<crate::search::Answered>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let (broker, caller, wake) = {
             let state = self.state.borrow();
             let Some(broker) = &state.broker else {
@@ -769,8 +769,8 @@ impl Apps {
     fn starting_tool(
         &self,
         context: Option<&str>,
-        start: impl FnOnce() -> Result<(), DoorError>,
-    ) -> Result<(), DoorError> {
+        start: impl FnOnce() -> Result<(), ApiError>,
+    ) -> Result<(), ApiError> {
         let previous = std::mem::replace(
             &mut self.state.borrow_mut().tool_context,
             context.map(str::to_owned),
@@ -967,7 +967,7 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
         reveal: Option<&str>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Ok(false);
         };
@@ -984,9 +984,7 @@ impl Apps {
             }
         });
         if !held {
-            return Err(DoorError::Failed(format!(
-                "the shell took no open of {app}"
-            )));
+            return Err(ApiError::Failed(format!("the shell took no open of {app}")));
         }
         let tool_context = self.state.borrow().tool_context.clone();
         self.plan_window(WindowAsk {
@@ -1037,7 +1035,7 @@ impl Apps {
     /// opens belongs.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
-    pub fn open(&self, launch: &Launch) -> Result<(), DoorError> {
+    pub fn open(&self, launch: &Launch) -> Result<(), ApiError> {
         let workspace = self.active_workspace();
         self.start(launch, &workspace)
     }
@@ -1050,7 +1048,7 @@ impl Apps {
         launch: &Launch,
         workspace: &Workspace,
         instance: Option<u64>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         self.start_at_place(launch, workspace, instance, None)
     }
 
@@ -1065,7 +1063,7 @@ impl Apps {
         workspace: &Workspace,
         instance: Option<u64>,
         place: Option<&LaunchPlace>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         self.admitted(&workspace.id)?;
         match self.starting(launch, workspace, instance, place) {
             Beginning::Raised => Ok(false),
@@ -1406,7 +1404,7 @@ impl Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         place: OpenPlace,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         // A row is published in one of two shapes: a workspace's `open` of an app
         // (`workspace:<workspace>`, what `application_open_target` builds) and an app's own action
         // (`application:<workspace>:<app>`). Read both, or every app row answers that apps cannot be
@@ -1442,7 +1440,7 @@ impl Apps {
     /// one is raised and nothing starts.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
-    pub fn start(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
+    pub fn start(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
         self.start_at(launch, workspace, None).map(|_| ())
     }
 
@@ -1461,7 +1459,7 @@ impl Apps {
         workspace: &Workspace,
         instance: Option<u64>,
         reveal: Option<&str>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         self.start_window(launch, workspace, true, instance, reveal)
             .map(|_| ())
     }
@@ -1527,7 +1525,7 @@ impl Apps {
     /// What the launcher is asked to run for `kept` : its package as a service, with the agent's
     /// own argv after the entrypoint. A service is handed no display — it draws nothing — and the
     /// launcher refuses one with a socket.
-    fn agent_plan(&self, kept: &Kept) -> Result<Planned, DoorError> {
+    fn agent_plan(&self, kept: &Kept) -> Result<Planned, ApiError> {
         let workspace = self.workspace_named(&kept.workspace);
         let launch = Launch::Package {
             app: AGENT_PACKAGE.to_owned(),
@@ -1553,7 +1551,7 @@ impl Apps {
             };
             Planned::of(&launch, &context)
         };
-        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
+        let mut planned = planned.map_err(|error| ApiError::Failed(error.to_string()))?;
         let provider = provider_selection(&agent_provider_config::ProviderConfig::load(), kept);
         planned.args.extend(agent_argv(kept, provider.as_deref()));
         Ok(planned)
@@ -1581,7 +1579,7 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
         reveal: Option<&str>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         self.admitted(&workspace.id)?;
         self.start_launched_window(launch, workspace, new_window, instance, reveal)
     }
@@ -1593,7 +1591,7 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
         reveal: Option<&str>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         // The open is timed from here to the app's first presented frame: everything this session
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
@@ -1603,7 +1601,7 @@ impl Apps {
         let doors = self.state.borrow().doors.clone();
         let hosted = launch.package().is_some() && self.runs_in_host(app);
         if instance.is_none() {
-            window_opens(launch, reveal, hosted).map_err(DoorError::Failed)?;
+            window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
             if self.ask_shell(launch, workspace, new_window, reveal)? {
                 return Ok(true);
             }
@@ -1611,7 +1609,7 @@ impl Apps {
         let timed = tilo_startup_metrics::launch_requested(app);
         let failed = |error: String| {
             tilo_startup_metrics::launch_failed(timed);
-            DoorError::Failed(error)
+            ApiError::Failed(error)
         };
         let documents = self.state.borrow().documents.clone();
         let launch = handed(launch, workspace, documents.as_ref())
@@ -1683,7 +1681,7 @@ impl Apps {
             // connection, and the host of its workspace and author runs their instances.
             if reservation.is_none() || !doors.host_instances(&planned.app, &workspace.id) {
                 tilo_startup_metrics::launch_failed(timed);
-                return Err(DoorError::Failed(format!(
+                return Err(ApiError::Failed(format!(
                     "{} has no window door, which its hosted windows open through",
                     planned.app
                 )));
@@ -1755,11 +1753,11 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
         timed: u64,
-    ) -> Result<Planned, DoorError> {
+    ) -> Result<Planned, ApiError> {
         self.plan(launch, workspace, new_window, instance)
             .map_err(|error| {
                 tilo_startup_metrics::launch_failed(timed);
-                DoorError::Failed(refusal_said(&error))
+                ApiError::Failed(refusal_said(&error))
             })
     }
 
@@ -1767,9 +1765,9 @@ impl Apps {
     /// process takes the app's actions on its records and makes a window only when the shell
     /// asks it for one, through the door it holds as every launch of the app does. A process of
     /// the app running there already takes the action instead, and nothing starts.
-    fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
+    fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
         if self.runs_in_host(launch.app()) {
-            return Err(DoorError::Failed(format!(
+            return Err(ApiError::Failed(format!(
                 "{}'s windows hold none of its data: it runs in a tilolang host, never without a window",
                 launch.app()
             )));
@@ -1781,21 +1779,21 @@ impl Apps {
         &self,
         launch: &Launch,
         workspace: &Workspace,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let Some(doors) = self.state.borrow().doors.clone() else {
-            return Err(DoorError::Failed(
+            return Err(ApiError::Failed(
                 "this session starts no app without a window".into(),
             ));
         };
         let mut planned = self
             .plan(launch, workspace, false, None)
-            .map_err(|error| DoorError::Failed(refusal_said(&error)))?;
+            .map_err(|error| ApiError::Failed(refusal_said(&error)))?;
         planned
             .env
             .insert(ui::window_door::WINDOWLESS_ENV.to_owned(), "1".to_owned());
         let Some(reservation) = doors
             .reserve_unless_running(&planned.app, &workspace.id)
-            .map_err(DoorError::Failed)?
+            .map_err(ApiError::Failed)?
         else {
             return Ok(());
         };
@@ -1881,7 +1879,7 @@ impl Apps {
         workspace: &str,
         door: Option<HeldDoor>,
         timed: Option<u64>,
-    ) -> Result<u64, DoorError> {
+    ) -> Result<u64, ApiError> {
         // An app of a workspace this device is not admitted to yet would take part in nothing
         // there, and would not join once the host admits the device: it is not started, and
         // whoever asked is told why at once.
@@ -1913,7 +1911,7 @@ impl Apps {
                     tilo_startup_metrics::launch_failed(timed);
                 }
                 tracing::warn!(app = %planned.app, %workspace, %error, "a launch did not start");
-                return Err(DoorError::Failed(error.to_string()));
+                return Err(ApiError::Failed(error.to_string()));
             }
         };
         let (started, door) = started;
@@ -2096,7 +2094,7 @@ impl AppActions for Apps {
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         self.invoke_at(target, arguments, OpenPlace::Focus)
     }
 
@@ -2107,7 +2105,7 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         answered: crate::search::Answered,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let workspace = match application_provider(&target.provider) {
             Some((workspace, _)) => workspace.to_owned(),
             None => provider_workspace(&target.provider)
@@ -2159,7 +2157,7 @@ impl AppActions for Apps {
         workspace: &str,
         app: &str,
         place: OpenPlace,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         self.invoke_at(
             application_open_target(workspace, app),
             serde_json::Map::new(),
@@ -2175,7 +2173,7 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         item: &str,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         if let Some((_, app)) = application_provider(&target.provider) {
             let launch = Launch::Package {
                 app: app.to_owned(),
@@ -2188,7 +2186,7 @@ impl AppActions for Apps {
         self.invoke(target, arguments)
     }
 
-    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
+    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), ApiError> {
         // A job's row carries the invocation the broker follows, and no row is listed yet
         // ([`Self::jobs`]), so nothing names one to stop.
         Err(no_action_host())
@@ -2196,7 +2194,7 @@ impl AppActions for Apps {
 
     /// Open `uri` in the app that takes it: the app this workspace's defaults, the person's own or
     /// this machine's open a file with, or the app that claims the scheme of a link.
-    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
+    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), ApiError> {
         let person = self.state.borrow().person.clone();
         let shell = self
             .desktop
@@ -2215,12 +2213,12 @@ impl AppActions for Apps {
             .next(),
             None => crate::documents::opener(shell.as_ref(), workspace, &person, uri),
         }
-        .ok_or_else(|| DoorError::Failed(format!("nothing on this device opens {uri}")))?;
+        .ok_or_else(|| ApiError::Failed(format!("nothing on this device opens {uri}")))?;
         let workspace = self.workspace_named(workspace);
         self.start(&launch, &workspace)
     }
 
-    fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError> {
+    fn start_host_app(&self, desktop_id: &str) -> Result<(), ApiError> {
         // One of the machine's own apps runs unconfined, so it is launched into no workspace: it is
         // told nothing of Tilo's authority.
         self.start(
@@ -2319,8 +2317,8 @@ pub(crate) fn window_is_its_page(app: &str) -> bool {
 
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on
 /// is not mounted in this session.
-fn no_action_host() -> DoorError {
-    DoorError::Unavailable {
+fn no_action_host() -> ApiError {
+    ApiError::Unavailable {
         code: "action_host_unavailable".into(),
         reason: "The session runs without an action host".into(),
     }

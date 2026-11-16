@@ -54,7 +54,7 @@ impl Dictation {
     /// Start the dictation service and mount the sheet that asks about the microphone.
     pub(crate) fn mount(
         compositor: &mut Compositor,
-        doors: &mut tilo_session_core::door::Doors,
+        doors: &mut tilo_session_core::surfaces::Surfaces,
         services: &Rc<RefCell<tilo_service::Services>>,
         options: &Options,
     ) -> Self {
@@ -472,7 +472,7 @@ impl OwnFields for DesktopHandle {
 /// from the field they are dictating into.
 fn mount_sheet(
     compositor: &mut Compositor,
-    doors: &mut tilo_session_core::door::Doors,
+    doors: &mut tilo_session_core::surfaces::Surfaces,
     options: &Options,
 ) -> Option<DictationState> {
     let who = (options.device.as_str(), options.person.as_str());

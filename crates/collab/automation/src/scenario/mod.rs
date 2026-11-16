@@ -611,17 +611,17 @@ mod tests {
             // expect something that never happens.
             let address = tilo_actions::ActionAddress::new("r", "a");
             let door = [
-                tilo_actions::DoorError::Unknown(address.clone()),
-                tilo_actions::DoorError::MissingArgument(address.clone()),
-                tilo_actions::DoorError::UnexpectedArgument(address),
-                tilo_actions::DoorError::InvalidArguments("x".into()),
-                tilo_actions::DoorError::Unavailable {
+                tilo_actions::ApiError::Unknown(address.clone()),
+                tilo_actions::ApiError::MissingArgument(address.clone()),
+                tilo_actions::ApiError::UnexpectedArgument(address),
+                tilo_actions::ApiError::InvalidArguments("x".into()),
+                tilo_actions::ApiError::Unavailable {
                     code: "x".into(),
                     reason: "x".into(),
                 },
-                tilo_actions::DoorError::ConfirmationRequired,
-                tilo_actions::DoorError::UnregisteredType("x".into()),
-                tilo_actions::DoorError::Failed("x".into()),
+                tilo_actions::ApiError::ConfirmationRequired,
+                tilo_actions::ApiError::UnregisteredType("x".into()),
+                tilo_actions::ApiError::Failed("x".into()),
             ];
             for error in &door {
                 assert!(

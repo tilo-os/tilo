@@ -1,4 +1,4 @@
-//! A workspace of tilolang apps as an agent task's door reaches them: each app's host (a
+//! A workspace of tilolang apps as an agent task's api reaches them: each app's host (a
 //! [`Replica`]) answers the task's reads and queries and runs what the task invokes, as the
 //! broker delivers it; every invocation is recorded. The task's programs run in a
 //! [`TaskSession`] of their own over it.
@@ -15,7 +15,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
-use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task::{Answered, TaskApi, TaskSession};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 use crate::fixtures::Replica;
@@ -29,11 +29,11 @@ pub struct Apps {
     pub invoked: RefCell<Vec<Json>>,
     /// Actions whose invocations the policy refuses.
     pub refused: Vec<&'static str>,
-    /// Apps the door cannot reach (not open), and why.
+    /// Apps the API cannot reach (not open), and why.
     pub unreachable: Vec<(&'static str, &'static str)>,
     /// The apps whose record a task fetched, in order.
     pub fetched: RefCell<Vec<String>>,
-    /// The copy of an app's record the door hands over while it lags the app's host: the
+    /// The copy of an app's record the API hands over while it lags the app's host: the
     /// record as it was when [`Self::lag`] froze it.
     lagging: RefCell<HashMap<String, Vec<u8>>>,
 }
@@ -89,7 +89,7 @@ impl Apps {
         }
     }
 
-    /// From now on the door hands over `app`'s record as it is now, whatever its host applies
+    /// From now on the API hands over `app`'s record as it is now, whatever its host applies
     /// later: the workspace's copy lagging the record's origin.
     pub fn lag(&self, app: &str) {
         let copy = self.replica(app).doc.save();
@@ -102,10 +102,10 @@ impl Apps {
     }
 
     /// A task of these apps acting for ada, reading their records itself as the session's
-    /// door hands them over ([`RecordReads`]): no app's host answers its reads, only its
+    /// api hands them over ([`RecordReads`]): no app's host answers its reads, only its
     /// invocations.
-    pub fn record_task(self: &Rc<Self>) -> (TaskSession, Rc<RecordsDoor>) {
-        let door = Rc::new(RecordsDoor {
+    pub fn record_task(self: &Rc<Self>) -> (TaskSession, Rc<RecordsApi>) {
+        let api = Rc::new(RecordsApi {
             apps: Rc::clone(self),
             reads: RecordReads::new(
                 &self.bundles,
@@ -116,19 +116,19 @@ impl Apps {
         });
         let task = TaskSession::new(
             Some("ada"),
-            &(Rc::clone(&door) as Rc<dyn TaskDoor>),
+            &(Rc::clone(&api) as Rc<dyn TaskApi>),
             &self.bundles,
             Rc::new(tilolang_tilo::native::Native::of(&self.bundles, &[])),
         )
         .unwrap();
-        (task, door)
+        (task, api)
     }
 
     /// A task of these apps, acting for ada.
     pub fn task(self: &Rc<Self>) -> TaskSession {
         TaskSession::new(
             Some("ada"),
-            &(Rc::clone(self) as Rc<dyn TaskDoor>),
+            &(Rc::clone(self) as Rc<dyn TaskApi>),
             &self.bundles,
             Rc::new(tilolang_tilo::native::Native::of(&self.bundles, &[])),
         )
@@ -155,13 +155,13 @@ impl RecordSource for Apps {
     }
 }
 
-/// A task's door that reads records itself: what [`Apps::record_task`] runs over.
-pub struct RecordsDoor {
+/// A task's api that reads records itself: what [`Apps::record_task`] runs over.
+pub struct RecordsApi {
     apps: Rc<Apps>,
     pub reads: RecordReads,
 }
 
-impl TaskDoor for RecordsDoor {
+impl TaskApi for RecordsApi {
     fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
         self.reads.read(app, item)
     }
@@ -191,7 +191,7 @@ impl TaskDoor for RecordsDoor {
     }
 }
 
-impl TaskDoor for Apps {
+impl TaskApi for Apps {
     fn read(&self, app: &str, item: &str, _: &str) -> Result<Json, String> {
         if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
             return Err((*why).to_owned());
@@ -208,7 +208,7 @@ impl TaskDoor for Apps {
     fn invoke(&self, call: &Json) -> Answered {
         self.invoked.borrow_mut().push(call.clone());
         let app = call["app"].as_str().unwrap();
-        // The door publishes an action by its name, which the policy names it by too; what is
+        // The API publishes an action by its name, which the policy names it by too; what is
         // planned and stored of it keeps its id.
         let named = call["action"].as_str().unwrap();
         let action = self

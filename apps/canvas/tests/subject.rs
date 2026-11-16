@@ -246,7 +246,7 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
     );
     assert!(matches!(
         another_participant,
-        Err(ui::tilo_actions::DoorError::Unavailable { code, .. }) if code == "private_view"
+        Err(ui::tilo_actions::ApiError::Unavailable { code, .. }) if code == "private_view"
     ));
     let output = app
         .effect(&canvas::resource::ViewOp::Inspect {

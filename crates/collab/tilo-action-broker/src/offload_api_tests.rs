@@ -1,5 +1,5 @@
 // An admitted offloadable invocation runs where the device's route places
-// it: answered by the door with another device's output, or handed to the
+// it: answered by the API with another device's output, or handed to the
 // app, whose own answer stands and whose run time the route hears.
 
 /// A route that answers what it is told to, recording what it was asked.
@@ -150,7 +150,7 @@ async fn an_admitted_offloadable_invocation_runs_where_the_route_places_it() {
                     .expect("admitted and pending")
             };
 
-            // Another device is better placed: the door answers with its
+            // Another device is better placed: the API answers with its
             // output, and the app is never handed the invocation.
             let remote = tilo_actions::ActionOutput {
                 value: None,

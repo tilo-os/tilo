@@ -21,7 +21,7 @@ use std::time::Duration;
 use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_app_launch::SessionEnvironment;
 use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::verbs::{
@@ -67,23 +67,23 @@ impl AppActions for Host {
         Vec::new()
     }
 
-    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
+    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), ApiError> {
         self.invoked.borrow_mut().push((target, arguments));
         Ok(())
     }
 
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
+    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), ApiError> {
         Ok(())
     }
 
-    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
+    fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), ApiError> {
         self.opened
             .borrow_mut()
             .push((workspace.to_owned(), uri.to_owned()));
         Ok(())
     }
 
-    fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError> {
+    fn start_host_app(&self, desktop_id: &str) -> Result<(), ApiError> {
         self.started.borrow_mut().push(desktop_id.to_owned());
         Ok(())
     }

@@ -14,7 +14,7 @@ impl OrdinaryConfirmation {
         domain: &crate::ControlDomain,
         address: tilo_actions::ActionAddress,
         arguments: ControlContinuationArguments,
-    ) -> Result<Self, tilo_actions::DoorError> {
+    ) -> Result<Self, tilo_actions::ApiError> {
         if domain.closed() {
             return Err(Self::stale());
         }
@@ -39,7 +39,7 @@ impl OrdinaryConfirmation {
         })
     }
 
-    /// This request as the door's answer made it: the invocation needs the person's go-ahead (the
+    /// This request as the API's answer made it: the invocation needs the person's go-ahead (the
     /// workspace's grants ask first) even where the action declares no confirmation, so the person is
     /// asked, told who decides, instead of the request waiting unseen for an answer nobody asks for.
     #[must_use]
@@ -79,9 +79,9 @@ impl OrdinaryConfirmation {
         address: &tilo_actions::ActionAddress,
         arguments: &ControlContinuationArguments,
         built_at: i64,
-    ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
+    ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::ApiError> {
         let (resource, spec) = unique_control_spec(resources, address)?;
-        let (argument, json) = arguments.as_door_arguments();
+        let (argument, json) = arguments.as_api_arguments();
         let retains_draft = matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. })
             && spec
                 .continuation_identity(tilo_actions::ContinuationQuery::Draft)
@@ -125,7 +125,7 @@ impl OrdinaryConfirmation {
     pub(crate) fn validate_owner(
         &self,
         domain: &crate::ControlDomain,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         let original = self.domain.upgrade().ok_or_else(Self::stale)?;
         if original.closed() || domain.closed() || !original.same_owner_incarnation(domain) {
             return Err(Self::stale());
@@ -137,7 +137,7 @@ impl OrdinaryConfirmation {
         root: &dyn Widget,
         doc: &AutoCommit,
         domain: &crate::ControlDomain,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         self.validate_owner(domain)?;
         let resources = resources_for_control_target(root, doc, &self.target, &self.address)?;
         let mut current = Self::snapshot(
@@ -155,8 +155,8 @@ impl OrdinaryConfirmation {
         }
         Ok(())
     }
-    fn stale() -> tilo_actions::DoorError {
-        tilo_actions::DoorError::Unavailable {
+    fn stale() -> tilo_actions::ApiError {
+        tilo_actions::ApiError::Unavailable {
             code: "stale_ordinary_confirmation".into(),
             reason: "The original confirmation request is no longer valid".into(),
         }

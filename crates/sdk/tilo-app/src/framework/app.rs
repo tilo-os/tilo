@@ -51,7 +51,7 @@ pub struct AppName {
 /// A framework app: one resource type and a view of it.
 ///
 /// Everything else — storage, sync, collaboration, history, undo,
-/// permissions, the action palette, the agent and script door, search — is
+/// permissions, the action palette, the agent and script api, search — is
 /// provided. See the [module docs](super).
 pub trait ResourceApp: 'static {
     /// The resource this app edits.
@@ -225,11 +225,11 @@ pub trait ResourceApp: 'static {
     /// The actions a launch naming `input` takes once its record is open;
     /// `created` when this launch created the record, so actions that fill
     /// a new record (the source of a new project) are taken only then. They
-    /// go through the same door as every control: checked against the
+    /// go through the same api as every control: checked against the
     /// participant's permissions, attributed, undoable and in history. A
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
-    /// of the app's effects ([`Invoke::effect`]) through the same door. A
+    /// of the app's effects ([`Invoke::effect`]) through the same api. A
     /// capture launched on nothing takes none: its [scenario](Self::scenario)
     /// stages the record.
     ///
@@ -300,7 +300,7 @@ pub trait ResourceApp: 'static {
 
     /// The actions that stage the resource for a capture: `Some(name)` for
     /// `--shots --scenario NAME`, `None` for a plain `--shots`. They apply
-    /// through the same door as every control; then the views stage their
+    /// through the same api as every control; then the views stage their
     /// view state ([`ViewCx::on_stage`], `ResourceSurface::stage`) and the
     /// frame is captured. See [`stage`](super::stage).
     fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {

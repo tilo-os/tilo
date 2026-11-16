@@ -1,5 +1,5 @@
 use tilo_actions::policy::MemberId;
-use ui::tilo_actions::DoorError;
+use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
 use super::*;
@@ -79,13 +79,13 @@ impl Talk {
     }
 
     /// Apply a verb or field edit on the messages, as the person confirming it would.
-    pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), DoorError> {
+    pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), ApiError> {
         use ui::framework::{Chained as _, Submit as _};
-        let invoke = invoke.into_invoke().map_err(DoorError::InvalidArguments)?;
+        let invoke = invoke.into_invoke().map_err(ApiError::InvalidArguments)?;
         let mut action = invoke
             .build(self.now_ms)
-            .map_err(DoorError::InvalidArguments)?;
-        ChatPart::prepare(&mut action, &self.chat.state().unwrap()).map_err(DoorError::Failed)?;
+            .map_err(ApiError::InvalidArguments)?;
+        ChatPart::prepare(&mut action, &self.chat.state().unwrap()).map_err(ApiError::Failed)?;
         self.part.apply_action(&action).map(drop)
     }
 

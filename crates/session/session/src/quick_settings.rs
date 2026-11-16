@@ -509,11 +509,11 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
             .search
             .perform_checked(&workspace, target, &mut |own| {
                 shared
-                    .doors
+                    .published
                     .invoke(
                         &own.address,
                         &own.arguments,
-                        &mut tilo_session_core::door::Look::none(),
+                        &mut tilo_session_core::surfaces::Look::none(),
                     )
                     .map(drop)
             });
@@ -624,7 +624,7 @@ impl QuickSettingsService {
     }
 
     /// Carry `action` out on the person's arrangement, and keep it: whether it changed.
-    fn carry(&mut self, action: &LayoutAction) -> Result<bool, tilo_actions::DoorError> {
+    fn carry(&mut self, action: &LayoutAction) -> Result<bool, tilo_actions::ApiError> {
         let mut arrangement = self.shown.borrow().clone();
         let changed = match action {
             LayoutAction::ShowControl { control } => {
@@ -648,7 +648,7 @@ impl QuickSettingsService {
             return Ok(false);
         }
         arrangement.save().map_err(|error| {
-            tilo_actions::DoorError::Failed(format!(
+            tilo_actions::ApiError::Failed(format!(
                 "the Quick Settings arrangement was not kept: {error}"
             ))
         })?;
@@ -682,7 +682,7 @@ impl tilo_service::Service for QuickSettingsService {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         let action =
             tilo_service::decode::<LayoutAction>(&self.resources(), resource, action, arguments)?;
         self.carry(&action)?;

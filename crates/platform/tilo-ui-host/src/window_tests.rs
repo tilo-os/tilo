@@ -488,7 +488,7 @@ fn catalogue_on(resource: &str, label: &str, shortcut: Option<&str>) -> Vec<u8> 
     .unwrap();
     spec.type_mut().state.shortcut = shortcut.map(str::to_owned);
     let resource = ResourceSpec::new(resource, "test.tasks", "Tasks").with_action(spec);
-    serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes")
+    serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes")
 }
 
 /// The window offers the actions its app publishes. A change replaces the actions of the
@@ -591,7 +591,7 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
     )
     .unavailable("nothing_selected", "Choose a task first");
     let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
-    let published = serde_json::to_vec(&tilo_actions::door::survey(&[resource])).expect("encodes");
+    let published = serde_json::to_vec(&tilo_actions::api::survey(&[resource])).expect("encodes");
 
     let (mut app, mut window) = window();
     send(

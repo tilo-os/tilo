@@ -1,5 +1,5 @@
 //! Connect: the one line that connects an MCP client to the person's workspaces, and every
-//! agent the door let in, with Revoke.
+//! agent the MCP server let in, with Revoke.
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -7,7 +7,7 @@ use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
-use crate::{Console, Doors, Reads, ago, faced, page, tr, trf};
+use crate::{Console, Reads, Records, ago, faced, page, tr, trf};
 
 const fn client_label(client: mcp_server::Client) -> &'static str {
     match client {
@@ -18,13 +18,13 @@ const fn client_label(client: mcp_server::Client) -> &'static str {
 }
 
 pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
-    let doors = Doors::of(cx);
-    let read = &reads.door;
-    Box::new(cx.arriving(&read.answer(), move |_, door| {
+    let records = Records::of(cx);
+    let read = &reads.server;
+    Box::new(cx.arriving(&read.answer(), move |_, server| {
         let commands = mcp_server::Client::ALL
             .into_iter()
             .map(|client| {
-                Property::new(tr(client_label(client)), client.command(&door.endpoint))
+                Property::new(tr(client_label(client)), client.command(&server.endpoint))
                     .with_kind(ui::text_render::TextKind::Code)
                     .copyable()
             })
@@ -38,17 +38,18 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
                 )],
             )),
         ];
-        let agents: Vec<Element> = if door.grants.is_empty() {
+        let agents: Vec<Element> = if server.grants.is_empty() {
             vec![Box::new(
                 EmptyState::new(tr("console-grants-empty"))
                     .with_icon(Icon::Link)
                     .with_id("console-grants-empty"),
             )]
         } else {
-            door.grants
+            server
+                .grants
                 .iter()
                 .enumerate()
-                .map(|(index, grant)| grant_row(&doors, index, grant))
+                .map(|(index, grant)| grant_row(&records, index, grant))
                 .collect()
         };
         parts.push(Box::new(Section::titled(
@@ -70,7 +71,7 @@ pub(crate) fn access(grant: &mcp_server::Grant) -> String {
     }
 }
 
-fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element {
+fn grant_row(records: &Records, index: usize, grant: &mcp_server::Grant) -> Element {
     let agent = wire::Author {
         name: grant.agent.clone(),
         relation: wire::Relation::Software,
@@ -93,14 +94,14 @@ fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element 
         )
     };
     let revoke = {
-        let (doors, id) = (doors.clone(), grant.id.clone());
+        let (records, id) = (records.clone(), grant.id.clone());
         Button::new(
             &format!("console-grant-{index}-revoke"),
             "console-grant-revoke",
         )
         .role(ButtonRole::Destructive)
         .on_view(move || {
-            doors.door(
+            records.server(
                 mcp_server::REVOKE,
                 &mcp_server::GrantRef { grant: id.clone() },
             );

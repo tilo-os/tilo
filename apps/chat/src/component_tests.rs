@@ -1155,7 +1155,7 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
         ] {
             let answer = frame.invoke_bound_action(&call(&action.on(row.clone())), &none);
             assert!(
-                !matches!(answer, Err(tilo_actions::DoorError::ConfirmationRequired)),
+                !matches!(answer, Err(tilo_actions::ApiError::ConfirmationRequired)),
                 "{role:?}: {} needs no confirmation",
                 action.id
             );
@@ -1168,7 +1168,7 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
             &none,
         );
         assert!(
-            !matches!(unmute, Err(tilo_actions::DoorError::ConfirmationRequired)),
+            !matches!(unmute, Err(tilo_actions::ApiError::ConfirmationRequired)),
             "{role:?}: unmuting is not asked of the workspace"
         );
         assert_eq!(
@@ -1181,7 +1181,7 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
             &none,
         );
         assert!(
-            !matches!(leave, Err(tilo_actions::DoorError::ConfirmationRequired)),
+            !matches!(leave, Err(tilo_actions::ApiError::ConfirmationRequired)),
             "{role:?}: leaving needs no confirmation"
         );
         assert!(leave.is_ok(), "{role:?} may leave: {leave:?}");

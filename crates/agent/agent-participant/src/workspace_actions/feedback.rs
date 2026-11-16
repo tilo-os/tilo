@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ed25519_dalek::Signer as _;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::feedback::{FeedbackAdmission, FeedbackAnswer, FeedbackQuery};
 use tilo_actions::remote::{ActionHostError, Caller, Completer};
 use tilo_feedback_transport::{
@@ -119,7 +119,7 @@ pub(super) fn answer(
         caller: caller.clone(),
         route,
     };
-    // Prove the configured destination exists through its registered Read door.
+    // Prove the configured destination exists through its registered Read API.
     source
         .read(
             &ActionAddress::new(

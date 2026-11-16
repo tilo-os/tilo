@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
@@ -371,7 +371,7 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), DoorError> {
+    fn invoke(&self, target: RemoteActionTarget, arguments: Arguments) -> Result<(), ApiError> {
         self.invoked.borrow_mut().push((target, arguments));
         Ok(())
     }
@@ -405,10 +405,10 @@ impl tilo_session::Service for Player {
         resource: &str,
         action: &str,
         _arguments: &Arguments,
-    ) -> Result<tilo_service::Started, DoorError> {
+    ) -> Result<tilo_service::Started, ApiError> {
         // It offers no actions: the tests move what plays between devices through the fabric, never
         // through its own transport.
-        Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+        Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
             resource, action,
         )))
     }

@@ -1,5 +1,5 @@
 //! The native host's side of the window's History: the registered History
-//! beside the live root, its door, the presentation it lays out, and the
+//! beside the live root, its API, the presentation it lays out, and the
 //! native runner integration of the same retained `HistoryHost` used
 //! headlessly.
 #[allow(
@@ -7,7 +7,7 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::history_mode::door::HISTORY_OPERATION;
+use crate::history_mode::api::HISTORY_OPERATION;
 use crate::history_mode::frame::FrameworkInputFrame;
 use crate::search::request::SEARCH_OPERATION;
 use crate::widget::Widget;
@@ -131,7 +131,7 @@ impl App {
                         .map_err(|error| error.to_string()),
                     ),
                 };
-                Ok::<_, tilo_actions::DoorError>((target, identity, witness))
+                Ok::<_, tilo_actions::ApiError>((target, identity, witness))
             });
             if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.suspend_for_history();
@@ -707,14 +707,14 @@ impl App {
         history_handled
     }
 
-    /// The History door's addresses: a History control in the app's tree
-    /// (its header row) is bound to the same door.
+    /// The History API's addresses: a History control in the app's tree
+    /// (its header row) is bound to the same API.
     pub(super) fn refresh_history_controls(
         &self,
     ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
         self.history_local_resources()
             .into_iter()
-            .filter(|resource| resource.id.as_str() == crate::history_mode::door::HISTORY_RESOURCE)
+            .filter(|resource| resource.id.as_str() == crate::history_mode::api::HISTORY_RESOURCE)
             .flat_map(|resource| {
                 resource.actions.into_iter().map(move |action| {
                     tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
@@ -725,7 +725,7 @@ impl App {
 
     pub(super) fn history_local_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self.close_admission.resources();
-        resources.extend(self.history.as_ref().map(|history| history.door_resource()));
+        resources.extend(self.history.as_ref().map(|history| history.api_resource()));
         if self.search_presented {
             resources.push(crate::search::search_resource());
         }
@@ -739,16 +739,16 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>> {
+    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>> {
         let mut resources = self.history_local_resources();
         resources.extend(self.edit_resource_for(address));
-        tilo_actions::door::resolve(&resources, address)?;
+        tilo_actions::api::resolve(&resources, address)?;
         Some((|| {
             let encoded = crate::bound_dispatch::encode_resource_invocation(
                 &resources, address, argument, None, false,
             )?;
             self.execute_history_encoded_local(&encoded)
-                .map_err(tilo_actions::DoorError::Failed)?;
+                .map_err(tilo_actions::ApiError::Failed)?;
             Ok(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
@@ -778,7 +778,7 @@ impl App {
             self.history
                 .as_mut()
                 .ok_or("History is unavailable")?
-                .invoke_door(encoded)?;
+                .invoke_api(encoded)?;
             self.needs_sync = true;
             self.layout.layout_dirty = true;
             return Ok(());
@@ -929,7 +929,7 @@ impl App {
     pub(super) fn prepare_native_presentation(&mut self, chrome: crate::host_chrome::HostChrome) {
         if chrome.draws_in_window() {
             // Native apps use their integrated header or the platform action
-            // door.
+            // API.
             if let Some(history) = &mut self.history {
                 history.remove_fallback_bar();
                 self.layout.request_rebuild();
@@ -972,7 +972,7 @@ impl App {
     }
 
     /// The window's History control was pressed: run it on this app's
-    /// History door, as the History shortcut does.
+    /// History API, as the History shortcut does.
     #[cfg(feature = "native")]
     pub(crate) fn invoke_window_history_control(
         &mut self,

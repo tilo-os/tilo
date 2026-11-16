@@ -48,7 +48,7 @@ fn a_full_ledger_forgets_only_settled_invocations() {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: "record:so.tilo.notes".into(),
-            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+            address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
         },
         argument: tilo_actions::remote::InvokeArgument::default(),
         context: None,
@@ -183,7 +183,7 @@ fn a_pending_write_settles_as_its_save_does() {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: "record:so.tilo.notes".into(),
-            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+            address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
         },
         argument: tilo_actions::remote::InvokeArgument::default(),
         context: None,
@@ -319,7 +319,7 @@ fn a_request_waits_for_the_record_its_provider_names() {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.into(),
-            address: tilo_actions::door::ActionAddress::new("notes.page", "append"),
+            address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
         },
         argument: tilo_actions::remote::InvokeArgument::default(),
         context: None,

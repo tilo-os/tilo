@@ -1,5 +1,5 @@
 //! Effects and jobs: work with no document delta, invoked through the same
-//! door as actions, answered by the app.
+//! api as actions, answered by the app.
 //!
 //! An app names its effects as a typed vocabulary (`#[derive(Effect)]` on an
 //! enum, see [`tilo_resource::effect`]) and handles them where the state they
@@ -1004,8 +1004,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Answer once what this effect submitted through its
     /// [`dispatcher`](Self::dispatcher) landed: each submission goes through
-    /// the door like any other, checked again for the effect's invoker, and
-    /// `then` runs with the last one's [`Landed`](super::Landed) — what the door answered
+    /// the api like any other, checked again for the effect's invoker, and
+    /// `then` runs with the last one's [`Landed`](super::Landed) — what the api answered
     /// (what an edit changed, as the resource's surface reports it) and the
     /// items it created — to reply to the effect's caller. A refused
     /// submission fails the effect with why. The effect must be declared

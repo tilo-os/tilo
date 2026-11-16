@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use collab_types::DocumentMutation;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_content::ContentStore;
 use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -22,7 +22,7 @@ use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
-    Reply, Request, Slot, WireDoorError,
+    Reply, Request, Slot, WireApiError,
 };
 use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::workspace_actions::ViewReadPolicy;
@@ -656,15 +656,15 @@ fn descriptors(descriptors: &[ActionDescriptor]) -> Reply {
     }
 }
 
-fn output(result: Result<tilo_actions::ActionOutput, DoorError>, at: &ActionAddress) -> Reply {
+fn output(result: Result<tilo_actions::ActionOutput, ApiError>, at: &ActionAddress) -> Reply {
     match result {
         Ok(output) => match serde_json::to_string(&output) {
             Ok(text) => Reply::Output(text),
-            Err(error) => Reply::Refused(WireDoorError::from_door(&DoorError::Failed(format!(
+            Err(error) => Reply::Refused(WireApiError::from_api(&ApiError::Failed(format!(
                 "{at:?}: the output does not encode: {error}"
             )))),
         },
-        Err(error) => Reply::Refused(WireDoorError::from_door(&error)),
+        Err(error) => Reply::Refused(WireApiError::from_api(&error)),
     }
 }
 
@@ -793,8 +793,8 @@ impl ReadSession {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_actions::ActionOutput, DoorError> {
-        let refused = || DoorError::Unknown(address.clone());
+    ) -> Result<tilo_actions::ActionOutput, ApiError> {
+        let refused = || ApiError::Unknown(address.clone());
         if !self
             .operations()
             .iter()

@@ -12,7 +12,7 @@ mod tests {
     }
     fn witness(spec: ActionSpec) -> Option<[u8; 32]> {
         let resources = vec![ResourceSpec::new("probe", "probe", "Probe").with_action(spec)];
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         ActionDirectorySnapshot::build(&resources, &descriptors, |_| None).effective_invocations
     }
 
@@ -59,7 +59,7 @@ mod tests {
             let mut project = |field: &crate::widget::EditableLabel| {
                 tree.refresh(field, &map, None, &[]);
                 let resources = tree.action_resources();
-                let descriptors = tilo_actions::door::survey(&resources);
+                let descriptors = tilo_actions::api::survey(&resources);
                 ActionDirectorySnapshot::build(&resources, &descriptors, |_| None).effective_invocations
             };
             let baseline = project(&field).expect("actual generated SetValue supports comparison");
@@ -132,7 +132,7 @@ mod tests {
                 .unwrap(),
             );
             let resources = vec![resource];
-            let descriptors = tilo_actions::door::survey(&resources);
+            let descriptors = tilo_actions::api::survey(&resources);
             assert!(
                 ActionDirectorySnapshot::build(&resources, &descriptors, |_| None)
                     .effective_invocations
@@ -141,7 +141,7 @@ mod tests {
             let mut duplicated = resources;
             let duplicate = duplicated[0].actions[0].clone();
             duplicated[0].actions.push(duplicate);
-            let descriptors = tilo_actions::door::survey(&duplicated);
+            let descriptors = tilo_actions::api::survey(&duplicated);
             assert!(
                 ActionDirectorySnapshot::build(&duplicated, &descriptors, |_| None)
                     .effective_invocations

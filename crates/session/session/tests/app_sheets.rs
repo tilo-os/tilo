@@ -507,8 +507,8 @@ impl tilo_service::Service for NotReadBack {
         resource: &str,
         action: &str,
         _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unavailable {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unavailable {
             code: "not-read-back".to_owned(),
             reason: format!("{resource}:{action} is not read by this build"),
         })

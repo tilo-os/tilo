@@ -106,8 +106,8 @@ pub fn component_actions(
         let resources = m
             .frame
             .bound_resources_of(instance, resource.as_deref())
-            .map_err(|e| door_error(&e))?;
-        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+            .map_err(|e| api_error(&e))?;
+        serde_json::to_string(&tilo_actions::api::survey(&resources)).map_err(error)
     })
 }
 
@@ -122,7 +122,7 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
         let mut resources = m
             .frame
             .published_bound_resources_of(None)
-            .map_err(|e| door_error(&e))?;
+            .map_err(|e| api_error(&e))?;
         if let Some(desktop) = &m.desktop {
             // The shell's own layout actions are published beside the
             // windows' applications, so the palette, a script and an agent
@@ -130,7 +130,7 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
             desktop.layout.remember(&resources);
             resources.extend(desktop.layout.resources());
         }
-        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+        serde_json::to_string(&tilo_actions::api::survey(&resources)).map_err(error)
     })
 }
 
@@ -281,7 +281,7 @@ pub(super) fn invoke_as(
             let output = desktop
                 .layout
                 .invoke(&address, arguments)
-                .map_err(|e| door_error(&e))?;
+                .map_err(|e| api_error(&e))?;
             m.pending = true;
             m.window.request_redraw();
             return Ok(output.to_string());
@@ -297,7 +297,7 @@ pub(super) fn invoke_as(
             Invoker::Door => m.frame.invoke_bound_action(&address, arguments),
             Invoker::Confirmed => m.frame.invoke_bound_action_confirmed(&address, arguments),
         }
-        .map_err(|e| door_error(&e))?;
+        .map_err(|e| api_error(&e))?;
         // A following call sees the state this one left, not the last frame's.
         m.frame.relayout();
         m.pending = true;
@@ -314,7 +314,7 @@ pub(super) fn invoke_as(
     })
 }
 
-fn door_error(e: &tilo_actions::DoorError) -> JsValue {
+fn api_error(e: &tilo_actions::ApiError) -> JsValue {
     error(format!("{}: {e}", e.code()))
 }
 

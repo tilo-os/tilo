@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "What your agents do in your workspaces: their runs as timelines of actions, each with its own view, and the door they connect by"
+description = "What your agents do in your workspaces: their runs as timelines of actions, each with its own view, and the MCP server they connect by"
 
 # The renamed self dev-dependency only turns on `samples` for tests.
 [package.metadata.cargo-machete]

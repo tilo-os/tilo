@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 use ui::widget::Widget;
 
 pub use tilo_session_core::surface::Placement;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::{
     Compositor, DisplayConfig, Error, LoopTurns, NestedConfig, OutputConfig, WindowPolicy,
 };
@@ -18,7 +18,7 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
-use tilo_session_core::door::Doors;
+use tilo_session_core::surfaces::Surfaces;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 use ui::host_operation::ResourceOperationStart;
 
@@ -131,7 +131,7 @@ impl Session {
             options.salt = salt;
         }
         let sources = crate::config::Sources::from_config(&options.config);
-        let mut doors = Doors::default();
+        let mut published = Surfaces::default();
         // The device VPN runs for the session's lifetime: the profiles' kill
         // switches from the start, the route through another of the
         // person's devices as the session's passes find this device's
@@ -441,7 +441,7 @@ impl Session {
                     "query".to_owned(),
                     serde_json::Value::String(query),
                 )]);
-                // The invocation's own result: refused (`DoorError`) or failed (`DoorError::Failed`)
+                // The invocation's own result: refused (`ApiError`) or failed (`ApiError::Failed`)
                 // is what the query stands `.failed` with; a run that was taken answers later into
                 // the app's records (shell.md §8).
                 let outcome = services
@@ -516,7 +516,7 @@ impl Session {
                 sends.posted(sent)
             }));
         }
-        doors.add(Rc::new(RefCell::new(layout::LayoutActions::new(
+        published.add(Rc::new(RefCell::new(layout::LayoutActions::new(
             Rc::clone(&layout),
             Rc::new(move || underway.get()),
             find.clone(),
@@ -631,9 +631,9 @@ impl Session {
         let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let panel_keys =
             (surfaces.panel_shows(crate::quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
-        let lists_door: tilo_session_core::door::Shared =
+        let lists_door: tilo_session_core::surfaces::Shared =
             crate::shell::lists_door(options.shell, desktop.clone(), surfaces.clone());
-        doors.add(Rc::clone(&lists_door));
+        published.add(Rc::clone(&lists_door));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
         let engine = activity.open_engine(&options, &handle);
@@ -896,7 +896,7 @@ impl Session {
         handle.search_palette().borrow_mut().adopt();
         // The shell as the session publishes it, which the shell reads through the door.
         let chrome_door = crate::shell::chrome_door(options.shell, &chrome, surfaces.clone());
-        doors.add(Rc::clone(&chrome_door));
+        published.add(Rc::clone(&chrome_door));
         // The seam the MCP server's connections ask this session's own doors on: made before
         // the plane starts, which serves the programs.
         let session_doors = std::sync::Arc::new(crate::mcp_server::SessionDoors::new(
@@ -946,7 +946,7 @@ impl Session {
             Some(
                 crate::shell::Shell::mount(
                     &mut compositor,
-                    &mut doors,
+                    &mut published,
                     shell(),
                     wells,
                     presentation.theme.clone(),
@@ -964,7 +964,7 @@ impl Session {
         // The surfaces the shell stands in for read as nothing, as they draw
         // nothing: the shell's parts are what a client finds there, while the
         // desktop's own shell and chrome keep their actions.
-        let aside: Vec<tilo_session_core::door::Shared> = if shell.is_some() {
+        let aside: Vec<tilo_session_core::surfaces::Shared> = if shell.is_some() {
             vec![Rc::clone(&lists_door), Rc::clone(&chrome_door)]
         } else {
             Vec::new()
@@ -974,7 +974,7 @@ impl Session {
         let people = crate::people::mount(
             &mut crate::platform::surfaces::Hosted::new(
                 &mut compositor,
-                &mut doors,
+                &mut published,
                 presentation.theme.clone(),
             ),
             crate::people::Given {
@@ -1014,7 +1014,7 @@ impl Session {
         let readout_place = crate::panels::ReadoutPlaces::default();
         let _activity_layer = mount_activities(
             &mut compositor,
-            &mut doors,
+            &mut published,
             &activities,
             &cards,
             (banner_stack.clone(), readout_band.clone()),
@@ -1023,7 +1023,7 @@ impl Session {
         );
         mount_banners(
             &mut compositor,
-            &mut doors,
+            &mut published,
             &notices,
             (&handle, &overlays),
             &options,
@@ -1032,7 +1032,7 @@ impl Session {
         );
 
         // The sheets, over the desktop and its panels.
-        let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut doors, &options);
+        let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut published, &options);
         let modal_sheets = sheets.modal();
         let crate::sheets::mount::Sheets {
             power,
@@ -1069,7 +1069,7 @@ impl Session {
         // The capture studio, over everything it captures.
         let capture_studio = crate::capture_studio::mount(
             &mut compositor,
-            &mut doors,
+            &mut published,
             &options,
             nearby.as_ref(),
             Rc::clone(&capture_io),
@@ -1106,7 +1106,7 @@ impl Session {
         let guide_keys = Rc::clone(&guide_state);
         let (commands, controls_reading, invocations, triggered, readout) = mount_controls(
             &mut compositor,
-            &mut doors,
+            &mut published,
             Rc::clone(&shortcuts),
             portal_shortcuts,
             guide_keys,
@@ -1134,7 +1134,7 @@ impl Session {
         // Setup last.
         let setup = mount_setup(
             &mut compositor,
-            &mut doors,
+            &mut published,
             options.setup.take(),
             &options.person,
             options.scale,
@@ -1272,7 +1272,7 @@ impl Session {
             tools: Some(tools),
             wake: options.wake.handle(),
         });
-        tilo_startup_metrics::mark("doors-done");
+        tilo_startup_metrics::mark("published-done");
         // The control door `tilo-control` reaches: the development socket and the device admin's,
         // both answered over the broker this session's plane starts. It exists whether or not a
         // socket opens, because a program inside an app this session started is served at it too.
@@ -1384,7 +1384,7 @@ impl Session {
         for service in &mut started {
             service.seated(&options.person, &seat.earlier);
         }
-        let services = mount_services(&mut doors, started);
+        let services = mount_services(&mut published, started);
         // The records the services keep themselves: the activity lists an agent's run in one and
         // undoes it through the record's own history, as it does an app's.
         activity.attach_services(Rc::clone(&services));
@@ -1461,8 +1461,12 @@ impl Session {
             .add(Box::new(crate::quick_settings::QuickSettingsService::new()));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
-        let dictation =
-            crate::dictation::Dictation::mount(&mut compositor, &mut doors, &services, &options);
+        let dictation = crate::dictation::Dictation::mount(
+            &mut compositor,
+            &mut published,
+            &services,
+            &options,
+        );
         // The questions about the person's apps answer through the registry
         // of their downloaded programs, which is one of the services.
         let app_sheets = crate::app_sheets::AppSheets::new(
@@ -1574,7 +1578,7 @@ impl Session {
             overlays,
             surfaces: one_surface,
             switcher,
-            doors,
+            published,
             invocations,
             triggered,
             super_tap,
@@ -1714,13 +1718,13 @@ impl Session {
         // the device admin and a person's own scripts read and drive through
         // the same door as the desktop's other actions.
         shared
-            .doors
+            .published
             .add(Rc::new(std::cell::RefCell::new(crate::diagnostics::Served)));
         // The person's own styles as packages in their workspace: "make it mine", `check`
         // and `install`, the same commands a person types at `tilolang`, so a shell view, the
         // canvas chat's agent and the REPL make and change styles the same way
         // (`shell.md` §6, "Agents make styles with the same commands a person types").
-        shared.doors.add(Rc::new(std::cell::RefCell::new(
+        shared.published.add(Rc::new(std::cell::RefCell::new(
             crate::style_packages::Served::new(),
         )));
         // The person's devices are what their other machines say of
@@ -2236,8 +2240,8 @@ impl Session {
     /// Reach `surface` (a service the session runs in its process) through
     /// the session's door from now on: its resources are published beside
     /// the desktop's, and keys that ask for its actions reach it.
-    pub fn publish(&mut self, surface: tilo_session_core::door::Shared) {
-        self.shared.doors.add(surface);
+    pub fn publish(&mut self, surface: tilo_session_core::surfaces::Shared) {
+        self.shared.published.add(surface);
     }
 
     /// Everything the session publishes now: the shell's resource (its
@@ -2245,7 +2249,7 @@ impl Session {
     /// session's own and the services', with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.shared.doors.resources()
+        self.shared.published.resources()
     }
 
     /// The server this device answers the person's other devices' agents at,
@@ -2332,9 +2336,9 @@ impl Session {
     ///
     /// # Errors
     /// The door's refusal: there is no step to take back.
-    pub fn undo_layout(&mut self) -> Result<(), DoorError> {
+    pub fn undo_layout(&mut self) -> Result<(), ApiError> {
         let address = ActionAddress::new(layout::RECORD_RESOURCE, "undo");
-        self.shared.doors.invoke(
+        self.shared.published.invoke(
             &address,
             &serde_json::Map::new(),
             &mut crate::look::look(&mut self.compositor, Some(&self.content)),
@@ -2354,10 +2358,10 @@ impl Session {
         resource: &str,
         action: &str,
         arguments: &serde_json::Value,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         let empty = serde_json::Map::new();
         let arguments = arguments.as_object().unwrap_or(&empty);
-        self.shared.doors.invoke_as(
+        self.shared.published.invoke_as(
             actor,
             &ActionAddress::new(resource, action),
             arguments,
@@ -2378,7 +2382,7 @@ impl Session {
         resource: &str,
         action: &str,
         arguments: &serde_json::Value,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         let empty = serde_json::Map::new();
         let address = ActionAddress::new(resource, action);
         let turn = tilo_action_policy::turn::Turn::new(conversation, message);
@@ -2388,7 +2392,7 @@ impl Session {
             arguments.as_object().unwrap_or(&empty),
             &beside,
         );
-        self.shared.doors.invoke_as(
+        self.shared.published.invoke_as(
             actor,
             &address,
             &arguments,
@@ -2409,21 +2413,21 @@ impl Session {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         let address = ActionAddress::new(resource, action);
-        let started = self.shared.doors.invoke(
+        let started = self.shared.published.invoke(
             &address,
             arguments,
             &mut crate::look::look(&mut self.compositor, Some(&self.content)),
         )?;
         self.settle()
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
         Ok(started)
     }
 
     /// Invoke a service's action the person confirmed (restart, power
     /// off): one [`Session::invoke`] refused with
-    /// [`DoorError::ConfirmationRequired`].
+    /// [`ApiError::ConfirmationRequired`].
     ///
     /// # Errors
     /// The door's refusal: no such resource or action, bad arguments, or
@@ -2433,7 +2437,7 @@ impl Session {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         match self
             .shared
             .services
@@ -2441,7 +2445,7 @@ impl Session {
             .invoke_confirmed(resource, action, arguments)
         {
             Some(started) => started.map(crate::doors::plane::answered),
-            None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+            None => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }
     }
 
@@ -2449,7 +2453,7 @@ impl Session {
     /// shell's, the chrome's and every open surface app's.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
-        self.shared.doors.accessible_labels()
+        self.shared.published.accessible_labels()
     }
 
     /// The other people whose pointers the shell drew on this session, as the
@@ -2468,12 +2472,12 @@ impl Session {
     #[must_use]
     pub fn a11y_windows(&self) -> Vec<(usize, String, ui::accesskit::TreeUpdate)> {
         self.shared
-            .doors
+            .published
             .offering()
             .into_iter()
             .filter_map(|(place, _)| {
                 let (name, tree) =
-                    crate::a11y::Accessibility::window_at(&self.shared.doors, place)?;
+                    crate::a11y::Accessibility::window_at(&self.shared.published, place)?;
                 Some((place, name, tree))
             })
             .collect()
@@ -2489,7 +2493,7 @@ impl Session {
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
     ) -> bool {
-        crate::a11y::Accessibility::perform(&self.shared.doors, place, target, action)
+        crate::a11y::Accessibility::perform(&self.shared.published, place, target, action)
     }
 
     /// Whether the person logged out, which ends the session's loop.
@@ -2704,10 +2708,12 @@ impl Session {
         // themselves moved.
         // A held pointer drags or resizes a window: every frame of it moves the shell, never what
         // the steps offer, so the rows are read once the person lets go.
-        if self.shared.underway.get().gesture || !actions.door_moved(self.shared.doors.revision()) {
+        if self.shared.underway.get().gesture
+            || !actions.door_moved(self.shared.published.revision())
+        {
             return;
         }
-        let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
+        let rows = tilo_actions::api::survey_placed(&self.shared.published.resources());
         if actions.offer(rows)
             && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
         {

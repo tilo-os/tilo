@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionState, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionState, ApiError, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode};
 
@@ -117,9 +117,9 @@ impl Service for TrayService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let effect = decode::<TrayAction>(&self.resources(), resource, action, arguments)?;
-        let unknown = || DoorError::Unknown(ActionAddress::new(resource, action));
+        let unknown = || ApiError::Unknown(ActionAddress::new(resource, action));
         let wanted = resource
             .strip_prefix(ITEM_PREFIX)
             .map(|rest| {
@@ -141,7 +141,7 @@ impl Service for TrayService {
         };
         self.tray
             .request(&item.key, request)
-            .map_err(DoorError::Failed)?;
+            .map_err(ApiError::Failed)?;
         Ok(Started::Accepted)
     }
 

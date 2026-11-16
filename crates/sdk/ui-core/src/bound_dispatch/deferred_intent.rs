@@ -1,6 +1,6 @@
 //! Inert current-declaration evidence for deferred no-argument invocations. No builder, registry, or
 //! executable is retained in this value.
-use tilo_actions::{ActionInput, ActionSpec, ContinuationEvidence, ContinuationQuery, DoorError};
+use tilo_actions::{ActionInput, ActionSpec, ApiError, ContinuationEvidence, ContinuationQuery};
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct DeferredIntent {
@@ -16,19 +16,19 @@ pub(crate) struct DeferredIntent {
 }
 
 impl DeferredIntent {
-    pub(crate) fn capture(spec: &ActionSpec) -> Result<Self, DoorError> {
+    pub(crate) fn capture(spec: &ActionSpec) -> Result<Self, ApiError> {
         let ActionInput::Deferred { type_id } = spec.input() else {
             return Err(Self::stale());
         };
         spec.validate_json(&serde_json::Map::new())
-            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+            .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
         if !spec.contract.availability.is_available() {
             return Err(Self::stale());
         }
         let Some(draft @ ContinuationEvidence::Draft { .. }) =
             spec.continuation_identity(ContinuationQuery::Draft)
         else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "unsupported_deferred_intent".into(),
                 reason: "The action provider cannot retain this creation intent".into(),
             });
@@ -45,7 +45,7 @@ impl DeferredIntent {
             draft,
         })
     }
-    pub(crate) fn validate(&self, spec: &ActionSpec) -> Result<(), DoorError> {
+    pub(crate) fn validate(&self, spec: &ActionSpec) -> Result<(), ApiError> {
         (Self::capture(spec)? == *self)
             .then_some(())
             .ok_or_else(Self::stale)
@@ -53,8 +53,8 @@ impl DeferredIntent {
     pub(crate) fn draft(&self) -> &ContinuationEvidence {
         &self.draft
     }
-    fn stale() -> DoorError {
-        DoorError::Unavailable {
+    fn stale() -> ApiError {
+        ApiError::Unavailable {
             code: "stale_deferred_intent".into(),
             reason: "The retained creation intent is no longer current".into(),
         }
@@ -79,12 +79,12 @@ pub(crate) fn validate_deferred_arguments(
     spec: &ActionSpec,
     json: Option<&serde_json::Map<String, serde_json::Value>>,
     text: Option<&str>,
-) -> Result<(), DoorError> {
+) -> Result<(), ApiError> {
     if text.is_some() && json.is_none() {
-        return Err(DoorError::InvalidArguments(
+        return Err(ApiError::InvalidArguments(
             "Deferred actions accept no argument".into(),
         ));
     }
     spec.validate_json(json.unwrap_or(&serde_json::Map::new()))
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))
+        .map_err(|error| ApiError::InvalidArguments(error.to_string()))
 }

@@ -2,7 +2,7 @@
 //! host routes to a running app or launches one for, and the launch an app
 //! offers as an action on its own resources.
 
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 use super::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, RemoteActionTarget,

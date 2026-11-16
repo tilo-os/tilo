@@ -12,7 +12,7 @@ use serde_json::Value;
 use tilo_actions::remote::crash_records::{
     self as wire, CrashKind, CrashRecord, CrashRecordText, StopReason,
 };
-use tilo_actions::{ActionAddress, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_service::{Service, reading};
 
 /// The kind of [`wire::RESOURCE`].
@@ -117,8 +117,8 @@ impl Service for CrashRecords {
         resource: &str,
         action: &str,
         _arguments: &serde_json::Map<String, Value>,
-    ) -> Result<tilo_service::Started, DoorError> {
-        Err(DoorError::Unknown(ActionAddress::new(resource, action)))
+    ) -> Result<tilo_service::Started, ApiError> {
+        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
     }
 }
 

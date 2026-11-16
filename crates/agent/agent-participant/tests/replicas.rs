@@ -473,8 +473,8 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
     assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
     assert_eq!(entry.caused_by.as_ref().unwrap().event, "e1");
     assert_eq!(
-        tilo_agent_participant::bot::door::RunStep::of(&entry),
-        Some(tilo_agent_participant::bot::door::RunStep {
+        tilo_agent_participant::bot::api::RunStep::of(&entry),
+        Some(tilo_agent_participant::bot::api::RunStep {
             run: "r1".into(),
             step: "0".into()
         })
@@ -494,7 +494,7 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 }
 
 #[test]
-fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() {
+fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
     let mut page =
         crate::common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
@@ -540,7 +540,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() 
     // record.
     let post = serde_json::json!({ "channel": channel, "text": "hello" });
     page.invoke(
-        &tilo_actions::door::ActionAddress::new(
+        &tilo_actions::api::ActionAddress::new(
             ui::record::chain_resource_id(&chat::parts::chain()),
             "post",
         ),

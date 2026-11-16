@@ -237,19 +237,19 @@ impl HistoryHost {
         self.open
     }
 
-    /// The window's History door as this History serves it: Open, Open at and Hide.
-    pub(crate) fn door_resource(&self) -> tilo_actions::ResourceSpec {
-        crate::history_mode::door::history_resource(!self.invalid_owner, self.is_open())
+    /// The window's History API as this History serves it: Open, Open at and Hide.
+    pub(crate) fn api_resource(&self) -> tilo_actions::ResourceSpec {
+        crate::history_mode::api::history_resource(!self.invalid_owner, self.is_open())
     }
 
-    /// Run one History door operation resolved against [`Self::door_resource`] (a header History
+    /// Run one History API operation resolved against [`Self::api_resource`] (a header History
     /// control, the History shortcut): it opens, opens at a change, or closes exactly as this History's
     /// own button does.
-    pub(crate) fn invoke_door(
+    pub(crate) fn invoke_api(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        use crate::history_mode::door::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        use crate::history_mode::api::{HISTORY_OPERATION, HistoryCommand, decode_entry};
         if encoded.type_id != HISTORY_OPERATION {
             return Err("Unsupported History operation".into());
         }
@@ -521,10 +521,10 @@ impl HistoryHost {
     pub(crate) fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
         self.enclosing_owner.as_ref()
     }
-    /// The History door actions a control in the hosted app can run now: Open while closed, Hide while
+    /// The History API actions a control in the hosted app can run now: Open while closed, Hide while
     /// open, none for an invalid owner.
-    pub(crate) fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
-        tilo_actions::door::survey(&[self.door_resource()])
+    pub(crate) fn api_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        tilo_actions::api::survey(&[self.api_resource()])
             .into_iter()
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
@@ -863,7 +863,7 @@ impl HistoryHost {
     }
     #[allow(
         clippy::needless_pass_by_ref_mut,
-        reason = "the surface-owned lifecycle door names which suspended queue is being drained"
+        reason = "the surface-owned lifecycle API names which suspended queue is being drained"
     )]
     pub(crate) fn discard_pending_output(&mut self, live: &mut dyn Widget) {
         let _ = crate::bound_dispatch::drain_control_invocations(live);
@@ -1766,7 +1766,7 @@ impl HistoryHost {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     row.push(Box::new(
-                        crate::history_mode::door::history_control_face(
+                        crate::history_mode::api::history_control_face(
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
@@ -2083,7 +2083,7 @@ impl HistoryHost {
         } else {
             let clicked = self.open_requested.clone();
             Some(
-                crate::history_mode::door::history_control_face(
+                crate::history_mode::api::history_control_face(
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )
@@ -2262,10 +2262,10 @@ pub(crate) fn press_window_control(
     history: &mut dyn HistoryChromeApi,
     control: crate::widget::HistoryControl,
 ) -> Result<(), String> {
-    let intent = super::door::history_control_binding(control)
+    let intent = super::api::history_control_binding(control)
         .invoke(())
         .map_err(|error| error.to_string())?;
-    super::embedded::run_door_control(history, &intent).map_err(|error| error.to_string())
+    super::embedded::run_api_control(history, &intent).map_err(|error| error.to_string())
 }
 
 /// The History code, as a program that fetches it on first use hands it over (`install_history_code`).
@@ -2335,8 +2335,8 @@ pub(crate) trait HistoryChromeApi: Widget {
     ) -> Option<NodeId>;
     fn request_open(&self) -> bool;
     fn is_open(&self) -> bool;
-    fn door_resource(&self) -> tilo_actions::ResourceSpec;
-    fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String>;
+    fn api_resource(&self) -> tilo_actions::ResourceSpec;
+    fn invoke_api(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String>;
     #[cfg(any(feature = "native", test))]
     fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry>;
     fn remove_fallback_bar(&mut self);
@@ -2365,7 +2365,7 @@ pub(crate) trait HistoryChromeApi: Widget {
     fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError>;
     fn encloses(&self, owner: &super::HistoryOwner) -> bool;
     fn enclosing_owner(&self) -> Option<&super::HistoryOwner>;
-    fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress>;
+    fn api_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress>;
     fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>);
     fn keyboard_is_active(&self) -> bool;
     fn cancel_focus_return(&mut self);
@@ -2547,11 +2547,11 @@ impl HistoryChromeApi for HistoryHost {
     fn is_open(&self) -> bool {
         HistoryHost::is_open(self)
     }
-    fn door_resource(&self) -> tilo_actions::ResourceSpec {
-        HistoryHost::door_resource(self)
+    fn api_resource(&self) -> tilo_actions::ResourceSpec {
+        HistoryHost::api_resource(self)
     }
-    fn invoke_door(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {
-        HistoryHost::invoke_door(self, encoded)
+    fn invoke_api(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {
+        HistoryHost::invoke_api(self, encoded)
     }
     #[cfg(any(feature = "native", test))]
     fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
@@ -2611,8 +2611,8 @@ impl HistoryChromeApi for HistoryHost {
     fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
         HistoryHost::enclosing_owner(self)
     }
-    fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
-        HistoryHost::door_addresses(self)
+    fn api_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        HistoryHost::api_addresses(self)
     }
     fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
         HistoryHost::set_enclosing_owner(self, owner)

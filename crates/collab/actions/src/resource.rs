@@ -38,11 +38,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
+use crate::api::ActionAddress;
 use crate::contract::{
     ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy, ExecutionMode,
     ResultSpec, RiskLevel,
 };
-use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 /// Builds an action's encoded form from arguments already bound against its
@@ -59,7 +59,7 @@ pub type ArgsBuilder = Arc<dyn Fn(&Target, &ActionArgs) -> EncodedAction + Send 
 ///
 /// This deliberately carries an address and typed JSON arguments, not an
 /// [`EncodedAction`]. The application host resolves the address against its
-/// *fresh* resource tree before opening the action door, so a control cannot
+/// *fresh* resource tree before opening the action API, so a control cannot
 /// retain stale authority when availability or policy changes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlInvocation {
@@ -211,7 +211,7 @@ impl<I> ActionBinding<I> {
     /// record it acts on, the one resource it acts on, and the id the app
     /// declares the action by ([`ActionAddress::naming`]) — so the row's
     /// Complete names that row, and what a person presses and what a caller
-    /// names at the door are one thing.
+    /// names at the API are one thing.
     #[must_use]
     pub fn identity(&self) -> ActionAddress {
         let declared = if self.spec.declared.is_empty() {
@@ -1355,7 +1355,7 @@ impl ActionSpec {
 
     /// Run a [`Deferred`](ActionInput::Deferred) spec's builder, unchecked:
     /// `None` for any other. Callers check the result's type against the
-    /// declared one, as the door does.
+    /// declared one, as the API does.
     #[must_use]
     pub fn build_deferred(&self) -> Option<EncodedAction> {
         match &self.lane {
@@ -1739,7 +1739,7 @@ impl ActionSpec {
     /// An action that fires immediately, from an [`EncodedAction`] the caller
     /// already holds.
     ///
-    /// [`immediate`](Self::immediate) is the usual door — it takes a typed
+    /// [`immediate`](Self::immediate) is the usual API — it takes a typed
     /// action and reads its [`locus`](Action::locus) — but a caller that has
     /// only the encoded form (a stored action, a fixture, one that arrived over
     /// a wire) has no typed value to hand it. Projects to zero parameters, the
@@ -2402,7 +2402,7 @@ impl ActionSpec {
     }
 
     /// What one invocation is, by the value it carries: `json`, or the
-    /// palette's and legacy text door's `argument` (typed JSON behind
+    /// palette's and legacy text API's `argument` (typed JSON behind
     /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
     /// text for the primary parameter, or nothing). Arguments that do not
     /// bind build no action, so they are what the declaration says.
@@ -2503,7 +2503,7 @@ impl ActionSpec {
     }
 
     /// [`confirmation_for_args`](Self::confirmation_for_args) for the palette
-    /// and legacy text door: typed JSON behind
+    /// and legacy text API: typed JSON behind
     /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
     /// text for the primary parameter, or nothing.
     pub fn confirmation_for_argument(&self, argument: Option<&str>) -> ConfirmationPolicy {
@@ -2741,7 +2741,7 @@ fn check_bound(
 }
 
 fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {
-    // A refusal carries the builder's own reason to the caller; the door reads
+    // A refusal carries the builder's own reason to the caller; the API reads
     // it out of the payload. Only an encoding of another operation, which the
     // spec cannot invoke, is a defect worth naming here.
     if encoded.type_id == expected || encoded.type_id == INVALID_ARGUMENTS_TYPE {

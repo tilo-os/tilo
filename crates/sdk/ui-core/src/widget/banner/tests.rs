@@ -543,7 +543,7 @@ fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
 }
 
 /// A banner whose dismiss the view bound to an action runs it once, through the banner's own
-/// control door, and goes away.
+/// control API, and goes away.
 #[test]
 fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
     let mut spec = tilo_actions::ResourceSpec::new("res-notice", "test.notice", "Notice");

@@ -1,6 +1,6 @@
 use super::*;
 use crate::surface::ResourceFacts;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::{Collects, ExecutionLocus, InputSpec};
 
 const STEPS: usize = 4;

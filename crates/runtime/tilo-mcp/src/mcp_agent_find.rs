@@ -541,7 +541,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // search gave the field (a field is labelled with its record's), and
         // its own level — the record's contents, never the container's —
         // names the field's row. Asked before the top level is scanned: a
-        // door that lists a field beside its record lists both with no
+        // API that lists a field beside its record lists both with no
         // parent, and only the key says which holds the other.
         if let Some(key) = key.as_ref()
             && let Some((_, field)) = key.rsplit_once('/')
@@ -561,7 +561,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     if let Some(node) = held.children.iter().find(|node| node.key == *key) {
                         let mut node = node.clone();
                         // The record that publishes the field is the one
-                        // whose level lists it; a door that lists the field
+                        // whose level lists it; an API that lists the field
                         // beside the record names no parent either.
                         if node.parent.is_empty() {
                             node.parent.clone_from(&holder.id);

@@ -4421,7 +4421,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
         discovered
             .iter()
             .any(|snapshot| snapshot.binding.same_component(&binding)
-                && tilo_actions::door::resolve(
+                && tilo_actions::api::resolve(
                     snapshot.resources(),
                     &tilo_actions::ActionAddress::new("actual-bridge", COMPONENT_CONTROL_ACTION)
                 )
@@ -5862,7 +5862,7 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
     let selected: Vec<_> = history
         .timeline_selection()
         .into_iter()
-        .map(crate::history_mode::door::encode_entry)
+        .map(crate::history_mode::api::encode_entry)
         .collect();
     assert_eq!(selected, [entry(chosen)]);
     assert!(

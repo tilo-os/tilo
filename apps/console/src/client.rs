@@ -1,7 +1,7 @@
 //! Which MCP client a run or a grant comes from, as the name it goes by says: the API
 //! server names a run "<client> #<number>" and a grant by the client's own name.
 
-/// An MCP client, by the name it gave the door when it connected.
+/// An MCP client, by the name it gave the MCP server when it connected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Client(String);
 

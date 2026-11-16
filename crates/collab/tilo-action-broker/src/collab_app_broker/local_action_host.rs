@@ -1,4 +1,4 @@
-//! A host-local door retaining an existing signed workspace admission, never a new grant.
+//! A host-local api retaining an existing signed workspace admission, never a new grant.
 use super::{AppBrokerState, Arc, VerifiedActionCaller, published_invocation::InvocationCaller};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -54,7 +54,7 @@ impl AppBrokerState {
 
     /// Invoke through the native seat's existing palette/control provider.
     ///
-    /// Its callers are the seat's own control doors — the owner's control socket, whose peer is
+    /// Its callers are the seat's own control apis — the owner's control socket, whose peer is
     /// the account whose desktop this is, and the development test-control socket that drives
     /// the seat as the person — and the palette itself. Network, MCP and app transports never
     /// reach it: an agent, or a person acting over one of them, invokes through
@@ -75,7 +75,7 @@ impl AppBrokerState {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
         // Hosts without a native-seat service retain the pre-existing ordinary
-        // action door. It supplies no original certificate custody, so no
+        // action api. It supplies no original certificate custody, so no
         // privileged continuation can mistake it for native-person evidence.
         // An installed service that refuses NEVER takes this compatibility path.
         if self.services.local_person.is_none() {
@@ -303,7 +303,7 @@ impl AppBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<Arc<CertifiedLocalActionHost>, String> {
-        // This door never falls back to the legacy wall clock during verification.
+        // This api never falls back to the legacy wall clock during verification.
         self.registered_policy_time()?
             .ok_or("original policy clock unavailable")?;
         let workspace = caller
@@ -485,7 +485,7 @@ impl CertifiedLocalActionHost {
         }
     }
 
-    /// This door, handed to agent `agent` by the person's own device.
+    /// This api, handed to agent `agent` by the person's own device.
     fn delegated_to(&self, agent: &str) -> Self {
         Self {
             state: Arc::clone(&self.state),
@@ -531,7 +531,7 @@ impl CertifiedLocalActionHost {
 impl ActionHost for CertifiedLocalActionHost {
     /// Who is in the workspace, as its membership names them: the same
     /// roster the desktop's people panel draws, read for a caller this
-    /// door admits.
+    /// api admits.
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         self.check(caller).ok()?;
         self.state.here(&self.effective)
@@ -545,7 +545,7 @@ impl ActionHost for CertifiedLocalActionHost {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }
-        // Allow only doors that retain original custody through application
+        // Allow only apis that retain original custody through application
         // dispatch or the host-side admission barrier.
         if query.provider.as_ref().is_some_and(|provider| {
             !certified_provider(provider)
@@ -687,7 +687,7 @@ impl ActionHost for CertifiedLocalActionHost {
     }
 }
 
-/// `page` without rows or providers outside this door.
+/// `page` without rows or providers outside this api.
 fn certified_page(mut page: CataloguePage) -> CataloguePage {
     page.rows.retain(|row| certified_provider(&row.provider));
     page.providers
@@ -704,7 +704,7 @@ fn certified_target(provider: &str, _address: &tilo_actions::ActionAddress) -> b
 // Only provider forms with preserved original dispatch/admission custody.
 // Workspace tokens are browsable, but their rows and requests need target checks.
 fn certified_provider(provider: &str) -> bool {
-    // This is only door classification. The action host independently looks
+    // This is only api classification. The action host independently looks
     // up the opaque token and revalidates its live registration/custody.
     if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
         return true;

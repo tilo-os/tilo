@@ -275,7 +275,7 @@ impl ActionDirectorySnapshot {
     }
 
     /// The directory of `resources`, whose actions `descriptors` describe
-    /// (the publication's [`tilo_actions::door::survey`]). A resource is
+    /// (the publication's [`tilo_actions::api::survey`]). A resource is
     /// disclosed through the action `visibility` names for it, or else its
     /// first view, preferring one that reads the document, then another read
     /// of the record ([`tilo_actions::ActionContract::disclosure_rank`]); one

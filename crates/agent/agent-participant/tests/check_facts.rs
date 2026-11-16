@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::common::catalogue;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner, Step,
     StepAction,

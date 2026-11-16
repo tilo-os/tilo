@@ -2,7 +2,7 @@
 //! [`crate::values`]), filled in from the workspace's records just before the
 //! step runs.
 
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;

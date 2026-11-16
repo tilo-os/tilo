@@ -1,4 +1,4 @@
-// Included in the actual App/record-owner action-door fixture.
+// Included in the actual App/record-owner action-API fixture.
 fn deferred_counter_resource(
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     server: bool,

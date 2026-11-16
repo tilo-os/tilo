@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_actions::{ActionAddress, DoorError};
+use tilo_actions::{ActionAddress, ApiError};
 use tilo_desktop::osd::{Device, DeviceGlyph, Hint, Level, OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
@@ -504,13 +504,13 @@ impl Shared {
     pub(crate) fn run_invocations(
         &self,
         locked: bool,
-        look: &mut tilo_session_core::door::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> bool {
         let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
         let ran = !invocations.is_empty();
         for invocation in invocations {
             let outcome = self
-                .doors
+                .published
                 .invoke(&invocation.address, &invocation.arguments, look)
                 .or_else(|error| {
                     if !locked {
@@ -702,8 +702,8 @@ impl Shared {
     }
 
     /// Whether `error` is the session saying that no display here can be dimmed.
-    fn says_nothing_to_dim(error: &DoorError) -> bool {
-        matches!(error, DoorError::Unavailable { code, .. } if code == "no-backlight")
+    fn says_nothing_to_dim(error: &ApiError) -> bool {
+        matches!(error, ApiError::Unavailable { code, .. } if code == "no-backlight")
     }
 
     /// Show `osd` through the readout's published action, on the display the person works on: the
@@ -731,10 +731,10 @@ impl Shared {
             });
         let arguments = osd.arguments(display.as_deref());
         let address = ActionAddress::new(OSD_RESOURCE, "show");
-        if let Err(error) = self.doors.invoke(
+        if let Err(error) = self.published.invoke(
             &address,
             &arguments,
-            &mut tilo_session_core::door::Look::none(),
+            &mut tilo_session_core::surfaces::Look::none(),
         ) {
             tracing::warn!(?error, "no readout shown");
         }

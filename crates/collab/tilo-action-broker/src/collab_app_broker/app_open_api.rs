@@ -4,7 +4,7 @@
 //! to it (`on_behalf_of`) continues that invocation: an edit its effect
 //! submits, or another app's published action its effect calls. It is
 //! decided as that invocation's caller (the person at one of the host's own
-//! doors: the palette, search, a Shortcut, the control socket; an agent; or
+//! apis: the palette, search, a Shortcut, the control socket; an agent; or
 //! another member), by their own grants, and admitted under the custody the
 //! broker kept for them, so the child's history names them and their undo
 //! takes it back. The app's own identity adds nothing, and its own grants
@@ -12,7 +12,7 @@
 //! to ([`tilo_action_policy::Reach`]): a reading invocation's edit, say, is
 //! put to the person as its own request first.
 //!
-//! An invocation the app made of its own action through this same door (a
+//! An invocation the app made of its own action through this same api (a
 //! button in its window runs its published action) speaks for the app, not
 //! for the person: a request continuing it is decided as the app's own,
 //! as if it named no invocation.
@@ -60,16 +60,16 @@ pub(super) enum Continuing {
     /// Someone else's invocation, delivered to this connection and still
     /// running: the request is decided as its caller, under its custody.
     Invocation(Box<Continued>),
-    /// An invocation the app made of its own action through its own door:
+    /// An invocation the app made of its own action through its own api:
     /// nobody's authority but the app's.
-    OwnDoor,
+    OwnApi,
 }
 
 impl AppBrokerState {
     /// Who application `app_id`'s `message` on connection `peer_id` is
     /// decided as, and the custody it is admitted under, when it opens an
     /// application or continues an invocation; `None` for a request the
-    /// app's own door decides. `person` is who admitted the connection.
+    /// app's own api decides. `person` is who admitted the connection.
     pub(super) fn app_request_caller(
         &self,
         peer_id: u64,
@@ -85,7 +85,7 @@ impl AppBrokerState {
             // A read continuing an invocation is its caller's read.
             return match self.continuing(peer_id, app_id, *parent) {
                 Some(Continuing::Invocation(continued)) => Some(Ok((continued.caller, None))),
-                Some(Continuing::OwnDoor) => None,
+                Some(Continuing::OwnApi) => None,
                 None => tilo_actions::remote::refuse(message, ActionHostError::NotPermitted)
                     .map(|refused| Err(Box::new(refused))),
             };
@@ -123,7 +123,7 @@ impl AppBrokerState {
         }
         match self.continuing(peer_id, app_id, parent) {
             Some(Continuing::Invocation(continued)) => Some(Ok(continued.child(invoke.invocation))),
-            Some(Continuing::OwnDoor) => None,
+            Some(Continuing::OwnApi) => None,
             None => {
                 tracing::info!(app = %app_id, target = ?invoke.target, "app's request continuing nothing running refused");
                 Some(Err(refused()))
@@ -157,9 +157,9 @@ impl AppBrokerState {
         let original = running.pop().filter(|_| running.is_empty())?;
         if original
             .as_ref()
-            .is_some_and(|original| original.through_door_of(app_id))
+            .is_some_and(|original| original.through_api_of(app_id))
         {
-            return Some(Continuing::OwnDoor);
+            return Some(Continuing::OwnApi);
         }
         self.child_caller(peer_id, parent)
             .map(|caller| Continuing::Invocation(Box::new(Continued { caller, original })))

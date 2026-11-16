@@ -8,7 +8,7 @@ use super::{AppCatalogue, Caller, DocumentRoute, ViewReadPolicy, WorkspaceRecord
 use crate::worker::ConfinedRead;
 use tilo_actions::{
     ActionDescriptor, ActionOutput,
-    door::{ActionAddress, DoorError},
+    api::{ActionAddress, ApiError},
 };
 use tilo_relay_protocol::WorkspaceId;
 use ui::record::RecordId;
@@ -101,8 +101,8 @@ impl CanonicalRead {
         route: &DocumentRoute,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ActionOutput, DoorError> {
-        let refused = || DoorError::Unknown(address.clone());
+    ) -> Result<ActionOutput, ApiError> {
+        let refused = || ApiError::Unknown(address.clone());
         self.recheck(link, workspace, caller, route)
             .map_err(|_| refused())?;
         if !self

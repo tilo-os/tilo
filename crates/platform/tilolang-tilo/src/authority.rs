@@ -1,7 +1,7 @@
 //! [`TiloAuthority`] — who may invoke what on the platform (authority.md).
 //!
 //! The runtime asks before every invocation it makes on its own (a step of a run, an agent's block,
-//! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the
+//! a press in a view), and the answer is the one `tilo_action_policy` gives every api: the
 //! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
 //! the action ([`tilo_action_policy::authorship`]), the minimum winning. Code a package wrote is
@@ -12,7 +12,7 @@
 //!
 //! Where the host has no standing for the person (a window outside a host, a test), the person's
 //! own part is not decided here, as a native window's detached dispatcher does not decide it: the
-//! door decides what they commit. The agent and code bounds still are.
+//! api decides what they commit. The agent and code bounds still are.
 //!
 //! An Ask is rendered by the host as trusted chrome, never by wasm.
 
@@ -54,7 +54,7 @@ struct State {
     apps: HashMap<ModuleHash, String>,
     /// The resource kind each action is published under, by its id.
     kinds: HashMap<String, String>,
-    /// The principals the door admitted as software acting for a person, with that person.
+    /// The principals the API admitted as software acting for a person, with that person.
     agents: HashMap<String, Option<String>>,
     /// The packages whose records are each member's own (`records: .own`), by app id.
     own: HashSet<String>,
@@ -326,7 +326,7 @@ impl Authority for TiloAuthority {
             (Some(standing), None, _) => standing
                 .policy
                 .party_of(Grantee::agent(agent_id(&invoker.0))),
-            // No standing here: the door decides the person's own part.
+            // No standing here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {

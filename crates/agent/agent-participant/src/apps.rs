@@ -3,7 +3,7 @@
 //!
 //! [`Replica`] mounts the app's real component over one record, as a window
 //! does, on a host without a screen: the record's view is live, and every
-//! operation goes through the same door a person's click takes, checked
+//! operation goes through the same API a person's click takes, checked
 //! against the participant's permissions and attributed to it. Nothing is
 //! performed out of sight of a view; what the participant did is where its
 //! presence shows ([`Replica::presence`]). The person's devices draw the
@@ -15,14 +15,14 @@
 //!
 //! An agent also runs the record's effects and views that answer with what
 //! they found or made (a look at an artwork, a PDF's text, an export), in
-//! the same view and through the same door ([`offered_to_agents`]): never
+//! the same view and through the same API ([`offered_to_agents`]): never
 //! one reaching a person's own device or needing them attending, and never
 //! told where on a device to write, so what an effect makes is kept as
 //! content in the store the view is lent ([`Replica::open_lending`]).
 
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_relay_protocol::live::LiveAnchor;
 use tilo_relay_protocol::live::presence_anchors;
 use ui::application::ApplicationDefinition;
@@ -216,7 +216,7 @@ pub enum Seed {
     },
 }
 
-/// Whom a replica acts as, which decides what its door allows.
+/// Whom a replica acts as, which decides what its API allows.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ReplicaActor {
     /// The host's own device acting for its user (workspace actions): the
@@ -342,7 +342,7 @@ const fn answers(contract: &tilo_actions::ActionContract) -> bool {
 /// export kept as content). One answering nothing leaves an agent nothing to
 /// go on: a view that only moves a window nobody sees, a read that opens an
 /// editor for a person (a vault's "New item"), a file saved or a picker
-/// opened. Document operations are offered by the door alone.
+/// opened. Document operations are offered by the API alone.
 #[must_use]
 pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
     descriptor.kind != tilo_actions::OperationKind::Document
@@ -392,7 +392,7 @@ pub fn readable(descriptor: &ActionDescriptor) -> bool {
 
 /// Why an agent may not run `descriptor`, an effect or view of its record
 /// that [`offered_to_agents`] leaves out.
-fn not_offered(descriptor: &ActionDescriptor) -> DoorError {
+fn not_offered(descriptor: &ActionDescriptor) -> ApiError {
     let label = &descriptor.action_label;
     let (code, reason) = if tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE) {
         (
@@ -418,7 +418,7 @@ fn not_offered(descriptor: &ActionDescriptor) -> DoorError {
             ),
         )
     };
-    DoorError::Unavailable {
+    ApiError::Unavailable {
         code: code.into(),
         reason,
     }
@@ -562,7 +562,7 @@ impl Replica {
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let resources = self.view.resources();
         let in_chains = chain_resources(&resources);
-        tilo_actions::door::survey(&resources)
+        tilo_actions::api::survey(&resources)
             .into_iter()
             .filter_map(|descriptor| self.offered(descriptor, &in_chains))
             .collect()
@@ -579,10 +579,10 @@ impl Replica {
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
         let (resources, past_root) = self.survey_resources();
         let in_chains = chain_resources(&resources);
-        let mut rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
+        let mut rows: Vec<_> = tilo_actions::api::survey_placed(&resources)
             .into_iter()
             .filter_map(|placed| {
-                let tilo_actions::door::PlacedAction {
+                let tilo_actions::api::PlacedAction {
                     parent,
                     has_children,
                     action,
@@ -591,7 +591,7 @@ impl Replica {
                 Some(tilo_actions::remote::CatalogueRow::for_placed_action(
                     "",
                     self.app_id(),
-                    tilo_actions::door::PlacedAction {
+                    tilo_actions::api::PlacedAction {
                         parent,
                         has_children,
                         action,
@@ -697,10 +697,10 @@ impl Replica {
             rows: Vec::new(),
             offering: std::collections::HashSet::new(),
         };
-        let visit = |placed: tilo_actions::door::PlacedAction,
+        let visit = |placed: tilo_actions::api::PlacedAction,
                      walk: &mut SurveyWalk<'_>,
                      in_chains: &std::collections::HashSet<String>| {
-            let tilo_actions::door::PlacedAction {
+            let tilo_actions::api::PlacedAction {
                 parent,
                 has_children,
                 action,
@@ -713,14 +713,14 @@ impl Replica {
             walk.admit(tilo_actions::remote::CatalogueRow::for_placed_action(
                 "",
                 self.app_id(),
-                tilo_actions::door::PlacedAction {
+                tilo_actions::api::PlacedAction {
                     parent,
                     has_children,
                     action,
                 },
             ))
         };
-        let mut complete = tilo_actions::door::survey_placed_each(&resources, &mut |placed| {
+        let mut complete = tilo_actions::api::survey_placed_each(&resources, &mut |placed| {
             visit(placed, &mut walk, &in_chains)
         });
         // The items past the published pages, built only as far as the page
@@ -754,7 +754,7 @@ impl Replica {
                 for child in self.view.past_page_named(name) {
                     in_chains.extend(chain_resources(std::slice::from_ref(&child)));
                     complete =
-                        tilo_actions::door::survey_placed_under(&child, root, &mut |placed| {
+                        tilo_actions::api::survey_placed_under(&child, root, &mut |placed| {
                             visit(placed, &mut walk, &in_chains)
                         });
                     past_built.push(child);
@@ -783,7 +783,7 @@ impl Replica {
                     // page of the record it is listed on.
                     in_chains.extend(chain_resources(std::slice::from_ref(&child)));
                     complete =
-                        tilo_actions::door::survey_placed_under(&child, root, &mut |placed| {
+                        tilo_actions::api::survey_placed_under(&child, root, &mut |placed| {
                             visit(placed, &mut walk, &in_chains)
                         });
                     past_built.push(child);
@@ -934,14 +934,14 @@ impl Replica {
         &self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<bool, DoorError> {
+    ) -> Result<bool, ApiError> {
         if !self.runs_effects {
             return Ok(false);
         }
         // The one action, resolved by its address: never every resource the
         // record publishes, which grows with everything it holds.
         let Some(descriptor) = self.view.descriptor(address) else {
-            // The door refuses what the view does not publish.
+            // The API refuses what the view does not publish.
             return Ok(false);
         };
         if descriptor.kind == tilo_actions::OperationKind::Document
@@ -950,7 +950,7 @@ impl Replica {
             return Ok(false);
         }
         // A view that moves only the agent's own caret, or types at it, is
-        // the agent's own to run as the door admits it for any participant,
+        // the agent's own to run as the API admits it for any participant,
         // though it answers nothing a plan is offered it for.
         let device = tagged(&descriptor, tilo_actions::OWN_DEVICE_SCOPE)
             || tagged(&descriptor, tilo_actions::ATTENDED_TAG)
@@ -967,7 +967,7 @@ impl Replica {
             return Err(not_offered(&descriptor));
         }
         if arguments.contains_key(PATH_PARAM) {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "effect_path".into(),
                 reason: format!(
                     "an agent's {} writes to no path: leave `{PATH_PARAM}` out and what it \
@@ -1003,7 +1003,7 @@ impl Replica {
         .unwrap_or_default()
     }
 
-    /// Perform one published operation through the view, the door a
+    /// Perform one published operation through the view, the API a
     /// person's click takes: permission, confirmation and strict argument
     /// binding exactly as for a person. The change it made is taken with
     /// [`Self::take_mutation`].
@@ -1012,11 +1012,11 @@ impl Replica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_with(None, None, address, arguments, confirm)
     }
 
-    /// [`Self::invoke`] showing the appearance a door admitted.
+    /// [`Self::invoke`] showing the appearance an API admitted.
     ///
     /// # Errors
     ///
@@ -1027,7 +1027,7 @@ impl Replica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
         appearance: Option<tilo_actions::Appearance>,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(None, None, appearance, address, arguments, confirm)
     }
 
@@ -1045,11 +1045,11 @@ impl Replica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(invoker, context, None, address, arguments, confirm)
     }
 
-    /// [`Self::invoke_with`] showing `appearance`. Only a door that admitted
+    /// [`Self::invoke_with`] showing `appearance`. Only an API that admitted
     /// it passes one; `None` clears any appearance the invoker or context
     /// carried.
     pub(crate) fn invoke_within(
@@ -1060,7 +1060,7 @@ impl Replica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let effect = self.agent_effect(address, arguments)?;
         let previous = context.as_ref().map(|_| self.view.context().cloned());
         if context.is_some() {
@@ -1447,7 +1447,7 @@ fn discover_views(
     let Some(permitted) = permissions.permitted_resource(app_id, published) else {
         return Vec::new();
     };
-    tilo_actions::door::survey(&[permitted])
+    tilo_actions::api::survey(&[permitted])
         .into_iter()
         .filter(|descriptor| {
             descriptor.address.resource.as_str() == wanted.id

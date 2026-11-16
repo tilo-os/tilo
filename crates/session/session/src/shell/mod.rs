@@ -13,8 +13,8 @@ use tilo_compositor::Compositor;
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_service::Services;
-use tilo_session_core::door::Doors;
 use tilo_session_core::shell::{Ask, LayoutReading};
+use tilo_session_core::surfaces::Surfaces;
 
 use crate::device_lists::DeviceLists;
 use crate::displays;
@@ -150,7 +150,7 @@ impl Shell {
     /// ([`crate::platform::surfaces::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
-        doors: &mut Doors,
+        doors: &mut Surfaces,
         lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
@@ -213,7 +213,7 @@ impl Shell {
     /// keeps its place with the compositor and the door, drawing and offering nothing, and stands
     /// again when that display comes back, so unplugging and replugging makes no new part. Cheap
     /// when nothing changed, which is what every frame runs.
-    fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
+    fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Surfaces) {
         let outputs = displays::placed(&compositor.outputs());
         for (name, part) in &self.parts {
             if !outputs.iter().any(|shown| &shown.connector == name) {
@@ -250,7 +250,7 @@ impl Shell {
     fn mount_part(
         &mut self,
         compositor: &mut Compositor,
-        doors: &mut Doors,
+        doors: &mut Surfaces,
         output: &str,
         rect: (i32, i32, u32, u32),
         scale: f64,
@@ -287,7 +287,7 @@ impl Shell {
         compositor.add_host(part.clone());
         // Each display's part is its own surface on the door: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
-        doors.add(Rc::clone(&part) as tilo_session_core::door::Shared);
+        doors.add(Rc::clone(&part) as tilo_session_core::surfaces::Shared);
         self.parts.push((output.to_owned(), part));
     }
 
@@ -334,7 +334,7 @@ impl Shell {
     /// Follow the displays as they come and go, and a window taking one for itself: a part is made
     /// or dropped per output, and a part on a display a fullscreen window owns steps aside. Cheap
     /// when nothing changed, which is what every frame runs.
-    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
+    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Surfaces) {
         self.follow_outputs(compositor, doors);
     }
 
@@ -1162,12 +1162,12 @@ pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Rc<RefCell
 /// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
 /// overview, the notifications, the quick settings and the workspaces — while the chrome's own
 /// draws nothing. Every other action is the chrome's.
-pub(crate) fn chrome_door<T: tilo_session_core::door::Published + 'static>(
+pub(crate) fn chrome_door<T: tilo_session_core::surfaces::Published + 'static>(
     shell: bool,
     chrome: &Rc<RefCell<T>>,
     surfaces: crate::device_lists::Surfaces,
-) -> tilo_session_core::door::Shared {
-    let chrome = Rc::clone(chrome) as tilo_session_core::door::Shared;
+) -> tilo_session_core::surfaces::Shared {
+    let chrome = Rc::clone(chrome) as tilo_session_core::surfaces::Shared;
     if shell {
         Rc::new(RefCell::new(ShellChrome { chrome, surfaces }))
     } else {
@@ -1179,12 +1179,12 @@ pub(crate) fn chrome_door<T: tilo_session_core::door::Published + 'static>(
 /// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
-pub(crate) fn lists_door<T: tilo_session_core::door::Published + 'static>(
+pub(crate) fn lists_door<T: tilo_session_core::surfaces::Published + 'static>(
     shell: bool,
     lists: T,
     surfaces: crate::device_lists::Surfaces,
-) -> tilo_session_core::door::Shared {
-    let lists: tilo_session_core::door::Shared = Rc::new(RefCell::new(lists));
+) -> tilo_session_core::surfaces::Shared {
+    let lists: tilo_session_core::surfaces::Shared = Rc::new(RefCell::new(lists));
     if shell {
         Rc::new(RefCell::new(ShellDoor {
             door: lists,
@@ -1197,7 +1197,7 @@ pub(crate) fn lists_door<T: tilo_session_core::door::Published + 'static>(
 
 /// The chrome's door on the shell ([`chrome_door`]).
 struct ShellChrome {
-    chrome: tilo_session_core::door::Shared,
+    chrome: tilo_session_core::surfaces::Shared,
     surfaces: crate::device_lists::Surfaces,
 }
 
@@ -1208,7 +1208,7 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::DoorError> {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
         if address.resource != tilo_desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
@@ -1274,18 +1274,18 @@ fn opens(
     address: &ActionAddress,
     arguments: &Map<String, Value>,
     here: bool,
-) -> Result<bool, tilo_actions::DoorError> {
+) -> Result<bool, tilo_actions::ApiError> {
     match arguments.get("open") {
         None | Some(Value::Null) => Ok(!here),
         Some(Value::Bool(wanted)) => Ok(*wanted),
-        Some(other) => Err(tilo_actions::DoorError::InvalidArguments(format!(
+        Some(other) => Err(tilo_actions::ApiError::InvalidArguments(format!(
             "`{}` takes `open` as a boolean, got {other}",
             address.action
         ))),
     }
 }
 
-impl tilo_session_core::door::Published for ShellChrome {
+impl tilo_session_core::surfaces::Published for ShellChrome {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         self.chrome.borrow_mut().resources()
     }
@@ -1294,8 +1294,8 @@ impl tilo_session_core::door::Published for ShellChrome {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
@@ -1307,8 +1307,8 @@ impl tilo_session_core::door::Published for ShellChrome {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
@@ -1344,11 +1344,11 @@ impl tilo_session_core::door::Published for ShellChrome {
 
 /// The shell's door on the shell ([`lists_door`]).
 struct ShellDoor {
-    door: tilo_session_core::door::Shared,
+    door: tilo_session_core::surfaces::Shared,
     surfaces: crate::device_lists::Surfaces,
 }
 
-impl tilo_session_core::door::Published for ShellDoor {
+impl tilo_session_core::surfaces::Published for ShellDoor {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
         self.door.borrow_mut().resources()
     }
@@ -1357,8 +1357,8 @@ impl tilo_session_core::door::Published for ShellDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if address.resource == tilo_desktop::verbs::SHELL_RESOURCE && address.action == "search" {
             if let Some(Value::String(query)) = arguments.get("query")
                 && !query.is_empty()
@@ -1414,8 +1414,8 @@ impl tilo_session_core::door::Published for ShellDoor {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if ui::search::is_search_address(address)
             || (address.resource == tilo_desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")
@@ -1617,21 +1617,21 @@ impl crate::Session {
         Self::follow_shell_record(shell, &self.shared);
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
-        shell.follow_displays(&mut self.compositor, &mut self.shared.doors);
+        shell.follow_displays(&mut self.compositor, &mut self.shared.published);
         if !shell.has_asks() {
             return Ok(());
         }
-        let doors = &self.shared.doors;
+        let published = &self.shared.published;
         let search = &self.shared.search;
         let workspace = self.shared.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
                 .unwrap_or_default()
         });
-        let resources = doors.resources();
+        let resources = published.resources();
         shell.serve(
             |resource, action, name| {
-                tilo_actions::door::resolve(&resources, &ActionAddress::new(resource, action))
+                tilo_actions::api::resolve(&resources, &ActionAddress::new(resource, action))
                     .and_then(|spec| spec.params().iter().find(|param| param.name == name))
                     .map(|param| param.ty)
             },
@@ -1650,22 +1650,22 @@ impl crate::Session {
                                 place: tilo_desktop_search::LaunchPlace::Focus,
                             },
                             &mut |own| {
-                                doors
+                                published
                                     .invoke(
                                         &own.address,
                                         &own.arguments,
-                                        &mut tilo_session_core::door::Look::none(),
+                                        &mut tilo_session_core::surfaces::Look::none(),
                                     )
                                     .map(drop)
                             },
                         )
                         .map_err(|error| error.to_string());
                 }
-                doors
+                published
                     .invoke(
                         &ActionAddress::new(resource, action),
                         arguments,
-                        &mut tilo_session_core::door::Look::none(),
+                        &mut tilo_session_core::surfaces::Look::none(),
                     )
                     .map(drop)
                     .map_err(|error| error.to_string())

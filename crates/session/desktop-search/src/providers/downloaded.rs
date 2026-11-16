@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn locate() -> Vec<ActionDescriptor> {
-        tilo_actions::door::survey(&[tilo_actions::ResourceSpec::new(
+        tilo_actions::api::survey(&[tilo_actions::ResourceSpec::new(
             wire::app("tilo-downloaded-Gone"),
             "so.tilo.downloaded-app",
             "Gone Tool",

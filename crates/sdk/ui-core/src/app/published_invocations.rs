@@ -6,8 +6,8 @@ impl super::App {
     pub(super) fn check_published_invocation_revision(
         &mut self,
         lease: &PublishedInvocationLease,
-    ) -> Result<(), tilo_actions::DoorError> {
-        let refused = |reason: String| tilo_actions::DoorError::Unavailable {
+    ) -> Result<(), tilo_actions::ApiError> {
+        let refused = |reason: String| tilo_actions::ApiError::Unavailable {
             code: "published_invocation_revision_changed".into(),
             reason,
         };
@@ -26,14 +26,14 @@ impl super::App {
         &self,
         address: &tilo_actions::ActionAddress,
         lease: Option<PublishedInvocationLease>,
-    ) -> Result<Option<ResourceInvocationScope>, tilo_actions::DoorError> {
+    ) -> Result<Option<ResourceInvocationScope>, tilo_actions::ApiError> {
         let Some(lease) = lease else { return Ok(None) };
         use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
         let scope = if let Some(target) = self
             .actions
             .bound_publication
             .target(address)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)?
+            .map_err(crate::bound_dispatch::BoundActionError::into_api)?
         {
             ResourceInvocationScope::for_bound_target(target, lease)
         } else {
@@ -42,13 +42,13 @@ impl super::App {
                     ResourceInvocationScope::for_bound_target(target, lease)
                 }
                 LocalResourceTarget::Outer => {
-                    return Err(tilo_actions::DoorError::Failed(
+                    return Err(tilo_actions::ApiError::Failed(
                         "required invocation has no canonical record owner".into(),
                     ));
                 }
             }
         };
-        scope.map(Some).map_err(tilo_actions::DoorError::Failed)
+        scope.map(Some).map_err(tilo_actions::ApiError::Failed)
     }
     #[cfg(test)]
     pub(crate) fn require_published_invocation_authorizer(&mut self) {
@@ -82,8 +82,8 @@ impl super::App {
     pub(super) fn authorize_published_invocation(
         &self,
         request: &PublishedInvocationRequest,
-    ) -> Result<Option<PublishedInvocationLease>, tilo_actions::DoorError> {
-        let refused = |reason: String| tilo_actions::DoorError::Unavailable {
+    ) -> Result<Option<PublishedInvocationLease>, tilo_actions::ApiError> {
+        let refused = |reason: String| tilo_actions::ApiError::Unavailable {
             code: "published_invocation_unauthorized".into(),
             reason,
         };

@@ -446,7 +446,7 @@ fn the_consent_sheet_names_file_notes_arguments_in_german() {
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);
     let id = "file_note";
-    let descriptor = tilo_actions::door::survey(std::slice::from_ref(&notebook))
+    let descriptor = tilo_actions::api::survey(std::slice::from_ref(&notebook))
         .into_iter()
         .find(|descriptor| descriptor.address.action == id)
         .expect("filing a note is offered on the notebook");

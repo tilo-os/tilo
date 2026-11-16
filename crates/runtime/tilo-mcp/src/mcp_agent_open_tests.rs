@@ -1,11 +1,11 @@
-//! An app's `open` asked of an app that runs already: what the door makes of the word that
+//! An app's `open` asked of an app that runs already: what the API makes of the word that
 //! starts an app when the app offers actions whose ids begin with it.
 use super::*;
 
 /// `notes#open` is what starts Notes, and says what is in it once it runs. The live Notes
 /// offers an agent `open-link`, its one action whose id begins with `open`: asked to open on
 /// Notes that runs already (another device of the person's opened it, and this one shows its
-/// own view), the door runs no action nobody named, least of all one that reaches outside
+/// own view), the API runs no action nobody named, least of all one that reaches outside
 /// the notebook and so asks the person first. Named in full, or by a start that is not the
 /// word that starts an app, `open-link` is still the action run. A file is the open's own.
 #[test]

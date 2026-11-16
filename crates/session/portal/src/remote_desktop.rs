@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
 use tilo_service::{Started, decode, offer};
@@ -330,7 +330,7 @@ impl crate::Published for Controls {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let path = resource.strip_prefix(CONTROL_PREFIX)?;
         Some(
             decode::<ControlEffect>(published, resource, action, arguments).and_then(|_| {
@@ -338,7 +338,7 @@ impl crate::Published for Controls {
                     .end(path)
                     .then(|| Started::Done(ActionOutput::default()))
                     .ok_or_else(|| {
-                        DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action))
+                        ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action))
                     })
             }),
         )

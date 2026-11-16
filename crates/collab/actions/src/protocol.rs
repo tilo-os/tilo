@@ -94,7 +94,7 @@ fn validate_resource<S: BuildHasher>(
         }
         // An action bound to its target is encoded when it is invoked, not when a surface is
         // validated: checking a surface of ten thousand items must build none of their
-        // actions. What such a builder returns is checked where it is built ([`crate::door`],
+        // actions. What such a builder returns is checked where it is built ([`crate::api`],
         // [`crate::ActionSpec::build_args`]), and the effect or view it declares is checked
         // below, against the handlers the host registered.
         let encoded = action.published_encoding();

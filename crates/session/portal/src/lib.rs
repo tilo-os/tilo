@@ -25,7 +25,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_service::{Questions, Service, Started, decode, offer, reading};
 use zbus::zvariant::OwnedValue;
@@ -679,7 +679,7 @@ pub(crate) trait Published {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>>;
+    ) -> Option<Result<Started, ApiError>>;
 }
 
 impl Published for Consents {
@@ -716,9 +716,9 @@ impl Published for Consents {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let consent = resource.strip_prefix(CONSENT_PREFIX)?;
-        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let unknown = || ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         Some(
             decode(published, resource, action, arguments).and_then(|ConsentEffect::Forget| {
                 let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
@@ -778,14 +778,14 @@ impl Service for Portal {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
         let controls = self.controls();
         self.parts(&controls)
             .into_iter()
             .find_map(|part| part.invoke(&published, resource, action, arguments))
             .unwrap_or_else(|| {
-                Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+                Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                     resource, action,
                 )))
             })

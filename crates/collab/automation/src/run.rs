@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tilo_actions::ActionKey;
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::context::{ActionContext, ActionFacet};
 use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId};
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{

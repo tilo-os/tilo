@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_action_is_published_by_its_name;
-    // A caller at the door lists and calls a tilolang action by its name, as it does a native verb,
+    // A caller at the API lists and calls a tilolang action by its name, as it does a native verb,
     // with its typed parameters and its label; what is stored of it keeps its id.
     {
         let meta = shapes();
@@ -417,7 +417,7 @@ tilo_test_env::scenario! {
     fn the_surface_the_planner_and_the_views_read_what_is_published;
 
     phase the_surface_says_what_the_published_spec_says;
-    // The generated surface describes each parameter as the door binds it, and says which actions
+    // The generated surface describes each parameter as the API binds it, and says which actions
     // are destructive, as a native surface does.
     {
         let meta = shapes();
@@ -451,7 +451,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_planner_takes_the_arguments_as_published;
-    // What the door binds is what the planner takes: a case by its name, a record by the
+    // What the API binds is what the planner takes: a case by its name, a record by the
     // catalogue's reference, refused when it names a resource of another kind.
     {
         let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(SHAPES, "")]);

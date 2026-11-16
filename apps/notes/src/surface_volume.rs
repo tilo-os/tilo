@@ -86,7 +86,7 @@ fn labelled(actions: Vec<ui::collaboration::ExportedAction>) -> Vec<(String, Str
 #[test]
 fn a_many_note_notebook_publishes_a_small_surface_and_an_edit_only_its_note() {
     let (mut app, target) = super::cpu_profile::fixture(45);
-    let before = tilo_actions::door::survey(&app.harness().resources());
+    let before = tilo_actions::api::survey(&app.harness().resources());
     let full: usize = before
         .iter()
         .map(|d| {
@@ -130,7 +130,7 @@ fn a_many_note_notebook_publishes_a_small_surface_and_an_edit_only_its_note() {
         let action = crate::actions::rename_page_action(target, "Renamed");
         tilo_actions::apply_local(doc, &action, crate::actions::encode(&action)).unwrap();
     });
-    let after = tilo_actions::door::survey(&app.harness().resources());
+    let after = tilo_actions::api::survey(&app.harness().resources());
     let (second, _) = SurfacePublication::next(Some((&state, &before)), &after);
     let second_bytes = wire_bytes(&second);
     eprintln!(

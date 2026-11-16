@@ -100,7 +100,7 @@ fn flooded_workspace() -> Replica {
         page.invoke_with(
             Some(tilo_actions::ActionInvoker::person(author)),
             None,
-            &tilo_actions::door::ActionAddress::new(
+            &tilo_actions::api::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),
                 "post",
             ),

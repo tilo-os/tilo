@@ -1752,7 +1752,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(|e| error(format!("{e:?}")))?;
         // A window opens another app by asking the session, as on a native
         // desktop; this page's desktop is that session.
-        frame.set_session_door(
+        frame.set_session_api(
             ui::RemoteActions::with_host(desktop.session.clone(), desktop.caller()),
             Some(desktop.workspace.clone()),
         );

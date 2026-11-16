@@ -850,7 +850,7 @@ tilo_test_env::scenario! {
         let flip = find(&commands, CommandGroup::AppActions, "flip");
         assert_eq!(flip.label, "Flip it");
 
-        // An app action enters the same door as the palette and is undoable
+        // An app action enters the same API as the palette and is undoable
         // from the Edit command.
         assert!(app.invoke_host_command(&flip.invocation().unwrap()));
         assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_some());

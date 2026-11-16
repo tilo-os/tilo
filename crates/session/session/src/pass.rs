@@ -227,7 +227,7 @@ impl Session {
         // The surface apps are answered after the services took in what their devices did, so a
         // panel is sent the reading of this pass.
         self.surfaces.poll();
-        self.surfaces.serve(&mut self.shared.doors);
+        self.surfaces.serve(&mut self.shared.published);
         // The windows shared with the workspaces: what the person asked,
         // what the plane brought, and the frames of the ones on screen.
         self.follow_window_shares();
@@ -365,7 +365,7 @@ impl Session {
         self.compositor
             .mark_testctl(answered.saturating_add(self.tool_input));
         // What assistive technology reads of the frame just drawn, and what it asked of it.
-        self.a11y.step(&self.shared.doors);
+        self.a11y.step(&self.shared.published);
         // A live projection is sent the desktop as the pass just drew it.
         let video = self.display_sheet.video_stream();
         self.projection_video
@@ -863,7 +863,7 @@ fn session<'a>(
     compositor: &Compositor,
 ) -> crate::test_control::Session<'a> {
     crate::test_control::Session {
-        doors: &shared.doors,
+        published: &shared.published,
         handle: &shared.handle,
         overlays: &shared.overlays,
         overview: shared.overview.open_cell(),

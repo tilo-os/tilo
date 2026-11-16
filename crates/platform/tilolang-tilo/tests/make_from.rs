@@ -194,7 +194,7 @@ fn a_task_made_from_a_message_links_both_ways() {
     let (mut ada, design, message) = workspace();
 
     // The message's own menu offers making a task of it, and running that carries the message
-    // through the door: the action it runs is made from the message, its title its text.
+    // through the API: the action it runs is made from the message, its title its text.
     let mut channel = ada.host.open_resource(&design, None).unwrap();
     assert_eq!(messages(&mut channel), std::slice::from_ref(&message));
     let row = rows(&mut channel).remove(0);

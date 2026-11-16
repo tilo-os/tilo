@@ -7,7 +7,7 @@
 //! section as the document stores it, an action runs on that value and what
 //! it changed is written back to the document as one change, and undo and
 //! redo of an invoker's steps read and write the document's own history.
-//! Every section is kept by the one [`SectionDoor`]; what it needs of the
+//! Every section is kept by the one [`SectionApi`]; what it needs of the
 //! section's type is a [`SectionKind`], a handful of functions built once
 //! per type; nothing else is compiled per section.
 
@@ -22,7 +22,7 @@ use ui_core::storage::{
 };
 
 use super::live::Live;
-use super::record::{Held, RecordDoor};
+use super::record::{Held, RecordApi};
 
 /// One thing a section's record asks of the section's type.
 #[derive(Clone, Copy)]
@@ -201,7 +201,7 @@ where
 }
 
 /// A settings section held as a record, whatever its type.
-pub(crate) struct SectionDoor {
+pub(crate) struct SectionApi {
     id: String,
     kind: Rc<SectionKind>,
     /// The person whose steps the section's undo and redo take back, and
@@ -209,16 +209,16 @@ pub(crate) struct SectionDoor {
     /// made under any of them are theirs.
     me: String,
     earlier: Vec<String>,
-    /// The settings document's version the door last read.
+    /// The settings document's version the api last read.
     seen: Cell<Option<SettingsRevision>>,
     /// Increases whenever what the section holds may have changed.
     revision: Cell<u64>,
-    /// The last publication, at the door's and the locale's revision it was
+    /// The last publication, at the api's and the locale's revision it was
     /// built at: published again only when either moved.
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
 }
 
-impl SectionDoor {
+impl SectionApi {
     pub(crate) fn new(kind: Rc<SectionKind>, me: String, earlier: Vec<String>) -> Self {
         Self {
             id: format!("settings:{}", kind.kind),
@@ -239,7 +239,7 @@ impl SectionDoor {
         self.revision.set(self.revision.get().wrapping_add(1));
     }
 
-    /// Note whether the settings document moved since the door last read
+    /// Note whether the settings document moved since the api last read
     /// it (another window, the Settings app, another device changed it).
     fn notice(&self) {
         let now = Some(self.kind.revision());
@@ -319,7 +319,7 @@ impl SectionDoor {
     }
 }
 
-impl RecordDoor for SectionDoor {
+impl RecordApi for SectionApi {
     fn id(&self) -> &str {
         &self.id
     }
@@ -355,8 +355,8 @@ impl RecordDoor for SectionDoor {
     }
 }
 
-impl SectionDoor {
-    /// [`RecordDoor::apply_encoded`], run by the action `invoked_by` when
+impl SectionApi {
+    /// [`RecordApi::apply_encoded`], run by the action `invoked_by` when
     /// another action ran this one.
     fn apply_invoked(
         &self,
@@ -383,7 +383,7 @@ impl SectionDoor {
 /// invocation (the invoker's grants) is the caller's, from the published
 /// action.
 pub struct SettingsRecords {
-    doors: Vec<Rc<SectionDoor>>,
+    apis: Vec<Rc<SectionApi>>,
     /// The person the sections are changed by, whose undo and redo of
     /// their steps on each are published beside it, with their shared
     /// records held beside the sections.
@@ -411,7 +411,7 @@ impl SettingsRecords {
                 app_id,
                 document,
                 person: None,
-                doors: Vec::new(),
+                apis: Vec::new(),
             },
             declares,
         )
@@ -436,7 +436,7 @@ impl SettingsRecords {
                 person: Some(Rc::new(super::person::PersonState::new(
                     records, None, app_id, app_title,
                 ))),
-                doors: Vec::new(),
+                apis: Vec::new(),
             },
             declares,
         )
@@ -489,7 +489,7 @@ impl SettingsRecords {
                     app_id,
                     app_title,
                 ))),
-                doors: Vec::new(),
+                apis: Vec::new(),
             },
             declares,
         )
@@ -502,7 +502,7 @@ impl SettingsRecords {
             declare(&mut records);
         }
         Self {
-            doors: records.into_sections(),
+            apis: records.into_sections(),
             person,
         }
     }
@@ -533,7 +533,7 @@ impl SettingsRecords {
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         match &self.person {
             Some(person) => person.resources(),
-            None => self.doors.iter().map(|door| door.publish()).collect(),
+            None => self.apis.iter().map(|api| api.publish()).collect(),
         }
     }
 
@@ -542,8 +542,8 @@ impl SettingsRecords {
     /// `None` for a section not declared here.
     #[must_use]
     pub fn stored(&self, kind: &str) -> Option<serde_json::Value> {
-        let door = self.doors.iter().find(|door| door.kind.kind == kind)?;
-        door.kind
+        let api = self.apis.iter().find(|api| api.kind.kind == kind)?;
+        api.kind
             .stored()
             .map_err(|error| tracing::warn!(kind, %error, "settings section unreadable"))
             .ok()
@@ -562,33 +562,33 @@ impl SettingsRecords {
         confirmed: bool,
         invoker: &ActionInvoker,
         invoked_by: Option<&InvokingAction>,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         let resources = self.resources();
-        let spec = tilo_actions::door::resolve(&resources, address)
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        let spec = tilo_actions::api::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
         if !confirmed
             && spec.confirmation_for_json(arguments) != tilo_actions::ConfirmationPolicy::None
         {
-            return Err(tilo_actions::DoorError::ConfirmationRequired);
+            return Err(tilo_actions::ApiError::ConfirmationRequired);
         }
-        let encoded = tilo_actions::door::encode_json(&resources, address, arguments)?;
+        let encoded = tilo_actions::api::encode_json(&resources, address, arguments)?;
         if encoded.type_id == super::person::HISTORY_TYPE
             && let Some(person) = &self.person
         {
             return person
                 .answer_for(&encoded.payload, invoker)
-                .map_err(tilo_actions::DoorError::Failed);
+                .map_err(tilo_actions::ApiError::Failed);
         }
         let request: super::record::RecordAction = tilo_actions::decode_json(&encoded.payload)
-            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
-        let door = self
-            .doors
+            .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
+        let api = self
+            .apis
             .iter()
-            .find(|door| door.id() == request.record)
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
-        door.apply_invoked(&request.action, invoker, invoked_by)
+            .find(|api| api.id() == request.record)
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
+        api.apply_invoked(&request.action, invoker, invoked_by)
             .map(|()| tilo_actions::ActionOutput::default())
-            .map_err(tilo_actions::DoorError::Failed)
+            .map_err(tilo_actions::ApiError::Failed)
     }
 }
 
@@ -603,7 +603,7 @@ impl SettingsRecords {
         let person = person.to_owned();
         Box::new(move |invocation| {
             if invocation.actor != person {
-                return Err(tilo_actions::DoorError::Unavailable {
+                return Err(tilo_actions::ApiError::Unavailable {
                     code: "permission_denied".into(),
                     reason: "Only the person they belong to changes these settings".into(),
                 });
@@ -612,7 +612,7 @@ impl SettingsRecords {
                 tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
                 tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
                 tilo_actions::remote::InvokeArgument::Text(_) => {
-                    return Err(tilo_actions::DoorError::InvalidArguments(
+                    return Err(tilo_actions::ApiError::InvalidArguments(
                         "a settings change carries typed arguments".into(),
                     ));
                 }

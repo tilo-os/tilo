@@ -1,4 +1,4 @@
-//! The capability door: privilege is granted, never inferred.
+//! Capability resolution: privilege is granted, never inferred.
 //!
 //! A privileged verb declares the [`Capability`] it needs and, before the app draws a control
 //! for it, asks for the capability's [`Resolution`]:
@@ -9,26 +9,26 @@
 //! | [`Resolution::Grantable`] | the control plus an explicit grant step, in the person's words |
 //! | [`Resolution::Unavailable`] | no control at all: one sentence of why, and what would make it available |
 //!
-//! A [`Door`] packages the capability with its resolution so a view cannot accidentally draw
-//! the granted face for a grantable or unavailable one: [`Door::face`] is the three-way choice,
-//! [`Door::control`] the common "only when granted" shorthand.
+//! A [`Resolved`] packages the capability with its resolution so a view cannot accidentally draw
+//! the granted face for a grantable or unavailable one: [`Resolved::face`] is the three-way choice,
+//! [`Resolved::control`] the common "only when granted" shorthand.
 //!
 //! **No inert control may exist**: a control for a privileged act is drawn only in the granted
 //! face. **Discovery is not resolution**: `which()`, `$PATH` and environment variables are test
 //! seams (`#[cfg(test)]`, the `testing` module), never the product path.
 //!
 //! ```
-//! use tilo_ui::capability_door::{Capability, Door};
+//! use tilo_ui::capability::{Capability, Resolved};
 //!
-//! let door = Door::grantable(Capability::FIREWALL, "Tilo needs your permission to change firewall rules");
-//! let shown: Option<&str> = door.control(|| "the Apply button");
+//! let resolved = Resolved::grantable(Capability::FIREWALL, "Tilo needs your permission to change firewall rules");
+//! let shown: Option<&str> = resolved.control(|| "the Apply button");
 //! assert!(shown.is_none(), "a grantable verb draws no inert control");
-//! let grant = door.grant_words().expect("the grant step names itself");
+//! let grant = resolved.grant_words().expect("the grant step names itself");
 //! assert!(grant.contains("permission"));
 //! ```
 //!
 //! The verdict's source is the host or the platform ([`Authority::resolve`]): an app its host
-//! gives a verdict has a [`Door`], a capture or test has one built directly, so neither
+//! gives a verdict has a [`Resolved`], a capture or test has one built directly, so neither
 //! needs an environment variable to say what it can do.
 
 use std::fmt;
@@ -121,13 +121,13 @@ impl Resolution {
 
 /// A capability and its resolution: the one thing a view asks before drawing a privileged control.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Door {
+pub struct Resolved {
     capability: Capability,
     resolution: Resolution,
 }
 
-impl Door {
-    /// The door for `capability` as `resolution` answers it.
+impl Resolved {
+    /// `capability` as `resolution` answers it.
     #[must_use]
     pub fn new(capability: Capability, resolution: Resolution) -> Self {
         Self {
@@ -154,7 +154,7 @@ impl Door {
         Self::new(capability, Resolution::unavailable(reason))
     }
 
-    /// What capability this door is about.
+    /// What capability this is about.
     #[must_use]
     pub fn capability(&self) -> Capability {
         self.capability
@@ -235,10 +235,10 @@ pub trait Authority {
     fn resolve(&self, capability: Capability) -> Resolution;
 }
 
-/// The door `authority` gives `capability`.
+/// `capability` as `authority` resolves it.
 #[must_use]
-pub fn door(authority: &(impl Authority + ?Sized), capability: Capability) -> Door {
-    Door::new(capability, authority.resolve(capability))
+pub fn resolve(authority: &(impl Authority + ?Sized), capability: Capability) -> Resolved {
+    Resolved::new(capability, authority.resolve(capability))
 }
 
 #[cfg(test)]
@@ -254,18 +254,18 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_capability_door_draws_what_its_authority_resolves;
+        fn a_capability_draws_what_its_authority_resolves;
 
         phase each_resolution_draws_its_own_face;
         {
-            let granted = Door::granted(Capability::FIREWALL);
+            let granted = Resolved::granted(Capability::FIREWALL);
             assert_eq!(granted.control(|| "apply"), Some("apply"));
             assert_eq!(
                 granted.face(|| "control", |_| "grant", |_, _| "none"),
                 "control"
             );
 
-            let grantable = Door::grantable(Capability::FIREWALL, "allow changing firewall rules");
+            let grantable = Resolved::grantable(Capability::FIREWALL, "allow changing firewall rules");
             assert_eq!(grantable.control(|| "apply"), None);
             assert_eq!(
                 grantable.face(
@@ -276,7 +276,7 @@ mod tests {
                 "allow changing firewall rules"
             );
 
-            let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
+            let unavailable = Resolved::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
                 || ("control".to_owned(), None),
                 |_| ("grant".to_owned(), None),
                 |reason, remedy| (reason.to_owned(), remedy.map(str::to_owned)),
@@ -288,15 +288,15 @@ mod tests {
             );
         }
 
-        phase an_authority_answers_the_door_and_carries_the_remedy;
+        phase an_authority_answers_the_resolution_and_carries_the_remedy;
         {
             let authority = Fixed(Resolution::unavailable("no daemon").with_remedy("start firewalld"));
-            let door = door(&authority, Capability::FIREWALL);
-            assert_eq!(door.capability(), Capability::FIREWALL);
-            assert_eq!(door.unavailable_reason(), Some("no daemon"));
-            assert_eq!(door.remedy(), Some("start firewalld"));
-            assert!(!door.is_granted());
-            assert!(!door.is_grantable());
+            let resolved = resolve(&authority, Capability::FIREWALL);
+            assert_eq!(resolved.capability(), Capability::FIREWALL);
+            assert_eq!(resolved.unavailable_reason(), Some("no daemon"));
+            assert_eq!(resolved.remedy(), Some("start firewalld"));
+            assert!(!resolved.is_granted());
+            assert!(!resolved.is_grantable());
         }
 
         phase a_capability_names_the_thing_it_reaches;

@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionContract, ActionDescriptor, ActionParam, ActionSpec, DoorError, ExecutionLocus,
+    ActionContract, ActionDescriptor, ActionParam, ActionSpec, ApiError, ExecutionLocus,
     OperationKind,
 };
 
@@ -70,13 +70,13 @@ impl ContextRequirement {
 
     /// The refusal for an invocation whose invoker's view does not meet
     /// this requirement.
-    pub fn refusal(self) -> DoorError {
+    pub fn refusal(self) -> ApiError {
         let reason = match self {
             Self::Caret => "Place the caret in the document first",
             Self::Selection => "Select some text first",
             Self::FindHits => "Find something first",
         };
-        DoorError::Unavailable {
+        ApiError::Unavailable {
             code: self.refusal_code().into(),
             reason: reason.into(),
         }
@@ -191,7 +191,7 @@ pub fn catalogue_schema_bytes(entries: &[CatalogueSchemaEntry]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EncodedAction, ResourceSpec, door};
+    use crate::{EncodedAction, ResourceSpec, api};
 
     fn encoded(tag: &str) -> EncodedAction {
         EncodedAction {
@@ -301,7 +301,7 @@ mod tests {
             assert_eq!(spec.contract.tags.len(), 3, "tags are not duplicated");
             assert!(matches!(
                 ContextRequirement::Selection.refusal(),
-                DoorError::Unavailable { ref code, .. } if code == "needs-selection"
+                ApiError::Unavailable { ref code, .. } if code == "needs-selection"
             ));
             let json = serde_json::to_value(&spec.contract).unwrap();
             let back: ActionContract = serde_json::from_value(json).unwrap();
@@ -315,15 +315,15 @@ mod tests {
             let participant = crate::ParticipantId::new("window:t").unwrap();
             // The participant's own trees differ (caret-derived ids, selection).
             assert_ne!(
-                door::survey(&before.resources_for(Some(&participant))).len(),
-                door::survey(&after.resources_for(Some(&participant))).len()
+                api::survey(&before.resources_for(Some(&participant))).len(),
+                api::survey(&after.resources_for(Some(&participant))).len()
             );
-            let schema = catalogue_schema(&door::survey(&schema_tree()));
+            let schema = catalogue_schema(&api::survey(&schema_tree()));
             // Every operation a participant can reach has an entry in the schema,
             // whatever its caret: grants checked against the schema cover it.
             for provider in [&before, &after] {
                 for entry in
-                    catalogue_schema(&door::survey(&provider.resources_for(Some(&participant))))
+                    catalogue_schema(&api::survey(&provider.resources_for(Some(&participant))))
                 {
                     assert!(
                         schema
@@ -341,8 +341,8 @@ mod tests {
 
         phase schema_ignores_volatile_ids_labels_and_order;
         {
-            let a = door::survey(&tree("b1", false, false));
-            let mut b = door::survey(&tree("b99", false, false));
+            let a = api::survey(&tree("b1", false, false));
+            let mut b = api::survey(&tree("b99", false, false));
             b.reverse();
             for descriptor in &mut b {
                 descriptor.resource_label = "Renamed".into();
@@ -354,22 +354,22 @@ mod tests {
         {
             let provider = provider("b7", true);
             let agent = crate::ParticipantId::new("window:t").unwrap();
-            let address = door::ActionAddress::new("doc", "type-text");
+            let address = api::ActionAddress::new("doc", "type-text");
             let agent_tree = provider.resources_for(Some(&agent));
             let own_tree = provider.resources_for(None);
             assert_eq!(
-                door::encode(&agent_tree, &address, None).unwrap().payload,
+                api::encode(&agent_tree, &address, None).unwrap().payload,
                 b"type@b7".to_vec()
             );
             assert_eq!(
-                door::encode(&own_tree, &address, None).unwrap().payload,
+                api::encode(&own_tree, &address, None).unwrap().payload,
                 b"type@b1".to_vec()
             );
             // Selection-scoped ops exist only in the tree of the participant
             // that has a selection.
-            let bold = door::ActionAddress::new("doc", "toggle-mark");
-            assert!(door::resolve(&agent_tree, &bold).is_some());
-            assert!(door::resolve(&own_tree, &bold).is_none());
+            let bold = api::ActionAddress::new("doc", "toggle-mark");
+            assert!(api::resolve(&agent_tree, &bold).is_some());
+            assert!(api::resolve(&own_tree, &bold).is_none());
             // An unknown participant gets no tree at all, not the default view.
             let stranger = crate::ParticipantId::new("window:other").unwrap();
             assert!(provider.resources_for(Some(&stranger)).is_empty());

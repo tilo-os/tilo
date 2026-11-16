@@ -1,7 +1,7 @@
 fn capture_bound_directory(fixture: &mut ActionFixture) -> String {
     let resources = fixture.app.publication_resources();
     assert!(!resources.is_empty());
-    let descriptors = tilo_actions::door::survey(&resources);
+    let descriptors = tilo_actions::api::survey(&resources);
     fixture
         .app
         .capture_action_directory_snapshot(&resources, &descriptors);

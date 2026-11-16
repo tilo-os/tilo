@@ -1,14 +1,14 @@
 //! An agent task's tilolang programs (`docs/designs/app-language/agents.md`, "How a program
 //! runs"), served by the session to the Tasks agent's loop.
 //!
-//! The session's door runs every task's programs: an MCP client's through its `tilo` tool, the
+//! The session's API runs every task's programs: an MCP client's through its `tilo` tool, the
 //! Tasks agent's through [`RUN`] under this provider. Both are the same step of the same task
 //! session: the program runs in the task's own tilolang host, what it reads and changes is done
 //! as the agent working on the task, one call is one step that `undo` takes back, and the
 //! answer is tilolang text whose references later programs of the task take.
 
 use super::RemoteActionTarget;
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The application whose step a task's program is: the agent a run works as.
 pub const APP: &str = "so.tilo.agent";

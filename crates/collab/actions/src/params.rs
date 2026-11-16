@@ -2166,7 +2166,7 @@ mod rich_schema_tests {
 
         phase a_maximum_violation_carries_its_bound;
         // A number outside its parameter's declared range is refused with the
-        // bound as data, in the same words as before, and the door's failure
+        // bound as data, in the same words as before, and the API's failure
         // carries it as `details`. A bound nested in a property stays words.
         {
             let params = vec![
@@ -2194,11 +2194,11 @@ mod rich_schema_tests {
                 refused.to_string(),
                 "argument `pageSize` must be at most 64"
             );
-            let door = crate::DoorError::from(refused);
-            assert_eq!(door.code(), "invalid_arguments");
-            assert_eq!(door.to_string(), "argument `pageSize` must be at most 64");
+            let api = crate::ApiError::from(refused);
+            assert_eq!(api.code(), "invalid_arguments");
+            assert_eq!(api.to_string(), "argument `pageSize` must be at most 64");
             assert_eq!(
-                door.failure_details(),
+                api.failure_details(),
                 Some(json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}))
             );
 
@@ -2214,7 +2214,7 @@ mod rich_schema_tests {
 
             let nested = bind(json!({"pageSize": 1, "box": {"width": 11}})).unwrap_err();
             assert!(matches!(nested, ArgError::Constraint { .. }), "{nested:?}");
-            assert_eq!(crate::DoorError::from(nested).failure_details(), None);
+            assert_eq!(crate::ApiError::from(nested).failure_details(), None);
             assert!(bind(json!({"pageSize": 64, "scale": 0.5})).is_ok());
         }
 

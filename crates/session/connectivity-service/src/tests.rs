@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_service::{Service, Started};
 
 use os_actions::{EnterpriseEapMethod, EnterpriseWifiConfiguration};
@@ -408,7 +408,7 @@ fn networks_are_joined_from_their_children() {
 
     let refused = service.invoke("wifi-network:Office", "join-wifi", &Map::new());
     assert!(
-        matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "password_needed"),
+        matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "password_needed"),
         "{refused:?}"
     );
     service
@@ -459,14 +459,14 @@ fn what_the_device_lacks_is_unavailable() {
     ] {
         let refused = service.invoke(resource, action, &self::arguments(arguments));
         assert!(
-            matches!(refused, Err(DoorError::Unavailable { .. })),
+            matches!(refused, Err(ApiError::Unavailable { .. })),
             "{resource} {action}: {refused:?}"
         );
     }
     assert!(fake.changes().is_empty());
     assert!(matches!(
         service.invoke(NETWORK, "set-wifi", &arguments(json!({}))),
-        Err(DoorError::Unavailable { .. } | DoorError::InvalidArguments(_))
+        Err(ApiError::Unavailable { .. } | ApiError::InvalidArguments(_))
     ));
 }
 
@@ -662,7 +662,7 @@ fn an_enterprise_network_without_what_it_needs_is_refused() {
     ] {
         let refused = service.invoke(NETWORK, "connect-enterprise-wifi", &arguments(enterprise));
         assert!(
-            matches!(&refused, Err(DoorError::InvalidArguments(reason)) if reason.contains(field)),
+            matches!(&refused, Err(ApiError::InvalidArguments(reason)) if reason.contains(field)),
             "{field}: {refused:?}"
         );
     }
@@ -757,7 +757,7 @@ fn saved_networks_are_kept_and_forgotten_from_their_children() {
         &arguments(json!({"profile": "uuid-home", "server": "proxy.local"})),
     );
     assert!(
-        matches!(refused, Err(DoorError::InvalidArguments(_))),
+        matches!(refused, Err(ApiError::InvalidArguments(_))),
         "{refused:?}"
     );
     service
@@ -943,7 +943,7 @@ fn bluetooth_looks_for_devices_pairs_and_forgets_them() {
         let arguments = arguments(json!({"on": true, "address": "AA:CC"}));
         let refused = service.invoke(BLUETOOTH, action, &arguments);
         assert!(
-            matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "bluetooth_off"),
+            matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
             "{action}: {refused:?}"
         );
     }

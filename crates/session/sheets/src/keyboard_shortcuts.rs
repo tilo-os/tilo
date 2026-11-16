@@ -22,8 +22,8 @@
 use serde_json::{Map, Value, json};
 use settings_store::hardware::{KeyChord, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{ActionContract, ActionKind, ResultSpec, RetryPolicy};
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs};
 use tilo_actions::remote::CatalogueRow;

@@ -33,9 +33,9 @@ pub(crate) enum BoxAsk {
 }
 
 /// Where each published part stood when search last read it: the part's
-/// place in the door and its revision ([`Doors::revision`]).
+/// place in the published side and its revision ([`Surfaces::revision`]).
 ///
-/// [`Doors::revision`]: tilo_session_core::door::Doors::revision
+/// [`Surfaces::revision`]: tilo_session_core::surfaces::Surfaces::revision
 pub(crate) type Observed = RefCell<Vec<(usize, u64)>>;
 
 #[cfg_attr(
@@ -115,8 +115,8 @@ pub(crate) struct Shared {
     pub(crate) switcher: tilo_desktop::window_switcher::Switcher,
     /// Every hosted surface's and service's published side: the session's
     /// action host.
-    pub(crate) doors: tilo_session_core::door::Doors,
-    /// Published actions keys and gestures asked for, waiting for the door.
+    pub(crate) published: tilo_session_core::surfaces::Surfaces,
+    /// Published actions keys and gestures asked for, waiting for the API.
     pub(crate) invocations: crate::keys::Invocations,
     /// Chords pressed that run a saved shortcut, waiting for the automation
     /// host.
@@ -431,7 +431,7 @@ pub(crate) struct Shared {
     /// login asks on, and the person's answers about it.
     #[cfg(target_os = "linux")]
     pub(crate) mcp_server: RefCell<Option<crate::mcp_server::Loop>>,
-    /// What a connection of any door asks of the session's own doors: answered
+    /// What a connection of any API asks of the session's published side: answered
     /// on the loop's pass, the only place that may touch them.
     #[cfg(target_os = "linux")]
     pub(crate) session_doors: std::sync::Arc<crate::mcp_server::SessionDoors>,

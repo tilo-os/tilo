@@ -1,13 +1,13 @@
 //! An agent task's programs (`tilolang_tilo::task`): run in a session of the task's own that
 //! holds no records, reading Notes and Todo through their apps and changing them only by
-//! invoking each app's actions, which the apps (here two hosts behind a door) run.
+//! invoking each app's actions, which the apps (here two hosts behind an API) run.
 
 use std::rc::Rc;
 
 use serde_json::{Value as Json, json};
 use tilolang_tilo::task::TaskSession;
 
-use crate::task_door::Apps;
+use crate::task_api::Apps;
 
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
@@ -26,7 +26,7 @@ const TODO_APP: &str = "so.tilo.lang.tasks";
 
 struct Task {
     session: TaskSession,
-    door: Rc<Apps>,
+    api: Rc<Apps>,
 }
 
 /// The agent's task, as the author of the programs these tests run.
@@ -39,10 +39,10 @@ fn agent() -> tilolang_tilo::runtime::Principal {
 fn task(refused: Vec<&'static str>) -> Task {
     let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
     apps.refused = refused;
-    let door = Rc::new(apps);
+    let api = Rc::new(apps);
     Task {
-        session: door.task(),
-        door,
+        session: api.task(),
+        api,
     }
 }
 
@@ -69,7 +69,7 @@ fn seeded() -> Task {
         let answer = task.run(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
     }
-    task.door.invoked.borrow_mut().clear();
+    task.api.invoked.borrow_mut().clear();
     task
 }
 
@@ -87,7 +87,7 @@ fn one_program_reads_notes_and_todo() {
         "{shown}"
     );
     assert!(
-        task.door.invoked.borrow().is_empty(),
+        task.api.invoked.borrow().is_empty(),
         "reading invokes nothing"
     );
 }
@@ -111,7 +111,7 @@ fn changes_in_two_apps_are_invocations_of_each() {
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 2, "{answer:#}");
     assert_eq!(answer["apps"], json!([NOTES_APP, TODO_APP]), "{answer:#}");
-    let invoked = task.door.invoked.borrow().clone();
+    let invoked = task.api.invoked.borrow().clone();
     let actions: Vec<(&str, &str)> = invoked
         .iter()
         .map(|call| {
@@ -143,7 +143,7 @@ fn an_assignment_is_the_resources_field_edit() {
     let task = seeded();
     let answer = task.run("for t in tasks.tasks.items {\n    t.done = true\n}", false);
     assert_eq!(answer["state"], "done", "{answer:#}");
-    let invoked = task.door.invoked.borrow().clone();
+    let invoked = task.api.invoked.borrow().clone();
     assert_eq!(invoked.len(), 2, "{invoked:#?}");
     assert!(
         invoked
@@ -169,7 +169,7 @@ fn many_changes_are_previewed_and_sent_on_confirm() {
         "{previewed:#}"
     );
     assert!(
-        task.door.invoked.borrow().is_empty(),
+        task.api.invoked.borrow().is_empty(),
         "a preview invokes nothing"
     );
     assert_eq!(task.said("tasks.tasks.items.len()"), "2");
@@ -218,8 +218,8 @@ tilo_test_env::scenario! {
     {
         let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
         apps.unreachable = vec![(TODO_APP, "todo is not open")];
-        let door = Rc::new(apps);
-        let session = door.task();
+        let api = Rc::new(apps);
+        let session = api.task();
         for source in [
             "tasks.tasks.items.len()",
             "print(tasks.tasks.items.len())",
@@ -266,7 +266,7 @@ fn a_flag_argument_is_sent_as_a_flag() {
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
-    let pin = task.door.invoked.borrow().last().cloned().unwrap();
+    let pin = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(pin["arguments"]["pinned"], json!(false), "{pin:#}");
 }
 
@@ -278,7 +278,7 @@ fn a_resource_argument_is_the_catalogues_reference() {
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
-    let remove = task.door.invoked.borrow().last().cloned().unwrap();
+    let remove = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
         remove["arguments"]["t"]["kind"],
         json!("tl.so.tilo.lang.tasks.Task"),
@@ -298,10 +298,10 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let door = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
+    let api = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
     let task = Task {
-        session: door.task(),
-        door,
+        session: api.task(),
+        api,
     };
     let answer = task.run(
         "let ch = chat.new_channel(chat.conversations, \"launch\")\n\
@@ -310,7 +310,7 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
         true,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
-    let send = task.door.invoked.borrow().last().cloned().unwrap();
+    let send = task.api.invoked.borrow().last().cloned().unwrap();
     assert_eq!(
         send["arguments"]["to"]["kind"],
         json!("tl.so.tilo.lang.chat.TextChannel"),

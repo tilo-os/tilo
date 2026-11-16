@@ -4,7 +4,7 @@ use tilolang_tilo::DynAction;
 use tilolang_tilo::host::Host;
 use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
 
-/// Commit `action` to `record` as the door would: one change, which records the action it is and
+/// Commit `action` to `record` as the API would: one change, which records the action it is and
 /// whom it was made for, as a record's service commits one.
 ///
 /// The store that planned the action keeps its own write of it until a change of the record

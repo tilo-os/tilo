@@ -13,9 +13,9 @@
 //! replica's log into a fresh one to prove determinism.
 
 use automerge::ChangeHash;
-use tilo_actions::door::{self, InvocationProvenance};
+use tilo_actions::api::{self, InvocationProvenance};
 use tilo_actions::{
-    ActionAddress, ActionEnvelope, ActionError, ActionRegistry, DoorError, LocalTransport,
+    ActionAddress, ActionEnvelope, ActionError, ActionRegistry, ApiError, LocalTransport,
 };
 use tilo_automerge::ApplyIncoming;
 
@@ -207,7 +207,7 @@ impl<R: Resource> Replica<R> {
     /// Invoke a published action exactly as a control, the palette, an
     /// agent or a script does: through the door, which refuses one that
     /// asks for confirmation ([`Self::apply_confirmed`]).
-    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, DoorError> {
+    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, ApiError> {
         self.invoke(invoke.into(), false)
     }
 
@@ -218,22 +218,22 @@ impl<R: Resource> Replica<R> {
     pub fn apply_confirmed(
         &mut self,
         invoke: impl Into<Invoke<R>>,
-    ) -> Result<&ActionEnvelope, DoorError> {
+    ) -> Result<&ActionEnvelope, ApiError> {
         self.invoke(invoke.into(), true)
     }
 
     /// Apply one typed action value, the path a custom surface takes once
     /// its person confirmed what it does: the generic
     /// [`APPLY`](crate::APPLY) action, through the door.
-    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, DoorError> {
-        let invoke = Invoke::apply(action)
-            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, ApiError> {
+        let invoke =
+            Invoke::apply(action).map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
         self.invoke(invoke, true)
     }
 
-    fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, DoorError> {
+    fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, ApiError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+            return Err(ApiError::InvalidArguments(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
         // Published from the state kept current change by change, so an
@@ -241,7 +241,7 @@ impl<R: Resource> Replica<R> {
         let tree = self
             .live()
             .map(|state| resource::publish::<R>(R::KIND, R::LABEL, state))
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
         let address = ActionAddress::new(tree.id.as_str(), id);
         // Without an author, the replica's own actor: every replica is a
         // device of its own.
@@ -284,7 +284,7 @@ impl<R: Resource> Replica<R> {
                 None => InvocationProvenance::caller(&actor),
             };
             if confirmed {
-                door::invoke_json_confirmed(
+                api::invoke_json_confirmed(
                     doc,
                     resources,
                     &address,
@@ -294,7 +294,7 @@ impl<R: Resource> Replica<R> {
                     &mut transport,
                 )
             } else {
-                door::invoke_json(
+                api::invoke_json(
                     doc,
                     resources,
                     &address,
@@ -308,7 +308,7 @@ impl<R: Resource> Replica<R> {
         self.log.push(dispatched.envelope().clone());
         self.log
             .last()
-            .ok_or_else(|| DoorError::Failed("no envelope".into()))
+            .ok_or_else(|| ApiError::Failed("no envelope".into()))
     }
 
     /// Replay an envelope authored on another replica.

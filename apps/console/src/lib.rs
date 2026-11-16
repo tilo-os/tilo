@@ -154,7 +154,7 @@ impl Nav {
 #[derive(Clone)]
 pub(crate) struct Reads {
     pub(crate) sessions: Query<wire::Sessions>,
-    pub(crate) door: Query<mcp_server::Server>,
+    pub(crate) server: Query<mcp_server::Server>,
 }
 
 impl Reads {
@@ -168,11 +168,11 @@ impl Reads {
     }
 }
 
-/// A door the app reads and asks through: the workspaces' history or the MCP server.
+/// A server the app reads and asks through: the workspaces' history or the MCP server.
 #[derive(Clone)]
-pub(crate) struct Doors(RecordEnv<Console>);
+pub(crate) struct Records(RecordEnv<Console>);
 
-impl Doors {
+impl Records {
     pub(crate) fn of(cx: &ViewCx<Console>) -> Self {
         Self(RecordEnv::clone(cx))
     }
@@ -187,7 +187,7 @@ impl Doors {
     }
 
     /// Ask the MCP server for `action` with `value` as its argument.
-    pub(crate) fn door(&self, action: &str, value: &impl serde::Serialize) {
+    pub(crate) fn server(&self, action: &str, value: &impl serde::Serialize) {
         self.ask(mcp_server::target(action), mcp_server::argument(value));
     }
 
@@ -200,7 +200,7 @@ impl Doors {
     }
 
     /// Follow the MCP server.
-    pub(crate) fn follow_door(&self) -> Query<mcp_server::Server> {
+    pub(crate) fn follow_server(&self) -> Query<mcp_server::Server> {
         self.0
             .query(mcp_server::target(mcp_server::SERVER), InvokeArgument::None)
     }
@@ -214,7 +214,7 @@ impl Doors {
 
     /// Open the full desktop where `href`, a `tilo://open#…` address, says.
     pub(crate) fn open_in_tilo(&self, href: &str) {
-        // The address is the door's, and an open the session refuses is told where the open
+        // The address is the MCP server's, and an open the session refuses is told where the open
         // lands; one that does not parse names nothing to open.
         let _ = self.0.dispatcher().open_link(href);
     }
@@ -308,10 +308,10 @@ impl ResourceApp for App {
             let stage = nav.clone();
             cx.on_stage(move |scenario| sample::stage(scenario, &stage));
         }
-        let doors = Doors::of(cx);
+        let records = Records::of(cx);
         let reads = Reads {
-            sessions: doors.follow_history(wire::SESSIONS, &agents::query()),
-            door: doors.follow_door(),
+            sessions: records.follow_history(wire::SESSIONS, &agents::query()),
+            server: records.follow_server(),
         };
         let opened = nav.clone();
         cx.effects(move |effect: ConsoleEffect, _cx| {
@@ -326,7 +326,7 @@ impl ResourceApp for App {
             Ok(ui::framework::Effected::done())
         });
         let (listed, named) = (reads.clone(), reads.clone());
-        let door_read = reads.door.clone();
+        let server_read = reads.server.clone();
         let filter = cx.value(Console::clone);
         let content = cx.switch(&filter, move |cx, _| {
             let (nav, reads) = (nav.clone(), reads.clone());
@@ -344,8 +344,8 @@ impl ResourceApp for App {
             Publishes::new()
                 .live_rows(move || {
                     let sessions = listed.sessions();
-                    let door = door_read.answer().with(|read| match read {
-                        Arrival::Ready(door) => door.clone(),
+                    let server = server_read.answer().with(|read| match read {
+                        Arrival::Ready(server) => server.clone(),
                         Arrival::Pending { .. } | Arrival::Failed(_) => {
                             mcp_server::Server::default()
                         }
@@ -354,7 +354,7 @@ impl ResourceApp for App {
                     let agent_names = sessions
                         .iter()
                         .map(|session| session.agent.name.as_str())
-                        .chain(door.grants.iter().map(|grant| grant.agent.as_str()));
+                        .chain(server.grants.iter().map(|grant| grant.agent.as_str()));
                     rows.extend(
                         agent_card::clients(agent_names)
                             .iter()

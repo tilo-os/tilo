@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
 use tilo_peer_state::join::Role;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};

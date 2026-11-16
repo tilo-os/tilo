@@ -2013,7 +2013,7 @@ mod framework_tests {
             .effect(&crate::actions::WeatherEffect::Refresh)
             .unwrap_err();
         assert!(
-            matches!(&refused, tilo_actions::DoorError::Unavailable { code, .. } if code == "no_locations"),
+            matches!(&refused, tilo_actions::ApiError::Unavailable { code, .. } if code == "no_locations"),
             "{refused:?}"
         );
         assert!(

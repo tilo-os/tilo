@@ -82,7 +82,7 @@ pub struct Button {
     on_click: Option<Box<dyn FnMut()>>,
     action: Option<ActionEmitter<()>>,
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
-    /// through the published action door.
+    /// through the published action API.
     native_resource: Option<tilo_actions::ResourceSpec>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,

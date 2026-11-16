@@ -229,14 +229,14 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
 /// hosted, as a connection to the process holding that device's session ([`held`]), started when
 /// none runs. `hold` is that process (`tilo mcp --hold`, which a connection starts).
 pub fn serve(hold: bool) -> Result<ExitCode> {
-    let device = match tilo_mcp::session_door::desktop_door() {
-        Ok(Some(door)) => {
-            tilo_mcp::session_door::bridge(&door)?;
+    let device = match tilo_mcp::session_api::desktop_server() {
+        Ok(Some(server)) => {
+            tilo_mcp::session_api::bridge(&server)?;
             return Ok(ExitCode::SUCCESS);
         }
         Ok(None) => crate::login::load(&crate::login::device_dir()?)?
             .ok_or_else(|| NOT_LOGGED_IN.to_owned()),
-        // A desktop whose door is not open yet (its first login is not complete) is no computer
+        // A desktop whose server is not open yet (its first login is not complete) is no computer
         // that needs a login: the agent hears what it waits for.
         Err(error) => Err(error.to_string()),
     };
@@ -520,11 +520,11 @@ mod tests {
         assert_eq!(called["result"]["isError"], true);
     }
 
-    /// A Tilo desktop whose door is not open yet (its first login is not complete) is no computer
+    /// A Tilo desktop whose server is not open yet (its first login is not complete) is no computer
     /// that needs `tilo login`: the agent hears what it waits for, never "not logged in".
     #[tokio::test]
-    async fn a_desktop_whose_door_is_not_open_yet_never_says_not_logged_in() {
-        let waiting = tilo_mcp::session_door::route(
+    async fn a_desktop_whose_server_is_not_open_yet_never_says_not_logged_in() {
+        let waiting = tilo_mcp::session_api::route(
             false,
             None,
             true,

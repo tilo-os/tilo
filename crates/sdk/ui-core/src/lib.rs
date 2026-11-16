@@ -123,7 +123,7 @@ pub mod arriving;
 /// What wants a person: the waiting stack, and the ledger an outcome goes to when it does not.
 pub mod attention;
 pub mod author;
-pub mod capability_door;
+pub mod capability;
 pub mod content_zoom;
 pub mod control_hints;
 pub mod control_notice;
@@ -171,7 +171,7 @@ pub mod content_layout;
 mod cpu_raster;
 pub mod damage;
 pub mod date;
-pub mod device_local_door;
+pub mod device_local_api;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
@@ -335,7 +335,7 @@ pub mod scroll_copy;
 pub mod search;
 pub mod secret_paint;
 pub mod selection;
-pub mod session_door;
+pub mod session_api;
 pub mod shared_selection;
 pub mod shell_tabs;
 mod slot_row;

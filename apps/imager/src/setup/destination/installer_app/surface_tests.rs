@@ -464,7 +464,7 @@ tilo_test_env::scenario! {
                     &handlers,
                 );
                 assert!(violations.is_empty(), "{step:?}: {violations:?}");
-                let described = tilo_actions::door::survey(&resources);
+                let described = tilo_actions::api::survey(&resources);
                 assert!(
                     described.iter().any(|d| d.address.action == "status"),
                     "{step:?} has no status"

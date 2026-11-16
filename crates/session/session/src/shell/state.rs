@@ -24,7 +24,7 @@ use std::rc::Rc;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_desktop::overlays::{Anchor as Place, Overlay, Slot, SwitcherScope};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
@@ -380,8 +380,8 @@ struct Focus {
 }
 
 /// The surface `text` names, as the readings and the verbs spell it.
-fn named(text: &str) -> Result<Slot, DoorError> {
-    Slot::named(text.trim()).ok_or_else(|| DoorError::Unavailable {
+fn named(text: &str) -> Result<Slot, ApiError> {
+    Slot::named(text.trim()).ok_or_else(|| ApiError::Unavailable {
         code: "unknown-surface".into(),
         reason: format!("{text} is not a surface"),
     })
@@ -471,13 +471,13 @@ impl ShellService {
 
     /// Open the menu of `tab` (or of the window in front), or close it when it is already up for
     /// that window.
-    fn open(&mut self, tab: Option<&str>, anchor: Option<&str>) -> Result<(), DoorError> {
+    fn open(&mut self, tab: Option<&str>, anchor: Option<&str>) -> Result<(), ApiError> {
         let tab = match tab.map(str::trim) {
-            Some(text) if !text.is_empty() => text.parse().map_err(|_| DoorError::Unavailable {
+            Some(text) if !text.is_empty() => text.parse().map_err(|_| ApiError::Unavailable {
                 code: "unknown-window".into(),
                 reason: format!("{text} is not a window"),
             })?,
-            _ => self.focused().ok_or_else(|| DoorError::Unavailable {
+            _ => self.focused().ok_or_else(|| ApiError::Unavailable {
                 code: "no-window".into(),
                 reason: "No window is in front".into(),
             })?,
@@ -487,7 +487,7 @@ impl ShellService {
             return Ok(());
         }
         let anchor = anchor.map(|text| {
-            Self::point(text).ok_or_else(|| DoorError::Unavailable {
+            Self::point(text).ok_or_else(|| ApiError::Unavailable {
                 code: "unknown-anchor".into(),
                 reason: format!("{text} is not a place on the shell"),
             })
@@ -497,7 +497,7 @@ impl ShellService {
             None => None,
         };
         if self.handle.window_menu(tab).is_empty() {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "no-rows".into(),
                 reason: "That window offers nothing".into(),
             });
@@ -521,10 +521,10 @@ impl ShellService {
     /// stands by itself. The desktop's own chrome keeps the rest: its menus,
     /// the picker, the overview and the strip ribbon open and close with the
     /// widgets that draw them, and say so to the same stack.
-    fn open_surface(&self, slot: &str, anchor: Option<&str>) -> Result<(), DoorError> {
+    fn open_surface(&self, slot: &str, anchor: Option<&str>) -> Result<(), ApiError> {
         let slot = named(slot)?;
         if !slot.session_closes() {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "not-mine".into(),
                 reason: format!(
                     "The desktop shows {} itself, in the widget that owns it",
@@ -533,7 +533,7 @@ impl ShellService {
             });
         }
         if slot == Slot::WindowMenu {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "use-window-menu".into(),
                 reason: "The window menu opens from \"desktop:window-menu\", which names \
                          the window it is for"
@@ -542,7 +542,7 @@ impl ShellService {
         }
         let anchor = anchor
             .map(|text| {
-                Place::parse(text).ok_or_else(|| DoorError::Unavailable {
+                Place::parse(text).ok_or_else(|| ApiError::Unavailable {
                     code: "unknown-anchor".into(),
                     reason: format!("{text} is not a place to hang a surface"),
                 })
@@ -553,10 +553,10 @@ impl ShellService {
     }
 
     /// Close a surface the session itself puts up.
-    fn close_surface(&mut self, slot: &str) -> Result<(), DoorError> {
+    fn close_surface(&mut self, slot: &str) -> Result<(), ApiError> {
         let slot = named(slot)?;
         if !slot.session_closes() {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "not-mine".into(),
                 reason: format!(
                     "The desktop shows {} itself, in the widget that owns it",
@@ -573,9 +573,9 @@ impl ShellService {
     }
 
     /// Choose row `row` of the open menu, as the shell would send it.
-    fn choose(&mut self, row: &str) -> Result<(), DoorError> {
+    fn choose(&mut self, row: &str) -> Result<(), ApiError> {
         let Some(menu) = self.state.menu.clone() else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "closed".into(),
                 reason: "The window menu is not open".into(),
             });
@@ -585,7 +585,7 @@ impl ShellService {
                 self.close();
                 Ok(())
             }
-            Err(reason) => Err(DoorError::Unavailable {
+            Err(reason) => Err(ApiError::Unavailable {
                 code: "row-refused".into(),
                 reason,
             }),
@@ -651,7 +651,7 @@ impl Service for ShellService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         match resource {
             WINDOW_MENU => {
                 match decode::<ShellEffect>(&self.resources(), resource, action, arguments)? {
@@ -704,7 +704,7 @@ impl Service for ShellService {
                     OverlayEffect::PutOffAsk => self.handle.put_off_personal_ask(),
                 }
             }
-            _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+            _ => return Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }
         Ok(Started::Done(ActionOutput::default()))
     }

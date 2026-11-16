@@ -1,15 +1,15 @@
 //! Enumerate and admit actions against an app's published resource tree.
 //!
-//! This is the external door for a console app, and it adds no rules of its
+//! This is the external API for a console app, and it adds no rules of its
 //! own: resolution, availability and strict binding are
-//! [`tilo_actions::door`]'s, and confirmation follows the projection the
+//! [`tilo_actions::api`]'s, and confirmation follows the projection the
 //! compositor's live-app provider already publishes — an action whose
 //! contract asks for `Confirm` takes a required boolean `confirm`, one that
 //! asks for a `Phrase` takes a required text `confirmation_phrase`. Those two
 //! arguments are consumed here and never reach the action's own binding.
 
 use serde_json::{Map, Value, json};
-use tilo_actions::door::{self, ActionAddress};
+use tilo_actions::api::{self, ActionAddress};
 use tilo_actions::{
     ActionParam, Availability, ConfirmationPolicy, EncodedAction, OperationKind, ParamType,
     ResourceSpec,
@@ -122,7 +122,7 @@ fn describe_into(provider: &str, resource: &ResourceSpec, words: &[String], out:
 }
 
 /// A refused invocation, with the code the wire reports. The codes are the
-/// ones [`tilo_actions::DoorError::code`] and the compositor use, so a caller
+/// ones [`tilo_actions::ApiError::code`] and the compositor use, so a caller
 /// handles "wrong address", "wrong arguments", "not now" and "not
 /// confirmed" the same way against either endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +139,7 @@ impl Refusal {
         }
     }
 
-    fn from_door(error: &door::DoorError) -> Self {
+    fn from_api(error: &api::ApiError) -> Self {
         Self {
             code: error.code(),
             message: error.to_string(),
@@ -147,7 +147,7 @@ impl Refusal {
     }
 }
 
-/// An invocation that passed the door: resolved, available, confirmed as
+/// An invocation that passed the API: resolved, available, confirmed as
 /// its contract requires, and bound strictly into the action's own encoded
 /// form. The owning app routes it by `kind`.
 pub struct Admitted {
@@ -181,9 +181,9 @@ pub fn admit(
         return Err(Refusal::unknown(id));
     }
     let address = parse_id(id).ok_or_else(|| Refusal::unknown(id))?;
-    let spec = door::resolve(resources, &address).ok_or_else(|| Refusal::unknown(id))?;
+    let spec = api::resolve(resources, &address).ok_or_else(|| Refusal::unknown(id))?;
     if let Availability::Unavailable { code, reason } = &spec.contract.availability {
-        return Err(Refusal::from_door(&door::DoorError::Unavailable {
+        return Err(Refusal::from_api(&api::ApiError::Unavailable {
             code: code.clone(),
             reason: reason.clone(),
         }));
@@ -224,7 +224,7 @@ pub fn admit(
         }
     };
     let encoded =
-        door::encode_json(resources, &address, &own).map_err(|error| Refusal::from_door(&error))?;
+        api::encode_json(resources, &address, &own).map_err(|error| Refusal::from_api(&error))?;
     Ok(Admitted {
         label: spec.label.clone(),
         kind: spec.kind,

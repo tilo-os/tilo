@@ -1175,7 +1175,7 @@ impl App {
         true
     }
 
-    /// The local actor's door onto one action: host services first, then an
+    /// The local actor's API onto one action: host services first, then an
     /// action that asks for confirmation through the palette, then the app's
     /// own. Assistive technology and host chrome both enter here.
     pub(super) fn invoke_local_address(
@@ -1187,7 +1187,7 @@ impl App {
             return result.is_ok();
         }
         let resources = self.collect_declared_resources();
-        let confirmation = tilo_actions::door::resolve(&resources, address)
+        let confirmation = tilo_actions::api::resolve(&resources, address)
             .map(|spec| spec.confirmation_for_argument(argument))
             .unwrap_or_default();
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
@@ -1211,7 +1211,7 @@ impl App {
     /// moves keyboard focus and activation returns click coordinates.
     #[allow(
         clippy::too_many_lines,
-        reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence"
+        reason = "one ordered native accessibility API preserves existing resource, semantic and pointer fallback precedence"
     )]
     pub fn dispatch_a11y_action(
         &mut self,
@@ -1665,7 +1665,7 @@ impl App {
         let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
-            Err(tilo_actions::DoorError::ConfirmationRequired) => {
+            Err(tilo_actions::ApiError::ConfirmationRequired) => {
                 if let Some(value) = arg {
                     let arguments = if let Some(json) =
                         value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
@@ -1746,7 +1746,7 @@ impl App {
                         self.layout.layout_dirty = true;
                         Ok(true)
                     }
-                    Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                    Err(tilo_actions::ApiError::ConfirmationRequired) => {
                         Ok(self.open_action_palette_at(&address))
                     }
                     Err(error) => Err(error.to_string()),

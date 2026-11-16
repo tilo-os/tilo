@@ -70,7 +70,7 @@ struct Pending {
 }
 
 /// The root's minting of links: its own client for the session's action
-/// door, and the mintings waiting on it.
+/// api, and the mintings waiting on it.
 pub(crate) struct ShareLinks {
     remote: RemoteActions,
     pending: Vec<Pending>,

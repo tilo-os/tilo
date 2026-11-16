@@ -1,4 +1,4 @@
-//! Whether every action an app publishes is reachable through the door, with
+//! Whether every action an app publishes is reachable through the api, with
 //! arguments sampled from each action's own schema. A test tool only: it is
 //! built with `test-support`, so no release binary carries it.
 
@@ -63,9 +63,9 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp>(
 }
 
 /// Invoke every action `app` publishes, one after another, as a headless
-/// drive's `invoke` steps do (`FrameHarness::invoke_action`: the door's own
+/// drive's `invoke` steps do (`FrameHarness::invoke_action`: the api's own
 /// resolution, availability, confirmation and strict binding), each with
-/// `sample_arguments` and confirmed. Answers the ones the door could not
+/// `sample_arguments` and confirmed. Answers the ones the api could not
 /// address, as `resource action: why`: published yet reachable only by
 /// clicking. An action an earlier one withdrew (its row was removed) is not
 /// asked; one that is unavailable now, refuses the sample as arguments (a
@@ -76,7 +76,7 @@ pub fn unreachable_actions<A: ResourceApp>(app: &mut HeadlessApp<A>) -> Vec<Stri
 }
 
 /// [`unreachable_actions`] for one share of what `app` publishes: the
-/// actions of every `shares`th resource in the order the door surveys them,
+/// actions of every `shares`th resource in the order the api surveys them,
 /// from the `share`th (below `shares`). A window publishing thousands of
 /// actions (one set per row of a long list) is asked in shares, each its
 /// own test running beside the others; the shares together ask every
@@ -90,7 +90,7 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     // The published tree costs a walk of the whole window, and a long list
     // publishes thousands of actions: the walk resolves each against a tree
     // it read earlier, and reads it again only where that tree decides
-    // something. The door resolves every invocation afresh itself, so an
+    // something. The api resolves every invocation afresh itself, so an
     // action the kept tree still names is asked whatever became of it: one
     // that answered with an error changed nothing to resolve against, and
     // the answers that depend on the tree (no such action, a confirmation
@@ -100,7 +100,7 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     // rows the walk has yet to ask, or published them again.
     let mut resources = app.harness().resources();
     let mut ran = false;
-    let surveyed = tilo_actions::door::survey(&resources);
+    let surveyed = tilo_actions::api::survey(&resources);
     let mut unreachable = Vec::new();
     let mut resource_ordinals = std::collections::HashMap::new();
     let ours = surveyed.into_iter().filter(|descriptor| {
@@ -113,22 +113,22 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
     for descriptor in ours {
         let address = descriptor.address.clone();
         let arguments = sample_arguments(&descriptor);
-        if ran && tilo_actions::door::resolve(&resources, &address).is_none() {
+        if ran && tilo_actions::api::resolve(&resources, &address).is_none() {
             resources = app.harness().resources();
             ran = false;
         }
-        let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
+        let Some(spec) = tilo_actions::api::resolve(&resources, &address) else {
             continue;
         };
         let phrase = confirmation_phrase(spec, &arguments);
         let mut answer = app
             .harness()
             .invoke_action(&address, &arguments, true, phrase.as_deref());
-        if matches!(answer, Err(tilo_actions::DoorError::ConfirmationRequired)) {
+        if matches!(answer, Err(tilo_actions::ApiError::ConfirmationRequired)) {
             // The phrase may name what an earlier invocation renamed.
             resources = app.harness().resources();
             ran = false;
-            let Some(spec) = tilo_actions::door::resolve(&resources, &address) else {
+            let Some(spec) = tilo_actions::api::resolve(&resources, &address) else {
                 continue;
             };
             let phrase = confirmation_phrase(spec, &arguments);
@@ -149,12 +149,12 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
             Err(error) if error.code() == "unknown_action" => {
                 resources = app.harness().resources();
                 ran = false;
-                if tilo_actions::door::resolve(&resources, &address).is_some() {
+                if tilo_actions::api::resolve(&resources, &address).is_some() {
                     unreachable.push(format!("{} {}: {error}", address.resource, address.action));
                 }
             }
             Err(error) => {
-                // Only an action the door no longer resolves continues the
+                // Only an action the api no longer resolves continues the
                 // walk; any other refusal is worth saying.
                 tracing::warn!(%error, resource = %address.resource, action = %address.action, "an action could not be invoked");
             }

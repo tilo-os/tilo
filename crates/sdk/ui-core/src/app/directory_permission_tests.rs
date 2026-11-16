@@ -22,7 +22,7 @@ fn directory_sampled_permission(
 
 fn republish_directory(fixture: &mut ActionFixture) -> (String, Vec<tilo_actions::ResourceSpec>) {
     let resources = fixture.app.publication_resources();
-    let descriptors = tilo_actions::door::survey(&resources);
+    let descriptors = tilo_actions::api::survey(&resources);
     fixture
         .app
         .capture_action_directory_snapshot(&resources, &descriptors);
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
         assert_ne!(fixture.app.action_directory_revision(), old);
         let (revision, resources) = republish_directory(&mut fixture);
         assert!(
-            tilo_actions::door::resolve(&resources, &address).is_none(),
+            tilo_actions::api::resolve(&resources, &address).is_none(),
             "normal publication reused rows filtered under the expired sole grant"
         );
         assert!(!matches!(
@@ -256,12 +256,12 @@ tilo_test_env::scenario! {
             .alias(&fixture.bindings[1], "bound:probe")
             .unwrap();
         let address = tilo_actions::ActionAddress::new(&alias, "follow-up");
-        assert!(tilo_actions::door::resolve(&resources, &address).is_none());
+        assert!(tilo_actions::api::resolve(&resources, &address).is_none());
         time.store(105, Ordering::Release);
         assert_ne!(fixture.app.action_directory_revision(), old);
         let (revision, resources) = republish_directory(&mut fixture);
         assert!(
-            tilo_actions::door::resolve(&resources, &address).is_some(),
+            tilo_actions::api::resolve(&resources, &address).is_some(),
             "expired restriction must regenerate filtered rows, not permanently hide the action"
         );
         assert!(matches!(

@@ -23,7 +23,7 @@ use connectivity::Connectivity;
 use connectivity::device::{Change, Device, Readings};
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
 use serde_json::{Map, Value, json};
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_compositor::{InputEvent, OutputConfig, Screenshot};
 use tilo_service::Started;
 use tilo_session::surfaces::{Anchor, Surface};
@@ -1052,8 +1052,8 @@ impl Service for Pack {
         resource: &str,
         action: &str,
         _arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
-        Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+    ) -> Result<Started, ApiError> {
+        Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
             resource, action,
         )))
     }

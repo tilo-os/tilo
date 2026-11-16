@@ -540,9 +540,9 @@ pub(crate) struct BrowserShell {
     /// The pointer, in logical pixels, for the popover's targets.
     cursor: Option<Point>,
     /// The MCP server, as the overview's Agents rows show it: the read the
-    /// session's door serves, followed while the overview is up.
-    door: tilo_desktop::overview_tilo::door::DoorRead,
-    /// The session the door is read on, and who reads it.
+    /// session serves, followed while the overview is up.
+    server: tilo_desktop::overview_tilo::api::ApiRead,
+    /// The session the server is read on, and who reads it.
     session: Arc<tilo_desktop_surface::session::DesktopSession>,
     caller: tilo_actions::remote::Caller,
     /// Pointing at what is wrong, to report it.
@@ -572,7 +572,7 @@ pub struct ChromeSources {
     /// The session the desktop serves its windows: the MCP server the
     /// overview's Agents rows show is the one it serves.
     pub session: Arc<tilo_desktop_surface::session::DesktopSession>,
-    /// Who asks the door: this page's person in its workspace.
+    /// Who asks the server: this page's person in its workspace.
     pub caller: tilo_actions::remote::Caller,
     /// The page's notifications, whose unread ones the bell counts.
     pub notifications: tilo_desktop_surface::DesktopNotifications,
@@ -756,7 +756,7 @@ impl BrowserShell {
             profile_links: None,
             links_asked: (0, None),
             cursor: None,
-            door: tilo_desktop::overview_tilo::door::DoorRead::default(),
+            server: tilo_desktop::overview_tilo::api::ApiRead::default(),
             session,
             caller,
             picker: crate::feedback_pick::PagePicker::default(),
@@ -1279,19 +1279,19 @@ impl BrowserShell {
     }
 
     /// The MCP server as the overview's Agents rows show it: the read the
-    /// session's door serves, followed while the overview is up, so a grant
+    /// session serves, followed while the overview is up, so a grant
     /// appears, works and leaves as it happens. Whether the rows changed.
     fn follow_mcp_server(&mut self) -> bool {
         if !self.top.overview_open()
             || !self
-                .door
+                .server
                 .follow(&*self.session, &self.caller, &self.chrome.wake)
         {
             return false;
         }
         self.top
             .set_tilo(tilo_desktop::overview_tilo::TiloOverview {
-                door: self.door.door().cloned(),
+                server: self.server.server().cloned(),
                 ..tilo_desktop::overview_tilo::TiloOverview::default()
             });
         true
@@ -1331,7 +1331,7 @@ impl BrowserShell {
                 // at the door, as Console's card takes it back: the root this page holds
                 // signs the revocation, as it revokes any of their devices.
                 DesktopAsk::RevokeAgentGrant(grant) => {
-                    tilo_desktop::overview_tilo::door::DoorRead::revoke(
+                    tilo_desktop::overview_tilo::api::ApiRead::revoke(
                         &*self.session,
                         &self.caller,
                         &grant,

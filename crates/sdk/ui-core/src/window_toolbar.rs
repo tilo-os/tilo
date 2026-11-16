@@ -420,7 +420,7 @@ pub struct ToolbarAction {
     /// It is the app's one main action for what the window shows ([`Self::primary`]): the
     /// bar draws it as the primary button, its words or its icon on the accent, so a
     /// person sees at once what the window is for. It leads the actions and stands in the
-    /// row at every width, never behind the bar's door.
+    /// row at every width, never behind the bar's API.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub primary: bool,
 }

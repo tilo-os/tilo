@@ -1,8 +1,8 @@
-//! Publishing tilolang resources on the action door.
+//! Publishing tilolang resources on the action api.
 //!
 //! Every resource in the workspace record is published as a `tilo_actions::ResourceSpec` of kind
 //! `tl.<app>.<Type>`, with one typed action per tilolang action whose subject is its type. The
-//! desktop agent, the runtime door, shortcuts and grants therefore reach tilolang actions with
+//! desktop agent, the runtime api, shortcuts and grants therefore reach tilolang actions with
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
 //! the resulting [`DynAction`].
 
@@ -47,9 +47,9 @@ fn said_of(
     words.word(&key, &args, source)
 }
 
-/// Who is invoking: what the door admitted of the caller, for the runtime's principal.
+/// Who is invoking: what the API admitted of the caller, for the runtime's principal.
 ///
-/// An agent is a task of a person under that person's narrowed rights, and the door tells the
+/// An agent is a task of a person under that person's narrowed rights, and the API tells the
 /// host which task (the delegate's id) and for whom. A person at the window is `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
@@ -62,7 +62,7 @@ pub struct Caller {
 }
 
 impl From<&tilo_actions::ActionInvoker> for Caller {
-    /// What the door admitted of `invoker`, as the runtime reads it.
+    /// What the API admitted of `invoker`, as the runtime reads it.
     fn from(invoker: &tilo_actions::ActionInvoker) -> Self {
         Self {
             actor: invoker.key(),
@@ -103,7 +103,7 @@ pub trait Planner: Send + Sync {
     /// Why the action cannot run: a trap, a refused argument, an unknown action.
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String>;
 
-    /// The caller of the invocation being built now, as the door admitted it.
+    /// The caller of the invocation being built now, as the API admitted it.
     fn caller(&self) -> Option<Caller> {
         None
     }
@@ -300,7 +300,7 @@ fn spec_of(
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();
-    // Published by its name, as a native verb is: what an agent at the door lists and calls. The
+    // Published by its name, as a native verb is: what an agent at the API lists and calls. The
     // build above plans it by the id the declaration keeps, which is also what a change of it
     // says in the record (and its words are keyed by).
     let spec = if no_params {
@@ -528,7 +528,7 @@ impl ActionTypes {
 /// type ([`Meta::views_showing`]), each taking the resource and nothing else, so opening one needs
 /// only the resource (`open(r, with: v)`).
 ///
-/// A view and the action that opens it name each other one to one: the door projects a view
+/// A view and the action that opens it name each other one to one: the API projects a view
 /// onto its open action's descriptor, and a caller opens the view by invoking that action. The
 /// type's default view is the primary one and opens through the resource's own `open`, which
 /// shows that view; every other view opens through an action of its own (`open-<view id>`, an
@@ -2789,7 +2789,7 @@ fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<
                 let value = json.get("value").cloned().unwrap_or(Json::Null);
                 let id = target.get::<String>().map_or("", String::as_str);
                 edit_action(&meta, &type_name, id, field, &value)
-                    // The edit is the caller's the door admitted: an agent's change is the
+                    // The edit is the caller's the API admitted: an agent's change is the
                     // agent's, in history and wherever the field shows who changed it.
                     .map(|mut planned| {
                         if let Some(caller) = planner.caller() {

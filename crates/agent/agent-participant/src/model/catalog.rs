@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_agent::surface::{self, Catalogue, Offer};
 use tilo_model_gateway::host_backend::protocol::{Message, Role, ToolDefinition};
 

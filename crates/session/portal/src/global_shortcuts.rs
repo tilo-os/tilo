@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use settings_store::hardware::ShortcutConfig;
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
 use tilo_service::{Answer, Question, Started, decode, offer};
@@ -430,11 +430,11 @@ impl crate::Published for Shortcuts {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let (path, id) = resource
             .strip_prefix(SHORTCUT_PREFIX)?
             .split_once('\u{1f}')?;
-        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let unknown = || ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         Some(
             decode::<ShortcutEffect>(published, resource, action, arguments).and_then(|effect| {
                 let mut state = self.state.lock_recover();

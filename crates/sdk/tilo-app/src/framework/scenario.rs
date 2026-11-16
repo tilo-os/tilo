@@ -410,7 +410,7 @@ impl<R: Resource> Fixture<R> {
     /// people) in fields the record keeps to its own actions
     /// (`#[model(readonly)]`), which refuse every generic edit, a
     /// scenario's or a version's alike. It is nobody's change: committed as
-    /// the record's genesis and checked by no door, so only ever a
+    /// the record's genesis and checked by no api, so only ever a
     /// capture's.
     pub fn start(&mut self, state: R::State)
     where

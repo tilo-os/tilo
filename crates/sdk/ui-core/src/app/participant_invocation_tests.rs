@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
         app.set_participant_host(true);
         assert!(probe.borrow().host);
         assert!(
-            tilo_actions::door::survey(&app.collect_resources())
+            tilo_actions::api::survey(&app.collect_resources())
                 .iter()
                 .all(|descriptor| descriptor.address.resource == "test.doc"),
         );
@@ -487,7 +487,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|snapshot| snapshot.binding.same_component(&binding))
             .expect("component snapshot");
-        let spec = tilo_actions::door::resolve(
+        let spec = tilo_actions::api::resolve(
             snapshot.resources(),
             &tilo_actions::ActionAddress::new("test.doc", "mark"),
         )

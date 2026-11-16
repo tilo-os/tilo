@@ -2,7 +2,7 @@
 //! action, and keeping their answer.
 //!
 //! An app reaches its own actions and records with its person's authority
-//! ([`AppBrokerState::app_door`]). Another app's action it takes only as the
+//! ([`AppBrokerState::app_api`]). Another app's action it takes only as the
 //! person let it: an answer kept in their settings (`settings_store::app_consent`),
 //! given once on the sheet the host draws ([`AppActionConsentPrompter`]).
 //! Until they answer, the request is refused. Nobody present means nobody to

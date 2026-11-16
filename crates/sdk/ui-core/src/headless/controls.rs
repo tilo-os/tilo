@@ -603,8 +603,8 @@ impl FrameHarness {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let unknown = || tilo_actions::DoorError::Unknown(address.clone());
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        let unknown = || tilo_actions::ApiError::Unknown(address.clone());
         let id = address
             .resource
             .strip_prefix(CONTROL_RESOURCE_PREFIX)
@@ -625,13 +625,13 @@ impl FrameHarness {
         let verb = match verb {
             Action::SetValue(_) => Action::SetValue(
                 tilo_actions::sole_text_argument(arguments)
-                    .ok_or_else(|| tilo_actions::DoorError::MissingArgument(address.clone()))?
+                    .ok_or_else(|| tilo_actions::ApiError::MissingArgument(address.clone()))?
                     .to_owned(),
             ),
             other => other.clone(),
         };
         self.perform_on_node(&node, &verb)
-            .map_err(tilo_actions::DoorError::Failed)?;
+            .map_err(tilo_actions::ApiError::Failed)?;
         Ok(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         ))

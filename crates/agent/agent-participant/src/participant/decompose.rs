@@ -31,7 +31,7 @@ mod items;
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::running::Running;

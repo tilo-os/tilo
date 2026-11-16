@@ -531,7 +531,7 @@ tilo_test_env::scenario! {
         }
         assert!(settled, "hosted pump never went idle");
         app.collaboration.manager.wait_for_commands_for_test();
-        let before = tilo_actions::door::survey(&app.publication_resources()).len();
+        let before = tilo_actions::api::survey(&app.publication_resources()).len();
         assert!(before > 0);
         let generation = app.actions.resource_generation.get();
         assert_eq!(
@@ -547,7 +547,7 @@ tilo_test_env::scenario! {
         assert!(report.synced && report.published);
         assert_ne!(app.actions.resource_generation.get(), generation);
         assert!(
-            tilo_actions::door::survey(&app.publication_resources()).len() < before,
+            tilo_actions::api::survey(&app.publication_resources()).len() < before,
             "revoked authority must filter the published surface"
         );
     }

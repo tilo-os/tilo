@@ -2,7 +2,7 @@
 //! each instance keeps its records in that person's own record of the workspace, on a route of
 //! its own, so what one member's mail holds never reaches the other's record, views, search or
 //! published actions, and the first member's instance refuses what the second asks of it
-//! through the door.
+//! through the API.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,11 +32,11 @@ const MAIL: &str = "so.tilo.lang.mail";
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
 const BO: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 
-/// What only Ada's mail says: in her conversations' list and search, and on the door, which
+/// What only Ada's mail says: in her conversations' list and search, and on the API, which
 /// names a conversation by its newest words.
 const ADAS: [&str; 3] = ["Launch plan", "Grace Hopper", "lease renewal"];
 /// Subjects her inbox's messages are published under: the launch thread's replies are its own
-/// messages, and the lease's is its one, so the door offers Ada's messages and not only the
+/// messages, and the lease's is its one, so the API offers Ada's messages and not only the
 /// conversations they are in.
 const ON_HER_DOOR: [&str; 2] = [
     "Re: Launch plan for the autumn release",
@@ -191,13 +191,13 @@ impl Member {
         format!("{:?}", tilolang_tilo::search::every_hit(&host))
     }
 
-    /// What the member's instance publishes on the door (each resource with its actions), as
+    /// What the member's instance publishes on the API (each resource with its actions), as
     /// text.
     fn published(&self) -> String {
         format!("{:?}", self.hosted().published())
     }
 
-    /// The answer the member's instance sent to the door's invocation `id`.
+    /// The answer the member's instance sent to the API's invocation `id`.
     fn answer(&self, id: u64) -> String {
         self.sent
             .borrow()
@@ -213,7 +213,7 @@ impl Member {
     }
 }
 
-/// None of `ada`'s mail reaches `bo`: not his record, his window, his search or his door.
+/// None of `ada`'s mail reaches `bo`: not his record, his window, his search or his api.
 fn nothing_of_reaches(ada: &Member, bo: &Member) {
     assert!(
         bo.inbox.borrow().is_empty(),
@@ -249,7 +249,7 @@ fn nothing_of_reaches(ada: &Member, bo: &Member) {
     for what in ADAS.iter().chain(&ON_HER_DOOR) {
         assert!(
             !bo.published().contains(what),
-            "Bo's door does not offer {what}"
+            "Bo's api does not offer {what}"
         );
     }
 }
@@ -307,15 +307,15 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     for what in ON_HER_DOOR {
         assert!(
             ada.published().contains(what),
-            "Ada's door offers {what}: {}",
+            "Ada's api offers {what}: {}",
             ada.published()
         );
     }
 
-    // None of it reaches Bo: not his record, his window, his search or his door.
+    // None of it reaches Bo: not his record, his window, his search or his api.
     nothing_of_reaches(&ada, &bo);
 
-    // Through the door, Bo asks Ada's instance to archive her conversation: refused, and her
+    // Through the API, Bo asks Ada's instance to archive her conversation: refused, and her
     // mail is as it was. Ada may.
     let archive = ada
         .hosted()

@@ -1,4 +1,4 @@
-// Exercise the real host action door, not an app-local launcher.
+// Exercise the real host action API, not an app-local launcher.
 #[test]
 fn application_action_handoff_requires_workspace_admission_and_routes_exact_destination() {
     use crate::collaboration::{PeerTransport, RouteSpec};

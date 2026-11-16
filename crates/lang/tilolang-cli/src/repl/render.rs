@@ -1,4 +1,4 @@
-//! The door's answers as the REPL prints them: the reference that starts a line in a column of
+//! The API's answers as the REPL prints them: the reference that starts a line in a column of
 //! its own, a title after it, errors, previews and notes in their colours.
 
 use super::style::{Role, highlight, pad, paint};
@@ -21,9 +21,9 @@ pub fn line_ref(line: &str) -> Option<&str> {
     is_ref(first).then_some(first)
 }
 
-/// A line of the door's `tilo` answer, coloured; `failed` when the answer is an error.
+/// A line of the API's `tilo` answer, coloured; `failed` when the answer is an error.
 #[must_use]
-pub fn door_line(line: &str, failed: bool) -> String {
+pub fn api_line(line: &str, failed: bool) -> String {
     for (head, role) in [
         ("error:", Role::Error),
         ("preview:", Role::Keyword),
@@ -60,9 +60,9 @@ mod tests {
     #[test]
     fn a_line_that_starts_with_a_reference_reads_as_a_row() {
         super::super::style::set(false);
-        assert_eq!(door_line("n1 \"Q3 plan\"", false), "n1   Q3 plan");
-        assert_eq!(door_line("t12 (true, 3)", false), "t12  (true, 3)");
-        assert_eq!(door_line("16", false), "16");
+        assert_eq!(api_line("n1 \"Q3 plan\"", false), "n1   Q3 plan");
+        assert_eq!(api_line("t12 (true, 3)", false), "t12  (true, 3)");
+        assert_eq!(api_line("16", false), "16");
         assert_eq!(line_ref("n1 \"Q3 plan\""), Some("n1"));
         assert_eq!(line_ref("notes 3"), None);
         assert!(!is_ref("n"));

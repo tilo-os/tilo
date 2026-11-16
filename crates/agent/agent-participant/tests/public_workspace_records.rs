@@ -27,7 +27,7 @@ use tilo_session_client::Event;
 
 use crate::common::{Body as _, Driveable};
 use collab_types::DocumentMutation;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner,
     Replica, ReplicaActor, Seed, Step, StepAction,

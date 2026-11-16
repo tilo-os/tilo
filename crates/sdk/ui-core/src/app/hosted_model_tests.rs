@@ -1,4 +1,4 @@
-// Included in the real action-door fixture module.
+// Included in the real action-API fixture module.
 use std::rc::Rc;
 
 struct HostedModelTransport(Rc<RefCell<Vec<CollabRequest>>>);
@@ -393,11 +393,11 @@ tilo_test_env::scenario! {
     {
         let mut app = hosted_directory_fixture();
         let old = app.action_directory_revision();
-        let before = tilo_actions::door::survey(&app.publication_resources());
+        let before = tilo_actions::api::survey(&app.publication_resources());
         app.state.doc.put(ROOT, "changed-payload", true).unwrap();
         app.pump_hosted_model();
         assert_eq!(
-            tilo_actions::door::survey(&app.publication_resources()),
+            tilo_actions::api::survey(&app.publication_resources()),
             before,
             "public descriptors deliberately omit the changed encoded target"
         );
@@ -559,11 +559,11 @@ tilo_test_env::scenario! {
             old,
             "truthful unchanged lazy domain remains usable"
         );
-        let before = tilo_actions::door::survey(&app.publication_resources());
+        let before = tilo_actions::api::survey(&app.publication_resources());
         provider.target.set(1);
         app.pump_hosted_model();
         assert_eq!(
-            tilo_actions::door::survey(&app.publication_resources()),
+            tilo_actions::api::survey(&app.publication_resources()),
             before
         );
         assert_ne!(
@@ -600,11 +600,11 @@ tilo_test_env::scenario! {
                 old,
                 "explicit stable Draft identity must progress"
             );
-            let before = tilo_actions::door::survey(&app.publication_resources());
+            let before = tilo_actions::api::survey(&app.publication_resources());
             app.state.doc.put(ROOT, change, true).unwrap();
             app.pump_hosted_model();
             assert_eq!(
-                tilo_actions::door::survey(&app.publication_resources()),
+                tilo_actions::api::survey(&app.publication_resources()),
                 before
             );
             assert_ne!(
@@ -620,7 +620,7 @@ tilo_test_env::scenario! {
         let mut app = hosted_directory_fixture();
         app.state.doc.put(ROOT, "wide", true).unwrap();
         app.pump_hosted_model();
-        let count = tilo_actions::door::survey(&app.publication_resources()).len();
+        let count = tilo_actions::api::survey(&app.publication_resources()).len();
         assert!(count > 256);
         let old = app.action_directory_revision();
         app.pump_hosted_model();
@@ -743,11 +743,11 @@ tilo_test_env::scenario! {
             });
         app.publish_action_surface();
         let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
-        let before = tilo_actions::door::survey(&app.publication_resources());
+        let before = tilo_actions::api::survey(&app.publication_resources());
         app.state.doc.put(ROOT, "changed-payload", true).unwrap();
         app.pump_hosted_model();
         assert_eq!(
-            tilo_actions::door::survey(&app.publication_resources()),
+            tilo_actions::api::survey(&app.publication_resources()),
             before
         );
         assert_ne!(app.action_directory_revision(), page.revision);

@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
         let address = resource
             .action_address("read-text")
             .expect("the document publishes its read");
-        let encoded = tilo_actions::door::encode_json(
+        let encoded = tilo_actions::api::encode_json(
             std::slice::from_ref(&resource),
             &address,
             serde_json::json!({"pageSize":2}).as_object().unwrap(),

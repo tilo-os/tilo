@@ -1,4 +1,4 @@
-// Included in the existing action-door fixture module so these checks execute
+// Included in the existing action-API fixture module so these checks execute
 // the same real document handler and retained asynchronous operation.
 fn remote_request(
     wire_id: u64,

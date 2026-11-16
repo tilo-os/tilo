@@ -69,7 +69,7 @@ fn a_caller_invokes_a_by_app_verb_by_no_name_value_or_group() {
     // By its id, the door finds no such action.
     let named = replica.apply(Visits::NOTE.with("forged")).map(drop);
     assert!(
-        matches!(named, Err(tilo_actions::DoorError::Unknown(_))),
+        matches!(named, Err(tilo_actions::ApiError::Unknown(_))),
         "{named:?}"
     );
     // As a value of the generic `apply`, confirmed or not.

@@ -11,7 +11,7 @@
 //! ([`ToolbarEvent::Search`], [`ToolbarEvent::SearchStep`],
 //! [`ToolbarEvent::SearchClose`], [`ToolbarEvent::History`]), which this
 //! runs on the app's widgets with the same [`SearchDriver`] the window uses
-//! and on the app's History door. Either way the app draws neither control
+//! and on the app's History API. Either way the app draws neither control
 //! itself: its header drops the button that opens its search
 //! ([`crate::widget::WindowHeader::set_window_presents_search`]) and its
 //! History draws no toggle of its own.

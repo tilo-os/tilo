@@ -162,7 +162,7 @@ impl WellPolicy {
     }
 
     /// Tell `observer` the process of each window the compositor maps, as the desktop gives
-    /// it a place: the app's door opens to it from then on.
+    /// it a place: the app's API opens to it from then on.
     pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
         self.followers.set_window_mapped(observer);
     }

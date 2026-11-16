@@ -19,7 +19,7 @@ use std::{
 };
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
-use tilo_mcp::session_door::{Asking, bridge_stdio};
+use tilo_mcp::session_api::{Asking, bridge_stdio};
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
@@ -31,8 +31,8 @@ pub enum Mode {
         owner_uid: u32,
     },
     Connect,
-    /// Invoke the canonical owner action door while holding the profile
-    /// exclusively. Refuses if a daemon already serves it; no extra IPC door.
+    /// Invoke the canonical owner action server while holding the profile
+    /// exclusively. Refuses if a daemon already serves it; no extra IPC server.
     OwnerAction {
         request: String,
     },
@@ -58,7 +58,7 @@ pub struct Args {
     /// The client chose a standalone profile itself (`--standalone`,
     /// `--profile` or `TILO_RUNTIME_PROFILE`), so `--connect` attaches to
     /// that profile even inside a Tilo login, where it otherwise relays to
-    /// the desktop's MCP server ([`crate::session_door`]).
+    /// the desktop's MCP server ([`crate::session_api`]).
     pub standalone: bool,
     /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
     /// client to that device's MCP server instead of this one's
@@ -205,7 +205,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
 }
 
 /// Where `--connect --device NAME [--workspace ID]` goes: `None` without a
-/// device, where `--workspace` asks this desktop's own door for the workspace.
+/// device, where `--workspace` asks this desktop's own server for the workspace.
 fn forward_of(
     mode: &Mode,
     device: Option<String>,
@@ -1090,7 +1090,7 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 }
 
 /// Bridge this process's stdio to the MCP host it belongs to: inside a
-/// confined environment, the door the environment names
+/// confined environment, the server the environment names
 /// ([`tilo_paths::login::AGENT_SOCKET_ENV`]); inside a Tilo login, the
 /// desktop's MCP server, which is never replaced by a standalone runtime;
 /// elsewhere, or when `standalone`, the persistent daemon of `profile`,
@@ -1108,27 +1108,27 @@ pub fn connect(
     forward: Option<&tilo_mcp::devices::Forward>,
     workspace: Option<&str>,
 ) -> io::Result<()> {
-    let route = tilo_mcp::session_door::route(
+    let route = tilo_mcp::session_api::route(
         standalone,
-        tilo_mcp::session_door::environment_door(std::env::var_os(
+        tilo_mcp::session_api::environment_server(std::env::var_os(
             tilo_paths::login::AGENT_SOCKET_ENV,
         )),
         tilo_paths::login::is_tilo_login(),
-        tilo_mcp::session_door::agent_socket_path(
+        tilo_mcp::session_api::agent_socket_path(
             tilo_paths::login::login_runtime_dir().map(Into::into),
         ),
         Path::exists,
     )?;
     let mut stream = match route {
-        tilo_mcp::session_door::Route::Session(door) => UnixStream::connect(&door)
-            .map_err(|error| tilo_mcp::session_door::unreachable_door(&door, &error))?,
-        tilo_mcp::session_door::Route::Standalone if workspace.is_some() => {
+        tilo_mcp::session_api::Route::Session(server) => UnixStream::connect(&server)
+            .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?,
+        tilo_mcp::session_api::Route::Standalone if workspace.is_some() => {
             return Err(invalid(
                 "--workspace asks a Tilo desktop's MCP server for a workspace, and this process \
                  is not in a Tilo login",
             ));
         }
-        tilo_mcp::session_door::Route::Standalone => {
+        tilo_mcp::session_api::Route::Standalone => {
             ensure_running(profile)?;
             UnixStream::connect(profile.join("native.sock"))?
         }
@@ -1140,7 +1140,7 @@ pub fn connect(
         stream,
         Asking {
             workspace: workspace.map(str::to_owned),
-            key: tilo_mcp::session_door::agent_key()?,
+            key: tilo_mcp::session_api::agent_key()?,
         },
     )
 }

@@ -923,7 +923,7 @@ impl tilo_session::Service for PlayerService {
         _resource: &str,
         action: &str,
         _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(action.to_owned());
         Ok(tilo_service::Started::Done(
             tilo_actions::ActionOutput::default(),

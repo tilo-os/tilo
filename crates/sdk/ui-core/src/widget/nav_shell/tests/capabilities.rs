@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
     }
 
     // The row's order of giving way: an action's label gives way for its icon, then what else stands
-    // in the row for the menu's door, and only then is the title cut — the primary action never
+    // in the row for the menu's API, and only then is the title cut — the primary action never
     // leaves the row, whatever the row's width and whatever language the title speaks.
     phase a_title_is_cut_only_once_its_actions_have_given_what_they_can;
     {

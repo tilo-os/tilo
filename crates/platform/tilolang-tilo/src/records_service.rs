@@ -12,7 +12,7 @@
 //! ([`tilolang_runtime::Runtime::set_reading`]): the shell composes a note's own view over the
 //! note's reading, and the reading is the record the notes app shows.
 //!
-//! An invocation is the published action's own: the door builds it through the action's spec,
+//! An invocation is the published action's own: the API builds it through the action's spec,
 //! which plans it in the runtime, and it is committed to the record as a step of the person
 //! seated here, or of the agent acting for them, in the run it is a step of.
 //!
@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
-use tilo_actions::{ActionAddress, ActionContext, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionContext, ActionOutput, ApiError, ResourceSpec};
 use tilo_service::{Service, Started};
 use tilolang_runtime::value::ResourceRef;
 
@@ -337,7 +337,7 @@ impl RecordService {
 
     /// Take in what the parts of the packages `share`d wrote into the documents they share
     /// since the last call, and publish it: the shell's own parts commit a setting or a place
-    /// into the record, and the door offers what it changed. Whether anything was taken in.
+    /// into the record, and the API offers what it changed. Whether anything was taken in.
     pub fn follow(&mut self) -> Result<bool, String> {
         use tilo_automerge::ApplyIncoming as _;
         let _in_records = self.in_records();
@@ -547,7 +547,7 @@ impl RecordService {
     /// into it. Both publish these edits, and the same ones: an item is edited in its record by
     /// its id there ([`edit_action`]).
     /// `None` for a resource that is not one of these records'.
-    /// A flag (`flag`) may come as its text, as a door that knows no parameter type for it
+    /// A flag (`flag`) may come as its text, as an API that knows no parameter type for it
     /// hands it on.
     fn direct_edit(
         &self,
@@ -681,7 +681,7 @@ impl RecordService {
         arguments: &Map<String, Json>,
         invoker: &tilo_actions::ActionInvoker,
         run: Option<&tilo_actions::WorkGroup>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let _in_records = self.in_records();
         let address = ActionAddress::new(resource, action);
         // Planned on the record as it is: what the workspace took in since the last pass
@@ -692,25 +692,25 @@ impl RecordService {
         let beside = std::mem::take(&mut self.beside);
         let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
             self.direct_edit(resource, action == EDIT_FLAG_ACTION, arguments)
-                .ok_or_else(|| DoorError::Unknown(address.clone()))?
-                .map_err(DoorError::InvalidArguments)?
+                .ok_or_else(|| ApiError::Unknown(address.clone()))?
+                .map_err(ApiError::InvalidArguments)?
         } else {
             // The action is planned to be carried out at once: what its plan writes is its
             // change, written once, as the invoker's.
             let resources = self.resources();
             let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
-                tilo_actions::door::encode_json(&resources, &address, arguments)
+                tilo_actions::api::encode_json(&resources, &address, arguments)
             })?;
             if encoded.type_id == crate::effects::OPEN_OPERATION {
                 let mut open =
-                    open_asked(&encoded.payload, resource).map_err(DoorError::InvalidArguments)?;
+                    open_asked(&encoded.payload, resource).map_err(ApiError::InvalidArguments)?;
                 open.beside = beside;
                 self.opens.push((invoker.clone(), open));
                 return Ok(Started::Done(ActionOutput::default()));
             }
             if encoded.type_id == EDIT_TYPE {
                 let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
-                    .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+                    .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
                 return self
                     .history(&edit, resource, invoker, run)
                     .map(|value| {
@@ -719,7 +719,7 @@ impl RecordService {
                             resources: Vec::new(),
                         })
                     })
-                    .map_err(DoorError::Failed);
+                    .map_err(ApiError::Failed);
             }
             if encoded.type_id == VIEW_TYPE {
                 return self
@@ -730,16 +730,16 @@ impl RecordService {
                         verbs::answer(doc, &encoded.payload, &self.words)
                     })
                     .map(Started::Done)
-                    .map_err(DoorError::Failed);
+                    .map_err(ApiError::Failed);
             }
             if encoded.type_id != ACTION_TYPE {
-                return Err(DoorError::Unknown(address));
+                return Err(ApiError::Unknown(address));
             }
             serde_json::from_slice(&encoded.payload)
-                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
+                .map_err(|error| ApiError::InvalidArguments(error.to_string()))?
         };
         self.commit_in(&planned, invoker, run)
-            .map_err(DoorError::Failed)?;
+            .map_err(ApiError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
@@ -1096,7 +1096,7 @@ impl Service for RecordService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Json>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let invoker = tilo_actions::ActionInvoker::person(self.person.clone());
         self.run(action, resource, arguments, &invoker, None)
     }
@@ -1110,7 +1110,7 @@ impl Service for RecordService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Json>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.run(action, resource, arguments, invoker, None)
     }
 
@@ -1123,7 +1123,7 @@ impl Service for RecordService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Json>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         self.run(action, resource, arguments, invoker, Some(run))
     }
 
@@ -1330,7 +1330,7 @@ pub fn placed_records<'a>(
         .filter(|record| !record.is_empty())
         .filter_map(|record| {
             let ty =
-                tilo_actions::door::find_resource(resources, record).and_then(reading_type_of)?;
+                tilo_actions::api::find_resource(resources, record).and_then(reading_type_of)?;
             Some((record.to_owned(), ty))
         })
         .collect()

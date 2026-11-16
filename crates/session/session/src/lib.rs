@@ -14,7 +14,7 @@
 //!
 //! Everything a person can do here is a published action: the shell's and
 //! the chrome's, and each surface app's through its door
-//! ([`ui::device_local_door::SharedDoor`]). [`Session::resources`] lists
+//! ([`ui::device_local_api::SharedApi`]). [`Session::resources`] lists
 //! them and [`Session::invoke`] runs one, as any caller of the action
 //! protocol on this device does.
 //!

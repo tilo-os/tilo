@@ -1,4 +1,4 @@
-//! The content put door against a store that records what reached it.
+//! The content put api against a store that records what reached it.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "fixtures hold the fake store's log while asserting on it"
@@ -91,7 +91,7 @@ impl Drop for FakeSink {
 }
 
 struct Fixture {
-    /// The door holds the broker weakly; the fixture keeps it.
+    /// The API holds the broker weakly; the fixture keeps it.
     _state: Arc<AppBrokerState>,
     puts: Arc<dyn ContentPuts>,
     shelf: Arc<Mutex<Shelf>>,

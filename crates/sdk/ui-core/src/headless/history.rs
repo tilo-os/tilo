@@ -1,4 +1,4 @@
-//! The headless host's side of the window's History: the registered History door, as the native App
+//! The headless host's side of the window's History: the registered History API, as the native App
 //! serves it.
 
 use super::FrameHarness;
@@ -15,18 +15,18 @@ impl FrameHarness {
         }
     }
 
-    /// The doors the window answers for the app, whatever its tree publishes: opening search, and
+    /// The APIs the window answers for the app, whatever its tree publishes: opening search, and
     /// History.
-    pub(super) fn host_door_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+    pub(super) fn host_api_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut doors = vec![crate::search::search_resource()];
         doors.push(self.history.as_ref().map_or_else(
-            || crate::history_mode::door::history_resource(false, false),
-            |history| history.door_resource(),
+            || crate::history_mode::api::history_resource(false, false),
+            |history| history.api_resource(),
         ));
         doors
     }
 
-    /// Invoke only this host's local History door. This is not a collaborator transport entry point and
+    /// Invoke only this host's local History API. This is not a collaborator transport entry point and
     /// never searches app destinations.
     pub fn invoke_local_history_action(
         &mut self,
@@ -51,7 +51,7 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Resolve and run one History door action; the next frame presents it.
+    /// Resolve and run one History API action; the next frame presents it.
     pub(super) fn run_local_history_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -59,13 +59,13 @@ impl FrameHarness {
     ) -> Result<(), String> {
         let history = self.history.as_mut().ok_or("History is unavailable")?;
         let encoded = crate::bound_dispatch::encode_resource_invocation(
-            &[history.door_resource()],
+            &[history.api_resource()],
             address,
             argument,
             None,
             false,
         )
         .map_err(|error| error.to_string())?;
-        history.invoke_door(&encoded)
+        history.invoke_api(&encoded)
     }
 }

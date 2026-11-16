@@ -41,7 +41,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
 
@@ -394,7 +394,7 @@ impl Service for SystemService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
         match resource {
             POWER => {
@@ -405,7 +405,7 @@ impl Service for SystemService {
                         let mode = PowerMode::named(&mode)
                             .filter(|mode| self.readings.power.modes.contains(mode))
                             .ok_or_else(|| {
-                                DoorError::InvalidArguments(format!(
+                                ApiError::InvalidArguments(format!(
                                     "this device offers no power mode {mode}"
                                 ))
                             })?;
@@ -436,7 +436,7 @@ impl Service for SystemService {
                 let change = match action {
                     TimeAction::SetZone { zone } => {
                         if !os_actions::valid_timezone(&zone) {
-                            return Err(DoorError::InvalidArguments(format!(
+                            return Err(ApiError::InvalidArguments(format!(
                                 "{zone} is no time zone"
                             )));
                         }
@@ -452,7 +452,7 @@ impl Service for SystemService {
                     decode::<KeyboardLightAction>(&published, resource, action, arguments)?;
                 let id = action.id();
                 let Some(light) = self.readings.keyboard_light.light() else {
-                    return Err(DoorError::Unavailable {
+                    return Err(ApiError::Unavailable {
                         code: "no_keyboard_light".into(),
                         reason: "This keyboard has no light".into(),
                     });
@@ -463,7 +463,7 @@ impl Service for SystemService {
                     KeyboardLightAction::Toggle => light.toggled(),
                     KeyboardLightAction::SetLevel { level } => {
                         if !(0.0..=1.0).contains(&level) {
-                            return Err(DoorError::InvalidArguments(format!(
+                            return Err(ApiError::InvalidArguments(format!(
                                 "a level is from 0 to 1, not {level}"
                             )));
                         }
@@ -478,7 +478,7 @@ impl Service for SystemService {
                 };
                 Ok(self.start(Part::KeyboardLight, id, Change::KeyboardLight(level)))
             }
-            _ => Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+            _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
             ))),
         }

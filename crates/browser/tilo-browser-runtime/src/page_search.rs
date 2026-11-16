@@ -11,7 +11,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_actions::remote::{RemoteActionTarget, application_provider};
 use tilo_desktop_search::SearchPreferences;
 use tilo_desktop_search::Target;
@@ -47,10 +47,10 @@ impl AppActions for PageActions {
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let app = application_provider(&target.provider)
             .map(|(_, app)| app.to_owned())
-            .ok_or_else(|| DoorError::Unavailable {
+            .ok_or_else(|| ApiError::Unavailable {
                 code: "unknown_application".into(),
                 reason: "That row names no app this page opens".into(),
             })?;
@@ -62,7 +62,7 @@ impl AppActions for PageActions {
                     background: None,
                     float: None,
                 })
-                .map_err(|reason| DoorError::Unavailable {
+                .map_err(|reason| ApiError::Unavailable {
                     code: "application_unavailable".into(),
                     reason,
                 })?;
@@ -81,9 +81,9 @@ impl AppActions for PageActions {
     /// Open the workspace's content whose hash is `hash` in the app its bytes say opens it: read
     /// where the page keeps the workspace's content, and asked of the workspace when it is not
     /// here yet.
-    fn open_content(&self, hash: &str, name: &str) -> Result<(), DoorError> {
+    fn open_content(&self, hash: &str, name: &str) -> Result<(), ApiError> {
         let Some(bytes) = self.content.read(hash) else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "content_on_its_way".into(),
                 reason: format!("{name} is still coming from the workspace"),
             });
@@ -92,7 +92,7 @@ impl AppActions for PageActions {
             .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
             .unwrap_or(&bytes);
         let Some(app) = crate::dropped_files::opens_in(head, name) else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "no_app".into(),
                 reason: format!("No app here opens {name}"),
             });
@@ -104,7 +104,7 @@ impl AppActions for PageActions {
                 background: None,
                 float: None,
             })
-            .map_err(|reason| DoorError::Unavailable {
+            .map_err(|reason| ApiError::Unavailable {
                 code: "application_unavailable".into(),
                 reason,
             })?;
@@ -191,8 +191,8 @@ pub(crate) trait PageSearchApi {
     fn perform_choices(
         &self,
         handle: &DesktopHandle,
-        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), DoorError>,
-    ) -> Vec<(Target, DoorError)>;
+        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), ApiError>,
+    ) -> Vec<(Target, ApiError)>;
 }
 
 impl PageSearchApi for SessionSearch {
@@ -209,8 +209,8 @@ impl PageSearchApi for SessionSearch {
     fn perform_choices(
         &self,
         handle: &DesktopHandle,
-        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), DoorError>,
-    ) -> Vec<(Target, DoorError)> {
+        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), ApiError>,
+    ) -> Vec<(Target, ApiError)> {
         Self::perform_choices(self, handle, own)
     }
 }

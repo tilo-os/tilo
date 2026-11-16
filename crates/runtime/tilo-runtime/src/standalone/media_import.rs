@@ -167,7 +167,7 @@ impl WorkspaceGovernanceServices for MediaImport {
                 },
                 ..Default::default()
             },
-            input: tilo_actions::door::InputSpec::None,
+            input: tilo_actions::api::InputSpec::None,
             params: vec![
                 ActionParam::required("source_store", ParamType::Text, "Host-configured source: runtime-profile-content").with_choices([SOURCE]),
                 ActionParam::required("source_workspace", ParamType::Text, "Legacy scope: unscoped").with_choices(["unscoped"]),

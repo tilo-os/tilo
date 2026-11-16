@@ -10,7 +10,7 @@
 //! the host says nothing of itself: a person sees one entry per run.
 //!
 //! The run's presence is a board's, as it is for a device speaking for the
-//! agents its person admitted at its own door ([`Board::speak_for`]): one
+//! agents its person admitted at its own API ([`Board::speak_for`]): one
 //! member per run, its face said when it changes and again at the keep-alive,
 //! taken down when the run's session ends. The host says it outside the live
 //! plane ([`Cmd::SayForRun`](tilo_session_client::Cmd::SayForRun)), signed with
@@ -52,7 +52,7 @@ struct Voice {
 }
 
 /// The runs the host speaks for in one workspace, and the board that holds
-/// them: one member per run, as a device's agents at its own door are.
+/// them: one member per run, as a device's agents at its own API are.
 pub(super) struct Runs {
     /// The workspace and the device speaking for its runs.
     id: WorkspaceId,

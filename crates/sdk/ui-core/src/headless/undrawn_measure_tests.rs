@@ -3,7 +3,7 @@
 use super::*;
 use crate::widget::Text;
 
-/// A container that lays out both its parts and paints, and rests, only the first: a shut door's
+/// A container that lays out both its parts and paints, and rests, only the first: a shut API's
 /// contents, a collapsed band's body.
 struct HiddenPart {
     shown: Text,

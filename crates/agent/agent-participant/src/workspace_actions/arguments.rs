@@ -1,9 +1,9 @@
-//! The arguments an invocation carries, as the door binds them.
+//! The arguments an invocation carries, as the API binds them.
 
 use tilo_actions::PROMPTED_PARAM;
 use tilo_actions::remote::InvokeArgument;
 
-/// The arguments an invocation carries, as the door binds them.
+/// The arguments an invocation carries, as the API binds them.
 pub(crate) fn invoke_arguments(
     argument: &InvokeArgument,
 ) -> serde_json::Map<String, serde_json::Value> {

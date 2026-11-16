@@ -1,7 +1,7 @@
 //! An agent task's reads of a workspace's records, outside their apps
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app").
 //!
-//! The task reads each app's record itself: the door hands it the record's committed content
+//! The task reads each app's record itself: the API hands it the record's committed content
 //! ([`RecordSource`]), read-only and decided for the task by the broker, and it reads that
 //! content with the app's own package, the same reads an app's host answers: a resource's
 //! fields ([`Host::read_values`]) and a program's `grep`, `find`, `read` and `describe`
@@ -13,7 +13,7 @@
 //! cuts what follows. What the record's origin applied for the task is taken into the record
 //! it read ([`RecordReads::take_in`]) and kept for the task's life: the program reads its own
 //! changes at once, and every later program of the task reads them too, whether or not the copy
-//! the door hands over holds them yet.
+//! the API hands over holds them yet.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -26,7 +26,7 @@ use tilolang_runtime::reads::ReadRequest;
 use crate::bundle::Bundle;
 use crate::host::Host;
 
-/// Where a task gets a record's committed content: the door, as the task.
+/// Where a task gets a record's committed content: the API, as the task.
 pub trait RecordSource {
     /// The record `record` (empty for the app's record of the workspace) of the app `app`: its
     /// content (an Automerge document), or `None` when the workspace holds no such record.
@@ -49,7 +49,7 @@ pub struct RecordReads {
     read_none: RefCell<std::collections::HashSet<String>>,
     /// What the records' origins applied for this task, by app, in order: kept for the task's
     /// life and put into every record the task reads, so each of its programs reads its own
-    /// earlier changes while the copy the door hands over still lags the origin.
+    /// earlier changes while the copy the API hands over still lags the origin.
     written: RefCell<HashMap<String, Vec<Vec<u8>>>>,
 }
 
@@ -202,7 +202,7 @@ impl RecordReads {
         answer
     }
 
-    /// A host of the app `app`'s package over its record, as the door hands it now.
+    /// A host of the app `app`'s package over its record, as the API hands it now.
     fn open_host(&self, app: &str) -> Result<Host, String> {
         let (under, record) = self
             .address(app)

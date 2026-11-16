@@ -8,7 +8,7 @@
 //! and live rows with the record's actions
 //! ([`SurfaceCx::record_actions`](super::SurfaceCx::record_actions)).
 //! It is published beside the app's resource with its field edits and verbs,
-//! so the palette, agents and scripts change it through the same door. Only
+//! so the palette, agents and scripts change it through the same api. Only
 //! the person whose record it is changes it (or software acting for them),
 //! whatever their role in the workspace the app shows, and every change is
 //! recorded in the record's own history: a person record's document history,
@@ -239,7 +239,7 @@ pub(crate) fn route_operation(
 
 /// A held record with its type erased, as the host publishes and answers
 /// it.
-pub(crate) trait RecordDoor {
+pub(crate) trait RecordApi {
     fn id(&self) -> &str;
     /// Whether this app changes the record; it is read here otherwise.
     fn editable(&self) -> bool;
@@ -257,7 +257,7 @@ pub(crate) trait RecordDoor {
             .map(|()| tilo_actions::ActionOutput::default())
     }
     /// [`Self::apply_answering`] in the window's pass over the record it
-    /// shows, lent as `live`: what a door that writes that record too (a
+    /// shows, lent as `live`: what an API that writes that record too (a
     /// container listing a new child) writes it through.
     fn apply_in(
         &self,
@@ -269,7 +269,7 @@ pub(crate) trait RecordDoor {
         self.apply_answering(action, invoker)
     }
 
-    /// What a read of this door's record answers, asked as `payload`: a
+    /// What a read of this api's record answers, asked as `payload`: a
     /// record reads what it holds ([`tilo_resource::read::TYPE`]), a chain
     /// of parts what its parts hold ([`super::chain::CHAIN_READ_TYPE`]). A
     /// record that answers no reads says so.
@@ -279,7 +279,7 @@ pub(crate) trait RecordDoor {
     }
 }
 
-impl<P: Resource> RecordDoor for Held<P> {
+impl<P: Resource> RecordApi for Held<P> {
     fn id(&self) -> &str {
         &self.id
     }
@@ -321,7 +321,7 @@ impl<P: Resource> RecordDoor for Held<P> {
 }
 
 /// Refuse `action` when only the app's own code applies it
-/// ([`Resource::by_app`]): a door takes what a caller may send, and this is
+/// ([`Resource::by_app`]): an API takes what a caller may send, and this is
 /// no caller's, however it came to be encoded.
 pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> {
     if P::by_app(action) {
@@ -342,15 +342,15 @@ pub(crate) fn acting(me: &str) -> ActionInvoker {
 /// Answer one published action of a record: apply it to the record it
 /// names, for the person whose record it is.
 pub(crate) fn answer(
-    doors: &[Rc<dyn RecordDoor>],
+    apis: &[Rc<dyn RecordApi>],
     me: Option<&str>,
     payload: &[u8],
 ) -> Result<tilo_actions::ActionOutput, String> {
     let request: RecordAction =
         tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
-    let door = doors
+    let api = apis
         .iter()
-        .find(|door| door.id() == request.record)
+        .find(|api| api.id() == request.record)
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
@@ -361,7 +361,7 @@ pub(crate) fn answer(
             request.record
         ));
     }
-    door.apply_encoded(&request.action, &invoker)?;
+    api.apply_encoded(&request.action, &invoker)?;
     Ok(tilo_actions::ActionOutput::default())
 }
 
@@ -395,12 +395,12 @@ pub(crate) mod sealed {
     pub trait Hold<P: Resource> {
         /// The record as a view part over it edits it through its type.
         fn held(&self, storage: Storage<'_>) -> Option<Rc<super::Held<P>>>;
-        /// The record as the door publishes and changes it.
-        fn door(&self, storage: Storage<'_>) -> Option<Door>;
+        /// The record as the api publishes and changes it.
+        fn api(&self, storage: Storage<'_>) -> Option<Api>;
     }
 
-    /// A held record as the door publishes and changes it.
-    pub struct Door(pub(crate) Rc<dyn super::RecordDoor>);
+    /// A held record as the api publishes and changes it.
+    pub struct Api(pub(crate) Rc<dyn super::RecordApi>);
 
     /// The window's storage, as a record is held in it.
     pub struct Storage<'a>(pub(crate) &'a super::ViewStorage);
@@ -420,7 +420,7 @@ pub struct Records<'a> {
     /// The app's own record, as `Live` of its resource: what the actions of
     /// a chain kept beside it read where they are invoked.
     base: Option<Rc<dyn std::any::Any>>,
-    /// The door of the app's own record, as the `Dispatcher` of its
+    /// The api of the app's own record, as the `Dispatcher` of its
     /// resource: what a container of children it lists writes it through.
     dispatch: Option<Rc<dyn std::any::Any>>,
     /// The resource types of the chains declared, while declaring.
@@ -447,7 +447,7 @@ pub(crate) struct Sections {
     /// The person they are changed by: each invoker's steps on them are
     /// published to undo and redo beside them.
     pub(crate) person: Option<Rc<super::person::PersonState>>,
-    pub(crate) doors: Vec<Rc<super::section::SectionDoor>>,
+    pub(crate) apis: Vec<Rc<super::section::SectionApi>>,
 }
 
 impl<'a> Records<'a> {
@@ -493,9 +493,9 @@ impl<'a> Records<'a> {
     }
 
     /// The settings sections held, after [`Self::sections`].
-    pub(crate) fn into_sections(self) -> Vec<Rc<super::section::SectionDoor>> {
+    pub(crate) fn into_sections(self) -> Vec<Rc<super::section::SectionApi>> {
         self.sections
-            .map(|sections| sections.doors)
+            .map(|sections| sections.apis)
             .unwrap_or_default()
     }
 
@@ -574,13 +574,13 @@ impl<'a> Records<'a> {
             return self;
         };
         let children = storage.children::<C>(move || parent.get());
-        if let (Some(children), Some(door)) = (
+        if let (Some(children), Some(api)) = (
             children,
             self.dispatch
                 .clone()
-                .and_then(|door| door.downcast::<Dispatcher<C::Parent>>().ok()),
+                .and_then(|api| api.downcast::<Dispatcher<C::Parent>>().ok()),
         ) {
-            children.write_parent_through((*door).clone());
+            children.write_parent_through((*api).clone());
         }
         self
     }
@@ -628,9 +628,9 @@ impl<'a> Records<'a> {
             let settings = ui_core::storage::Settings::<T>::for_app(sections.app_id)
                 .in_document(sections.document.clone());
             let kind = super::section::SectionKind::of(&settings);
-            sections.doors.push(match &sections.person {
+            sections.apis.push(match &sections.person {
                 Some(person) => person.open_section(kind),
-                None => Rc::new(super::section::SectionDoor::new(
+                None => Rc::new(super::section::SectionApi::new(
                     kind,
                     String::new(),
                     Vec::new(),
@@ -641,9 +641,9 @@ impl<'a> Records<'a> {
             return self;
         };
         let settings = storage.storage().settings::<T>();
-        let door = storage.section(&settings);
+        let api = storage.section(&settings);
         if let Some(provider) = self.provider {
-            storage.keep_by(door.id(), provider);
+            storage.keep_by(api.id(), provider);
         }
         self
     }
@@ -669,7 +669,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            Rc::clone(&held) as Rc<dyn RecordDoor>,
+            Rc::clone(&held) as Rc<dyn RecordApi>,
         );
         let mut cx = ViewCx::<P> {
             env: super::env::RecordEnv {
@@ -715,29 +715,29 @@ fn record_actions<P: Resource>(
     app: &'static str,
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
-    door: Rc<dyn RecordDoor>,
+    api: Rc<dyn RecordApi>,
 ) -> Actions<P> {
-    let actions = Actions::new(app, Rc::new(door.publish())).routed_to(
-        door.id(),
-        door.editable(),
-        storage.kept_provider(door.id()),
+    let actions = Actions::new(app, Rc::new(api.publish())).routed_to(
+        api.id(),
+        api.editable(),
+        storage.kept_provider(api.id()),
     );
-    follow_publication(storage, alive, door, actions.table());
+    follow_publication(storage, alive, api, actions.table());
     actions
 }
 
-/// Keep `table` current with `door`'s publication while `alive` lives.
+/// Keep `table` current with `api`'s publication while `alive` lives.
 fn follow_publication(
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
-    door: Rc<dyn RecordDoor>,
+    api: Rc<dyn RecordApi>,
     table: super::controls::ActionTable,
 ) {
-    let followed = Cell::new(door.revision());
+    let followed = Cell::new(api.revision());
     storage.follow_with(alive, move || {
-        let revision = door.revision();
+        let revision = api.revision();
         if followed.replace(revision) != revision {
-            table.update(door.publish());
+            table.update(api.publish());
         }
     });
 }
@@ -748,12 +748,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// ([`Self::record`]): a hand widget bound to a settings section's field
     /// edits. `None` where the record cannot be held.
     pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
-        let door = record.door(sealed::Storage(&self.storage))?.0;
+        let api = record.api(sealed::Storage(&self.storage))?.0;
         Some(record_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            door,
+            api,
         ))
     }
 }
@@ -766,17 +766,17 @@ impl<R: Resource> SurfaceCx<R> {
     /// live rows ([`Actions::operation`]). `None` where the record cannot be
     /// held.
     pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
-        let door = record.door(sealed::Storage(&self.storage))?.0;
+        let api = record.api(sealed::Storage(&self.storage))?.0;
         Some(record_actions(
             self.dispatch.app_id(),
             &self.storage,
             self.alive.clone(),
-            door,
+            api,
         ))
     }
 }
 
-/// `parent`'s door, submitting to the held record `held`: what applies now
+/// `parent`'s api, submitting to the held record `held`: what applies now
 /// applies to it as the person.
 fn record_dispatch<R: Resource, P: Resource>(
     parent: &Dispatcher<R>,

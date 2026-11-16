@@ -1,4 +1,4 @@
-//! A hosted surface's device-local door, shared with whoever lists and invokes its actions while its
+//! A hosted surface's device-local API, shared with whoever lists and invokes its actions while its
 //! host owns the surface. A host mounts a private surface app (setup, Quick Settings, a sheet) and
 //! keeps it to itself: only the host may lay it out, draw it or run it.
 
@@ -8,11 +8,11 @@ use std::rc::Rc;
 use crate::widget::{AppWidget, ResourceOperationStart};
 
 /// What an invocation answers, once its host served it.
-pub type Answer = Rc<RefCell<Option<Result<ResourceOperationStart, tilo_actions::DoorError>>>>;
+pub type Answer = Rc<RefCell<Option<Result<ResourceOperationStart, tilo_actions::ApiError>>>>;
 
-/// A hosted surface's door, cloned between its host and its catalogue.
+/// A hosted surface's API, cloned between its host and its catalogue.
 #[derive(Clone, Default)]
-pub struct SharedDoor(Rc<RefCell<State>>);
+pub struct SharedApi(Rc<RefCell<State>>);
 
 #[derive(Default)]
 struct State {
@@ -28,7 +28,7 @@ struct Queued {
     answer: Answer,
 }
 
-impl SharedDoor {
+impl SharedApi {
     /// The resources the surface published when its host last published it, with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
@@ -69,19 +69,19 @@ impl SharedDoor {
         !self.0.borrow().queued.is_empty()
     }
 
-    /// Host: run what was queued through `app`'s door, oldest first.
+    /// Host: run what was queued through `app`'s API, oldest first.
     pub fn serve(&self, app: &mut dyn AppWidget) -> bool {
         self.serve_with(|address, arguments| app.invoke_device_local_action(address, arguments))
     }
 
-    /// Host: run what was queued through `run`, the surface door, oldest first: for a host holding the
+    /// Host: run what was queued through `run`, the surface's API, oldest first: for a host holding the
     /// surface as something other than an [`AppWidget`].
     pub fn serve_with(
         &self,
         mut run: impl FnMut(
             &tilo_actions::ActionAddress,
             &serde_json::Map<String, serde_json::Value>,
-        ) -> Result<ResourceOperationStart, tilo_actions::DoorError>,
+        ) -> Result<ResourceOperationStart, tilo_actions::ApiError>,
     ) -> bool {
         let queued = std::mem::take(&mut self.0.borrow_mut().queued);
         let ran = !queued.is_empty();
@@ -97,7 +97,7 @@ impl SharedDoor {
         let queued = std::mem::take(&mut self.0.borrow_mut().queued);
         for invocation in queued {
             *invocation.answer.borrow_mut() =
-                Some(Err(tilo_actions::DoorError::Unknown(invocation.address)));
+                Some(Err(tilo_actions::ApiError::Unknown(invocation.address)));
         }
     }
 
@@ -110,7 +110,7 @@ impl SharedDoor {
     /// Host: publish `resources`, what the surface offers now; `None` for a surface that is gone.
     pub fn publish_resources(&self, resources: Option<Vec<tilo_actions::ResourceSpec>>) {
         let resources = resources.unwrap_or_default();
-        let actions = tilo_actions::door::survey(&resources);
+        let actions = tilo_actions::api::survey(&resources);
         let mut state = self.0.borrow_mut();
         if state.actions != actions {
             state.actions = actions;

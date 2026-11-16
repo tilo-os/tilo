@@ -38,7 +38,7 @@ pub(crate) struct ReviewedRestore<'a> {
     pub(crate) review: &'a crate::history_mode::RestoreReview,
 }
 
-/// The framework History host's admission door.
+/// The framework History host's admission API.
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
     restore: &ReviewedRestore<'_>,
@@ -241,7 +241,7 @@ fn check_restore_authority(
     Ok(())
 }
 
-/// The History host's door for descriptions of its resource's changes: one forward change
+/// The History host's API for descriptions of its resource's changes: one forward change
 /// through the resource's owner, under the same authority a restore needs, written only
 /// while no edit is open.
 #[cfg(feature = "native")]

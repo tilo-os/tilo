@@ -43,7 +43,7 @@ fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
         "kind": resource.kind,
         "label": resource.label,
         "detail": resource.presentation.as_ref().and_then(|presentation| presentation.detail.clone()),
-        "actions": tilo_actions::door::survey(&[own]),
+        "actions": tilo_actions::api::survey(&[own]),
         "views": resource.views.len(),
         "children": resource.children.iter().map(outline).collect::<Vec<_>>(),
     })

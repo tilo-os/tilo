@@ -47,7 +47,7 @@ pub enum Press {
     /// Nothing: the strip reports the press as the index it chose.
     #[default]
     Nothing,
-    /// An action the app published, invoked through the door.
+    /// An action the app published, invoked through the API.
     Action(ActionEmitter<()>),
     /// The view's own handler.
     View(Box<dyn FnMut()>),

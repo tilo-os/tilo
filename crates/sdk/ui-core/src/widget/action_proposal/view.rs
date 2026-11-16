@@ -103,7 +103,7 @@ impl<R: tilo_resource::Resource> ActionProposalView<R> {
     }
 
     /// The action that writes what the person accepted, to submit through
-    /// the app's own door — `cx.dispatcher().submit(...)` — as the record's
+    /// the app's own API — `cx.dispatcher().submit(...)` — as the record's
     /// one field edit: one change, one History row, one undo step. `Ok(None)`
     /// when nothing was accepted, so rejecting submits nothing at all.
     ///

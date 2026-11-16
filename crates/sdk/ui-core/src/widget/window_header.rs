@@ -163,7 +163,7 @@ pub struct WindowBar {
     pub controls_width: f64,
     /// The system already lists the window's actions where the person reaches
     /// them (the shell bar's window menu, for the window in front): the row's
-    /// actions that do not fit give way with no door of their own, since every
+    /// actions that do not fit give way with no API of their own, since every
     /// one stays reachable there. `false`: nothing lists them, so what does not
     /// fit goes behind the row's door ([`crate::widget::OverflowDoor`]). Each
     /// host states it; no row guesses it from what shell it is on.
@@ -362,7 +362,7 @@ impl RowControl {
 }
 
 /// The width a header row keeps at its trailing end for the window's furniture
-/// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab door, each
+/// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab API, each
 /// with the gap the bar keeps between its sections. Every window that lets its row hold the bar
 /// reserves this, so its app's own controls end where the window's begin.
 ///
@@ -376,7 +376,7 @@ pub fn merged_row_width() -> f64 {
 /// What a row `width` wide keeps at its trailing end for the window's furniture: everything
 /// [`merged_row_width`] names while the bar is wider than a phone's, and the window's own controls
 /// alone where it is not. A bar that narrow is the app's row, and the width its own controls need
-/// there is worth more than the window's search and new-tab door, which such a row draws for
+/// there is worth more than the window's search and new-tab API, which such a row draws for
 /// itself (its own search control, its own tabs `+`).
 #[must_use]
 pub fn merged_row_width_in(width: f64) -> f64 {
@@ -614,7 +614,7 @@ impl HistoryOpener {
     pub fn set_control(&mut self, control: Option<HistoryControl>) {
         if self.control != control {
             let next = control.map(|control| {
-                crate::history_mode::door::history_control_button(HISTORY_CONTROL_ID, control)
+                crate::history_mode::api::history_control_button(HISTORY_CONTROL_ID, control)
             });
             if let Some(old) = std::mem::replace(&mut self.button, next) {
                 self.retired.push(old);
@@ -631,7 +631,7 @@ impl HistoryOpener {
     /// The retained History button for a header row that hosts library
     /// controls: lay it out at the row's History rect, keep it among the
     /// host's children, draw it and route its events like the others. Its
-    /// press goes through the History door by itself.
+    /// press goes through the History API by itself.
     pub fn button(&self) -> Option<&super::Button> {
         self.button.as_ref()
     }
@@ -666,7 +666,7 @@ impl HistoryOpener {
 
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         let control = self.pending.take()?;
-        crate::history_mode::door::history_control_binding(control)
+        crate::history_mode::api::history_control_binding(control)
             .invoke(())
             .ok()
     }
@@ -796,7 +796,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_press_on_the_control_goes_through_the_history_door() {
+    fn a_press_on_the_control_goes_through_the_history_api() {
         let rect = Rect::new(900.0, 12.0, 932.0, 44.0);
         let mut opener = HistoryOpener::new();
         let device = winit::event::DeviceId::dummy();

@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
 use tilo_service::{Service, Started, decode, reading};
 
 use crate::surfaces::{
@@ -243,7 +243,7 @@ impl Service for KeyboardService {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         match decode::<KeyboardAction>(&self.resources(), resource, action, arguments)? {
             KeyboardAction::SetVisible { visible } => self.state.ask(Ask::SetVisible(visible)),
             KeyboardAction::Type { text } => self.state.ask(Ask::Type(text)),

@@ -269,7 +269,7 @@ impl crate::services::WorkspaceGovernanceServices for NativeFacadeGovernance {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_other_doors() {
+async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_other_apis() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();

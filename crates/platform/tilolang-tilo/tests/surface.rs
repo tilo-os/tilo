@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         );
         let increment = &meta.actions[0];
         let counter = &surfaces[0];
-        // By the action's id, the one its changes' claims name: its name is what the door offers
+        // By the action's id, the one its changes' claims name: its name is what the API offers
         // it by, not what a record keeps.
         assert_eq!(counter.verb(&increment.id).unwrap().0, ActionKind::Undoable);
         assert!(counter.verb(&increment.name).is_none());
@@ -514,7 +514,7 @@ tilo_test_env::scenario! {
 
     phase a_parameter_of_another_apps_record_picks_a_resource_of_its_kind;
     // A parameter of another app's record type (`list: todo.TodoList` in a package that uses the
-    // todo app) picks a resource of that kind, as one of the package's own records does: the door
+    // todo app) picks a resource of that kind, as one of the package's own records does: the API
     // takes the catalogue's reference to it. Published as an array, no caller could pass one.
     {
         const BOARD: &str = r#"app so.tilo.board "Board"
@@ -569,7 +569,7 @@ action attach(b: Board, list: todo.TodoList) {
 
     phase a_requirement_refuses_the_invocation_whose_rule_does_not_hold;
     // An action's requirement is the app's to answer, and the app answers it for the one resource
-    // a caller names: a door planning the action against an item whose rule does not hold is
+    // a caller names: an API planning the action against an item whose rule does not hold is
     // refused with the rule's reason, where before the answer had to be published for every item
     // of every record.
     {

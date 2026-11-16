@@ -401,7 +401,7 @@ mod tests {
                     payload: Vec::new(),
                 },
             ));
-            let published = tilo_actions::door::survey(&[switch]);
+            let published = tilo_actions::api::survey(&[switch]);
             let offered = |settings: &Settings| {
                 settings
                     .query("keyboard layout")

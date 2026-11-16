@@ -175,7 +175,7 @@ impl crate::host_core::HostCore for App {
     fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         use crate::bound_dispatch::local_target::LocalResourceTarget;
         let argument = format!(
             "{}{}",

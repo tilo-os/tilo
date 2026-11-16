@@ -10,7 +10,7 @@
 //! resource (`desktop:window-menu`) and handed to the instance as the reading of an app the
 //! package does not run ([`Runtime::set_reading`]): the session's watch of that resource is the
 //! one reading the view ever sees. What the view invokes it invokes on that same resource,
-//! through the same action door every other caller uses: the host queues each invocation
+//! through the same action API every other caller uses: the host queues each invocation
 //! ([`Asked`]), its arguments in the shapes the verb declares, and the session runs it.
 //!
 //! The pointer and the keys reach the view while its surface is the one over the desktop, which
@@ -80,7 +80,7 @@ pub struct Spec {
 }
 
 /// One change the view asked the session for: an invocation on the slot's resource, of the
-/// kind any caller of the action door makes.
+/// kind any caller of the action API makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asked {
     /// The resource the view invoked: the slot's.
@@ -92,8 +92,8 @@ pub struct Asked {
     pub arguments: BTreeMap<String, Json>,
 }
 
-/// The session's door as the view's invoker: what the view asks waits here for the session's
-/// next pass, which runs it through the door every other caller uses.
+/// The session's API as the view's invoker: what the view asks waits here for the session's
+/// next pass, which runs it through the API every other caller uses.
 struct SlotInvoker {
     /// The app whose surface the view invokes: its own state's.
     meta: Meta,
@@ -103,8 +103,8 @@ struct SlotInvoker {
 }
 
 impl SlotInvoker {
-    /// What the view's invocation passes `action`, in the shape the door takes: its arguments
-    /// by name, each as its declared type reads on the door, and not the resource the address
+    /// What the view's invocation passes `action`, in the shape the API takes: its arguments
+    /// by name, each as its declared type reads on the API, and not the resource the address
     /// already names.
     fn arguments(
         &self,
@@ -226,7 +226,7 @@ impl Open {
             .downcast_mut::<AppWindow>()
     }
 
-    /// Commit what the instance planned to the package's own record, as the door would, and
+    /// Commit what the instance planned to the package's own record, as the API would, and
     /// bring the instance up to date with it. Whether anything was committed.
     fn commit(&mut self) -> bool {
         let mut committed = false;
@@ -432,7 +432,7 @@ impl SlotView {
             return Err("the session could not start a runtime for it".to_owned());
         };
         // What the view reads is the slot's reading, as the session's watch last had it; what
-        // it invokes goes to the session's door, in the shapes the verbs declare.
+        // it invokes goes to the session's API, in the shapes the verbs declare.
         host.runtime()
             .set_reading(&target, reading)
             .map_err(|error| error.to_string())?;
@@ -523,7 +523,7 @@ impl SlotView {
             .is_some_and(|open| !open.asked.borrow().is_empty())
     }
 
-    /// Run what the view asked through `invoke` (the session's door), as any caller of the
+    /// Run what the view asked through `invoke` (the session's API), as any caller of the
     /// action protocol does.
     pub fn serve(&self, mut invoke: impl FnMut(&Asked) -> Result<(), String>) {
         let Some(open) = self.open.as_ref() else {

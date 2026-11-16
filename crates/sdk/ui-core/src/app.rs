@@ -180,7 +180,7 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than translated to a
     /// `WindowEvent` (e.g.
     External(String),
-    /// A host command chosen in the operating system chrome (a menu item), entering the same door as
+    /// A host command chosen in the operating system chrome (a menu item), entering the same API as
     /// the palette.
     HostCommand(tilo_actions::ControlInvocation),
     /// Text typed into the host's title-bar search field; search continues in the palette.
@@ -1784,7 +1784,7 @@ impl App {
         Some(crate::theme::SurfaceShape::rounded(window, radius).transformed(transform))
     }
 
-    /// What a standalone app read from its host OS, through the same door as
+    /// What a standalone app read from its host OS, through the same API as
     /// a settings pane's intent. The caller applies each host change once, so
     /// a contrast toggle made in the app has until the host changes again.
     #[cfg(feature = "native")]
@@ -4463,7 +4463,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     crate::search::open_search_binding(&crate::search::SearchRequest::this_app()),
                 ),
             ))
-            .push(Box::new(crate::history_mode::door::history_control_button(
+            .push(Box::new(crate::history_mode::api::history_control_button(
                 "coverage-history",
                 crate::widget::window_header::HistoryControl::Closed,
             )))

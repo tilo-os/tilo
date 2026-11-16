@@ -1718,7 +1718,7 @@ mod owner_commit_tests {
     }
 
     /// A person's certified caller that their own device handed to agent
-    /// `agent`, as the standalone runtime's MCP door does.
+    /// `agent`, as the standalone runtime's MCP api does.
     fn delegated_owner_caller(f: &OwnerFixture, agent: &str) -> VerifiedActionCaller {
         effect_owner_caller(f).delegated_to(agent)
     }
@@ -1762,7 +1762,7 @@ mod owner_commit_tests {
         fn a_delegated_agent_owns_its_effect_terminal_and_keeps_it_on_reverification;
 
         phase a_delegated_agents_effect_terminal_is_owned_and_receipted_as_that_agent;
-        // The MCP door hands a person's certified session to their agent, and
+        // The MCP api hands a person's certified session to their agent, and
         // that agent's own effect terminal is accepted: the durable owner, the
         // receipt actor and the validation all name the agent the person's
         // device delegated to. A receipt naming anyone else is still refused.
@@ -1823,7 +1823,7 @@ mod owner_commit_tests {
         }
 
         phase a_delegated_callers_reverification_keeps_its_agent_owner;
-        // The certified door re-verifies a caller on every status, retry and
+        // The certified api re-verifies a caller on every status, retry and
         // effect barrier. That recheck proves the same person and device and
         // keeps this caller's own delegation, so it cannot be satisfied by
         // another person's or another device's evidence, and a caller that

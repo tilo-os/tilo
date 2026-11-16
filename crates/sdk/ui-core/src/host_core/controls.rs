@@ -1,15 +1,15 @@
 //! Control dispatch: what the native and headless app hosts do with the control intents their tree
-//! queued, written once. Each host lends the doors an intent finally enters through [`ControlHost`].
+//! queued, written once. Each host lends the APIs an intent finally enters through [`ControlHost`].
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments, Origin};
 use crate::widget::ResourceOperationStart;
-use tilo_actions::{ActionAddress, ControlInvocation, DoorError, InvocationId};
+use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
 use super::{HostCore, ResourceInvocation};
 
-/// What entering a door started, or why it refused.
-pub(crate) type Started = Result<ResourceOperationStart, DoorError>;
+/// What entering an API started, or why it refused.
+pub(crate) type Started = Result<ResourceOperationStart, ApiError>;
 
 pub(crate) trait ControlHost: HostCore {
     /// The person at this device.
@@ -37,7 +37,7 @@ pub(crate) trait ControlHost: HostCore {
         intent: &ControlInvocation,
     ) -> Option<tilo_actions::ConfirmationPolicy>;
 
-    /// A control bound to the window's History door (or its unsaved-changes Retry) runs there, never as
+    /// A control bound to the window's History API (or its unsaved-changes Retry) runs there, never as
     /// an app action.
     fn take_history_invocation(
         &mut self,
@@ -45,11 +45,11 @@ pub(crate) trait ControlHost: HostCore {
         owner: Option<crate::history_mode::HistoryOwner>,
     ) -> bool {
         let host_action = self.is_host_action_resource(&intent.address.resource);
-        if intent.address.resource != crate::history_mode::door::HISTORY_RESOURCE && !host_action {
+        if intent.address.resource != crate::history_mode::api::HISTORY_RESOURCE && !host_action {
             return false;
         }
         let embedded = owner.filter(|_| !host_action).and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.host_root_mut(), &owner, intent)
+            crate::history_mode::embedded::invoke_api(self.host_root_mut(), &owner, intent)
         });
         let result = if let Some(result) = embedded {
             self.embedded_history_acted();
@@ -72,13 +72,13 @@ pub(crate) trait ControlHost: HostCore {
         false
     }
 
-    /// Run a History door action, or one of the window's own, locally.
+    /// Run a History API action, or one of the window's own, locally.
     fn run_local_history_address(&mut self, address: &ActionAddress, argument: &str) -> Started;
 
     /// A History surface embedded in the app took a control.
     fn embedded_history_acted(&mut self) {}
 
-    /// A control addressed to the host search door opens search instead of reaching the app; `owner` is
+    /// A control addressed to the host search API opens search instead of reaching the app; `owner` is
     /// the component it came from.
     fn take_search_invocation(
         &mut self,
@@ -86,14 +86,14 @@ pub(crate) trait ControlHost: HostCore {
         owner: Option<&crate::bound_dispatch::CallbackBinding>,
     ) -> bool;
 
-    /// Enter the door of the component `target` names.
+    /// Enter the API of the component `target` names.
     fn invoke_bound_control(
         &mut self,
         target: &BoundActionTarget,
         request: &ResourceInvocation<'_>,
     ) -> Started;
 
-    /// Enter the outer document's door at `request.address`.
+    /// Enter the outer document's API at `request.address`.
     fn invoke_outer_control(&mut self, request: &ResourceInvocation<'_>) -> Started;
 
     /// The control intents this host's tree registered, by owner.
@@ -102,7 +102,7 @@ pub(crate) trait ControlHost: HostCore {
     /// Put `request` to the person in the window's palette.
     fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool;
 
-    /// Ask the person before `address` goes ahead: as the door asked, or, `confirming`, as the app
+    /// Ask the person before `address` goes ahead: as the API asked, or, `confirming`, as the app
     /// asked for a pick of theirs ([`Origin::PersonConfirming`]).
     fn ask_person(
         &mut self,
@@ -131,12 +131,12 @@ pub(crate) trait ControlHost: HostCore {
     }
 
     /// Say that an invocation the person made did not run, and why, at the control they used.
-    fn refuse_visibly(&mut self, error: &DoorError);
+    fn refuse_visibly(&mut self, error: &ApiError);
 
     /// An invocation nobody at this device asked for was refused; only its app hears of it.
-    fn refused_unsaid(&mut self, _error: &DoorError) {}
+    fn refused_unsaid(&mut self, _error: &ApiError) {}
 
-    /// Enter the door `target` names with `request`.
+    /// Enter the API `target` names with `request`.
     fn invoke_local_target(
         &mut self,
         target: &LocalResourceTarget,
@@ -276,7 +276,7 @@ pub(crate) trait ControlHost: HostCore {
         }
         let acting = on_behalf_of.and_then(|id| self.acting_for_mut().get(&id).cloned());
         let Some(confirmation) = self.local_confirmation(&intent) else {
-            let error = DoorError::Unknown(intent.address.clone());
+            let error = ApiError::Unknown(intent.address.clone());
             tracing::warn!(
                 resource = %intent.address.resource,
                 action = %intent.address.action,
@@ -296,7 +296,7 @@ pub(crate) trait ControlHost: HostCore {
             // Nobody here asked for it: the person at the device is never
             // prompted to confirm another invoker's edit.
             tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, "an effect's edit that needs confirmation is refused");
-            let error = DoorError::ConfirmationRequired;
+            let error = ApiError::ConfirmationRequired;
             self.refused_unsaid(&error);
             self.outer_control_settled(&intent.address, on_behalf_of, &Err(error));
             return false;
@@ -305,11 +305,11 @@ pub(crate) trait ControlHost: HostCore {
         if confirming || needs_confirmation {
             // A bound control never manufactures confirmation. Hand the
             // exact address to the standard palette flow, which owns the
-            // explicit confirm/phrase UI and only then enters the door.
+            // explicit confirm/phrase UI and only then enters the API.
             crate::widget::controls::on_control_invocation_result(
                 self.host_root_mut(),
                 &intent.address,
-                &Err(DoorError::ConfirmationRequired),
+                &Err(ApiError::ConfirmationRequired),
             );
             self.ask_person(
                 LocalResourceTarget::Outer,
@@ -350,7 +350,7 @@ pub(crate) trait ControlHost: HostCore {
         self.outer_control_settled(&intent.address, on_behalf_of, &result);
         match result {
             Ok(_) => true,
-            Err(DoorError::ConfirmationRequired) if acting.is_none() => {
+            Err(ApiError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(
                     LocalResourceTarget::Outer,
                     intent.address,
@@ -409,7 +409,7 @@ pub(crate) trait ControlHost: HostCore {
             let result = self
                 .bound_publication()
                 .alias(&target.binding, &target.address.address.resource)
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                .map_err(crate::bound_dispatch::BoundActionError::into_api)
                 .and_then(|alias| {
                     self.send_follow_up(
                         running,
@@ -447,7 +447,7 @@ pub(crate) trait ControlHost: HostCore {
             Ok(_) => true,
             // Nobody here asked for it: the person at the device is never
             // prompted to confirm another invoker's edit.
-            Err(DoorError::ConfirmationRequired) if acting.is_none() => {
+            Err(ApiError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(
                     LocalResourceTarget::Component(target.clone()),
                     intent.address.clone(),
@@ -489,7 +489,7 @@ pub(crate) trait ControlHost: HostCore {
     }
 }
 
-/// `arguments` as the door's text argument.
+/// `arguments` as the API's text argument.
 pub(crate) fn json_argument(arguments: &serde_json::Map<String, serde_json::Value>) -> String {
     format!(
         "{}{}",

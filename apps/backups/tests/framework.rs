@@ -55,7 +55,7 @@ fn an_unconfigured_device_offers_setup_and_refuses_to_back_up() {
     );
     let refused = app.effect(&BackupsEffect::BackupNow).unwrap_err();
     assert!(
-        matches!(&refused, ui::tilo_actions::DoorError::Unavailable { code, .. } if code == "not_configured"),
+        matches!(&refused, ui::tilo_actions::ApiError::Unavailable { code, .. } if code == "not_configured"),
         "{refused:?}"
     );
 }

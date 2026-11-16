@@ -4,10 +4,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::Error;
 use tilo_service::Started;
-use tilo_session_core::door::{Doors, Published};
+use tilo_session_core::surfaces::{Published, Surfaces};
 use ui::host_operation::ResourceOperationStart;
 
 use tilo_action_broker::collab_broker::FanoutState;
@@ -36,21 +36,21 @@ struct ServiceDoor {
 
 /// A surface app reaches the desktop's actions exactly as a person's palette does: through the door
 /// over every surface it hosts.
-impl surfaces::ActionDoor for tilo_session_core::door::Doors {
+impl surfaces::ActionApi for tilo_session_core::surfaces::Surfaces {
     fn resources(&mut self) -> Vec<ResourceSpec> {
-        tilo_session_core::door::Doors::resources(self)
+        tilo_session_core::surfaces::Surfaces::resources(self)
     }
 
     fn invoke(
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_session_core::door::Doors::invoke(
+    ) -> Result<ResourceOperationStart, ApiError> {
+        tilo_session_core::surfaces::Surfaces::invoke(
             self,
             address,
             arguments,
-            &mut tilo_session_core::door::Look::none(),
+            &mut tilo_session_core::surfaces::Look::none(),
         )
     }
 }
@@ -83,15 +83,15 @@ impl Published for ServiceDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         match self
             .services
             .borrow_mut()
             .invoke(&address.resource, &address.action, arguments)
         {
             Some(started) => started.map(answered),
-            None => Err(DoorError::Unknown(address.clone())),
+            None => Err(ApiError::Unknown(address.clone())),
         }
     }
 
@@ -102,8 +102,8 @@ impl Published for ServiceDoor {
         actor: &str,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         // An agent is named `agent:<id>` , as the MCP server names it.
         let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
         match self.services.borrow_mut().invoke_by(
@@ -113,7 +113,7 @@ impl Published for ServiceDoor {
             arguments,
         ) {
             Some(started) => started.map(answered),
-            None => Err(DoorError::Unknown(address.clone())),
+            None => Err(ApiError::Unknown(address.clone())),
         }
     }
 
@@ -471,7 +471,7 @@ fn offload_route(
 
 /// The services, published on the door.
 pub(crate) fn mount_services(
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     started: Vec<Box<dyn Service>>,
 ) -> Rc<RefCell<Services>> {
     let mut services = Services::default();

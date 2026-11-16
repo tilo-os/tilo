@@ -470,7 +470,7 @@ pub trait WorkspaceRecordActions {
 }
 
 /// The invocation that asks a host to run `action` of `app`'s workspace
-/// record with `arguments`: the record's own resource, as the app's door
+/// record with `arguments`: the record's own resource, as the app's api
 /// offers it. The receipt is held until the action settles, so a reading
 /// answers at once and one that went elsewhere answers once it is back.
 #[must_use]
@@ -1205,8 +1205,8 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_record_action_asks_the_host_and_reads_its_answer;
 
-        phase a_record_action_asks_the_host_at_the_records_own_door;
-        // A record action is the record's own invocation, as the app's door
+        phase a_record_action_asks_the_host_at_the_records_own_api;
+        // A record action is the record's own invocation, as the app's api
         // offers it: the app's record, its own resource, and the arguments the
         // action takes, held until it settles.
         {

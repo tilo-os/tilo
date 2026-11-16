@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
 use settings_store::day_schedule::Location;
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_service::{Service, Services, Started};
 
 use crate::device::{Change, System};
@@ -133,7 +133,7 @@ fn the_power_mode_is_one_the_machine_offers() {
             "set-power-mode",
             &arguments(json!({"mode": "performance"}))
         ),
-        Err(DoorError::InvalidArguments(_))
+        Err(ApiError::InvalidArguments(_))
     ));
     assert_eq!(fake.changes(), [Change::PowerMode(PowerMode::Saver)]);
 }
@@ -146,7 +146,7 @@ fn restarting_and_powering_off_ask_for_confirmation() {
     for action in ["restart", "power-off", "log-out"] {
         assert_eq!(
             services.invoke(POWER, action, &Map::new()),
-            Some(Err(DoorError::ConfirmationRequired)),
+            Some(Err(ApiError::ConfirmationRequired)),
             "{action}"
         );
     }
@@ -174,7 +174,7 @@ fn locking_asks_nothing_and_switching_user_needs_a_seat_for_another() {
     assert!(
         matches!(
             services.invoke(POWER, "switch-user", &Map::new()),
-            Some(Err(DoorError::Unavailable { .. }))
+            Some(Err(ApiError::Unavailable { .. }))
         ),
         "nobody else can sign in here"
     );
@@ -208,7 +208,7 @@ fn an_update_reports_what_it_needs() {
     assert!(
         matches!(
             service.invoke(SYSTEM_UPDATE, "restart-to-update", &Map::new()),
-            Err(DoorError::Unavailable { .. })
+            Err(ApiError::Unavailable { .. })
         ),
         "nothing waits for a restart"
     );
@@ -222,7 +222,7 @@ fn an_update_reports_what_it_needs() {
     assert!(
         matches!(
             service.invoke(SYSTEM_UPDATE, "update-now", &Map::new()),
-            Err(DoorError::Unavailable { .. })
+            Err(ApiError::Unavailable { .. })
         ),
         "one update at a time"
     );
@@ -239,7 +239,7 @@ fn a_pending_desktop_restart_is_offered_only_while_the_desktop_waits() {
     assert!(
         matches!(
             service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
-            Err(DoorError::Unavailable { .. })
+            Err(ApiError::Unavailable { .. })
         ),
         "no part of the update waits for the desktop"
     );
@@ -268,7 +268,7 @@ fn a_pending_desktop_restart_is_offered_only_while_the_desktop_waits() {
     assert!(
         matches!(
             service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
-            Err(DoorError::Unavailable { .. })
+            Err(ApiError::Unavailable { .. })
         ),
         "only the machine finishing the update is offered"
     );
@@ -312,7 +312,7 @@ fn the_zone_follows_the_device_only_while_chosen_and_never_guesses() {
             "set-zone",
             &arguments(json!({"zone": "../etc/passwd"}))
         ),
-        Err(DoorError::InvalidArguments(_))
+        Err(ApiError::InvalidArguments(_))
     ));
 
     // No location: the zone stays as it is.
@@ -361,7 +361,7 @@ fn the_keyboard_keys_step_the_keyboard_light_through_its_levels() {
             "set-level",
             &arguments(json!({"level": 2.0}))
         ),
-        Err(DoorError::InvalidArguments(_))
+        Err(ApiError::InvalidArguments(_))
     ));
 
     *fake.keyboard_light.lock().unwrap() = KeyboardLight::default();
@@ -369,6 +369,6 @@ fn the_keyboard_keys_step_the_keyboard_light_through_its_levels() {
     service.settle();
     assert!(matches!(
         service.invoke(KEYBOARD_BACKLIGHT, "brighter", &Map::new()),
-        Err(DoorError::Unavailable { .. })
+        Err(ApiError::Unavailable { .. })
     ));
 }

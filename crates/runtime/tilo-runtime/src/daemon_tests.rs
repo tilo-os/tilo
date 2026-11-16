@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         let mut client = Client::default();
         let reply = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
         let mut daemon = OpenStream(vec![reply[16..].to_vec(), reply[..16].to_vec()]);
-        let still_open = tilo_mcp::session_door::relay(&mut daemon, &mut client).unwrap_err();
+        let still_open = tilo_mcp::session_api::relay(&mut daemon, &mut client).unwrap_err();
         assert_eq!(still_open.kind(), io::ErrorKind::WouldBlock);
         assert_eq!(
             client.delivered, reply,
@@ -878,7 +878,7 @@ tilo_test_env::scenario! {
 }
 
 /// A client that names a profile chose a standalone runtime itself; one that
-/// names none is routed by its login (`session_door::route`).
+/// names none is routed by its login (`session_api::route`).
 #[test]
 fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
@@ -1005,12 +1005,12 @@ fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
         "\n",
     );
     let mut relayed = Vec::new();
-    let asking = tilo_mcp::session_door::Asking {
+    let asking = tilo_mcp::session_api::Asking {
         workspace: Some("w-1".into()),
         key: Some("tilo_ak_0123".into()),
     };
     let total =
-        tilo_mcp::session_door::relay_asking(&mut sent.as_bytes(), &mut relayed, &asking).unwrap();
+        tilo_mcp::session_api::relay_asking(&mut sent.as_bytes(), &mut relayed, &asking).unwrap();
     assert_eq!(total, sent.len() as u64, "every byte read is relayed");
     let lines: Vec<serde_json::Value> = relayed
         .split(|byte| *byte == b'\n')
@@ -1020,12 +1020,12 @@ fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[0]["method"], "server/discover");
     assert_eq!(
-        lines[1].pointer(tilo_mcp::session_door::KEY),
+        lines[1].pointer(tilo_mcp::session_api::KEY),
         Some(&serde_json::json!("tilo_ak_0123")),
         "the agent key rides in the initialize"
     );
     assert_eq!(
-        lines[1].pointer(tilo_mcp::session_door::WORKSPACE),
+        lines[1].pointer(tilo_mcp::session_api::WORKSPACE),
         Some(&serde_json::json!("w-1"))
     );
     assert_eq!(
@@ -1038,7 +1038,7 @@ fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
         serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"workspace":"x"}})
     );
     let hello =
-        tilo_mcp::session_door::parse_hello(&serde_json::to_vec(&lines[1]).unwrap()).unwrap();
+        tilo_mcp::session_api::parse_hello(&serde_json::to_vec(&lines[1]).unwrap()).unwrap();
     assert_eq!(hello.workspace.as_deref(), Some("w-1"), "the door reads it");
     assert_eq!(
         hello.key.as_deref(),
@@ -1046,7 +1046,7 @@ fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
         "the door reads the key"
     );
     assert_eq!(
-        hello.request.pointer(tilo_mcp::session_door::KEY),
+        hello.request.pointer(tilo_mcp::session_api::KEY),
         None,
         "the key is kept out of the request the door goes on to answer"
     );

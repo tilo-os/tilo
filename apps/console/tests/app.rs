@@ -278,8 +278,8 @@ fn run() -> wire::AgentSession {
     }
 }
 
-/// The door, with the run History names "Claude Code #2" open through it or not.
-fn the_door(open: bool) -> mcp_server::Server {
+/// The server, with the run History names "Claude Code #2" open through it or not.
+fn the_server(open: bool) -> mcp_server::Server {
     mcp_server::Server {
         endpoint: "https://mcp.example".into(),
         grants: vec![mcp_server::Grant {
@@ -299,7 +299,7 @@ fn the_door(open: bool) -> mcp_server::Server {
     }
 }
 
-/// Open the console on a session that answers with `run` and a door where that run is
+/// Open the console on a session that answers with `run` and an MCP server where that run is
 /// `open` or not.
 fn opened(open: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
@@ -311,7 +311,7 @@ fn opened(open: bool) -> TestApp<App> {
         wire::Scope::AllWorkspaces,
         "the console reads every workspace's runs"
     );
-    let door_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
+    let server_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         runs.invocation,
@@ -325,14 +325,14 @@ fn opened(open: bool) -> TestApp<App> {
     );
     answer(
         &mut app,
-        door_read.invocation,
-        serde_json::to_value(the_door(open)).unwrap(),
+        server_read.invocation,
+        serde_json::to_value(the_server(open)).unwrap(),
     );
     app
 }
 
 #[test]
-fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
+fn stopping_a_working_run_asks_the_server_to_end_that_run_alone() {
     english();
     let mut app = opened(true);
     app.harness().click_named("console-session-r1").unwrap();
@@ -395,13 +395,13 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     );
 }
 
-/// The console open at Connect, its door listing one agent whose key does or does not
+/// The console open at Connect, its server listing one agent whose key does or does not
 /// operate web pages in Browser.
 fn connect(browser_pages: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
     let runs = find(&requests, &wire::target(wire::SESSIONS));
-    let door_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
+    let server_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         runs.invocation,
@@ -413,12 +413,12 @@ fn connect(browser_pages: bool) -> TestApp<App> {
         })
         .unwrap(),
     );
-    let mut door = the_door(false);
-    door.grants[0].browser_pages = browser_pages;
+    let mut server = the_server(false);
+    server.grants[0].browser_pages = browser_pages;
     answer(
         &mut app,
-        door_read.invocation,
-        serde_json::to_value(door).unwrap(),
+        server_read.invocation,
+        serde_json::to_value(server).unwrap(),
     );
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
@@ -432,7 +432,7 @@ fn connect(browser_pages: bool) -> TestApp<App> {
 
 /// A key that operates web pages in Browser says so in the connected agents list, beside
 /// what it reaches; a key asked about every page action says nothing of it, and revoking
-/// the agent whose key does takes that key back at the door.
+/// the agent whose key does takes that key back at the server.
 #[test]
 fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
     english();
@@ -460,7 +460,7 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
 }
 
 #[test]
-fn revoking_a_grant_names_it_to_the_door() {
+fn revoking_a_grant_names_it_to_the_server() {
     english();
     let mut app = opened(true);
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
@@ -478,7 +478,7 @@ fn revoking_a_grant_names_it_to_the_door() {
         answer(
             &mut app,
             read.invocation,
-            serde_json::to_value(the_door(true)).unwrap(),
+            serde_json::to_value(the_server(true)).unwrap(),
         );
     }
     app.harness().click_named("console-grant-0-revoke").unwrap();

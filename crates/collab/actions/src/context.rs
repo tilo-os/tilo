@@ -61,7 +61,7 @@ pub struct ActionContext {
     /// against. `None` is the local person acting in this window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invoker: Option<ActionInvoker>,
-    /// The invocation admitted by the action door, when this change came
+    /// The invocation admitted by the action API, when this change came
     /// through one. This is correlation, not authority: executors replace
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,7 +225,7 @@ impl ActionContext {
         if self.caused_by.is_none() {
             self.caused_by.clone_from(&ambient.caused_by);
         }
-        // The caller's undo step: what a door joins its calls under (one
+        // The caller's undo step: what an API joins its calls under (one
         // task step), so they are taken back as one. Rebound under the
         // caller's group, never recorded as the caller wrote it: a caller
         // cannot name a gesture of someone else's and have its change
@@ -298,7 +298,7 @@ impl ActionContext {
     }
 
     /// Fill app ownership from the registered action type when a generic
-    /// palette/door caller has only resource metadata. Explicit app context
+    /// palette/API caller has only resource metadata. Explicit app context
     /// always wins. Action types conventionally start with the package stem
     /// (`word-processor.action`, `api_tester.action`).
     #[must_use]
@@ -1185,7 +1185,7 @@ pub struct InvokerDevice {
 }
 
 impl InvokerDevice {
-    /// The device of the key `key`, called `label` by the certificate a door
+    /// The device of the key `key`, called `label` by the certificate an API
     /// verified for it.
     #[must_use]
     pub fn certified(key: [u8; 32], label: &str) -> Self {
@@ -1230,7 +1230,7 @@ pub struct ActionInvoker {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub participant: Option<ParticipantId>,
     /// The name and avatar a bot showed for this action. Set only by the
-    /// door that admitted the invocation, and only for a bot allowed it.
+    /// API that admitted the invocation, and only for a bot allowed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
     /// The name an agent goes by, as the host that admitted it knows it from
@@ -1240,7 +1240,7 @@ pub struct ActionInvoker {
     pub name: Option<String>,
     /// The other device of its person's an agent works from, when it came to
     /// this host through its MCP server. Set only by the host that admitted
-    /// the connection, from the device certificate the door verified, and
+    /// the connection, from the device certificate the API verified, and
     /// never taken from a request. `None` for an actor on the host's own
     /// device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1302,9 +1302,9 @@ impl ActionInvoker {
     }
 
     /// The other device of its person's the agent works from
-    /// ([`Self::device`]), as the door that admitted its connection verified
+    /// ([`Self::device`]), as the API that admitted its connection verified
     /// it; `None` clears one, so an invoker copied from a caller's context
-    /// never keeps a device no door checked.
+    /// never keeps a device no API checked.
     #[must_use]
     pub fn from_device(mut self, device: Option<InvokerDevice>) -> Self {
         self.device = device;
@@ -1329,9 +1329,9 @@ impl ActionInvoker {
         self
     }
 
-    /// The appearance the door admitted for this one invocation; `None`
+    /// The appearance the API admitted for this one invocation; `None`
     /// clears one, so an invoker copied from a caller's context never keeps
-    /// what no door checked.
+    /// what no API checked.
     #[must_use]
     pub fn with_appearance(mut self, appearance: Option<crate::Appearance>) -> Self {
         self.appearance = appearance;

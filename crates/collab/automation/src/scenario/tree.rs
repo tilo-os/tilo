@@ -8,7 +8,7 @@
 //! `invocation` names, the first publication of that kind when the step does
 //! not fix a resource id.
 
-use tilo_actions::door;
+use tilo_actions::api;
 use tilo_actions::{ActionKey, ResourceSpec};
 
 use crate::{Binding, Invocation, Selector, kind_matches};
@@ -16,9 +16,9 @@ use crate::{Binding, Invocation, Selector, kind_matches};
 /// The published address `invocation` names, or `None` when the tree
 /// publishes no such action.
 #[must_use]
-pub fn resolve(resources: &[ResourceSpec], invocation: &Invocation) -> Option<door::ActionAddress> {
+pub fn resolve(resources: &[ResourceSpec], invocation: &Invocation) -> Option<api::ActionAddress> {
     let wanted = SelectorTarget::of(&invocation.resource)?;
-    let mut best: Option<(usize, door::ActionAddress)> = None;
+    let mut best: Option<(usize, api::ActionAddress)> = None;
     walk(resources, &mut |resource| {
         if !matching(resource, &invocation.action, &wanted) {
             return;
@@ -34,7 +34,7 @@ pub fn resolve(resources: &[ResourceSpec], invocation: &Invocation) -> Option<do
             if best.as_ref().is_none_or(|(held, _)| rank < *held) {
                 best = Some((
                     rank,
-                    door::ActionAddress::new(resource.id.as_str(), spec.id.clone()),
+                    api::ActionAddress::new(resource.id.as_str(), spec.id.clone()),
                 ));
             }
         }
@@ -141,7 +141,7 @@ mod tests {
         // child is in the tree as much as a top-level resource is.
         assert_eq!(
             resolve(&resources, &step(Selector::Fixed("notes.note:2".into()))),
-            Some(door::ActionAddress::new("notes.note:2", "rename"))
+            Some(api::ActionAddress::new("notes.note:2", "rename"))
         );
         // No such resource: nothing is resolved, never a guess.
         assert_eq!(
@@ -154,12 +154,12 @@ mod tests {
                 &resources,
                 &step(Selector::FirstOfKind("notes.note".into()))
             ),
-            Some(door::ActionAddress::new("notes.note:1", "rename"))
+            Some(api::ActionAddress::new("notes.note:1", "rename"))
         );
         // A parent kind takes what is below it: `notes`, `notes.note`.
         assert_eq!(
             resolve(&resources, &step(Selector::FirstOfKind("notes".into()))),
-            Some(door::ActionAddress::new("notes.note:1", "rename"))
+            Some(api::ActionAddress::new("notes.note:1", "rename"))
         );
         // A kind is not a prefix of any spelling: `not` names nothing.
         assert_eq!(

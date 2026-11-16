@@ -121,7 +121,7 @@ fn run() -> wire::AgentSession {
     }
 }
 
-fn the_door() -> mcp_server::Server {
+fn the_server() -> mcp_server::Server {
     mcp_server::Server {
         endpoint: "https://mcp.example".into(),
         grants: vec![mcp_server::Grant {
@@ -207,14 +207,14 @@ fn open() -> TestApp<App> {
     TestApp::<App>::for_person("ada").expect("open")
 }
 
-/// Answer `requests`' sessions read with `sessions` and its door read.
+/// Answer `requests`' sessions read with `sessions` and its MCP server read.
 fn answer_reads(
     app: &mut TestApp<App>,
     requests: &[InvokeRequest],
     sessions: Vec<wire::AgentSession>,
 ) {
     let sessions_read = find(requests, &wire::target(wire::SESSIONS));
-    let door_read = find(requests, &mcp_server::target(mcp_server::SERVER));
+    let server_read = find(requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         app,
         sessions_read.invocation,
@@ -228,8 +228,8 @@ fn answer_reads(
     );
     answer(
         app,
-        door_read.invocation,
-        serde_json::to_value(the_door()).unwrap(),
+        server_read.invocation,
+        serde_json::to_value(the_server()).unwrap(),
     );
 }
 
@@ -270,7 +270,7 @@ fn a_session_is_published_as_its_address_with_a_primary_view_and_a_link() {
         "the view is opened by the effect that shows the run"
     );
     let resources = app.harness().resources();
-    let opened = ui::tilo_actions::door::survey(&resources)
+    let opened = ui::tilo_actions::api::survey(&resources)
         .into_iter()
         .find(|descriptor| {
             descriptor.address.resource == RUN && descriptor.address.action == view.open_action

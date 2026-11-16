@@ -1,12 +1,12 @@
 //! What the Windows menu bar and Jump List show, kept apart from Win32 so the mapping tests on every
 //! host. A Jump List task starts a new process of the app with `--host-command` and the task's
-//! invocation; that process runs it through the same door as the palette once its window exists.
+//! invocation; that process runs it through the same API as the palette once its window exists.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ControlInvocation};
 
 use super::model::{CommandGroup, HostCommand};
-use crate::history_mode::door::HISTORY_RESOURCE;
+use crate::history_mode::api::HISTORY_RESOURCE;
 use crate::platform::PlatformConventions;
 use crate::search::request::SEARCH_RESOURCE;
 

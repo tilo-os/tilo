@@ -433,7 +433,7 @@ impl LayoutActions {
         asked: &str,
         arguments: &serde_json::Map<String, Json>,
         action: &LayoutAction,
-    ) -> Result<bool, tilo_actions::DoorError> {
+    ) -> Result<bool, tilo_actions::ApiError> {
         let names_strip = arguments.get("strip").is_some_and(|strip| !strip.is_null());
         let (LayoutAction::Show { resource, view, .. }
         | LayoutAction::Place { resource, view, .. }) = action
@@ -447,7 +447,7 @@ impl LayoutActions {
         self.layout
             .borrow_mut()
             .open_place(asked, resource, view, &turn)
-            .map_err(|why| tilo_actions::DoorError::Unavailable {
+            .map_err(|why| tilo_actions::ApiError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: why,
             })?;

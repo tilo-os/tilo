@@ -54,7 +54,7 @@ fn concurrent_full_triage_histories_still_have_a_bounded_public_status_read() {
         .unwrap();
     assert_eq!(report.triage.len(), 256);
     let resource = crate::testing::report_resource(&submission.id, &submission.feedback.text);
-    let operation = tilo_actions::door::encode_json(
+    let operation = tilo_actions::api::encode_json(
         std::slice::from_ref(&resource),
         &resource
             .action_address("read-feedback-status")

@@ -54,7 +54,7 @@ fn workspace() -> (Replica, Replica, Meta, String) {
     (ada, grace, meta, item)
 }
 
-/// What the door builds for the action `name` invoked on `on` (a type and a resource id).
+/// What the API builds for the action `name` invoked on `on` (a type and a resource id).
 fn plan(
     replica: &Replica,
     meta: &Meta,

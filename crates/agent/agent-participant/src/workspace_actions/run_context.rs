@@ -3,9 +3,9 @@
 
 use tilo_actions::remote::{Caller, InvokeRequest};
 
-/// The longest run title the host keeps, as the door bounds the one it reads.
+/// The longest run title the host keeps, as the API bounds the one it reads.
 const MAX_RUN_TITLE: usize = 96;
-/// The longest run id the host keeps, as the door bounds the one it reads.
+/// The longest run id the host keeps, as the API bounds the one it reads.
 const MAX_RUN_ID: usize = 96;
 
 /// What the agent called the run `request` says it is a step of (`_meta`

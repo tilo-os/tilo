@@ -10,7 +10,7 @@
 //! same door the editor's own window uses; the editor shows the result once
 //! the change reaches it.
 
-use tilo_actions::door::{ActionAddress, DoorError};
+use tilo_actions::api::{ActionAddress, ApiError};
 use ui::collaboration::DocumentMutation;
 use ui::framework::testing::TEST_WORKSPACE;
 use ui::framework::{AttachedView, definition};
@@ -125,7 +125,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     assert!(
         matches!(
             agent.invoke(&bogus, &arguments, false),
-            Err(DoorError::Unknown(_))
+            Err(ApiError::Unknown(_))
         ),
         "an address the tree never published must be refused, not attempted",
     );

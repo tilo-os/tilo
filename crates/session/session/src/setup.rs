@@ -2,7 +2,7 @@
 //! ([`tilo_onboarding_host::view::OnboardingView`]) on a layer covering the outputs, above the
 //! desktop and every window, taking the keyboard until the person finished it, or the wait for the
 //! clock to admit this device's certificate, which goes away by itself. Its actions are the setup
-//! app's, through its door; what setup needs of the session it reads through
+//! app's, through its API; what setup needs of the session it reads through
 //! [`tilo_onboarding_host::host::SessionHost`].
 
 use std::path::PathBuf;
@@ -11,13 +11,13 @@ use std::sync::{Mutex, PoisonError};
 use std::task::Waker;
 
 use crate::platform::surfaces::{Placement, WidgetHost};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_session_core::surface::HostKey;
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_onboarding_host::view::OnboardingView;
-use tilo_session_core::door::{Published, through_door};
-use ui::device_local_door::SharedDoor;
+use tilo_session_core::surfaces::{Published, through_api};
+use ui::device_local_api::SharedApi;
 use ui::host_operation::ResourceOperationStart;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
@@ -88,11 +88,11 @@ pub enum BeforeShell {
 
 /// What the layer shows, while it shows anything.
 enum Surface {
-    /// The setup app's own view: its door publishes its actions, and its own signal says when the
+    /// The setup app's own view: its API publishes its actions, and its own signal says when the
     /// person finished it.
     Ceremony {
         widgets: WidgetHost,
-        door: SharedDoor,
+        api: SharedApi,
         finished: Rc<dyn Fn() -> bool>,
     },
     /// The wait for the clock, which has no actions of its own.
@@ -185,16 +185,16 @@ impl Setup {
         }
     }
 
-    /// Run what its door holds now, and publish what setup offers: the view does both on each pass
-    /// of its own. The wait for the clock has no door and nothing of its own to publish.
+    /// Run what its API holds now, and publish what setup offers: the view does both on each pass
+    /// of its own. The wait for the clock has no API and nothing of its own to publish.
     fn serve(&mut self) {
         if let Surface::Ceremony {
             widgets,
-            door,
+            api,
             finished,
         } = &mut self.surface
             && !(finished)()
-            && (door.has_queued() || door.revision() == 0)
+            && (api.has_queued() || api.revision() == 0)
         {
             widgets.relayout();
         }
@@ -203,11 +203,11 @@ impl Setup {
 
 /// The setup app's view on the layer over every output, taking the keyboard.
 fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
-    let door = view.device_local_door();
+    let api = view.device_local_api();
     let finished = view.finished_signal();
     Surface::Ceremony {
         widgets: covering(Box::new(view), placement),
-        door,
+        api,
         finished,
     }
 }
@@ -225,7 +225,7 @@ impl Published for Setup {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.serve();
         match &self.surface {
-            Surface::Ceremony { door, .. } => door.resources(),
+            Surface::Ceremony { api, .. } => api.resources(),
             Surface::WaitForClock { .. } => Vec::new(),
         }
     }
@@ -234,13 +234,13 @@ impl Published for Setup {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        let Surface::Ceremony { door, .. } = &self.surface else {
-            return Err(DoorError::Unknown(address.clone()));
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
+        let Surface::Ceremony { api, .. } = &self.surface else {
+            return Err(ApiError::Unknown(address.clone()));
         };
-        let door = door.clone();
-        through_door(&door, address, arguments, || self.serve())
+        let api = api.clone();
+        through_api(&api, address, arguments, || self.serve())
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

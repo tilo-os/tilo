@@ -117,7 +117,7 @@ pub(super) fn risk_note(action: &ActionDescriptor) -> String {
 }
 
 /// One action in a listing, as a program calls it (`session.show_overview()  Show the
-/// overview`), or as the door's own tools take it (`#rename(value)  Rename note`) where no
+/// overview`), or as the API's own tools take it (`#rename(value)  Rename note`) where no
 /// program can.
 pub(super) fn action_line(action: &ActionDescriptor, called: Option<&str>) -> String {
     let mut line = called.map_or_else(

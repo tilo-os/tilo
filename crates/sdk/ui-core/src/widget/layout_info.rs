@@ -95,7 +95,7 @@ pub struct RowLayout {
 ///
 /// An audit reads this to hold a header to the rule the row lays itself out by: a title is cut
 /// short only once every action in the row has given what it can — its label first, then its
-/// place in the row for the menu's door — and the app's primary action never leaves the row.
+/// place in the row for the menu's API — and the app's primary action never leaves the row.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub struct HeaderRowLayout {
     pub column: &'static str,

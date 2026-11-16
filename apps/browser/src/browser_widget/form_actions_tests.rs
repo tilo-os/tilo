@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
-    ActionFailure, ActionInvoker, ActionSpec, DoorError, InvocationUpdate, ParamType,
+    ActionFailure, ActionInvoker, ActionSpec, ApiError, InvocationUpdate, ParamType,
 };
 use ui::tilo_resource::Replica;
 use ui::webview::{FormSubmit, PageFailure, PageNavigation, PageRecordNote, WebViewEngine as _};
@@ -307,7 +307,7 @@ fn refused_at_the_door(
     app: &mut TestApp<BrowserShell>,
     action: &str,
     arguments: &serde_json::Value,
-) -> Option<DoorError> {
+) -> Option<ApiError> {
     let address = address(app, action);
     app.harness()
         .start_bound_job_for(

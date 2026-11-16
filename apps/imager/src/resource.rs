@@ -637,8 +637,8 @@ mod tests {
                 assert!(
                     matches!(
                         error,
-                        ui::tilo_actions::DoorError::InvalidArguments(_)
-                            | ui::tilo_actions::DoorError::Failed(_)
+                        ui::tilo_actions::ApiError::InvalidArguments(_)
+                            | ui::tilo_actions::ApiError::Failed(_)
                     ),
                     "{arguments}: {error}"
                 );
@@ -896,7 +896,7 @@ mod tests {
                     "write",
                     serde_json::json!({})
                 ),
-                Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+                Err(ui::tilo_actions::ApiError::ConfirmationRequired)
             ));
 
             let device = |name: &str| {

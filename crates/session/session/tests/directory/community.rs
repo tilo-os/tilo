@@ -154,7 +154,7 @@ impl tilo_session::Service for Cable {
         _: &str,
         _: &str,
         _: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         Ok(tilo_service::Started::Accepted)
     }
 

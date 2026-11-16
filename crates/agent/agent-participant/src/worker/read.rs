@@ -2,7 +2,7 @@
 //! workers.
 
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::remote::ViewResourceQuery;
 use ui::record::RecordId;
 
@@ -100,15 +100,15 @@ impl ConfinedRead {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ActionOutput, DoorError> {
-        let refused = || DoorError::Unknown(address.clone());
+    ) -> Result<ActionOutput, ApiError> {
+        let refused = || ApiError::Unknown(address.clone());
         let request = Request::ReadInvoke {
             address: json(address).map_err(|_| refused())?,
             arguments: json(arguments).map_err(|_| refused())?,
         };
         match sent(&mut self.process, &request).map_err(|_| refused())? {
             Reply::Output(text) => serde_json::from_str(&text).map_err(|_| refused()),
-            Reply::Refused(error) => Err(error.into_door(address)),
+            Reply::Refused(error) => Err(error.into_api(address)),
             _ => Err(refused()),
         }
     }

@@ -29,7 +29,7 @@ use super::{
     WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
@@ -799,14 +799,14 @@ impl Worker {
             confirmed,
         ) {
             Ok(output) => output,
-            Err(tilo_actions::door::DoorError::ConfirmationRequired) if given.is_some() => {
+            Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
                 return Err(Outcome::Rejected(own_word_refused()));
             }
-            Err(tilo_actions::door::DoorError::ConfirmationRequired) => {
+            Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
                 let about = self.about(workspace_id, route, &descriptor, arguments);
                 return Err(self.waits_for_person(request.invocation, about));
             }
-            Err(error) => return Err(super::door_outcome(&error)),
+            Err(error) => return Err(super::api_outcome(&error)),
         };
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
@@ -899,7 +899,7 @@ impl Worker {
     }
 }
 
-/// Where an action left its actor, for the door that shows it working.
+/// Where an action left its actor, for the API that shows it working.
 pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
     ActorPlace {
         anchor: hex::encode(anchor.cursor),
@@ -931,7 +931,7 @@ impl super::Shared {
         let failed = |message: &str| tilo_actions::InvocationUpdate::Failed {
             invocation,
             error: tilo_actions::ActionFailure {
-                code: tilo_actions::door::DoorError::ConfirmationRequired
+                code: tilo_actions::api::ApiError::ConfirmationRequired
                     .code()
                     .to_owned(),
                 message: message.to_owned(),

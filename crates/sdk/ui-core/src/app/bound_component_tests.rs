@@ -754,7 +754,7 @@ fn bound_components_keep_child_binding() {
         app.layout.layout_dirty = true;
         run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();
         assert!(
-            tilo_actions::door::resolve(
+            tilo_actions::api::resolve(
                 &app.collect_local_resources(),
                 &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
             )
@@ -1095,7 +1095,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
             .unwrap_err();
         assert_eq!(
-            crate::bound_dispatch::door_error_code(&error),
+            crate::bound_dispatch::api_error_code(&error),
             "ambiguous_action_target"
         );
         let resources = fixture.app.publication_resources();
@@ -1113,7 +1113,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             .unwrap();
         assert_ne!(first, second);
         let descriptor = |id: &str| {
-            tilo_actions::door::resolve(
+            tilo_actions::api::resolve(
                 &resources,
                 &tilo_actions::ActionAddress::new(id, "follow-up"),
             )
@@ -1182,7 +1182,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         fixture.permissions.set(expired);
         let resources = fixture.app.collect_resources();
         assert!(
-            tilo_actions::door::resolve(
+            tilo_actions::api::resolve(
                 &resources,
                 &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
             )
@@ -1445,7 +1445,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 .count(),
             1
         );
-        let descriptor = tilo_actions::door::resolve(
+        let descriptor = tilo_actions::api::resolve(
             &resources,
             &tilo_actions::ActionAddress::new(&alias, "follow-up"),
         )
@@ -1662,7 +1662,7 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 )
                 .unwrap_err();
             assert_eq!(
-                crate::bound_dispatch::door_error_code(&error),
+                crate::bound_dispatch::api_error_code(&error),
                 "undeclared_document_mutation"
             );
             assert!(error.to_string().contains("retained"));
@@ -2214,7 +2214,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         );
         let resource = request.target.address.resource;
         let action = request.target.address.action;
-        let descriptor = tilo_actions::door::resolve(
+        let descriptor = tilo_actions::api::resolve(
             &resources,
             &tilo_actions::ActionAddress::new(&resource, &action),
         )
@@ -2448,7 +2448,7 @@ fn assert_bound_broker_route_refused(
         )
         .unwrap_err();
     assert_eq!(
-        crate::bound_dispatch::door_error_code(&error),
+        crate::bound_dispatch::api_error_code(&error),
         "bound_broker_route_unavailable"
     );
     assert!(!sent);
@@ -2840,7 +2840,7 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
                 "the actual application's accessible label remains: {names:?}"
             );
             assert!(
-                tilo_actions::door::resolve(
+                tilo_actions::api::resolve(
                     &app.collect_local_resources(),
                     &tilo_actions::ActionAddress::new("bound-collaboration", "export"),
                 )
@@ -2940,7 +2940,7 @@ fn bound_hover_carries_snapshots_only_across_unwritten_records() {
     let mut fixture = ActionFixture::new();
     let resources = fixture.app.collect_resources();
     assert!(
-        tilo_actions::door::resolve(
+        tilo_actions::api::resolve(
             &resources,
             &tilo_actions::ActionAddress::new("bound:probe", "view")
         )
@@ -3208,8 +3208,8 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
     // schema. The transport must never rename or forgive an unknown key.
     let invalid = serde_json::json!({"value": "replacement"});
     assert!(matches!(
-        tilo_actions::door::encode_json(&resources, &address, invalid.as_object().unwrap()),
-        Err(tilo_actions::DoorError::InvalidArguments(_))
+        tilo_actions::api::encode_json(&resources, &address, invalid.as_object().unwrap()),
+        Err(tilo_actions::ApiError::InvalidArguments(_))
     ));
 }
 

@@ -757,11 +757,11 @@ async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_unscoped_broker_door_does_not_invent_native_custody() {
+async fn an_unscoped_broker_api_does_not_invent_native_custody() {
     let fixture = Fixture::new();
-    let door = BrokerDoor::new(fixture.state.clone());
+    let api = BrokerApi::new(fixture.state.clone());
     assert!(
-        tilo_actions::remote::ActionHost::invoke(&door, &fixture.caller, fixture.request.clone())
+        tilo_actions::remote::ActionHost::invoke(&api, &fixture.caller, fixture.request.clone())
             .await
             .unwrap()
             .is_err(),

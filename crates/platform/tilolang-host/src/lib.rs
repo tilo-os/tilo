@@ -4,7 +4,7 @@
 //!
 //! The host has no app identity. The session starts it as the launch kind "tilolang host", keyed
 //! by the workspace and the author as the launcher attributes it, in a sandbox narrower than any
-//! app's: it holds only its door and its storage. Everything an instance is arrives over the door
+//! app's: it holds only its api and its storage. Everything an instance is arrives over the API
 //! from the session (`runtime_portal::tilolang_host`): its broker connection and its
 //! identity-service connection, which the session opened and attested as that app's launch, its
 //! verified module, and its window's patch connection. The broker attributes everything the
@@ -41,7 +41,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use collaboration::CommittedDocument;
 use collaboration::native_initial::PrimaryRead;
-/// The person's formats and language, as the session says them on the door
+/// The person's formats and language, as the session says them on the API
 /// ([`TilolangHost::set_locale`]).
 pub use runtime_portal::tilolang_host::Locale;
 use runtime_portal::tilolang_host::{AppBuild, InstanceFds, InstanceRequest, Module};
@@ -209,7 +209,7 @@ pub struct TilolangHost {
     /// its package ships ([`hosted::Spec::language`]).
     phrases: Rc<Phrases>,
     /// The person's formats, which every instance's clock and dates read by: the session hands
-    /// them over the door, and says again when they change in Settings.
+    /// them over the API, and says again when they change in Settings.
     formats: hosted::Formats,
     wake: Waker,
     scope: tilo_wake::WakeScope,
@@ -250,7 +250,7 @@ impl TilolangHost {
         }
     }
 
-    /// Run the programs of the task the session handed over, until the door closes it.
+    /// Run the programs of the task the session handed over, until the API closes it.
     pub fn begin_task(
         &mut self,
         request: &runtime_portal::tilolang_host::TaskRequest,
@@ -274,11 +274,11 @@ impl TilolangHost {
             .unwrap_or_default()
     }
 
-    /// Answer what the task's door sent, and every guest connection with something; the task
-    /// ends when the door closed it.
+    /// Answer what the task's API sent, and every guest connection with something; the task
+    /// ends when the API closed it.
     pub fn serve_task(&mut self) {
         if self.task.as_ref().is_some_and(|task| !task.serve_all()) {
-            tracing::info!("task ended: the door closed it");
+            tracing::info!("task ended: the API closed it");
             self.task = None;
         }
     }
@@ -418,7 +418,7 @@ impl TilolangHost {
     }
 
     /// A development session verified a later build of an app this host runs, and handed its
-    /// module over the door in the sealed memfd `module`: every instance of the app takes it over,
+    /// module over the API in the sealed memfd `module`: every instance of the app takes it over,
     /// in place when it reads the state the one before wrote, else starting over on its data.
     ///
     /// # Errors
@@ -438,7 +438,7 @@ impl TilolangHost {
         Ok(())
     }
 
-    /// Open the instance the session handed over on the door: its module is read, its
+    /// Open the instance the session handed over on the API: its module is read, its
     /// connection joins and its record is read off the host's loop, and it runs once all three
     /// are done ([`Self::turn`]).
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
@@ -1098,7 +1098,7 @@ impl TilolangHost {
 
     /// Whether the host owes work of its own: an instance being opened, a change being applied,
     /// or a window with a frame coming. A host that owes none draws nothing more until something
-    /// reaches it — its door, a window, or a wake — so a frame taken then is the same frame the
+    /// reaches it — its api, a window, or a wake — so a frame taken then is the same frame the
     /// next one would be.
     #[must_use]
     pub fn owes_work(&self) -> bool {

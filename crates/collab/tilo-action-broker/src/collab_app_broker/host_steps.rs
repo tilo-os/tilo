@@ -5,7 +5,7 @@
 //! Each is answered under the host's own provider, offered only to a caller
 //! on this machine confined to a workspace, and admitted against that workspace's
 //! policy under the service's app id — the application whose controls reach
-//! the steps as the person using it. The door treats them alike; only the
+//! the steps as the person using it. The API treats them alike; only the
 //! service that runs a step differs.
 
 use std::sync::Arc;
@@ -215,11 +215,11 @@ impl AppBrokerState {
             )?;
             Ok(policy)
         })?;
-        // What a step of an agent session does in turn goes through the session's own door.
-        let door = match (&session, origin) {
+        // What a step of an agent session does in turn goes through the session's own api.
+        let api = match (&session, origin) {
             (Some(Ok(_)), Some(origin)) => {
-                self.agent_session_door(caller, origin.clone()).map(|door| {
-                    Arc::new(door) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>
+                self.agent_session_api(caller, origin.clone()).map(|api| {
+                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>
                 })
             }
             _ => None,
@@ -229,7 +229,7 @@ impl AppBrokerState {
             actor: &policy,
             address,
             argument: argument.as_deref(),
-            door,
+            door: api,
             group: request
                 .context
                 .as_ref()
@@ -946,7 +946,7 @@ mod identity_admin_tests {
                     assert_eq!(
                         f.query(&asked.target.provider).rows.is_empty(),
                         foreign,
-                        "only the retained local door offers host steps"
+                        "only the retained local api offers host steps"
                     );
                     assert!(
                         f.state
@@ -965,7 +965,7 @@ mod identity_admin_tests {
                     }
                     assert!(
                         invoked(&f.state, &f.caller, &asked).is_err(),
-                        "device keys without certified local custody are not a local door"
+                        "device keys without certified local custody are not a local api"
                     );
                     assert!(service.started.lock().unwrap().is_empty());
                     *service.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
@@ -1344,12 +1344,12 @@ mod identity_admin_tests {
             let list = RemoteActionMessage::Invoke(request(identity_admin::LIST, None));
             assert_eq!(
                 state
-                    .app_door(&person, "so.tilo.settings", &list)
+                    .app_api(&person, "so.tilo.settings", &list)
                     .map(|caller| caller.acting().clone())
                     .ok(),
                 Some(person.acting().clone())
             );
-            assert!(state.app_door(&person, "so.tilo.notes", &list).is_err());
+            assert!(state.app_api(&person, "so.tilo.notes", &list).is_err());
 
             for step in [
                 identity_admin::ACTIVATE,

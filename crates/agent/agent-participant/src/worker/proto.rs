@@ -18,7 +18,7 @@
 //! the workspace keeps it.
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::door::DoorError;
+use tilo_actions::api::ApiError;
 use wire_frame::Framing;
 
 /// Frames in either direction: a record's whole document, with workspace.
@@ -144,7 +144,7 @@ pub(crate) enum Request {
         invoker: Option<String>,
         /// JSON `ActionContext` of this invocation.
         context: Option<String>,
-        /// JSON `Appearance` the door admitted, if any.
+        /// JSON `Appearance` the API admitted, if any.
         appearance: Option<String>,
     },
     /// The holder's own changes since the last call.
@@ -254,8 +254,8 @@ pub(crate) enum Reply {
     Keys(String),
     /// JSON `ActionOutput`.
     Output(String),
-    /// The resource's door refused or the action failed.
-    Refused(WireDoorError),
+    /// The resource's API refused or the action failed.
+    Refused(WireApiError),
     /// The holder's changes: whether they are a whole document, and the bytes.
     Mutation(Option<(bool, Vec<u8>)>),
     /// The holder's changes to records held beside the held one: each
@@ -308,9 +308,9 @@ pub struct ProbeReport {
     pub exec: bool,
 }
 
-/// [`DoorError`] as it crosses the boundary.
+/// [`ApiError`] as it crosses the boundary.
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) enum WireDoorError {
+pub(crate) enum WireApiError {
     Unknown(String),
     MissingArgument(String),
     UnexpectedArgument(String),
@@ -328,44 +328,44 @@ pub(crate) enum WireDoorError {
     Failed(String),
 }
 
-impl WireDoorError {
-    pub(crate) fn from_door(error: &DoorError) -> Self {
+impl WireApiError {
+    pub(crate) fn from_api(error: &ApiError) -> Self {
         let address = |address| serde_json::to_string(address).unwrap_or_default();
         match error {
-            DoorError::Unknown(at) => Self::Unknown(address(at)),
-            DoorError::MissingArgument(at) => Self::MissingArgument(address(at)),
-            DoorError::UnexpectedArgument(at) => Self::UnexpectedArgument(address(at)),
-            DoorError::InvalidArguments(reason) => Self::InvalidArguments(reason.clone()),
-            DoorError::ArgumentOutOfRange { param, violation } => Self::ArgumentOutOfRange {
+            ApiError::Unknown(at) => Self::Unknown(address(at)),
+            ApiError::MissingArgument(at) => Self::MissingArgument(address(at)),
+            ApiError::UnexpectedArgument(at) => Self::UnexpectedArgument(address(at)),
+            ApiError::InvalidArguments(reason) => Self::InvalidArguments(reason.clone()),
+            ApiError::ArgumentOutOfRange { param, violation } => Self::ArgumentOutOfRange {
                 param: param.clone(),
                 violation: violation.clone(),
             },
-            DoorError::Unavailable { code, reason } => Self::Unavailable {
+            ApiError::Unavailable { code, reason } => Self::Unavailable {
                 code: code.clone(),
                 reason: reason.clone(),
             },
-            DoorError::ConfirmationRequired => Self::ConfirmationRequired,
-            DoorError::UnregisteredType(kind) => Self::UnregisteredType(kind.clone()),
-            DoorError::Failed(message) => Self::Failed(message.clone()),
+            ApiError::ConfirmationRequired => Self::ConfirmationRequired,
+            ApiError::UnregisteredType(kind) => Self::UnregisteredType(kind.clone()),
+            ApiError::Failed(message) => Self::Failed(message.clone()),
         }
     }
 
-    /// The door's error, addressed at `fallback` where the worker's address
+    /// The API's error, addressed at `fallback` where the worker's address
     /// does not decode.
-    pub(crate) fn into_door(self, fallback: &tilo_actions::door::ActionAddress) -> DoorError {
+    pub(crate) fn into_api(self, fallback: &tilo_actions::api::ActionAddress) -> ApiError {
         let address = |text: &str| serde_json::from_str(text).unwrap_or_else(|_| fallback.clone());
         match self {
-            Self::Unknown(at) => DoorError::Unknown(address(&at)),
-            Self::MissingArgument(at) => DoorError::MissingArgument(address(&at)),
-            Self::UnexpectedArgument(at) => DoorError::UnexpectedArgument(address(&at)),
-            Self::InvalidArguments(reason) => DoorError::InvalidArguments(reason),
+            Self::Unknown(at) => ApiError::Unknown(address(&at)),
+            Self::MissingArgument(at) => ApiError::MissingArgument(address(&at)),
+            Self::UnexpectedArgument(at) => ApiError::UnexpectedArgument(address(&at)),
+            Self::InvalidArguments(reason) => ApiError::InvalidArguments(reason),
             Self::ArgumentOutOfRange { param, violation } => {
-                DoorError::ArgumentOutOfRange { param, violation }
+                ApiError::ArgumentOutOfRange { param, violation }
             }
-            Self::Unavailable { code, reason } => DoorError::Unavailable { code, reason },
-            Self::ConfirmationRequired => DoorError::ConfirmationRequired,
-            Self::UnregisteredType(kind) => DoorError::UnregisteredType(kind),
-            Self::Failed(message) => DoorError::Failed(message),
+            Self::Unavailable { code, reason } => ApiError::Unavailable { code, reason },
+            Self::ConfirmationRequired => ApiError::ConfirmationRequired,
+            Self::UnregisteredType(kind) => ApiError::UnregisteredType(kind),
+            Self::Failed(message) => ApiError::Failed(message),
         }
     }
 }
@@ -375,30 +375,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn door_errors_survive_the_boundary() {
-        let at = tilo_actions::door::ActionAddress {
+    fn api_errors_survive_the_boundary() {
+        let at = tilo_actions::api::ActionAddress {
             resource: "r".into(),
             item: None,
             action: "a".into(),
         };
         for error in [
-            DoorError::Unknown(at.clone()),
-            DoorError::MissingArgument(at.clone()),
-            DoorError::UnexpectedArgument(at.clone()),
-            DoorError::InvalidArguments("x".into()),
-            DoorError::Unavailable {
+            ApiError::Unknown(at.clone()),
+            ApiError::MissingArgument(at.clone()),
+            ApiError::UnexpectedArgument(at.clone()),
+            ApiError::InvalidArguments("x".into()),
+            ApiError::Unavailable {
                 code: "c".into(),
                 reason: "r".into(),
             },
-            DoorError::ConfirmationRequired,
-            DoorError::UnregisteredType("t".into()),
-            DoorError::Failed("f".into()),
+            ApiError::ConfirmationRequired,
+            ApiError::UnregisteredType("t".into()),
+            ApiError::Failed("f".into()),
         ] {
-            let wire: WireDoorError = postcard::from_bytes(
-                &postcard::to_stdvec(&WireDoorError::from_door(&error)).unwrap(),
+            let wire: WireApiError = postcard::from_bytes(
+                &postcard::to_stdvec(&WireApiError::from_api(&error)).unwrap(),
             )
             .unwrap();
-            assert_eq!(wire.into_door(&at), error);
+            assert_eq!(wire.into_api(&at), error);
         }
     }
 

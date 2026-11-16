@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
         let host = replica.host;
         let before = counts(&host);
 
-        // The door invokes the action: the store writes the card into chunk 1's own document.
+        // The API invokes the action: the store writes the card into chunk 1's own document.
         let add = meta
             .actions
             .iter()
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
             "chunk 1 holds the open write: {before:?} then {open:?}"
         );
 
-        // The door applies what the store queued to the record, and the record hands it over.
+        // The API applies what the store queued to the record, and the record hands it over.
         let committed = host.take_committed();
         assert_eq!(committed.len(), 1, "one action was queued");
         let action = committed.into_iter().next().unwrap().action;
@@ -303,9 +303,9 @@ view main(b: Board) {
 pub(crate) const BOARD_APP: &str = "so.tilo.board";
 
 /// The documents of a workspace, one per chunk: a replica applies each edit of an action to the
-/// chunk it is addressed to, as the door does, and commits each document its own change.
+/// chunk it is addressed to, as the API does, and commits each document its own change.
 ///
-/// It holds them as the door does ([`Chunks`]), so handing them to the store hands the same
+/// It holds them as the API does ([`Chunks`]), so handing them to the store hands the same
 /// documents the record keeps: a fill writes one chunk per action and copies none of them.
 #[derive(Clone)]
 pub(crate) struct Docs(Chunks);
@@ -442,7 +442,7 @@ fn counts(host: &Host) -> BTreeMap<ChunkNo, (usize, usize)> {
         .collect()
 }
 
-/// The action `name` of the board, invoked on `subject` of the type `ty`, as the door plans it.
+/// The action `name` of the board, invoked on `subject` of the type `ty`, as the API plans it.
 pub(crate) fn act(
     host: &Host,
     meta: &Meta,
@@ -530,7 +530,7 @@ pub(crate) fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usi
             );
             let id = made(&action);
             docs.apply(&action);
-            // As the door does: each insert is committed before the next is planned, so the
+            // As the API does: each insert is committed before the next is planned, so the
             // next one appends after it.
             docs.sync(host);
             id
@@ -538,7 +538,7 @@ pub(crate) fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usi
         .collect()
 }
 
-/// One board of two full runs and a card or two past them, filled once as the door fills it:
+/// One board of two full runs and a card or two past them, filled once as the API fills it:
 /// where its cards live and how they are read, and then what a change to a card in the last
 /// chunk writes. The first part reads the board and writes nothing, so the change meets the
 /// board as the fill left it.
@@ -1101,7 +1101,7 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
 }
 
 /// A window whose record the framework keeps as one document — no chunk above the record's own is
-/// held apart — keeps a card added past a full run: the door writes it into that document, and the
+/// held apart — keeps a card added past a full run: the API writes it into that document, and the
 /// board reads it there, in its place after the others, in the window and once opened again.
 #[test]
 fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {

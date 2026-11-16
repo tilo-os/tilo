@@ -21,7 +21,7 @@ use winit::window::WindowId;
 /// Builds the window the shell asked for, or says why it cannot.
 pub(crate) type OpenWindow<'a> = dyn FnMut(crate::window_door::PendingWindow) -> Option<App> + 'a;
 
-/// Read the window door the launcher handed this process, if it was handed
+/// Read the window API the launcher handed this process, if it was handed
 /// one, waking the loop behind `proxy` with each window the shell asks for.
 pub(super) fn serve_door(proxy: &EventLoopProxy<UserEvent>) -> Option<()> {
     let door = crate::window_door::take_door()?;

@@ -56,7 +56,7 @@ tilo-actions = { path = "../actions" }
 tilo-broker-core = { path = "../broker-core" }
 # The channel engine every host runs: this broker enforces its channels' plaintext gates.
 tilo-workspace-keys = { path = "../workspace-keys" }
-# Shortcuts: checking, running and describing them at the action door.
+# Shortcuts: checking, running and describing them at the action API.
 tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
 settings-store = { path = "../../system/settings-store" }

@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
                 )
             })
             .collect();
-        let documents: Vec<_> = tilo_actions::door::survey(std::slice::from_ref(&published))
+        let documents: Vec<_> = tilo_actions::api::survey(std::slice::from_ref(&published))
             .into_iter()
             .filter(|descriptor| descriptor.kind == tilo_actions::OperationKind::Document)
             .collect();

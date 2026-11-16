@@ -114,7 +114,7 @@ mod tests {
         let mut access = Replica::<AccessibilitySettings>::new();
         let mut step = |step: &str| {
             access.apply(AccessibilitySettings::STEP.with(step.to_owned()))?;
-            Ok::<_, ui::tilo_actions::DoorError>(access.state().unwrap().magnifier_zoom)
+            Ok::<_, ui::tilo_actions::ApiError>(access.state().unwrap().magnifier_zoom)
         };
         assert_eq!(step("toggle").unwrap(), 2);
         assert_eq!(step("zoom-in").unwrap(), 3);

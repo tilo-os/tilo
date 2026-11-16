@@ -24,13 +24,13 @@ test-support = []
 tilolang-tilo = { path = "../tilolang-tilo", features = ["record"] }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["native", "broker-transport"] }
-# The door the session hands instances over.
+# The API the session hands instances over.
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
-# Dates and clocks as the person set them, which the session hands over the door: the toolkit
+# Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-wake.workspace = true
@@ -53,7 +53,7 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-# A record the door hands over travels as base64 on the program connection.
+# A record the API hands over travels as base64 on the program connection.
 base64.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

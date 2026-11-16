@@ -74,12 +74,12 @@ impl BoundActionAddress {
 
 #[derive(Debug)]
 pub(crate) enum BoundActionError {
-    Door(tilo_actions::DoorError),
+    Api(tilo_actions::ApiError),
     Dispatch(BoundDispatchError),
     AmbiguousTarget {
         address: tilo_actions::ActionAddress,
     },
-    /// The resolved action runs through the workspace broker, so the door handed it back before
+    /// The resolved action runs through the workspace broker, so the API handed it back before
     /// anything ran ([`ResourceActionRequest::route`]).
     Rerouted,
     /// The resolved action is another provider's ([`tilo_actions::ActionSpec::run_by`]): nothing ran
@@ -88,10 +88,10 @@ pub(crate) enum BoundActionError {
 }
 
 impl BoundActionError {
-    pub(crate) fn into_door(self) -> tilo_actions::DoorError {
+    pub(crate) fn into_api(self) -> tilo_actions::ApiError {
         match self {
-            Self::Door(error) => error,
-            error => tilo_actions::DoorError::Unavailable {
+            Self::Api(error) => error,
+            error => tilo_actions::ApiError::Unavailable {
                 code: error.code().to_owned(),
                 reason: error.to_string(),
             },
@@ -99,7 +99,7 @@ impl BoundActionError {
     }
     pub(crate) fn code(&self) -> &str {
         match self {
-            Self::Door(error) => error.code(),
+            Self::Api(error) => error.code(),
             Self::Dispatch(BoundDispatchError::CrossRecordReentry) => "cross_record_reentry",
             Self::Dispatch(BoundDispatchError::ClosedLifetime) => "closed_lifetime",
             Self::Dispatch(_) => "record_unavailable",
@@ -112,7 +112,7 @@ impl BoundActionError {
 impl std::fmt::Display for BoundActionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Door(error) => error.fmt(f),
+            Self::Api(error) => error.fmt(f),
             Self::Dispatch(error) => write!(f, "component dispatch refused: {error:?}"),
             Self::AmbiguousTarget { address } => {
                 write!(
@@ -128,8 +128,8 @@ impl std::fmt::Display for BoundActionError {
 }
 impl std::error::Error for BoundActionError {}
 /// The unchanged domain enum groups Unavailable failures.
-pub(crate) fn door_error_code(error: &tilo_actions::DoorError) -> &str {
-    if let tilo_actions::DoorError::Unavailable { code, .. } = error
+pub(crate) fn api_error_code(error: &tilo_actions::ApiError) -> &str {
+    if let tilo_actions::ApiError::Unavailable { code, .. } = error
         && matches!(
             code.as_str(),
             "cross_record_reentry"
@@ -142,9 +142,9 @@ pub(crate) fn door_error_code(error: &tilo_actions::DoorError) -> &str {
     }
     error.code()
 }
-impl From<tilo_actions::DoorError> for BoundActionError {
-    fn from(error: tilo_actions::DoorError) -> Self {
-        Self::Door(error)
+impl From<tilo_actions::ApiError> for BoundActionError {
+    fn from(error: tilo_actions::ApiError) -> Self {
+        Self::Api(error)
     }
 }
 impl From<BoundDispatchError> for BoundActionError {
@@ -191,27 +191,27 @@ pub(crate) fn has_matching_broker_component(
     found
 }
 
-/// Refresh every component control's availability from its resources, plus the doors its host answers
-/// for it (`host_doors`): the window's History door wherever History serves it.
+/// Refresh every component control's availability from its resources, plus the APIs its host answers
+/// for it (`host_apis`): the window's History API wherever History serves it.
 pub(crate) fn refresh_bound_controls(
     root: &mut dyn Widget,
     snapshots: &[BoundResourceSnapshot],
-    host_doors: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    host_apis: &std::collections::HashSet<tilo_actions::ActionAddress>,
 ) -> Result<(), BoundDispatchError> {
-    let mut tile_doors = Vec::new();
+    let mut tile_apis = Vec::new();
     crate::history_mode::capability::visit_framework_history(&*root, &mut |history, _| {
         if let Some(owner) = history.enclosing_owner() {
-            tile_doors.push((owner.clone(), history.door_addresses()));
+            tile_apis.push((owner.clone(), history.api_addresses()));
         }
     });
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
         let owner = crate::history_mode::HistoryOwner::component(binding.clone());
-        let mut doors = host_doors.clone();
+        let mut doors = host_apis.clone();
         doors.insert(crate::search::search_address());
         doors.extend(
-            tile_doors
+            tile_apis
                 .iter()
                 .filter(|(enclosing, _)| enclosing.same_owner(&owner))
                 .flat_map(|(_, doors)| doors.iter().cloned()),
@@ -228,13 +228,13 @@ pub(crate) fn refresh_bound_controls(
 }
 
 /// The addresses a component's controls may run: every available action of
-/// its published resources that its permissions admit, and `doors`, what
+/// its published resources that its permissions admit, and `APIs`, what
 /// its host answers. Derived from the tree once, then kept: the same forest
 /// (a cached snapshot is handed to every frame until the component's
 /// declarations change) reuses it as it is, and the next forest,
 /// which shares every subtree an edit did not touch, updates the addresses of
 /// the nodes that changed only. Either needs the same permissions
-/// and doors; anything else derives afresh.
+/// and APIs; anything else derives afresh.
 pub(crate) fn component_controls_allowed(
     binding: &CallbackBinding,
     snapshots: &[BoundResourceSnapshot],
@@ -554,7 +554,7 @@ fn answering() -> bool {
     ANSWERING.with(std::cell::Cell::get)
 }
 
-/// While held, a document action the door applies answers what it changed
+/// While held, a document action the API applies answers what it changed
 /// even when its declaration answers nothing: it continues an operation
 /// that waits on it, and that operation replies to its caller from it.
 pub(crate) struct Answering(bool);
@@ -576,7 +576,7 @@ impl Drop for Answering {
 pub(crate) fn notify_control_invocation_result(
     root: &mut dyn Widget,
     target: &BoundActionTarget,
-    result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
     on_behalf_of: Option<tilo_actions::InvocationId>,
 ) -> Result<(), BoundDispatchError> {
     let mut visit = |_: &CallbackBinding,
@@ -703,14 +703,14 @@ impl BoundResourceSnapshot {
 
 /// What [`refresh_bound_controls`] derived from one component's forest, and everything that derivation
 /// read: the forest itself (kept, so the next one is diffed against it), the component's permissions
-/// and the doors its host offers.
+/// and the APIs its host offers.
 pub(crate) struct ControlAvailability {
     forest: Rc<[SharedResource]>,
     permissions: crate::permissions::DirectoryPermissionWitness,
     doors: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
-    /// `doors` and every address in `counts`.
+    /// `APIs` and every address in `counts`.
     allowed: Rc<std::collections::HashSet<tilo_actions::ActionAddress>>,
 }
 
@@ -756,7 +756,7 @@ impl BoundPublication {
             .get(&binding.lifetime_id)
             .is_some_and(|old| !old.same_component(binding))
         {
-            return Err(tilo_actions::DoorError::Unavailable {
+            return Err(tilo_actions::ApiError::Unavailable {
                 code: "publication_identity_collision".into(),
                 reason: "component publication identity collision".into(),
             }
@@ -769,7 +769,7 @@ impl BoundPublication {
             .and_then(|length| length.checked_add(prefix.len()))
             .is_none_or(|length| length > MAX_PUBLICATION_ALIAS)
         {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "resource transport alias exceeds its size bound".into(),
             )
             .into());
@@ -787,7 +787,7 @@ impl BoundPublication {
         if !address.resource.starts_with(PUBLICATION_PREFIX) {
             return Ok(None);
         }
-        let unknown = || BoundActionError::Door(tilo_actions::DoorError::Unknown(address.clone()));
+        let unknown = || BoundActionError::Api(tilo_actions::ApiError::Unknown(address.clone()));
         if address.resource.len() > MAX_PUBLICATION_ALIAS {
             return Err(unknown());
         }
@@ -1702,10 +1702,10 @@ pub(crate) fn discover_cached_bound_resources(
 }
 
 /// Action-scoped authority shared by native and headless legacy and outer
-/// hosts, as the bound door decides it: the action `action` on `resource`
+/// hosts, as the bound API decides it: the action `action` on `resource`
 /// runs when allowed; where the workspace's grants ask first it runs once the
 /// person confirmed it (`confirmed`), and is
-/// [`tilo_actions::DoorError::ConfirmationRequired`] until then, so the
+/// [`tilo_actions::ApiError::ConfirmationRequired`] until then, so the
 /// window asks them, saying who decides. A plain quick control (a button's
 /// effect) gets no further than an action declaring its confirmation.
 pub(crate) fn admit_local_action(
@@ -1714,28 +1714,28 @@ pub(crate) fn admit_local_action(
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
     confirmed: bool,
-) -> Result<(), tilo_actions::DoorError> {
+) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_answer(app_id, resource, action, typed, argument);
     crate::permissions::admit_in_window(answer, action, permissions.asker(), confirmed)
 }
 
 /// Why an invocation the person made did not run, in words for them: what
 /// the window says instead of dropping the click unseen.
-pub(crate) fn refusal_reason(error: &tilo_actions::DoorError) -> String {
-    use tilo_actions::DoorError;
+pub(crate) fn refusal_reason(error: &tilo_actions::ApiError) -> String {
+    use tilo_actions::ApiError;
     let reason = match error {
-        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
+        ApiError::Unknown(_) | ApiError::UnregisteredType(_) => {
             "It isn't available to you here.".to_owned()
         }
-        DoorError::ConfirmationRequired => "It needs your go-ahead first.".to_owned(),
-        DoorError::Unavailable { code, reason } => {
+        ApiError::ConfirmationRequired => "It needs your go-ahead first.".to_owned(),
+        ApiError::Unavailable { code, reason } => {
             internal_refusal(code).map_or_else(|| reason.clone(), str::to_owned)
         }
-        DoorError::Failed(reason) => reason.clone(),
-        DoorError::MissingArgument(_)
-        | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_)
-        | DoorError::ArgumentOutOfRange { .. } => "It couldn't run. Try again.".to_owned(),
+        ApiError::Failed(reason) => reason.clone(),
+        ApiError::MissingArgument(_)
+        | ApiError::UnexpectedArgument(_)
+        | ApiError::InvalidArguments(_)
+        | ApiError::ArgumentOutOfRange { .. } => "It couldn't run. Try again.".to_owned(),
     };
     let mut reason = reason.trim().to_owned();
     if let Some(first) = reason.chars().next()
@@ -1801,8 +1801,8 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
 }
 
 /// The refusal of an invocation the participant may not take.
-pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
-    tilo_actions::DoorError::Unavailable {
+pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
+    tilo_actions::ApiError::Unavailable {
         code: "permission_denied".into(),
         reason: format!("you may not {} here", action.label.to_lowercase()),
     }
@@ -1815,7 +1815,7 @@ pub(crate) fn history_action_resource<'a>(
     snapshots: &'a [BoundResourceSnapshot],
     binding: &CallbackBinding,
     request: crate::undo::UndoRequest,
-) -> Result<(&'a ResourceSpec, &'static str), tilo_actions::DoorError> {
+) -> Result<(&'a ResourceSpec, &'static str), tilo_actions::ApiError> {
     let action = match request {
         crate::undo::UndoRequest::Undo => "undo",
         crate::undo::UndoRequest::Redo => "redo",
@@ -1832,12 +1832,12 @@ pub(crate) fn history_action_resource<'a>(
         });
     let resource = candidates
         .next()
-        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
             code: "history_action_unavailable".into(),
             reason: "the current document does not publish its history action".into(),
         })?;
     if candidates.next().is_some() {
-        return Err(tilo_actions::DoorError::Unavailable {
+        return Err(tilo_actions::ApiError::Unavailable {
             code: "history_action_ambiguous".into(),
             reason: "the current document publishes more than one history target".into(),
         });
@@ -1903,7 +1903,7 @@ fn discover_bound_resources_with_filter(
                             .collect();
                     }
                     if let Some(address) = address
-                        && tilo_actions::door::resolve(&resources, address).is_none()
+                        && tilo_actions::api::resolve(&resources, address).is_none()
                         && let Some(resource) = crate::resources::resource_for(
                             widget,
                             participant.as_ref(),
@@ -1984,7 +1984,7 @@ pub(crate) fn select_bound_target(
             .cloned()
             .filter_map(|resource| filter_resource(&snapshot.binding, resource))
             .collect::<Vec<_>>();
-        if tilo_actions::door::resolve(&authorized, address).is_none() {
+        if tilo_actions::api::resolve(&authorized, address).is_none() {
             continue;
         }
         if selected.is_some() {
@@ -2029,9 +2029,9 @@ pub(crate) fn resolve_resource_invocation<'a>(
     argument: Option<&str>,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
     confirmed: bool,
-) -> Result<ResolvedResourceInvocation<'a>, tilo_actions::DoorError> {
+) -> Result<ResolvedResourceInvocation<'a>, tilo_actions::ApiError> {
     if arguments.is_some() && argument.is_some() {
-        return Err(tilo_actions::DoorError::InvalidArguments(
+        return Err(tilo_actions::ApiError::InvalidArguments(
             "supply structured arguments or legacy text, not both".into(),
         ));
     }
@@ -2039,23 +2039,23 @@ pub(crate) fn resolve_resource_invocation<'a>(
         .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
         .map(|json| {
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))
+                .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))
         })
         .transpose()?
         .or_else(|| arguments.cloned());
     let resource = find_action_resource(resources, &address.resource)
-        .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
     let spec = resource
         .actions
         .iter()
         .find(|action| action.id == address.action)
-        .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
     let confirmation = match typed.as_ref() {
         Some(arguments) => spec.confirmation_for_json(arguments),
         None => spec.confirmation_for_argument(argument),
     };
     if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) && !confirmed {
-        return Err(tilo_actions::DoorError::ConfirmationRequired);
+        return Err(tilo_actions::ApiError::ConfirmationRequired);
     }
     Ok((typed, resource, spec))
 }
@@ -2065,11 +2065,11 @@ pub(crate) fn encode_resource_action(
     address: &tilo_actions::ActionAddress,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
-) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
+) -> Result<tilo_actions::EncodedAction, tilo_actions::ApiError> {
     if let Some(arguments) = arguments {
-        tilo_actions::door::encode_json(resources, address, arguments)
+        tilo_actions::api::encode_json(resources, address, arguments)
     } else {
-        tilo_actions::door::encode(resources, address, argument)
+        tilo_actions::api::encode(resources, address, argument)
     }
 }
 
@@ -2080,7 +2080,7 @@ pub(crate) fn encode_resource_invocation(
     argument: Option<&str>,
     arguments: Option<&serde_json::Map<String, serde_json::Value>>,
     confirmed: bool,
-) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
+) -> Result<tilo_actions::EncodedAction, tilo_actions::ApiError> {
     let (arguments, _, _) =
         resolve_resource_invocation(resources, address, argument, arguments, confirmed)?;
     encode_resource_action(resources, address, arguments.as_ref(), None)
@@ -2204,7 +2204,7 @@ pub(crate) enum ControlContinuationArguments {
 }
 
 impl ControlContinuationArguments {
-    pub(crate) fn as_door_arguments(
+    pub(crate) fn as_api_arguments(
         &self,
     ) -> (
         Option<&str>,
@@ -2232,7 +2232,7 @@ pub(crate) fn control_witness(
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
-) -> Result<ControlWitness, tilo_actions::DoorError> {
+) -> Result<ControlWitness, tilo_actions::ApiError> {
     control_witness_with_arguments(
         root,
         doc,
@@ -2248,7 +2248,7 @@ pub(crate) fn control_witness_with_arguments(
     target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
     original_arguments: &ControlContinuationArguments,
-) -> Result<ControlWitness, tilo_actions::DoorError> {
+) -> Result<ControlWitness, tilo_actions::ApiError> {
     let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
     let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
     let (argument, arguments) = match original_arguments {
@@ -2269,7 +2269,7 @@ pub(crate) fn control_witness_with_arguments(
                 .continuation_identity(tilo_actions::ContinuationQuery::Exact(
                     original_arguments.query(),
                 ))
-                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                .ok_or_else(|| tilo_actions::ApiError::Unavailable {
                     code: "unsupported_continuation_identity".into(),
                     reason:
                         "The action provider cannot prove the original target and handler identity"
@@ -2316,18 +2316,18 @@ fn resources_for_control_target(
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
-) -> Result<Vec<ResourceSpec>, tilo_actions::DoorError> {
+) -> Result<Vec<ResourceSpec>, tilo_actions::ApiError> {
     match target {
         local_target::LocalResourceTarget::Component(target) => {
             if target.address.address != *address {
-                return Err(tilo_actions::DoorError::Unknown(address.clone()));
+                return Err(tilo_actions::ApiError::Unknown(address.clone()));
             }
             let snapshots = discover_bound_resources_with_filter(root, doc, Some(address), false)
-                .map_err(|error| BoundActionError::Dispatch(error).into_door())?;
+                .map_err(|error| BoundActionError::Dispatch(error).into_api())?;
             let snapshot = snapshots
                 .into_iter()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))
-                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+                .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
             unique_control_spec(snapshot.resources(), address)?;
             let binding = snapshot.binding.clone();
             Ok(snapshot
@@ -2339,7 +2339,7 @@ fn resources_for_control_target(
         local_target::LocalResourceTarget::Outer => {
             let mut resources = Vec::new();
             collect_unbound_resources(root, doc, &mut resources);
-            if tilo_actions::door::resolve(&resources, address).is_none()
+            if tilo_actions::api::resolve(&resources, address).is_none()
                 && let Some(resource) = resolve_unbound_resource(root, doc, &address.resource)
             {
                 resources.push(resource);
@@ -2352,7 +2352,7 @@ fn resources_for_control_target(
 fn unique_control_spec<'a>(
     resources: &'a [ResourceSpec],
     address: &tilo_actions::ActionAddress,
-) -> Result<(&'a ResourceSpec, &'a tilo_actions::ActionSpec), tilo_actions::DoorError> {
+) -> Result<(&'a ResourceSpec, &'a tilo_actions::ActionSpec), tilo_actions::ApiError> {
     fn matches<'a>(
         resources: &'a [ResourceSpec],
         address: &tilo_actions::ActionAddress,
@@ -2369,9 +2369,9 @@ fn unique_control_spec<'a>(
     matches(resources, address, &mut found);
     let [resource] = found.as_slice() else {
         return if found.is_empty() {
-            Err(tilo_actions::DoorError::Unknown(address.clone()))
+            Err(tilo_actions::ApiError::Unknown(address.clone()))
         } else {
-            Err(tilo_actions::DoorError::Unavailable {
+            Err(tilo_actions::ApiError::Unavailable {
                 code: "ambiguous_action_identity".into(),
                 reason: "More than one declaration in the retained owner claims this address"
                     .into(),
@@ -2385,9 +2385,9 @@ fn unique_control_spec<'a>(
         .collect::<Vec<_>>();
     let [spec] = actions.as_slice() else {
         return if actions.is_empty() {
-            Err(tilo_actions::DoorError::Unknown(address.clone()))
+            Err(tilo_actions::ApiError::Unknown(address.clone()))
         } else {
-            Err(tilo_actions::DoorError::Unavailable {
+            Err(tilo_actions::ApiError::Unavailable {
                 code: "ambiguous_action_identity".into(),
                 reason: "More than one action declaration in the retained resource claims this id"
                     .into(),
@@ -2423,12 +2423,12 @@ pub(crate) fn control_draft_identity(
     doc: &AutoCommit,
     target: &local_target::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
-) -> Result<ControlIdentity, tilo_actions::DoorError> {
+) -> Result<ControlIdentity, tilo_actions::ApiError> {
     let resources = resources_for_control_target(root, doc, target, address)?;
     let (resource, spec) = unique_control_spec(&resources, address)?;
     let continuation = spec
         .continuation_identity(tilo_actions::ContinuationQuery::Draft)
-        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+        .ok_or_else(|| tilo_actions::ApiError::Unavailable {
             code: "unsupported_continuation_identity".into(),
             reason: "The action provider cannot prove a stable draft resolution domain".into(),
         })?;
@@ -2497,7 +2497,7 @@ fn execute_document(
     actor: &str,
     broker_admitted: bool,
     context: tilo_actions::ActionContext,
-) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
+) -> Result<tilo_actions::Dispatched, tilo_actions::ApiError> {
     let before = typed_action_before(doc);
     let capture_heads = if broker_admitted {
         Vec::new()
@@ -2508,7 +2508,7 @@ fn execute_document(
         None
     } else {
         crate::local_document_action::reserve(&encoded, Some(&context), doc, &capture_heads)
-            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+            .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()))?
     };
     let capture_before = observation.as_ref().map(|_| capture_heads);
     let capture_encoded = observation.as_ref().map(|_| encoded.clone());
@@ -2526,7 +2526,7 @@ fn execute_document(
                     Some(writer.as_slice()),
                     context,
                 )
-                .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?,
+                .map_err(|e| tilo_actions::ApiError::Failed(e.to_string()))?,
             )
         } else {
             tilo_actions::dispatch_by_with_context(
@@ -2537,7 +2537,7 @@ fn execute_document(
                 Some(writer.as_slice()),
                 context,
             )
-            .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
+            .map_err(|e| tilo_actions::ApiError::Failed(e.to_string()))?
         };
     if let (Some(observation), Some(capture_before), Some(encoded)) =
         (observation, capture_before, capture_encoded)
@@ -2545,7 +2545,7 @@ fn execute_document(
     {
         observation
             .finish(doc, &capture_before, encoded, capture_context)
-            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+            .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()))?;
     }
     if let Some(before) = before {
         let after = doc.get_heads();
@@ -2566,8 +2566,8 @@ fn note_active_writer(writer: &[u8]) {
 }
 
 /// The refusal of an own-device effect for someone not at this device.
-pub(crate) fn own_device_refusal() -> tilo_actions::DoorError {
-    tilo_actions::DoorError::Unavailable {
+pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
+    tilo_actions::ApiError::Unavailable {
         code: "own_device".into(),
         reason:
             "This action acts on the device of whoever invokes it: here, the host participant's"
@@ -2610,9 +2610,9 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
-    /// The session's action door of the host running it: where opening another app goes
-    /// ([`crate::session_door`]).
-    pub(crate) door: Option<&'a mut dyn crate::session_door::SessionDoor>,
+    /// The session's action API of the host running it: where opening another app goes
+    /// ([`crate::session_api`]).
+    pub(crate) api: Option<&'a mut dyn crate::session_api::SessionApi>,
 }
 
 /// One execution body for bound components and legacy shell roots. Broker
@@ -2624,7 +2624,7 @@ pub(crate) fn execute_resource_operation(
     registry: &tilo_actions::ActionRegistry,
     transport: &mut dyn tilo_actions::ActionTransport,
     operation: ResourceOperation<'_>,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
     let ResourceOperation {
         target_route,
         address,
@@ -2638,7 +2638,7 @@ pub(crate) fn execute_resource_operation(
         source_invocation,
         ambient,
         scope,
-        door,
+        api,
     } = operation;
     debug_assert!(
         !broker_admitted || source_invocation.is_some(),
@@ -2652,7 +2652,7 @@ pub(crate) fn execute_resource_operation(
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {
-        return Err(tilo_actions::DoorError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
+        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
     let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = ambient {
@@ -2699,7 +2699,7 @@ pub(crate) fn execute_resource_operation(
     };
     let observation = if capture_local {
         crate::local_document_action::reserve(&encoded, Some(&context), doc, &capture_heads)
-            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+            .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()))?
     } else {
         None
     };
@@ -2710,9 +2710,9 @@ pub(crate) fn execute_resource_operation(
         let started = if spec.kind == tilo_actions::OperationKind::Document {
             let action = registry
                 .decode(&encoded)
-                .map_err(tilo_actions::DoorError::decoding)?;
+                .map_err(tilo_actions::ApiError::decoding)?;
             if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
-                return Err(tilo_actions::DoorError::Failed(
+                return Err(tilo_actions::ApiError::Failed(
                     "Deferred action locus differs from its declaration".into(),
                 ));
             }
@@ -2826,7 +2826,7 @@ pub(crate) fn execute_resource_operation(
                 };
                 effects
                     .start_document_effects(&operation, &applied)
-                    .map_err(tilo_actions::DoorError::Failed)?
+                    .map_err(tilo_actions::ApiError::Failed)?
                     .unwrap_or(crate::widget::ResourceOperationStart::Completed(output))
             } else {
                 crate::widget::ResourceOperationStart::Completed(output)
@@ -2836,20 +2836,20 @@ pub(crate) fn execute_resource_operation(
         {
             let refused = |error: crate::semantic_document_read::SemanticReadError| {
                 let (code, reason) = error.describe();
-                tilo_actions::DoorError::Unavailable {
+                tilo_actions::ApiError::Unavailable {
                     code: code.into(),
                     reason: reason.into(),
                 }
             };
             let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
                 .map_err(refused)?
-                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+                .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
             crate::widget::ResourceOperationStart::Completed(
                 selected.read(scope, doc).map_err(refused)?,
             )
         } else if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
-            crate::session_door::start_application_launch(
-                door,
+            crate::session_api::start_application_launch(
+                api,
                 target_route.as_ref(),
                 &encoded.payload,
                 source_invocation.unwrap_or(invocation),
@@ -2880,8 +2880,8 @@ pub(crate) fn execute_resource_operation(
                 &mut crate::widget::Edits::lend(doc),
                 path,
             )
-            .map_err(tilo_actions::DoorError::Failed)?
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
+            .map_err(tilo_actions::ApiError::Failed)?
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?
         };
         match &started {
             crate::widget::ResourceOperationStart::Accepted
@@ -2891,7 +2891,7 @@ pub(crate) fn execute_resource_operation(
                         tilo_actions::ExecutionMode::Immediate
                     ) =>
             {
-                return Err(tilo_actions::DoorError::Failed(
+                return Err(tilo_actions::ApiError::Failed(
                     "an immediate operation cannot remain pending".into(),
                 ));
             }
@@ -2912,7 +2912,7 @@ pub(crate) fn execute_resource_operation(
                 spec.contract
                     .result
                     .validate(&declared)
-                    .map_err(tilo_actions::DoorError::Failed)?;
+                    .map_err(tilo_actions::ApiError::Failed)?;
             }
             crate::widget::ResourceOperationStart::Accepted => {}
         }
@@ -2925,7 +2925,7 @@ pub(crate) fn execute_resource_operation(
         if doc.get_heads() == capture_heads {
             observation
                 .finish(doc, &capture_heads, encoded, capture_context)
-                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+                .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()))?;
         }
     }
     result
@@ -2943,19 +2943,19 @@ pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
-    /// Asked with the action as the door resolved it, before any check after resolution and before
+    /// Asked with the action as the API resolved it, before any check after resolution and before
     /// anything runs: `true` hands the invocation back unexecuted as [`BoundActionError::Rerouted`],
     /// for the host to route through the workspace broker.
     pub(crate) route: Option<&'a dyn Fn(&tilo_actions::ActionSpec) -> bool>,
 }
 
-/// Private checked front door.
+/// Private checked front API.
 pub(crate) fn invoke_resource_action(
     root: &mut dyn Widget,
     document: &mut AutoCommit,
     target: &BoundActionTarget,
     transport: &mut dyn tilo_actions::ActionTransport,
-    mut door: Option<&mut dyn crate::session_door::SessionDoor>,
+    mut api: Option<&mut dyn crate::session_api::SessionApi>,
     request: ResourceActionRequest<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
     let ResourceActionRequest {
@@ -3003,7 +3003,7 @@ pub(crate) fn invoke_resource_action(
                             participant.as_ref(),
                             &mut resources,
                         );
-                        if tilo_actions::door::resolve(&resources, &target.address.address).is_none()
+                        if tilo_actions::api::resolve(&resources, &target.address.address).is_none()
                             && let Some(resource) = resolve_published(
                                 widget,
                                 doc,
@@ -3063,7 +3063,7 @@ pub(crate) fn invoke_resource_action(
                         spec.need_for(arguments.as_ref(), argument).kind,
                     )?;
                     // A grant given once is spent by admitting this call,
-                    // before it runs: the host revokes it, and this door never
+                    // before it runs: the host revokes it, and this API never
                     // relies on it again.
                     binding
                         .permissions
@@ -3078,7 +3078,7 @@ pub(crate) fn invoke_resource_action(
                             &spec.contract,
                         )
                     {
-                        return Err(tilo_actions::DoorError::Unavailable {
+                        return Err(tilo_actions::ApiError::Unavailable {
                             code: "private_view".into(),
                             reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
                         }.into());
@@ -3142,8 +3142,8 @@ pub(crate) fn invoke_resource_action(
                                 source_invocation,
                                 ambient: Some(&ambient),
                                 scope,
-                                door: match door.as_mut() {
-                                    Some(door) => Some(&mut **door as &mut dyn crate::session_door::SessionDoor),
+                                api: match api.as_mut() {
+                                    Some(api) => Some(&mut **api as &mut dyn crate::session_api::SessionApi),
                                     None => None,
                                 },
                             },
@@ -3164,16 +3164,16 @@ pub(crate) fn invoke_resource_action(
                     // span to arbitrary writes elsewhere in the opaque callback.
                     binding.drain_owned_tree(widget, operation.doc)?;
                     if operation.finish() {
-                        return Err(BoundActionError::Door(tilo_actions::DoorError::Unavailable {
+                        return Err(BoundActionError::Api(tilo_actions::ApiError::Unavailable {
                             code: "undeclared_document_mutation".into(),
                             reason: "callback mutated the document without a declared Document follow-up; bytes were retained".into(),
                         }));
                     }
-                    started.map_err(BoundActionError::Door)
+                    started.map_err(BoundActionError::Api)
                     };
                     match scope {
                         Some(scope) => scope.with_document_mutation(doc, |doc| Ok(run(doc)))
-                            .map_err(|error| BoundActionError::Door(tilo_actions::DoorError::Failed(error)))?,
+                            .map_err(|error| BoundActionError::Api(tilo_actions::ApiError::Failed(error)))?,
                         None => run(doc),
                     }
                 })
@@ -3482,7 +3482,7 @@ pub(crate) fn service_retained_owner_model(
                 })
                 .and_then(|result| result);
             // The original host attempts sync after a nonpanic update/drain
-            // refusal. Retain its first error without omitting the fresh door.
+            // refusal. Retain its first error without omitting the fresh API.
             let admitted = updated.and(synced);
             // Original status projection follows the canonical loan, including
             // refusal. No application callback runs under a record-store loan.

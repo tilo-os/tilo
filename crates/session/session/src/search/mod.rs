@@ -29,7 +29,7 @@ use crate::records::Records;
 #[cfg(target_os = "linux")]
 mod host;
 
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
     ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
@@ -89,7 +89,7 @@ pub trait AppActions {
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), DoorError>;
+    ) -> Result<(), ApiError>;
     /// [`Self::invoke`], and tell `answered` what the action answered once it settled: its value,
     /// or `None` when it answered none or failed. A host that hears no answers tells it `None`
     /// at once.
@@ -101,7 +101,7 @@ pub trait AppActions {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         answered: Answered,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let invoked = self.invoke(target, arguments);
         answered(None);
         invoked
@@ -120,7 +120,7 @@ pub trait AppActions {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
         item: &str,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let _ = item;
         self.invoke(target, arguments)
     }
@@ -128,8 +128,8 @@ pub trait AppActions {
     ///
     /// # Errors
     /// The host's refusal: no such invocation, or it cannot be stopped.
-    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
+    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), ApiError> {
+        Err(ApiError::Unavailable {
             code: "unknown_invocation".into(),
             reason: "This host runs no invocations".into(),
         })
@@ -139,8 +139,8 @@ pub trait AppActions {
     ///
     /// # Errors
     /// Nothing takes it.
-    fn open_uri(&self, _workspace: &str, _uri: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
+    fn open_uri(&self, _workspace: &str, _uri: &str) -> Result<(), ApiError> {
+        Err(ApiError::Unavailable {
             code: "no_uri_opener".into(),
             reason: "This host opens no addresses".into(),
         })
@@ -149,8 +149,8 @@ pub trait AppActions {
     ///
     /// # Errors
     /// It did not start.
-    fn start_host_app(&self, _desktop_id: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
+    fn start_host_app(&self, _desktop_id: &str) -> Result<(), ApiError> {
+        Err(ApiError::Unavailable {
             code: "no_host_apps".into(),
             reason: "This host runs no programs of the machine's".into(),
         })
@@ -162,8 +162,8 @@ pub trait AppActions {
     ///
     /// # Errors
     /// It does not hold the content, or the app did not open.
-    fn open_content(&self, _hash: &str, _name: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
+    fn open_content(&self, _hash: &str, _name: &str) -> Result<(), ApiError> {
+        Err(ApiError::Unavailable {
             code: "no_content".into(),
             reason: "This host holds no workspace content to open".into(),
         })
@@ -180,7 +180,7 @@ pub trait AppActions {
         workspace: &str,
         app: &str,
         place: LaunchPlace,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let _ = place;
         self.invoke(
             application_open_target(workspace, app),
@@ -239,9 +239,9 @@ struct DownloadedRows {
 /// Why a row the person chose did not happen, in words they read: the session's own missing app host
 /// says what it means, rather than naming its code on the row.
 #[must_use]
-pub fn why_in_words(error: &DoorError) -> String {
+pub fn why_in_words(error: &ApiError) -> String {
     match error {
-        DoorError::Unavailable { code, .. } if code == "action_host_unavailable" => {
+        ApiError::Unavailable { code, .. } if code == "action_host_unavailable" => {
             tilo_desktop_surface::i18n::t("answer-why-cannot-start")
         }
         other => other.to_string(),
@@ -466,7 +466,7 @@ impl SessionSearch {
         notifications: Vec<tilo_actions::ResourceSpec>,
     ) {
         *self.notifications.borrow_mut() = notifications;
-        let mut published = tilo_actions::door::survey(own);
+        let mut published = tilo_actions::api::survey(own);
         // Search does not list itself, nor opening itself.
         published.retain(|action| {
             let address = &action.address;
@@ -1150,8 +1150,8 @@ impl SessionSearch {
         &self,
         workspace: &str,
         target: Target,
-        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-    ) -> Result<(), DoorError> {
+        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
+    ) -> Result<(), ApiError> {
         self.perform_checked(workspace, target, own)
     }
 
@@ -1173,10 +1173,10 @@ impl SessionSearch {
         workspace: &str,
         target: Target,
         answered: Answered,
-    ) -> Result<(), DoorError> {
+    ) -> Result<(), ApiError> {
         let _ = workspace;
         let Target::Invoke(invoke) = target else {
-            return Err(DoorError::InvalidArguments(
+            return Err(ApiError::InvalidArguments(
                 "only an app's action answers what it did".into(),
             ));
         };
@@ -1196,8 +1196,8 @@ impl SessionSearch {
     pub fn perform_choices(
         &self,
         handle: &tilo_desktop_surface::DesktopHandle,
-        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-    ) -> Vec<(Target, DoorError)> {
+        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
+    ) -> Vec<(Target, ApiError)> {
         let workspace = handle.read(|tree| {
             tree.active_workspace()
                 .map(|held| held.id().to_string())
@@ -1218,8 +1218,8 @@ impl SessionSearch {
         &self,
         workspace: &str,
         target: Target,
-        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-    ) -> Result<(), DoorError> {
+        own: &mut dyn FnMut(&InvokeTarget) -> Result<(), ApiError>,
+    ) -> Result<(), ApiError> {
         match target {
             Target::Invoke(invoke)
                 if invoke.app == DESKTOP_APP
@@ -1296,9 +1296,9 @@ impl SessionSearch {
     /// A record kept as a file is also opened, so bringing it here and opening it are one gesture.
     /// The reference is named first and the launch reported after it: a record whose file is gone
     /// is still one this workspace now holds, and a refusal to open leaves it held.
-    fn bring_here(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), DoorError> {
+    fn bring_here(&self, workspace: &str, invoke: &InvokeTarget) -> Result<(), ApiError> {
         let Some(records) = &self.records else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "records_unavailable".into(),
                 reason: "The session keeps no record indexes".into(),
             });
@@ -1315,12 +1315,12 @@ impl SessionSearch {
             text(record_rows::KIND_PARAM),
             text(record_rows::PACKAGE_PARAM),
         ) else {
-            return Err(DoorError::InvalidArguments(
+            return Err(ApiError::InvalidArguments(
                 "a record row carries its id, its kind and its index".into(),
             ));
         };
         let Some(id) = RecordId::parse(&id) else {
-            return Err(DoorError::InvalidArguments(format!(
+            return Err(ApiError::InvalidArguments(format!(
                 "{id} is not a record id"
             )));
         };
@@ -1329,7 +1329,7 @@ impl SessionSearch {
         // refused rather than written, so search never brings a record that is gone into a
         // workspace as if it were still there.
         if !records.holds(id.as_str()) {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "record_not_held".into(),
                 reason: format!("No workspace holds {id} any more"),
             });
@@ -1340,7 +1340,7 @@ impl SessionSearch {
             &package,
             RecordCheckout::new(id, RecordKind::new(kind)),
         ) {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "records_unavailable".into(),
                 reason: "Records of another workspace are not brought here".into(),
             });
@@ -1352,7 +1352,7 @@ impl SessionSearch {
             return Ok(());
         };
         if !path.exists() {
-            return Err(DoorError::Failed(format!("{} is gone", path.display())));
+            return Err(ApiError::Failed(format!("{} is gone", path.display())));
         }
         let uri = tilo_desktop_search::file_uri(&path);
         self.with_apps(|apps| apps.open_uri(workspace, &uri))
@@ -1360,11 +1360,11 @@ impl SessionSearch {
 
     fn with_apps(
         &self,
-        run: impl FnOnce(&dyn AppActions) -> Result<(), DoorError>,
-    ) -> Result<(), DoorError> {
+        run: impl FnOnce(&dyn AppActions) -> Result<(), ApiError>,
+    ) -> Result<(), ApiError> {
         match &self.apps {
             Some(apps) => run(&**apps),
-            None => Err(DoorError::Unavailable {
+            None => Err(ApiError::Unavailable {
                 code: "action_host_unavailable".into(),
                 reason: "The session runs without an action host".into(),
             }),
@@ -1709,14 +1709,14 @@ mod tests {
             &self,
             target: RemoteActionTarget,
             _: serde_json::Map<String, serde_json::Value>,
-        ) -> Result<(), DoorError> {
+        ) -> Result<(), ApiError> {
             self.0
                 .borrow_mut()
                 .push((target.provider, target.address.action));
             Ok(())
         }
 
-        fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
+        fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), ApiError> {
             self.0
                 .borrow_mut()
                 .push((workspace.to_owned(), uri.to_owned()));
@@ -1977,7 +1977,7 @@ mod tests {
         assert!(
             matches!(
                 refused,
-                Err(DoorError::Unavailable { ref code, .. }) if code == "record_not_held"
+                Err(ApiError::Unavailable { ref code, .. }) if code == "record_not_held"
             ),
             "a record no workspace names is refused: {refused:?}"
         );
@@ -2214,7 +2214,7 @@ mod tests {
             assert!(
                 matches!(
                     search.perform_checked("here", row, &mut |_| Ok(())),
-                    Err(DoorError::Failed(ref reason)) if reason.contains("is gone")
+                    Err(ApiError::Failed(ref reason)) if reason.contains("is gone")
                 ),
                 "a record whose file is gone is still held, and the launch says why it does not open"
             );
@@ -2522,7 +2522,7 @@ mod tests {
             &self,
             target: RemoteActionTarget,
             arguments: serde_json::Map<String, serde_json::Value>,
-        ) -> Result<(), DoorError> {
+        ) -> Result<(), ApiError> {
             self.0.borrow_mut().push((
                 target.provider,
                 target.address.resource,

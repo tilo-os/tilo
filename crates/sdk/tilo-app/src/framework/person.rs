@@ -12,8 +12,8 @@ use std::rc::Rc;
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
 use super::live::Live;
-use super::record::{Held, RecordDoor};
-use super::section::{SectionDoor, SectionKind};
+use super::record::{Held, RecordApi};
+use super::section::{SectionApi, SectionKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -60,7 +60,7 @@ struct Shared<P: Resource> {
     live: Live<P>,
     /// The same state, for controls bound to it.
     state: LocalState<Rc<P::State>>,
-    /// The record as views and the door edit it.
+    /// The record as views and the api edit it.
     held: RefCell<Option<Rc<Held<P>>>>,
 }
 
@@ -182,7 +182,7 @@ impl<P: Resource> PersonRecord<P> {
     ///
     /// This, with [`Self::invoke_as`], is how the app applies what its
     /// resource keeps for itself (`#[action(by_app)]`): such an action is
-    /// declared to no caller, and the record's door refuses it.
+    /// declared to no caller, and the record's api refuses it.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
@@ -292,8 +292,8 @@ pub(crate) struct PersonState {
 struct Published {
     id: String,
     label: String,
-    /// Its field edits and verbs, as the door reaches them.
-    door: Rc<dyn RecordDoor>,
+    /// Its field edits and verbs, as the api reaches them.
+    api: Rc<dyn RecordApi>,
     /// Take back (`true`) or redo (`false`) one of the person's steps, for
     /// the invoker named. Whether there was one.
     step: Step,
@@ -302,11 +302,11 @@ struct Published {
 /// Take back (`true`) or redo (`false`) one step for the invoker named.
 type Step = Box<dyn Fn(bool, &str) -> bool>;
 
-/// A person record just opened as its type: its shared state, its door and
+/// A person record just opened as its type: its shared state, its api and
 /// its undo and redo.
 struct Opened {
     shared: Rc<dyn Any>,
-    door: Rc<dyn RecordDoor>,
+    api: Rc<dyn RecordApi>,
     step: Step,
 }
 
@@ -526,7 +526,7 @@ impl PersonState {
             let weak = Rc::downgrade(&shared);
             Ok(Opened {
                 shared: shared as Rc<dyn Any>,
-                door: held,
+                api: held,
                 step: Box::new(move |undo, _| {
                     weak.upgrade().is_some_and(|shared| {
                         let record = PersonRecord { shared };
@@ -586,7 +586,7 @@ impl PersonState {
             Ok(record) => record,
             Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
-        let Opened { shared, door, step } = match open(record) {
+        let Opened { shared, api, step } = match open(record) {
             Ok(opened) => opened,
             Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
@@ -600,7 +600,7 @@ impl PersonState {
             Published {
                 id: resource_id(kind),
                 label: label.to_owned(),
-                door,
+                api,
                 step,
             },
         );
@@ -657,35 +657,31 @@ impl PersonState {
 
     /// The settings section `kind` held as a record, opened on first use and
     /// published with the undo and redo of each invoker's steps on it.
-    pub(crate) fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionDoor> {
+    pub(crate) fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionApi> {
         let key = (self.app_id, kind.kind.to_owned());
-        if let Some(door) = self
+        if let Some(api) = self
             .opened
             .borrow()
             .get(&key)
-            .and_then(|open| Rc::clone(open).downcast::<SectionDoor>().ok())
+            .and_then(|open| Rc::clone(open).downcast::<SectionApi>().ok())
         {
-            return door;
+            return api;
         }
-        let door = Rc::new(SectionDoor::new(
-            kind,
-            self.me.clone(),
-            self.earlier.clone(),
-        ));
-        let stepping = Rc::downgrade(&door);
+        let api = Rc::new(SectionApi::new(kind, self.me.clone(), self.earlier.clone()));
+        let stepping = Rc::downgrade(&api);
         self.publish(
             key,
-            Rc::clone(&door) as Rc<dyn Any>,
+            Rc::clone(&api) as Rc<dyn Any>,
             Published {
-                id: door.id().to_owned(),
-                label: door.label().to_owned(),
-                door: Rc::clone(&door) as Rc<dyn RecordDoor>,
+                id: api.id().to_owned(),
+                label: api.label().to_owned(),
+                api: Rc::clone(&api) as Rc<dyn RecordApi>,
                 step: Box::new(move |undo, by| {
-                    stepping.upgrade().is_some_and(|door| door.step(undo, by))
+                    stepping.upgrade().is_some_and(|api| api.step(undo, by))
                 }),
             },
         );
-        door
+        api
     }
 
     /// The person's records `owner` keeps: this app's own, or another app's,
@@ -743,7 +739,7 @@ impl PersonState {
         self.unavailable.borrow().values().cloned().collect()
     }
 
-    /// Keep the record opened under `key`, publishing its door and its undo
+    /// Keep the record opened under `key`, publishing its api and its undo
     /// and redo.
     fn publish(&self, key: OpenKey, open: Rc<dyn Any>, published: Published) {
         self.published.borrow_mut().push(published);
@@ -767,7 +763,7 @@ impl PersonState {
             .iter()
             .map(|published| {
                 published
-                    .door
+                    .api
                     .publish()
                     .with_action(history_spec(&published.id, &published.label, true))
                     .with_action(history_spec(&published.id, &published.label, false))
@@ -775,12 +771,12 @@ impl PersonState {
             .collect()
     }
 
-    /// The open records of the person's own, as the door changes them.
-    pub(crate) fn doors(&self) -> Vec<Rc<dyn RecordDoor>> {
+    /// The open records of the person's own, as the api changes them.
+    pub(crate) fn apis(&self) -> Vec<Rc<dyn RecordApi>> {
         self.published
             .borrow()
             .iter()
-            .map(|published| Rc::clone(&published.door))
+            .map(|published| Rc::clone(&published.api))
             .collect()
     }
 
@@ -858,7 +854,7 @@ fn open_record(
         .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
 }
 
-/// The record `shared` as views and the door edit it: read into a state of
+/// The record `shared` as views and the api edit it: read into a state of
 /// its own that follows the record, changed as the person.
 fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);
@@ -893,15 +889,15 @@ impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
         self.shared.held.borrow().clone()
     }
 
-    fn door(
+    fn api(
         &self,
         _storage: super::record::sealed::Storage<'_>,
-    ) -> Option<super::record::sealed::Door> {
+    ) -> Option<super::record::sealed::Api> {
         self.shared
             .held
             .borrow()
             .clone()
-            .map(|held| super::record::sealed::Door(held as Rc<dyn RecordDoor>))
+            .map(|held| super::record::sealed::Api(held as Rc<dyn RecordApi>))
     }
 }
 

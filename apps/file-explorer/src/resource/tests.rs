@@ -1374,7 +1374,7 @@ tilo_test_env::scenario! {
                     );
                 } else {
                     assert!(
-                        matches!(&error, ui::tilo_actions::DoorError::Unavailable { code, .. }
+                        matches!(&error, ui::tilo_actions::ApiError::Unavailable { code, .. }
                             if code == "private_view"),
                         "{actor}: {effect:?}: {error}"
                     );
@@ -1576,9 +1576,9 @@ fn invoke_confirmed_by(
     role: ui::permissions::Role,
     invoker: ui::tilo_actions::ActionInvoker,
     invoke: &ui::tilo_resource::Invoke<FileExplorer>,
-) -> Result<(), ui::tilo_actions::DoorError> {
+) -> Result<(), ui::tilo_actions::ApiError> {
     if let Some(refusal) = invoke.refusal() {
-        return Err(ui::tilo_actions::DoorError::InvalidArguments(
+        return Err(ui::tilo_actions::ApiError::InvalidArguments(
             refusal.to_owned(),
         ));
     }
@@ -1587,7 +1587,7 @@ fn invoke_confirmed_by(
         .into_iter()
         .find(|action| action.address.action == invoke.id)
         .ok_or_else(|| {
-            ui::tilo_actions::DoorError::Failed(format!("action {} is not published", invoke.id))
+            ui::tilo_actions::ApiError::Failed(format!("action {} is not published", invoke.id))
         })?
         .address;
     app.set_role(role);

@@ -37,8 +37,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_action_policy::share::{ShareAccess, is_of_share, share_grants};
 use tilo_actions::{
-    ActionAddress, ActionContract, ActionParam, ActionSpec, DoorError, EncodedAction,
-    ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
+    ActionAddress, ActionContract, ActionParam, ActionSpec, ApiError, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
@@ -2594,16 +2594,16 @@ impl Service for WindowShareService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != SHARES_RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         let address = ActionAddress::new(resource, action);
-        let encoded = tilo_actions::door::encode_json(&[shares_resource()], &address, arguments)?;
+        let encoded = tilo_actions::api::encode_json(&[shares_resource()], &address, arguments)?;
         let command = (encoded.type_id == OPERATION)
             .then(|| serde_json::from_slice::<ShareCommand>(&encoded.payload).ok())
             .flatten()
-            .ok_or_else(|| DoorError::Failed("not a window-share command".into()))?;
+            .ok_or_else(|| ApiError::Failed("not a window-share command".into()))?;
         self.shares.borrow_mut().queue(command);
         Ok(Started::Accepted)
     }

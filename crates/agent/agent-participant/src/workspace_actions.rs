@@ -14,7 +14,7 @@
 //!   naming a record's provider lists every action that record publishes.
 //! - **Invoke.** The record is held as a replica of its resource in its own
 //!   confined app worker ([`ConfinedReplica`]) from what the service opened
-//!   of it, the operation runs there through the resource's own door
+//!   of it, the operation runs there through the resource's own API
 //!   (permission, confirmation and argument binding exactly as for a person),
 //!   and the change it returns is admitted through the isolate, then sealed
 //!   and signed here as the host device's own, so every page receives it as
@@ -90,7 +90,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::actions::{Outcome, door_outcome, record_of, record_provider};
+use crate::participant::actions::{Outcome, api_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use catch_up::catch_up;
@@ -1319,7 +1319,7 @@ struct Worker {
     notes_failures: HashMap<WorkspaceId, u32>,
 }
 
-/// The door's answer for an action it has nothing by that address.
+/// The API's answer for an action it has nothing by that address.
 fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionHostError::UnknownAction)
 }
@@ -1341,7 +1341,7 @@ fn acts_for(caller: &Caller, person: &str) -> bool {
             .is_some_and(|delegating| delegating.acting().person_id() == Some(person))
 }
 
-/// What a held record publishes that its door runs now.
+/// What a held record publishes that its API runs now.
 fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
 }
@@ -2385,7 +2385,7 @@ impl Worker {
             .ok_or_else(unknown_action)?;
         let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
-        // What the record publishes, its own door runs. What only its
+        // What the record publishes, its own API runs. What only its
         // committed source publishes — a canonical read of it — is asked of
         // that source, which reads the record and opens a worker for it: an
         // action the record publishes never pays for that.
@@ -2456,8 +2456,8 @@ impl Worker {
                 &arguments,
                 confirmed,
             )
-            .map_err(|error| door_outcome(&error))?;
-        // Where the action left its actor, for the door that shows it
+            .map_err(|error| api_outcome(&error))?;
+        // Where the action left its actor, for the API that shows it
         // working: the text it wrote, the item it acted on.
         let left_at = mounted.app.presence().map(bounded::placed);
         let taken = take_all(&mounted.app, &holder)
@@ -2678,7 +2678,7 @@ impl Worker {
             &route,
         ) else {
             // A missing canonical read source must not replace or grant the
-            // ordinary document door. Unregistered effects stay refused there.
+            // ordinary document API. Unregistered effects stay refused there.
             return Ok(None);
         };
         if !read
@@ -2717,7 +2717,7 @@ impl Worker {
             &arguments,
         )
         .map(Some)
-        .map_err(|error| Box::new(door_outcome(&error)))
+        .map_err(|error| Box::new(api_outcome(&error)))
     }
 
     /// A new record of `app` in `workspace`, created by the host's own person

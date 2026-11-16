@@ -7,4 +7,4 @@ search-keywords = agents, agent runs, mcp, connect an agent, claude code, codex,
 # What the app does, in one plain phrase (English): the tag line under its
 # name in the Store and in search. No marketing; the packer signs it into the
 # manifest.
-app-tagline = What your agents do in your workspaces, and the door they come in by
+app-tagline = What your agents do in your workspaces, and the MCP server they come in by

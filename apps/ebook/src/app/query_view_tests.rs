@@ -142,7 +142,7 @@ fn the_book_chips_clear_control_widens_the_search() {
     let mut app = TestApp::<EbookShell>::drive("search-in-book").unwrap();
     let resources = app.harness().resources();
     let address =
-        ui::tilo_actions::door::published(&resources, "tilo.control:view-chip:book", "remove")
+        ui::tilo_actions::api::published(&resources, "tilo.control:view-chip:book", "remove")
             .expect("the chip publishes its remove");
     let inside = found(&mut app, PASSAGE);
     assert!(!inside.is_empty(), "the book's words are found");

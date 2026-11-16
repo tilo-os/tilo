@@ -462,7 +462,7 @@ impl super::AppBrokerState {
         if !original.delivered_to(caller_app, workspace) {
             return Err("the invocation the open is for is another app's".into());
         }
-        if original.through_app_door() {
+        if original.through_app_api() {
             return Ok(AppOpen::NeedsPress);
         }
         let caller = self

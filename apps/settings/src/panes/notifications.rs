@@ -890,7 +890,7 @@ mod tests {
             settings.get().per_app["so.tilo.chat"].muted_until,
             Some(unix_now_i64() + 60 * 60)
         );
-        let offered = ui::tilo_actions::door::survey(&app.harness().resources());
+        let offered = ui::tilo_actions::api::survey(&app.harness().resources());
         assert!(
             offered.iter().any(
                 |row| row.address.resource.as_str() == "settings.notification-app:so.tilo.mail"

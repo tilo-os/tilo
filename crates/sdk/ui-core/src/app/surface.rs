@@ -2144,7 +2144,7 @@ mod tests {
         let zoom = local
             .iter()
             .find(|resource| resource.id.as_str() == ZOOM_RESOURCE)
-            .expect("the window's own doors offer zoom");
+            .expect("the window's own APIs offer zoom");
         let ids: Vec<_> = zoom
             .actions
             .iter()
@@ -2155,7 +2155,7 @@ mod tests {
 
         assert!(
             app.invoke_local_address(&address("zoom-in"), None),
-            "the palette's and assistive technology's door runs Zoom in"
+            "the palette's and assistive technology's API runs Zoom in"
         );
         app.surface_frame(&region, &mut Scene::new());
         assert!(app.content_zoom() > 1.0, "Zoom in zoomed in");

@@ -4,7 +4,7 @@
 //! the desktop and what it shows, and handed to the session as the state it speaks through.
 
 use tilo_compositor::Compositor;
-use tilo_session_core::door::Doors;
+use tilo_session_core::surfaces::Surfaces;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::add_app::AddState;
 use tilo_sheets::delete_workspace::DeleteWorkspaceState;
@@ -88,7 +88,7 @@ pub(crate) fn power_offers(options: &Options) -> tilo_sheets::power::Offers {
 
 pub(crate) fn mount_sheets(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     options: &Options,
 ) -> Sheets {
     let who = (options.device.as_str(), options.person.as_str());
@@ -195,7 +195,7 @@ pub(crate) fn mount_sheets(
 /// the layouts and the wireless displays it streams to.
 fn mount_displays(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> (Option<ConfirmState>, Option<DisplaysState>) {
@@ -227,7 +227,7 @@ fn mount_displays(
 /// could unlock it. It stands on every display while it is up.
 fn mount_lock_view(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> Option<LockState> {
@@ -258,7 +258,7 @@ fn mount_lock_view(
 /// its own sheet over the shell.
 fn mount_app_questions(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     who: (&str, &str),
     options: &Options,
 ) -> (Option<AddState>, Option<UninstallState>) {
@@ -283,7 +283,7 @@ fn mount_app_questions(
 
 fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     definition: &'static ui::application::ApplicationDefinition,
     state: S,
     who: (&str, &str),

@@ -420,7 +420,7 @@ impl ActionProposal {
 
     fn accept_edit<R: tilo_resource::Resource>(&self, edit: Edit<R>) -> ProposalAccept<R> {
         let field = edit.path().last().map(field_of).unwrap_or_default();
-        // The action that carries the edit through the app's door; an edit
+        // The action that carries the edit through the app's API; an edit
         // that does not encode is never written, and carries why.
         let (invoke, refusal) = match tilo_resource::Invoke::edit(&edit) {
             Ok(invoke) => (Some(invoke), None),
@@ -540,10 +540,10 @@ impl<R: tilo_resource::Resource> ProposalAccept<R> {
         self.selection
     }
 
-    /// The action to submit through the app's own door — `cx
+    /// The action to submit through the app's own API — `cx
     /// .dispatcher().submit(...)`, or `app.invoke(...)` in a test — which
     /// applies it as the record's one field edit: one change, one History
-    /// row, one undo step, and the refusal the door gives when the field
+    /// row, one undo step, and the refusal the API gives when the field
     /// moved on while the model ran.
     ///
     /// # Errors

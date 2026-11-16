@@ -2,10 +2,10 @@
 //!
 //! An action whose contract declares [`Offload`] is a pure transform of
 //! content: its inputs are the content its invocation names, its outputs are
-//! content, and they depend on the inputs alone. The action door admits such
+//! content, and they depend on the inputs alone. The action API admits such
 //! an invocation exactly as any other — who may invoke never changes — and
 //! then asks the device's [`ActionOffload`] whether another of the person's
-//! devices should run it. When one did, the door answers the invocation with
+//! devices should run it. When one did, the API answers the invocation with
 //! that output ([`Offloaded::Ran`]); otherwise, for any reason at all, the
 //! app's own handler runs it here ([`Offloaded::RunHere`]), so a failed or
 //! unreachable worker only ever costs time, never a different answer.
@@ -66,7 +66,7 @@ pub trait ActionOffload: Send + Sync {
     fn offload(&self, request: OffloadRequest) -> OffloadFuture<'_>;
 
     /// [`Self::offload`] for the invocation `request` was admitted from, as
-    /// this device's door would send it to another device: a route that runs
+    /// this device's API would send it to another device: a route that runs
     /// it elsewhere sends the invocation the person made, so the device that
     /// runs it answers that one and a retry there is not a second run. A
     /// route with no device to send it to keeps its own way of running it.

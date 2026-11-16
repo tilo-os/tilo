@@ -1,6 +1,6 @@
 //! One command model for every host chrome. A command is only a view of an action that already exists:
 //! its binding addresses a resource the host serves, its enabled state is that action's availability,
-//! and invoking it opens the same door the palette uses.
+//! and invoking it opens the same API the palette uses.
 
 use crate::time::SystemTime;
 
@@ -8,7 +8,7 @@ use fluent::FluentArgs;
 use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, ResourceSpec};
 
 use super::edit::EDIT_RESOURCE;
-use crate::history_mode::door::{HISTORY_RESOURCE, encode_entry};
+use crate::history_mode::api::{HISTORY_RESOURCE, encode_entry};
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
 use crate::search::request::SEARCH_RESOURCE;

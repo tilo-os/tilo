@@ -97,7 +97,7 @@ fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         let refused = session.invoke(CHROME_RESOURCE, "move-tab", &arguments);
         assert!(
-            matches!(refused, Err(tilo_actions::DoorError::InvalidArguments(_))),
+            matches!(refused, Err(tilo_actions::ApiError::InvalidArguments(_))),
             "a call naming no window's id is answered, not taken for the first window: {arguments:?} {refused:?}"
         );
     }

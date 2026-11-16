@@ -72,7 +72,7 @@ impl LayoutActions {
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_by(None, address, arguments)
     }
 
@@ -83,7 +83,7 @@ impl LayoutActions {
         actor: Option<&str>,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         // The layout publishes its record's undo and redo beside its layout actions: both
         // step the record, never decode as an layout action.
         if address.resource == RECORD_RESOURCE
@@ -92,14 +92,14 @@ impl LayoutActions {
             return self.step(address);
         }
         let published = self.layout.borrow().resources();
-        let built = tilo_actions::door::spec_of(&published, &address.resource, &address.action)
-            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        let built = tilo_actions::api::spec_of(&published, &address.resource, &address.action)
+            .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
         let encoded = built
             .build_json(arguments)
-            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+            .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
         let mut action =
             LayoutAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
-                tilo_actions::DoorError::UnregisteredType("tilo.shell.layout".to_owned())
+                tilo_actions::ApiError::UnregisteredType("tilo.shell.layout".to_owned())
             })?;
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
@@ -145,7 +145,7 @@ impl LayoutActions {
             .borrow_mut()
             .ask(&asked, action.clone(), busy)
             .map(drop)
-            .map_err(tilo_actions::DoorError::Failed)?;
+            .map_err(tilo_actions::ApiError::Failed)?;
         Ok(self.shown(&action))
     }
 
@@ -242,7 +242,7 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &str,
         busy: Busy,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
+    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::PlaceFound {
             text,
             view,
@@ -282,7 +282,7 @@ impl LayoutActions {
         &self,
         action: &LayoutAction,
         asked: &str,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
+    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::Open {
             resource,
             view,
@@ -297,7 +297,7 @@ impl LayoutActions {
             .open_place(asked, resource, view, beside);
         Some(match opened {
             Ok(_) => Ok(self.shown(action)),
-            Err(why) => Err(tilo_actions::DoorError::Unavailable {
+            Err(why) => Err(tilo_actions::ApiError::Unavailable {
                 code: "nowhere_to_open".to_owned(),
                 reason: why,
             }),
@@ -313,7 +313,7 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &str,
         busy: Busy,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>> {
+    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::RetryQuery { place } = action else {
             return None;
         };
@@ -324,7 +324,7 @@ impl LayoutActions {
             .retry_query(asked, *place, &*ask_origin, busy);
         Some(match retried {
             Ok(()) => Ok(completed()),
-            Err(why) => Err(tilo_actions::DoorError::Unavailable {
+            Err(why) => Err(tilo_actions::ApiError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,
             }),
@@ -341,7 +341,7 @@ impl LayoutActions {
         actor: &str,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_by(Some(actor), address, arguments)
     }
 
@@ -378,7 +378,7 @@ impl LayoutActions {
         &self,
         arguments: &serde_json::Map<String, Json>,
         action: &mut LayoutAction,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         let LayoutAction::Place {
             workspace,
             row,
@@ -398,12 +398,12 @@ impl LayoutActions {
         // A row is a row of one workspace: the two come named together, or both from the surface in
         // front.
         if arguments.contains_key("workspace") != arguments.contains_key("row") {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "a place names its workspace and its row together, or neither".to_owned(),
             ));
         }
         let surface = self.layout.borrow().surface_at().map_err(|why| {
-            tilo_actions::DoorError::Unavailable {
+            tilo_actions::ApiError::Unavailable {
                 code: "nowhere_to_place".to_owned(),
                 reason: why,
             }
@@ -425,15 +425,15 @@ impl LayoutActions {
     fn step(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         let person = self.person();
         let stepped = match address.action.as_str() {
             "undo" => self.layout.borrow_mut().undo(&person),
             "redo" => self.layout.borrow_mut().redo(&person),
-            _ => return Err(tilo_actions::DoorError::Unknown(address.clone())),
+            _ => return Err(tilo_actions::ApiError::Unknown(address.clone())),
         };
         if !stepped {
-            return Err(tilo_actions::DoorError::Unavailable {
+            return Err(tilo_actions::ApiError::Unavailable {
                 code: "nothing_to_undo".to_owned(),
                 reason: "the layout has no step left".to_owned(),
             });
@@ -447,7 +447,7 @@ impl LayoutActions {
     }
 }
 
-impl crate::door::Published for LayoutActions {
+impl crate::surfaces::Published for LayoutActions {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         Self::resources(self)
     }
@@ -460,8 +460,8 @@ impl crate::door::Published for LayoutActions {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-        _look: &mut crate::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        _look: &mut crate::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         Self::invoke(self, address, arguments)
     }
 
@@ -470,8 +470,8 @@ impl crate::door::Published for LayoutActions {
         actor: &str,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-        _look: &mut crate::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        _look: &mut crate::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         Self::invoke_as(self, actor, address, arguments)
     }
 

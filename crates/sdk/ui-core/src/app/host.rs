@@ -966,7 +966,7 @@ fn lay_out_window(
             );
         }
     }
-    // Initial redraws and programmatic changes need the same semantic door
+    // Initial redraws and programmatic changes need the same semantic API
     // as input. Published once the retained control tree has settled, and
     // after the frame is handed to the render thread
     // (`App::publish_owed_action_surface`): no frame waits on it.

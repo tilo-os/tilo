@@ -289,11 +289,11 @@ mod tests {
             app: app.to_string(),
             broker_peer_id: None,
             broker_provider: None,
-            descriptor: tilo_actions::door::ActionDescriptor {
+            descriptor: tilo_actions::api::ActionDescriptor {
                 did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
-                address: tilo_actions::door::ActionAddress::new(resource, action),
+                address: tilo_actions::api::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
                 action_label: label.to_string(),

@@ -1,4 +1,4 @@
-//! The window's History door and control: the one resource every History control, shortcut, menu and
+//! The window's History API and control: the one resource every History control, shortcut, menu and
 //! palette row goes through to open History, open it at a change, or hide it, and the button that
 //! presents it.
 
@@ -44,14 +44,14 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
         .toggled(control.is_open())
 }
 
-/// The window's History control, bound to the History door: closed it opens History, open it closes it,
+/// The window's History control, bound to the History API: closed it opens History, open it closes it,
 /// exactly as the History shortcut and the palette do.
 #[must_use]
 pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
     history_control_face(id, control).on_action(history_control_binding(control))
 }
 
-/// The History door a press of the window's History control goes through: Open while History is closed,
+/// The History API a press of the window's History control goes through: Open while History is closed,
 /// Hide while it shows. # Panics Never: Open and Hide are fixed unit operations whose bindings always
 /// serialize.
 #[must_use]
@@ -120,7 +120,7 @@ fn open_resource() -> ResourceSpec {
     .with_action(open_at_operation())
 }
 
-/// The stable History door, whichever History serves it: Open while there is a document to show, and
+/// The stable History API, whichever History serves it: Open while there is a document to show, and
 /// Hide while History is showing.
 pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
     let mut resource = open_resource();

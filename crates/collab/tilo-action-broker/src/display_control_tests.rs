@@ -267,8 +267,8 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 wait_ms: None,
                 appearance: None,
             };
-            // The previous normal host door really admitted this action but
-            // supplied no original custody. The generic door still cannot
+            // The previous normal host api really admitted this action but
+            // supplied no original custody. The generic API still cannot
             // borrow native-owner identity just from a local-person label.
             let mut generic = request.clone();
             generic.invocation = tilo_actions::InvocationId::new();
@@ -409,7 +409,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
                 .await
                 .unwrap();
             // The application that launched this connection is the one whose
-            // actions these are: its own door reaches them.
+            // actions these are: its own api reaches them.
             let mut caller = rig.app_caller(&env, 905, "so.tilo.settings", None).await;
             let settings = rig.worker.handle.settings();
             let receipt = identify_displays(&caller.handle).await;

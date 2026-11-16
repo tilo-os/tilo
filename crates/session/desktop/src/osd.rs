@@ -1686,7 +1686,7 @@ mod tests {
         let resource = osd_resource();
         let spec = &resource.actions[0];
         let show = |arguments: &serde_json::Map<String, serde_json::Value>| {
-            tilo_actions::door::encode_json(
+            tilo_actions::api::encode_json(
                 std::slice::from_ref(&resource),
                 &tilo_actions::ActionAddress::new(OSD_RESOURCE, spec.id.as_str()),
                 arguments,

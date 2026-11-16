@@ -30,7 +30,7 @@ use std::io::Read as _;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionOutput, HOST_RENDER_TAG};
 use tilo_content::ContentStore;
 use tilo_lock::MutexRecover as _;
@@ -120,7 +120,7 @@ pub(crate) fn route(
     content: Option<&ContentStore>,
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Option<Result<ActionOutput, DoorError>> {
+) -> Option<Result<ActionOutput, ApiError>> {
     let ours = record.app_id() == VIDEO_EDITOR
         && [RENDER, EXPORT, STATUS, CANCEL, FRAME].contains(&address.action.as_str());
     if !ours || !record.is_agents() || !available() {
@@ -187,16 +187,16 @@ impl RenderService {
         content: &ContentStore,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         let Some(helper) = self.helper.clone() else {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "host_render".into(),
                 reason: "rendering video is unavailable on this host: it has no render \
                          service (tilo-video-render)"
                     .into(),
             });
         };
-        let wait = || agent_render::wait_from_args(arguments).map_err(DoorError::InvalidArguments);
+        let wait = || agent_render::wait_from_args(arguments).map_err(ApiError::InvalidArguments);
         match address.action.as_str() {
             EXPORT | RENDER => {
                 let mut snapshot = Snapshot::of(record).map_err(refused)?;
@@ -211,7 +211,7 @@ impl RenderService {
                 } else {
                     AgentExportSettings::from_args(arguments, aspect)
                 }
-                .map_err(DoorError::InvalidArguments)?;
+                .map_err(ApiError::InvalidArguments)?;
                 let wait = wait()?;
                 agent_render::renderable(&snapshot.project).map_err(refused)?;
                 snapshot.check_sources(content).map_err(refused)?;
@@ -236,13 +236,13 @@ impl RenderService {
                     snapshot.project.aspect(),
                     snapshot.project.duration(),
                 )
-                .map_err(DoorError::InvalidArguments)?;
+                .map_err(ApiError::InvalidArguments)?;
                 agent_render::renderable(&snapshot.project).map_err(refused)?;
                 snapshot.check_sources(content).map_err(refused)?;
                 self.still(&helper, &snapshot, frame, content)
-                    .map_err(DoorError::Failed)
+                    .map_err(ApiError::Failed)
             }
-            _ => Err(DoorError::Unknown(address.clone())),
+            _ => Err(ApiError::Unknown(address.clone())),
         }
     }
 
@@ -250,17 +250,17 @@ impl RenderService {
     fn find(
         &self,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Arc<Job>, DoorError> {
+    ) -> Result<Arc<Job>, ApiError> {
         let id = arguments
             .get("job")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| DoorError::InvalidArguments("name the render: `job`".into()))?;
+            .ok_or_else(|| ApiError::InvalidArguments("name the render: `job`".into()))?;
         self.jobs
             .lock_recover()
             .iter()
             .find(|job| job.id == id)
             .cloned()
-            .ok_or_else(|| DoorError::InvalidArguments(format!("there is no render {id}")))
+            .ok_or_else(|| ApiError::InvalidArguments(format!("there is no render {id}")))
     }
 
     /// The render of `snapshot` at `settings`: the one made or running, or a
@@ -549,14 +549,14 @@ fn keep(
 fn number(
     arguments: &serde_json::Map<String, serde_json::Value>,
     name: &str,
-) -> Result<Option<f64>, DoorError> {
+) -> Result<Option<f64>, ApiError> {
     match arguments.get(name) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(value) => value
             .as_f64()
             .filter(|seconds| seconds.is_finite())
             .map(Some)
-            .ok_or_else(|| DoorError::InvalidArguments(format!("`{name}` is seconds"))),
+            .ok_or_else(|| ApiError::InvalidArguments(format!("`{name}` is seconds"))),
     }
 }
 
@@ -573,8 +573,8 @@ fn value(answer: serde_json::Value) -> ActionOutput {
     }
 }
 
-fn refused(reason: String) -> DoorError {
-    DoorError::Unavailable {
+fn refused(reason: String) -> ApiError {
+    ApiError::Unavailable {
         code: "render_refused".into(),
         reason,
     }

@@ -1,5 +1,5 @@
 //! The session a desktop serves the windows it hosts in process.
-//! A window never opens another app itself: it asks its session to open it ([`ui::session_door`]),
+//! A window never opens another app itself: it asks its session to open it ([`ui::session_api`]),
 //! the same request a native window hands its workspace broker. A desktop that hosts its windows in
 //! process, such as a page, answers that request here: [`serve`] makes the session the windows are
 //! handed ([`DesktopSession`], a remote action host) and the desktop's end of it ([`Openings`]),

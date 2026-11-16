@@ -43,10 +43,10 @@ impl crate::Shared {
             Action::Next => "next",
         };
         let address = tilo_actions::ActionAddress::new(crate::MEDIA, action);
-        if let Err(error) = self.doors.invoke(
+        if let Err(error) = self.published.invoke(
             &address,
             &serde_json::Map::new(),
-            &mut tilo_session_core::door::Look::none(),
+            &mut tilo_session_core::surfaces::Look::none(),
         ) {
             tracing::warn!(%error, ?action, "the shell's music control did not reach the player");
         }

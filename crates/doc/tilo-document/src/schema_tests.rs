@@ -102,7 +102,7 @@ fn published() -> tilo_actions::ResourceSpec {
 }
 
 fn descriptor(action: &str) -> ActionDescriptor {
-    tilo_actions::door::survey(&[published()])
+    tilo_actions::api::survey(&[published()])
         .into_iter()
         .find(|descriptor| descriptor.address.action == action)
         .unwrap()

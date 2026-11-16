@@ -1,7 +1,7 @@
 //! The person's MCP server, as the overview of their Tilo follows it: the
-//! door's live read ([`mcp_server::SERVER`]), asked of the host that serves it
+//! server's live read ([`mcp_server::SERVER`]), asked of the host that serves it
 //! and followed as agents connect, work and leave. It is the read Console's
-//! agent card shows, not a second one: the same door, asked of the same host
+//! agent card shows, not a second one: the same server, asked of the same host
 //! ([`ActionHost`]), and each host's answer is what its own run names.
 //!
 //! A host that refuses the read, or a session that reaches none, leaves the
@@ -11,33 +11,33 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     ActionHost, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, mcp_server,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
-/// How long the door is given to answer before its read is asked again: a
+/// How long the MCP server is given to answer before its read is asked again: a
 /// refused read, or a session that reached no host, is worth another try
 /// later, never a frame spent waiting for it.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The MCP server's read, as the overview follows it.
 #[derive(Default)]
-pub struct DoorRead {
+pub struct ApiRead {
     /// The read being followed, once asked.
     read: Option<InvocationId>,
     /// When it was asked, so one that never answers is asked again.
     asked: Option<ui::time::Instant>,
-    /// What the door last answered.
+    /// What the MCP server last answered.
     answer: Option<mcp_server::Server>,
     /// Whether a wake is out for the answer to move.
     armed: Arc<AtomicBool>,
 }
 
-impl DoorRead {
-    /// Follow the door `host` serves for `caller`, waking `wake` when the
-    /// answer may have moved. Whether the door's answer changed, so the rows
+impl ApiRead {
+    /// Follow the MCP server `host` serves for `caller`, waking `wake` when the
+    /// answer may have moved. Whether the MCP server's answer changed, so the rows
     /// are to be drawn again.
     pub fn follow(
         &mut self,
@@ -64,7 +64,9 @@ impl DoorRead {
                 id
             }
         };
-        let answer = host.observe(caller, &id).and_then(|state| door_of(&state));
+        let answer = host
+            .observe(caller, &id)
+            .and_then(|state| server_of(&state));
         let changed = answer.is_some() && answer != self.answer;
         if changed {
             self.answer = answer;
@@ -85,16 +87,16 @@ impl DoorRead {
         changed
     }
 
-    /// The door as it last answered, for the overview's rows.
+    /// The MCP server as it last answered, for the overview's rows.
     #[must_use]
-    pub fn door(&self) -> Option<&mcp_server::Server> {
+    pub fn server(&self) -> Option<&mcp_server::Server> {
         self.answer.as_ref()
     }
 
-    /// Take back grant `grant` at the door `host` serves, as the person:
-    /// the door ends its runs and lets it in no more, and a page hands the
+    /// Take back grant `grant` at the MCP server `host` serves, as the person:
+    /// the MCP server ends its runs and lets it in no more, and a page hands the
     /// device's revocation to their root to sign, as it revokes any of
-    /// their devices. The door answers in its own time; what it says next
+    /// their devices. The MCP server answers in its own time; what it says next
     /// is what the read shows.
     pub fn revoke(host: &dyn ActionHost, caller: &Caller, grant: &str) {
         let request = request(
@@ -108,7 +110,7 @@ impl DoorRead {
     }
 }
 
-/// The invocation of door `action`, with `argument`.
+/// The invocation of server `action`, with `argument`.
 fn request(invocation: InvocationId, action: &str, argument: InvokeArgument) -> InvokeRequest {
     InvokeRequest {
         invocation,
@@ -126,8 +128,8 @@ fn request(invocation: InvocationId, action: &str, argument: InvokeArgument) -> 
     }
 }
 
-/// What a read's state says of the door.
-fn door_of(state: &tilo_actions::remote::InvocationState) -> Option<mcp_server::Server> {
+/// What a read's state says of the MCP server.
+fn server_of(state: &tilo_actions::remote::InvocationState) -> Option<mcp_server::Server> {
     let InvocationUpdate::Item { value, .. } = &state.update else {
         return None;
     };

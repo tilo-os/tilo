@@ -107,7 +107,7 @@ impl Workspace {
         }
     }
 
-    /// `who` invokes `name` on the resource `subject` (of the type `ty`), as the door plans it,
+    /// `who` invokes `name` on the resource `subject` (of the type `ty`), as the API plans it,
     /// and commits it; returns what it recorded.
     fn act(&mut self, who: &str, (ty, subject): (&str, &str), name: &str, args: Json) -> DynAction {
         let action = self

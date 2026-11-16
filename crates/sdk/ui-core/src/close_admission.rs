@@ -245,7 +245,7 @@ mod tests {
                 crate::platform::PlatformConventions::default(),
             );
             assert!(!admission.validate(&stale));
-            assert!(tilo_actions::door::resolve(&admission.resources(), &stale_address).is_none());
+            assert!(tilo_actions::api::resolve(&admission.resources(), &stale_address).is_none());
             admission.save_waiting = true;
             admission.save_local = Some(tilo_actions::InvocationId::new());
             admission.dismiss();

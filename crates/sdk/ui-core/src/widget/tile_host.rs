@@ -1726,7 +1726,7 @@ impl Widget for TileHost {
     fn visit_resource_owners(
         &self,
         request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         if let TileContent::App(live) = &self.content {
             request.tile(
                 self.history.as_ref().is_none_or(|h| h.live_interactive()),

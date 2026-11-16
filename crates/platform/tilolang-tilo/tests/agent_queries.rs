@@ -4,7 +4,7 @@
 //!
 //! Two workspaces' worth of records: Tasks and a journal in one, Notes, Chat and Board with their
 //! scenarios in the other. The task's programs run in a host of the task's own, which reads
-//! each app's record itself as the door hands it over (`task_records`): no app's host answers
+//! each app's record itself as the API hands it over (`task_records`): no app's host answers
 //! what a program asks.
 
 use std::fmt::Write as _;
@@ -14,7 +14,7 @@ use serde_json::Value as Json;
 use tilolang_runtime::Principal;
 use tilolang_tilo::task::TaskSession;
 
-use crate::task_door::Apps;
+use crate::task_api::Apps;
 
 macro_rules! app {
     ($name:literal) => {
@@ -86,7 +86,7 @@ fn world() -> World {
         other.commit();
     }
     let apps = Rc::new(apps);
-    let (task, _door) = apps.record_task();
+    let (task, _api) = apps.record_task();
     // The task reads times as they are: what an app wrote just now was changed within any recent window.
     task.set_clock(tilolang_tilo::host::system_time);
     World { task }
@@ -433,7 +433,7 @@ fn a_session_of_the_agents_doc_examples() {
 #[test]
 fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
-    let (task, _door) = apps.record_task();
+    let (task, _api) = apps.record_task();
     task.set_clock(tilolang_tilo::host::system_time);
     let notes = "so.tilo.lang.notes";
     let fetches = || {
@@ -469,11 +469,11 @@ fn a_task_reads_each_record_anew_for_every_program_and_after_changing_it() {
 }
 
 /// A task reads its own earlier changes in every program after them, while the copy of the
-/// record the door hands over still lags the record's origin.
+/// record the API hands over still lags the record's origin.
 #[test]
 fn a_tasks_next_program_reads_what_its_earlier_ones_changed() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("tasks")]]));
-    let (task, _door) = apps.record_task();
+    let (task, _api) = apps.record_task();
     task.set_clock(tilolang_tilo::host::system_time);
     apps.lag("so.tilo.lang.tasks");
     let out = printed(&task.run(
@@ -516,7 +516,7 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
             .unwrap();
         notes.commit();
     }
-    let (task, _door) = apps.record_task();
+    let (task, _api) = apps.record_task();
     task.set_clock(tilolang_tilo::host::system_time);
     let run = |source: &str| {
         task.run(

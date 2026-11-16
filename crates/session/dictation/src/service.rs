@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use serde_json::{Map, Value};
 use settings_store::personal_dictionary::{Reader, Vocabulary};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_service::{Service, Started, decode, offer};
 use zeroize::Zeroizing;
 
@@ -285,9 +285,9 @@ impl Service for DictationService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != DICTATION {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         let published = self.resources();
         let action = decode::<DictationAction>(&published, resource, action, arguments)?;
@@ -387,7 +387,7 @@ mod tests {
             assert_eq!(link.take_requests(), vec![Request::Toggle]);
             assert_eq!(
                 service.invoke(DICTATION, "allow", &Map::new()),
-                Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
+                Err(ApiError::Unknown(ActionAddress::new(DICTATION, "allow"))),
                 "there is no action that allows the microphone"
             );
         }

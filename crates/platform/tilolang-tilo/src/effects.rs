@@ -1,10 +1,10 @@
-//! What an agent does on the door beyond the published actions of the packages: run a block,
+//! What an agent does on the API beyond the published actions of the packages: run a block,
 //! read the catalogue.
 //!
 //! They are an [`Effect`] vocabulary published on the `tl:host` resource, so the desktop agent,
-//! the runtime door, shortcuts and grants reach them as they reach every other operation. The
+//! the runtime api, shortcuts and grants reach them as they reach every other operation. The
 //! window answers them with [`Host::answer`]; what they change in the workspace they change through
-//! the runtime's own commits, which the window hands to the door like a press's.
+//! the runtime's own commits, which the window hands to the API like a press's.
 
 use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
@@ -165,7 +165,7 @@ const READ_ITEMS: usize = 200;
 const READ_TEXT_CHARS: usize = 100_000;
 
 /// Name each resource a projection holds (`{"type", "id", ...}`) by its published id too, the
-/// `item` a read or an action of the door takes.
+/// `item` a read or an action of the API takes.
 fn published_ids(value: &mut Json, app: &str) {
     match value {
         Json::Object(fields) => {
@@ -198,7 +198,7 @@ fn output(value: Json) -> ActionOutput {
 }
 
 impl Host {
-    /// Answer `effect` for `caller`, the principal the door admitted (the person at the window
+    /// Answer `effect` for `caller`, the principal the API admitted (the person at the window
     /// when `None`). An agent's code is written by its own principal, so what it applies to
     /// another app or outside asks a person first.
     pub fn answer(
@@ -332,7 +332,7 @@ impl Host {
         })
     }
 
-    /// What the workspace's resources hold, as an agent or a script reads it through the door's
+    /// What the workspace's resources hold, as an agent or a script reads it through the API's
     /// `read`: with no `item`, every record of the workspace with its id, kind and title; with an
     /// `item` (a published id, `tl:<app>:<id>`, an item of a record by its path), that resource
     /// with its fields, each of the items it holds named by its published id.

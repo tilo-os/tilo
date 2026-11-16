@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
         }
         assert!(
             item_ids(&ada, &meta, &root).is_empty(),
-            "only the door's commit changes the workspace"
+            "only the API's commit changes the workspace"
         );
     }
 }

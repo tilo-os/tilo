@@ -22,7 +22,7 @@ pub(crate) fn graph(
     app: &mut TestApp<ChipDesignShell>,
     action: &str,
     args: serde_json::Value,
-) -> Result<Option<serde_json::Value>, ui::tilo_actions::DoorError> {
+) -> Result<Option<serde_json::Value>, ui::tilo_actions::ApiError> {
     if action == "set-output-width" {
         let node = args["node"].as_str().unwrap_or_default();
         let width = args["width"]

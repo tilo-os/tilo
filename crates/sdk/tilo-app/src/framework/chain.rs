@@ -17,7 +17,7 @@
 //! item the head or the part after it), and what an action reads of the
 //! app's own record where it is invoked. Everything else is the framework's:
 //!
-//! - **One door.** The chain is published beside the app's resource as one
+//! - **One api.** The chain is published beside the app's resource as one
 //!   resource ([`Chain::id`]): the head's actions, and every held part's
 //!   items with theirs, each carried out on the part [`Chained::part_for`]
 //!   names when it is invoked. The palette, agents, scripts and the app's
@@ -39,7 +39,7 @@
 //! undone with the app's own: they are recorded in the part's history, and
 //! the chain publishes the history verbs (`undo`, `redo`, `restore`,
 //! `checkpoint`) naming the part they change, so a person, an agent or the
-//! workspace's moderation takes back steps in a part through the same door.
+//! workspace's moderation takes back steps in a part through the same api.
 //!
 //! A part opened in the app's store by anyone — a peer's merged into an
 //! attached view, one this device asked the workspace for — is held from the
@@ -68,7 +68,7 @@ use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError, Rec
 use super::dispatch::Dispatcher;
 use super::history::{PART_EDIT_TYPE, PartEdit};
 use super::live::Live;
-use super::record::RecordDoor;
+use super::record::RecordApi;
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -485,7 +485,7 @@ impl<P: Chained> ChainState<P> {
     /// logged. Otherwise it is left for the caller to answer now.
     ///
     /// # Errors
-    /// As the door refuses it now: the person may not, the app's record or
+    /// As the api refuses it now: the person may not, the app's record or
     /// the part refused it, or the record of waiting actions cannot be
     /// written.
     pub(crate) fn apply_as(
@@ -1037,7 +1037,7 @@ impl<P: Chained> ChainState<P> {
         drop(base);
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
         if let Some(permissions) = &self.workspace.permissions {
-            // Decided where the chain publishes the action, as the door
+            // Decided where the chain publishes the action, as the api
             // decides it: a grant on the app, the parts' kind or the verb
             // covers it.
             let need = tilo_resource::need_of::<P>(&action);
@@ -1531,7 +1531,7 @@ fn route_at(
     resource
 }
 
-impl<P: Chained> RecordDoor for ChainState<P> {
+impl<P: Chained> RecordApi for ChainState<P> {
     fn id(&self) -> &str {
         &self.id
     }
@@ -1698,7 +1698,7 @@ impl<P: Chained> Chain<P> {
     /// meanwhile, and is written once it is here, in the order asked.
     ///
     /// # Errors
-    /// As the door refuses it: the person may not, the app's record or the
+    /// As the api refuses it: the person may not, the app's record or the
     /// part refused it.
     pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
@@ -1760,10 +1760,10 @@ impl<P: Chained> Chain<P> {
     /// gesture (Undo beside a message they deleted).
     ///
     /// A refusal is reported through the dispatcher's
-    /// [`refused`](Dispatcher::refused), as the door's are.
+    /// [`refused`](Dispatcher::refused), as the api's are.
     ///
     /// # Errors
-    /// As the door refuses it: the person may not change the part's history,
+    /// As the api refuses it: the person may not change the part's history,
     /// the part is not here, or they have no step in it to take back.
     pub fn undo_in(&self, index: u64) -> Result<(), ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
@@ -1872,7 +1872,7 @@ impl<P: Chained> Chain<P> {
         self.state.workspace.store.takes_writes()
     }
 
-    /// The chain's dispatcher: what it submits goes through the host's door
+    /// The chain's dispatcher: what it submits goes through the host's api
     /// as a click on a control does (a destructive verb asks first), and
     /// [`apply_now`](Dispatcher::apply_now) applies at once.
     #[must_use]
@@ -1936,8 +1936,8 @@ impl<P: Chained> Chain<P> {
             .read(&self.state.chain.part(index), |doc| doc.clone().save())
     }
 
-    /// What this chain's dispatcher handed to the door and nothing took yet
-    /// (a destructive verb waiting for confirmation), applied as the door
+    /// What this chain's dispatcher handed to the api and nothing took yet
+    /// (a destructive verb waiting for confirmation), applied as the api
     /// does once the person agreed. Taking them empties the queue.
     ///
     /// # Errors
@@ -2069,7 +2069,7 @@ pub(crate) struct Chains {
     held: RefCell<HeldChains>,
     /// The child records held, by their container's address.
     children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
-    doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
+    apis: RefCell<Vec<Rc<dyn RecordApi>>>,
 }
 
 impl Chains {
@@ -2135,13 +2135,13 @@ impl Chains {
             (P::KIND, chain.as_str().to_owned()),
             Rc::clone(state) as Rc<dyn Any>,
         );
-        self.doors
+        self.apis
             .borrow_mut()
-            .push(Rc::clone(state) as Rc<dyn RecordDoor>);
+            .push(Rc::clone(state) as Rc<dyn RecordApi>);
     }
 
     /// The children of `C` the parent lists, held in `workspace` on first use:
-    /// published and answered beside the chains, through the same door.
+    /// published and answered beside the chains, through the same api.
     pub(crate) fn open_children<C: super::children::ChildRecord>(
         &self,
         workspace: Option<&WorkspaceRecords>,
@@ -2160,14 +2160,14 @@ impl Chains {
         self.children
             .borrow_mut()
             .insert(key, Rc::clone(&state) as Rc<dyn Any>);
-        self.doors
+        self.apis
             .borrow_mut()
-            .push(Rc::clone(&state) as Rc<dyn RecordDoor>);
+            .push(Rc::clone(&state) as Rc<dyn RecordApi>);
         Some(state)
     }
 
-    pub(crate) fn doors(&self) -> Vec<Rc<dyn RecordDoor>> {
-        self.doors.borrow().clone()
+    pub(crate) fn apis(&self) -> Vec<Rc<dyn RecordApi>> {
+        self.apis.borrow().clone()
     }
 
     /// Answer one published action of a chain: apply it to the part it
@@ -2180,29 +2180,29 @@ impl Chains {
     ) -> Result<tilo_actions::ActionOutput, String> {
         let request: super::record::RecordAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
-        let door = self
-            .doors
+        let api = self
+            .apis
             .borrow()
             .iter()
-            .find(|door| door.id() == request.record)
+            .find(|api| api.id() == request.record)
             .cloned()
             .ok_or_else(|| format!("no chain `{}` is open here", request.record))?;
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.map(ActionInvoker::person))
             .ok_or("nobody changes a past version")?;
-        door.apply_in(&request.action, &invoker, live)
+        api.apply_in(&request.action, &invoker, live)
     }
 
     /// Answer a read of the chain `chain` ([`CHAIN_READ_TYPE`]) from the
     /// parts this device holds.
     pub(crate) fn read(&self, chain: &str, payload: &[u8]) -> Result<serde_json::Value, String> {
-        let door = self
-            .doors
+        let api = self
+            .apis
             .borrow()
             .iter()
-            .find(|door| door.id() == chain)
+            .find(|api| api.id() == chain)
             .cloned()
             .ok_or_else(|| format!("no chain `{chain}` is open here"))?;
-        door.read(payload)
+        api.read(payload)
     }
 }

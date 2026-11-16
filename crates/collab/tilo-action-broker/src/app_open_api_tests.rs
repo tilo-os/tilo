@@ -1,6 +1,6 @@
 // An app's own connection opens an application only for the person's press
 // in it or for an invocation someone else asked of it: a person at one of
-// the host's doors, or an agent within its own grants.
+// the host's apis, or an agent within its own grants.
 
 /// A launcher that opens what it is asked and answers whether the person
 /// pressed in the asking app, each press proving one open.

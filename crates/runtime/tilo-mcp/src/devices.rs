@@ -5,7 +5,7 @@
 //! on [`ALPN`], to B's MCP server, where the person — or B's own setting —
 //! admits it as an agent delegated by them, via A. Nothing else is new
 //! authority: B serves the connection as it serves a program of its own login
-//! ([`crate::session_door`]), through its broker's ordinary gate, in one
+//! ([`crate::session_api`]), through its broker's ordinary gate, in one
 //! workspace, under an agent id that names A ([`agent_id`]).
 //!
 //! B knows who dials from the transport alone. The connection's endpoint id is
@@ -1097,7 +1097,7 @@ mod tests {
                 None,
                 "nothing beyond the device and the workspace is read"
             );
-            assert!(!crate::session_door::is_control_request(
+            assert!(!crate::session_api::is_control_request(
                 br#"{"forward":{"device":"studio"}}"#
             ));
         }

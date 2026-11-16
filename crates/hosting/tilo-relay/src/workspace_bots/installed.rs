@@ -3,7 +3,7 @@
 //! The runner follows the records of the apps the bot's program names and
 //! the event logs of the connectors it listens to. Each change and each
 //! connector event goes through the dispatcher; every firing is queued and
-//! run unattended through the bot's door ([`BotDoor`]) over its own
+//! run unattended through the bot's API ([`BotApi`]) over its own
 //! replicas of the workspace's records, and what a run changed is published by
 //! the governor signed by the bot's own device, so every member admits it
 //! as the bot's. An outbox entry a step queues is handed to the connector's
@@ -11,7 +11,7 @@
 //!
 //! Cursors and the queue are kept in the installation's state file, so a
 //! restarted host carries on after the last change and event it took in;
-//! a firing that runs again reuses its run id, and the door answers the
+//! a firing that runs again reuses its run id, and the API answers the
 //! steps already in history instead of repeating them.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -25,7 +25,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_agent_participant::bot::door::{BotDoor, OutboxSpec, PerformError, Performer};
+use tilo_agent_participant::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
 use tilo_agent_participant::bot::held::HeldRecords;
 use tilo_agent_participant::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
@@ -128,7 +128,7 @@ impl Progress {
     }
 }
 
-/// A connector's worker as the door's performer. The door performs from
+/// A connector's worker as the API's performer. The API performs from
 /// the run's own blocking thread, so waiting here never holds a runtime
 /// worker; the op itself runs on the runtime.
 struct ConnectorPerformer {
@@ -157,7 +157,7 @@ impl Performer for ConnectorPerformer {
 }
 
 /// Nobody answers for a bot: an unattended run never confirms or asks,
-/// and the door answers every step at once.
+/// and the API answers every step at once.
 struct Unattended;
 
 impl RunHooks for Unattended {
@@ -196,7 +196,7 @@ pub struct BotRunner {
     /// Apps whose records the bot reads and acts on.
     apps: BTreeSet<String>,
     held: Arc<Mutex<HeldRecords>>,
-    door: Arc<BotDoor<HeldRecords>>,
+    api: Arc<BotApi<HeldRecords>>,
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
@@ -273,7 +273,7 @@ impl BotRunner {
                 }),
             })
             .collect();
-        let door = Arc::new(BotDoor::new(
+        let api = Arc::new(BotApi::new(
             Arc::clone(&held),
             bot.installation.clone(),
             installer,
@@ -290,7 +290,7 @@ impl BotRunner {
             shortcut: Arc::new(shortcut),
             apps,
             held,
-            door,
+            api,
             connectors,
             progress,
             state_file,
@@ -565,7 +565,7 @@ impl BotRunner {
         Ok(inputs)
     }
 
-    /// Run `firing` through the bot's door and publish what it changed.
+    /// Run `firing` through the bot's API and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
         // The replicas are brought up to the workspace's records first, so the
         // run reads what members did up to now: each app's own records,
@@ -603,7 +603,7 @@ impl BotRunner {
         )
         .in_workspace(self.workspace.clone());
         let (door, shortcut, handle) = (
-            Arc::clone(&self.door),
+            Arc::clone(&self.api),
             Arc::clone(&self.shortcut),
             tokio::runtime::Handle::current(),
         );
@@ -649,7 +649,7 @@ impl BotRunner {
                     held.forget(route);
                 }
                 drop(held);
-                self.door.forget_steps();
+                self.api.forget_steps();
                 let reason = format!(
                     "the workspace refused the bot's change to {}/{}: {refusal}",
                     route.app_id, route.record

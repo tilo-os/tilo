@@ -112,7 +112,7 @@ fn serving_shell(
     driver.set_caller_palette_enabled(false);
     let (session, openings) =
         tilo_desktop_surface::session::serve(workspace, std::sync::Arc::default());
-    driver.set_session_door(
+    driver.set_session_api(
         ui::RemoteActions::with_host(
             session,
             ui::tilo_actions::remote::Caller::local_person("tester").in_workspace(workspace),

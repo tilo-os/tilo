@@ -9,11 +9,11 @@
 pub(crate) mod mount;
 
 use crate::platform::surfaces::{AppHost, Placement};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_session_core::surface::{HostKey, KeyClaim};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState;
 use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
@@ -259,8 +259,8 @@ impl<S: SheetState> Published for Sheet<S> {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.host.invoke(address, arguments, look)
     }
 

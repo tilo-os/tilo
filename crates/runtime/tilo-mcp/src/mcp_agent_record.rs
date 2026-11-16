@@ -1,4 +1,4 @@
-//! `tilo_read` of `record:<app>:<record>`: a record of the workspace as any reader reads it, through the one record door
+//! `tilo_read` of `record:<app>:<record>`: a record of the workspace as any reader reads it, through the one record API
 //! ([`tilo_actions::remote::RecordReads`]): its content as a structured value whatever app keeps
 //! it, decided as the agent may read it now, and woken by the next write to it.
 

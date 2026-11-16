@@ -47,7 +47,7 @@ impl SlotRowHost for App {
 
     fn press_history(&mut self, control: HistoryControl) {
         // The window's own bar reports the same refusal the same way
-        // ([`crate::app::window_bar`]): History is not open yet, or the door
+        // ([`crate::app::window_bar`]): History is not open yet, or the API
         // refused, and the row is offered again.
         if let Err(error) = self.invoke_window_history_control(control) {
             tracing::debug!(%error, ?control, "window slots: History control refused");

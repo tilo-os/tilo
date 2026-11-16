@@ -4,7 +4,7 @@
 //! A workspace's records are sealed per app: a connection holding that app's launch custody opens
 //! them. An agent is not an app. It is admitted acting for the person whose session it works in,
 //! never session-delegated and holding no app's route, and reads one record at a time through
-//! this door. Each read is decided by the check every reader of a record goes through (the lesser
+//! this API. Each read is decided by the check every reader of a record goes through (the lesser
 //! of the agent's grants and the person's), again for every read, so a grant revoked or a member
 //! removed in the middle of a session cuts the reads that follow. A read carries the record's
 //! committed content and nothing that writes to it: the agent changes a record only by invoking
@@ -40,7 +40,7 @@ pub enum RecordCopy {
     Absent,
 }
 
-/// A host's door for reading records outside their app.
+/// A host's API for reading records outside their app.
 pub trait RecordReads: Send + Sync {
     /// The record `address` of `caller`'s workspace, as `caller` may read it now.
     ///
@@ -53,13 +53,13 @@ pub trait RecordReads: Send + Sync {
     fn read(&self, caller: &Caller, address: &RecordAddress)
     -> Result<RecordCopy, ActionHostError>;
 
-    /// Answer a read of one of this host's records, asked as `correlation` over the door
+    /// Answer a read of one of this host's records, asked as `correlation` over the API
     /// ([`super::RemoteActionMessage::RecordRead`]), with what every reader of it is answered:
     /// [`answer_read`], which every host that reads records through this trait answers with.
     ///
-    /// The door posts a read here rather than to code of its own, so what a reading is made of —
+    /// The API posts a read here rather than to code of its own, so what a reading is made of —
     /// every copy as JSON, and the record format behind it — is reached only from the reader's
-    /// code. A host that serves an app's windows and reads no record through the door leaves
+    /// code. A host that serves an app's windows and reads no record through the API leaves
     /// [`super::ActionHost::record_reads`] `None` and carries none of it.
     fn answer_read(
         self: std::sync::Arc<Self>,
@@ -240,10 +240,10 @@ pub fn read_records(
     }
 }
 
-/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the host's record door: on
+/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the host's record API: on
 /// a thread of its own, which the wait for a write past `read.after` and the record's capture hold.
 ///
-/// Every host that reads records answers [`RecordReads::answer_read`] with this, and the door
+/// Every host that reads records answers [`RecordReads::answer_read`] with this, and the API
 /// posts a read through that method rather than here: the reading, the JSON every reader is
 /// answered and the record format behind it are reached only from a reader's own code, so a host
 /// that serves an app's windows and reads no record does not carry them.
@@ -261,7 +261,7 @@ pub fn answer_read(
     })
 }
 
-/// What a host that reads no records answers a read of one: the door posts every read through
+/// What a host that reads no records answers a read of one: the API posts every read through
 /// [`RecordReads::answer_read`], and a host whose [`super::ActionHost::record_reads`] is `None`
 /// answers as this one does.
 pub(crate) fn unanswered(correlation: u64) -> super::Pending<super::RemoteActionMessage> {
@@ -433,7 +433,7 @@ pub struct RecordChange {
     pub preview: Option<serde_json::Value>,
 }
 
-/// A host's door for an agent task's changes to records outside their apps. A change goes to
+/// A host's API for an agent task's changes to records outside their apps. A change goes to
 /// the record's origin, which runs the action against the record as it is then, applies what it
 /// wrote as the task's step and answers with its JSON: `{"ok": {value, resources}, "differs":
 /// bool}`, or `{"failed": why}` when the action did not run.

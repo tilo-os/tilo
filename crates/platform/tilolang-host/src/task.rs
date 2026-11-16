@@ -2,13 +2,13 @@
 //! (`docs/designs/app-language/agents.md`, "How a program runs").
 //!
 //! The MCP server starts it on the task's first `tilo` call and it lives as long as the task:
-//! until the door closes the task's program connection. It holds the task's session (the `let`s
+//! until the API closes the task's program connection. It holds the task's session (the `let`s
 //! its programs bound) and no records, opens no windows and no broker connection of its own.
 //! Every program comes in on the program connection, and everything a program reads or changes
-//! goes out on it to the door, which reads and invokes as the task: the door's connection is the
+//! goes out on it to the API, which reads and invokes as the task: the API's connection is the
 //! task's custody, so nothing here is trusted to say who it is.
 //!
-//! The connection carries one JSON object per line. The door sends `{"run": {source, confirm}}`
+//! The connection carries one JSON object per line. The API sends `{"run": {source, confirm}}`
 //! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
 //! [`TaskSession::catalogue`], and each app whose package did not load with what a program
 //! naming it is told, `can't be reached: <why>`);
@@ -41,7 +41,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::catalogue::NativeSurface;
 use tilolang_tilo::native::{Calls, Native, NativeReads};
 use tilolang_tilo::runtime::meta::PackageMeta;
-use tilolang_tilo::task::{Answered, TaskDoor, TaskSession, Unreachable};
+use tilolang_tilo::task::{Answered, TaskApi, TaskSession, Unreachable};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 /// The program connection, one line at a time.
@@ -57,10 +57,10 @@ impl Line {
         self.writer
             .borrow_mut()
             .write_all(&line)
-            .map_err(|error| format!("the door went away: {error}"))
+            .map_err(|error| format!("the API went away: {error}"))
     }
 
-    /// The next message: `None` once the door closed the connection (or it broke, which is
+    /// The next message: `None` once the API closed the connection (or it broke, which is
     /// logged), `Some(Err(why))` for a line that is not a JSON message.
     fn next(&self) -> Option<Result<Json, String>> {
         let mut line = String::new();
@@ -72,7 +72,7 @@ impl Line {
             }
             Ok(_) => Some(
                 serde_json::from_str(&line)
-                    .map_err(|error| format!("the door sent a line that is not JSON: {error}")),
+                    .map_err(|error| format!("the API sent a line that is not JSON: {error}")),
             ),
         }
     }
@@ -80,7 +80,7 @@ impl Line {
     fn ask(&self, request: &Json) -> Result<Json, String> {
         self.send(request)?;
         self.next()
-            .ok_or_else(|| "the door closed the task".to_owned())?
+            .ok_or_else(|| "the API closed the task".to_owned())?
     }
 }
 
@@ -94,19 +94,19 @@ impl RecordSource for Line {
             return base64::engine::general_purpose::STANDARD
                 .decode(document)
                 .map(Some)
-                .map_err(|error| format!("the door sent a record that is not base64: {error}"));
+                .map_err(|error| format!("the API sent a record that is not base64: {error}"));
         }
         Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the door answered a record read with neither ok, absent nor err: {reply}"),
+            || format!("the API answered a record read with neither ok, absent nor err: {reply}"),
             str::to_owned,
         ))
     }
 }
 
 /// What the task's programs reach the workspace through: the records, read here from what the
-/// door hands over ([`RecordReads`]), a native app's record, read by the app itself
-/// ([`NativeReads`]), and invocations, which go to the door.
-struct Door {
+/// api hands over ([`RecordReads`]), a native app's record, read by the app itself
+/// ([`NativeReads`]), and invocations, which go to the API.
+struct Api {
     line: Rc<Line>,
     reads: RecordReads,
     /// The native apps the task reaches, and the record each publishes.
@@ -119,7 +119,7 @@ struct Door {
     changed_at_record: std::collections::BTreeSet<String>,
 }
 
-impl TaskDoor for Door {
+impl TaskApi for Api {
     fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String> {
         if self.native.is(app) {
             return NativeReads::new(&self.native, self).read(app, item, ty);
@@ -135,7 +135,7 @@ impl TaskDoor for Door {
     }
 
     fn begin_program(&self) {
-        // Each program reads the records anew, as the door decides them now.
+        // Each program reads the records anew, as the API decides them now.
         self.reads.forget();
     }
 
@@ -184,7 +184,7 @@ impl TaskDoor for Door {
     }
 }
 
-impl Calls for Door {
+impl Calls for Api {
     fn call(&self, call: &Json) -> Answered {
         self.invoke(call)
     }
@@ -197,7 +197,7 @@ impl Calls for Door {
             return Ok(rows.clone());
         }
         Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the door answered a listing with neither ok nor err: {reply}"),
+            || format!("the API answered a listing with neither ok nor err: {reply}"),
             str::to_owned,
         ))
     }
@@ -210,14 +210,14 @@ impl Calls for Door {
             return Ok(reads);
         }
         Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the door answered a read question with neither ok nor err: {reply}"),
+            || format!("the API answered a read question with neither ok nor err: {reply}"),
             str::to_owned,
         ))
     }
 }
 
 impl Line {
-    /// The bytes a door's `change` field holds: the record's whole document, as base64 text or,
+    /// The bytes an API's `change` field holds: the record's whole document, as base64 text or,
     /// for the record a package the session runs itself keeps, as its bytes in JSON.
     fn change_bytes(change: &Json) -> Option<Result<Vec<u8>, String>> {
         match change {
@@ -240,13 +240,13 @@ impl Line {
         }
     }
 
-    /// How the door's `reply` to an invocation says it ended.
+    /// How the API's `reply` to an invocation says it ended.
     fn answered(reply: &Json) -> Answered {
         let why = |key: &str| {
             reply
                 .get(key)
                 .and_then(Json::as_str)
-                .map_or_else(|| format!("the door gave no reason ({key})"), str::to_owned)
+                .map_or_else(|| format!("the API gave no reason ({key})"), str::to_owned)
         };
         if let Some(output) = reply.get("ok") {
             Answered::Done(output.clone())
@@ -258,18 +258,18 @@ impl Line {
             Answered::Failed(why("failed"))
         } else {
             Answered::Failed(format!(
-                "the door answered the invocation with neither ok, failed, refused nor asks: \
+                "the API answered the invocation with neither ok, failed, refused nor asks: \
                  {reply}"
             ))
         }
     }
 }
 
-/// One other connection into a task's session: the door's own, which started the host, or one
-/// the door opened later for the person's lines in the run's conversation (shell.md §8.1).
+/// One other connection into a task's session: the API's own, which started the host, or one
+/// the API opened later for the person's lines in the run's conversation (shell.md §8.1).
 struct Guest {
     line: Rc<Line>,
-    door: Rc<Door>,
+    api: Rc<Api>,
     /// Its connection, watched by the host's wait: a line arriving wakes the host.
     watched: OwnedFd,
 }
@@ -277,14 +277,14 @@ struct Guest {
 /// A task this host runs the programs of.
 pub struct Task {
     line: Rc<Line>,
-    /// The program connection, watched for what the door sends.
+    /// The program connection, watched for what the API sends.
     watched: OwnedFd,
     /// Further connections into the same session, each given when the host opened: the
     /// person's lines in the run's conversation run here, beside the agent's own calls, so the
     /// two share the session's `let`s. Every program still runs one at a time.
     guests: RefCell<Vec<Guest>>,
     session: TaskSession,
-    door: Rc<Door>,
+    api: Rc<Api>,
 }
 
 impl Task {
@@ -317,7 +317,7 @@ impl Task {
             Rc::clone(&line) as Rc<dyn RecordSource>,
         );
         let native = Rc::new(Native::of(&apps.bundles, &apps.native));
-        let door = Rc::new(Door {
+        let api = Rc::new(Api {
             line: Rc::clone(&line),
             reads,
             native: Rc::clone(&native),
@@ -331,7 +331,7 @@ impl Task {
         });
         let session = TaskSession::new(
             request.person.as_deref(),
-            &(Rc::clone(&door) as Rc<dyn TaskDoor>),
+            &(Rc::clone(&api) as Rc<dyn TaskApi>),
             &apps.bundles,
             native,
         )?;
@@ -352,7 +352,7 @@ impl Task {
             watched,
             guests: RefCell::new(Vec::new()),
             session,
-            door,
+            api,
         };
         if let Some(person) = person {
             task.join(person)?;
@@ -372,7 +372,7 @@ impl Task {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
         });
-        let door = Rc::new(Door {
+        let api = Rc::new(Api {
             line: Rc::clone(&line),
             reads: RecordReads::new(
                 &[],
@@ -386,13 +386,9 @@ impl Task {
                 agent: true,
                 on_behalf_of: None,
             }),
-            changed_at_record: self.door.changed_at_record.clone(),
+            changed_at_record: self.api.changed_at_record.clone(),
         });
-        self.guests.borrow_mut().push(Guest {
-            line,
-            door,
-            watched,
-        });
+        self.guests.borrow_mut().push(Guest { line, api, watched });
         Ok(())
     }
 
@@ -402,7 +398,7 @@ impl Task {
     }
 
     /// Copies of the guest connections' descriptors, to wait on: a line arriving on one wakes
-    /// the host as the door's own connection would.
+    /// the host as the API's own connection would.
     pub fn guest_fds(&self) -> Vec<OwnedFd> {
         self.guests
             .borrow()
@@ -411,13 +407,13 @@ impl Task {
             .collect()
     }
 
-    /// Answer what the door sent: run each program and say how it went. `false` once the door
+    /// Answer what the API sent: run each program and say how it went. `false` once the API
     /// closed the task.
     ///
-    /// Everything the door sends is answered: a line that is not a program to run is answered
-    /// `failed` with why, so the door never waits on a message the host dropped. Every line
+    /// Everything the API sends is answered: a line that is not a program to run is answered
+    /// `failed` with why, so the API never waits on a message the host dropped. Every line
     /// already read off the connection is served: a line left in the reader's buffer would wake
-    /// nothing, and wait until the door sent more.
+    /// nothing, and wait until the API sent more.
     pub fn serve(&self) -> bool {
         loop {
             if !self.serve_one() {
@@ -429,9 +425,9 @@ impl Task {
         }
     }
 
-    /// Answer every connection that has something: the door's own first, then the guests it
+    /// Answer every connection that has something: the API's own first, then the guests it
     /// opened. Waits on all of them, so a person's line is served as soon as it arrives and
-    /// never waits on the agent's next call. `false` once the door's own connection closed.
+    /// never waits on the agent's next call. `false` once the API's own connection closed.
     pub fn serve_all(&self) -> bool {
         loop {
             let mut ready: Vec<usize> = Vec::new();
@@ -472,16 +468,16 @@ impl Task {
         }
     }
 
-    /// Block until the door's connection or a guest's has something to read, saying which: `0`
-    /// for the door's own, `at + 1` for the guest at `at`. `None` once the door's connection
+    /// Block until the API's connection or a guest's has something to read, saying which: `0`
+    /// for the API's own, `at + 1` for the guest at `at`. `None` once the API's connection
     /// closed.
     fn wait_ready(&self) -> Option<Vec<usize>> {
         use std::os::fd::AsRawFd as _;
-        let door = self.watched.as_raw_fd();
+        let api = self.watched.as_raw_fd();
         let guests = self.guest_fds();
         let mut fds = Vec::with_capacity(guests.len().saturating_add(1));
         fds.push(libc::pollfd {
-            fd: door,
+            fd: api,
             events: libc::POLLIN,
             revents: 0,
         });
@@ -502,7 +498,7 @@ impl Task {
                 }
                 return None;
             }
-            // The door's own connection closing ends the task; a guest's closing is served as
+            // The API's own connection closing ends the task; a guest's closing is served as
             // a line that ends, which drops it.
             if fds.first().is_some_and(|fd| {
                 fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -521,21 +517,21 @@ impl Task {
     }
 
     /// Serve one line of the guest at `at`: `false` once its connection closed. The guest's own
-    /// line and door are taken out of the list's borrow, so a program that serves the door's
+    /// line and api are taken out of the list's borrow, so a program that serves the API's
     /// connection too is never held under it.
     fn serve_guest_at(&self, at: usize) -> bool {
-        let (line, door) = {
+        let (line, api) = {
             let guests = self.guests.borrow();
             let Some(guest) = guests.get(at) else {
                 return false;
             };
-            (Rc::clone(&guest.line), Rc::clone(&guest.door))
+            (Rc::clone(&guest.line), Rc::clone(&guest.api))
         };
-        self.serve_guest(&line, &door)
+        self.serve_guest(&line, &api)
     }
 
     /// Serve one line of a connection: `false` once it closed.
-    fn serve_guest(&self, guest: &Rc<Line>, door: &Rc<Door>) -> bool {
+    fn serve_guest(&self, guest: &Rc<Line>, api: &Rc<Api>) -> bool {
         let Some(message) = guest.next() else {
             return false;
         };
@@ -553,7 +549,7 @@ impl Task {
         let answer = match message.and_then(|message| program(&message)) {
             Ok((source, confirm, author)) => {
                 let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
-                *door.caller.borrow_mut() = author;
+                *api.caller.borrow_mut() = author;
                 self.session.run(&source, confirm, &principal)
             }
             Err(why) => {
@@ -581,7 +577,7 @@ impl Task {
             {
                 Ok(()) => true,
                 Err(error) => {
-                    tracing::warn!(%error, "the catalogue did not reach the door");
+                    tracing::warn!(%error, "the catalogue did not reach the API");
                     false
                 }
             };
@@ -589,19 +585,16 @@ impl Task {
         let answer = match message.and_then(|message| program(&message)) {
             Ok((source, confirm, author)) => {
                 let principal = tilolang_tilo::runtime::Principal::new(author.actor.clone());
-                *self.door.caller.borrow_mut() = author;
+                *self.api.caller.borrow_mut() = author;
                 self.session.run(&source, confirm, &principal)
             }
             Err(why) => {
-                tracing::warn!(
-                    why,
-                    "the door sent the task something that is not a program"
-                );
+                tracing::warn!(why, "the API sent the task something that is not a program");
                 json!({"kind": "program", "state": "failed", "detail": why})
             }
         };
         if let Err(error) = self.line.send(&json!({ "answer": answer })) {
-            tracing::warn!(%error, "a program's answer did not reach the door");
+            tracing::warn!(%error, "a program's answer did not reach the API");
             return false;
         }
         true
@@ -609,25 +602,25 @@ impl Task {
 }
 
 /// The program `message` asks the task to run, whether its changes are confirmed, and who wrote
-/// it: the door names the author of every program, the agent or the person typing.
+/// it: the API names the author of every program, the agent or the person typing.
 fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Caller), String> {
     let run = message.get("run").ok_or_else(|| {
-        format!("the door sent the task something other than a program: {message}")
+        format!("the API sent the task something other than a program: {message}")
     })?;
     let source = run
         .get("source")
         .and_then(Json::as_str)
-        .ok_or("the door sent a program without its source")?;
+        .ok_or("the API sent a program without its source")?;
     // An absent `confirm` is a run not confirmed yet: its changes are previewed first.
     let confirm = run.get("confirm").and_then(Json::as_bool).unwrap_or(false);
     let author = run
         .get("author")
-        .ok_or("the door sent a program without its author")?;
+        .ok_or("the API sent a program without its author")?;
     let actor = author
         .get("actor")
         .and_then(Json::as_str)
         .filter(|actor| !actor.is_empty())
-        .ok_or("the door sent a program whose author names no one")?;
+        .ok_or("the API sent a program whose author names no one")?;
     let author = tilolang_tilo::publish::Caller {
         actor: actor.to_owned(),
         agent: author.get("agent").and_then(Json::as_bool).unwrap_or(true),
@@ -707,30 +700,30 @@ mod tests {
 
     use super::*;
 
-    /// A task over no packages, its program connection's far end returned as the door's.
+    /// A task over no packages, its program connection's far end returned as the API's.
     fn task() -> (Task, BufReader<UnixStream>, UnixStream) {
         task_with(&[])
     }
 
     /// A task over the apps `native`, read as packages from their surfaces, its program
-    /// connection's far end returned as the door's.
+    /// connection's far end returned as the API's.
     fn task_with(native: &[PackageMeta]) -> (Task, BufReader<UnixStream>, UnixStream) {
         task_over(&[], native)
     }
 
     /// A task over the packages `bundles` and the apps `native`, its program connection's far
-    /// end returned as the door's.
+    /// end returned as the API's.
     fn task_over(
         bundles: &[Bundle],
         native: &[PackageMeta],
     ) -> (Task, BufReader<UnixStream>, UnixStream) {
-        let (ours, door) = UnixStream::pair().expect("a socket pair");
+        let (ours, api) = UnixStream::pair().expect("a socket pair");
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
             writer: RefCell::new(ours.try_clone().expect("a clone")),
         });
         let apps = Rc::new(Native::of(bundles, native));
-        let reached = Rc::new(Door {
+        let reached = Rc::new(Api {
             line: Rc::clone(&line),
             reads: RecordReads::new(
                 bundles,
@@ -748,7 +741,7 @@ mod tests {
         });
         let session = TaskSession::new(
             None,
-            &(Rc::clone(&reached) as Rc<dyn TaskDoor>),
+            &(Rc::clone(&reached) as Rc<dyn TaskApi>),
             bundles,
             apps,
         )
@@ -758,13 +751,9 @@ mod tests {
             watched: OwnedFd::from(ours),
             guests: RefCell::new(Vec::new()),
             session,
-            door: reached,
+            api: reached,
         };
-        (
-            task,
-            BufReader::new(door.try_clone().expect("a clone")),
-            door,
-        )
+        (task, BufReader::new(api.try_clone().expect("a clone")), api)
     }
 
     fn answer(reader: &mut BufReader<UnixStream>) -> Json {
@@ -778,8 +767,8 @@ mod tests {
 
         phase a_line_that_is_not_json_is_answered_failed;
         {
-            let (task, mut reader, mut door) = task();
-            door.write_all(b"{not json\n").expect("sent");
+            let (task, mut reader, mut api) = task();
+            api.write_all(b"{not json\n").expect("sent");
             assert!(task.serve(), "the task goes on");
             let answer = answer(&mut reader);
             assert_eq!(answer["answer"]["state"], "failed");
@@ -789,11 +778,11 @@ mod tests {
 
         phase a_message_that_is_not_a_program_is_answered_failed;
         {
-            let (task, mut reader, mut door) = task();
-            door.write_all(b"{\"walk\": {}}\n").expect("sent");
+            let (task, mut reader, mut api) = task();
+            api.write_all(b"{\"walk\": {}}\n").expect("sent");
             assert!(task.serve());
             assert_eq!(answer(&mut reader)["answer"]["state"], "failed");
-            door.write_all(b"{\"run\": {\"confirm\": true}}\n")
+            api.write_all(b"{\"run\": {\"confirm\": true}}\n")
                 .expect("sent");
             assert!(task.serve());
             let answer = answer(&mut reader);
@@ -808,15 +797,15 @@ mod tests {
 
         phase an_unreadable_reply_fails_the_request_with_why;
         {
-            let (task, mut reader, mut door) = task();
+            let (task, mut reader, mut api) = task();
             let asking = std::thread::spawn(move || {
                 let mut asked = String::new();
                 reader.read_line(&mut asked).expect("asked");
-                door.write_all(b"garbage\n").expect("sent");
-                (reader, door)
+                api.write_all(b"garbage\n").expect("sent");
+                (reader, api)
             });
             let read = task.line.record("app", "");
-            let _ends = asking.join().expect("the door");
+            let _ends = asking.join().expect("the API");
             let why = read.expect_err("an unreadable reply fails the read");
             assert!(why.contains("not JSON"), "{why}");
         }
@@ -852,16 +841,16 @@ mod tests {
         )
     }
 
-    /// Answer the `count` invocations the door is sent with `answer` (one JSON line), and hand
+    /// Answer the `count` invocations the API is sent with `answer` (one JSON line), and hand
     /// back the invocations it was sent.
     fn answering(
-        door: UnixStream,
+        api: UnixStream,
         count: usize,
         answer: &'static str,
     ) -> std::thread::JoinHandle<Vec<Json>> {
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(door.try_clone().expect("a clone"));
-            let mut door = door;
+            let mut reader = BufReader::new(api.try_clone().expect("a clone"));
+            let mut api = api;
             let mut seen = Vec::new();
             for _ in 0..count {
                 let mut line = String::new();
@@ -870,8 +859,8 @@ mod tests {
                 }
                 let message: Json = serde_json::from_str(&line).expect("a JSON call");
                 seen.push(message["invoke"].clone());
-                door.write_all(answer.as_bytes()).expect("answered");
-                door.write_all(b"\n").expect("answered");
+                api.write_all(answer.as_bytes()).expect("answered");
+                api.write_all(b"\n").expect("answered");
             }
             seen
         })
@@ -912,8 +901,8 @@ mod tests {
     }
 
     impl Reads {
-        /// The door's answers to what a program asks of the app.
-        fn door(self) -> impl FnMut(&Json) -> Json + Send + 'static {
+        /// The API's answers to what a program asks of the app.
+        fn api(self) -> impl FnMut(&Json) -> Json + Send + 'static {
             move |message| self.answer(message)
         }
 
@@ -965,21 +954,21 @@ mod tests {
         }
     }
 
-    /// Close the test's end of the door once the program ran: the task sends nothing more.
-    fn closed(door: &UnixStream) {
-        door.shutdown(std::net::Shutdown::Both)
-            .expect("the door closed");
+    /// Close the test's end of the API once the program ran: the task sends nothing more.
+    fn closed(api: &UnixStream) {
+        api.shutdown(std::net::Shutdown::Both)
+            .expect("the API closed");
     }
 
-    /// A door that answers every message with `answer` until its far end closes (the test shuts
+    /// An API that answers every message with `answer` until its far end closes (the test shuts
     /// the returned stream down once the program ran), handing back what the task sent it.
     fn scripted(
-        door: &UnixStream,
+        api: &UnixStream,
         mut answer: impl FnMut(&Json) -> Json + Send + 'static,
     ) -> std::thread::JoinHandle<Vec<Json>> {
-        let mut door = door.try_clone().expect("a clone");
+        let mut api = api.try_clone().expect("a clone");
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(door.try_clone().expect("a clone"));
+            let mut reader = BufReader::new(api.try_clone().expect("a clone"));
             let mut seen = Vec::new();
             loop {
                 let mut line = String::new();
@@ -990,7 +979,7 @@ mod tests {
                 let message: Json = serde_json::from_str(&line).expect("a JSON message");
                 let mut reply = serde_json::to_vec(&answer(&message)).expect("JSON");
                 reply.push(b'\n');
-                door.write_all(&reply).expect("answered");
+                api.write_all(&reply).expect("answered");
                 seen.push(message);
             }
             seen
@@ -1002,9 +991,9 @@ mod tests {
 
         phase a_program_reads_a_native_apps_record_fields_through_the_app;
         {
-            let (task, _reader, door) = task_with(&[tasks()]);
+            let (task, _reader, api) = task_with(&[tasks()]);
             let calls = scripted(
-                &door,
+                &api,
                 Reads {
                     app: "so.tilo.tasks",
                     record: "tasks.tracker",
@@ -1021,7 +1010,7 @@ mod tests {
                         }),
                     )],
                 }
-                .door(),
+                .api(),
             );
             let answer = ran(
                 &task,
@@ -1036,8 +1025,8 @@ mod tests {
                 json!(["Ship the reads", "person:ada", "2", "7"]),
                 "{answer:#}"
             );
-            closed(&door);
-            let calls = calls.join().expect("the door");
+            closed(&api);
+            let calls = calls.join().expect("the API");
             // The app listed its directory and what its record published holds; reading the
             // resource the program asked about, it listed the directory again to address that
             // resource, asked whether it reads itself, and read through its own `read`, once.
@@ -1069,9 +1058,9 @@ mod tests {
 
         phase a_program_filters_a_native_apps_resources_by_their_fields;
         {
-            let (task, _reader, door) = task_with(&[tasks()]);
+            let (task, _reader, api) = task_with(&[tasks()]);
             let calls = scripted(
-                &door,
+                &api,
                 Reads {
                     app: "so.tilo.tasks",
                     record: "tasks.tracker",
@@ -1094,7 +1083,7 @@ mod tests {
                         ),
                     ],
                 }
-                .door(),
+                .api(),
             );
             let answer = ran(
                 &task,
@@ -1103,8 +1092,8 @@ mod tests {
             );
             assert_eq!(answer["state"], "done", "{answer:#}");
             assert_eq!(answer["output"], json!(["Ship the reads"]), "{answer:#}");
-            closed(&door);
-            let calls = calls.join().expect("the door");
+            closed(&api);
+            let calls = calls.join().expect("the API");
             // Its directory and its record's resources; the two the predicate reads, each by its
             // own `read`; and the one the program prints, addressed again.
             assert_eq!(calls.len(), 10, "{calls:#?}");
@@ -1112,10 +1101,10 @@ mod tests {
 
         phase a_program_reads_a_native_apps_channels;
         {
-            let (task, _reader, door) = task_with(&[chat()]);
+            let (task, _reader, api) = task_with(&[chat()]);
             // Chat's record reads itself and takes an item: its channels are read through it.
             let calls = scripted(
-                &door,
+                &api,
                 Reads {
                     app: "so.tilo.chat",
                     record: "chat.workspace",
@@ -1135,7 +1124,7 @@ mod tests {
                         ),
                     ],
                 }
-                .door(),
+                .api(),
             );
             let answer = ran(
                 &task,
@@ -1147,8 +1136,8 @@ mod tests {
                 json!(["design .voice 1", "general .text 0"]),
                 "{answer:#}"
             );
-            closed(&door);
-            let calls = calls.join().expect("the door");
+            closed(&api);
+            let calls = calls.join().expect("the API");
             // The app listed its directory, its record's resources, and for each channel the
             // program read, the directory once more and the question of what reads it: its record
             // does, taking the channel as its `item`. The listing read no channel's fields.
@@ -1157,8 +1146,8 @@ mod tests {
 
         phase a_native_read_the_policy_refuses_fails_the_program_with_why;
         {
-            let (task, _reader, door) = task_with(&[tasks()]);
-            let calls = scripted(&door, |message| {
+            let (task, _reader, api) = task_with(&[tasks()]);
+            let calls = scripted(&api, |message| {
                 if let Some(listing) = message.get("children") {
                     let rows = match listing["resource"].as_str() {
                         Some("") => vec![record_row("tasks.tracker", "Tasks")],
@@ -1172,8 +1161,8 @@ mod tests {
                 json!({"refused": "these are a person's private tasks"})
             });
             let answer = ran(&task, "for i in find(tasks.Issue) {\n    print(i.title)\n}");
-            closed(&door);
-            let calls = calls.join().expect("the door");
+            closed(&api);
+            let calls = calls.join().expect("the API");
             assert_eq!(calls.len(), 6, "{calls:#?}");
             assert_eq!(answer["state"], "failed", "{answer:#}");
             let why = answer["detail"].as_str().unwrap_or_default();
@@ -1185,7 +1174,7 @@ mod tests {
 
         phase a_program_names_a_native_apps_fields_and_reads_no_other;
         {
-            let (task, _reader, _door) = task_with(&[chat()]);
+            let (task, _reader, _api) = task_with(&[chat()]);
             // A field the app does not publish is an error in the program, as in `tilolang check`.
             let wrong = ran(
                 &task,
@@ -1196,7 +1185,7 @@ mod tests {
 
         phase a_native_apps_record_is_a_root_a_program_names;
         {
-            let (task, _reader, _door) = task_with(&[chat(), tasks()]);
+            let (task, _reader, _api) = task_with(&[chat(), tasks()]);
             let catalogue = task.session.catalogue();
             let roots = |app: &str| -> Vec<(String, String)> {
                 catalogue[app]["signatures"]
@@ -1231,13 +1220,13 @@ mod tests {
 
         phase a_program_changes_native_apps_through_their_actions;
         {
-            let (task, _reader, door) = task_with(&[chat(), tasks()]);
-            let calls = answering(door, 2, r#"{"ok": {}}"#);
+            let (task, _reader, api) = task_with(&[chat(), tasks()]);
+            let calls = answering(api, 2, r#"{"ok": {}}"#);
             let answer = ran(
                 &task,
                 "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
             );
-            let calls = calls.join().expect("the door");
+            let calls = calls.join().expect("the API");
             assert_eq!(answer["state"], "done", "{answer:#}");
             assert_eq!(
                 calls,
@@ -1277,9 +1266,9 @@ mod tests {
 
         phase a_native_action_the_app_refuses_fails_the_program_and_changes_nothing;
         {
-            let (task, _reader, door) = task_with(&[chat()]);
+            let (task, _reader, api) = task_with(&[chat()]);
             let calls = answering(
-                door,
+                api,
                 1,
                 r#"{"refused": "the workspace asks its members before renaming"}"#,
             );
@@ -1287,7 +1276,7 @@ mod tests {
                 &task,
                 "chat.rename_channel(chat.workspace, \"general\", \"town\")",
             );
-            let calls = calls.join().expect("the door");
+            let calls = calls.join().expect("the API");
             assert_eq!(calls.len(), 1, "{calls:#?}");
             assert_eq!(answer["state"], "failed", "{answer:#}");
             let why = answer["detail"].as_str().unwrap_or_default();
@@ -1302,7 +1291,7 @@ mod tests {
 
         phase a_task_names_only_the_apps_its_session_hands_it;
         {
-            let (task, _reader, _door) = task_with(&[]);
+            let (task, _reader, _api) = task_with(&[]);
             let answer = ran(
                 &task,
                 "for c in find(chat.Conversation) {\n    print(c.name)\n}",
@@ -1322,7 +1311,7 @@ mod tests {
             let mut broken = counter();
             let gone = broken.meta.app.clone();
             broken.wasm = b"not a tilolang module".to_vec();
-            let (task, _reader, door) = task_over(&[discussion(), broken], &[]);
+            let (task, _reader, api) = task_over(&[discussion(), broken], &[]);
             // The task starts: the catalogue lists the rest of the apps, and says of the broken one
             // what a program naming it reads.
             let catalogue = task.session.catalogue();
@@ -1347,11 +1336,11 @@ mod tests {
                 .iter()
                 .find(|signature| signature["kind"] == "action" && signature["name"] == "comment")
                 .unwrap_or_else(|| panic!("discussion lists no comment action: {catalogue:#}"));
-            // The door takes it by the name it is published under.
+            // The API takes it by the name it is published under.
             let comment = comment["name"].as_str().unwrap_or_default().to_owned();
-            // Its actions resolve, and invoking one runs: the call goes to the app through the door,
+            // Its actions resolve, and invoking one runs: the call goes to the app through the API,
             // which answers the comment it made.
-            let called = scripted(&door, |message| {
+            let called = scripted(&api, |message| {
                 if message.get("record").is_some() {
                     return json!({"absent": true});
                 }
@@ -1368,8 +1357,8 @@ mod tests {
             );
             assert_eq!(answer["state"], "done", "{answer:#}");
             assert_eq!(answer["changed"], 1, "{answer:#}");
-            closed(&door);
-            let calls = called.join().expect("the door");
+            closed(&api);
+            let calls = called.join().expect("the API");
             let invoked = calls
                 .iter()
                 .find(|call| call.get("invoke").is_some())
@@ -1400,7 +1389,7 @@ mod tests {
                 .iter()
                 .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
                 .collect();
-            let (task, _reader, _door) = task_with(&[chat()]);
+            let (task, _reader, _api) = task_with(&[chat()]);
             let answer = ran(&task, program);
             assert_eq!(answer["state"], "rejected", "{answer:#}");
             assert_eq!(answer["detail"], serde_json::json!(expected), "{answer:#}");

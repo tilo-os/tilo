@@ -1,4 +1,4 @@
-//! One agent session's door to the broker: an MCP client the session's MCP server admitted, or an
+//! One agent session's api to the broker: an MCP client the session's MCP server admitted, or an
 //! agent answering a turn ([`super::turns`]).
 //!
 //! An MCP connection joins as the agent its certificate names, certified by a device of the person
@@ -127,9 +127,9 @@ impl AppBrokerState {
         })))
     }
 
-    /// The door `caller`, an agent in an agent session, takes its steps through, on a connection
+    /// The API `caller`, an agent in an agent session, takes its steps through, on a connection
     /// admitted as `origin`. `None` for a caller in no agent session.
-    pub(super) fn agent_session_door(
+    pub(super) fn agent_session_api(
         self: &Arc<Self>,
         caller: &Caller,
         origin: InvocationCaller,

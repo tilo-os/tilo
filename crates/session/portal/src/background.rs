@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
 use tilo_service::{Started, decode, offer};
@@ -218,13 +218,13 @@ impl crate::Published for Autostart {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let app = resource.strip_prefix(AUTOSTART_PREFIX)?;
         Some(
             decode::<AutostartEffect>(published, resource, action, arguments).and_then(|_| {
                 self.disable(app)
                     .then(|| Started::Done(ActionOutput::default()))
-                    .ok_or_else(|| DoorError::Unknown(ActionAddress::new(resource, action)))
+                    .ok_or_else(|| ApiError::Unknown(ActionAddress::new(resource, action)))
             }),
         )
     }

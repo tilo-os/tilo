@@ -1779,7 +1779,7 @@ tilo_test_env::scenario! {
     phase what_a_listing_offers_is_what_its_path_invokes;
     // An agent reads a listing and then runs what it read: every action a
     // listing writes must run by the path that listing names, with no argument
-    // where the listing asks for none. What a listing offers and what the door
+    // where the listing asks for none. What a listing offers and what the API
     // admits are one answer, not two.
     {
         let host = Notes::new(true).live();
@@ -1794,7 +1794,7 @@ tilo_test_env::scenario! {
                 assert!(!failed, "{path}: {listing}");
                 for action in listed_actions(&listing) {
                     // The point here is the path, not the arguments: an action
-                    // that needs one is asked for its arguments by the door, and
+                    // that needs one is asked for its arguments by the API, and
                     // that answer is not this test's.
                     let signature = listing
                         .lines()
@@ -2105,7 +2105,7 @@ tilo_test_env::scenario! {
                 "a cut of the app's second page keeps its cursor: {cursors:?}"
             );
             // The app is asked for its second page by its own cursor, never by one
-            // of the door's.
+            // of the API's.
             for (_, action, arguments) in host.invoked() {
                 if action == "read" {
                     let asked = arguments.get("cursor").and_then(Value::as_str);
@@ -2137,7 +2137,7 @@ tilo_test_env::scenario! {
 
     phase a_read_in_an_app_that_names_only_its_top_level_reads_the_level;
     // An app from before a name could be asked under a parent answers it
-    // about its top level: the door reads the level instead, and the read
+    // about its top level: the API reads the level instead, and the read
     // still finds the note.
     {
         let host = Notes::new(true).live().with_notes(3);
@@ -2570,7 +2570,7 @@ tilo_test_env::scenario! {
     phase every_row_find_answers_is_one_ls_lists;
     // Every row `find` answers is named by the path `ls` lists that resource
     // at, and `ls` there answers the row's own kind: one path model, read back
-    // through the same door.
+    // through the same API.
     {
         let host = Notes::new(true);
         run(async {
@@ -2863,7 +2863,7 @@ impl CatalogueHost {
 
 impl crate::TaskHosts for CatalogueHost {
     fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
-        let (door, host) = std::os::unix::net::UnixStream::pair()?;
+        let (api, host) = std::os::unix::net::UnixStream::pair()?;
         let catalogue = self.catalogue.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead as _, Write as _};
@@ -2884,7 +2884,7 @@ impl crate::TaskHosts for CatalogueHost {
                 }
             }
         });
-        Ok(std::os::fd::OwnedFd::from(door))
+        Ok(std::os::fd::OwnedFd::from(api))
     }
 }
 

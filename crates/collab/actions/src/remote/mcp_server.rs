@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{InvokeArgument, RemoteActionTarget};
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The provider the MCP server is served under.
 pub const PROVIDER: &str = "tilo.mcp-server";

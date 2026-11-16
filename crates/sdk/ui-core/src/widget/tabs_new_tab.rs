@@ -1,4 +1,4 @@
-//! The window bar's own door to another application: the "+" every tabbed app wears, what it is
+//! The window bar's own API to another application: the "+" every tabbed app wears, what it is
 //! called and how it paints.
 
 use vello::Scene;
@@ -9,7 +9,7 @@ use crate::icons;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// The catalogue key naming the strip's new-tab door: a "+" needs no words in the row, so the name
+/// The catalogue key naming the strip's new-tab API: a "+" needs no words in the row, so the name
 /// is what assistive technology reads and the tip of its glyph, in the shell's language.
 const NEW_TAB_KEY: &str = "window-toolbar-new-tab";
 
@@ -17,7 +17,7 @@ pub(crate) fn new_tab_name() -> String {
     crate::i18n::I18nManager::lookup_plain(NEW_TAB_KEY)
 }
 
-/// The window's own door to another application, as a bar reads it at `rect`: the "+" every
+/// The window's own API to another application, as a bar reads it at `rect`: the "+" every
 /// tabbed app wears, in no words a bar would keep width for, named as [`new_tab_name`] says.
 pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
     crate::window_toolbar::BarControl::new("new-tab", NEW_TAB_TARGET, rect)
@@ -26,7 +26,7 @@ pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
         .furniture()
 }
 
-/// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
+/// Paint the new-tab API at `rect`: the shared small button, bare at rest so it never competes
 /// with a tab, a lift of the ground under the pointer.
 pub(crate) fn paint_new_tab(
     scene: &mut Scene,

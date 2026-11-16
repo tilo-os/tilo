@@ -8,7 +8,7 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_lock::MutexRecover as _;
 
-use super::{DoorAsk, SessionDoors, WAIT, unanswered};
+use super::{ApiAsk, SessionDoors, WAIT, unanswered};
 
 /// The records a connection reads and changes as any app's: those the session's services keep for
 /// packages it runs itself (the shell), on the loop's pass, and the workspace's through the broker.
@@ -30,7 +30,7 @@ impl ServiceRecords {
     fn on_pass<T>(
         &self,
         app: &str,
-        ask: impl FnOnce(tilo_actions::remote::Completer<Option<T>>) -> DoorAsk,
+        ask: impl FnOnce(tilo_actions::remote::Completer<Option<T>>) -> ApiAsk,
     ) -> Result<Option<T>, ActionHostError> {
         if !self.session.kept.lock_recover().contains(app) {
             return Ok(None);
@@ -79,7 +79,7 @@ impl tilo_actions::remote::RecordReads for ServiceRecords {
         address: &tilo_actions::remote::RecordAddress,
     ) -> Result<tilo_actions::remote::RecordCopy, ActionHostError> {
         let app = address.app.clone();
-        if let Some(record) = self.on_pass(&address.app, |done| DoorAsk::Record { app, done })? {
+        if let Some(record) = self.on_pass(&address.app, |done| ApiAsk::Record { app, done })? {
             return Ok(tilo_actions::remote::RecordCopy::Document(record.document));
         }
         self.workspace_reads()?.read(caller, address)
@@ -109,7 +109,7 @@ impl tilo_actions::remote::RecordChanges for ServiceRecords {
             sessions.changed(session, &change.app, &change.record);
         }
         let asked = (caller.acting().clone(), change.clone());
-        if let Some(answer) = self.on_pass(&change.app, |done| DoorAsk::Change {
+        if let Some(answer) = self.on_pass(&change.app, |done| ApiAsk::Change {
             actor: asked.0,
             change: asked.1,
             done,

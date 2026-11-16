@@ -27,7 +27,7 @@ use std::rc::Rc;
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_quick_settings::hosted::{
     DevicesReading, PersonalDevice, SendableSound, SoundAsk, SoundRoute,
 };
@@ -264,9 +264,9 @@ impl Service for Served {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource != RESOURCE {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         match decode::<DevicesAction>(&self.resources(), resource, action, arguments)? {
             // What a press does is the session's own: it sends what plays here over the fabric,

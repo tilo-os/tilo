@@ -1,4 +1,4 @@
-//! What an MCP session answers, driven as the doors drive it: the agents'
+//! What an MCP session answers, driven as the APIs drive it: the agents'
 //! tools against a stub app, its directory, the content it produced and the
 //! runs and executions the calls are attributed to.
 use super::*;
@@ -23,7 +23,7 @@ tilo_test_env::scenario! {
         assert!(invoked.lock().unwrap().is_empty());
     }
 
-    phase default_activation_uses_the_existing_permission_checked_view_door;
+    phase default_activation_uses_the_existing_permission_checked_view_api;
     {
         let host = StubHost {
             activation: true,
@@ -964,7 +964,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_bound_resource_invoked_at_a_revision_shows_its_picture;
-    // The same bound resource as an ordinary caller reaches it: the MCP door
+    // The same bound resource as an ordinary caller reaches it: the MCP API
     // names the revision it invokes at (a confirmed action, a retried one), and
     // the class is then asked where the host answers for what it publishes. An
     // id a window bound a resource under names no action, so an answer that does

@@ -1121,7 +1121,7 @@ mod tests {
         use ui::collaboration::action_directory::ActionDirectorySnapshot;
         use ui::tilo_actions::OperationKind;
         let resources = app.harness().resources();
-        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let descriptors = ui::tilo_actions::api::survey(&resources);
         let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
         let mut reached = Vec::new();
         let mut levels = vec![Browser::KIND.to_owned()];
@@ -1155,7 +1155,7 @@ mod tests {
         use ui::collaboration::action_directory::ActionDirectorySnapshot;
         use ui::tilo_actions::OperationKind;
         let resources = app.harness().resources();
-        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let descriptors = ui::tilo_actions::api::survey(&resources);
         let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
         let mut reached = Vec::new();
         let mut top = String::new();

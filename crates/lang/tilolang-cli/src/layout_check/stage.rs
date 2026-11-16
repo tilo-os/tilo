@@ -981,7 +981,7 @@ mod tests {
             .values()
             .map(|tree| (**tree).clone())
             .collect();
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
         staged
             .instance

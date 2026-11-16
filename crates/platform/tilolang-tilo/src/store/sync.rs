@@ -155,7 +155,7 @@ impl TiloStore {
         self.changing().author = Some(automerge::ActorId::from(author));
     }
 
-    /// Run `run` with the store writing as `author`: an invocation the door builds for an agent
+    /// Run `run` with the store writing as `author`: an invocation the API builds for an agent
     /// is the agent's change, written as theirs.
     pub fn writing_as<R>(&self, author: &[u8], run: impl FnOnce() -> R) -> R {
         let held = self

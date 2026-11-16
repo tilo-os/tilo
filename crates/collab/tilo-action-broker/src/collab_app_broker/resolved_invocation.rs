@@ -7,7 +7,7 @@ use super::{
 
 enum ResolutionRevision<'a> {
     /// Only the durable admission tests resolve from a live revision; the
-    /// action door resolves the directory without this retained-offer path.
+    /// action api resolves the directory without this retained-offer path.
     #[allow(
         dead_code,
         reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"

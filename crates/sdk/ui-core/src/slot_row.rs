@@ -33,7 +33,7 @@ const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 const WINDOW: u64 = 0;
 
-/// The window's History slot, the row's own: a press runs the History door and never
+/// The window's History slot, the row's own: a press runs the History API and never
 /// reaches the app.
 pub(crate) const HISTORY: &str = "tilo.window.history";
 
@@ -77,7 +77,7 @@ pub(crate) trait SlotRowHost {
     fn takes_search(&mut self, opening: SearchOpening) -> bool;
     /// The window's History control, none while the app has no History.
     fn history_control(&self) -> Option<HistoryControl>;
-    /// Run the window's History control on the app's History door.
+    /// Run the window's History control on the app's History API.
     fn press_history(&mut self, control: HistoryControl);
     /// Hand the app what the person did in its slots, as the shell's bar hands it over.
     fn deliver(&mut self, event: ToolbarEvent);

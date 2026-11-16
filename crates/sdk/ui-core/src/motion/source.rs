@@ -43,7 +43,7 @@ pub fn note_input(event: &WindowEvent) {
     }
 }
 
-/// Note that `source` is acting (an action door or agent performing a control is
+/// Note that `source` is acting (an action API or agent performing a control is
 /// [`MotionSource::Action`]).
 pub fn note_source(source: MotionSource) {
     LAST_INPUT.with(|last| last.set(source));

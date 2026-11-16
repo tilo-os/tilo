@@ -3,7 +3,7 @@
 //! A [`Planner`] turns a task into [`Step`]s, each one operation a record
 //! publishes. The planner sees only inert descriptors ([`PlanContext`]); it
 //! can name an operation but never perform one, and the participant checks
-//! every step against the delegation and the resource's door before it
+//! every step against the delegation and the resource's API before it
 //! runs.
 //!
 //! [`DirectPlanner`] reads steps written out in the task itself (JSON), for
@@ -12,7 +12,7 @@
 //! descriptors.
 
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 /// What one step does.

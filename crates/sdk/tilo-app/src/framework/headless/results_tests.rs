@@ -1,4 +1,4 @@
-//! Retained results must come from the real framework semantic door.
+//! Retained results must come from the real framework semantic api.
 use crate::framework::{ResourceApp, ViewCx, testing::TestApp};
 use crate::prelude::*;
 use serde_json::{Map, Value, json};
@@ -82,7 +82,7 @@ fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Act
 }
 
 tilo_test_env::scenario! {
-    fn retained_results_keep_what_the_semantic_door_answered;
+    fn retained_results_keep_what_the_semantic_api_answered;
 
     phase readable_parent_does_not_promote_private_custom_children;
     {

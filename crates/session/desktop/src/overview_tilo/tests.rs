@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            door: Some(Server {
+            server: Some(Server {
                 grants: vec![Grant {
                     id: "g1".into(),
                     agent: "Claude Code".into(),
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            door: Some(Server {
+            server: Some(Server {
                 grants: vec![Grant {
                     id: "g2".into(),
                     agent: "Cursor".into(),

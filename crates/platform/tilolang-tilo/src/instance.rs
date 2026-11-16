@@ -3,7 +3,7 @@
 //! The instance holds what the window shows and does, as data: the host over the workspace record
 //! (or its indexes, before the record), the window's two views (the root, and the view of the
 //! resource `open(r)` or a row went to), the rows of their virtual lists, what bound controls
-//! show, and the commits waiting for the door. It sends its window component patches and hears
+//! show, and the commits waiting for the API. It sends its window component patches and hears
 //! what the person did, over the patch protocol (`tilo_render_protocol::patch`), through any
 //! transport: a queue beside a window in one process, the UI host's socket, or `postMessage`
 //! from a worker. What builds, lays out, draws and takes input is the window's.
@@ -14,7 +14,7 @@
 //! 2. takes what the person did and runs it in the runtime, which plans the change,
 //! 3. re-runs a view if what it read changed, and sends the window the patches that bring its
 //!    copy of the view's tree up to date, and
-//! 4. queues what the runtime planned for the door, as an invocation of the host's `commit`
+//! 4. queues what the runtime planned for the API, as an invocation of the host's `commit`
 //!    action, so the change is attributed, undoable and replayed by every peer.
 //!
 //! What holds for every window is the platform's, and so the instance's: the lenses on each
@@ -93,7 +93,7 @@ pub struct Update {
 }
 
 /// The later builds of one package, as they arrive while its instances run: the latest, and what
-/// wakes each instance that follows them. A development session hands them over the host's door;
+/// wakes each instance that follows them. A development session hands them over the host's api;
 /// `tilolang dev` without one, from the directory it publishes builds into.
 #[derive(Default)]
 pub struct LaterBuilds(std::sync::Mutex<Arrived>);
@@ -149,7 +149,7 @@ impl LaterBuilds {
     }
 }
 
-/// What the instance publishes on the door while it lives: the workspace's records with their
+/// What the instance publishes on the API while it lives: the workspace's records with their
 /// actions, kept up to date change by change.
 pub trait Publication {
     /// Bring what is published up to date with the record.
@@ -202,11 +202,11 @@ pub struct Config {
     pub root: RootView,
 }
 
-/// Commits waiting to be handed to the door, each tagged with the invocation of the door that
-/// made it, when one did: the door applies it for the invoker it admitted.
+/// Commits waiting to be handed to the API, each tagged with the invocation of the API that
+/// made it, when one did: the API applies it for the invoker it admitted.
 pub type Outgoing = Rc<RefCell<VecDeque<(ControlInvocation, Option<InvocationId>)>>>;
 
-/// Hand everything the runtime committed under a ticket of `first` or later to the door.
+/// Hand everything the runtime committed under a ticket of `first` or later to the API.
 /// Returns the tickets handed over.
 pub fn queue_commits(
     host: &Host,
@@ -318,7 +318,7 @@ impl Shown {
     }
 }
 
-/// What a person's action, run from a control, waits for the door to commit: the notice of a
+/// What a person's action, run from a control, waits for the API to commit: the notice of a
 /// destructive one, which offers Undo once it is committed.
 #[derive(Default)]
 struct Pending {
@@ -575,7 +575,7 @@ impl Instance {
         self.origins.borrow_mut().push(origin);
     }
 
-    /// Poll each origin: what the services said is written and handed to the door.
+    /// Poll each origin: what the services said is written and handed to the API.
     fn poll_origins(&mut self) -> bool {
         if self.opening
             || self.mode != Mode::Live
@@ -645,7 +645,7 @@ impl Instance {
         self.pressed_opens.push((self.taken_press, anchor));
     }
 
-    /// The commits waiting for the door.
+    /// The commits waiting for the API.
     #[must_use]
     pub fn outgoing(&self) -> Outgoing {
         Rc::clone(&self.outgoing)
@@ -1201,7 +1201,7 @@ impl Instance {
         }
     }
 
-    // ----- the door ------------------------------------------------------------------------
+    // ----- the API ------------------------------------------------------------------------
 
     fn notice(&mut self, words: Words, kind: ui::NoticeKind) {
         // The window shows one notice at a time: what the one before offered to take back is
@@ -1339,7 +1339,7 @@ impl Instance {
         }
     }
 
-    /// Queue what the runtime committed for the door. Returns the tickets queued.
+    /// Queue what the runtime committed for the API. Returns the tickets queued.
     pub fn commit_planned(&mut self) -> Vec<u64> {
         // A past version shows what it held; nothing it does is committed.
         if self.mode == Mode::Past {
@@ -1353,7 +1353,7 @@ impl Instance {
         tickets
     }
 
-    /// The next invocation for the door, with the invocation of the door that made it.
+    /// The next invocation for the API, with the invocation of the API that made it.
     pub fn take_invocation(&mut self) -> Option<(ControlInvocation, Option<InvocationId>)> {
         let (invocation, origin) = self.outgoing.borrow_mut().pop_front()?;
         if invocation.address.resource == HOST_RESOURCE {
@@ -1367,11 +1367,11 @@ impl Instance {
         Some((invocation, origin))
     }
 
-    /// The door answered an invocation the instance handed over: done, or refused with
+    /// The API answered an invocation the instance handed over: done, or refused with
     /// `error`. Whether it was the instance's own.
     pub fn answered(&mut self, address: &ActionAddress, error: Option<String>) -> bool {
         if address.resource == HOST_RESOURCE && address.action == COMMIT {
-            self.door_answered(error);
+            self.api_answered(error);
             self.flush();
             return true;
         }
@@ -1385,8 +1385,8 @@ impl Instance {
         false
     }
 
-    /// The door answered the oldest commit handed over.
-    fn door_answered(&mut self, error: Option<String>) {
+    /// The API answered the oldest commit handed over.
+    fn api_answered(&mut self, error: Option<String>) {
         let Some(ticket) = self.in_flight.pop_front() else {
             return;
         };
@@ -1839,7 +1839,7 @@ impl Instance {
         // subject: the resource the descriptor was published on.
         let mut args = Vec::new();
         if let Some(subject) = meta.subject_of(&action.params) {
-            // The address names the resource as the door publishes it (`tl:<app>:<id>`); the
+            // The address names the resource as the API publishes it (`tl:<app>:<id>`); the
             // runtime holds it by its id.
             let id = address
                 .resource
@@ -2364,7 +2364,7 @@ impl Instance {
         moved
     }
 
-    /// The second half of a frame: what the person did and what the door answered, run in the
+    /// The second half of a frame: what the person did and what the API answered, run in the
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
         let received = self.receive();

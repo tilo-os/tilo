@@ -29,7 +29,7 @@
 //! [`NextStepKind::AddPaymentMethod`]: nothing asks for a card before that.
 //!
 //! Every type here is written field for field, with enums tagged by their
-//! variant, so it crosses both JSON (the action door) and postcard (a
+//! variant, so it crosses both JSON (the action API) and postcard (a
 //! host's own sockets) as the same value.
 //!
 //! Payment itself (checkout, prices, webhooks, credit, rate limits, fraud

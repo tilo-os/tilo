@@ -161,7 +161,7 @@ impl crate::Session {
         // but the screen offers an action while it is up. A lock a client put up of its own is that
         // client's, and ends with it.
         let locked = self.compositor.locked();
-        self.shared.doors.locked(locked);
+        self.shared.published.locked(locked);
         if self.compositor.session_locked()
             && !lock.shown().unlocking
             && self.lock_shown == LockShown::App

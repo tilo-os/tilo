@@ -5974,7 +5974,7 @@
         },
         {
           "name": "lists_actions",
-          "doc": "The shell lists this window's actions where the person reaches them (the shell bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
+          "doc": "The shell lists this window's actions where the person reaches them (the shell bar's window menu): its header's actions that do not fit give way with no API of their own. Without it what does not fit goes behind the header's API.",
           "type": "bool"
         },
         {

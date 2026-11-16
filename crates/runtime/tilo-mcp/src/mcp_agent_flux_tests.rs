@@ -1,4 +1,4 @@
-//! An app's directory while the app is busy or its view is rebuilt: what the door makes of a
+//! An app's directory while the app is busy or its view is rebuilt: what the API makes of a
 //! page that cannot be read now and of a level that lists less than the app has.
 use super::*;
 

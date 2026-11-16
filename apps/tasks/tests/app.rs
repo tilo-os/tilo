@@ -1202,7 +1202,7 @@ fn its_palette_lists_its_own_resources_and_actions() {
     // What the tracker does is offered as the catalogue words it, whatever
     // those are in the language this window speaks.
     let made =
-        ui::tilo_actions::door::spec_of(&app.harness().resources(), "tasks.tracker", "create")
+        ui::tilo_actions::api::spec_of(&app.harness().resources(), "tasks.tracker", "create")
             .expect("the tracker publishes making an issue")
             .label
             .clone();

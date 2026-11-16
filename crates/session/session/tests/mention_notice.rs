@@ -117,7 +117,7 @@ impl AppActions for Opens {
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         self.0.lock().expect("the opens").push((target, arguments));
         Ok(())
     }

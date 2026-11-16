@@ -189,7 +189,7 @@ impl Caller {
     }
 
     /// Retain a host-issued execution when projecting the same transport into
-    /// another verified action door. A lease conveys ownership and lifetime,
+    /// another verified action API. A lease conveys ownership and lifetime,
     /// never certificate custody or additional permissions.
     #[must_use]
     pub fn in_execution(mut self, execution: ExecutionLease) -> Self {
@@ -327,7 +327,7 @@ impl Caller {
 
     /// The turn this agent acts inside ([`Self::agent_turn`]), when it was
     /// admitted as one: the message whose conversation caused its ops, which
-    /// every door it reaches decides it against.
+    /// every API it reaches decides it against.
     #[must_use]
     pub fn turn(&self) -> Option<&tilo_action_policy::turn::Turn> {
         self.turn.as_ref()

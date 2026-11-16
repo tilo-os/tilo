@@ -48,7 +48,7 @@ pub const EDIT_TEXT_ACTION: &str = tilolang_runtime::store::EDIT_TEXT_ACTION;
 pub const EDIT_FLAG_ACTION: &str = tilolang_runtime::store::EDIT_FLAG_ACTION;
 
 /// A bound control's edit of one field — a text input or a checkbox — as a resource offers it:
-/// the door gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
+/// the API gives it an action ([`crate::publish`]), and the surface publishes it as the verb a
 /// change of the field names ([`crate::surface`]). One declaration, so the arguments a change is
 /// published with are the ones the surface's verb declares.
 pub struct DirectEdit {

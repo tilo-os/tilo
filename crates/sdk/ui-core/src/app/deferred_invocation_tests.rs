@@ -254,7 +254,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     );
     if foreign {
         assert!(
-            matches!(result, Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view")
+            matches!(result, Err(tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "private_view")
         );
         assert!(
             ledger.borrow().is_empty(),

@@ -90,7 +90,7 @@ pub(super) struct LaunchDestination {
 
 /// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
 /// admitted application or agent connection reaches over its channel's
-/// `remoteAction` door. [`OWN_PROVIDER`] names that connection itself.
+/// `remoteAction` api. [`OWN_PROVIDER`] names that connection itself.
 #[derive(Clone)]
 pub(super) struct ConnectionActionHost {
     pub(super) state: Arc<AppBrokerState>,
@@ -184,11 +184,11 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     }
 }
 
-/// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
+/// The broker's own api, as the [`ActionHost`](tilo_actions::remote::ActionHost)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller under its retained original
 /// custody, with the run's grants and confirmations still checked per step.
-pub(super) struct BrokerDoor {
+pub(super) struct BrokerApi {
     state: Arc<AppBrokerState>,
     /// Protected dispatch custody, scoped to this run rather than a connection.
     origin: Option<super::InvocationCaller>,
@@ -197,7 +197,7 @@ pub(super) struct BrokerDoor {
     seen: std::sync::Mutex<tokio::sync::watch::Receiver<u64>>,
 }
 
-impl BrokerDoor {
+impl BrokerApi {
     pub(super) fn new(state: Arc<AppBrokerState>) -> Self {
         let seen = std::sync::Mutex::new(state.invocation_changes());
         Self {
@@ -233,7 +233,7 @@ impl BrokerDoor {
     }
 }
 
-impl tilo_actions::remote::ActionHost for BrokerDoor {
+impl tilo_actions::remote::ActionHost for BrokerApi {
     fn query(
         &self,
         caller: &Caller,
@@ -649,7 +649,7 @@ impl AppBrokerState {
     /// app asks the shell for it as that person
     /// ([`app_admission::invitation_request`]), under their part in the workspace; so is showing
     /// them how an agent or a computer connects as them ([`app_admission::connect_request`]).
-    pub(crate) fn app_door(
+    pub(crate) fn app_api(
         &self,
         person: &Caller,
         app_id: &str,
@@ -723,14 +723,14 @@ impl AppBrokerState {
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
-            // A confirmation is asked for on the door that puts questions to
+            // A confirmation is asked for on the API that puts questions to
             // the person, never by an application.
             | RemoteActionMessage::Confirm { .. }
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
             | RemoteActionMessage::RetiredResourceWatch { .. }
             // An application puts content through its own store, not into
-            // another device's over this door; nor does it read another
+            // another device's over this api; nor does it read another
             // device's workspace content through it.
             | RemoteActionMessage::ContentPutRequest { .. }
             | RemoteActionMessage::ContentGetRequest { .. }
@@ -767,7 +767,7 @@ impl AppBrokerState {
         })
     }
 
-    /// What application `app_id` declared it may do on the door.
+    /// What application `app_id` declared it may do on the API.
     pub(crate) fn app_action_access(&self, app_id: &str) -> crate::app_actions::AppActionAccess {
         self.app_action_access
             .read()
@@ -1094,7 +1094,7 @@ impl AppBrokerState {
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
         // Listing must retain the same local custody as dispatch. A device key
-        // alone does not establish that this is a local rather than remote door.
+        // alone does not establish that this is a local rather than remote api.
         let host_steps = if super::host_steps::is_local_host_caller(caller, origin) {
             self.services.host_steps.clone()
         } else {
@@ -3213,7 +3213,7 @@ impl AppBrokerState {
             }
             changed.complete(());
         };
-        // A waiter on a thread of its own (the control door's connections) waits on the app
+        // A waiter on a thread of its own (the control API's connections) waits on the app
         // runtime: without one it would hear no change and ask again at once.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             drop(runtime.spawn(wait));
@@ -3871,12 +3871,12 @@ mod device_pairing_tests {
         let discover = RemoteActionMessage::Invoke(request(device_pairing::DISCOVER, None));
         assert_eq!(
             state
-                .app_door(&person, "so.tilo.settings", &discover)
+                .app_api(&person, "so.tilo.settings", &discover)
                 .map(|caller| caller.acting().clone())
                 .ok(),
             Some(person.acting().clone())
         );
-        assert!(state.app_door(&person, "so.tilo.notes", &discover).is_err());
+        assert!(state.app_api(&person, "so.tilo.notes", &discover).is_err());
 
         let unconfirmed = fixture.invoke(&request(device_pairing::APPROVE, None));
         assert_eq!(

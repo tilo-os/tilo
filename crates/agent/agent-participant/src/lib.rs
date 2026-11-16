@@ -11,7 +11,7 @@
 //!   treats it as its own principal ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's
 //!   resource, looked up by the kind the record names and used only through
-//!   the operations the resource publishes — the same door a person's window
+//!   the operations the resource publishes — the same API a person's window
 //!   uses — with no per-app code and nothing rendered ([`apps`]).
 //! - **Confinement.** On a host, each record lives in its own confined app
 //!   worker process, so no app code runs beside the host's and agents'

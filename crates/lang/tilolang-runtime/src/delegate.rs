@@ -49,7 +49,7 @@ impl Invocation {
     /// An action's arguments as its subject's door takes them, by name, as any caller gives them
     /// ([`crate::value::to_argument`]): the subject itself and every option left out are not sent.
     #[must_use]
-    pub fn door_arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+    pub fn api_arguments(&self) -> serde_json::Map<String, serde_json::Value> {
         let Self::Action { args, subject, .. } = self else {
             return serde_json::Map::new();
         };

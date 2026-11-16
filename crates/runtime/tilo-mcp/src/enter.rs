@@ -43,7 +43,7 @@ pub struct Key {
 /// A workspace a key entered: where its MCP is answered.
 pub enum Entered {
     /// A device of the person's serves it; its MCP server carries the lines.
-    Door(Box<DoorLines>),
+    Device(Box<DeviceLines>),
     /// A dedicated host's actions, served by the agent surface here.
     Host {
         server: Box<McpServer<SessionActions>>,
@@ -57,7 +57,7 @@ impl Entered {
     /// notification.
     pub async fn handle(&self, request: Value) -> Option<Value> {
         match self {
-            Self::Door(lines) => lines.call(request).await,
+            Self::Device(lines) => lines.call(request).await,
             Self::Host { server, .. } => server.handle(request).await,
         }
     }
@@ -66,7 +66,7 @@ impl Entered {
     #[must_use]
     pub fn is_live(&self) -> bool {
         match self {
-            Self::Door(lines) => lines.is_live(),
+            Self::Device(lines) => lines.is_live(),
             Self::Host { device, .. } => device.is_live(),
         }
     }
@@ -128,7 +128,7 @@ pub async fn enter(
                 .to_owned()
         }
     })?;
-    Ok(Entered::Door(Box::new(DoorLines::new(dialed))))
+    Ok(Entered::Device(Box::new(DeviceLines::new(dialed))))
 }
 
 impl Entered {
@@ -149,14 +149,14 @@ impl Entered {
 }
 
 /// The MCP lines of an MCP server one device opened for this key: each
-/// request a line out, its answer the line back with its id; what the door
+/// request a line out, its answer the line back with its id; what the device
 /// says in between (a notification) is not an answer.
-pub struct DoorLines {
+pub struct DeviceLines {
     lines: tokio::sync::Mutex<crate::devices::Lines>,
     live: std::sync::atomic::AtomicBool,
 }
 
-impl DoorLines {
+impl DeviceLines {
     fn new(dialed: crate::devices::Dialed) -> Self {
         Self {
             lines: tokio::sync::Mutex::new(dialed.into_lines()),

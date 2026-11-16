@@ -9,7 +9,7 @@ use ui::widget::{ButtonRole, ListRow, Section, SectionHeader};
 
 use crate::agents::{self, Seen};
 use crate::effects::{AgentCommand, ConsoleEffect};
-use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
+use crate::{Console, Nav, Reads, Records, ago, faced, page, tr, trf};
 
 pub(crate) const AGENT_KIND: &str = "console.agent";
 
@@ -77,28 +77,28 @@ fn sessions_of<'a>(seen: &'a Seen, client: &str) -> Vec<&'a wire::AgentSession> 
     sessions
 }
 
-/// The grant `client` came in by, when the door lists one.
+/// The grant `client` came in by, when the MCP server lists one.
 fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a mcp_server::Grant> {
-    seen.door
+    seen.server
         .grants
         .iter()
         .find(|grant| crate::client::of(&grant.agent).name() == client)
 }
 
 /// Carry out `command` on the agent of `client`, as its card's buttons do.
-pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentCommand) -> bool {
+pub(crate) fn act(records: &Records, seen: &Seen, client: &str, command: AgentCommand) -> bool {
     let newest = sessions_of(seen, client).into_iter().next();
     match command {
-        AgentCommand::Stop => newest.is_some_and(|session| agents::stop(doors, seen, session)),
+        AgentCommand::Stop => newest.is_some_and(|session| agents::stop(records, seen, session)),
         AgentCommand::UndoSession => {
-            newest.is_some_and(|session| agents::undo_session(doors, session))
+            newest.is_some_and(|session| agents::undo_session(records, session))
         }
         AgentCommand::TakeOver => newest.is_some_and(|session| {
-            agents::take_over(doors, seen, session);
+            agents::take_over(records, seen, session);
             true
         }),
         AgentCommand::Revoke => grant_of(seen, client).is_some_and(|grant| {
-            doors.door(
+            records.server(
                 mcp_server::REVOKE,
                 &mcp_server::GrantRef {
                     grant: grant.id.clone(),
@@ -109,23 +109,23 @@ pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentComman
     }
 }
 
-/// The card of `client`: once the sessions and the door have answered, the command asked from
+/// The card of `client`: once the sessions and the MCP server have answered, the command asked from
 /// outside it (`nav.command`) is carried out, once.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str) -> Element {
-    let door_state = reads.door.answer().state();
+    let server_state = reads.server.answer().state();
     let (nav, client) = (nav.clone(), client.to_owned());
     Box::new(cx.arriving(&reads.sessions.answer(), move |cx, sessions| {
         let (nav, sessions, client) = (nav.clone(), sessions.clone(), client.clone());
-        cx.switch(&door_state, move |cx, door| {
+        cx.switch(&server_state, move |cx, server| {
             let seen = Seen {
                 history: sessions.clone(),
-                door: agents::ready(door),
+                server: agents::ready(server),
             };
             if let Some(command) = nav.command.get()
-                && !matches!(door, Arrival::Pending { .. })
+                && !matches!(server, Arrival::Pending { .. })
             {
                 nav.command.set(None);
-                act(&Doors::of(cx), &seen, &client, command);
+                act(&Records::of(cx), &seen, &client, command);
             }
             card(cx, &nav, &seen, &client)
         })
@@ -133,7 +133,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str)
 }
 
 fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
-    let doors = Doors::of(cx);
+    let records = Records::of(cx);
     let sessions = sessions_of(seen, client);
     let newest = sessions.first().copied();
     let working = newest.filter(|session| seen.working(session));
@@ -160,7 +160,7 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     }
     let mut parts: Vec<Element> = vec![Box::new(head)];
     if let Some(session) = newest {
-        parts.push(agents::commands(&doors, seen, session));
+        parts.push(agents::commands(&records, seen, session));
         if let Some(blocked) = &session.undo_blocked {
             parts.push(Box::new(
                 Text::new(blocked)
@@ -172,11 +172,11 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     }
     if let Some(grant) = grant_of(seen, client) {
         let revoke = {
-            let (doors, id) = (doors.clone(), grant.id.clone());
+            let (records, id) = (records.clone(), grant.id.clone());
             Button::new("console-agent-revoke", "console-grant-revoke")
                 .role(ButtonRole::Destructive)
                 .on_view(move || {
-                    doors.door(
+                    records.server(
                         mcp_server::REVOKE,
                         &mcp_server::GrantRef { grant: id.clone() },
                     );

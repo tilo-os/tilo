@@ -1,6 +1,6 @@
 //! A header row whose window's actions the host lists elsewhere (the shell bar's window
 //! menu): the row keeps none of them, each standing once; where nothing lists them, the row
-//! shows what fits and its door holds the rest.
+//! shows what fits and its API holds the rest.
 
 use super::*;
 use crate::headless::InspectionNode;

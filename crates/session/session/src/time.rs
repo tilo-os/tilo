@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_resource::NoEffect;
 use tilo_service::{Service, Started, offer, reading};
 
@@ -92,8 +92,8 @@ impl Service for Served {
         resource: &str,
         action: &str,
         _arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
-        Err(DoorError::Unknown(ActionAddress::new(resource, action)))
+    ) -> Result<Started, ApiError> {
+        Err(ApiError::Unknown(ActionAddress::new(resource, action)))
     }
 
     fn poll(&mut self) -> bool {

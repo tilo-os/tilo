@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect;
 
 use crate::lines::{self, Event, Remote, Request};
@@ -90,7 +90,7 @@ impl Service for LampService {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         match decode::<Lamp>(&self.resources(), resource, action, arguments)? {
             Lamp::SetOn { on } => {
                 self.worker.run(move |bulb: &Bulb| {
@@ -156,7 +156,7 @@ fn an_action_lands_in_the_reading() {
         .invoke("lamp", "set-on", &arguments(json!({"on": "bright"})))
         .expect("the lamp publishes it");
     assert!(
-        matches!(refused, Err(DoorError::InvalidArguments(_))),
+        matches!(refused, Err(ApiError::InvalidArguments(_))),
         "{refused:?}"
     );
     assert!(services.invoke("lamp", "explode", &Map::new()).is_none());
@@ -177,7 +177,7 @@ fn an_unavailable_action_is_refused() {
         .invoke("lamp", "dim", &Map::new())
         .expect("the lamp publishes it");
     assert!(
-        matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "not_dimmable"),
+        matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "not_dimmable"),
         "{refused:?}"
     );
 }
@@ -189,7 +189,7 @@ fn a_destructive_action_waits_for_confirmation() {
     services.add(Box::new(LampService::new()));
     assert_eq!(
         services.invoke("lamp", "smash", &Map::new()),
-        Some(Err(DoorError::ConfirmationRequired))
+        Some(Err(ApiError::ConfirmationRequired))
     );
     assert!(matches!(
         services.invoke_confirmed("lamp", "smash", &Map::new()),

@@ -8290,18 +8290,15 @@ pub(crate) mod published {
         args: &serde_json::Value,
     ) -> Result<Option<Started>, String> {
         let tree = tree(files, doc);
-        let address = ui::tilo_actions::door::published(&tree, resource, action)
+        let address = ui::tilo_actions::api::published(&tree, resource, action)
             .ok_or_else(|| format!("{resource} offers no {action}"))?;
-        let spec = ui::tilo_actions::door::resolve(&tree, &address)
+        let spec = ui::tilo_actions::api::resolve(&tree, &address)
             .ok_or_else(|| format!("{resource} offers no {action}"))?;
         let kind = spec.kind;
         let empty = serde_json::Map::new();
-        let encoded = ui::tilo_actions::door::encode_json(
-            &tree,
-            &address,
-            args.as_object().unwrap_or(&empty),
-        )
-        .map_err(|error| error.to_string())?;
+        let encoded =
+            ui::tilo_actions::api::encode_json(&tree, &address, args.as_object().unwrap_or(&empty))
+                .map_err(|error| error.to_string())?;
         start(
             files,
             kind,

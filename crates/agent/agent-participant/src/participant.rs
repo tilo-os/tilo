@@ -33,7 +33,7 @@ use crate::control::{AgentControl, AgentIdentity};
 use crate::planner::{MESSAGE_APPS, Planner, Step, StepAction, written_steps};
 use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_live::presence::KEEPALIVE_MS;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -55,7 +55,7 @@ mod logs;
 mod obligations;
 mod parts;
 mod planning;
-mod record_door;
+mod record_api;
 mod records;
 mod repairs;
 mod running;
@@ -943,7 +943,7 @@ impl AgentParticipant {
                 .map_err(actions::Refusal::into_text),
             Ok(_) | Err(_) => Err(format!(
                 "{}: the person did not confirm",
-                tilo_actions::door::DoorError::ConfirmationRequired.code()
+                tilo_actions::api::ApiError::ConfirmationRequired.code()
             )),
         };
         let edited = self.generation != generation;
@@ -1732,7 +1732,7 @@ impl AgentParticipant {
             self.own_wrote.insert(route.clone());
         }
         Ok(match outcome {
-            Err(actions::Refusal::Door(tilo_actions::door::DoorError::ConfirmationRequired)) => {
+            Err(actions::Refusal::Api(tilo_actions::api::ApiError::ConfirmationRequired)) => {
                 self.ask(step, route, address, &arguments)
             }
             outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
@@ -1832,7 +1832,7 @@ impl AgentParticipant {
         let refused = || {
             Performed::Done(Err(format!(
                 "{}: nobody is there to confirm it",
-                tilo_actions::door::DoorError::ConfirmationRequired.code()
+                tilo_actions::api::ApiError::ConfirmationRequired.code()
             )))
         };
         let Some(witness) = self.control.witness() else {
@@ -2111,7 +2111,7 @@ impl AgentParticipant {
                 route.app_id
             )));
         }
-        if record_door::reads(route, address) {
+        if record_api::reads(route, address) {
             return self.read_record(route).map(Some).map_err(Refusal::Agent);
         }
         let app = self
@@ -2146,11 +2146,11 @@ impl AgentParticipant {
         // routes it there (`crate::render::route`) when the host found the
         // helper, and its survey offers it only then.
         let output = match app.invoke(address, arguments, confirmed) {
-            Err(tilo_actions::DoorError::Unknown(_)) => {
+            Err(tilo_actions::ApiError::Unknown(_)) => {
                 // Say what the record does offer, so the next plan names it.
                 return Err(Refusal::Agent(unknown_action(address, &app.survey())));
             }
-            outcome => outcome.map_err(Refusal::Door)?,
+            outcome => outcome.map_err(Refusal::Api)?,
         };
         let output = running::content_named_in_value(output);
         let changed = app

@@ -689,7 +689,7 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
     };
     assert!(matches!(
         app.effect(&PrintCentreEffect::NewScannedDocument),
-        Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
     ));
     assert_eq!(centre(&mut app).borrow().scan.pages.len(), 2);
 

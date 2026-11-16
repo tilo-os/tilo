@@ -191,20 +191,20 @@ pub trait AppWidget: Widget {
     /// The edge drag ended.
     fn release_live_resize_anchor(&mut self) {}
 
-    /// What a private window offers its own device: the resources and actions its door publishes, for
+    /// What a private window offers its own device: the resources and actions its API publishes, for
     /// the host to list and invoke for this device's person without publishing them to any workspace.
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         None
     }
 
     /// Invoke one of [`Self::device_local_resources`]' actions as the window's own person, through its
-    /// door.
+    /// API.
     fn invoke_device_local_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unknown(address.clone()))
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unknown(address.clone()))
     }
 
     /// What an app keeping its own document publishes for the search of its window: its resources and
@@ -1904,7 +1904,7 @@ mod component_adapter {
         fn on_control_invocation_result(
             &mut self,
             _: &tilo_actions::ActionAddress,
-            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
         ) {
         }
         fn has_pending_control_invocation(&self) -> bool {

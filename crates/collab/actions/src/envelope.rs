@@ -30,7 +30,7 @@ pub struct ActionEnvelope {
     /// honor it.
     pub locus: ExecutionLocus,
     /// The participant that authored this action, when named — a person, an
-    /// agent, or another session reached through [`crate::door`].
+    /// agent, or another session reached through [`crate::api`].
     ///
     /// These bytes become the Automerge actor the change commits under, so
     /// an edit from outside attributes in history exactly like a typed one.

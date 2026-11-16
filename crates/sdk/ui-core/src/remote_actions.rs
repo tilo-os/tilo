@@ -1,5 +1,5 @@
-//! An application's own client for the session's action door. [`RemoteActions`] lets an app read the
-//! action catalogue and invoke published actions through the session broker — the same door the
+//! An application's own client for the session's action API. [`RemoteActions`] lets an app read the
+//! action catalogue and invoke published actions through the session broker — the same API the
 //! palette, scripts and agents use.
 
 use crate::time::{Duration, Instant};
@@ -172,7 +172,7 @@ struct Inner {
     wake: WakeHandle,
 }
 
-/// An application's client for the session's action door.
+/// An application's client for the session's action API.
 #[derive(Clone)]
 pub struct RemoteActions {
     inner: Arc<Mutex<Inner>>,
@@ -420,7 +420,7 @@ impl RemoteActions {
         }
     }
 
-    /// Read a record of the window's workspace through the record door, as a request of its own or
+    /// Read a record of the window's workspace through the record API, as a request of its own or
     /// continuing `on_behalf_of`, an invocation the host delivered here: the host decides it as that
     /// invocation's caller.
     #[must_use]

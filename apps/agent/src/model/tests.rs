@@ -4,7 +4,7 @@
 use super::*;
 use crate::plan::Instruction;
 use crate::surface::Offer;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
 
 tilo_test_env::scenario! {

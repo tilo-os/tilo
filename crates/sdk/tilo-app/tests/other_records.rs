@@ -327,7 +327,7 @@ tilo_test_env::scenario! {
 
         let records = tilo_app::framework::SettingsRecords::new(LockApp::ID, LockApp::records);
         let resources = records.resources();
-        let spec = tilo_app::tilo_actions::door::resolve(&resources, &address)
+        let spec = tilo_app::tilo_actions::api::resolve(&resources, &address)
             .expect("the section's field edit is published");
         assert_eq!(
             spec.confirmation_for_json(&edit(1)),
@@ -346,7 +346,7 @@ tilo_test_env::scenario! {
         assert_eq!(stored(), 1);
         assert_eq!(
             records.invoke(&address, &edit(0), false, &invoker, None),
-            Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+            Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking runs only once confirmed"
         );
         assert_eq!(stored(), 1);
@@ -363,7 +363,7 @@ tilo_test_env::scenario! {
             .set(&Lock { minutes: 10 })
             .unwrap();
         let resources = records.resources();
-        let spec = tilo_app::tilo_actions::door::resolve(&resources, &address).unwrap();
+        let spec = tilo_app::tilo_actions::api::resolve(&resources, &address).unwrap();
         assert_eq!(
             spec.confirmation_for_json(&edit(5)),
             tilo_app::tilo_actions::ConfirmationPolicy::None,
@@ -396,7 +396,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.settings::<Lock>().get().minutes, 1);
         assert_eq!(
             app.call_on("settings:test.lock", "field-edit", edit(0).into()),
-            Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+            Err(tilo_app::tilo_actions::ApiError::ConfirmationRequired),
             "never locking asks first, here as at the host"
         );
         app.call_confirmed_on("settings:test.lock", "field-edit", edit(0).into())
@@ -484,7 +484,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let resources = app.harness().resources();
-        let descriptor = tilo_actions::door::survey(&resources)
+        let descriptor = tilo_actions::api::survey(&resources)
             .into_iter()
             .find(|descriptor| {
                 descriptor.address.resource.as_str() == "person:test.playback"

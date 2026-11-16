@@ -15,13 +15,13 @@ use crate::panels::{ActivityLayer, Readout, ReadoutPlaces, Reserved};
 use crate::platform::keys::NativeKeys;
 use crate::setup::Setup;
 use crate::{BeforeShell, SessionCommand};
-use tilo_session_core::door::Doors;
+use tilo_session_core::surfaces::Surfaces;
 
 /// What stands before the shell, when it stands there at all: above everything, first to the
 /// keyboard, and while it is up the only surface offering actions.
 pub(crate) fn mount_setup(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     surface: Option<BeforeShell>,
     person: &str,
     scale: f64,
@@ -31,7 +31,7 @@ pub(crate) fn mount_setup(
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
         compositor.add_host(setup.clone());
-        doors.add(Rc::clone(&setup) as tilo_session_core::door::Shared);
+        doors.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
         setup
     })
 }
@@ -72,7 +72,7 @@ pub(crate) type Shortcuts = Rc<RefCell<ui::shortcut_table::ShortcutConfig>>;
 
 pub(crate) fn mount_controls(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     shortcuts: Shortcuts,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     guide: Rc<GuideState>,
@@ -90,7 +90,7 @@ pub(crate) fn mount_controls(
 ) -> Controls {
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(places), band)));
     compositor.add_host(readout.clone());
-    let shared: tilo_session_core::door::Shared = readout.clone();
+    let shared: tilo_session_core::surfaces::Shared = readout.clone();
     doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
     // The controls are a service of the session's, mounted beside the other services so an app
@@ -130,7 +130,7 @@ pub(crate) fn mount_controls(
 /// a layer of ours would draw a second card over it.
 pub(crate) fn mount_activities(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     reader: &Rc<crate::chrome::Activities>,
     cards: &crate::cards::Cards,
     (banners, readout): (Reserved, Reserved),

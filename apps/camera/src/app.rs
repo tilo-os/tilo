@@ -3860,7 +3860,7 @@ mod tests {
             // and the bar says so.
             let mut app = ui::framework::testing::TestApp::<SampleCamera>::new().unwrap();
             let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-            app.harness().set_session_door(
+            app.harness().set_session_api(
                 ui::RemoteActions::with_host(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
@@ -5011,14 +5011,14 @@ mod tests {
         assert!(
             matches!(
                 &refused,
-                ui::tilo_actions::DoorError::Unavailable { code, .. }
+                ui::tilo_actions::ApiError::Unavailable { code, .. }
                     if code == "authoritative_host_unavailable"
             ),
             "{refused}"
         );
 
         let session = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-        app.harness().set_session_door(
+        app.harness().set_session_api(
             ui::RemoteActions::with_host(
                 session.clone(),
                 ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")

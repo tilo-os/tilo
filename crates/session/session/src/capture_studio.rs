@@ -41,7 +41,7 @@ use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
 
 use tilo_portal::CaptureError;
-use tilo_session_core::door::Doors;
+use tilo_session_core::surfaces::Surfaces;
 use ui::vello::kurbo::Rect;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, ScreenshotKept,
@@ -229,7 +229,7 @@ struct Feeding {
 /// Mount the capture studio over the desktop, and hand back the session's end of it.
 pub(crate) fn mount(
     compositor: &mut Compositor,
-    doors: &mut Doors,
+    doors: &mut Surfaces,
     options: &Options,
     nearby: Option<&Arc<NearbyTransfer>>,
     io: Rc<CaptureIo>,
@@ -1641,7 +1641,7 @@ mod tests {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 1280, 800))
             .expect("a display");
-        let mut doors = Doors::default();
+        let mut doors = Surfaces::default();
         let (io, worker_notes) = CaptureIo::new(options.wake.handle());
         let (said, notes) = channel();
         let board = Arc::new(runtime_collab::LiveActivities::default());

@@ -207,8 +207,8 @@ pub(super) struct AvailabilityInputs {
     pub(super) tree: TreeGeneration,
     pub(super) framework_input: bool,
     pub(super) history_captures: bool,
-    /// The addresses the window's History door serves.
-    pub(super) history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+    /// The addresses the window's History API serves.
+    pub(super) history_api: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
 
 /// What pushing control availability into the tree last read and found.

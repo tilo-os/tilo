@@ -20,7 +20,7 @@ fn read_text_address(
 fn read(
     app: &mut TestApp<WordProcessorApp>,
     arguments: &serde_json::Value,
-) -> Result<serde_json::Value, tilo_actions::DoorError> {
+) -> Result<serde_json::Value, tilo_actions::ApiError> {
     let harness = app.harness();
     let address = BoundActionAddress {
         instance_id: INSTANCE,
@@ -82,7 +82,7 @@ fn read_text_pages_the_committed_document_for_an_agent() {
         &serde_json::json!({"pageSize": 8, "cursor": cursor, "format": "segments"}),
     );
     assert!(
-        matches!(&stale, Err(tilo_actions::DoorError::Unavailable { code, .. }) if code == "stale_cursor"),
+        matches!(&stale, Err(tilo_actions::ApiError::Unavailable { code, .. }) if code == "stale_cursor"),
         "a cursor from before an edit is refused: {stale:?}"
     );
 }

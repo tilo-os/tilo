@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(Some(invocation.clone()), history[0].invocation());
         assert!(
             app.invoke_host_command(invocation),
-            "the palette's door opens it"
+            "the palette's API opens it"
         );
         crate::app::framework_history_tests::layout(&mut app);
         assert!(
@@ -594,7 +594,7 @@ mod tests {
         };
         assert!(
             app.invoke_host_command(invocation),
-            "the palette's door opens it"
+            "the palette's API opens it"
         );
         let search = app
             .host_commands(false)

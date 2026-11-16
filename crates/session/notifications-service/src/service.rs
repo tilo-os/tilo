@@ -5,7 +5,7 @@
 //! actions that change them.
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 
@@ -302,10 +302,10 @@ impl Service for Notifications {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
-        let unknown = || DoorError::Unknown(ActionAddress::new(resource, action));
-        let refused = |error: String| DoorError::InvalidArguments(error);
+        let unknown = || ApiError::Unknown(ActionAddress::new(resource, action));
+        let refused = |error: String| ApiError::InvalidArguments(error);
         if resource == SCHEDULES_RESOURCE {
             let SchedulesEffect::Schedule {
                 app_id,
@@ -387,7 +387,7 @@ impl Service for Notifications {
             NotificationEffect::Close => {}
             NotificationEffect::Invoke { action: key } => {
                 if !invocable(&notification).any(|offered| offered == key) {
-                    return Err(DoorError::InvalidArguments(key));
+                    return Err(ApiError::InvalidArguments(key));
                 }
                 self.action_invoked(id, &key, self.mint());
             }

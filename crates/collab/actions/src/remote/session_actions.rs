@@ -3,7 +3,7 @@
 //!
 //! The agent answering a person's turn arranges the screen as the REPL does: the
 //! layout's `place`, `place_at` and `open`, the windows and the notices. Those are
-//! published by the session on its own door, on the loop's thread, and this is the
+//! published by the session on its own API, on the loop's thread, and this is the
 //! provider its broker answers them under, so one catalogue names them for every caller
 //! that has a broker: the MCP server, a launched agent, and a task's program alike.
 //!
@@ -17,7 +17,7 @@
 //! ([`SHOW_INVITE`]), and the invitation it makes ([`ISSUE_INVITATION`]) — and nothing else of
 //! the shell.
 
-/// The provider the session answers its own actions under: the same name its own door
+/// The provider the session answers its own actions under: the same name its own API
 /// publishes them as, so a catalogue that names a session action names it here too.
 pub const PROVIDER: &str = "so.tilo.session";
 

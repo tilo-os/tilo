@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The provider the host answers the records under.
 pub const PROVIDER: &str = "tilo.crash-records";

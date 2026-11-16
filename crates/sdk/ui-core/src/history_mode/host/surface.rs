@@ -521,7 +521,7 @@ impl Widget for HistoryHost {
                 &self.panel_rect,
             );
         } else if self.has_toolbar_controls() {
-            crate::history_mode::door::bar_edge(scene, transform, theme, self.toolbar.get_rect());
+            crate::history_mode::api::bar_edge(scene, transform, theme, self.toolbar.get_rect());
         }
         self.toolbar
             .draw_child(scene, bar_transform, text, theme, presence);

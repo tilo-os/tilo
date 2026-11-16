@@ -1,19 +1,19 @@
-//! What a hosted surface publishes, and the one door the session reaches
+//! What a hosted surface publishes, and the one API the session reaches
 //! every hosted surface through.
 //!
 //! Each surface (the shell, the chrome, quick settings, the banners, …) is
 //! an ordinary widget tree or app with its own published resources and
-//! actions. [`Doors`] gathers them: a caller of the action protocol (a
+//! actions. [`Surfaces`] gathers them: a caller of the action protocol (a
 //! person's key, the palette, an agent, a test) names an action by address
-//! and the door resolves it to the surface publishing it. Nothing calls a
+//! and the API resolves it to the surface publishing it. Nothing calls a
 //! surface directly.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ui::device_local_door::SharedDoor;
+use ui::device_local_api::SharedApi;
 use ui::host_operation::ResourceOperationStart;
-use ui::tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use ui::tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 
 /// A picture of a window, as a surface answers with one: the address it is
 /// kept at, and how large it is.
@@ -83,7 +83,7 @@ pub trait Published {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError>;
+    ) -> Result<ResourceOperationStart, ApiError>;
 
     /// Run its published action `address` as `actor` (an agent, a script):
     /// who the change it makes is attributed to. The person's own input is
@@ -97,7 +97,7 @@ pub trait Published {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.invoke(address, arguments, look)
     }
 
@@ -184,8 +184,8 @@ pub trait Published {
         false
     }
 
-    /// Where what it publishes stands: equal revisions publish the same, so the door reads it
-    /// again only once this moved ([`Doors::revision`]). It may move without a change of what it
+    /// Where what it publishes stands: equal revisions publish the same, so the API reads it
+    /// again only once this moved ([`Surfaces::revision`]). It may move without a change of what it
     /// publishes (a frame drawn), never the other way round. `None` when it cannot tell, and is
     /// read again every time.
     fn revision(&self) -> Option<u64> {
@@ -204,35 +204,35 @@ pub trait Published {
     }
 
     /// Whether a locked session still offers it: only the lock screen's own
-    /// door is, and every other surface is withheld while the session is
+    /// API is, and every other surface is withheld while the session is
     /// locked.
     fn serves_while_locked(&self) -> bool {
         false
     }
 
     /// What it publishes while the session is locked. Nothing, but for the
-    /// door publishing the session's services: the lock's own resource.
+    /// API publishing the session's services: the lock's own resource.
     fn locked_resources(&mut self) -> Vec<ResourceSpec> {
         Vec::new()
     }
 }
 
-/// Run `address` through `door` (the surface app's own door on this
+/// Run `address` through `api` (the surface app's own API on this
 /// device, which every caller shares), `serve` it at once, and take the
 /// answer.
 ///
 /// # Errors
 /// The app's refusal, or none came: nothing there publishes `address`.
-pub fn through_door(
-    door: &SharedDoor,
+pub fn through_api(
+    api: &SharedApi,
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
     serve: impl FnOnce(),
-) -> Result<ResourceOperationStart, DoorError> {
-    let answer = door.invoke(address.clone(), arguments.clone());
+) -> Result<ResourceOperationStart, ApiError> {
+    let answer = api.invoke(address.clone(), arguments.clone());
     serve();
     let answered = answer.borrow_mut().take();
-    answered.unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))
+    answered.unwrap_or_else(|| Err(ApiError::Unknown(address.clone())))
 }
 
 /// A hosted surface the session keeps beside the compositor's hold of it.
@@ -241,15 +241,15 @@ pub type Shared = Rc<RefCell<dyn Published>>;
 /// Every hosted surface's published side, the session's action host for
 /// them.
 #[derive(Default, Clone)]
-pub struct Doors {
-    surfaces: Vec<Shared>,
+pub struct Surfaces {
+    hosted: Vec<Shared>,
     /// Whether the session is locked: only its lock screen is offered then.
     locked: Rc<Cell<bool>>,
     /// What each surface published when it was last read, by its place.
     read: Rc<RefCell<std::collections::HashMap<usize, Read>>>,
 }
 
-/// What the door last read of one surface.
+/// What the API last read of one surface.
 struct Read {
     /// The surface's own revision, the language and whether the session was locked when it was
     /// read: the same again, and the surface publishes what it did. `None` for a surface that
@@ -261,13 +261,13 @@ struct Read {
     revision: u64,
 }
 
-impl Doors {
-    /// Reach `surface` through the door from now on.
+impl Surfaces {
+    /// Reach `surface` through the API from now on.
     pub fn add(&mut self, surface: Shared) {
-        self.surfaces.push(surface);
+        self.hosted.push(surface);
     }
 
-    /// Offer the lock screen's door alone while the session is locked, and
+    /// Offer the lock screen's API alone while the session is locked, and
     /// every other again once it is unlocked.
     pub fn locked(&self, locked: bool) {
         self.locked.set(locked);
@@ -278,7 +278,7 @@ impl Doors {
     /// the session is locked.
     fn offered(&self) -> Vec<(usize, &Shared)> {
         let offered: Vec<(usize, &Shared)> = self
-            .surfaces
+            .hosted
             .iter()
             .enumerate()
             .filter(|(_, surface)| surface.borrow().offered())
@@ -317,7 +317,7 @@ impl Doors {
         };
         let mut read = self.read.borrow_mut();
         let revision = match read.get(&place) {
-            Some(kept) if ui::tilo_actions::door::publishes_same(&kept.resources, &resources) => {
+            Some(kept) if ui::tilo_actions::api::publishes_same(&kept.resources, &resources) => {
                 kept.revision
             }
             kept => kept.map_or(0, |kept| kept.revision.wrapping_add(1)),
@@ -333,7 +333,7 @@ impl Doors {
         );
     }
 
-    /// `look` at what the door last read of the surface at `place`.
+    /// `look` at what the API last read of the surface at `place`.
     fn kept<R>(&self, place: usize, look: impl FnOnce(&Read) -> R) -> Option<R> {
         self.read.borrow().get(&place).map(look)
     }
@@ -382,7 +382,7 @@ impl Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.publishing(address)?
             .borrow_mut()
             .invoke(address, arguments, look)
@@ -400,26 +400,26 @@ impl Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+    ) -> Result<ResourceOperationStart, ApiError> {
         self.publishing(address)?
             .borrow_mut()
             .invoke_as(actor, address, arguments, look)
     }
 
     /// The surface offering `address` now.
-    fn publishing(&self, address: &ActionAddress) -> Result<Shared, DoorError> {
+    fn publishing(&self, address: &ActionAddress) -> Result<Shared, ApiError> {
         let locale = ui::i18n::I18nManager::revision();
         self.offered()
             .into_iter()
             .find(|(place, surface)| {
                 self.read(*place, surface, locale);
                 self.kept(*place, |kept| {
-                    ui::tilo_actions::door::resolve(&kept.resources, address).is_some()
+                    ui::tilo_actions::api::resolve(&kept.resources, address).is_some()
                 })
                 .unwrap_or_default()
             })
             .map(|(_, surface)| Rc::clone(surface))
-            .ok_or_else(|| DoorError::Unknown(address.clone()))
+            .ok_or_else(|| ApiError::Unknown(address.clone()))
     }
 
     /// The labels of every hosted surface's accessibility tree.
@@ -493,7 +493,7 @@ impl Doors {
         Err(format!("no control does {identity}"))
     }
 
-    /// The surfaces offering now, each with its place in the door: what the
+    /// The surfaces offering now, each with its place in the API: what the
     /// accessibility exporter publishes, the last one topmost.
     #[must_use]
     pub fn offering(&self) -> Vec<(usize, Shared)> {
@@ -506,7 +506,7 @@ impl Doors {
     /// The surface at `place`, as [`Self::offering`] numbers it.
     #[must_use]
     pub fn surface(&self, place: usize) -> Option<Shared> {
-        self.surfaces.get(place).cloned()
+        self.hosted.get(place).cloned()
     }
 }
 
@@ -529,8 +529,8 @@ mod tests {
             address: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
             _: &mut Look<'_>,
-        ) -> Result<ResourceOperationStart, DoorError> {
-            Err(DoorError::Unknown(address.clone()))
+        ) -> Result<ResourceOperationStart, ApiError> {
+            Err(ApiError::Unknown(address.clone()))
         }
 
         fn accessible_labels(&mut self) -> Vec<String> {
@@ -543,23 +543,23 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_that_drew_without_changing_its_offer_leaves_the_door_where_it_stood() {
+    fn a_surface_that_drew_without_changing_its_offer_leaves_the_api_where_it_stood() {
         let surface = Rc::new(RefCell::new(Surface::default()));
-        let mut doors = Doors::default();
-        doors.add(surface.clone());
-        let first = doors.revision();
-        assert_eq!(doors.revision(), first);
+        let mut api = Surfaces::default();
+        api.add(surface.clone());
+        let first = api.revision();
+        assert_eq!(api.revision(), first);
         assert_eq!(
             surface.borrow().2,
             1,
             "a surface that did not move is not described again"
         );
         surface.borrow_mut().1 = 1;
-        assert_eq!(doors.revision(), first, "a frame drawn offers the same");
+        assert_eq!(api.revision(), first, "a frame drawn offers the same");
         surface.borrow_mut().0 = "renamed".into();
         surface.borrow_mut().1 = 2;
-        assert_ne!(doors.revision(), first, "a new label is a new offer");
-        assert_eq!(doors.resources()[0].label, "renamed");
+        assert_ne!(api.revision(), first, "a new label is a new offer");
+        assert_eq!(api.resources()[0].label, "renamed");
         assert_eq!(surface.borrow().2, 3, "what was read is what is handed on");
     }
 }

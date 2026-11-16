@@ -44,7 +44,7 @@ impl Shared {
         if self.underway.get().gesture {
             return;
         }
-        let now = self.doors.revision();
+        let now = self.published.revision();
         if *self.observed.borrow() == now {
             return;
         }
@@ -75,7 +75,7 @@ impl Shared {
         // registry the app sheets read too, so a registry that does not read back is said once, in
         // one place.
         let downloaded = self.downloaded_apps();
-        let resources = self.doors.resources();
+        let resources = self.published.resources();
         // What a place made from a resource reads its app and views from: the same tree search and
         // the palette read.
         self.layout.borrow().targets().borrow_mut().take(&resources);

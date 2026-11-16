@@ -45,7 +45,7 @@ fn row_for(effect: &AgentModelsEffect) -> String {
 fn invoke(
     app: &mut TestApp<SettingsShell>,
     effect: AgentModelsEffect,
-) -> Result<(), ui::tilo_actions::DoorError> {
+) -> Result<(), ui::tilo_actions::ApiError> {
     let row = row_for(&effect);
     let effect = SettingsEffect::from(effect);
     let mut arguments = effect.arguments();

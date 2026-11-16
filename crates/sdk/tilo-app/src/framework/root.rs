@@ -195,7 +195,7 @@ impl ResourceRoot {
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
-    /// Asked through the root's own door, or by the app's view: a view whose app runs
+    /// Asked through the root's own api, or by the app's view: a view whose app runs
     /// elsewhere (a tilolang host's instance) hears the request there.
     fn take_window_activation_intent(&self) -> bool {
         let own = self.native_presentation.take_window_activation_intent();
@@ -1673,7 +1673,7 @@ impl RootModel for ResourceRoot {
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
 
-    /// Resource and app presentation doors publish effect/view actions; their
+    /// Resource and app presentation apis publish effect/view actions; their
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
@@ -2054,16 +2054,16 @@ impl ResourceRoot {
     }
 }
 
-// The root's own clients for the action door (minting links, opening
+// The root's own clients for the action api (minting links, opening
 // references) share the app's collaboration connection with whatever the
 // view keeps there.
 impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
-        if let Some(mut door) = self.dispatch.opener.door() {
+        if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(ui_core::widget::Collaborative::take_collab_requests(
-                &mut door,
+                &mut api,
             ));
         }
         with_app_view_mut(&mut self.content, |view| {
@@ -2076,8 +2076,8 @@ impl ui_core::widget::Collaborative for ResourceRoot {
 
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
-        if let Some(mut door) = self.dispatch.opener.door() {
-            ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
+        if let Some(mut api) = self.dispatch.opener.api() {
+            ui_core::widget::Collaborative::handle_collab_event(&mut api, event);
         }
         with_app_view_mut(&mut self.content, |view| {
             if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
@@ -2510,7 +2510,7 @@ impl RootApp for ResourceRoot {
             {
                 return Some(intent);
             }
-            // A view whose app runs elsewhere asks through its own door.
+            // A view whose app runs elsewhere asks through its own api.
             if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
                 return Some(intent);
             }

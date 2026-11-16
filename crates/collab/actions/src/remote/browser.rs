@@ -31,7 +31,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The provider a member answers the workspaces' Browser under.
 pub const PROVIDER: &str = "tilo.environment";

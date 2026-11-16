@@ -149,7 +149,7 @@ fn main() {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tilo_actions::{ActionDescriptor, DoorError};
+    use tilo_actions::{ActionDescriptor, ApiError};
     use tilo_app::Role;
 
     fn task_action(app: &mut TestApp<ChecklistApp>, action: &str) -> ActionDescriptor {
@@ -166,7 +166,7 @@ mod tests {
         assert!(app.state().tasks.is_empty(), "the live app starts empty");
         let versions = app.versions();
         assert!(
-            matches!(app.call("add", json!({})), Err(DoorError::Failed(message))
+            matches!(app.call("add", json!({})), Err(ApiError::Failed(message))
             if message.contains("Give the task a title"))
         );
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         assert!(
             matches!(
                 app.call_confirmed_on(&remove.address.resource, &remove.address.action, json!({})),
-                Err(DoorError::Unknown(_))
+                Err(ApiError::Unknown(_))
             ),
             "a deleted task's address is stale"
         );
@@ -316,7 +316,7 @@ mod tests {
         }
         assert!(matches!(
             app.call("add", json!({})),
-            Err(DoorError::Unknown(_))
+            Err(ApiError::Unknown(_))
         ));
         assert_eq!(app.state(), before);
         let versions = app.versions();
@@ -351,11 +351,11 @@ mod tests {
                 &remove.address.action,
                 json!({"unexpected": true})
             ),
-            Err(DoorError::InvalidArguments(_))
+            Err(ApiError::InvalidArguments(_))
         ));
         assert!(matches!(
             app.call_confirmed("remove", json!([])),
-            Err(DoorError::InvalidArguments(_))
+            Err(ApiError::InvalidArguments(_))
         ));
         app.set_role(Role::Viewer);
         assert!(
@@ -367,7 +367,7 @@ mod tests {
         assert!(
             matches!(
                 app.call_confirmed_on(&remove.address.resource, &remove.address.action, json!({})),
-                Err(DoorError::Unknown(_))
+                Err(ApiError::Unknown(_))
             ),
             "saved descriptors grant no authority"
         );

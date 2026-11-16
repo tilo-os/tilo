@@ -154,12 +154,9 @@ impl Conversations {
         invoker: &tilo_actions::ActionInvoker,
         resource: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         let unknown = || {
-            tilo_actions::DoorError::Unknown(tilo_actions::ActionAddress::new(
-                resource,
-                RECORD_WORK,
-            ))
+            tilo_actions::ApiError::Unknown(tilo_actions::ActionAddress::new(resource, RECORD_WORK))
         };
         // The message is the agent's argument, as Chat's window's item takes it; the item's own
         // id names it too, for a caller that names nothing.
@@ -172,12 +169,12 @@ impl Conversations {
             return Err(unknown());
         };
         let work = arguments.get("work").cloned().ok_or_else(|| {
-            tilo_actions::DoorError::InvalidArguments(
+            tilo_actions::ApiError::InvalidArguments(
                 "a record of work says how the work is going".to_owned(),
             )
         })?;
         let work: chat::record::WorkUpdate = serde_json::from_value(work).map_err(|error| {
-            tilo_actions::DoorError::InvalidArguments(format!("the work does not read: {error}"))
+            tilo_actions::ApiError::InvalidArguments(format!("the work does not read: {error}"))
         })?;
         let say = arguments
             .get("say")
@@ -200,7 +197,7 @@ impl Conversations {
             }
             return part
                 .invoke_as(invoker, &invoke)
-                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()));
+                .map_err(|error| tilo_actions::ApiError::Failed(error.to_string()));
         }
         Err(unknown())
     }
@@ -686,7 +683,7 @@ impl tilo_service::Service for TurnSummonses {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         let invoker = tilo_actions::ActionInvoker::person(self.conversations.person());
         self.invoke_as(&invoker, resource, action, arguments)
     }
@@ -702,7 +699,7 @@ impl tilo_service::Service for TurnSummonses {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         // A conversation's composer sends through the one send, to the conversation it is: Chat
         // posts it, as a box's message.
         if let Some(channel) = resource.strip_prefix(CHANNELS)
@@ -734,7 +731,7 @@ impl tilo_service::Service for TurnSummonses {
             self.layout
                 .borrow_mut()
                 .open_conversation_of(&asked, resource)
-                .map_err(|why| tilo_actions::DoorError::Unavailable {
+                .map_err(|why| tilo_actions::ApiError::Unavailable {
                     code: "nowhere_to_open".to_owned(),
                     reason: why,
                 })?;
@@ -743,7 +740,7 @@ impl tilo_service::Service for TurnSummonses {
             ));
         }
         if action != RECORD_WORK {
-            return Err(tilo_actions::DoorError::Unknown(
+            return Err(tilo_actions::ApiError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
             ));
         }

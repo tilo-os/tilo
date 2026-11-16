@@ -13,7 +13,7 @@ use super::{
 
 /// How the host answered a control's invocation: started (done at once with its output, or accepted
 /// to finish later), or refused.
-pub type ControlResult = Result<ResourceOperationStart, tilo_actions::DoorError>;
+pub type ControlResult = Result<ResourceOperationStart, tilo_actions::ApiError>;
 
 /// Who asked for a queued invocation on this device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -171,7 +171,7 @@ pub(crate) fn value_control_bindings<I>(
         return vec![action.metadata(control_id)];
     }
     if has_callback {
-        // A callback-only value control reaches no door, so it is no
+        // A callback-only value control reaches no API, so it is no
         // binding: the inventory names what an agent can invoke.
         return Vec::new();
     }

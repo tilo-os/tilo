@@ -11,7 +11,7 @@ use tilo_actions::remote::Caller;
 #[derive(Clone, Copy)]
 pub(super) enum DurableContext<'a> {
     /// Only the durable admission tests build this caller kind: the action
-    /// door admits a device's request on its own path.
+    /// api admits a device's request on its own path.
     #[allow(
         dead_code,
         reason = "driven by the durable admission tests, which reach it through a test-only entrypoint"

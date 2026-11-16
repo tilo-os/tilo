@@ -228,7 +228,7 @@ fn outline(resource: &tilo_actions::ResourceSpec) -> serde_json::Value {
         "kind": resource.kind,
         "label": resource.label,
         "detail": resource.presentation.as_ref().and_then(|presentation| presentation.detail.clone()),
-        "actions": tilo_actions::door::survey(&[without_children(resource)]),
+        "actions": tilo_actions::api::survey(&[without_children(resource)]),
         "views": resource.views.len(),
         "children": resource.children.iter().map(outline).collect::<Vec<_>>(),
     })
@@ -381,7 +381,7 @@ tilo_test_env::scenario! {
                 // Bound controls look actions up by id: the same actions, in
                 // whatever order.
                 let surveyed = |resource| {
-                    let mut actions = tilo_actions::door::survey(&[resource]);
+                    let mut actions = tilo_actions::api::survey(&[resource]);
                     actions.sort_by(|a, b| a.address.action.cmp(&b.address.action));
                     actions
                 };

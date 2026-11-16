@@ -1874,7 +1874,7 @@ provenance together so a view cannot draw the number without answering
 ## 11. Capability: privilege is granted, never inferred
 
 A privileged verb declares the capability it needs. Before a view draws a
-control for it, it asks `ui::capability_door` for the resolution and draws one
+control for it, it asks `ui::capability` for the resolution and draws one
 of exactly three faces:
 
 | Resolution | The surface draws |
@@ -1887,7 +1887,7 @@ of exactly three faces:
   privileged act is drawn only in the granted face. If it would not do the
   thing, it is not drawn. An unavailable surface has no disabled switches
   standing in for the truth.
-- **Ask for the grant once, in words.** `Door::grantable` carries the words the
+- **Ask for the grant once, in words.** `Resolved::grantable` carries the words the
   grant step says. The grant is object-scoped ("change firewall rules", not
   "manage the system"), so revoking one privileged act does not silently take
   away another.

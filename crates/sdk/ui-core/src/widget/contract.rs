@@ -111,7 +111,7 @@ pub trait Widget {
     fn visit_resource_owners(
         &self,
         request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         request.visit(self)
     }
 

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::{SpeakerCommand, SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec};
 use serde_json::{Map, Value, json};
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_audio_service::sound::{self, Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_connectivity_service::Connectivity;
@@ -176,7 +176,7 @@ fn turning_wifi_on_is_an_action_of_the_published_network() {
             "set-mobile-data",
             &arguments(json!({"on": true}))
         ),
-        Err(DoorError::Unavailable { .. })
+        Err(ApiError::Unavailable { .. })
     ));
 }
 
@@ -198,7 +198,7 @@ fn choosing_headphones_is_an_action_of_the_published_sound() {
     assert_eq!(sound["outputs"][1]["chosen"], json!(true));
     assert!(matches!(
         session.invoke("sound", "set-volume", &arguments(json!({"level": "loud"}))),
-        Err(DoorError::InvalidArguments(_))
+        Err(ApiError::InvalidArguments(_))
     ));
 }
 

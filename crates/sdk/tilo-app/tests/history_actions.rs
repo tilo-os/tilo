@@ -95,7 +95,7 @@ fn cards(app: &TestApp<BoardApp>) -> Vec<String> {
         .collect()
 }
 
-fn refusal(result: Result<Option<Value>, tilo_actions::DoorError>) -> String {
+fn refusal(result: Result<Option<Value>, tilo_actions::ApiError>) -> String {
     result.expect_err("refused").to_string()
 }
 

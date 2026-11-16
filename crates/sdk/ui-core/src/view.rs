@@ -55,7 +55,7 @@ pub fn broadcast_subset(view: &View) -> ViewSubset {
 
 impl View {
     /// Capture the live [`App`](crate::app::App)'s presentation into a View. Thin front
-    /// door for [`FreezeThaw::capture_view`] so callers can write the natural
+    /// API for [`FreezeThaw::capture_view`] so callers can write the natural
     /// `View::capture(&app)`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn capture(app: &crate::app::App) -> View {

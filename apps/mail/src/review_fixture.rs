@@ -148,7 +148,7 @@ pub fn fetched_into(profile: &Path) -> (FakeImap, FakeSmtp) {
         assert!(ui::time::now() < deadline, "every message is fetched");
         match app.effect(&crate::actions::MailEffect::Refresh) {
             Ok(_) => {}
-            Err(tilo_actions::DoorError::Failed(why)) if why.contains("already running") => {}
+            Err(tilo_actions::ApiError::Failed(why)) if why.contains("already running") => {}
             Err(error) => panic!("the inbox is fetched: {error:?}"),
         }
         app.settle();

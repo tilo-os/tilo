@@ -892,7 +892,7 @@ impl JoinedChannel {
     }
 
     /// Answer the app's remote-action `frame` with the frame its caller,
-    /// door, grants and the person decide.
+    /// api, grants and the person decide.
     pub(super) fn remote_action_dispatch(&self, frame: &[u8]) -> Answer<Vec<u8>> {
         use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
         let encode = |message: RemoteActionMessage| {
@@ -932,7 +932,7 @@ impl JoinedChannel {
         // decided as that invocation's caller, under its custody; its open
         // of an application, else as the person whose press it follows.
         // Anything else, including what continues an invocation the app made
-        // of itself, is the app's own door's to decide.
+        // of itself, is the app's own API's to decide.
         let (decided, continued_origin) = if current.agent_id.is_none() {
             match self.state.app_request_caller(
                 self.peer_id,
@@ -946,7 +946,7 @@ impl JoinedChannel {
             }
         } else if let Some(caller) = self.state.turn_caller(self.peer_id) {
             // An agent answering a turn makes every request as the turn, through its session.
-            let door = self.state.agent_session_door(
+            let api = self.state.agent_session_api(
                 &caller,
                 InvocationCaller::Local {
                     route,
@@ -954,11 +954,11 @@ impl JoinedChannel {
                     admitted: Box::new(current),
                 },
             );
-            let Some(door) = door else {
+            let Some(api) = api else {
                 return refusal(&request.message);
             };
             let answer =
-                tilo_actions::remote::serve(&door, &caller, request.message).ok_or_else(|| {
+                tilo_actions::remote::serve(&api, &caller, request.message).ok_or_else(|| {
                     BrokerError::failed("only remote-action requests are answered".into())
                 })?;
             return Ok(Box::pin(async move {
@@ -976,10 +976,7 @@ impl JoinedChannel {
             Some(Ok(caller)) => caller,
             Some(Err(refused)) => return Ok(ready(*refused)),
             None if current.agent_id.is_some() => person.clone(),
-            None => match self
-                .state
-                .app_door(&person, &route.app_id, &request.message)
-            {
+            None => match self.state.app_api(&person, &route.app_id, &request.message) {
                 Ok(caller) => caller,
                 Err(refusal) => return Ok(ready(*refusal)),
             },
@@ -1380,7 +1377,7 @@ impl JoinedChannel {
             Err(error) => return refuse(error),
         };
         // An app opens another only for the person's press in it or an
-        // invocation delivered to it ([`app_open_door`]); an agent's own
+        // invocation delivered to it ([`app_open_api`]); an agent's own
         // connection, by its own grants.
         if self.verified_identity.agent_id.is_none()
             && self

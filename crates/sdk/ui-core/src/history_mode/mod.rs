@@ -18,10 +18,10 @@ pub(crate) fn note_news() {
     NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
+pub(crate) mod api;
 pub mod capability;
 pub mod checked_files;
 pub mod coverage;
-pub(crate) mod door;
 mod files_session;
 pub mod folder;
 pub mod preview;

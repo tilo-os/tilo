@@ -1,4 +1,4 @@
-// Uses the ordinary retained component, publication and public local action door.
+// Uses the ordinary retained component, publication and public local action API.
 struct CustodyCapturePeer {
     inner: CapturePeer,
     custody: Option<runtime_collab::committed_document::ConnectionSnapshot>,
@@ -768,7 +768,7 @@ tilo_test_env::scenario! {
             "the admission settles the change"
         );
         // Refusal is visible, but is neither a blocked UI thread nor a consumed
-        // next keystroke: the next ordinary action still enters the same door.
+        // next keystroke: the next ordinary action still enters the same API.
         fixture
             .app
             .invoke_local_resource_action(&address, &serde_json::Map::new())
@@ -801,7 +801,7 @@ tilo_test_env::scenario! {
         fixture.app.collaboration.local_author = fixture.bindings[0].author.clone();
         capture_bound_directory(&mut fixture);
         let target = fixture.target(0, "apply");
-        // This is the same internal door a delivered/model action uses, not the
+        // This is the same internal API a delivered/model action uses, not the
         // public local-user semantic entry point.
         let actor = fixture.bindings[0].author.key();
         fixture

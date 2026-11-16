@@ -48,12 +48,12 @@ usage:
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
-  tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
+  tilolang repl [--session SESSION | --api SOCKET | --real] [--color always|never]
       tilolang typed against a running session through its MCP server: the nested session
       started last by default (SESSION: its --ready file, runtime directory or control socket),
-      another session's door, or the person's own session (--real). The person admits it there:
-      on the sheet the door puts up, or ahead of time when they start the session
-      (`tilo-session --admit-repl PATH`). Each entry is a program for the door's `tilo` tool, run
+      another session's MCP server, or the person's own session (--real). The person admits it there:
+      on the sheet the session puts up, or ahead of time when they start the session
+      (`tilo-session --admit-repl PATH`). Each entry is a program for the session's `tilo` tool, run
       as the REPL's task: lets are kept, refs (n3) name what answers showed, a bulk change
       previews until `confirm`, `undo` takes a step back.
   tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
@@ -369,7 +369,7 @@ fn repl_command(args: &[String]) -> Result<(), String> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--session" => options.session = Some(PathBuf::from(value(&mut iter, arg)?)),
-            "--door" => options.door = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--api" => options.api = Some(PathBuf::from(value(&mut iter, arg)?)),
             "--real" => options.real = true,
             "--color" => {
                 options.color = match value(&mut iter, arg)?.as_str() {

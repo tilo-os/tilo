@@ -1,5 +1,5 @@
-//! The door's read becomes the overview's Agents rows, and a row's Revoke
-//! goes to the door the page serves.
+//! The MCP server's read becomes the overview's Agents rows, and a row's Revoke
+//! goes to the MCP server the page serves.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
-use super::{DoorRead, mcp_server};
+use super::{ApiRead, mcp_server};
 use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::{TiloItem, TiloOverview, TiloRow, rows};
 
@@ -22,15 +22,15 @@ fn en() {
 /// The MCP server of a host: what it let in, read live, and the grants the
 /// person took back there.
 #[derive(Default)]
-struct DoorHost {
+struct ServerHost {
     grants: Vec<mcp_server::Grant>,
-    /// The state the door's read last answered.
+    /// The state the MCP server's read last answered.
     read: RefCell<Option<InvocationState>>,
     /// The grants a revoke named, in the order they were asked.
     revoked: RefCell<Vec<String>>,
 }
 
-impl DoorHost {
+impl ServerHost {
     fn with(grants: Vec<mcp_server::Grant>) -> Self {
         Self {
             grants,
@@ -39,7 +39,7 @@ impl DoorHost {
     }
 }
 
-impl ActionHost for DoorHost {
+impl ActionHost for ServerHost {
     fn query(
         &self,
         _caller: &Caller,
@@ -72,8 +72,8 @@ impl ActionHost for DoorHost {
                 },
             }));
         }
-        // The door's read: what a live door holds now.
-        let door = mcp_server::Server {
+        // The MCP server's read: what a live server holds now.
+        let server = mcp_server::Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: self.grants.clone(),
             ..mcp_server::Server::default()
@@ -83,7 +83,7 @@ impl ActionHost for DoorHost {
             InvocationUpdate::Item {
                 invocation: request.invocation,
                 sequence: 1,
-                value: serde_json::to_value(&door).unwrap_or_default(),
+                value: serde_json::to_value(&server).unwrap_or_default(),
             },
         );
         *self.read.borrow_mut() = Some(state.clone());
@@ -106,7 +106,7 @@ fn caller() -> Caller {
     Caller::local_person("ada".to_owned()).in_workspace("ws-build".to_owned())
 }
 
-/// An agent the door let into every workspace, working now.
+/// An agent the MCP server let into every workspace, working now.
 fn working() -> mcp_server::Grant {
     mcp_server::Grant {
         id: "g1".into(),
@@ -135,10 +135,10 @@ fn facts(item: &TiloItem) -> Vec<&str> {
 }
 
 /// The shell the page fills from the read: nothing else of the person's Tilo
-/// is known from a door.
-fn shell(read: &DoorRead) -> TiloOverview {
+/// is known from an MCP server.
+fn shell(read: &ApiRead) -> TiloOverview {
     TiloOverview {
-        door: read.door().cloned(),
+        server: read.server().cloned(),
         ..TiloOverview::default()
     }
 }
@@ -146,11 +146,11 @@ fn shell(read: &DoorRead) -> TiloOverview {
 tilo_test_env::scenario! {
     fn the_mcp_server_feeds_the_overviews_agents_rows;
 
-    phase the_doors_answer_becomes_the_overviews_agents_rows;
+    phase the_servers_answer_becomes_the_overviews_agents_rows;
     {
         en();
-        let host = DoorHost::with(vec![working()]);
-        let mut read = DoorRead::default();
+        let host = ServerHost::with(vec![working()]);
+        let mut read = ApiRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake), "the first answer");
         assert!(
@@ -184,22 +184,22 @@ tilo_test_env::scenario! {
             },
             ..working()
         };
-        let host = DoorHost::with(vec![at_rest]);
-        let mut read = DoorRead::default();
+        let host = ServerHost::with(vec![at_rest]);
+        let mut read = ApiRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake));
         let rows = rows(&shell(&read));
         assert_eq!(facts(items(&rows)[0]), ["Build"]);
     }
 
-    phase a_rows_revoke_reaches_the_door;
-    // A row's Revoke is the grant's, asked of the door the page serves: the
+    phase a_rows_revoke_reaches_the_server;
+    // A row's Revoke is the grant's, asked of the MCP server the page serves: the
     // person's root signs the device's revocation from there, as the card's
     // Revoke does.
     {
         en();
-        let host = DoorHost::with(vec![working()]);
-        let mut read = DoorRead::default();
+        let host = ServerHost::with(vec![working()]);
+        let mut read = ApiRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake));
         let action = items(&rows(&shell(&read)))[0].action.clone();
@@ -207,18 +207,18 @@ tilo_test_env::scenario! {
             panic!("the agents' row offers to take its grant back");
         };
         assert_eq!(label, "Revoke");
-        DoorRead::revoke(&host, &caller(), &grant);
-        assert_eq!(*host.revoked.borrow(), [grant], "the door took it back");
+        ApiRead::revoke(&host, &caller(), &grant);
+        assert_eq!(*host.revoked.borrow(), [grant], "the MCP server took it back");
     }
 
-    phase a_door_with_no_grants_leaves_the_overview_without_agents;
+    phase a_server_with_no_grants_leaves_the_overview_without_agents;
     {
         en();
-        let host = DoorHost::default();
-        let mut read = DoorRead::default();
+        let host = ServerHost::default();
+        let mut read = ApiRead::default();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
         assert!(read.follow(&host, &caller(), &wake), "it answered, empty");
-        assert_eq!(read.door().map(|door| door.grants.len()), Some(0));
+        assert_eq!(read.server().map(|server| server.grants.len()), Some(0));
         let rows = rows(&shell(&read));
         assert!(
             !rows

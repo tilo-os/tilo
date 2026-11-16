@@ -2,13 +2,13 @@
 //!
 //! The REPL is the person at the session's MCP server (`docs/runtime-mcp.md`): they admit it to
 //! act as them, and what it changes is theirs, attributed to them, in history and undo. Each entry
-//! is a program for the door's `tilo` tool (`docs/designs/app-language/agents.md`), the same call
+//! is a program for the API's `tilo` tool (`docs/designs/app-language/agents.md`), the same call
 //! the session's agent makes, with the same session semantics: `let`s kept between entries,
 //! references (`n3`) naming what answers showed, one step per entry with a preview before a bulk
 //! or destructive change, and `undo`. `ls` and `find` are the agent's one-call tools (`tilo_ls`,
 //! `tilo_find`). The REPL adds line editing, history, completion and colour.
 
-mod door;
+mod api;
 mod editor;
 mod render;
 pub mod style;
@@ -17,14 +17,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value as Json, json};
 
-use door::Door;
+use api::Api;
 use editor::{Complete, Editor, Read};
 use style::{Role, paint};
 
 #[derive(Clone, Debug, Default)]
 pub struct ReplOptions {
     pub session: Option<PathBuf>,
-    pub door: Option<PathBuf>,
+    pub api: Option<PathBuf>,
     pub real: bool,
     /// Colour: `None` for when the output is a terminal.
     pub color: Option<bool>,
@@ -83,7 +83,7 @@ const METHODS: &[&str] = &[
 ];
 
 struct Session {
-    door: Door,
+    api: Api,
     catalogue: Catalogue,
     names: Vec<String>,
     /// The program the last answer was a preview of: what `confirm` sends again.
@@ -95,7 +95,7 @@ enum Entry {
     Nothing,
     Command(String, String),
     Confirm,
-    /// One of the door's one-call tools, with its arguments:
+    /// One of the API's one-call tools, with its arguments:
     /// `ls [path]` (`tilo_ls`) and `find text` (`tilo_find`).
     Tool(&'static str, Json),
     Program(String),
@@ -146,12 +146,12 @@ impl Session {
     fn survey(&mut self) -> Result<(), String> {
         // Every installed app, from the packages the task's host
         // holds: whether a window of it is open does not matter.
-        let listed = self.door.call("tilo", &json!({"program": "catalogue"}))?;
+        let listed = self.api.call("tilo", &json!({"program": "catalogue"}))?;
         if listed.failed {
-            return Err(format!("the door did not list its apps: {}", listed.text));
+            return Err(format!("the API did not list its apps: {}", listed.text));
         }
         let catalogue: Json = serde_json::from_str(listed.text.trim())
-            .map_err(|error| format!("the door's catalogue is not JSON: {error}"))?;
+            .map_err(|error| format!("the API's catalogue is not JSON: {error}"))?;
         for (alias, app) in catalogue.as_object().into_iter().flatten() {
             self.catalogue.learn(alias, &app["signatures"]);
             self.catalogue.apps.push(alias.clone());
@@ -159,10 +159,10 @@ impl Session {
         Ok(())
     }
 
-    /// Send `program` to the door's `tilo` tool and print its answer.
+    /// Send `program` to the API's `tilo` tool and print its answer.
     fn run(&mut self, program: &str, confirm: bool) {
         let answer = match self
-            .door
+            .api
             .call("tilo", &json!({"program": program, "confirm": confirm}))
         {
             Ok(answer) => answer,
@@ -182,7 +182,7 @@ impl Session {
             {
                 self.names.push(shown.to_owned());
             }
-            Self::say(&render::door_line(line, answer.failed));
+            Self::say(&render::api_line(line, answer.failed));
         }
         if !answer.failed {
             for name in program.lines().filter_map(bound_name) {
@@ -193,12 +193,12 @@ impl Session {
         }
     }
 
-    /// Call the door's one-call tool `tool` with `arguments` and print its answer.
+    /// Call the API's one-call tool `tool` with `arguments` and print its answer.
     fn tool(&mut self, tool: &str, arguments: &Json) {
-        match self.door.call(tool, arguments) {
+        match self.api.call(tool, arguments) {
             Ok(answer) => {
                 for line in answer.text.lines() {
-                    Self::say(&render::door_line(line, answer.failed));
+                    Self::say(&render::api_line(line, answer.failed));
                 }
             }
             Err(error) => Self::say(&format!("{} {error}", paint(Role::Error, "error:"))),
@@ -285,13 +285,13 @@ impl Complete for Session {
 /// The MCP server of the session `options` names.
 fn locate(options: &ReplOptions) -> Result<PathBuf, String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    if let Some(door) = &options.door {
-        return Ok(door.clone());
+    if let Some(api) = &options.api {
+        return Ok(api.clone());
     }
     if options.real {
         return runtime
             .map(|runtime| runtime.join("tilo-session").join("agent.sock"))
-            .ok_or_else(|| "XDG_RUNTIME_DIR is unset: no session door to reach".to_owned());
+            .ok_or_else(|| "XDG_RUNTIME_DIR is unset: no session api to reach".to_owned());
     }
     let nested = match &options.session {
         Some(named) => nested_runtime(named)?,
@@ -343,7 +343,7 @@ fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
     found.sort();
     found.pop().map(|(_, path)| path).ok_or_else(|| {
         "no nested session with an MCP server is running; start one (dist/dev/nested-session.sh), \
-         or name one with --session, --door PATH or --real"
+         or name one with --session, --api PATH or --real"
             .to_owned()
     })
 }
@@ -352,21 +352,21 @@ pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));
     let socket = locate(options)?;
-    let door = Door::open(&socket, &|line| eprintln!("{line}"))?;
-    if !door.serves("tilo") {
+    let api = Api::open(&socket, &|line| eprintln!("{line}"))?;
+    if !api.serves("tilo") {
         return Err(format!(
-            "the session's door at {} has no `tilo` tool, so it runs no tilolang programs (it \
-             serves {}); the session runs a Tilo from before programs on the door",
+            "the session's api at {} has no `tilo` tool, so it runs no tilolang programs (it \
+             serves {}); the session runs a Tilo from before programs on the API",
             socket.display(),
-            if door.tools.is_empty() {
+            if api.tools.is_empty() {
                 "nothing".to_owned()
             } else {
-                door.tools.join(", ")
+                api.tools.join(", ")
             }
         ));
     }
     let mut session = Session {
-        door,
+        api,
         catalogue: Catalogue::default(),
         names: Vec::new(),
         previewed: None,

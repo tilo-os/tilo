@@ -484,7 +484,7 @@ impl AppActionBroker {
             })
     }
 
-    /// A local action door bound to an already-issued signed workspace admission and
+    /// A local action api bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
     pub fn certified_local_action_host(
         &self,
@@ -579,7 +579,7 @@ impl AppActionBroker {
     }
 
     /// Current certified checkout of an attested local native worker. This is
-    /// inert provenance for the owner state door, never an invocation grant.
+    /// inert provenance for the owner state api, never an invocation grant.
     #[must_use]
     pub fn native_checkout(
         &self,
@@ -673,7 +673,7 @@ impl AppActionBroker {
             .admit_app_open(caller_app, workspace, parent, target)
     }
 
-    /// Read what each application declared on the action door from
+    /// Read what each application declared on the action api from
     /// `resolver` from now on.
     pub fn set_app_action_access(&self, resolver: crate::app_actions::AppActionAccessResolver) {
         self.state.set_app_action_access(resolver);

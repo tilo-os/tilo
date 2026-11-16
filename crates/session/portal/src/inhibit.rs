@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 use tilo_resource::Effect;
@@ -246,14 +246,14 @@ impl crate::Published for Inhibitions {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let path = resource.strip_prefix(INHIBITION_PREFIX)?;
         Some(
             decode::<InhibitionEffect>(published, resource, action, arguments).and_then(|_| {
                 self.release(path)
                     .then(|| Started::Done(ActionOutput::default()))
                     .ok_or_else(|| {
-                        DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action))
+                        ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action))
                     })
             }),
         )

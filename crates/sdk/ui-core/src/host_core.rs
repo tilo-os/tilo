@@ -289,7 +289,7 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
 }
 
-/// One invocation a host hands a door: who asks, with what argument, under which confirmation,
+/// One invocation a host hands an API: who asks, with what argument, under which confirmation,
 /// invocation and context.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceInvocation<'a> {
@@ -654,7 +654,7 @@ pub(crate) trait HostCore {
     fn dispatch_current_history_control(
         &mut self,
         prepared: PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>;
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>;
 
     fn inspect_node<R>(
         &self,
@@ -721,7 +721,7 @@ pub(crate) trait HostCore {
     fn note_continuation(
         &mut self,
         on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         let Err(error) = result else {
             return;
@@ -880,12 +880,12 @@ pub(crate) trait HostCore {
     fn dispatch_prepared_history_control(
         &mut self,
         prepared: PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let captured =
             prepared
                 .witness
                 .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
+                .map_err(|reason| tilo_actions::ApiError::Unavailable {
                     code: "stale_pending_control".into(),
                     reason: reason.clone(),
                 })?;
@@ -897,7 +897,7 @@ pub(crate) trait HostCore {
             &prepared.invocation,
         )?;
         if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
+            return Err(tilo_actions::ApiError::Unavailable {
                 code: "stale_pending_control".into(),
                 reason: "The action meaning or confirmation policy changed while History was open"
                     .into(),
@@ -917,7 +917,7 @@ pub(crate) trait HostCore {
         let result = self.dispatch_prepared_history_control(prepared);
         let history = self.registered_history_mut()?;
         Some(match result {
-            Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
+            Err(tilo_actions::ApiError::ConfirmationRequired) if !confirmed => {
                 history.pending_control_needs_confirmation(id);
                 PendingControlStatus::NeedsConfirmation
             }
@@ -1012,7 +1012,7 @@ pub(crate) trait HostCore {
             let confirmed = confirmation.is_some();
             let id = prepared.id;
             let outcome = match self.dispatch_prepared_history_control(prepared) {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
+                Err(tilo_actions::ApiError::ConfirmationRequired) if !confirmed => {
                     PendingCommandOutcome::NeedsConfirmation
                 }
                 Ok(_) => PendingCommandOutcome::Consumed,

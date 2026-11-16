@@ -43,7 +43,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, ResourceSpe
 }
 
 fn encoded(resource: &ResourceSpec) -> EncodedAction {
-    tilo_actions::door::encode_json(
+    tilo_actions::api::encode_json(
         std::slice::from_ref(resource),
         &resource
             .action_address(ui::feedback::destination::READ_RECEIPT)
@@ -428,7 +428,7 @@ fn triage(
     frame: &mut ui::headless::FrameHarness,
     submission: &str,
     update: &serde_json::Value,
-) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::ApiError> {
     frame
         .call_on(
             &crate::testing::item("feedback", submission),

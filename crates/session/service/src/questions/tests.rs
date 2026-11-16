@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::json;
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 
 use super::*;
 use crate::{Service, Services};
@@ -35,7 +35,7 @@ fn invoke(
     resource: &str,
     action: &str,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Option<Result<Started, DoorError>> {
+) -> Option<Result<Started, ApiError>> {
     services.invoke(resource, action, arguments)
 }
 
@@ -169,7 +169,7 @@ fn an_answer_for_a_question_no_longer_asked_is_unknown() {
         "cancel",
         &serde_json::Map::new(),
     );
-    assert!(matches!(refused, Err(DoorError::Unknown(_))), "{refused:?}");
+    assert!(matches!(refused, Err(ApiError::Unknown(_))), "{refused:?}");
 }
 
 #[test]

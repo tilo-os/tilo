@@ -29,7 +29,7 @@ pub(crate) trait LayoutApi {
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, tilo_actions::DoorError>;
+    ) -> Result<serde_json::Value, tilo_actions::ApiError>;
 }
 
 /// The page's layout, and the actions everything that changes it by action reaches it through.
@@ -86,7 +86,7 @@ impl LayoutApi for PageActions {
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, tilo_actions::DoorError> {
+    ) -> Result<serde_json::Value, tilo_actions::ApiError> {
         let started = self.actions.invoke(address, arguments)?;
         Ok(match started {
             ui::host_operation::ResourceOperationStart::Completed(output) => {
@@ -217,7 +217,7 @@ impl PageLayout {
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, tilo_actions::DoorError> {
+    ) -> Result<serde_json::Value, tilo_actions::ApiError> {
         if let Some(actions) = self.page_actions() {
             return actions.invoke(address, arguments);
         }

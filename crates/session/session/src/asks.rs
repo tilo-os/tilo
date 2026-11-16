@@ -34,7 +34,7 @@ fn pairing_tag(digest: [u8; 32]) -> String {
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::door::Look<'_>) {
+    pub(crate) fn follow_asks(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
         // A press on one of the person's devices is one of the session's own verbs: the queue it
         // lands in is carried out here, with the asks.
         self.carry_out_presses();
@@ -169,9 +169,9 @@ impl Shared {
 
     /// Carry out the rows the person chose in search. A row that asks the session for something of
     /// its own leaves it on the shell's asks, which the pass answers in its next round.
-    fn follow_search_choices(&self, look: &mut tilo_session_core::door::Look<'_>) {
+    fn follow_search_choices(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
         let refused = self.search.perform_choices(&self.handle, &mut |own| {
-            self.doors
+            self.published
                 .invoke(&own.address, &own.arguments, look)
                 .map(drop)
         });
@@ -324,11 +324,11 @@ impl Shared {
             ),
         ));
         let carried = self.search.perform(&workspace, target, &mut |own| {
-            self.doors
+            self.published
                 .invoke(
                     &own.address,
                     &own.arguments,
-                    &mut tilo_session_core::door::Look::none(),
+                    &mut tilo_session_core::surfaces::Look::none(),
                 )
                 .map(drop)
         });
@@ -342,10 +342,10 @@ impl Shared {
         use tilo_actions::remote::mcp_server;
         let mut arguments = serde_json::Map::new();
         arguments.insert("grant".into(), grant.into());
-        let revoked = self.doors.invoke(
+        let revoked = self.published.invoke(
             &ActionAddress::new(mcp_server::RESOURCE, mcp_server::REVOKE),
             &arguments,
-            &mut tilo_session_core::door::Look::none(),
+            &mut tilo_session_core::surfaces::Look::none(),
         );
         if let Err(error) = revoked {
             self.answer_failed(&t("action-failed-that-agent"), &error);
@@ -773,8 +773,12 @@ impl Shared {
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
-        self.doors
-            .invoke(&address, args, &mut tilo_session_core::door::Look::none())
+        self.published
+            .invoke(
+                &address,
+                args,
+                &mut tilo_session_core::surfaces::Look::none(),
+            )
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

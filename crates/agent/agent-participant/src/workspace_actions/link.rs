@@ -2,7 +2,7 @@
 //! hands it: the host's own device in its workspaces
 //! ([`HostDevice`]), the standing and read policy it decides a view by
 //! ([`ViewReadPolicy`]), the verified snapshot a view is discovered from
-//! ([`ViewDocument`]), and the two doors back into the host
+//! ([`ViewDocument`]), and the two APIs back into the host
 //! ([`WorkspaceRecordsLink`] for everything the service asks, and
 //! [`FeedbackReviewer`] for the model a review is looked over with).
 

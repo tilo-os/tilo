@@ -186,7 +186,7 @@ pub enum MotionSource {
     #[default]
     Pointer,
     Gesture,
-    /// An agent, a script or the action door. Nobody watches a hand move, and the caller
+    /// An agent, a script or the action API. Nobody watches a hand move, and the caller
     /// acts on the result at once, so it follows the keyboard rule.
     Action,
 }

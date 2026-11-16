@@ -3622,7 +3622,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::HostCommand(invocation) => {
                 self.app.invoke_host_command(&invocation);
-                // The door is a wake too: what the command started is answered
+                // The API is a wake too: what the command started is answered
                 // by the state passes even when no frame follows (a window
                 // macOS is not drawing, an agent driving it unseen).
                 self.app.run_state_tick();
@@ -4466,7 +4466,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let retry_at = retry_at.into_iter().chain(auxiliary_retry_at).min();
         // Widget deadlines are serviced by sync/redraw. While occluded they can
         // be delayed by at most the 250ms probe cap; independent history, record,
-        // autosave and collaboration work above continues on its existing doors.
+        // autosave and collaboration work above continues on its existing APIs.
         let demand = crate::render_thread::retry::WakeDemand {
             typing: typing_active,
             tooltip: tooltip_pending,
@@ -5126,9 +5126,9 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        // The door is taken before the launch's own window is made: the shell
+        // The API is taken before the launch's own window is made: the shell
         // takes a window as it maps as one this process serves, and only a
-        // process that answered its door before that is served more.
+        // process that answered its API before that is served more.
         let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::host::environment().windowless;

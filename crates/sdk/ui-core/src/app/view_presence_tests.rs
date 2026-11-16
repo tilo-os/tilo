@@ -176,11 +176,11 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
         }
 
         assert!(matches!(
-            app.broker_door().admit(
+            app.broker_api().admit(
                 MAX_PENDING_APPLICATION_LAUNCHES as u64,
                 tilo_actions::InvocationId::new(),
             ),
-            Err(tilo_actions::DoorError::Unavailable { code, .. })
+            Err(tilo_actions::ApiError::Unavailable { code, .. })
                 if code == "application_launch_queue_full"
         ));
         assert_eq!(

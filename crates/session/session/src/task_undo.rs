@@ -376,7 +376,7 @@ mod tests {
                 };
                 let mut spec = ResourceSpec::new(root, "note", "Release notes");
                 spec.actions = ui::history_source::verbs::specs();
-                page.rows = tilo_actions::door::survey(&[spec])
+                page.rows = tilo_actions::api::survey(&[spec])
                     .into_iter()
                     .map(|action| CatalogueRow::for_action(provider, provider, action))
                     .collect();
@@ -453,7 +453,7 @@ mod tests {
 
     /// The same document, kept by the session itself: no app's process holds it, and the
     /// session's own provider answers its history.
-    fn session_door(doc: AutoCommit) -> FakeDoor {
+    fn session_api(doc: AutoCommit) -> FakeDoor {
         FakeDoor {
             doc: Mutex::new(doc),
             history: true,
@@ -550,7 +550,7 @@ mod tests {
         // a provider an app process never published.
         {
             let (doc, body) = edited(TASK);
-            let door = session_door(doc);
+            let door = session_api(doc);
             // The activity names a session-kept record as the app's own record of the workspace.
             let primary = ui::record::RecordId::package_primary().as_str().to_owned();
             let undone = undo_task_run(
@@ -579,7 +579,7 @@ mod tests {
         // has no history to undo there, and the refusal says so rather than claiming the undo.
         {
             let (doc, _) = edited(TASK);
-            let door = session_door(doc);
+            let door = session_api(doc);
             let refused = undo_task_run(
                 &door,
                 &caller(),

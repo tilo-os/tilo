@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
             .call_by(invoker, page.id.as_str(), "open", serde_json::json!({}))
             .unwrap_err();
         assert!(
-            matches!(error, tilo_actions::DoorError::Unavailable { ref code, .. } if code == "private_view")
+            matches!(error, tilo_actions::ApiError::Unavailable { ref code, .. } if code == "private_view")
         );
         app.settle();
         assert!(app.harness().targets().contains_key("no-page"));

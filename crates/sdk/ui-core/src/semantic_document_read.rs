@@ -386,7 +386,7 @@ pub fn registered_operations(
     for resource in resources {
         collect(widget, resource, &mut addresses);
     }
-    tilo_actions::door::survey(resources)
+    tilo_actions::api::survey(resources)
         .into_iter()
         .filter(|descriptor| addresses.contains(&descriptor.address))
         .collect()

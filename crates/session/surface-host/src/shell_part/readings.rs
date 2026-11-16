@@ -1,7 +1,7 @@
 //! The readings of other apps' resources the shell's places show, and what the views composed
 //! over them change of those resources: the session publishes each place's record's reading
 //! ([`SessionLink::follow_places`]), the shell's runtime reads it ([`SessionOrigin::poll_readings`]),
-//! and an edit or an action in a composed view goes back as an ask to the record's door
+//! and an edit or an action in a composed view goes back as an ask to the record's API
 //! ([`PlaceInvoker`]).
 
 use std::collections::BTreeMap;
@@ -35,7 +35,7 @@ impl SessionLink {
     /// the shell's runtime names another app's resource as its document and item
     /// (`chat.workspace/c_general`), while the session's catalogue names the same resource by its
     /// own address (`chat.workspace/channels/c_general`). A menu, a sheet or a press the shell
-    /// sends back to the session's door must name it as the session published it, or the door
+    /// sends back to the session's API must name it as the session published it, or the API
     /// finds no such action.
     #[must_use]
     pub fn published_address(&self, reference: &str) -> Option<String> {
@@ -49,7 +49,7 @@ impl SessionLink {
 
     /// The verbs the session's resources publish that no loaded package declares, by resource
     /// and verb ([`tilolang_tilo::runtime::published`]): the shell's runtime sends a view's action of
-    /// one to the app publishing it, as it sends any other app's action to that app's door.
+    /// one to the app publishing it, as it sends any other app's action to that app's API.
     /// Whether they differ from the last.
     pub fn publish_published_actions(
         &self,
@@ -248,7 +248,7 @@ pub fn with_uses(
 ///
 /// * the platform's packages (`tilolang_tilo::platform_apps::platform_packages`: the device,
 ///   Settings and the session), which the runtime loads for itself as descriptions the session's
-///   door answers (`ShellPlatform::load`), so a used one stands here already and loading it
+///   API answers (`ShellPlatform::load`), so a used one stands here already and loading it
 ///   again would redeclare its ids;
 /// * the standard library (`tilo.std`), which every module lists among its uses but which shows
 ///   nothing itself: its views are templates the compiler expands into their callers, so no
@@ -373,7 +373,7 @@ impl SessionOrigin {
 }
 
 /// What a view composed in a place changes of the resource it shows, sent to that resource's
-/// door through the session: a press on one of its app's actions, or an edit of a field it
+/// API through the session: a press on one of its app's actions, or an edit of a field it
 /// binds. The change comes back as the resource's next reading.
 pub(super) struct PlaceInvoker {
     pub(super) link: Rc<SessionLink>,
@@ -401,7 +401,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 resource: subject.id_string(),
                 // As the resource's app publishes it.
                 action: name.clone(),
-                arguments: invocation.door_arguments().into_iter().collect(),
+                arguments: invocation.api_arguments().into_iter().collect(),
                 from: from
                     .as_ref()
                     .map(|from| ui::tilo_actions::params::MadeFrom {
@@ -420,7 +420,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     action: action.clone(),
                     arguments: session_arguments(
                         self.verbs.get(action),
-                        invocation.door_arguments(),
+                        invocation.api_arguments(),
                     ),
                     from: None,
                 }

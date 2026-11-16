@@ -6,7 +6,7 @@
 use serde_json::json;
 use ui::framework::content;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::DoorError;
+use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Invoke, Resource as _};
 
 use super::*;
@@ -89,7 +89,7 @@ fn linked_shot() -> (Project, Uuid, Uuid) {
 }
 
 /// Import `bytes` as `name` through the effect, answering its value.
-fn import(app: &mut TestApp<VideoEditor>, bytes: &[u8], name: &str) -> Result<Value, DoorError> {
+fn import(app: &mut TestApp<VideoEditor>, bytes: &[u8], name: &str) -> Result<Value, ApiError> {
     let hash = app.content().put(bytes).unwrap();
     import_content(app, &format!("tilo.content:{hash}"), name)
 }
@@ -100,7 +100,7 @@ fn import_content(
     app: &mut TestApp<VideoEditor>,
     named: &str,
     name: &str,
-) -> Result<Value, DoorError> {
+) -> Result<Value, ApiError> {
     app.effect(&VideoEditorEffect::ImportContent {
         content: named.to_owned(),
         name: Some(name.to_owned()),
@@ -109,7 +109,7 @@ fn import_content(
     .map(|output| output.value.unwrap())
 }
 
-fn call(app: &mut TestApp<VideoEditor>, verb: &str, args: Value) -> Result<Value, DoorError> {
+fn call(app: &mut TestApp<VideoEditor>, verb: &str, args: Value) -> Result<Value, ApiError> {
     app.call(verb, args)
         .map(|answer| answer.unwrap_or(Value::Null))
 }
@@ -650,7 +650,7 @@ fn a_field_edit_naming_no_field_says_which_fields_there_are() {
 }
 
 /// The refusal `result` carries, as text.
-fn refusal(result: Result<Value, DoorError>) -> String {
+fn refusal(result: Result<Value, ApiError>) -> String {
     format!("{:?}", result.expect_err("refused"))
 }
 

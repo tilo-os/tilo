@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::session_actions::INVITE_RESOURCE;
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::overlays::{Overlay, Overlays, Slot};
@@ -580,7 +580,7 @@ impl DeviceLists {
 impl DeviceLists {
     /// The id of the shell's workspace `key`, or of the workspace in front when the caller names
     /// none.
-    fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, DoorError> {
+    fn workspace_id(&self, workspace: Option<&str>) -> Result<WorkspaceId, ApiError> {
         let workspace_id = self.handle.read(|tree| {
             let workspace = match workspace {
                 Some(key) => tree
@@ -593,21 +593,21 @@ impl DeviceLists {
         });
         workspace_id.ok_or_else(|| match workspace {
             Some(key) => {
-                DoorError::InvalidArguments(format!("there is no workspace {key} on this device"))
+                ApiError::InvalidArguments(format!("there is no workspace {key} on this device"))
             }
-            None => DoorError::Failed("no workspace is in front".to_owned()),
+            None => ApiError::Failed("no workspace is in front".to_owned()),
         })
     }
 
     /// The invitations into a workspace this device's person made that are still redeemable, as the
     /// workspace's host lists them: its id in hex, the part it grants, whom it is addressed to, how
     /// it names them and when it lapses.
-    fn invitations(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
+    fn invitations(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
         let invitations = engine
             .invitations(&workspace_id.to_string(), std::time::SystemTime::now())
-            .map_err(DoorError::Failed)?;
+            .map_err(ApiError::Failed)?;
         let value = Value::Array(invitations.iter().map(invitation_json).collect());
         Ok(Started::Done(tilo_actions::ActionOutput {
             value: Some(value),
@@ -620,7 +620,7 @@ impl DeviceLists {
         &self,
         invite: &str,
         workspace: Option<&str>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
         let cancelled = engine
@@ -629,7 +629,7 @@ impl DeviceLists {
                 invite,
                 std::time::SystemTime::now(),
             )
-            .map_err(DoorError::Failed)?;
+            .map_err(ApiError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"cancelled": cancelled})),
             resources: Vec::new(),
@@ -645,7 +645,7 @@ impl DeviceLists {
         recipient: Option<&str>,
         expires_in_seconds: Option<u64>,
         workspace: Option<&str>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let room = self.workspace_id(workspace)?;
         let (role, makes_administrator) = match role {
@@ -658,7 +658,7 @@ impl DeviceLists {
                 Role::parse(name)
                     .filter(|role| role.assignable())
                     .ok_or_else(|| {
-                        DoorError::InvalidArguments(format!("`{name}` is no part of a workspace"))
+                        ApiError::InvalidArguments(format!("`{name}` is no part of a workspace"))
                     })?,
                 false,
             ),
@@ -666,7 +666,7 @@ impl DeviceLists {
         let recipient = recipient
             .map(|person| {
                 let not_a_key = || {
-                    DoorError::InvalidArguments(format!(
+                    ApiError::InvalidArguments(format!(
                         "`{person}` is not a person's key, 64 hex characters"
                     ))
                 };
@@ -686,7 +686,7 @@ impl DeviceLists {
             .as_ref()
             .map(|sync| sync.invitation_addr())
             .ok_or_else(|| {
-                DoorError::Failed(
+                ApiError::Failed(
                     "this session takes part in no transport, so no link can name it".to_owned(),
                 )
             })?;
@@ -710,7 +710,7 @@ impl DeviceLists {
                     std::time::SystemTime::now(),
                 )
                 .await
-                .map_err(DoorError::Failed)?;
+                .map_err(ApiError::Failed)?;
             Ok(tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({
                     "invite": issued.invite,
@@ -726,7 +726,7 @@ impl DeviceLists {
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
     /// one made, or one taken back.
-    fn invitation(&self, effect: &InviteEffect) -> Option<Result<Started, DoorError>> {
+    fn invitation(&self, effect: &InviteEffect) -> Option<Result<Started, ApiError>> {
         match effect {
             InviteEffect::Invitations { workspace } => Some(self.invitations(workspace.as_deref())),
             InviteEffect::IssueInvitation {
@@ -750,17 +750,17 @@ impl DeviceLists {
     }
 
     /// This device's engine: invitations are its record's, and a session without one has none.
-    fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, DoorError> {
+    fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, ApiError> {
         self.engine
             .as_ref()
-            .ok_or_else(|| DoorError::Failed("this session holds no workspace's record".to_owned()))
+            .ok_or_else(|| ApiError::Failed("this session holds no workspace's record".to_owned()))
     }
 }
 
 impl DeviceLists {
     /// Open the invite sheet on a workspace: the workspace comes to the front, and the sheet the
     /// bar's button opens is shown on it, through the session, which holds the surface.
-    fn show_invite(&self, workspace: Option<&str>) -> Result<Started, DoorError> {
+    fn show_invite(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
         let workspace = match workspace {
             Some(key) => key.to_owned(),
             None => self
@@ -769,7 +769,7 @@ impl DeviceLists {
                     tree.active_workspace()
                         .map(|active| active.id().to_string())
                 })
-                .ok_or_else(|| DoorError::Failed("no workspace is in front".to_owned()))?,
+                .ok_or_else(|| ApiError::Failed("no workspace is in front".to_owned()))?,
         };
         let known = self.handle.read(|tree| {
             tree.workspaces
@@ -777,7 +777,7 @@ impl DeviceLists {
                 .any(|candidate| candidate.id().to_string() == workspace)
         });
         if !known {
-            return Err(DoorError::InvalidArguments(format!(
+            return Err(ApiError::InvalidArguments(format!(
                 "there is no workspace {workspace} on this device"
             )));
         }
@@ -791,7 +791,7 @@ impl DeviceLists {
                     workspace: Some(workspace),
                     delta: None,
                 })
-                .map_err(DoorError::Failed)?;
+                .map_err(ApiError::Failed)?;
         }
         self.asks
             .borrow_mut()
@@ -819,14 +819,14 @@ const DEFAULT_INVITE_SECONDS: u64 = 3_600;
 impl DeviceLists {
     /// Open or close the running application's tray item `key`, as a press on its icon does: its
     /// window, or its menu when the item is one.
-    fn open_tray_item(&self, key: &str) -> Result<Started, DoorError> {
+    fn open_tray_item(&self, key: &str) -> Result<Started, ApiError> {
         let Some(tray) = &self.tray else {
-            return Err(DoorError::Failed(
+            return Err(ApiError::Failed(
                 "no tray is served: the press reaches no application".to_owned(),
             ));
         };
         let Some(item) = tray.snapshot().into_iter().find(|item| item.key == key) else {
-            return Err(DoorError::InvalidArguments(format!(
+            return Err(ApiError::InvalidArguments(format!(
                 "there is no tray item {key}"
             )));
         };
@@ -836,14 +836,14 @@ impl DeviceLists {
             tilo_tray_host::TrayRequest::Activate { x: 0, y: 0 }
         };
         tray.request_or_else(key, request, |_| {})
-            .map_err(DoorError::Failed)?;
+            .map_err(ApiError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
 
 impl DeviceLists {
     /// Carry out `effect` of the inviting resource.
-    fn invite(&self, effect: &InviteEffect) -> Result<Started, DoorError> {
+    fn invite(&self, effect: &InviteEffect) -> Result<Started, ApiError> {
         if let Some(answer) = self.invitation(effect) {
             return answer;
         }
@@ -913,7 +913,7 @@ impl Service for DeviceLists {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         match resource {
             TRAY_RESOURCE => {
                 let TrayEffect::OpenTrayItem { key } =
@@ -927,7 +927,7 @@ impl Service for DeviceLists {
                     .agent_sessions
                     .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
                 {
-                    return Err(DoorError::InvalidArguments(format!(
+                    return Err(ApiError::InvalidArguments(format!(
                         "no agent session {agent} works here"
                     )));
                 }
@@ -938,7 +938,7 @@ impl Service for DeviceLists {
                     decode::<InviteEffect>(&self.resources(), resource, action, arguments)?;
                 self.invite(&effect)
             }
-            _ => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+            _ => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }
     }
 }

@@ -1,5 +1,5 @@
 //! Undo and Redo as host actions, so a menu, the keyboard and automation reach the one undo
-//! implementation through the same door.
+//! implementation through the same API.
 
 use fluent::FluentArgs;
 use tilo_actions::{ActionSpec, Availability, OperationKind, ResourceSpec};

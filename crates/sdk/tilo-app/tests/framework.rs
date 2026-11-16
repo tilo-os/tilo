@@ -481,7 +481,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 without_host,
-                Err(tilo_actions::DoorError::ConfirmationRequired)
+                Err(tilo_actions::ApiError::ConfirmationRequired)
             ),
             "{without_host:?}"
         );
@@ -501,7 +501,7 @@ tilo_test_env::scenario! {
         );
         assert!(matches!(
             app.invoke(Checklist::RENAME.with("Twice")),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         assert_eq!(app.state().title, "Once", "the second call changed nothing");
     }

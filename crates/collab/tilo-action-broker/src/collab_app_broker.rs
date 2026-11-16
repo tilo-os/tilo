@@ -21,7 +21,7 @@ mod execution_activity;
 mod execution_activity_tests;
 mod observed_launch;
 pub use observed_launch::AppOpen;
-mod offload_door;
+mod offload_api;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 mod app_changes;
@@ -292,7 +292,7 @@ impl AdmittedJoinIdentity {
 
     /// The durable owner of an invocation this admitted identity invokes:
     /// [`InvocationOwner::AuthenticatedLocal`] naming the agent this session
-    /// was handed to, or no agent for the person themselves. Both doors that
+    /// was handed to, or no agent for the person themselves. Both apis that
     /// admit a certified or local identity derive their owner here, so an
     /// invocation's durable owner, its receipt actor and every later
     /// validation name the same effective actor.
@@ -314,7 +314,7 @@ impl AdmittedJoinIdentity {
     /// ([`VerifiedActionCaller`]).
     ///
     /// A session the person's own device handed to an agent is owned exactly
-    /// as the local door owns that same admitted identity
+    /// as the local api owns that same admitted identity
     /// ([`Self::invocation_owner`]): [`InvocationOwner::AuthenticatedLocal`]
     /// naming the agent, so the durable owner, the receipt actor and every
     /// later validation agree on who acted. A plain certified person keeps
@@ -322,7 +322,7 @@ impl AdmittedJoinIdentity {
     /// always been owned.
     ///
     /// A delegated session whose admission cannot name its owner (an
-    /// admission made without a retained certificate, as a network door's
+    /// admission made without a retained certificate, as a network API's
     /// can be) is refused here: falling back to [`InvocationOwner::Certified`]
     /// would silently drop the delegation the person's device granted.
     fn delegated_invocation_owner(
@@ -844,7 +844,7 @@ impl VerifiedActionCaller {
     ///
     /// A plain certified person is owned as [`InvocationOwner::Certified`].
     /// A session the person's own device handed to an agent (an MCP client,
-    /// [`Self::delegated_to`]) is owned exactly as the local door owns the
+    /// [`Self::delegated_to`]) is owned exactly as the local api owns the
     /// same admitted identity ([`durable_local_invocation::LocalCaller::owner_of`]):
     /// [`InvocationOwner::AuthenticatedLocal`] naming that agent, so the
     /// durable owner, the receipt actor and every later validation agree on
@@ -992,7 +992,7 @@ impl AppBrokerState {
         peer_id: u64,
         running: tilo_actions::InvocationId,
     ) -> Option<(tilo_actions::remote::Caller, tilo_action_policy::Reach)> {
-        // Doors that take the caller's own invocation id can admit two
+        // Apis that take the caller's own invocation id can admit two
         // callers' invocations under one id; such an id names nobody.
         let mut matching = self
             .pending_invocations
@@ -1011,7 +1011,7 @@ impl AppBrokerState {
     }
 }
 
-/// Who a running invocation was admitted for, however the door knew them:
+/// Who a running invocation was admitted for, however the API knew them:
 /// the caller an edit its effect submits is admitted as.
 #[derive(Clone)]
 enum ContinuingCaller {
@@ -1022,14 +1022,14 @@ enum ContinuingCaller {
         time: crate::policy_clock::PolicyTime,
         direct: tilo_actions::remote::Caller,
     },
-    /// A caller the door knew directly.
+    /// A caller the API knew directly.
     Caller(tilo_actions::remote::Caller),
     /// A certified caller, its certificate checked again each time.
     Certified {
         caller: Box<VerifiedActionCaller>,
         /// A stricter foreign-device restriction the host kept for them.
         foreign_restriction: bool,
-        /// The exact caller the door admitted, with its execution, when it
+        /// The exact caller the API admitted, with its execution, when it
         /// knew one; it continues only while that execution is live.
         direct: Option<tilo_actions::remote::Caller>,
     },
@@ -1083,7 +1083,7 @@ impl ContinuingCaller {
         }
     }
 
-    /// Who `caller` was admitted as: certified, with the custody its door
+    /// Who `caller` was admitted as: certified, with the custody its api
     /// holds, when it holds one.
     fn admitted(
         caller: Option<&tilo_actions::remote::Caller>,
@@ -1177,7 +1177,7 @@ mod agent_connection;
 #[path = "collab_app_broker/agent_tests.rs"]
 mod agent_tests;
 mod app_consent;
-mod app_open_door;
+mod app_open_api;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -1201,7 +1201,7 @@ pub use local_action_host::{CertifiedActionLifecycle, CertifiedPersonContext};
 pub(crate) fn device_host(
     state: Arc<AppBrokerState>,
 ) -> Arc<dyn tilo_actions::remote::ActionHost + Send + Sync> {
-    Arc::new(action_host::BrokerDoor::new(state))
+    Arc::new(action_host::BrokerApi::new(state))
 }
 
 pub use launchable::launchable_provider;
@@ -1268,7 +1268,7 @@ impl AppBrokerState {
         presentation: &[u8],
     ) -> Result<VerifiedActionCaller, String> {
         // The local certified presentation format also binds the exact workspace.
-        // No caller-controlled `is_agent` or principal string enters this door.
+        // No caller-controlled `is_agent` or principal string enters this api.
         if uuid::Uuid::parse_str(workspace).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
@@ -2346,7 +2346,7 @@ mod directory_query_input_tests {
     }
 }
 
-/// A directory target names a resource of the app, never one of its rows (only the app's own door
+/// A directory target names a resource of the app, never one of its rows (only the app's own api
 /// resolves a row), and a revision.
 fn check_directory_target(
     target: &DirectoryActionTarget,
@@ -2613,7 +2613,7 @@ struct InvocationInputs<'a> {
     original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
     /// The caller's lifecycle identity, independent of execution authority.
     requested: Option<tilo_actions::InvocationId>,
-    /// Who the invocation is admitted for, when the door knows them as a
+    /// Who the invocation is admitted for, when the API knows them as a
     /// caller: kept with the running invocation, so an edit its effect
     /// submits is admitted for them too.
     caller: Option<&'a tilo_actions::remote::Caller>,
@@ -2728,9 +2728,9 @@ pub struct AppBrokerState {
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
-    /// Shortcut runs the door finished, until history records them.
+    /// Shortcut runs the API finished, until history records them.
     ended_runs: crate::automation::EndedRuns,
-    /// What each application declared it may do on the action door under
+    /// What each application declared it may do on the action api under
     /// its own identity.
     app_action_access: RwLock<crate::app_actions::AppActionAccessResolver>,
     app_resource_kinds: RwLock<Option<crate::app_actions::AppResourceKindsResolver>>,
@@ -2794,7 +2794,7 @@ pub struct AppBrokerState {
     local_turn: std::sync::Arc<tokio::sync::Notify>,
     /// Admitted offloadable invocations waiting for the turn to ask
     /// [`HostServices::action_offload`] where they run.
-    offloads: Mutex<Vec<offload_door::QueuedOffload>>,
+    offloads: Mutex<Vec<offload_api::QueuedOffload>>,
     /// Offloadable invocations the route sent back here, by wire id: what
     /// was asked and when the app was handed it.
     offloaded_here:
@@ -9649,7 +9649,7 @@ async fn serve_broker_thread(
         }
         // Sleep until something here is due: the next policy re-check, or an
         // invocation about to expire. Everything else the turn handles wakes
-        // it at once: queued directory work, in-process door calls and quit
+        // it at once: queued directory work, in-process api calls and quit
         // through `local_turn`, admitted workers through `worker_admitted`,
         // policy announcements, and with them runs to deliver, through
         // `policy_turn`; connected apps run as
@@ -11525,7 +11525,7 @@ pub mod tests {
     #[cfg(test)]
     include!("record_content_tests.rs");
     #[cfg(test)]
-    include!("offload_door_tests.rs");
+    include!("offload_api_tests.rs");
     #[cfg(test)]
     include!("hosted_workspace_tests.rs");
 

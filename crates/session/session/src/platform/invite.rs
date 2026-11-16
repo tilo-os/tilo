@@ -42,7 +42,7 @@ impl InviteWorkspace {
         arguments: &serde_json::Map<String, serde_json::Value>,
         answer: impl FnOnce(Result<Option<serde_json::Value>, Refused>) + 'static,
     ) {
-        let refused = move |error: tilo_actions::DoorError| {
+        let refused = move |error: tilo_actions::ApiError| {
             tracing::warn!(%error, "the session refused");
             Refused::Because(error.to_string())
         };

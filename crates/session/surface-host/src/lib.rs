@@ -35,7 +35,7 @@ use tilo_session_core::surface::{
 
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
-use ui::device_local_door::SharedDoor;
+use ui::device_local_api::SharedApi;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
     DeviceId, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
@@ -46,9 +46,9 @@ use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use frames::Frames;
 
-/// The door a hosted surface publishes through: every host's, so a surface app is reached the
+/// The API a hosted surface publishes through: every host's, so a surface app is reached the
 /// same on each.
-pub(crate) use tilo_session_core::door::{Look, Published, through_door};
+pub(crate) use tilo_session_core::surfaces::{Look, Published, through_api};
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -115,7 +115,7 @@ pub struct AppHost {
     modifiers: ModifiersState,
     /// The app's actions for this device: what it publishes, and what the
     /// session's catalogue asked of it, run on the next frame.
-    door: SharedDoor,
+    api: SharedApi,
     /// The regions the app drew translucent material in last frame, in
     /// its physical pixels: bounds, blur deviation, texel size.
     backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
@@ -151,7 +151,7 @@ impl AppHost {
             damage: SurfaceDamage::default(),
             wants: true,
             modifiers: ModifiersState::empty(),
-            door: SharedDoor::default(),
+            api: SharedApi::default(),
             backdrops: Vec::new(),
             provided: Vec::new(),
             full: false,
@@ -168,24 +168,24 @@ impl AppHost {
         self
     }
 
-    /// The app's door, shared with the catalogue the person, a script or
+    /// The app's API, shared with the catalogue the person, a script or
     /// an agent on this device drives the app through.
-    pub fn door(&self) -> SharedDoor {
-        self.door.clone()
+    pub fn api(&self) -> SharedApi {
+        self.api.clone()
     }
 
-    /// Run what was asked through the door now, then publish what the app
+    /// Run what was asked through the API now, then publish what the app
     /// offers: the session serves an invocation without waiting for a
     /// frame. Whether anything ran.
-    pub fn serve_door(&mut self) -> bool {
+    pub fn serve_api(&mut self) -> bool {
         let app = &mut self.app;
         let ran = self
-            .door
+            .api
             .serve_with(|address, arguments| app.invoke_local_resource_action(address, arguments));
         if ran {
             self.wants = true;
         }
-        self.door
+        self.api
             .publish_resources(Some(self.app.collect_resources()));
         ran
     }
@@ -261,12 +261,12 @@ impl Published for AppHost {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut crate::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
-        // Through the app's own door, as every caller on this device.
-        let door = self.door.clone();
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+        // Through the app's own API, as every caller on this device.
+        let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
-        through_door(&door, address, arguments, || {
-            self.serve_door();
+        through_api(&api, address, arguments, || {
+            self.serve_api();
         })
     }
 
@@ -559,8 +559,8 @@ impl SurfaceHost for AppHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
-        if self.door.has_queued() {
-            self.serve_door();
+        if self.api.has_queued() {
+            self.serve_api();
         }
         let now = ui::time::now();
         let due = self.app.surface_next_frame().is_some_and(|at| at <= now);
@@ -608,7 +608,7 @@ impl SurfaceHost for AppHost {
             changed
         };
         self.frames.present(&self.scene, changed.as_deref());
-        self.door
+        self.api
             .publish_resources(Some(self.app.collect_resources()));
         true
     }

@@ -29,7 +29,7 @@ use tilo_session_client::{Cmd, Event, Outbox};
 
 use crate::common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_actions::remote::{
     ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
@@ -1198,7 +1198,7 @@ fn sheet_rows(
     route: &DocumentRoute,
     range: &str,
 ) -> serde_json::Value {
-    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let read = tilo_actions::api::ActionAddress::new("sheets.workbook", "read-cells");
     let arguments = serde_json::json!({"sheet": "Sheet1", "range": range});
     agent
         .invoke(route, &read, arguments.as_object().unwrap())
@@ -1354,7 +1354,7 @@ async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
         .to_string(),
     );
     assert_eq!(task.state, TaskState::Completed, "{task:?}");
-    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let read = tilo_actions::api::ActionAddress::new("sheets.workbook", "read-cells");
     let cells = agent
         .invoke(
             &sheets,
@@ -1697,7 +1697,7 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
     )
     .await;
     let sheets = first.open(SHEETS, None).unwrap();
-    let address = |action: &str| tilo_actions::door::ActionAddress::new("sheets.workbook", action);
+    let address = |action: &str| tilo_actions::api::ActionAddress::new("sheets.workbook", action);
     let headers = serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
         "rows": [["Name", "Seats"], ["Ana", 1]]});
     first
@@ -1870,7 +1870,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     poster
         .invoke(
             &theirs,
-            &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+            &tilo_actions::api::ActionAddress::new("chat.workspace", "begin-chat"),
             begin.as_object().unwrap(),
         )
         .unwrap();
@@ -2096,7 +2096,7 @@ impl RelayWorkspace {
         rae.0
             .invoke(
                 &chat,
-                &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+                &tilo_actions::api::ActionAddress::new("chat.workspace", "begin-chat"),
                 begin.as_object().unwrap(),
             )
             .unwrap();
@@ -2297,7 +2297,7 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
         .0
         .invoke(
             &theirs,
-            &tilo_actions::door::ActionAddress::new("chat.workspace", "introduce"),
+            &tilo_actions::api::ActionAddress::new("chat.workspace", "introduce"),
             again.as_object().unwrap(),
         )
         .unwrap();

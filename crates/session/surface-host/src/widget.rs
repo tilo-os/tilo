@@ -678,7 +678,7 @@ impl crate::Published for WidgetHost {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut crate::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
@@ -750,7 +750,7 @@ impl crate::Published for WidgetHost {
             ));
         }
         // Two controls of one name — the sidebar toggle of each window, each window's "More
-        // actions" — are each listed where they stand, as the door lists them; a control named
+        // actions" — are each listed where they stand, as the API lists them; a control named
         // both by a target and by its node is listed once.
         let mut shown: Vec<(String, vello::kurbo::Rect)> = Vec::with_capacity(found.len());
         for (name, rect) in found {

@@ -30,7 +30,7 @@ pub(crate) fn apply_part_at(
     author: &str,
     now_ms: i64,
     invoke: Invoke<crate::parts::ChatPart>,
-) -> Result<u64, ui::tilo_actions::DoorError> {
+) -> Result<u64, ui::tilo_actions::ApiError> {
     workspace.apply_part_at(author, now_ms, invoke)
 }
 
@@ -40,7 +40,7 @@ pub(crate) fn apply_part_as(
     workspace: &mut Workspace,
     author: &str,
     invoke: Invoke<crate::parts::ChatPart>,
-) -> Result<u64, ui::tilo_actions::DoorError> {
+) -> Result<u64, ui::tilo_actions::ApiError> {
     workspace.apply_part_as(author, invoke)
 }
 

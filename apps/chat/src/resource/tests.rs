@@ -641,7 +641,7 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
 fn feedback_is_filed_by_people_and_never_offered_to_agents() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let resources = app.harness().resources();
-    let submit = ui::tilo_actions::door::survey(&resources)
+    let submit = ui::tilo_actions::api::survey(&resources)
         .into_iter()
         .find(|descriptor| {
             descriptor.address.resource.as_str() == item("channels", "c_chat")

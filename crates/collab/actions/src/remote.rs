@@ -22,7 +22,7 @@
 //! host beside the message; nothing in a frame can name or change it.
 //!
 //! Descriptors, addresses, arguments, outputs and lifecycle updates are the
-//! same types the local action surface already uses ([`ActionDescriptor`](crate::door::ActionDescriptor),
+//! same types the local action surface already uses ([`ActionDescriptor`](crate::api::ActionDescriptor),
 //! [`ActionAddress`], [`InvocationUpdate`], [`ActionOutput`],
 //! [`ActionFailure`]), so a remote caller sees exactly what a local one does.
 
@@ -115,8 +115,8 @@ pub use search::{FOUND_FILE, Found, ResourceSearch, stem_word};
 pub use test_host::TestHost;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
+use crate::api::ActionAddress;
 use crate::context::{ActionContext, ActionFacet};
-use crate::door::ActionAddress;
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
@@ -261,7 +261,7 @@ pub mod identity_admin {
     /// `confirm`).
     pub const REVOKE: &str = "revoke";
     /// Name one of the person's devices (`device`, `name`): what their device
-    /// lists read it by from now on. A page's door forwards it to the host
+    /// lists read it by from now on. A page's API forwards it to the host
     /// that keeps their record; it is no step of the device's own store.
     pub const RENAME: &str = "rename-device";
     /// Root-revoke and stop a paired home server (`device`, `service`,
@@ -454,9 +454,9 @@ pub struct InvokeRequest {
     /// admission, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
-    /// The name and avatar a bot asks to show for this action. Only a door
+    /// The name and avatar a bot asks to show for this action. Only an API
     /// that can check the caller is a bot allowed it admits one
-    /// (the workspace-action door a bot host drives); every other door refuses the request
+    /// (the workspace-action API a bot host drives); every other API refuses the request
     /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
@@ -549,7 +549,7 @@ pub struct InvocationState {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub untrusted: bool,
     /// Where the invocation left its actor in the record it acted on: the
-    /// text it changed, or the caret it left. What a door that shows its
+    /// text it changed, or the caret it left. What an API that shows its
     /// actor working highlights for the people watching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_at: Option<ActorPlace>,
@@ -634,11 +634,11 @@ impl InvocationState {
 }
 
 /// The failure code an action answers while it runs when what it reached
-/// waits for the person's word ([`DoorError::ConfirmationRequired`]): the
+/// waits for the person's word ([`ApiError::ConfirmationRequired`]): the
 /// caller's invocation is refused for want of their answer, and their
 /// answer runs it again.
 ///
-/// [`DoorError::ConfirmationRequired`]: crate::door::DoorError::ConfirmationRequired
+/// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
 /// Why a host would not do what was asked. Every variant means nothing ran.
@@ -994,7 +994,7 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
-    /// Retired: records are read through the record door ([`Self::RecordRead`]). Kept in
+    /// Retired: records are read through the record API ([`Self::RecordRead`]). Kept in
     /// place because the variants after it are encoded by position.
     RetiredRecordRequest,
     /// Retired with [`Self::RetiredRecordRequest`].
@@ -1072,7 +1072,7 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<Box<ConfirmedInvocation>, ActionHostError>,
     },
-    /// Read a record of the caller's workspace through the one record door
+    /// Read a record of the caller's workspace through the one record API
     /// ([`RecordReads`]), decided as every reader of it is; continuing
     /// `on_behalf_of`, an invocation the host delivered to the caller, it is
     /// that invocation's caller's read.
@@ -1123,7 +1123,7 @@ pub enum RemoteActionMessage {
     },
 }
 
-/// One record a reader asks for over the action door: alone, or `joined`
+/// One record a reader asks for over the action API: alone, or `joined`
 /// as the chain of parts whose base it is, once it differs from the revision
 /// `after` or `wait_ms` passed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1402,7 +1402,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
         // Read by a host's own reader, which answers through its trait object: what a reading is
-        // made of loads with the code that reads records, not with every host's door.
+        // made of loads with the code that reads records, not with every host's API.
         RemoteActionMessage::RecordRead {
             correlation, read, ..
         } => host.record_reads().map_or_else(
@@ -2584,7 +2584,7 @@ mod tests {
         RemoteActionMessage::Invoke(archive(id))
     }
 
-    /// A host's search and its change feed are asked across the door as any
+    /// A host's search and its change feed are asked across the API as any
     /// request is, each answer the host's own; a host keeping neither says
     /// so in the words a caller tells apart.
     #[test]
@@ -2592,7 +2592,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one host answering both asks, and one keeping neither, in order"
     )]
-    fn search_and_changes_cross_the_door_as_the_host_answers_them() {
+    fn search_and_changes_cross_the_api_as_the_host_answers_them() {
         struct Held;
         impl ResourceSearch for Held {
             fn find(

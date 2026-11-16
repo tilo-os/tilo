@@ -267,8 +267,8 @@ async fn a_delegated_callers_continuation_passes_reverification_and_others_do_no
         .await;
 }
 
-/// A caller the door admits without a retained certificate (a network
-/// door's admission can be) cannot name the agent it was delegated
+/// A caller the API admits without a retained certificate (a network
+/// API's admission can be) cannot name the agent it was delegated
 /// to. Status, retry and the effect barrier must refuse it rather than
 /// silently re-own its invocation as the person's.
 #[tokio::test(flavor = "current_thread")]

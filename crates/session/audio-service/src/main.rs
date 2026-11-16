@@ -11,7 +11,7 @@ use std::io::{BufRead as _, Write as _};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::{DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_audio_service::media::MediaService;
 use tilo_audio_service::mpris::Mpris;
 use tilo_audio_service::policy::{self, PolicyEvent};
@@ -119,8 +119,8 @@ impl Service for SharedSound {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Started, DoorError> {
-        let mut sound = self.0.lock().map_err(|_| DoorError::Unavailable {
+    ) -> Result<Started, ApiError> {
+        let mut sound = self.0.lock().map_err(|_| ApiError::Unavailable {
             code: "no_sound".to_owned(),
             reason: "the sound did not answer".to_owned(),
         })?;

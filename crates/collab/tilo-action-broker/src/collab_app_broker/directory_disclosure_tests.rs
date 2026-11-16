@@ -559,7 +559,7 @@ async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_b
                     .unwrap();
             app.settle();
             let resources = app.harness().resources();
-            let descriptors = tilo_actions::door::survey(&resources);
+            let descriptors = tilo_actions::api::survey(&resources);
             let mut published = Vec::new();
             // Export the real framework's governing actions, not a hand-written
             // assertion about what a readable parent ought to publish.

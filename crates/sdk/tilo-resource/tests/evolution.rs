@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
         };
         assert!(matches!(
             contact.apply(group()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         assert_eq!(contact.state().unwrap().outbox.len(), 0);
         contact.apply_confirmed(group()).unwrap();
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
         // A destructive verb asks the person first.
         assert!(matches!(
             contact.apply(Contact::INVITE.invoke()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
+            Err(tilo_actions::ApiError::ConfirmationRequired)
         ));
         assert_eq!(contact.state().unwrap().outbox.len(), 0);
         contact.apply_confirmed(Contact::INVITE.invoke()).unwrap();
@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
             tilo_resource::ActionRef::new("nope", &[], tilo_resource::ResourceKind::of::<Contact>());
         assert!(matches!(
             contact.apply(unknown.invoke()),
-            Err(tilo_actions::DoorError::Unknown(_))
+            Err(tilo_actions::ApiError::Unknown(_))
         ));
         // The change carries the history entry the door writes.
         contact

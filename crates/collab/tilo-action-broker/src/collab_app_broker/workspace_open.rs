@@ -402,7 +402,7 @@ mod tests {
     }
 
     /// A broker serving the person at this device's own seat, with `launcher` and a durable
-    /// journal: what the session's own control doors and palette invoke through.
+    /// journal: what the session's own control apis and palette invoke through.
     struct NativeSeat {
         state: Arc<AppBrokerState>,
         bridge: std::sync::mpsc::Receiver<super::super::ActionDirectoryBridgeRequest>,

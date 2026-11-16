@@ -140,7 +140,7 @@ mod tests {
     fn drive_invoke(
         app: &mut TestApp<VideoPlayerShell>,
         effect: &VideoEffect,
-    ) -> Result<(), ui::tilo_actions::DoorError> {
+    ) -> Result<(), ui::tilo_actions::ApiError> {
         use ui::tilo_resource::{Effect as _, Resource as _};
         let address = effect.address_on(Library::KIND);
         app.harness()

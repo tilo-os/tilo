@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
 use super::browser::PROVIDER;
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The resource these are actions of: the asking device itself, as the
 /// workspace's host knows it.

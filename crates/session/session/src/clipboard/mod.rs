@@ -30,7 +30,7 @@ use crate::platform::fabric::{ClipboardEntry, ClipboardPayload, DeviceId, Fabric
 use serde_json::{Map, Value};
 use settings_store::clipboard_history::{HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
-use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
 use tilo_compositor::clipboard_history::{Copy, History, Pull, Pulled, TEXT_MIME, kept_mime};
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
@@ -716,7 +716,7 @@ impl Service for Served {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         match decode::<ClipboardAction>(&self.resources(), resource, action, arguments)? {
             ClipboardAction::Paste { copy } => self.clipboard.ask(Ask::Paste(copy)),
             ClipboardAction::Pin { copy, pinned } => {
@@ -737,7 +737,7 @@ impl Service for Served {
                 conflict,
             } => {
                 let Some(chosen) = paste::Conflict::parse(conflict.as_deref()) else {
-                    return Err(DoorError::InvalidArguments(format!(
+                    return Err(ApiError::InvalidArguments(format!(
                         "{:?} is not a paste conflict policy: keep-both, skip or replace",
                         conflict.as_deref().unwrap_or_default()
                     )));

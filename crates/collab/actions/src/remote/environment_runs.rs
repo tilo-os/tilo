@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use super::RemoteActionTarget;
 use super::host_account::Refusal;
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The provider the taking member answers runs under.
 pub const PROVIDER: &str = "tilo.environment";

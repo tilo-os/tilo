@@ -25,7 +25,7 @@ fn resources(items: usize) -> Vec<ResourceSpec> {
 fn published(items: usize) -> PublishedDirectory {
     let resources = resources(items);
     let mut directory = PublishedDirectory::default();
-    directory.publish(&resources, &tilo_actions::door::survey(&resources));
+    directory.publish(&resources, &tilo_actions::api::survey(&resources));
     directory
 }
 
@@ -122,10 +122,10 @@ tilo_test_env::scenario! {
         // The same publication keeps the revision; a different one moves it.
         let revision = first.revision.clone();
         let same = resources(5);
-        directory.publish(&same, &tilo_actions::door::survey(&same));
+        directory.publish(&same, &tilo_actions::api::survey(&same));
         assert_eq!(directory.revision(), Some(revision.as_str()));
         let fewer = resources(1);
-        directory.publish(&fewer, &tilo_actions::door::survey(&fewer));
+        directory.publish(&fewer, &tilo_actions::api::survey(&fewer));
         assert_ne!(directory.revision(), Some(revision.as_str()));
         let stale = directory.page(&ActionDirectoryQuery {
             parent_resource: "todos".into(),

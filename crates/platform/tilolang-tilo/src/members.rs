@@ -1,10 +1,10 @@
 //! The workspace's members as tilolang reads them (`workspace.members`, `members(r)`): the
-//! workspace's own policy, the one the door decides by, read with the person's standing. Nothing
+//! workspace's own policy, the one the API decides by, read with the person's standing. Nothing
 //! here keeps a list of its own: the members are the policy's owner and members with their
 //! roles and the agents its grants name, and who reads a resource is what the policy answers
 //! for each of them.
 //!
-//! The policy names people by their person id, as the door, presence and the member list do;
+//! The policy names people by their person id, as the API, presence and the member list do;
 //! the runtime names the person at the window `me`.
 
 use std::collections::HashMap;

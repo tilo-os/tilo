@@ -17,7 +17,7 @@
 )]
 
 use serde_json::{Map, Value, json};
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_service::{Service, Started};
@@ -95,7 +95,7 @@ impl Service for Channels {
         _resource: &str,
         _action: &str,
         _arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }

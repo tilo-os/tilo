@@ -311,7 +311,7 @@ tilo_test_env::scenario! {
         let title = crate::fixtures::field_id(&meta, "TodoList", "title");
         let input = find_bound(view.tree(), &title).unwrap();
         view.edit(&input, &Value::text("Groceries")).unwrap();
-        // Planning another action for the door writes into the mirror and takes it back.
+        // Planning another action for the API writes into the mirror and takes it back.
         let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
         let args = json!({ "text": "tea" }).as_object().cloned().unwrap();
         ada.host

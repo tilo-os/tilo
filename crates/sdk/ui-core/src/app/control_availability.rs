@@ -4,7 +4,7 @@
 impl App {
     /// Push what each control in the tree may run now into it. The walks
     /// of the tree here read only the tree, the document and permissions it
-    /// was built from, what the window's own History door serves and
+    /// was built from, what the window's own History API serves and
     /// whether input goes to History: a frame that moved none of them (one
     /// only an animation asked for) walks nothing, unless a bound
     /// component's permissions changed with time since
@@ -12,13 +12,13 @@ impl App {
     /// they follow announces its changes, which move the tree generation.
     fn refresh_control_action_availability(&mut self) {
         let history_captures = self.history.as_ref().is_some_and(|h| h.captures_input());
-        let history_door = self.refresh_history_controls();
+        let history_api = self.refresh_history_controls();
         tilo_startup_metrics::startup_mark("actions-history-done");
         let inputs = runtime::AvailabilityInputs {
             tree: self.tree_generation(),
             framework_input: self.framework_input.get(),
             history_captures,
-            history_door,
+            history_api,
         };
         let now = crate::time::now();
         let unchanged = self.layout.walks.availability.as_ref().filter(|walk| {
@@ -28,16 +28,16 @@ impl App {
         });
         if let Some(walk) = unchanged {
             if walk.unread {
-                let history_door = inputs.history_door.clone();
-                let _ = self.refresh_bound_control_availability(&history_door);
+                let history_api = inputs.history_api.clone();
+                let _ = self.refresh_bound_control_availability(&history_api);
             }
             return;
         }
         #[cfg(test)]
         let _walk = crate::profiling::frame_probe::span("walk.availability");
-        let history_door = inputs.history_door.clone();
-        let bound = self.refresh_bound_control_availability(&history_door);
-        self.refresh_emitter_availability(history_door);
+        let history_api = inputs.history_api.clone();
+        let bound = self.refresh_bound_control_availability(&history_api);
+        self.refresh_emitter_availability(history_api);
         // What each control may run is what assistive technology is offered:
         // a walk for permissions that changed (with time, or announced from
         // outside) changes it with nothing in the tree marking it.
@@ -77,7 +77,7 @@ impl App {
     /// Push what the bound components' controls may run into them.
     fn refresh_bound_control_availability(
         &mut self,
-        history_door: &std::collections::HashSet<tilo_actions::ActionAddress>,
+        history_api: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> BoundAvailability {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
@@ -95,7 +95,7 @@ impl App {
         let _ = crate::bound_dispatch::refresh_bound_controls(
             self.root_widget.as_mut(),
             &snapshots,
-            history_door,
+            history_api,
         );
         trace.finish(CacheResult::NotApplicable);
         tilo_startup_metrics::startup_mark("actions-bound-projection-done");
@@ -113,11 +113,11 @@ impl App {
     /// Push the local action surface into the tree's action emitters.
     fn refresh_emitter_availability(
         &mut self,
-        history_door: std::collections::HashSet<tilo_actions::ActionAddress>,
+        history_api: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         // Only ActionEmitter controls consume this address projection. Semantic,
-        // document and legacy controls still use their normal invocation doors.
+        // document and legacy controls still use their normal invocation APIs.
         // Recheck presence: widget-local changes can add/remove emitters.
         if !crate::widget::controls::has_action_control_bindings(self.root_widget.as_ref()) {
             // A replacement emitter must not inherit a prior refresh stamp.
@@ -145,8 +145,8 @@ impl App {
             });
         // Opening search is the host's, and this host always answers it.
         allowed.insert(crate::search::search_address());
-        // So is the window's History door, wherever History serves it.
-        allowed.extend(history_door);
+        // So is the window's History API, wherever History serves it.
+        allowed.extend(history_api);
         crate::widget::controls::refresh_control_action_availability(
             self.root_widget.as_mut(),
             &allowed,

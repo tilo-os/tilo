@@ -1,4 +1,4 @@
-//! The undo step a door call joins: one per run a client names, one per task
+//! The undo step an API call joins: one per run a client names, one per task
 //! step a program names, one of its own for any other call.
 use super::{ActionHost, MAX_RUN_ID, McpServer, Value};
 
@@ -83,7 +83,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         });
         let (domain, step) = match named {
             Some((key, step)) => (
-                "tilo door step v1",
+                "tilo API step v1",
                 step.as_str()
                     .filter(|step| !step.is_empty() && step.len() <= MAX_RUN_ID)
                     .ok_or_else(|| {
@@ -95,7 +95,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     })?,
             ),
             None => match invocation {
-                Some(invocation) => ("tilo door call v1", invocation),
+                Some(invocation) => ("tilo API call v1", invocation),
                 None => return Ok(tilo_actions::ActionId::new()),
             },
         };

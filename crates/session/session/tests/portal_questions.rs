@@ -48,11 +48,7 @@ fn showing(session: &Session) -> String {
 
 /// Answer `effect` on the portal sheet's door for `handle` .
 #[track_caller]
-fn answer(
-    session: &mut Session,
-    handle: &str,
-    effect: &str,
-) -> Result<(), tilo_actions::DoorError> {
+fn answer(session: &mut Session, handle: &str, effect: &str) -> Result<(), tilo_actions::ApiError> {
     let sheet = publisher(session, effect).expect("the sheet publishes that");
     let arguments = serde_json::json!({ "handle": handle })
         .as_object()

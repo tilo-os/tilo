@@ -9,7 +9,7 @@
 //!   without the wasm module applies;
 //! * [`meta`] and [`surface`]: what the platform derives from package metadata, and the surface
 //!   generated from it;
-//! * [`publish`]: the resources and typed actions published on the action door;
+//! * [`publish`]: the resources and typed actions published on the action api;
 //! * [`instance`]: one window of an app as an app host runs it, without the toolkit, sending
 //!   its window component patches and taking what the person did;
 
@@ -68,7 +68,7 @@ pub use tilolang_runtime as runtime;
 /// Where `meta`'s package keeps its resources for `person` (the lowercase hex of their user root
 /// key): their own record of the workspace when the app declares `records: .own`
 /// (`tilo_action_policy::member_record`), which only that person's devices read or change and
-/// every door decides as theirs alone. `None` for the workspace's record of the app, which
+/// every api decides as theirs alone. `None` for the workspace's record of the app, which
 /// every member reads; and for a person without a root identity, who is a member of no
 /// workspace, so nobody else reads what they keep.
 #[must_use]
@@ -89,7 +89,7 @@ pub fn member_record_of(app: &str, person: &str) -> Option<String> {
 }
 
 /// Whether `person` reaches what the record `record` holds: a member's own record
-/// ([`member_record_of`]) is that person's alone, whatever their role in the workspace, as every door
+/// ([`member_record_of`]) is that person's alone, whatever their role in the workspace, as every api
 /// decides it; any other record is the workspace policy's to decide. An agent reaches it as the
 /// person it acts for; an invoker acting for nobody reaches no one's own record.
 #[must_use]

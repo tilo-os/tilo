@@ -1064,7 +1064,7 @@ mod tests {
     fn shell_with_an_agent() -> OverviewCards {
         use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach, Server};
         let mut shell = shell();
-        shell.tilo.door = Some(Server {
+        shell.tilo.server = Some(Server {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
@@ -1283,7 +1283,7 @@ mod tests {
             use tilo_actions::remote::mcp_server::{AgentSession, Grant, Reach};
             ui::i18n::I18nManager::init("en-US");
             let row = crate::overview_tilo::rows(&TiloOverview {
-                door: Some(tilo_actions::remote::mcp_server::Server {
+                server: Some(tilo_actions::remote::mcp_server::Server {
                     grants: vec![Grant {
                         id: "g1".into(),
                         agent: "Claude Code".into(),

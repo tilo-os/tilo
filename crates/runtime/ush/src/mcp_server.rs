@@ -1,13 +1,13 @@
 //! The environment's own MCP server: where a coding agent inside the guest reaches
 //! the desktop's actions (`tilo-runtime --connect`).
 //!
-//! The session's own door serves only programs outside every sandbox, so the
-//! supervisor asks the session for a door bound to this environment
+//! The session's own server serves only programs outside every sandbox, so the
+//! supervisor asks the session for a server bound to this environment
 //! ([`runtime_portal::environment_door`]), binds it into the guest at
 //! [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
-//! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The door belongs to the lease: it closes
+//! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The server belongs to the lease: it closes
 //! when the session ends. Outside a Tilo login, or when the session refuses, the guest
-//! has no door.
+//! has no server.
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +39,7 @@ fn workspace_of(store: &Store, id: &str) -> Option<String> {
     }
 }
 
-fn session_door() -> Option<PathBuf> {
+fn session_api() -> Option<PathBuf> {
     Some(
         tilo_paths::login::session_dir(
             tilo_paths::login::login_runtime_dir().map(PathBuf::into_os_string),
@@ -50,25 +50,25 @@ fn session_door() -> Option<PathBuf> {
 
 #[must_use]
 pub fn open_for(store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
-    open_at(&session_door()?, store, id, environment)
+    open_at(&session_api()?, store, id, environment)
 }
 
 #[must_use]
-pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
-    if !door.exists() {
-        tracing::debug!(door = %door.display(), "ush: no session door; the guest has no MCP server");
+pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
+    if !server.exists() {
+        tracing::debug!(server = %server.display(), "ush: no session server; the guest has no MCP server");
         return None;
     }
     let workspace = workspace_of(store, id);
     match open(
-        door,
+        server,
         &Request::new(id, &environment.name, workspace.as_deref()),
     ) {
         Ok(lease) => {
             tracing::info!(
                 environment = id,
                 workspace = lease.workspace(),
-                door = %lease.path().display(),
+                server = %lease.path().display(),
                 "ush: the environment's MCP server is open"
             );
             Some(lease)
@@ -83,40 +83,40 @@ pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) 
 pub const CONNECT_COMMANDS: [&str; 2] = ["tilo-runtime", "tilo-runtime-mcp"];
 
 /// `tilo-runtime --connect` inside a guest: relay this process's standard
-/// input and output to the environment's door, which
+/// input and output to the environment's server, which
 /// [`tilo_paths::login::AGENT_SOCKET_ENV`] names.
 ///
 /// # Errors
-/// Anything but `--connect` was asked, the environment has no door, or the
-/// door does not answer.
+/// Anything but `--connect` was asked, the environment has no server, or the
+/// server does not answer.
 pub fn connect_main(args: &[String]) -> anyhow::Result<i32> {
     anyhow::ensure!(
         args.iter().map(String::as_str).eq(["--connect"]),
         "inside an environment, tilo-runtime only connects to the desktop: run `tilo-runtime --connect`"
     );
-    let door = std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)
+    let server = std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)
         .map(PathBuf::from)
-        .filter(|door| door.is_absolute())
+        .filter(|server| server.is_absolute())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "this environment has no MCP server: the desktop opens one as the environment starts"
             )
         })?;
-    let stream = tilo_files::native::socket::connect(&door).map_err(|error| {
+    let stream = tilo_files::native::socket::connect(&server).map_err(|error| {
         anyhow::anyhow!(
             "the environment's MCP server, {}, does not answer: {error}",
-            door.display()
+            server.display()
         )
     })?;
     relay(&stream, std::io::stdin(), &mut std::io::stdout().lock())?;
     Ok(0)
 }
 
-/// Relay `input` to `stream`, and `stream` to `output`, until the door
+/// Relay `input` to `stream`, and `stream` to `output`, until the server
 /// closes; each read is passed on at once, as a client waits for each reply.
 ///
 /// # Errors
-/// Reading the door or writing `output` failed.
+/// Reading the server or writing `output` failed.
 pub fn relay(
     stream: &std::os::unix::net::UnixStream,
     mut input: impl std::io::Read + Send + 'static,
@@ -157,16 +157,16 @@ mod tests {
         /// `connect`: a client's lines to the environment's MCP server and its answers back.
         fn connect_carries_a_client_to_the_mcp_server;
 
-        phase connect_relays_the_clients_lines_to_the_door_and_its_answers_back;
+        phase connect_relays_the_clients_lines_to_the_server_and_its_answers_back;
         {
             use std::io::{BufRead as _, Write as _};
-            let (ours, door) = std::os::unix::net::UnixStream::pair().unwrap();
+            let (ours, server) = std::os::unix::net::UnixStream::pair().unwrap();
             let session = std::thread::spawn(move || {
                 let mut line = String::new();
-                std::io::BufReader::new(door.try_clone().unwrap())
+                std::io::BufReader::new(server.try_clone().unwrap())
                     .read_line(&mut line)
                     .unwrap();
-                (&door).write_all(b"{\"answer\":1}\n").unwrap();
+                (&server).write_all(b"{\"answer\":1}\n").unwrap();
                 line
             });
             let mut output = Vec::new();

@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
 use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{

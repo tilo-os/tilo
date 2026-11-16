@@ -66,7 +66,7 @@ fn heads(doc: &mut AutoCommit) -> String {
         .join(",")
 }
 
-/// Commit through the executor every action the host queued, as the door does for a window.
+/// Commit through the executor every action the host queued, as the API does for a window.
 fn commit(host: &Host, doc: &mut AutoCommit) {
     for committed in host.take_committed() {
         apply(host, doc, &committed.action);

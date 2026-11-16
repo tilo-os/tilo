@@ -157,7 +157,7 @@ fn tilo_shell(build_box: &str) -> TiloOverview {
             HostAccount::sells_nothing("Framework 16", HostKind::Device),
             tilo_cloud(build_box),
         ],
-        door: Some(Server {
+        server: Some(Server {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),

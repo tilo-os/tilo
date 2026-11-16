@@ -8,7 +8,7 @@
 //! start filled in; what the caller gave is not shown.
 //!
 //! What the person types is their view state in the window the form opened from, so closing the
-//! form and opening it again keeps it. Each value is read as the action takes it (the door's own
+//! form and opening it again keeps it. Each value is read as the action takes it (the API's own
 //! reading, [`crate::host::Host::argument`]), and submit stays disabled while one does not
 //! read. Submit is one invocation, run as the control would have run it, with undo and history.
 

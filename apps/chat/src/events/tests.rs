@@ -105,11 +105,11 @@ tilo_test_env::scenario! {
             &crate::testing::item("channels", "c_crit"),
         )
         .expect("c_crit is a channel resource");
-        let offered = tilo_actions::door::survey(std::slice::from_ref(&crit))
+        let offered = tilo_actions::api::survey(std::slice::from_ref(&crit))
             .into_iter()
             .find(|offered| offered.address.action == "delete-channel")
             .expect("the channel offers delete-channel");
-        let from_spec = tilo_actions::door::encode_json(
+        let from_spec = tilo_actions::api::encode_json(
             std::slice::from_ref(&crit),
             &offered.address,
             &serde_json::Map::new(),

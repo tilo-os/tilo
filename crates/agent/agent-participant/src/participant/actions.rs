@@ -1,11 +1,11 @@
 //! `actionsV1` for apps over the remote-action path: the agent answers
 //! `tilo_actions::remote` frames other devices of the workspace address to it,
-//! for the records it has open, through the same door its own steps use.
+//! for the records it has open, through the same API its own steps use.
 //!
 //! - A catalogue lists one provider per open record (`record:<app>:<record>`)
 //!   with every operation the record publishes, and the workspace's provider (`workspace:<workspace>`) offering
 //!   `app.<app>#open` for each delegated app.
-//! - An invocation runs through the app's door with the caller's arguments;
+//! - An invocation runs through the app's API with the caller's arguments;
 //!   an explicit `Confirmed` from the caller satisfies a confirmation step.
 //!   The change is committed through the agent's session and its presence
 //!   moves there, exactly as for its own steps.
@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use tilo_session_client::{Cmd, Outbox};
 
-use tilo_actions::door::DoorError;
+use tilo_actions::api::ApiError;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
@@ -68,7 +68,7 @@ pub(crate) fn open_row_needing(
     CatalogueRow::for_action(
         target.provider,
         app,
-        tilo_actions::door::ActionDescriptor {
+        tilo_actions::api::ActionDescriptor {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
@@ -383,13 +383,13 @@ impl AgentParticipant {
             InvokeArgument::Json(arguments) => arguments.clone(),
         };
         // Whoever drives the agent's records from afar confirms nothing by
-        // their word here: the agent's door cannot tell a person's device
+        // their word here: the agent's API cannot tell a person's device
         // from another agent's, so an action that asks first is refused
         // and is the person's to run themselves.
         self.invoke_as(&route, &target.address, &arguments, false)
             .map(Option::unwrap_or_default)
             .map_err(|error| match error {
-                Refusal::Door(error) => door_status(&error),
+                Refusal::Api(error) => api_status(&error),
                 Refusal::Agent(reason) => reject(ActionHostError::Refused { reason }),
             })
     }
@@ -397,8 +397,8 @@ impl AgentParticipant {
 
 /// Why an invocation did not run or failed.
 pub(super) enum Refusal {
-    /// The app's door refused or the action failed.
-    Door(DoorError),
+    /// The app's API refused or the action failed.
+    Api(ApiError),
     /// The agent refused: paused, outside its delegation, record not open,
     /// or the change could not be committed.
     Agent(String),
@@ -408,7 +408,7 @@ impl Refusal {
     /// The refusal as a step's error reads.
     pub(super) fn into_text(self) -> String {
         match self {
-            Self::Door(error) => format!("{}: {error}", error.code()),
+            Self::Api(error) => format!("{}: {error}", error.code()),
             Self::Agent(reason) => reason,
         }
     }
@@ -421,40 +421,40 @@ fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceip
     }
 }
 
-/// How an invocation the door refused ended.
+/// How an invocation the API refused ended.
 pub(crate) enum Outcome {
     /// Nothing ran.
     Rejected(ActionHostError),
     Failed(ActionFailure),
 }
 
-/// The code a door refuses an invocation the grants do not admit with.
+/// The code an API refuses an invocation the grants do not admit with.
 const PERMISSION_DENIED: &str = "permission_denied";
 
-pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
+pub(crate) fn api_outcome(error: &ApiError) -> Outcome {
     match error {
-        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
+        ApiError::Unknown(_) | ApiError::UnregisteredType(_) => {
             Outcome::Rejected(ActionHostError::UnknownAction)
         }
-        DoorError::ConfirmationRequired => {
+        ApiError::ConfirmationRequired => {
             Outcome::Rejected(ActionHostError::confirmation_required())
         }
-        DoorError::MissingArgument(_)
-        | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_)
-        | DoorError::ArgumentOutOfRange { .. } => {
+        ApiError::MissingArgument(_)
+        | ApiError::UnexpectedArgument(_)
+        | ApiError::InvalidArguments(_)
+        | ApiError::ArgumentOutOfRange { .. } => {
             Outcome::Rejected(ActionHostError::InvalidRequest {
                 reason: error.to_string(),
             })
         }
         // The grants refused it: not the caller's, whenever they ask again.
-        DoorError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
+        ApiError::Unavailable { code, .. } if code == PERMISSION_DENIED => {
             Outcome::Rejected(ActionHostError::NotPermitted)
         }
-        DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
+        ApiError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),
         }),
-        DoorError::Failed(message) => Outcome::Failed(ActionFailure {
+        ApiError::Failed(message) => Outcome::Failed(ActionFailure {
             code: error.code().to_owned(),
             message: message.clone(),
             details: None,
@@ -463,8 +463,8 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
     }
 }
 
-pub(crate) fn door_status(error: &DoorError) -> ReceiptStatus {
-    match door_outcome(error) {
+pub(crate) fn api_status(error: &ApiError) -> ReceiptStatus {
+    match api_outcome(error) {
         Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
         Outcome::Failed(error) => ReceiptStatus::Failed { error },
     }

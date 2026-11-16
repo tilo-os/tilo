@@ -21,7 +21,7 @@
 )]
 
 use collab_types::DocumentMutation;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{CatalogueQuery, CatalogueRow};
 use tilo_agent_participant::{ConfinedReplica, Replica, ReplicaActor, Seed};
 

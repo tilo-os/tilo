@@ -17,7 +17,7 @@ use crate::common::catalogue;
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};
 use tilo_actions::OperationKind;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_agent_participant::apps::readable;
 use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed};
 use tilo_content::ContentStore;

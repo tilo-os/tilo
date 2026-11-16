@@ -467,7 +467,7 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
         .await;
 }
 
-/// The certified local door's effect edits are admitted for its caller only
+/// The certified local API's effect edits are admitted for its caller only
 /// while that caller's certificate still verifies: revoked mid-run, the
 /// running effect continues nothing, as the caller's own invoke would fail.
 #[tokio::test(flavor = "current_thread")]

@@ -1,18 +1,18 @@
 //! `tilolang-host`: the process the session starts as a tilolang host, for one workspace and author.
 //!
-//! It holds its door (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
-//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the door, its instances' windows,
+//! It holds its api (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
+//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the API, its instances' windows,
 //! its own wake and a stop (`stop`), and runs a frame of every instance when one of them has
-//! something for it. It ends when the session closes its door and its last window is gone, or
+//! something for it. It ends when the session closes its api and its last window is gone, or
 //! when it is asked to stop: both drop the instances, and every index they keep closes with them
 //! rather than being left for the next start to build anew.
 //!
-//! Every wait ends on something its owner then takes out: the door's message is received, the
+//! Every wait ends on something its owner then takes out: the API's message is received, the
 //! wake is drained ([`Wake::consume`]), the task's lines are served, a running window's input is
 //! read by its instance's frame, and an opening window is waited on only for closing. An idle
 //! host's wait does not end.
 //!
-//! Whatever ends it, the host says why on its door last ([`send_exiting`]), and on its log.
+//! Whatever ends it, the host says why on its api last ([`send_exiting`]), and on its log.
 
 use std::os::fd::AsFd as _;
 use std::sync::{Arc, OnceLock};
@@ -24,8 +24,8 @@ use tilolang_host::TilolangHost;
 use tilolang_host::stop::Stop;
 use tilolang_host::wait::{Wake, wait};
 
-/// The door, for the panic hook to say why the host ends.
-static DOOR: OnceLock<Arc<Descriptor>> = OnceLock::new();
+/// The API, for the panic hook to say why the host ends.
+static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -35,28 +35,28 @@ fn main() -> std::process::ExitCode {
         ))
         .with_writer(std::io::stderr)
         .init();
-    let Some(door) = take_door() else {
-        // No door to say it on: the session's log of the host's stderr is all there is.
-        eprintln!("tilolang-host: exiting: no door: the session starts the tilolang host");
+    let Some(api) = take_door() else {
+        // No api to say it on: the session's log of the host's stderr is all there is.
+        eprintln!("tilolang-host: exiting: no api: the session starts the tilolang host");
         return std::process::ExitCode::from(2);
     };
-    let door = Arc::new(door);
-    let _ = DOOR.set(Arc::clone(&door));
+    let api = Arc::new(api);
+    let _ = API.set(Arc::clone(&api));
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
-        if let Some(door) = DOOR.get() {
-            let _ = send_exiting(door, &format!("the host panicked: {info}"));
+        if let Some(api) = API.get() {
+            let _ = send_exiting(api, &format!("the host panicked: {info}"));
         }
     }));
-    let (exit, door) = run(door);
+    let (exit, api) = run(api);
     if exit.failed {
         tracing::error!(reason = exit.reason, "tilolang host exiting");
     } else {
         tracing::info!(reason = exit.reason, "tilolang host exiting");
     }
-    if let Some(door) = door
-        && let Err(error) = send_exiting(&door, &exit.reason)
+    if let Some(api) = api
+        && let Err(error) = send_exiting(&api, &exit.reason)
     {
         tracing::warn!(%error, "the session was not told why the host exits");
     }
@@ -82,7 +82,7 @@ impl Exit {
     }
 
     /// The end a stop asks for: the instances are dropped, and what they keep is closed with
-    /// them, as when the door closes.
+    /// them, as when the API closes.
     fn stopped() -> Self {
         Self {
             reason: "it was asked to stop, and closed what it keeps".to_owned(),
@@ -137,33 +137,33 @@ fn stop_watching() -> Option<Stop> {
     }
 }
 
-/// Run the host until it ends: why, and its door while it is still open.
-fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
+/// Run the host until it ends: why, and its api while it is still open.
+fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
     let wake = match Wake::new() {
         Ok(wake) => wake,
-        Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(door)),
+        Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(api)),
     };
     let storage = granted_storage();
     let stop = stop_watching();
     let mut host = TilolangHost::new(storage, wake.waker());
-    let mut door = Some(door);
-    // Why the door closed, when the session did not close it.
-    let mut door_failed: Option<String> = None;
+    let mut api = Some(api);
+    // Why the API closed, when the session did not close it.
+    let mut api_failed: Option<String> = None;
     loop {
         run_frames(&mut host);
         // The session stops the host once its last instance ended.
         for instance in host.take_ended() {
-            if let Some(open) = door.as_ref()
+            if let Some(open) = api.as_ref()
                 && let Err(error) = send_ended(open, instance)
             {
                 tracing::warn!(%error, instance, "the session was not told an instance ended");
             }
         }
-        if door.is_none() && host.is_empty() {
-            let exit = match door_failed {
+        if api.is_none() && host.is_empty() {
+            let exit = match api_failed {
                 Some(reason) => Exit::failed(reason),
                 None => Exit {
-                    reason: "the session closed its door and no instance runs".to_owned(),
+                    reason: "the session closed its api and no instance runs".to_owned(),
                     failed: false,
                 },
             };
@@ -174,29 +174,29 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
             i32::try_from(wait.as_millis()).unwrap_or(i32::MAX)
         });
         let ready = match wait(
-            door.as_ref().map(|door| door.as_fd()),
+            api.as_ref().map(|api| api.as_fd()),
             wake.fd(),
             stop.as_ref().map(Stop::fd),
             &host,
             timeout_ms,
         ) {
             Ok(ready) => ready,
-            Err(error) => return (Exit::failed(format!("its wait failed: {error}")), door),
+            Err(error) => return (Exit::failed(format!("its wait failed: {error}")), api),
         };
         tracing::debug!(?ready, "the host's wait ended");
         if ready.wake
             && let Err(error) = wake.consume()
         {
-            return (Exit::failed(format!("its wake failed: {error}")), door);
+            return (Exit::failed(format!("its wake failed: {error}")), api);
         }
         if ready.stop || stop.as_ref().is_some_and(Stop::asked) {
-            return (Exit::stopped(), door);
+            return (Exit::stopped(), api);
         }
         if ready.task {
             host.serve_task();
         }
-        if ready.door
-            && let Some(open) = door.as_ref()
+        if ready.api
+            && let Some(open) = api.as_ref()
         {
             match receive(open) {
                 Ok(Some(Handed::Instance(request, fds))) => {
@@ -233,17 +233,17 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         tracing::error!(task = request.task, %error, "a task did not start");
                     }
                 }
-                Ok(None) => door = None,
-                // The packet was taken: the door carries the next one.
+                Ok(None) => api = None,
+                // The packet was taken: the API carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                    tracing::error!(%error, "the door carried something unreadable");
+                    tracing::error!(%error, "the API carried something unreadable");
                 }
-                // The door itself failed: it carries nothing more, and stays ready, so it is
+                // The API itself failed: it carries nothing more, and stays ready, so it is
                 // closed here; the host ends once its instances have.
                 Err(error) => {
-                    tracing::error!(%error, "the door failed");
-                    door_failed = Some(format!("its door failed: {error}"));
-                    door = None;
+                    tracing::error!(%error, "the API failed");
+                    api_failed = Some(format!("its api failed: {error}"));
+                    api = None;
                 }
             }
         }

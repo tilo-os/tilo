@@ -37,7 +37,7 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
-use tilo_session_core::door::Doors;
+use tilo_session_core::surfaces::Surfaces;
 
 use crate::engine::Engine;
 use crate::mcp_server::{self, PeerRefusal};
@@ -187,13 +187,13 @@ pub fn owner_decision(
     }
 }
 
-/// What the session is, for the answers that read it: the doors every hosted surface's actions go
-/// through, the layout, what stands over it, the workspaces this computer holds, whether the
-/// person locked the screen, whether the lock screen's own frame is on it, and the agents seated at
-/// the person's door.
+/// What the session is, for the answers that read it: the published side every hosted surface's
+/// actions go through, the layout, what stands over it, the workspaces this computer holds, whether
+/// the person locked the screen, whether the lock screen's own frame is on it, and the agents seated
+/// at the person's API.
 #[derive(Clone, Copy)]
 pub(crate) struct Session<'a> {
-    pub(crate) doors: &'a Doors,
+    pub(crate) published: &'a Surfaces,
     pub(crate) handle: &'a DesktopHandle,
     pub(crate) overlays: &'a Overlays,
     /// Whether the overview the person sees is up: its pictures' own flag, which the chrome writes
@@ -506,7 +506,7 @@ impl Op {
 }
 
 /// Whether the socket at `gate` answers `op` : the one place the protocol's ops are divided between
-/// the doors.
+/// the APIs.
 fn served(gate: Gate, op: Op) -> bool {
     match gate {
         Gate::Dev => true,
@@ -514,8 +514,8 @@ fn served(gate: Gate, op: Op) -> bool {
     }
 }
 
-/// The answer a door gives what it does not serve.
-fn not_this_doors(gate: Gate, op: Op) -> Json {
+/// The answer an API gives what it does not serve.
+fn not_this_api(gate: Gate, op: Op) -> Json {
     let _ = gate;
     refusal(
         "not_permitted",
@@ -878,7 +878,7 @@ fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Optio
             Err(error) => refusal("parse_error", &error.to_string()),
             Ok(request) => match Op::of(&request) {
                 None => unsupported(ctx, &request),
-                Some(op) if !served(ctx.gate, op) => not_this_doors(ctx.gate, op),
+                Some(op) if !served(ctx.gate, op) => not_this_api(ctx.gate, op),
                 Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, door) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
@@ -1711,7 +1711,7 @@ fn legacy_rows(
 /// does something the app publishes, and where it stands.
 fn listed_targets(session: &Session<'_>) -> Vec<Json> {
     session
-        .doors
+        .published
         .controls()
         .into_iter()
         .map(|control| {
@@ -1750,9 +1750,9 @@ fn clicked_named(request: &Json, session: &Session<'_>) -> Json {
         }
     };
     let pressed = if let Some(identity) = identity {
-        session.doors.press_identity(identity, action)
+        session.published.press_identity(identity, action)
     } else {
-        session.doors.press_action(name, action)
+        session.published.press_action(name, action)
     };
     match pressed {
         Ok(()) => json!({"ok": {}}),

@@ -6,7 +6,7 @@
 //! ([`ResourceApp::fixture`](super::ResourceApp::fixture)), prepared before
 //! the view is built. The resource half is ordinary actions
 //! ([`ResourceApp::scenario`](super::ResourceApp::scenario)), applied through
-//! the host's door like any edit. The view half — a selection, an open
+//! the host's api like any edit. The view half — a selection, an open
 //! dialog, a scroll position, a drag in flight — belongs to the views and
 //! surfaces that own it, so the framework asks them once the actions are
 //! laid out: every [`ViewCx::on_stage`](super::ViewCx::on_stage) callback
@@ -127,7 +127,7 @@ impl Stages {
 }
 
 /// Stage `scenario` (`None` for a plain `--shots`) on a running `A`: apply
-/// its resource actions through the host's door, then let its views and
+/// its resource actions through the host's api, then let its views and
 /// surfaces stage their view state, and run the frames that settles.
 pub fn stage<A: ResourceApp>(
     harness: &mut FrameHarness,

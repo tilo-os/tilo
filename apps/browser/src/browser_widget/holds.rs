@@ -67,9 +67,9 @@ pub(crate) const TOO_MANY: &str = "browser.page.too_many_held";
 pub(crate) const HOLD_ENDED: &str = "browser.page.hold_ended";
 const MAX_SHOWN_FILE: usize = 120;
 /// What a page action answers when its run reached something that waits for the person:
-/// the code [`DoorError::ConfirmationRequired`] carries, so their allow runs it again.
+/// the code [`ApiError::ConfirmationRequired`] carries, so their allow runs it again.
 ///
-/// [`DoorError::ConfirmationRequired`]: ui::tilo_actions::DoorError::ConfirmationRequired
+/// [`ApiError::ConfirmationRequired`]: ui::tilo_actions::ApiError::ConfirmationRequired
 pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE;
 
 /// Where a hold stands with whoever may answer it.

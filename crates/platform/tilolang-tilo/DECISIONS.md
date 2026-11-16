@@ -19,16 +19,16 @@ Each entry is the closest working design to `docs/designs/app-language`.
   are native automerge scalars. An unset register (`null`) reads as absent.
 - **The runtime plans on a mirror.** The runtime expects its commits to be visible at once, but
   the workspace record belongs to the framework. `TiloStore` applies a transaction's mutations to a
-  copy of the record, queues the recorded `DynAction`, and the host commits it through the door.
+  copy of the record, queues the recorded `DynAction`, and the host commits it through the API.
   When the record's heads move, the mirror is replaced by a copy and subscribers are told. One
   transaction may be open at a time (a rollback discards the mirror's open change).
 - **Press goes through a `commit` action.** A press runs in the runtime (`ViewInstance::press`,
   whose action reference is not reachable from outside), which queues a `DynAction`; the window
   then invokes the host's `tl:host/commit(ticket)`, whose build closure encodes the queued action.
   An agent calling a published record action takes the other path: the build closure plans with the
-  runtime and the door commits what it returns. Both end in the executor, so both write the
+  runtime and the API commits what it returns. Both end in the executor, so both write the
   change's `ActionContext`.
-- **Closures reach the host through a thread-local.** The door's closures are `Send + Sync`; the
+- **Closures reach the host through a thread-local.** The API's closures are `Send + Sync`; the
   runtime is not. They hold a `HostHandle` (an id), which finds the host in a thread-local on the
   thread that built it, and answer an error from any other thread.
 - **Per-workspace roots have a fixed id** (`root-<type id>`), so two replicas that open an app for the
@@ -52,7 +52,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 ## Authority
 
 - The invoker's own verdict is `Allow` in the window: permission to change the workspace is decided
-  where the change is committed (the door refuses a viewer's `commit`). The seam is
+  where the change is committed (the API refuses a viewer's `commit`). The seam is
   `TiloAuthority::new(invoker_verdict)` for a host that wants the verdict earlier.
 - A foreign author in the chain asks (the runtime's rule); the Ask bar offers Allow, Decline and
   Always allow (trust the code that asked). The bar shows the action and who asked. A proposal
@@ -71,22 +71,22 @@ Each entry is the closest working design to `docs/designs/app-language`.
   Settling before the record converged can deliver twice, so the window settles after it synced.
   A press's own effect has no origin and is an entry of its own.
 
-## The door and who invokes
+## The API and who invokes
 
-- **An agent is a task of a person.** The host takes the door's invoker (the task's delegate, for
+- **An agent is a task of a person.** The host takes the API's invoker (the task's delegate, for
   the person) unchanged: effects read it from the framework's endpoint (`EffectEndpoint`), published
   verbs through `HostHandle::with_caller`. The runtime's principal is that delegate. What an effect
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
-- **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every door
+- **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every api
   decides: the person's standing in the workspace (the window's, from its host), bounded by an agent's
   delegation and the answers the person gave that agent in the workspace, and by each author of the
   code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
   `Subject::App`; a block's is its writer). Installed and built-in packages are trusted, an
   admitted agent's code as far as its standing goes. Without a standing the person's own part is
-  the door's to decide, as for a native window's detached dispatcher; the bounds still apply.
+  the API's to decide, as for a native window's detached dispatcher; the bounds still apply.
   What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
-  a call, decided by a person, through the Ask bar or the door's `resolve`, never by an agent.
+  a call, decided by a person, through the Ask bar or the API's `resolve`, never by an agent.
 - **Item verbs are published.** Items of collections are child resources
   (`doc/field:item`) carrying the verbs whose subject is their type, and every resource offers
   `open`, a view action search hits invoke.
@@ -165,7 +165,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **A plain toolkit window.** `run` opens `ui::App::from_factory` with a `Workbench` root, not
   the launcher: no runtime attachment, workspace, record store or identity, so a development run
   cannot reach the person's session. Each replica holds its own `AutoCommit` and commits through
-  a door in `dev.rs` that builds and applies the published action as the action door does.
+  an API in `dev.rs` that builds and applies the published action as the action api does.
 - **Peers in one window.** The toolkit runs one window per event loop, so `--peers N` shows N
   replicas side by side in one window. Replicas are forks of one workspace and exchange changes with
   automerge's merge after every frame in which a replica changed something.
@@ -181,7 +181,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
   service, with its credentials, which package code never sees. The instance polls an origin
   only while it is `due` (the service answered and woke the window, or people changed what the
   service is told), so nothing runs while nothing changed. What it writes is one change by the
-  origin (`Runtime::apply_origin`, invoker `origin:<name>`), handed to the door as every commit
+  origin (`Runtime::apply_origin`, invoker `origin:<name>`), handed to the API as every commit
   is. The outbox delivers each capability an origin `serves` to it (`RoutingSink`); `Err` keeps
   the entry queued with the reason.
 - **Today an origin runs while a window of its package is open**, in that window's process. A

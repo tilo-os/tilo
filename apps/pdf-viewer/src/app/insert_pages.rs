@@ -174,7 +174,7 @@ mod tests {
         path: &std::path::Path,
         at: Option<usize>,
         pages: Option<Vec<usize>>,
-    ) -> Result<serde_json::Value, ui::tilo_actions::DoorError> {
+    ) -> Result<serde_json::Value, ui::tilo_actions::ApiError> {
         let effect = PdfEffect::InsertPages {
             path: ui::tilo_resource::AbsolutePath::new(path).expect("an absolute path"),
             at,

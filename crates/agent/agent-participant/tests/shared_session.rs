@@ -40,7 +40,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, RemoteActionTarget,

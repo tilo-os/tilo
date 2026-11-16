@@ -626,14 +626,14 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// read back from, so a device paired on another of their devices, or a
 /// browser certified in its own tab, is listed here too. `engine` is the
 /// workspaces whose hosts answer it.
-pub(crate) struct BrokerDoor {
+pub(crate) struct BrokerApi {
     pub(crate) layout: Arc<crate::plane::LayoutAuthority>,
     pub(crate) admin: &'static IdentityAdmin,
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
 
-impl tilo_broker_core::steps::HostStepServices for BrokerDoor {
+impl tilo_broker_core::steps::HostStepServices for BrokerApi {
     fn provider(&self) -> &'static str {
         tilo_actions::remote::identity_admin::PROVIDER
     }

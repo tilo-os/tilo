@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use media::audio::{AudioDevice, AudioGraph, AudioStream, GraphControl};
 use serde_json::{Map, Value, json};
-use tilo_actions::DoorError;
+use tilo_actions::ApiError;
 use tilo_service::{Service, Started};
 
 use super::super::SOUND;
@@ -212,7 +212,7 @@ tilo_test_env::scenario! {
 
         let refused = service.invoke(SOUND, "set-volume", &arguments(json!({"level": 3})));
         assert!(
-            matches!(refused, Err(DoorError::InvalidArguments(_))),
+            matches!(refused, Err(ApiError::InvalidArguments(_))),
             "{refused:?}"
         );
         assert_eq!(
@@ -307,7 +307,7 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     refused,
-                    Err(DoorError::Unavailable { .. } | DoorError::InvalidArguments(_))
+                    Err(ApiError::Unavailable { .. } | ApiError::InvalidArguments(_))
                 ),
                 "{action}: {refused:?}"
             );
@@ -398,7 +398,7 @@ tilo_test_env::scenario! {
 
         let out_of_range = service.invoke(SOUND, "set-input-volume", &arguments(json!({"level": 3})));
         assert!(
-            matches!(out_of_range, Err(DoorError::InvalidArguments(_))),
+            matches!(out_of_range, Err(ApiError::InvalidArguments(_))),
             "{out_of_range:?}"
         );
     }

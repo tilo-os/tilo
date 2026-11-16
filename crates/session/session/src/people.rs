@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use settings_store::widgets::{PEOPLE_OVERLAY, PeopleOverlayPrefs};
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::edges::{self, DockEdge, EdgeDrag, Item};
 use tilo_desktop::here::Screen;
@@ -25,7 +25,7 @@ use tilo_desktop::profile_card::{
 use tilo_desktop_model::Layout;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, LayoutEffect};
 use tilo_desktop_surface::{DesktopHandle, HostAction};
-use tilo_session_core::door::{Look, Published};
+use tilo_session_core::surfaces::{Look, Published};
 use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::{Affine, Point, Rect, Size, Vec2};
 use ui::motion::{Appear, Direction, MotionValue, Presence, Snap};
@@ -449,8 +449,8 @@ impl Published for People {
         address: &ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
-        Err(DoorError::Unknown(address.clone()))
+    ) -> Result<ResourceOperationStart, ApiError> {
+        Err(ApiError::Unknown(address.clone()))
     }
 
     fn revision(&self) -> Option<u64> {

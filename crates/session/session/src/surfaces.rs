@@ -5,7 +5,7 @@
 //! its environment. What the app draws reaches the compositor as a client's buffer, shown and given
 //! input like any other client's; nothing of the app runs in the session.
 //! A surface is still an app that does things, so it is also handed one end of an actions socket:
-//! on it the session answers the actions it publishes ([`ActionDoor`]) and asks the surface to run
+//! on it the session answers the actions it publishes ([`ActionApi`]) and asks the surface to run
 //! one of its own, both as [`RemoteActionMessage`]s of the protocol every app speaks to its host.
 //! Those are the only messages: what a surface shows it reads from the resources it holds, and what
 //! was done is said in actions.
@@ -367,11 +367,11 @@ const ANSWERED_KEPT: usize = 256;
 const LISTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The provider surface apps address the desktop's actions under.
-pub const SESSION_PROVIDER: &str = tilo_mcp::session_door::SESSION_PROVIDER;
+pub const SESSION_PROVIDER: &str = tilo_mcp::session_api::SESSION_PROVIDER;
 
 /// What the session answers its surface apps' actions from: the published side every caller of the
 /// desktop reaches, so a surface invokes what a person's palette or an agent invokes.
-pub trait ActionDoor {
+pub trait ActionApi {
     /// What the desktop publishes now: its resources, each with its actions.
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec>;
 
@@ -383,7 +383,7 @@ pub trait ActionDoor {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, tilo_actions::DoorError>;
+    ) -> Result<ResourceOperationStart, tilo_actions::ApiError>;
 }
 
 /// Why a surface app did not start.
@@ -952,7 +952,7 @@ impl Surfaces {
 
     /// Answer what the surface apps asked since the last turn, and take in how the invocations they
     /// were asked to run stand.
-    pub fn serve(&mut self, door: &mut dyn ActionDoor) {
+    pub fn serve(&mut self, api: &mut dyn ActionApi) {
         for app in &mut self.running {
             // A surface publishes its actions once it has mounted: until it has listed them, the
             // session asks again.
@@ -1001,7 +1001,7 @@ impl Surfaces {
                             }));
                     }
                     request => {
-                        if let Some(answer) = answer(door, &mut app.actions.answered, request) {
+                        if let Some(answer) = answer(api, &mut app.actions.answered, request) {
                             app.actions.send(answer);
                         }
                     }
@@ -1099,7 +1099,7 @@ impl Drop for Surfaces {
 /// The session's answer to one message from a surface app: `None` for a message no host answers (an
 /// answer arriving at the host, and anything the desktop does not offer).
 fn answer(
-    door: &mut dyn ActionDoor,
+    api: &mut dyn ActionApi,
     answered: &mut VecDeque<(InvocationId, InvocationUpdate)>,
     message: RemoteActionMessage,
 ) -> Option<RemoteActionMessage> {
@@ -1108,9 +1108,9 @@ fn answer(
             correlation,
             ref query,
         } => {
-            let resources = door.resources();
+            let resources = api.resources();
             let revision = revision(&resources);
-            let rows: Vec<CatalogueRow> = tilo_actions::door::survey_placed(&resources)
+            let rows: Vec<CatalogueRow> = tilo_actions::api::survey_placed(&resources)
                 .into_iter()
                 .map(|placed| {
                     CatalogueRow::for_placed_action(SESSION_PROVIDER, SESSION_PROVIDER, placed)
@@ -1128,7 +1128,7 @@ fn answer(
                     InvokeArgument::Json(arguments) => arguments,
                     InvokeArgument::Text(_) | InvokeArgument::None => serde_json::Map::default(),
                 };
-                match door.invoke(&request.target.address, &arguments) {
+                match api.invoke(&request.target.address, &arguments) {
                     Ok(ResourceOperationStart::Completed(output)) => {
                         ReceiptStatus::Completed { output }
                     }
@@ -1175,7 +1175,7 @@ fn answer(
 fn revision(resources: &[tilo_actions::ResourceSpec]) -> String {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for descriptor in tilo_actions::door::survey(resources) {
+    for descriptor in tilo_actions::api::survey(resources) {
         descriptor.address.resource.hash(&mut hasher);
         descriptor.address.action.hash(&mut hasher);
     }
@@ -1222,21 +1222,21 @@ pub(crate) fn outcome(
     }
 }
 
-/// A door's refusal as the action protocol says it: the door's own code, so a caller tells "no
-/// such action" apart from "not now" and "not shaped like that" without reading prose. A door that
+/// A refusal as the action protocol says it: the API's own code, so a caller tells "no
+/// such action" apart from "not now" and "not shaped like that" without reading prose. An API that
 /// refused for a reason of its own says it in words, its code leading them.
-pub(crate) fn refusal(error: &tilo_actions::DoorError) -> ActionHostError {
-    use tilo_actions::DoorError;
+pub(crate) fn refusal(error: &tilo_actions::ApiError) -> ActionHostError {
+    use tilo_actions::ApiError;
     match error {
-        DoorError::Unknown(_) | DoorError::UnregisteredType(_) => ActionHostError::UnknownAction,
-        DoorError::MissingArgument(_)
-        | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_)
-        | DoorError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest {
+        ApiError::Unknown(_) | ApiError::UnregisteredType(_) => ActionHostError::UnknownAction,
+        ApiError::MissingArgument(_)
+        | ApiError::UnexpectedArgument(_)
+        | ApiError::InvalidArguments(_)
+        | ApiError::ArgumentOutOfRange { .. } => ActionHostError::InvalidRequest {
             reason: error.to_string(),
         },
-        DoorError::ConfirmationRequired => ActionHostError::confirmation_required(),
-        DoorError::Unavailable { .. } | DoorError::Failed(_) => ActionHostError::Refused {
+        ApiError::ConfirmationRequired => ActionHostError::confirmation_required(),
+        ApiError::Unavailable { .. } | ApiError::Failed(_) => ActionHostError::Refused {
             reason: error.to_string(),
         },
     }
@@ -1375,7 +1375,7 @@ mod tests {
                 payload: Vec::new(),
             },
         ));
-        let descriptor = tilo_actions::door::survey(&[resource])
+        let descriptor = tilo_actions::api::survey(&[resource])
             .into_iter()
             .next()
             .expect("an action");

@@ -554,7 +554,7 @@ decorator_trait! {
         )]
         fn visit_resource_owners(
             request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-        ) -> Result<(), tilo_actions::DoorError>;
+        ) -> Result<(), tilo_actions::ApiError>;
     }
 
     mut {

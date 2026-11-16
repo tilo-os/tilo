@@ -4,7 +4,7 @@
 
 use os_actions::battery::{BATTERY, BATTERY_KIND};
 use serde_json::{Map, Value};
-use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, decode, offer, reading};
 
@@ -167,14 +167,14 @@ impl Service for SessionPower {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         if resource == BATTERY {
             let published = self.resources();
             let action = decode::<BatteryAction>(&published, resource, action, arguments)?;
             match action {
                 BatteryAction::SetChargeLimit { percent } => {
                     if self.link.battery().charge_limit.is_none() {
-                        return Err(DoorError::Unavailable {
+                        return Err(ApiError::Unavailable {
                             code: "no-charge-limit".into(),
                             reason: "this battery's driver offers no charge limit".into(),
                         });
@@ -182,11 +182,11 @@ impl Service for SessionPower {
                     let limit = self
                         .link
                         .set_charge_limit(percent)
-                        .map_err(DoorError::InvalidArguments)?;
+                        .map_err(ApiError::InvalidArguments)?;
                     return Ok(Started::Done(ActionOutput {
                         value: Some(
                             serde_json::to_value(&limit)
-                                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?,
+                                .map_err(|error| ApiError::InvalidArguments(error.to_string()))?,
                         ),
                         resources: Vec::new(),
                     }));
@@ -194,7 +194,7 @@ impl Service for SessionPower {
             }
         }
         if resource != SLEEP {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         }
         let published = self.resources();
         let action = decode::<SleepAction>(&published, resource, action, arguments)?;
@@ -202,7 +202,7 @@ impl Service for SessionPower {
             SleepAction::KeepAwake { reason } => {
                 let reason = reason.trim();
                 if reason.is_empty() {
-                    return Err(DoorError::InvalidArguments(
+                    return Err(ApiError::InvalidArguments(
                         "a hold says why the machine must stay awake".into(),
                     ));
                 }
@@ -214,13 +214,10 @@ impl Service for SessionPower {
             }
             SleepAction::Release { ref ticket } => {
                 let ticket = ticket.trim().parse::<u64>().map_err(|_| {
-                    DoorError::InvalidArguments(format!("{ticket} is no hold of this session"))
+                    ApiError::InvalidArguments(format!("{ticket} is no hold of this session"))
                 })?;
                 if !self.link.release(ticket) {
-                    return Err(DoorError::Unknown(ActionAddress::new(
-                        resource,
-                        action.id(),
-                    )));
+                    return Err(ApiError::Unknown(ActionAddress::new(resource, action.id())));
                 }
                 Ok(Started::Done(ActionOutput::default()))
             }
@@ -239,7 +236,7 @@ impl Service for SessionPower {
             SleepAction::SetProfile { profile } => {
                 let offered = self.link.sleep().profiles;
                 if !offered.contains(&profile) {
-                    return Err(DoorError::Unavailable {
+                    return Err(ApiError::Unavailable {
                         code: "no-such-profile".into(),
                         reason: format!("this machine offers no {profile} power profile"),
                     });

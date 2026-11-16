@@ -36,7 +36,7 @@ fn row_for(effect: &ProviderEffect) -> String {
 fn invoke(
     app: &mut TestApp<ProviderSettingsApp>,
     effect: ProviderEffect,
-) -> Result<(), ui::tilo_actions::DoorError> {
+) -> Result<(), ui::tilo_actions::ApiError> {
     let effect = host_effect(effect);
     let row = row_for(&effect);
     let mut arguments = effect.arguments();

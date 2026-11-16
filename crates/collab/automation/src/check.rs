@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::Value;
 use tilo_actions::ActionKey;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::catalog::{ActionCatalog, ResourceTarget};

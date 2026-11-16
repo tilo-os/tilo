@@ -78,7 +78,7 @@ impl Replica {
     }
 
     /// As [`Self::new`], deciding what the runtime invokes by `standing`, the person's standing
-    /// in the workspace; without one, the door decides the person's own part.
+    /// in the workspace; without one, the API decides the person's own part.
     pub fn standing(
         name: &str,
         doc: AutoCommit,

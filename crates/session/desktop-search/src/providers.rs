@@ -437,7 +437,7 @@ impl PublishedActions {
         Self {
             app: app.to_owned(),
             workspace: workspace.to_owned(),
-            actions: tilo_actions::door::survey(resources),
+            actions: tilo_actions::api::survey(resources),
             types: types_of(resources),
         }
     }

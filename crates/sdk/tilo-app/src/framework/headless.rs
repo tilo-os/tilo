@@ -1171,15 +1171,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// Invoke a declared action through the host door, exactly as a control,
+    /// Invoke a declared action through the host api, exactly as a control,
     /// the palette, an agent or a script does.
-    pub fn invoke(&mut self, invoke: Invoke<A::Resource>) -> Result<(), tilo_actions::DoorError> {
+    pub fn invoke(&mut self, invoke: Invoke<A::Resource>) -> Result<(), tilo_actions::ApiError> {
         self.invoke_as(invoke, false)
     }
 
     /// Invoke an action of the resource nested in this one at `resource` —
     /// a child resource a view edits through [`Dispatcher::child`](super::Dispatcher::child)
-    /// — through the host door, as the palette, an agent or a script
+    /// — through the host api, as the palette, an agent or a script
     /// addresses it.
     ///
     /// # Errors
@@ -1188,9 +1188,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         resource: &str,
         invoke: Invoke<C>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+            return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
@@ -1211,7 +1211,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn invoke_confirmed(
         &mut self,
         invoke: Invoke<A::Resource>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         self.invoke_as(invoke, true)
     }
 
@@ -1224,10 +1224,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// running app's current permissions and resource state again.
     pub fn actions(
         &mut self,
-    ) -> Result<Vec<tilo_actions::ActionDescriptor>, tilo_actions::DoorError> {
+    ) -> Result<Vec<tilo_actions::ActionDescriptor>, tilo_actions::ApiError> {
         let instance = self.instance;
         let resources = self.harness().bound_resources_of(Some(instance), None)?;
-        let mut actions = tilo_actions::door::survey(&resources);
+        let mut actions = tilo_actions::api::survey(&resources);
         actions.sort_by(|left, right| {
             (&left.address.resource, &left.address.action)
                 .cmp(&(&right.address.resource, &right.address.action))
@@ -1244,7 +1244,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut resources = self.harness().resources();
         // Another provider publishes what it runs, not this window.
         resources.iter_mut().for_each(published_here);
-        let mut rows: Vec<serde_json::Value> = tilo_actions::door::survey(&resources)
+        let mut rows: Vec<serde_json::Value> = tilo_actions::api::survey(&resources)
             .into_iter()
             .map(|descriptor| {
                 serde_json::json!({
@@ -1263,7 +1263,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Run a view or effect operation (`look`, `export`) through the host
-    /// door, as an agent or script does, and answer with what it produced;
+    /// api, as an agent or script does, and answer with what it produced;
     /// `None` while it is still running.
     ///
     /// # Errors
@@ -1271,9 +1271,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn operate(
         &mut self,
         invoke: Invoke<A::Resource>,
-    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::ApiError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+            return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
@@ -1286,14 +1286,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(started.completed())
     }
 
-    /// Invoke one of the app's effects through the host door, as a button,
+    /// Invoke one of the app's effects through the host api, as a button,
     /// the palette or an agent does, and wait for its answer: what it
     /// reported at once, or the result of the job it started. Progress the
     /// job reported is in [`FrameHarness::job_updates`].
     pub fn effect<E: Effect>(
         &mut self,
         effect: &E,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_as(
             <A::Resource as Resource>::KIND,
             effect.id(),
@@ -1314,7 +1314,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         actor: &str,
         effect: &E,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_invoked(
             Some(tilo_actions::ActionInvoker::person(actor)),
             <A::Resource as Resource>::KIND,
@@ -1337,9 +1337,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         let serde_json::Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -1354,7 +1354,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn effect_confirmed<E: Effect>(
         &mut self,
         effect: &E,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_as(
             <A::Resource as Resource>::KIND,
             effect.id(),
@@ -1373,7 +1373,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         row: &str,
         effect: &E,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_as(row, effect.id(), &serde_json::Map::new(), false)
     }
 
@@ -1385,11 +1385,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         row: &str,
         effect: &E,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_as(row, effect.id(), &serde_json::Map::new(), true)
     }
 
-    /// Start `effect` through the host door without waiting for it, as a
+    /// Start `effect` through the host api without waiting for it, as a
     /// caller that may cancel it does, confirmed: the invocation its job
     /// runs under.
     ///
@@ -1399,7 +1399,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn start_effect<E: Effect>(
         &mut self,
         effect: &E,
-    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::ApiError> {
         self.start_effect_at(
             <A::Resource as Resource>::KIND,
             effect.id(),
@@ -1416,7 +1416,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         row: &str,
         effect: &E,
-    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::ApiError> {
         self.start_effect_at(row, effect.id(), &serde_json::Map::new())
     }
 
@@ -1425,7 +1425,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::ApiError> {
         let address = BoundActionAddress {
             instance_id: self.instance,
             address: tilo_actions::ActionAddress::new(resource, id),
@@ -1435,7 +1435,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .start_bound_job_for(None, &address, arguments, true)?;
         self.last_effect = Some(invocation);
         if started.completed().is_some() {
-            return Err(tilo_actions::DoorError::Failed(format!(
+            return Err(tilo_actions::ApiError::Failed(format!(
                 "`{id}` answered at once; it started no job"
             )));
         }
@@ -1467,7 +1467,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         self.effect_invoked(None, resource, id, arguments, confirmed)
     }
 
@@ -1478,7 +1478,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         let address = BoundActionAddress {
             instance_id: self.instance,
             address: tilo_actions::ActionAddress::new(resource, id),
@@ -1497,7 +1497,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 .validate(&output)
                 .map(|()| output)
                 .map_err(|error| {
-                    tilo_actions::DoorError::Failed(format!(
+                    tilo_actions::ApiError::Failed(format!(
                         "`{id}` answered outside the result it declares: {error}"
                     ))
                 }),
@@ -1525,10 +1525,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
         match finished(harness) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => within(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
-                Err(tilo_actions::DoorError::Failed(error.message))
+                Err(tilo_actions::ApiError::Failed(error.message))
             }
-            Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
-            None => Err(tilo_actions::DoorError::Failed(format!(
+            Some(_) => Err(tilo_actions::ApiError::Failed("cancelled".into())),
+            None => Err(tilo_actions::ApiError::Failed(format!(
                 "`{id}` did not finish"
             ))),
         }
@@ -1576,7 +1576,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The last action refused here ([`super::Dispatcher::refused`]): by
-    /// the door, or by the workspace after this window applied it.
+    /// the api, or by the workspace after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.dispatch.refused.get())
@@ -1695,7 +1695,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_within(None, id, arguments)
     }
 
@@ -1709,7 +1709,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         run: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         let ambient = tilo_actions::ActionContext::default().with_group(
             run,
             run,
@@ -1729,7 +1729,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_at(None, resource, id, arguments, false)
     }
 
@@ -1743,9 +1743,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
         let serde_json::Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -1762,7 +1762,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::ApiError> {
         self.call_output_at(None, resource, id, arguments, false)
     }
 
@@ -1797,7 +1797,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_confirmed_on(<A::Resource as Resource>::KIND, id, arguments)
     }
 
@@ -1813,7 +1813,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_at(None, resource, id, arguments, true)
     }
 
@@ -1822,7 +1822,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         ambient: Option<&tilo_actions::ActionContext>,
         id: &str,
         arguments: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_at(
             ambient,
             <A::Resource as Resource>::KIND,
@@ -1839,7 +1839,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
         confirmed: bool,
-    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+    ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
         self.call_output_at(ambient, resource, id, arguments, confirmed)
             .map(|output| output.and_then(|output| output.value))
     }
@@ -1851,9 +1851,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
         confirmed: bool,
-    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::ApiError> {
         let serde_json::Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -1880,9 +1880,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         invoke: Invoke<A::Resource>,
         confirmed: bool,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+            return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
@@ -2586,6 +2586,6 @@ fn published_here(resource: &mut tilo_actions::ResourceSpec) {
     resource.children.iter_mut().for_each(published_here);
 }
 
-// Retained results come from the real framework semantic door.
+// Retained results come from the real framework semantic api.
 #[cfg(test)]
 mod results_tests;

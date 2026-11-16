@@ -46,10 +46,10 @@ pub trait HostStepServices: Send + Sync {
     fn descriptors(&self) -> Vec<ActionDescriptor>;
     /// Every step as the row it stands in: the resource of the level above it, and whether its
     /// own resource holds rows below it. By default every step is a top-level row.
-    fn rows(&self) -> Vec<tilo_actions::door::PlacedAction> {
+    fn rows(&self) -> Vec<tilo_actions::api::PlacedAction> {
         self.descriptors()
             .into_iter()
-            .map(|action| tilo_actions::door::PlacedAction {
+            .map(|action| tilo_actions::api::PlacedAction {
                 parent: String::new(),
                 has_children: false,
                 action,

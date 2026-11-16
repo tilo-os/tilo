@@ -13,7 +13,7 @@
 //! through `govern`, held to the workspace's policy.
 
 use tilo_action_policy::Change;
-use tilo_actions::door::ActionAddress;
+use tilo_actions::api::ActionAddress;
 use tilo_actions::entry::Did;
 use tilo_agent_participant::Replica;
 use tilo_moderation::{

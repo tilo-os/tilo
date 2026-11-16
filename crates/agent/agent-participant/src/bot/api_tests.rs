@@ -39,7 +39,7 @@ fn route(app: &str, record: &str) -> DocumentRoute {
     }
 }
 
-impl DoorParticipant for FakeParticipant {
+impl ApiParticipant for FakeParticipant {
     fn workspace(&self) -> &str {
         WORKSPACE
     }
@@ -67,7 +67,7 @@ impl DoorParticipant for FakeParticipant {
         invoker: &ActionInvoker,
         context: &ActionContext,
         _confirmed: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoked
             .lock()
             .unwrap()
@@ -137,11 +137,11 @@ impl Performer for Scripted {
     }
 }
 
-fn door(
+fn api(
     fake: FakeParticipant,
     results: Vec<Result<Value, PerformError>>,
-) -> BotDoor<FakeParticipant> {
-    BotDoor::new(
+) -> BotApi<FakeParticipant> {
+    BotApi::new(
         Arc::new(Mutex::new(fake)),
         "b1".into(),
         "ada".into(),
@@ -199,25 +199,25 @@ fn block<T>(pending: Pending<T>) -> T {
         .poll(&mut Context::from_waker(Waker::noop()))
     {
         Poll::Ready(Some(value)) => value,
-        _ => panic!("the door answers at once"),
+        _ => panic!("the API answers at once"),
     }
 }
 
 #[test]
 fn a_caller_that_is_not_this_bot_is_refused() {
-    let door = door(FakeParticipant::default(), vec![]);
+    let api = api(FakeParticipant::default(), vec![]);
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
-        block(door.invoke(&person, post())),
+        block(api.invoke(&person, post())),
         Err(ActionHostError::NotPermitted)
     ));
     let other = Caller::bot("b2", [1; 32], [3; 32]).in_workspace(WORKSPACE);
     assert!(matches!(
-        block(door.invoke(&other, post())),
+        block(api.invoke(&other, post())),
         Err(ActionHostError::NotPermitted)
     ));
     assert!(matches!(
-        block(door.query(&other, CatalogueQuery::default())),
+        block(api.query(&other, CatalogueQuery::default())),
         Err(ActionHostError::NotPermitted)
     ));
 }
@@ -226,13 +226,13 @@ fn a_caller_that_is_not_this_bot_is_refused() {
 fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
     let fake = FakeParticipant::default();
     let invoked = fake.invoked.clone();
-    let door = door(fake, vec![]);
-    door.set_cause(Some(Cause {
+    let api = api(fake, vec![]);
+    api.set_cause(Some(Cause {
         installation: "b1".into(),
         event: "e".into(),
         depth: 2,
     }));
-    block(door.invoke(&bot(), post())).unwrap();
+    block(api.invoke(&bot(), post())).unwrap();
     let (by, context, _) = invoked.lock().unwrap().last().cloned().unwrap();
     assert_eq!(by.key(), "bot:b1");
     assert!(by.acting.is_bot());
@@ -249,9 +249,9 @@ fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
 
 #[test]
 fn a_record_the_bot_does_not_hold_is_unknown() {
-    let door = door(FakeParticipant::default(), vec![]);
+    let api = api(FakeParticipant::default(), vec![]);
     assert!(matches!(
-        block(door.invoke(&bot(), request("so.tilo.chat", "other", "post"))),
+        block(api.invoke(&bot(), request("so.tilo.chat", "other", "post"))),
         Err(ActionHostError::UnknownAction)
     ));
 }
@@ -265,12 +265,12 @@ fn a_step_already_in_history_is_answered_not_repeated() {
         step_context().with_invoker(ActionInvoker::bot("b1")),
     ));
     let invoked = fake.invoked.clone();
-    let door = door(fake, vec![]);
+    let api = api(fake, vec![]);
     assert!(
-        door.observe(&bot(), &request.invocation).is_none(),
-        "a restarted door has not seen the invocation"
+        api.observe(&bot(), &request.invocation).is_none(),
+        "a restarted api has not seen the invocation"
     );
-    let receipt = block(door.invoke(&bot(), request)).unwrap();
+    let receipt = block(api.invoke(&bot(), request)).unwrap();
     assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
     assert!(invoked.lock().unwrap().is_empty(), "nothing ran twice");
 }
@@ -279,13 +279,13 @@ fn a_step_already_in_history_is_answered_not_repeated() {
 fn an_outside_step_answers_the_connectors_result_and_settles_its_entry() {
     let fake = FakeParticipant::default();
     let outbox = fake.outbox.clone();
-    let door = door(
+    let api = api(
         fake,
         vec![Ok(json!({"result": "sent", "message_id": "d1"}))],
     );
     let request = send();
     let id = request.invocation;
-    let receipt = block(door.invoke(&bot(), request)).unwrap();
+    let receipt = block(api.invoke(&bot(), request)).unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("{receipt:?}")
     };
@@ -294,7 +294,7 @@ fn an_outside_step_answers_the_connectors_result_and_settles_its_entry() {
         outbox.lock().unwrap()[0].settled,
         Some(json!({"state": "done", "result": {"result": "sent", "message_id": "d1"}}))
     );
-    let observed = door.observe(&bot(), &id).unwrap().receipt();
+    let observed = api.observe(&bot(), &id).unwrap().receipt();
     assert!(matches!(observed.status, ReceiptStatus::Completed { .. }));
 }
 
@@ -302,7 +302,7 @@ fn an_outside_step_answers_the_connectors_result_and_settles_its_entry() {
 fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
     let fake = FakeParticipant::default();
     let outbox = fake.outbox.clone();
-    let door = door(
+    let api = api(
         fake,
         vec![
             Err(PerformError::Unavailable("down".into())),
@@ -310,11 +310,11 @@ fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
         ],
     );
     assert!(matches!(
-        block(door.invoke(&bot(), send())),
+        block(api.invoke(&bot(), send())),
         Err(ActionHostError::Unavailable { .. })
     ));
     assert!(outbox.lock().unwrap()[0].settled.is_none());
-    let refused = block(door.invoke(&bot(), send())).unwrap();
+    let refused = block(api.invoke(&bot(), send())).unwrap();
     assert!(matches!(refused.status, ReceiptStatus::Failed { .. }));
     // In the settled form the record reads, whatever its results are.
     let settled = outbox.lock().unwrap()[1].settled.clone().unwrap();
@@ -335,7 +335,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
     let history = fake.history.clone();
     let queued_in_history = fake.queued_in_history.clone();
     let invoked = fake.invoked.clone();
-    let door = door(
+    let api = api(
         fake,
         vec![
             Err(PerformError::Unavailable("the file is not here yet".into())),
@@ -343,7 +343,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
         ],
     );
     assert!(matches!(
-        block(door.invoke(&bot(), send())),
+        block(api.invoke(&bot(), send())),
         Err(ActionHostError::Unavailable { .. })
     ));
     // A send names no item: the entry is found by what its change queued.
@@ -352,7 +352,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
         step_context().with_invoker(ActionInvoker::bot("b1")),
     ));
     queued_in_history.lock().unwrap().push("q1".into());
-    let receipt = block(door.invoke(&bot(), send())).unwrap();
+    let receipt = block(api.invoke(&bot(), send())).unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
         panic!("{receipt:?}")
     };
@@ -370,7 +370,7 @@ fn a_retried_step_hands_over_the_entry_it_queued_before() {
 }
 
 #[test]
-fn a_bot_reads_the_records_it_holds_through_the_record_door() {
+fn a_bot_reads_the_records_it_holds_through_the_record_api() {
     use automerge::transaction::Transactable as _;
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "title", "Plan").unwrap();
@@ -378,8 +378,8 @@ fn a_bot_reads_the_records_it_holds_through_the_record_door() {
         records: std::collections::BTreeMap::from([("rec-1".to_owned(), doc.save())]),
         ..FakeParticipant::default()
     };
-    let door = door(fake, vec![]);
-    let reads = door.record_reads().unwrap();
+    let api = api(fake, vec![]);
+    let reads = api.record_reads().unwrap();
     let ask = |record: &str| tilo_actions::remote::RecordAsk {
         address: RecordAddress {
             app: "so.tilo.notes".into(),

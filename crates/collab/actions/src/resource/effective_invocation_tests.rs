@@ -24,7 +24,7 @@ tilo_test_env::scenario! {
         assert_eq!(spec.build_json(&serde_json::Map::new()).unwrap(), original);
         let resource = ResourceSpec::new("probe", "probe", "Probe").with_action(spec);
         assert_eq!(
-            crate::door::encode(
+            crate::api::encode(
                 &[resource],
                 &crate::ActionAddress::new("probe", "run"),
                 None
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
         assert_eq!(cloned.fixed_invocation_encoding(), Some(&original));
         let resource = ResourceSpec::new("probe", "probe", "Probe").with_action(cloned);
         assert_eq!(
-            crate::door::encode(
+            crate::api::encode(
                 &[resource],
                 &crate::ActionAddress::new("probe", "run"),
                 None
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
         );
         let resource = ResourceSpec::new("probe", "probe", "Probe").with_action(spec.clone());
         assert_eq!(
-            crate::door::encode(
+            crate::api::encode(
                 &[resource],
                 &crate::ActionAddress::new("probe", "run"),
                 None

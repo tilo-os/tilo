@@ -109,7 +109,7 @@ impl RiskLevel {
 /// [`ActionContract::tags`] entry of an action any member of a workspace may ask
 /// the workspace's host to run for themselves on a record of the workspace (linking
 /// their own account elsewhere). The host runs it as that member, under
-/// their own standing, so the action's door and its own checks decide what
+/// their own standing, so the action's API and its own checks decide what
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 
@@ -277,7 +277,7 @@ pub const COMPENSATED_UNDO_TAG: &str = "undo:compensated";
 /// [`ActionContract::tags`] entry of an action whose document change Undo
 /// reverts but which also loses something Undo cannot bring back (an
 /// account's secret every device forgets): it cannot be taken back, so a
-/// destructive one is confirmed through every door.
+/// destructive one is confirmed through every API.
 pub const IRREVERSIBLE_TAG: &str = "undo:irreversible";
 
 /// Contract tag on the declaration of a housekeeping verb: a change about the
@@ -319,7 +319,7 @@ pub fn resource_node(
 /// The node of the action `action` on the resource `resource` (of kind
 /// `resource_kind`) the app `app` publishes, below `base` (a workspace, or the
 /// root for a path relative to one), and below the one `field` it writes if
-/// any: where every door decides it.
+/// any: where every API decides it.
 #[must_use]
 pub fn action_node(
     base: &tilo_action_policy::TreePath,
@@ -594,7 +594,7 @@ pub struct ActionContract {
     /// What the action is able to do: read, change only the document, or
     /// reach outside it. Whether Undo takes it back and whether it asks
     /// first follow from it. What a grant must allow is its
-    /// [`need`](Self::need), which every door decides with the action's
+    /// [`need`](Self::need), which every API decides with the action's
     /// place in the published tree: the kind, unless the action's scope
     /// reaches nothing a workspace governs ([`Self::scoped`]).
     #[serde(default = "undoable")]

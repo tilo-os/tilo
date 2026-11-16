@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
     // A submit is answered with the words it caught, never with what the field shows when the answer
     // runs: the shell collects a press and answers it a step later, and an entry has let go of its
     // words by then. Reading the field back at the answer would send an empty message — the words
-    // the person typed are lost between the press and the door.
+    // the person typed are lost between the press and the API.
     //
     // Marked by `insert_at_cursor`, whose rows before the fix never reached the change verb and the
     // submit's answer read an emptied field: this test fails on both counts without the fix.

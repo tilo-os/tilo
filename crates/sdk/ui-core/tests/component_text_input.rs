@@ -340,7 +340,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
         };
         frame.relayout();
         let address =
-            tilo_actions::door::survey(&frame.published_bound_resources_of(Some(12)).unwrap())
+            tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap())
                 .remove(0)
                 .address;
         let raw = frame.targets()["locus-button-0"];
@@ -382,7 +382,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     let mut frame = FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
     frame.relayout();
     let resources = frame.published_bound_resources_of(Some(12)).unwrap();
-    let address = tilo_actions::door::survey(&resources)
+    let address = tilo_actions::api::survey(&resources)
         .into_iter()
         .find(|d| d.address.action == "edit")
         .unwrap()
@@ -487,7 +487,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
             FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
         frame.relayout();
         let address =
-            tilo_actions::door::survey(&frame.published_bound_resources_of(Some(12)).unwrap())
+            tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap())
                 .remove(0)
                 .address;
         let rect = frame.published_action_locus(12, &app, checkout.id.as_str(), &address);
@@ -619,7 +619,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
     }
     let mut frame = FrameHarness::new(tilo_ui::State::new(), Box::new(column), (800, 600));
     let addresses =
-        tilo_actions::door::survey(&frame.published_bound_resources_of(Some(12)).unwrap());
+        tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap());
     assert_eq!(addresses.len(), 2);
     assert_ne!(addresses[0].address.resource, addresses[1].address.resource);
     let invoke = |frame: &mut FrameHarness, address: &tilo_actions::ActionAddress| {

@@ -24,7 +24,7 @@ use std::time::Duration;
 use crate::common::publisher;
 use futures_util::FutureExt as _;
 use serde_json::{Map, Value, json};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
 use tilo_network_secret_agent::questions::{
     CannotJoinDetails, FieldDetails, FieldRule, Refusal, SecretsDetails, SimDetails, SimUnlockStep,
@@ -834,7 +834,7 @@ impl Service for Allowances {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let Consent::Forget = decode::<Consent>(&self.resources(), resource, action, arguments)?;
         self.kept
             .lock()

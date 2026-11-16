@@ -1421,7 +1421,7 @@ impl tilo_session::AppActions for Apps {
         &self,
         target: tilo_actions::remote::RemoteActionTarget,
         _: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         self.invoked.borrow_mut().push(target);
         Ok(())
     }
@@ -2430,8 +2430,8 @@ impl tilo_session::Service for Device {
         _resource: &str,
         _action: &str,
         _arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
-        Err(tilo_actions::DoorError::Unavailable {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
+        Err(tilo_actions::ApiError::Unavailable {
             code: "test".to_owned(),
             reason: "this device takes no actions: its readings are the test's".to_owned(),
         })

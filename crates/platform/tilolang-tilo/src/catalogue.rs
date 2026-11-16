@@ -143,13 +143,13 @@ impl NativeSurface {
 /// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.
 /// A surface's verb ids are the app's own (`open`, `share-window`), so several apps in one
 /// catalogue would otherwise be one action; its types are named by their app the same way. The
-/// app's own door takes the verb back ([`published_verb`]).
+/// app's own api takes the verb back ([`published_verb`]).
 #[must_use]
 pub fn action_id(app: &str, verb: &str) -> String {
     format!("{app}#{verb}")
 }
 
-/// The verb id the app's own door takes for the catalogue action `id` ([`action_id`]): a
+/// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): a
 /// tilolang package's action keeps the id its app gives it.
 #[must_use]
 pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {

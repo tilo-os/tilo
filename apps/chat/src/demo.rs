@@ -6,7 +6,7 @@
 //! test without a window holds both as documents ([`Workspace`]).
 
 use automerge::AutoCommit;
-use ui::tilo_actions::DoorError;
+use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica};
 
 use crate::messages::{Messages, chat_part};
@@ -571,8 +571,8 @@ pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
 
 /// The demo workspace in `workspace`, read by [`crate::model::ME`]: its chat record,
 /// and its conversation as the first part of its messages.
-pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), DoorError> {
-    seed(&mut workspace.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
+pub fn seed_workspace(workspace: &mut Workspace) -> Result<(), ApiError> {
+    seed(&mut workspace.chat).map_err(|error| ApiError::Failed(error.to_string()))?;
     workspace.write_part(0, &demo_part(crate::model::ME))
 }
 
@@ -633,7 +633,7 @@ impl Workspace {
     ///
     /// # Errors
     /// Never for an empty workspace: the demo fits it.
-    pub fn demo() -> Result<Self, DoorError> {
+    pub fn demo() -> Result<Self, ApiError> {
         let mut workspace = Self::default();
         seed_workspace(&mut workspace)?;
         Ok(workspace)
@@ -699,7 +699,7 @@ impl Workspace {
     ///
     /// # Errors
     /// As [`apply_as`].
-    pub fn apply_as(&mut self, author: &str, invoke: Invoke<Chat>) -> Result<(), DoorError> {
+    pub fn apply_as(&mut self, author: &str, invoke: Invoke<Chat>) -> Result<(), ApiError> {
         apply_as(&mut self.chat, author, invoke)
     }
 
@@ -711,7 +711,7 @@ impl Workspace {
         &mut self,
         author: &str,
         invoke: Invoke<ChatPart>,
-    ) -> Result<u64, DoorError> {
+    ) -> Result<u64, ApiError> {
         self.apply_part_at(author, ui::tilo_resource::origin_now_ms(), invoke)
     }
 
@@ -724,38 +724,38 @@ impl Workspace {
         author: &str,
         now_ms: i64,
         invoke: impl Into<Invoke<ChatPart>>,
-    ) -> Result<u64, DoorError> {
+    ) -> Result<u64, ApiError> {
         let invoke = invoke.into();
         let chain = self
             .parts
             .as_ref()
-            .ok_or_else(|| DoorError::Failed("the workspace holds no messages".into()))?;
+            .ok_or_else(|| ApiError::Failed("the workspace holds no messages".into()))?;
         if let Some(refusal) = invoke.refusal() {
-            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+            return Err(ApiError::InvalidArguments(refusal.to_owned()));
         }
         *self.base.borrow_mut() = std::rc::Rc::new(crate::projection::read(&self.chat));
         chain
             .stage_at(&invoke, author, now_ms)
-            .map_err(|error| DoorError::Failed(error.to_string()))?
-            .ok_or_else(|| DoorError::Failed("the part is on its way from the workspace".into()))
+            .map_err(|error| ApiError::Failed(error.to_string()))?
+            .ok_or_else(|| ApiError::Failed("the part is on its way from the workspace".into()))
     }
 
     /// Write `part` into part `index` of the messages as it stands: a test's
     /// or a tool's fixture of messages by several people, which no one
     /// person's verb makes ([`ui::framework::Chain::write_start`]).
-    pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), DoorError> {
+    pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), ApiError> {
         self.parts
             .as_ref()
-            .ok_or_else(|| DoorError::Failed("the workspace holds no messages".into()))?
+            .ok_or_else(|| ApiError::Failed("the workspace holds no messages".into()))?
             .write_start(index, part)
-            .map_err(DoorError::Failed)
+            .map_err(ApiError::Failed)
     }
 
     /// Post `text` in `channel` as `author`; the new message's id.
     ///
     /// # Errors
     /// As [`Self::apply_part_as`].
-    pub fn say(&mut self, author: &str, channel: &str, text: &str) -> Result<String, DoorError> {
+    pub fn say(&mut self, author: &str, channel: &str, text: &str) -> Result<String, ApiError> {
         let before: Vec<String> = self
             .message_rows(channel)
             .into_iter()
@@ -775,7 +775,7 @@ impl Workspace {
 // the record's verbs as a named person, the way the door applies them.
 
 /// Apply `invoke` to `doc` through the door, as `author` invokes it.
-pub fn apply_as(doc: &mut AutoCommit, author: &str, invoke: Invoke<Chat>) -> Result<(), DoorError> {
+pub fn apply_as(doc: &mut AutoCommit, author: &str, invoke: Invoke<Chat>) -> Result<(), ApiError> {
     apply_at(doc, author, 0, invoke)
 }
 
@@ -788,8 +788,8 @@ pub fn apply_at(
     author: &str,
     now_ms: i64,
     invoke: Invoke<Chat>,
-) -> Result<(), DoorError> {
-    initialized(doc).map_err(|error| DoorError::Failed(error.to_string()))?;
+) -> Result<(), ApiError> {
+    initialized(doc).map_err(|error| ApiError::Failed(error.to_string()))?;
     let mut replica = Replica::<Chat>::from_doc(std::mem::take(doc))
         .as_invoker(author)
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
@@ -805,7 +805,7 @@ pub fn apply_at(
 ///
 /// # Errors
 /// As [`apply_as`].
-pub fn start(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) -> Result<(), DoorError> {
+pub fn start(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) -> Result<(), ApiError> {
     apply_as(
         doc,
         me,
@@ -826,7 +826,7 @@ pub fn introduce(
     me: &str,
     name: &str,
     initials: &str,
-) -> Result<(), DoorError> {
+) -> Result<(), ApiError> {
     apply_as(
         doc,
         me,
@@ -866,26 +866,26 @@ pub fn apply_part_doc(
     chat: &Chat,
     author: &str,
     invoke: impl Into<Invoke<ChatPart>>,
-) -> Result<(), DoorError> {
+) -> Result<(), ApiError> {
     use automerge::ReadDoc as _;
     use ui::framework::Chained as _;
     let invoke = invoke.into();
     if let Some(refusal) = invoke.refusal() {
-        return Err(DoorError::InvalidArguments(refusal.to_owned()));
+        return Err(ApiError::InvalidArguments(refusal.to_owned()));
     }
     if part
         .get(automerge::ROOT, "messages")
-        .map_err(|error| DoorError::Failed(error.to_string()))?
+        .map_err(|error| ApiError::Failed(error.to_string()))?
         .is_none()
     {
         <ChatPart as ui::tilo_resource::Resource>::initialize(part)
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(|error| ApiError::Failed(error.to_string()))?;
         commit_genesis(part);
     }
     let mut action = invoke
         .build(ui::tilo_resource::origin_now_ms())
-        .map_err(DoorError::InvalidArguments)?;
-    ChatPart::prepare(&mut action, chat).map_err(DoorError::Failed)?;
+        .map_err(ApiError::InvalidArguments)?;
+    ChatPart::prepare(&mut action, chat).map_err(ApiError::Failed)?;
     let mut replica = Replica::<ChatPart>::from_doc(std::mem::take(part))
         .as_invoker(author)
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
@@ -905,7 +905,7 @@ pub fn say_in_part(
     author: &str,
     channel: &str,
     text: &str,
-) -> Result<String, DoorError> {
+) -> Result<String, ApiError> {
     let ids = |part: &AutoCommit| -> Vec<Id> {
         crate::messages::read_part(part)
             .messages
@@ -931,14 +931,14 @@ pub fn say(
     author: &str,
     channel: &str,
     text: &str,
-) -> Result<String, DoorError> {
+) -> Result<String, ApiError> {
     workspace.say(author, channel, text)
 }
 
 /// Add the category `id` named `name` to `doc`, as a fixture writes it:
 /// under the id a test names, which the moderators' `create-category`
 /// mints itself.
-pub fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) -> Result<(), DoorError> {
+pub fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) -> Result<(), ApiError> {
     let category = Category { name: name.into() };
     write_fixture(doc, |chat| {
         add(&mut chat.categories, &Id::from_raw(id), category)
@@ -954,7 +954,7 @@ pub fn insert_channel(
     category: &str,
     name: &str,
     kind: ChannelKind,
-) -> Result<(), DoorError> {
+) -> Result<(), ApiError> {
     let channel = Conversation {
         category: (!category.is_empty()).then(|| Id::from_raw(category)),
         name: name.into(),
@@ -971,10 +971,10 @@ pub fn insert_channel(
 fn write_fixture(
     doc: &mut AutoCommit,
     change: impl FnOnce(&mut Chat) -> Result<(), ModelError>,
-) -> Result<(), DoorError> {
+) -> Result<(), ApiError> {
     initialized(doc)
         .and_then(|()| change_chat(doc, change))
-        .map_err(|error| DoorError::Failed(error.to_string()))?;
+        .map_err(|error| ApiError::Failed(error.to_string()))?;
     commit_genesis(doc);
     Ok(())
 }

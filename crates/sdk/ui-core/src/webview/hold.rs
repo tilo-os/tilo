@@ -70,7 +70,7 @@ pub enum AnsweredBy {
     /// The person at the window: the answer was theirs, and no actor's.
     #[default]
     Person,
-    /// An actor the action door admitted the answer for, by the name the tab
+    /// An actor the action API admitted the answer for, by the name the tab
     /// keeps that actor's page actions under.
     Actor(PageActor),
     /// Nobody: the window dropped what it held at its own deadline.
@@ -81,7 +81,7 @@ pub enum AnsweredBy {
 }
 
 impl AnsweredBy {
-    /// Who answers when the action door admitted the answer for `actor`: an
+    /// Who answers when the action API admitted the answer for `actor`: an
     /// answer nobody is named for is the person's at the window.
     pub fn admitted(actor: Option<PageActor>) -> Self {
         actor.map_or(Self::Person, Self::Actor)

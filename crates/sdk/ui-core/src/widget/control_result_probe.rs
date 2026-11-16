@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 #[derive(Clone, Default)]
 pub(crate) struct Observed {
-    pub(crate) results: Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::DoorError>>>>,
+    pub(crate) results: Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::ApiError>>>>,
     pub(crate) calls: Rc<Cell<usize>>,
     pub(crate) polls: Rc<Cell<usize>>,
     pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
@@ -197,7 +197,7 @@ impl crate::widget::controls::ActionControls for Probe {
     fn on_control_invocation_result(
         &mut self,
         _: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.observed.results.borrow_mut().push(result.clone());
     }

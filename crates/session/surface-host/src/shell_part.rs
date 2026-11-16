@@ -10,11 +10,11 @@
 //! session (`type Layout (origin: session.layout)`), which [`SessionOrigin`] writes,
 //! and as the readings of the device's resources (`device.overlays`). The views call the
 //! session's actions as an app's (`use so.tilo.session as session`, then `session.overview()`),
-//! each an invocation on its door ([`PlaceInvoker`]). A shell view never reaches the session
+//! each an invocation on its API ([`PlaceInvoker`]). A shell view never reaches the session
 //! another way.
 //!
 //! The part works only when something changed: a press, a reading of the session's that moved,
-//! or a door answer. Otherwise a frame asks nothing of the instance, and the toolkit draws
+//! or an API answer. Otherwise a frame asks nothing of the instance, and the toolkit draws
 //! nothing.
 
 use std::cell::{Cell, RefCell};
@@ -302,7 +302,7 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
 const EXCHANGES: usize = 8;
 
 /// Between the session and the shell's origin: the readings the session last published, what the
-/// shell asked of the door, and the door's answers. The session serves it every turn
+/// shell asked of the API, and the API's answers. The session serves it every turn
 /// of its loop ([`SessionLink::serve`]); the origin reads and writes the rest.
 #[derive(Default)]
 pub struct SessionLink {
@@ -346,7 +346,7 @@ pub struct SessionLink {
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
-    /// What the door refused of what the shell asked, in its words: each refusal, kept for
+    /// What the API refused of what the shell asked, in its words: each refusal, kept for
     /// whoever asks ([`SessionLink::refused`]), never a quiet drop.
     refused: RefCell<Vec<String>>,
 }
@@ -363,7 +363,7 @@ impl SessionLink {
         true
     }
 
-    /// Run what the shell asked through `invoke` (the session's door), keeping each refusal.
+    /// Run what the shell asked through `invoke` (the session's API), keeping each refusal.
     /// Whether anything ran.
     pub fn serve(&self, mut invoke: impl FnMut(&Ask) -> Result<(), String>) -> bool {
         let asked: Vec<Ask> = self.asked.borrow_mut().drain(..).collect();
@@ -381,13 +381,13 @@ impl SessionLink {
         !asked.is_empty()
     }
 
-    /// What the door refused of what the shell asked since the session started, in its words.
+    /// What the API refused of what the shell asked since the session started, in its words.
     #[must_use]
     pub fn refused(&self) -> Vec<String> {
         self.refused.borrow().clone()
     }
 
-    /// The shell asks `ask` of the session's door: run on the session's next turn
+    /// The shell asks `ask` of the session's API: run on the session's next turn
     /// ([`Self::serve`]).
     pub fn ask(&self, ask: Ask) {
         self.asked.borrow_mut().push_back(ask);
@@ -712,7 +712,7 @@ impl Origin for SessionOrigin {
     }
 
     /// The shell calls the session's actions as an app's (`session.show_surface(...)`), each an
-    /// invocation on its door ([`PlaceInvoker`]); no outside effect is the session's.
+    /// invocation on its API ([`PlaceInvoker`]); no outside effect is the session's.
     fn serves(&self, _capability: &str) -> bool {
         false
     }
@@ -776,11 +776,11 @@ impl Loads for ShellPlatform {
         // Other apps' packages come as places show their resources ([`SessionOrigin`]): their
         // records are the ones their apps keep, read through the session
         // ([`SessionLink::follow_places`]), and what their views change goes to those records'
-        // doors ([`PlaceInvoker`]). The shell's record holds the shell's own records only.
+        // APIs ([`PlaceInvoker`]). The shell's record holds the shell's own records only.
         let Some(shell) = self.packages.last() else {
             return 0;
         };
-        // The session's own package is a description: its actions run at the session's door.
+        // The session's own package is a description: its actions run at the session's API.
         // It is the one the shell was built against — the bundle's own import, whose action ids
         // are the ids the shell's code calls (`so.tilo.session#workspace-menu`). A package read again
         // from the source describes the same resources under the same names, but names its
@@ -817,7 +817,7 @@ const SHELL_ROOM: &str = "shell";
 
 /// `person`'s standing over their own shell `app`: they own its record, and their shell may
 /// hand the session its outside effects (`session.*`) without asking each time, as their
-/// chosen shell. The grant is theirs, in the one policy every door decides with.
+/// chosen shell. The grant is theirs, in the one policy every API decides with.
 fn shell_standing(
     app: &str,
     person: &str,
@@ -858,7 +858,7 @@ pub struct ShellWork {
     pub laying_out: std::time::Duration,
     /// Of [`Self::committing`]: the instance reading the record anew after a commit.
     pub syncing: std::time::Duration,
-    /// Effects the shell handed the session's door, and those the session ran.
+    /// Effects the shell handed the session's API, and those the session ran.
     pub handed: u64,
     pub served: u64,
 }
@@ -885,7 +885,7 @@ pub struct ShellPart {
     /// as the display allows, rather than drawn at one scale and stretched over another.
     output_scale: f64,
     /// The display the part stood on, which went (unplugged, turned off): while it is gone the
-    /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
+    /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the API,
     /// until it is told a display again.
     gone: Option<String>,
     /// The outputs a fullscreen window covers, by connector name: the part on one of them
@@ -1063,7 +1063,7 @@ impl ShellPart {
             return;
         }
         // The package's migrations run for the room's origin alone, as an app's do. Each
-        // committed action is written into the part's record, as the door writes an app's: the
+        // committed action is written into the part's record, as the API writes an app's: the
         // record's making first, then the seed that runs once the record is had.
         self.instance.set_origin(true);
         for _ in 0..3 {
@@ -1436,7 +1436,7 @@ impl ShellPart {
             .downcast_ref::<AppWindow>()
     }
 
-    /// Commit what the instance planned to the shell's record, as the door would, and bring
+    /// Commit what the instance planned to the shell's record, as the API would, and bring
     /// the instance up to date with it. Whether anything was committed.
     fn commit(&mut self) -> bool {
         let mut committed = false;
@@ -1657,7 +1657,7 @@ impl ShellPart {
 }
 
 impl crate::Published for ShellPart {
-    /// A part whose display went offers nothing: the parts still standing answer the door.
+    /// A part whose display went offers nothing: the parts still standing answer the API.
     fn offered(&self) -> bool {
         !self.retired()
     }
@@ -1675,7 +1675,7 @@ impl crate::Published for ShellPart {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut crate::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         self.input = true;
         crate::Published::invoke(&mut self.widgets, address, arguments, look)
     }
@@ -1766,7 +1766,7 @@ impl ShellPart {
 
 impl ShellPart {
     /// Ask the session for the surface action `action` with `arguments`: what a key of the part's
-    /// own asks, as a press of the views asks through the session's door.
+    /// own asks, as a press of the views asks through the session's API.
     fn ask(&self, action: &str, arguments: &[(&str, serde_json::Value)]) {
         let arguments = arguments
             .iter()

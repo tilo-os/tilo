@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::NOTHING_LEFT;

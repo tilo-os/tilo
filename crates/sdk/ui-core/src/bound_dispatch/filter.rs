@@ -132,7 +132,7 @@ fn filter_shared_children(
 }
 
 /// Add to `allowed` the address of every available action in `resources` that `binding` permits: what
-/// [`tilo_actions::door::survey`] lists as available in the trees [`filter_resource`] keeps, read in
+/// [`tilo_actions::api::survey`] lists as available in the trees [`filter_resource`] keeps, read in
 /// place rather than through a filtered copy and a descriptor per action.
 pub(super) fn insert_available_permitted(
     binding: &CallbackBinding,

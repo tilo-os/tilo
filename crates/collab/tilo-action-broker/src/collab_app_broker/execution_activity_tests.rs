@@ -265,8 +265,8 @@ tilo_test_env::scenario! {
     // The person told the agent not to change the app: its change is refused
     // before the app hears of it, the action not offered to the agent at all.
     {
-        for door in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, door);
+        for api in mcp_servers() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, api);
             assert!(
                 matches!(
                     answered,
@@ -282,8 +282,8 @@ tilo_test_env::scenario! {
     // The person told the agent to ask first: its change waits for the
     // person's confirmation.
     {
-        for door in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, door);
+        for api in mcp_servers() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, api);
             assert!(
                 matches!(
                     answered,
@@ -298,8 +298,8 @@ tilo_test_env::scenario! {
     phase an_agents_change_the_person_allowed_runs;
     // The person allowed the agent the app's changes: its change runs.
     {
-        for door in mcp_servers() {
-            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, door);
+        for api in mcp_servers() {
+            let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, api);
             assert!(
                 matches!(answered, PendingPoll::Ready(Ok(_))),
                 "{answered:?}"
@@ -1186,7 +1186,7 @@ tilo_test_env::scenario! {
     fn execution_identity_is_host_owned_and_ends_with_retirement;
 
     phase an_invocation_id_two_callers_share_continues_neither;
-    // Doors that take the caller's own invocation id can admit two callers'
+    // Apis that take the caller's own invocation id can admit two callers'
     // invocations under one id on the same app. An edit submitted on behalf of
     // that id names no single caller, so it is admitted for neither, never for
     // whichever one the registry happens to find first.
@@ -1358,19 +1358,19 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The broker's door, counting how often a shortcut run observes through it.
-struct CountedDoor {
-    door: action_host::BrokerDoor,
+/// The broker's api, counting how often a shortcut run observes through it.
+struct CountedApi {
+    api: action_host::BrokerApi,
     observes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ActionHost for CountedDoor {
+impl ActionHost for CountedApi {
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.door.query(caller, query)
+        self.api.query(caller, query)
     }
 
     fn invoke(
@@ -1378,16 +1378,16 @@ impl ActionHost for CountedDoor {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.door.invoke(caller, request)
+        self.api.invoke(caller, request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
         self.observes.fetch_add(1, Ordering::Relaxed);
-        self.door.observe(caller, id)
+        self.api.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
-        self.door.next_change(caller, id)
+        self.api.next_change(caller, id)
     }
 
     fn cancel(
@@ -1395,13 +1395,13 @@ impl ActionHost for CountedDoor {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        self.door.cancel(caller, id)
+        self.api.cancel(caller, id)
     }
 }
 
 /// Hooks for a run whose host says when a step changes, so nothing may fall
 /// back to polling it.
-struct NoPolling(crate::automation::DoorHooks);
+struct NoPolling(crate::automation::ApiHooks);
 
 impl tilo_automation::RunHooks for NoPolling {
     fn confirm(
@@ -1416,7 +1416,7 @@ impl tilo_automation::RunHooks for NoPolling {
     }
 
     fn settle(&self, invocation: tilo_actions::InvocationId) -> Pending<()> {
-        panic!("the broker's door says when {invocation:?} changes; nothing polls it")
+        panic!("the broker's API says when {invocation:?} changes; nothing polls it")
     }
 }
 
@@ -1464,7 +1464,7 @@ async fn shortcut_step_observes_once_per_change() {
     let (state, caller, mut app) = fixture();
     let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let shortcut = export_shortcut();
-    let hooks = NoPolling(crate::automation::DoorHooks::new(
+    let hooks = NoPolling(crate::automation::ApiHooks::new(
         None,
         tokio::runtime::Handle::current(),
         crate::automation::RunningRuns::default(),
@@ -1474,12 +1474,12 @@ async fn shortcut_step_observes_once_per_change() {
         let state = Arc::clone(&state);
         let observes = Arc::clone(&observes);
         async move {
-            let door = CountedDoor {
-                door: action_host::BrokerDoor::new(state),
+            let api = CountedApi {
+                api: action_host::BrokerApi::new(state),
                 observes,
             };
             tilo_automation::run(
-                &door,
+                &api,
                 &hooks,
                 tilo_automation::RunRequest {
                     shortcut: &shortcut,
@@ -1501,7 +1501,7 @@ async fn shortcut_step_observes_once_per_change() {
 
     let delivered = app.recv().await.expect("the step reaches the app");
     // Each pause is many of the old 25 ms poll intervals and well inside the
-    // door's safety interval: only a change may wake the run.
+    // API's safety interval: only a change may wake the run.
     let pause = std::time::Duration::from_millis(150);
     for sequence in 1..=PROGRESS_UPDATES {
         tokio::time::sleep(pause).await;
@@ -1599,12 +1599,12 @@ async fn retiring_a_run_clears_only_its_presence_without_cancelling_work() {
     );
 }
 
-/// What the broker answers agent `scribe`'s change through `door` (the
+/// What the broker answers agent `scribe`'s change through `api` (the
 /// caller it is in the workspace) when its person's answer for the app's changes
 /// is `answer`, and whether the app heard of it.
 fn agent_answered(
     answer: tilo_action_policy::Answer,
-    door: impl FnOnce(&str) -> Caller,
+    api: impl FnOnce(&str) -> Caller,
 ) -> (
     PendingPoll<Result<InvocationReceipt, ActionHostError>>,
     bool,
@@ -1631,7 +1631,7 @@ fn agent_answered(
         .expect("the fixture's workspace")
         .to_owned();
     let answered = state
-        .action_invoke(&door(&workspace), None, None, &request())
+        .action_invoke(&api(&workspace), None, None, &request())
         .poll_ready();
     (answered, app.try_recv().is_ok())
 }

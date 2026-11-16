@@ -4,10 +4,10 @@
 //! gives back what the layout is, how it changed and who changed it. Every role that moves here
 //! removes the copy the other host kept, so the two run the same rules.
 
-pub mod door;
 pub mod layout;
 pub mod notice;
 pub mod presence;
 pub mod shell;
 pub mod super_tap;
 pub mod surface;
+pub mod surfaces;

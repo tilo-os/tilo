@@ -1,4 +1,4 @@
-//! The content put door: a session client uploads bytes, chunk by chunk,
+//! The content put api: a session client uploads bytes, chunk by chunk,
 //! into its workspace's content store and gets back `tilo.content:<hash>`.
 //!
 //! Actions carry intent and references; bytes travel by session transport
@@ -39,7 +39,7 @@ fn put_node(workspace: &Workspace) -> TreePath {
 }
 
 impl AppBrokerState {
-    /// The content put door, when this host has a content store.
+    /// The content put api, when this host has a content store.
     pub fn content_puts(self: &Arc<Self>) -> Option<Arc<dyn ContentPuts>> {
         let store = self.services.content_store.clone()?;
         Some(Arc::new(BrokerContentPuts {

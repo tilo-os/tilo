@@ -4,7 +4,7 @@
 //! record with the request (and v2 with v1) as data.
 
 use tilo_actions::ActionOutput;
-use tilo_actions::door::ActionDescriptor;
+use tilo_actions::api::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::AgentParticipant;

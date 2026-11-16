@@ -792,13 +792,13 @@ mod tests {
         }
     }
 
-    /// The arguments of the field edit `edit`, as the door takes them.
+    /// The arguments of the field edit `edit`, as the api takes them.
     fn edit(edit: &tilo_resource::Edit<FeedbackDraft>) -> serde_json::Value {
         json!({ tilo_resource::EDIT_PARAM: edit })
     }
 
     /// Type the issue, as the composer's text field does.
-    fn describe(frame: &mut FrameHarness, issue: &str) -> Result<(), tilo_actions::DoorError> {
+    fn describe(frame: &mut FrameHarness, issue: &str) -> Result<(), tilo_actions::ApiError> {
         call(
             frame,
             tilo_resource::FIELD_EDIT,
@@ -810,7 +810,7 @@ mod tests {
         frame: &mut FrameHarness,
         action: &str,
         arguments: &serde_json::Value,
-    ) -> Result<(), tilo_actions::DoorError> {
+    ) -> Result<(), tilo_actions::ApiError> {
         frame.relayout();
         let resource = frame
             .resources()

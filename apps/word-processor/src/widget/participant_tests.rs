@@ -725,7 +725,7 @@ fn invoke_opening_action(
     arguments: serde_json::Value,
 ) {
     let resource = <crate::framework::Document as ui::tilo_resource::Resource>::KIND;
-    let published = tilo_actions::door::survey(&app.harness().resources())
+    let published = tilo_actions::api::survey(&app.harness().resources())
         .into_iter()
         .any(|descriptor| {
             descriptor.address.resource.as_str() == resource && descriptor.address.action == action

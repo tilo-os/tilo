@@ -1418,7 +1418,7 @@ tilo_test_env::scenario! {
     fn row_and_section_actions_run_where_they_are_pressed;
 
     // Choosing a place the view bound to an action runs that action once, through the list's
-    // control door: the place is a part of the list, and its press is the action's own route.
+    // control API: the place is a part of the list, and its press is the action's own route.
     phase a_place_bound_to_an_action_runs_it_once_as_the_person_presses_it;
     {
         let bound = published("res-inbox", "open");
@@ -2496,7 +2496,7 @@ fn bound_check_rename_and_delete_run_their_actions() {
     );
 }
 
-/// A count means something wants attention: zero is no count, at both doors a
+/// A count means something wants attention: zero is no count, at both APIs a
 /// destination takes one, and the chosen place reports only what it draws.
 #[test]
 fn a_zero_count_is_no_count() {

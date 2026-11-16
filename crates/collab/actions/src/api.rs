@@ -1,4 +1,4 @@
-//! **The door**: how a participant that is not the app enumerates what
+//! **The action API**: how a participant that is not the app enumerates what
 //! it has open and performs one of its exported operations.
 //!
 //! [`ResourceSpec`] trees already describe an app's surface and
@@ -323,7 +323,7 @@ impl ResourceViewDescriptor {
 /// both "no such address" and "not offered to you", so a caller can't
 /// map what it may not reach by probing for a different error.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DoorError {
+pub enum ApiError {
     /// Nothing in the tree carries this address.
     Unknown(ActionAddress),
     /// The action takes text and none was supplied.
@@ -336,7 +336,7 @@ pub enum DoorError {
     InvalidArguments(String),
     /// A typed argument is a number outside the range its parameter
     /// declares: [`InvalidArguments`](Self::InvalidArguments) whose bound
-    /// reaches the caller as data ([`DoorError::failure_details`]).
+    /// reaches the caller as data ([`ApiError::failure_details`]).
     ArgumentOutOfRange {
         param: String,
         violation: crate::params::ArgViolation,
@@ -347,7 +347,7 @@ pub enum DoorError {
     /// The action contract requires an explicit confirmation step that this
     /// invocation did not carry.
     ConfirmationRequired,
-    /// The app never registered a decoder for the action's type, so the door
+    /// The app never registered a decoder for the action's type, so the API
     /// can't prove what it would run. Fail-closed: a refusal, not a
     /// best-effort apply.
     UnregisteredType(String),
@@ -355,7 +355,7 @@ pub enum DoorError {
     Failed(String),
 }
 
-impl DoorError {
+impl ApiError {
     /// Why an encoded action could not be turned back into one: no decoder
     /// for its type, or a payload the registered decoder does not read (the
     /// code that encoded it and the code decoding it disagree). The second is
@@ -363,10 +363,8 @@ impl DoorError {
     /// whoever reads it looking for a registration that is there.
     pub fn decoding(error: crate::action::ActionError) -> Self {
         match error {
-            crate::action::ActionError::UnknownType(type_id) => {
-                DoorError::UnregisteredType(type_id)
-            }
-            other => DoorError::Failed(other.to_string()),
+            crate::action::ActionError::UnknownType(type_id) => ApiError::UnregisteredType(type_id),
+            other => ApiError::Failed(other.to_string()),
         }
     }
 
@@ -374,14 +372,14 @@ impl DoorError {
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &'static str {
         match self {
-            DoorError::Unknown(_) | DoorError::UnregisteredType(_) => "unknown_action",
-            DoorError::MissingArgument(_)
-            | DoorError::UnexpectedArgument(_)
-            | DoorError::InvalidArguments(_)
-            | DoorError::ArgumentOutOfRange { .. } => "invalid_arguments",
-            DoorError::Unavailable { .. } => "action_unavailable",
-            DoorError::ConfirmationRequired => "action_confirmation_required",
-            DoorError::Failed(_) => "action_failed",
+            ApiError::Unknown(_) | ApiError::UnregisteredType(_) => "unknown_action",
+            ApiError::MissingArgument(_)
+            | ApiError::UnexpectedArgument(_)
+            | ApiError::InvalidArguments(_)
+            | ApiError::ArgumentOutOfRange { .. } => "invalid_arguments",
+            ApiError::Unavailable { .. } => "action_unavailable",
+            ApiError::ConfirmationRequired => "action_confirmation_required",
+            ApiError::Failed(_) => "action_failed",
         }
     }
 
@@ -392,7 +390,7 @@ impl DoorError {
     #[must_use]
     pub fn failure_details(&self) -> Option<serde_json::Value> {
         match self {
-            DoorError::ArgumentOutOfRange { param, violation } => {
+            ApiError::ArgumentOutOfRange { param, violation } => {
                 Some(serde_json::json!({ "param": param, "violation": violation }))
             }
             _ => None,
@@ -402,50 +400,50 @@ impl DoorError {
 
 /// An argument out of its declared range keeps its bound as data; every
 /// other argument refusal is reported in words.
-impl From<crate::params::ArgError> for DoorError {
+impl From<crate::params::ArgError> for ApiError {
     fn from(error: crate::params::ArgError) -> Self {
         match error {
             crate::params::ArgError::OutOfRange { name, violation } => {
-                DoorError::ArgumentOutOfRange {
+                ApiError::ArgumentOutOfRange {
                     param: name,
                     violation,
                 }
             }
-            error => DoorError::InvalidArguments(error.to_string()),
+            error => ApiError::InvalidArguments(error.to_string()),
         }
     }
 }
 
-impl std::fmt::Display for DoorError {
+impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DoorError::Unknown(a) => {
+            ApiError::Unknown(a) => {
                 write!(f, "no action addressed by ({}, {})", a.resource, a.action)
             }
-            DoorError::MissingArgument(a) => write!(
+            ApiError::MissingArgument(a) => write!(
                 f,
                 "action ({}, {}) needs a text argument and none was given",
                 a.resource, a.action
             ),
-            DoorError::UnexpectedArgument(a) => {
+            ApiError::UnexpectedArgument(a) => {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
-            DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
-            DoorError::ArgumentOutOfRange { param, violation } => {
+            ApiError::InvalidArguments(why) | ApiError::Failed(why) => write!(f, "{why}"),
+            ApiError::ArgumentOutOfRange { param, violation } => {
                 write!(f, "argument `{param}` {violation}")
             }
-            DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
-            DoorError::ConfirmationRequired => {
+            ApiError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
+            ApiError::ConfirmationRequired => {
                 f.write_str("this action requires explicit confirmation")
             }
-            DoorError::UnregisteredType(t) => {
+            ApiError::UnregisteredType(t) => {
                 write!(f, "no decoder registered for action type `{t}`")
             }
         }
     }
 }
 
-impl std::error::Error for DoorError {}
+impl std::error::Error for ApiError {}
 
 /// Walk a resource forest and describe every operation it exports.
 /// Depth-first, parents before children, matching
@@ -589,7 +587,7 @@ pub fn resolve<'a>(
     locate(resources, address).map(|(_, spec)| spec)
 }
 
-/// [`resolve`], with the resource that publishes the action: what a door
+/// [`resolve`], with the resource that publishes the action: what the API
 /// needs to place the action in the tree it grants over.
 pub fn locate<'a>(
     resources: &'a [ResourceSpec],
@@ -648,32 +646,32 @@ pub fn spec_of<'a>(
 ///
 /// # Errors
 ///
-/// Returns [`DoorError::Unknown`] if `address` names no resource/action
-/// in `resources`; [`DoorError::UnexpectedArgument`] if `argument` is
+/// Returns [`ApiError::Unknown`] if `address` names no resource/action
+/// in `resources`; [`ApiError::UnexpectedArgument`] if `argument` is
 /// `Some` for an [`ActionInput::Immediate`] action; or
-/// [`DoorError::MissingArgument`] if it's `None` for an
+/// [`ApiError::MissingArgument`] if it's `None` for an
 /// [`ActionInput::Prompted`] one whose text is required.
 pub fn encode(
     resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
-) -> Result<EncodedAction, DoorError> {
-    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+) -> Result<EncodedAction, ApiError> {
+    let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     ensure_available(spec)?;
     spec.validate_deferred_shape()
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
     match (spec.input(), argument) {
         (ActionInput::Deferred { type_id }, None) => {
             let Some(encoded) = spec.build_deferred() else {
-                return Err(DoorError::Unknown(address.clone()));
+                return Err(ApiError::Unknown(address.clone()));
             };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
-                return Err(DoorError::InvalidArguments(
+                return Err(ApiError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
                 ));
             }
             if encoded.type_id != *type_id {
-                return Err(DoorError::InvalidArguments(format!(
+                return Err(ApiError::InvalidArguments(format!(
                     "builder returned `{}` but declared `{type_id}`",
                     encoded.type_id
                 )));
@@ -681,19 +679,19 @@ pub fn encode(
             Ok(encoded)
         }
         (ActionInput::Deferred { .. }, Some(_)) => {
-            Err(DoorError::UnexpectedArgument(address.clone()))
+            Err(ApiError::UnexpectedArgument(address.clone()))
         }
         (ActionInput::Immediate(_), None) => spec
             .encode_immediate()
             .map(std::sync::Arc::unwrap_or_clone)
-            .ok_or_else(|| DoorError::Unknown(address.clone())),
-        (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
+            .ok_or_else(|| ApiError::Unknown(address.clone())),
+        (ActionInput::Immediate(_), Some(_)) => Err(ApiError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { .. }, Some(text)) => {
             let Some(encoded) = spec.build_text(text) else {
-                return Err(DoorError::Unknown(address.clone()));
+                return Err(ApiError::Unknown(address.clone()));
             };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
-                return Err(DoorError::InvalidArguments(
+                return Err(ApiError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
                 ));
             }
@@ -707,15 +705,15 @@ pub fn encode(
         {
             let encoded = spec
                 .build_json(&serde_json::Map::new())
-                .map_err(DoorError::from)?;
+                .map_err(ApiError::from)?;
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
-                return Err(DoorError::InvalidArguments(
+                return Err(ApiError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
                 ));
             }
             Ok(encoded)
         }
-        (ActionInput::Prompted { .. }, None) => Err(DoorError::MissingArgument(address.clone())),
+        (ActionInput::Prompted { .. }, None) => Err(ApiError::MissingArgument(address.clone())),
     }
 }
 
@@ -725,30 +723,30 @@ pub fn encode(
 ///
 /// # Errors
 ///
-/// Returns [`DoorError::Unknown`] when the address is not published,
-/// [`DoorError::Unavailable`] when policy currently disables it, or
-/// [`DoorError::InvalidArguments`] (or [`DoorError::ArgumentOutOfRange`])
+/// Returns [`ApiError::Unknown`] when the address is not published,
+/// [`ApiError::Unavailable`] when policy currently disables it, or
+/// [`ApiError::InvalidArguments`] (or [`ApiError::ArgumentOutOfRange`])
 /// when the object violates its parameter contract.
 pub fn encode_json(
     resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<EncodedAction, DoorError> {
-    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+) -> Result<EncodedAction, ApiError> {
+    let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let encoded = spec.build_json(arguments).map_err(DoorError::from)?;
+    let encoded = spec.build_json(arguments).map_err(ApiError::from)?;
     if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
-        return Err(DoorError::InvalidArguments(
+        return Err(ApiError::InvalidArguments(
             String::from_utf8_lossy(&encoded.payload).into_owned(),
         ));
     }
     Ok(encoded)
 }
 
-fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
+fn ensure_available(spec: &ActionSpec) -> Result<(), ApiError> {
     match &spec.contract.availability {
         crate::Availability::Available => Ok(()),
-        crate::Availability::Unavailable { code, reason } => Err(DoorError::Unavailable {
+        crate::Availability::Unavailable { code, reason } => Err(ApiError::Unavailable {
             code: code.clone(),
             reason: reason.clone(),
         }),
@@ -757,7 +755,7 @@ fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
 
 /// Caller identity and optional semantic context for an invoked action.
 ///
-/// Every door entry point takes one, so an invocation made inside a task or
+/// Every API entry point takes one, so an invocation made inside a task or
 /// agent run — confirmed or not, text or typed arguments — is recorded with
 /// that run's context rather than only the resource's own.
 #[derive(Clone, Copy, Debug)]
@@ -809,11 +807,11 @@ impl<'a> InvocationProvenance<'a> {
 ///
 /// # Errors
 ///
-/// Returns any error [`encode`] documents; [`DoorError::ConfirmationRequired`]
+/// Returns any error [`encode`] documents; [`ApiError::ConfirmationRequired`]
 /// when the action's effective confirmation for this argument is not
 /// [`None`](crate::ConfirmationPolicy::None) (see [`invoke_confirmed`]);
-/// [`DoorError::UnregisteredType`] if `registry` has no decoder for the
-/// encoded action's type; or [`DoorError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails
+/// [`ApiError::UnregisteredType`] if `registry` has no decoder for the
+/// encoded action's type; or [`ApiError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails
 /// once decoded.
 pub fn invoke(
     doc: &mut crate::action::Doc,
@@ -823,7 +821,7 @@ pub fn invoke(
     provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     invoke_with_consent(
         doc, resources, address, argument, provenance, registry, transport, false,
     )
@@ -840,7 +838,7 @@ pub fn invoke_confirmed(
     provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     invoke_with_consent(
         doc, resources, address, argument, provenance, registry, transport, true,
     )
@@ -855,7 +853,7 @@ fn invoke_with_consent(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
     confirmed: bool,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     ensure_confirmation(resources, address, confirmed, |spec| {
         spec.confirmation_for_argument(argument)
     })?;
@@ -875,7 +873,7 @@ pub fn invoke_json(
     provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     invoke_json_with_consent(
         doc, resources, address, arguments, provenance, registry, transport, false,
     )
@@ -891,7 +889,7 @@ pub fn invoke_json_confirmed(
     provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     invoke_json_with_consent(
         doc, resources, address, arguments, provenance, registry, transport, true,
     )
@@ -906,7 +904,7 @@ fn invoke_json_with_consent(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
     confirmed: bool,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     ensure_confirmation(resources, address, confirmed, |spec| {
         spec.confirmation_for_json(arguments)
     })?;
@@ -924,38 +922,38 @@ fn ensure_confirmation(
     address: &ActionAddress,
     confirmed: bool,
     policy: impl FnOnce(&ActionSpec) -> crate::ConfirmationPolicy,
-) -> Result<(), DoorError> {
-    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+) -> Result<(), ApiError> {
+    let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     if !matches!(policy(spec), crate::ConfirmationPolicy::None) && !confirmed {
-        return Err(DoorError::ConfirmationRequired);
+        return Err(ApiError::ConfirmationRequired);
     }
     Ok(())
 }
 
 // This low-level transport accepts already encoded actions. A Deferred server
-// operation must instead reach the SDK's address-based broker door before mint.
+// operation must instead reach the SDK's address-based broker API before mint.
 fn ensure_deferred_local_owner(
     resources: &[ResourceSpec],
     address: &ActionAddress,
     registry: &ActionRegistry,
-) -> Result<(), DoorError> {
-    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+) -> Result<(), ApiError> {
+    let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     if spec.deferred_invocation_type().is_some()
         || matches!(spec.input(), ActionInput::Deferred { .. })
     {
         spec.validate_deferred_shape()
-            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+            .map_err(|error| ApiError::InvalidArguments(error.to_string()))?;
         if spec.kind != OperationKind::Document || spec.locus != ExecutionLocus::ClientLocal {
-            return Err(DoorError::Unavailable {
+            return Err(ApiError::Unavailable {
                 code: "deferred_owner_required".into(),
-                reason: "This creation must use the owning application's address-based action door"
+                reason: "This creation must use the owning application's address-based action API"
                     .into(),
             });
         }
         if let Some(type_id) = spec.deferred_invocation_type()
             && !registry.contains(type_id)
         {
-            return Err(DoorError::UnregisteredType(type_id.into()));
+            return Err(ApiError::UnregisteredType(type_id.into()));
         }
     }
     Ok(())
@@ -969,16 +967,16 @@ fn dispatch_encoded_with_context(
     provenance: InvocationProvenance<'_>,
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, DoorError> {
+) -> Result<Dispatched, ApiError> {
     let resource = find_resource(resources, &address.resource)
-        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        .ok_or_else(|| ApiError::Unknown(address.clone()))?;
     let spec = resource
         .actions
         .iter()
         .find(|candidate| candidate.id == address.action)
-        .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        .ok_or_else(|| ApiError::Unknown(address.clone()))?;
     if spec.kind != OperationKind::Document {
-        return Err(DoorError::Failed(format!(
+        return Err(ApiError::Failed(format!(
             "{} operation must be handled by the owning application",
             spec.kind.as_str()
         )));
@@ -997,9 +995,9 @@ fn dispatch_encoded_with_context(
     {
         context = context.with_described(described);
     }
-    let action = registry.decode(&encoded).map_err(DoorError::decoding)?;
+    let action = registry.decode(&encoded).map_err(ApiError::decoding)?;
     if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
-        return Err(DoorError::Failed(
+        return Err(ApiError::Failed(
             "Deferred action locus differs from its declaration".into(),
         ));
     }
@@ -1011,7 +1009,7 @@ fn dispatch_encoded_with_context(
         Some(provenance.actor),
         context,
     )
-    .map_err(|e| DoorError::Failed(e.to_string()))
+    .map_err(|e| ApiError::Failed(e.to_string()))
 }
 
 /// The resource `id` in `resources` or among their children.
@@ -1102,7 +1100,7 @@ mod tests {
         tree: &[ResourceSpec],
         address: &ActionAddress,
         argument: Option<&str>,
-    ) -> Result<Dispatched, DoorError> {
+    ) -> Result<Dispatched, ApiError> {
         invoke(
             doc,
             tree,
@@ -1156,7 +1154,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_survey_describes_without_acting;
 
-        phase surveying_through_the_door_describes_without_acting;
+        phase surveying_through_the_api_describes_without_acting;
         // A descriptor carries nothing that could act, survey annotates only the declared view-open
         // action, enumeration leaves the document untouched, and an address survives its string form.
         // Runs each phase below in order; every phase builds its own fixture.
@@ -1271,7 +1269,7 @@ mod tests {
         let before = doc.get_heads();
         let err = perform(&mut doc, &now, &address, None).unwrap_err();
 
-        assert_eq!(err, DoorError::Unknown(address));
+        assert_eq!(err, ApiError::Unknown(address));
         assert_eq!(err.code(), "unknown_action");
         assert_eq!(doc.get_heads(), before, "a refused address left no change");
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
@@ -1291,11 +1289,11 @@ mod tests {
         let before = doc.get_heads();
 
         let err = perform(&mut doc, &tree, &retitle(), None).unwrap_err();
-        assert_eq!(err, DoorError::MissingArgument(retitle()));
+        assert_eq!(err, ApiError::MissingArgument(retitle()));
         assert_eq!(err.code(), "invalid_arguments");
 
         let err = perform(&mut doc, &tree, &star(), Some("Ledger")).unwrap_err();
-        assert_eq!(err, DoorError::UnexpectedArgument(star()));
+        assert_eq!(err, ApiError::UnexpectedArgument(star()));
         assert_eq!(err.code(), "invalid_arguments");
 
         assert_eq!(doc.get_heads(), before, "a refused call left no change");
@@ -1304,7 +1302,7 @@ mod tests {
     }
 
     /// An action the app never registered a decoder for cannot be run, even
-    /// though its own tree offers it: the door will not dispatch what it cannot
+    /// though its own tree offers it: the API will not dispatch what it cannot
     /// reconstruct the way a replaying peer would.
     fn an_unregistered_action_type_is_refused_rather_than_applied() {
         let tree = open();
@@ -1322,7 +1320,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert_eq!(err, DoorError::UnregisteredType(NOTE_TYPE.into()));
+        assert_eq!(err, ApiError::UnregisteredType(NOTE_TYPE.into()));
         assert_eq!(doc.get_heads(), before);
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
     }
@@ -1359,7 +1357,7 @@ mod tests {
         )
         .unwrap_err();
 
-        let DoorError::Failed(why) = &err else {
+        let ApiError::Failed(why) = &err else {
             panic!("a payload the decoder cannot read is its own failure: {err:?}");
         };
         assert!(why.contains(NOTE_TYPE), "{why}");
@@ -1410,10 +1408,10 @@ mod tests {
         assert_eq!(doc.save(), saved, "surveying rewrote the document");
     }
 
-    /// A change made through the door commits under the *caller's* actor, so
+    /// A change made through the API commits under the *caller's* actor, so
     /// history names who asked rather than the app — and since the actor
     /// rides the envelope, a peer still replays to the identical document.
-    fn a_change_through_the_door_is_attributed_to_the_caller() {
+    fn a_change_through_the_api_is_attributed_to_the_caller() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "seed", ScalarValue::Str("s".into()))
             .unwrap();
@@ -1437,7 +1435,7 @@ mod tests {
         assert!(dispatched.mutated_local());
         let env = dispatched.envelope().clone();
         assert_eq!(env.actor.as_deref(), Some(caller));
-        let context = env.context.as_ref().expect("door supplies provenance");
+        let context = env.context.as_ref().expect("the API supplies provenance");
         assert_eq!(published_verb(context), "star");
         assert_eq!(
             context
@@ -1473,7 +1471,7 @@ mod tests {
         assert_eq!(transport.replicated.len(), 1);
     }
 
-    fn ambient_task_context_reaches_door_actions_without_overwriting_resource() {
+    fn ambient_task_context_reaches_api_actions_without_overwriting_resource() {
         let mut doc = AutoCommit::new();
         let mut transport = LocalTransport::new();
         let ambient = ActionContext::default()
@@ -1492,7 +1490,7 @@ mod tests {
             &registry(),
             &mut transport,
         )
-        .expect("door action");
+        .expect("the API answered");
 
         let context = dispatched.envelope().context.as_ref().expect("context");
         assert_eq!(published_verb(context), "star");
@@ -1510,7 +1508,7 @@ mod tests {
         );
     }
 
-    fn consequential_actions_cannot_cross_the_door_without_consent() {
+    fn consequential_actions_cannot_cross_the_api_without_consent() {
         let resources = vec![
             ResourceSpec::new("notes.note:1", "notes.note", "Harbour").with_action(
                 ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
@@ -1534,7 +1532,7 @@ mod tests {
             &mut transport,
         )
         .unwrap_err();
-        assert_eq!(refusal, DoorError::ConfirmationRequired);
+        assert_eq!(refusal, ApiError::ConfirmationRequired);
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
 
         invoke_confirmed(
@@ -1602,12 +1600,12 @@ mod tests {
         let mut transport = LocalTransport::new();
         let registry = registry();
         let mut run = |doc: &mut AutoCommit, value: &str, confirmed: bool| {
-            let door = if confirmed {
+            let api = if confirmed {
                 invoke_json_confirmed
             } else {
                 invoke_json
             };
-            door(
+            api(
                 doc,
                 &resources,
                 &edit(),
@@ -1622,7 +1620,7 @@ mod tests {
         run(&mut doc, "Harbour", false).expect("an ordinary value runs");
         assert_eq!(
             run(&mut doc, "", false).unwrap_err(),
-            DoorError::ConfirmationRequired
+            ApiError::ConfirmationRequired
         );
         assert_eq!(
             stored_title(&doc).as_deref(),
@@ -1644,7 +1642,7 @@ mod tests {
                 &mut transport,
             )
             .unwrap_err(),
-            DoorError::ConfirmationRequired
+            ApiError::ConfirmationRequired
         );
     }
 
@@ -1656,7 +1654,7 @@ mod tests {
             .with_group("agent-session:7", "Remove the draft marks", "agent-session")
     }
 
-    /// Read the durable change the door just committed back from its message,
+    /// Read the durable change the API just committed back from its message,
     /// and require it to carry both the resource's own context and the run's.
     /// The published action an entry names, with the resource kind it was
     /// published on.
@@ -1673,7 +1671,7 @@ mod tests {
         let heads = doc.get_heads();
         let change = doc
             .get_change_by_hash(&heads[0])
-            .expect("the door committed");
+            .expect("the API committed");
         assert_eq!(change.actor_id().to_bytes(), b"agent:ada");
         let context = change
             .message()
@@ -1695,9 +1693,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn an_invocation_through_the_door_is_checked_and_recorded;
+        fn an_invocation_through_the_api_is_checked_and_recorded;
 
-        phase invoking_through_the_door_refuses_mismatches_and_attributes_the_caller;
+        phase invoking_through_the_api_refuses_mismatches_and_attributes_the_caller;
         // Stale addresses, mismatched arguments and unregistered action types are refused rather than
         // redirected or applied; an accepted change is attributed to the caller and ambient task
         // context reaches it without overwriting the resource.
@@ -1707,8 +1705,8 @@ mod tests {
             an_argument_that_does_not_match_the_declaration_is_refused();
             an_unregistered_action_type_is_refused_rather_than_applied();
             a_payload_its_decoder_cannot_read_is_not_called_unregistered();
-            a_change_through_the_door_is_attributed_to_the_caller();
-            ambient_task_context_reaches_door_actions_without_overwriting_resource();
+            a_change_through_the_api_is_attributed_to_the_caller();
+            ambient_task_context_reaches_api_actions_without_overwriting_resource();
         }
 
         phase an_optional_only_prompt_runs_without_its_argument;
@@ -1743,7 +1741,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let err = perform(&mut doc, &open(), &retitle(), None).unwrap_err();
-            assert_eq!(err, DoorError::MissingArgument(retitle()));
+            assert_eq!(err, ApiError::MissingArgument(retitle()));
         }
 
         phase a_wire_text_argument_goes_under_the_actions_own_prompt_parameter;
@@ -1777,12 +1775,12 @@ mod tests {
             assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
         }
 
-        phase consequential_door_actions_need_consent_whatever_form_the_argument_takes;
+        phase consequential_api_actions_need_consent_whatever_form_the_argument_takes;
         // Consequential actions and values classified destructive need consent, and effective
         // confirmation reads every argument form.
         // Runs each phase below in order; every phase builds its own fixture.
         {
-            consequential_actions_cannot_cross_the_door_without_consent();
+            consequential_actions_cannot_cross_the_api_without_consent();
             a_value_classified_as_destructive_needs_the_same_consent();
             effective_confirmation_reads_every_argument_form();
         }
@@ -1815,7 +1813,7 @@ mod tests {
                     &mut transport,
                 )
                 .unwrap_err(),
-                DoorError::ConfirmationRequired
+                ApiError::ConfirmationRequired
             );
             let dispatched = invoke_confirmed(
                 &mut doc,

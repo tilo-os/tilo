@@ -12,7 +12,7 @@ use ui::widget::{
 };
 
 use crate::effects::ConsoleEffect;
-use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
+use crate::{Console, Nav, Reads, Records, ago, faced, page, tr, trf};
 
 /// What Agents reads: every session in every workspace.
 pub(crate) fn query() -> wire::SessionsQuery {
@@ -90,18 +90,18 @@ pub(crate) fn live_session_at(sessions: &[wire::AgentSession], resource: &str) -
     Some(live_session(sessions, session_id(resource)?))
 }
 
-/// The sessions, beside the door that says which agents are connected.
+/// The sessions, beside the MCP server that says which agents are connected.
 #[derive(Clone, Default)]
 pub(crate) struct Seen {
     pub(crate) history: wire::Sessions,
-    pub(crate) door: mcp_server::Server,
+    pub(crate) server: mcp_server::Server,
 }
 
 impl Seen {
-    /// The door's open agent session `session` is, with the grant it came in by: History names a
-    /// session as the door does ("Claude Code #2").
+    /// The MCP server's open agent session `session` is, with the grant it came in by: History names a
+    /// session as the MCP server does ("Claude Code #2").
     pub(crate) fn open(&self, session: &wire::AgentSession) -> Option<mcp_server::AgentSessionRef> {
-        self.door
+        self.server
             .session(&session.agent.name)
             .map(|(grant, session)| mcp_server::AgentSessionRef {
                 grant: grant.id.clone(),
@@ -109,7 +109,7 @@ impl Seen {
             })
     }
 
-    /// Whether `session` is working now: its agent session through the door is open and it is that
+    /// Whether `session` is working now: its agent session through the MCP server is open and it is that
     /// session's newest work.
     pub(crate) fn working(&self, session: &wire::AgentSession) -> bool {
         self.open(session).is_some()
@@ -122,10 +122,10 @@ impl Seen {
                 .is_some_and(|newest| newest.id == session.id)
     }
 
-    /// The workspace `session` worked in, as the door lists it.
+    /// The workspace `session` worked in, as the MCP server lists it.
     pub(crate) fn workspace(&self, session: &wire::AgentSession) -> Option<&mcp_server::Workspace> {
         let name = session.workspace.as_deref()?;
-        self.door
+        self.server
             .workspaces
             .iter()
             .find(|workspace| workspace.name == name || workspace.id == name)
@@ -135,15 +135,15 @@ impl Seen {
 /// The place's content: every session, or the session chosen, whose way back is the shell's.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     let sessions = &reads.sessions;
-    let door_state = reads.door.answer().state();
+    let server_state = reads.server.answer().state();
     let chosen = nav.session.get();
     let nav = nav.clone();
     Box::new(cx.arriving(&sessions.answer(), move |cx, sessions| {
         let (nav, sessions, chosen) = (nav.clone(), sessions.clone(), chosen.clone());
-        cx.switch(&door_state, move |cx, door| {
+        cx.switch(&server_state, move |cx, server| {
             let seen = Seen {
                 history: sessions.clone(),
-                door: ready(door),
+                server: ready(server),
             };
             let session = chosen.as_deref().and_then(|id| {
                 seen.history
@@ -160,11 +160,11 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     })) as Element
 }
 
-/// The door as far as it answered: nothing connected until it does, and nothing where no
-/// door is served.
-pub(crate) fn ready<E>(door: &Arrival<mcp_server::Server, E>) -> mcp_server::Server {
-    match door {
-        Arrival::Ready(door) => door.clone(),
+/// The MCP server as far as it answered: nothing connected until it does, and nothing where no
+/// server is served.
+pub(crate) fn ready<E>(server: &Arrival<mcp_server::Server, E>) -> mcp_server::Server {
+    match server {
+        Arrival::Ready(server) => server.clone(),
         Arrival::Pending { .. } | Arrival::Failed(_) => mcp_server::Server::default(),
     }
 }
@@ -445,7 +445,7 @@ pub(crate) fn inspect(
     seen: &Seen,
     session: &wire::AgentSession,
 ) -> Element {
-    let doors = Doors::of(cx);
+    let records = Records::of(cx);
     let mut facts = vec![Fact::with_icon(Icon::Bot, session.agent.name.clone())];
     if let Some(starter) = starter(&session.agent) {
         facts.push(Fact::with_icon(Icon::User, starter));
@@ -461,7 +461,7 @@ pub(crate) fn inspect(
         Box::new(ObjectHeader::new(session.instruction.clone())),
         Box::new(Facts::new(facts)),
     ];
-    parts.push(commands(&doors, seen, session));
+    parts.push(commands(&records, seen, session));
     if let Some(blocked) = &session.undo_blocked {
         parts.push(Box::new(
             Text::new(blocked)
@@ -486,8 +486,8 @@ pub(crate) fn inspect(
             else {
                 return actions(cx, &nav, &shown, open, None);
             };
-            let read =
-                Doors::of(cx).follow_history::<wire::SessionOutput>(wire::SESSION_OUTPUT, &session);
+            let read = Records::of(cx)
+                .follow_history::<wire::SessionOutput>(wire::SESSION_OUTPUT, &session);
             let (nav, shown) = (nav.clone(), shown.clone());
             Box::new(cx.arriving(&read.answer(), move |cx, whole| {
                 actions(cx, &nav, &shown, open, Some((index, whole)))
@@ -498,28 +498,28 @@ pub(crate) fn inspect(
 }
 
 /// Stop, Take over and Undo, as the session allows them.
-pub(crate) fn commands(doors: &Doors, seen: &Seen, session: &wire::AgentSession) -> Element {
+pub(crate) fn commands(records: &Records, seen: &Seen, session: &wire::AgentSession) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related);
     if seen.open(session).is_some() && seen.working(session) {
-        let (doors, seen, session) = (doors.clone(), seen.clone(), session.clone());
+        let (records, seen, session) = (records.clone(), seen.clone(), session.clone());
         row = row.push(Box::new(
             Button::new("console-session-stop", "console-session-stop")
                 .with_icon(Icon::Square)
                 .role(ButtonRole::Destructive)
                 .on_view(move || {
-                    stop(&doors, &seen, &session);
+                    stop(&records, &seen, &session);
                 }),
         ));
     }
     if take_over_target(seen, session).is_some() {
-        let (doors, seen, session) = (doors.clone(), seen.clone(), session.clone());
+        let (records, seen, session) = (records.clone(), seen.clone(), session.clone());
         row = row.push(Box::new(
             Button::new("console-session-take-over", "console-session-take-over")
                 .with_icon(Icon::Hand)
-                .on_view(move || take_over(&doors, &seen, &session)),
+                .on_view(move || take_over(&records, &seen, &session)),
         ));
     }
-    let (undo, undone) = (doors.clone(), session.clone());
+    let (undo, undone) = (records.clone(), session.clone());
     row = row.push(Box::new(
         Button::new("console-session-undo", "console-session-undo")
             .with_icon(Icon::Undo2)
@@ -528,7 +528,7 @@ pub(crate) fn commands(doors: &Doors, seen: &Seen, session: &wire::AgentSession)
                 undo_session(&undo, &undone);
             }),
     ));
-    let link = doors.clone();
+    let link = records.clone();
     let resource = session_resource_id(&session.id);
     row = row.push(Box::new(
         Button::new("console-session-copy-link", "console-session-copy-link")
@@ -555,10 +555,10 @@ fn take_over_target(
 }
 
 /// End `session` now, keeping its grant, when it is working.
-pub(crate) fn stop(doors: &Doors, seen: &Seen, session: &wire::AgentSession) -> bool {
+pub(crate) fn stop(records: &Records, seen: &Seen, session: &wire::AgentSession) -> bool {
     match seen.open(session).filter(|_| seen.working(session)) {
         Some(open) => {
-            doors.door(mcp_server::STOP, &open);
+            records.server(mcp_server::STOP, &open);
             true
         }
         None => false,
@@ -566,21 +566,21 @@ pub(crate) fn stop(doors: &Doors, seen: &Seen, session: &wire::AgentSession) -> 
 }
 
 /// Take `session` over: stop the agent and open where it was working.
-pub(crate) fn take_over(doors: &Doors, seen: &Seen, session: &wire::AgentSession) {
-    stop(doors, seen, session);
+pub(crate) fn take_over(records: &Records, seen: &Seen, session: &wire::AgentSession) {
+    stop(records, seen, session);
     match take_over_target(seen, session) {
-        Some(Ok(target)) => doors.history(wire::OPEN, &target),
-        Some(Err(href)) => doors.open_in_tilo(&href),
+        Some(Ok(target)) => records.history(wire::OPEN, &target),
+        Some(Err(href)) => records.open_in_tilo(&href),
         None => {}
     }
 }
 
 /// Undo all of `session`, when the history lets it.
-pub(crate) fn undo_session(doors: &Doors, session: &wire::AgentSession) -> bool {
+pub(crate) fn undo_session(records: &Records, session: &wire::AgentSession) -> bool {
     if session.undo_blocked.is_some() {
         return false;
     }
-    doors.history(wire::UNDO_SESSION, &session.range);
+    records.history(wire::UNDO_SESSION, &session.range);
     true
 }
 
@@ -601,7 +601,7 @@ fn actions(
     open: Option<usize>,
     full: Option<(usize, &wire::SessionOutput)>,
 ) -> Element {
-    let doors = Doors::of(cx);
+    let records = Records::of(cx);
     let mut rows: Vec<Element> = Vec::new();
     for (index, action) in session.actions.iter().enumerate() {
         let target = action.view.target();
@@ -611,7 +611,7 @@ fn actions(
             .meta(ago(action.at_ms))
             .selected(open == Some(index));
         if let Some(offer) = &action.undo {
-            let doors = doors.clone();
+            let records = records.clone();
             let query = wire::RecordQuery {
                 range: session.range.clone(),
                 task: None,
@@ -624,9 +624,9 @@ fn actions(
                     .role(ButtonRole::Plain)
                     .on_view(move || match kind {
                         wire::DetailAction::UndoRecord => {
-                            doors.history(wire::UNDO_RECORD, &query);
+                            records.history(wire::UNDO_RECORD, &query);
                         }
-                        _ => doors.history(wire::UNDO, &range),
+                        _ => records.history(wire::UNDO, &range),
                     }),
             ));
         }
@@ -641,7 +641,7 @@ fn actions(
             rows.push(action_view(
                 cx,
                 nav,
-                &doors,
+                &records,
                 index,
                 action,
                 full.filter(|(shown, _)| *shown == index)
@@ -662,7 +662,7 @@ fn actions(
 fn action_view(
     cx: &ViewCx<Console>,
     nav: &Nav,
-    doors: &Doors,
+    records: &Records,
     index: usize,
     action: &wire::SessionAction,
     whole: Option<&wire::SessionOutput>,
@@ -670,17 +670,17 @@ fn action_view(
     let id = format!("console-action-{index}-view");
     let target = action.view.target().clone();
     let open = {
-        let (doors, target) = (doors.clone(), target.clone());
+        let (records, target) = (records.clone(), target.clone());
         Button::new(&format!("{id}-open"), "console-action-open")
             .with_icon(Icon::ExternalLink)
-            .on_view(move || doors.history(wire::OPEN, &target))
+            .on_view(move || records.history(wire::OPEN, &target))
     };
     let mut parts: Vec<Element> = Vec::new();
     match &action.view {
         wire::ActionView::File { path, lines, .. } => {
             parts.push(code_line(path, None));
             if lines.is_empty() {
-                parts.push(compared(cx, doors, &action.range));
+                parts.push(compared(cx, records, &action.range));
             } else {
                 parts.push(well(lines.iter().map(diff_line).collect()));
             }
@@ -738,7 +738,7 @@ fn action_view(
             let mut place = vec![Fact::with_icon(Icon::AppWindow, target.label.clone())];
             place.extend(target.app_label.map(Fact::text));
             parts.push(Box::new(Facts::new(place)));
-            parts.push(compared(cx, doors, &action.range));
+            parts.push(compared(cx, records, &action.range));
         }
     }
     parts.push(Box::new(
@@ -869,8 +869,8 @@ fn more_of(session: &wire::AgentSession, index: usize) -> Option<wire::CommandEx
 
 /// What the action's changes did, as the history compares the workspace either side of
 /// them: each field before and after, or else each change in a line.
-fn compared(cx: &ViewCx<Console>, doors: &Doors, range: &wire::Range) -> Element {
-    let read = doors.follow_history::<wire::Detail>(
+fn compared(cx: &ViewCx<Console>, records: &Records, range: &wire::Range) -> Element {
+    let read = records.follow_history::<wire::Detail>(
         wire::DETAIL,
         &wire::DetailQuery {
             range: range.clone(),

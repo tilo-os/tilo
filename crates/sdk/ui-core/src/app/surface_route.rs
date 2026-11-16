@@ -138,7 +138,7 @@ impl App {
             }
             return self.withdraw_action_surface();
         }
-        let descriptors = tilo_actions::door::survey(&resources);
+        let descriptors = tilo_actions::api::survey(&resources);
         self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return true;

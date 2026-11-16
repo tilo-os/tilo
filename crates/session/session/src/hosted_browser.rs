@@ -1333,7 +1333,7 @@ mod tests {
                 .stating_bound("picture", "The filled page, as content");
         }
         page.actions.push(spec);
-        let action = tilo_actions::door::survey(&[page]).into_iter().next()?;
+        let action = tilo_actions::api::survey(&[page]).into_iter().next()?;
         Some(tilo_actions::remote::CatalogueRow::for_action(
             "42", BROWSER, action,
         ))

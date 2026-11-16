@@ -5,7 +5,7 @@
 pub use console_model::ConsoleEffect;
 
 /// What a person asked of an agent from outside its card, carried out once the card has
-/// read the sessions and the door.
+/// read the sessions and the MCP server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentCommand {
     Stop,

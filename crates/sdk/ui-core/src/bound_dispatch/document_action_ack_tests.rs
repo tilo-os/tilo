@@ -136,7 +136,7 @@ fn execute(
     doc: &mut AutoCommit,
     action: &Write,
     broker: bool,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
     execute_mode(owner, doc, action, broker, false)
 }
 
@@ -146,7 +146,7 @@ fn execute_mode(
     action: &Write,
     broker: bool,
     background: bool,
-) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<Write>("ack.write");
     let resource = tilo_actions::ResourceSpec::new("ack.owner", "ack.owner", "Owner");
@@ -180,7 +180,7 @@ fn execute_mode(
             source_invocation,
             ambient: None,
             scope: None,
-            door: None,
+            api: None,
         },
     )
 }
@@ -398,7 +398,7 @@ tilo_test_env::scenario! {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
-                        door: None,
+                        api: None,
                     },
                 )
                 .unwrap();

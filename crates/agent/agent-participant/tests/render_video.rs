@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_actions::door::{ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionDescriptor, ApiError};
 use tilo_agent_participant::{ConfinedReplica, ReplicaActor, Seed, render};
 use tilo_content::ContentStore;
 use video_editor::Project;
@@ -248,7 +248,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
     let agent = agents_record(&timeline(Some(&missing)), &workspace);
     let export = offered(&agent, "export-video-content").unwrap().address;
     match agent.invoke(&export, &serde_json::Map::new(), true) {
-        Err(DoorError::Unavailable { code, reason }) => {
+        Err(ApiError::Unavailable { code, reason }) => {
             assert_eq!(code, "render_refused");
             assert!(reason.contains("does not hold"), "{reason}");
         }
@@ -258,7 +258,7 @@ fn a_render_of_content_the_workspace_lacks_or_a_size_too_large_is_refused_before
     let too_big = arguments(serde_json::json!({ "width": 3840, "height": 2160 }));
     assert!(matches!(
         plain.invoke(&export, &too_big, true),
-        Err(DoorError::InvalidArguments(_))
+        Err(ApiError::InvalidArguments(_))
     ));
 }
 

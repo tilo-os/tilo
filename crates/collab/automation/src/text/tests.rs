@@ -11,8 +11,8 @@ use super::*;
 use crate::shortcut::{Schedule, TriggerSpec};
 
 use tilo_actions::action::{ExecutionLocus, OperationKind};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::ActionContract;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::params::ActionParam;
 use tilo_actions::remote::{CatalogueResource, CatalogueRow};
 

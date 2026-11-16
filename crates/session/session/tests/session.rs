@@ -29,7 +29,7 @@ use tilo_desktop::verbs::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, laun
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
@@ -883,7 +883,7 @@ impl tilo_session::Service for Wire {
         _: &str,
         action: &str,
         _: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(action.to_owned());
         Ok(tilo_service::Started::Accepted)
     }
@@ -1075,8 +1075,8 @@ impl Published for Player {
         &mut self,
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
@@ -1742,7 +1742,7 @@ impl tilo_session::Service for Audio {
         _: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+    ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
         let named = arguments
             .iter()
             .map(|(name, value)| format!("{name}={value}"))

@@ -28,7 +28,7 @@ use tilo_actions::{ActionAddress, OperationKind, ResourceSpec, ResourceViewSpec}
 use tilo_compositor::OutputConfig;
 use tilo_session::platform::indexes::SessionIndexes;
 use tilo_session::{Options, Session};
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -93,8 +93,8 @@ impl Published for Mailbox {
         &mut self,
         address: &ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
@@ -746,8 +746,8 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             &mut self,
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_session_core::door::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            _: &mut tilo_session_core::surfaces::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
             Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
@@ -884,8 +884,8 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
             &mut self,
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
-            _: &mut tilo_session_core::door::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            _: &mut tilo_session_core::surfaces::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
             Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))

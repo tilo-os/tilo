@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
         let heads = board.heads();
         let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
         assert!(
-            matches!(refused, Err(tilo_actions::DoorError::Failed(reason)) if reason == "no such card")
+            matches!(refused, Err(tilo_actions::ApiError::Failed(reason)) if reason == "no such card")
         );
         assert_eq!(board.heads(), heads);
     }
@@ -499,7 +499,7 @@ tilo_test_env::scenario! {
         let address = tilo_actions::ActionAddress::new("board", "clear");
         for taken in 1..=2 {
             let encoded =
-                tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
+                tilo_actions::api::encode(std::slice::from_ref(&resource), &address, None).unwrap();
             assert_eq!(encoded.type_id, Board::ACTION_TYPE);
             assert_eq!(
                 takings.load(Ordering::SeqCst),
@@ -514,13 +514,13 @@ tilo_test_env::scenario! {
             });
         let resource = tilo_actions::ResourceSpec::new("board", "test.board", "Board")
             .with_action(tilo_resource::declaration_spec(&refusing));
-        let refused = tilo_actions::door::encode(
+        let refused = tilo_actions::api::encode(
             std::slice::from_ref(&resource),
             &tilo_actions::ActionAddress::new("board", "refuse"),
             None,
         );
         assert!(
-            matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
+            matches!(&refused, Err(tilo_actions::ApiError::InvalidArguments(reason)) if reason == "nothing to clear"),
             "{refused:?}"
         );
     }
@@ -566,8 +566,8 @@ tilo_test_env::scenario! {
             let head = tilo_resource::publish_head::<Board>("board", "Board", &board);
             assert!(head.children.is_empty());
             assert_eq!(
-                tilo_actions::door::survey(&[head]),
-                tilo_actions::door::survey(&[published]),
+                tilo_actions::api::survey(&[head]),
+                tilo_actions::api::survey(&[published]),
                 "{count} cards: the head carries the published record's own actions"
             );
             // Counted, not built: the card actions are for scripts once a card

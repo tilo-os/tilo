@@ -1,7 +1,7 @@
 //! Installed bots on the workspace's host: what a bot reads of the records it
 //! watches.
 
-pub mod door;
+pub mod api;
 pub mod held;
 /// What a bot reads of an item: its stored shape, as every host reads it.
 pub use tilo_automerge::items as item_json;

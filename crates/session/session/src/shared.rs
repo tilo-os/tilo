@@ -403,11 +403,11 @@ impl Shared {
             };
             let address =
                 tilo_actions::ActionAddress::new(tilo_session_core::layout::RESOURCE, "open");
-            let run = self.doors.invoke_as(
+            let run = self.published.invoke_as(
                 &invoker.key(),
                 &address,
                 &arguments,
-                &mut tilo_session_core::door::Look::none(),
+                &mut tilo_session_core::surfaces::Look::none(),
             );
             if let Err(error) = run {
                 tracing::warn!(
@@ -420,7 +420,7 @@ impl Shared {
     }
 
     /// Carry out what the person chose in the sheets.
-    pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::door::Look<'_>) {
+    pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::surfaces::Look<'_>) {
         // What a place can show, as the layout published it: an agent's `find` leads with the
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.
@@ -436,7 +436,7 @@ impl Shared {
             std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
         };
         self.session_doors
-            .answer(&self.doors, &self.services, &self.search, &shows, look);
+            .answer(&self.published, &self.services, &self.search, &shows, look);
         // A service's `open` changes nothing of its record: opening is the session's arranging
         // step, and the places the services were asked for are stood through the layout's
         // own `open`, as an agent and a view asking the shell are one act

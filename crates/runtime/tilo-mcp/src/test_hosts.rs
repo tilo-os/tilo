@@ -99,7 +99,7 @@ impl StubHost {
             "Note",
             &schema_rows::Note::default(),
         );
-        let mut descriptor = tilo_actions::door::survey(&[resource])
+        let mut descriptor = tilo_actions::api::survey(&[resource])
             .into_iter()
             .find(|descriptor| descriptor.address.action == tilo_resource::APPLY)
             .unwrap();
@@ -111,7 +111,7 @@ impl StubHost {
             descriptor.kind = tilo_actions::OperationKind::View;
             descriptor.contract = tilo_actions::ActionContract::view();
             descriptor.params.clear();
-            descriptor.input = tilo_actions::door::InputSpec::None;
+            descriptor.input = tilo_actions::api::InputSpec::None;
         }
         CatalogueRow {
             provider: "71".into(),

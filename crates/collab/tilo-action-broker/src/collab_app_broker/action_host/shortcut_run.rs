@@ -1,9 +1,9 @@
-//! Saved shortcut admission and execution through the host action door.
+//! Saved shortcut admission and execution through the host action api.
 
 use super::super::InvocationCaller;
 use super::super::host_action_admission::{AdmittedHostAction, HostActionAdmission};
 use super::{
-    ActionHostError, AppBrokerState, Arc, BrokerActor, BrokerDoor, Caller, InvocationReceipt,
+    ActionHostError, AppBrokerState, Arc, BrokerActor, BrokerApi, Caller, InvocationReceipt,
     InvokeRequest, Reservation, RowScope, SHORTCUTS_APP_ID, automation, workspace_provider,
 };
 
@@ -76,7 +76,7 @@ impl AppBrokerState {
                         .filter(|group| group.kind != "shortcut"),
                 },
                 |runtime, run| {
-                    automation::DoorHooks::new(
+                    automation::ApiHooks::new(
                         request.confirmation.clone(),
                         runtime,
                         self.ended_runs.running.running.clone(),
@@ -280,7 +280,7 @@ impl AppBrokerState {
                 parent: None,
             },
             |runtime, run| {
-                automation::DoorHooks::new(
+                automation::ApiHooks::new(
                     None,
                     runtime,
                     self.ended_runs.running.running.clone(),
@@ -358,7 +358,7 @@ impl AppBrokerState {
             self.prepare_shortcut_run(caller, workspace, &shortcut, &start, admission)?;
         let job = admitted.id;
         let invocation = admitted.invocation;
-        let host = BrokerDoor::for_run(Arc::clone(self), origin);
+        let host = BrokerApi::for_run(Arc::clone(self), origin);
         let state = Arc::clone(self);
         let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let workspace = workspace.to_string();

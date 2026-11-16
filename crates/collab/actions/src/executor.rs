@@ -4,7 +4,7 @@
 //! action on the local replica, minting a fresh envelope (the origin);
 //! [`replay`] decodes an envelope's action and applies it, reproducing
 //! the *identical* change on any replica at the same base state (peers);
-//! [`dispatch`] is the locus-aware front door — `ClientLocal` applies
+//! [`dispatch`] is the locus-aware front API — `ClientLocal` applies
 //! and hands to the transport for replication; `ServerPreferred` submits to
 //! an authoritative host and fails closed when none answers.
 //!
@@ -244,7 +244,7 @@ fn envelope_for(
         context.gesture = current_step();
     }
     // What history records the step did: described by the value itself from
-    // the document before it applies, else as the published action the door
+    // the document before it applies, else as the published action the API
     // resolved, else as the verb its encoded form names.
     let app = context.app.as_ref().map(|app| app.id.clone());
     // The value describes itself as it will apply: under its invoker.
@@ -614,7 +614,7 @@ pub fn apply_local_by(
 }
 
 /// [`apply_local`], with semantic provenance embedded in the resulting
-/// durable change. Use this at framework/action-door boundaries where the
+/// durable change. Use this at framework/action-API boundaries where the
 /// resource and human action label are already known.
 ///
 /// # Errors
@@ -893,7 +893,7 @@ impl Dispatched {
     }
 }
 
-/// The locus-aware front door, routing `action` per
+/// The locus-aware front API, routing `action` per
 /// its [`ExecutionLocus`]: `ClientLocal` →
 /// [`apply_local`] then `transport.replicate`; `ServerPreferred` →
 /// `transport.submit_to_host`, refusing when no authoritative host is

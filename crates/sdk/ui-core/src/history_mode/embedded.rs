@@ -350,29 +350,29 @@ pub(crate) fn refresh(
         }
     });
 }
-/// Run a History door control (the History control in an app's header row) on the History of the tile
+/// Run a History API control (the History control in an app's header row) on the History of the tile
 /// that hosts the app `owner` names, as the window's own History runs it for a window's app.
-pub(crate) fn invoke_door(
+pub(crate) fn invoke_api(
     root: &mut dyn Widget,
     owner: &HistoryOwner,
     intent: &tilo_actions::ControlInvocation,
-) -> Option<Result<(), tilo_actions::DoorError>> {
+) -> Option<Result<(), tilo_actions::ApiError>> {
     let mut result = None;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
         if result.is_some() || !history.encloses(owner) {
             return;
         }
-        result = Some(run_door_control(history, intent));
+        result = Some(run_api_control(history, intent));
     });
     result
 }
-/// Run one History door control on `history` exactly as its own History control does: resolved against
-/// the door this History serves now.
-pub(crate) fn run_door_control(
+/// Run one History API control on `history` exactly as its own History control does: resolved against
+/// the API this History serves now.
+pub(crate) fn run_api_control(
     history: &mut dyn host::HistoryChromeApi,
     intent: &tilo_actions::ControlInvocation,
-) -> Result<(), tilo_actions::DoorError> {
-    let resources = [history.door_resource()];
+) -> Result<(), tilo_actions::ApiError> {
+    let resources = [history.api_resource()];
     let encoded = crate::bound_dispatch::encode_resource_invocation(
         &resources,
         &intent.address,
@@ -381,8 +381,8 @@ pub(crate) fn run_door_control(
         false,
     )?;
     history
-        .invoke_door(&encoded)
-        .map_err(tilo_actions::DoorError::Failed)
+        .invoke_api(&encoded)
+        .map_err(tilo_actions::ApiError::Failed)
 }
 pub(crate) fn has_review(root: &dyn Widget) -> bool {
     let mut pending = false;
@@ -391,7 +391,7 @@ pub(crate) fn has_review(root: &dyn Widget) -> bool {
     });
     pending
 }
-/// Settled matching owners are checked again immediately at the shared door.
+/// Settled matching owners are checked again immediately at the shared API.
 pub(crate) fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,

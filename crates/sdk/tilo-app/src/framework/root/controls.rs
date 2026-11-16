@@ -2,7 +2,7 @@
 //! its view's controls queued, and how each one is answered.
 //!
 //! A press goes over the app's own record: the root keeps it, and the host's
-//! local document door runs what the view's controls submit.
+//! local document api runs what the view's controls submit.
 
 use super::ResourceRoot;
 use super::widget::RootControls;
@@ -42,7 +42,7 @@ impl RootControls for ResourceRoot {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         // The host delivers feedback to the exact emitting document owner;
         // forwarding stops at nested owner boundaries. Its children may have
@@ -55,7 +55,7 @@ impl RootControls for ResourceRoot {
         }
         match result {
             Err(error) => {
-                if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
+                if !matches!(error, tilo_actions::ApiError::ConfirmationRequired) {
                     self.dispatch.refuse(&address.action, error.to_string());
                 }
                 self.typed.represent();

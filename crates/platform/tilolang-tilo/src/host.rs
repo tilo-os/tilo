@@ -2,11 +2,11 @@
 //!
 //! A host owns one [`Runtime`] over a [`TiloStore`] and the platform's [`TiloAuthority`]. It
 //! compiles and loads packages, keeps their record schemas registered, opens a package's root
-//! resource (`root T`, one per workspace) through the default view of its type, and plans door
+//! resource (`root T`, one per workspace) through the default view of its type, and plans api
 //! invocations into [`DynAction`]s. The
 //! window widget in `apps/tilolang` drives it; so do the collaboration tests, with no window.
 //!
-//! The runtime is single-threaded. The closures the action door calls are `Send + Sync`, so they
+//! The runtime is single-threaded. The closures the action api calls are `Send + Sync`, so they
 //! hold a [`HostHandle`]: an id that finds its host in a thread-local registry, on the thread
 //! that built it. A call from another thread is refused with a message.
 
@@ -145,7 +145,7 @@ impl Package {
 /// What one settle of the outbox did ([`Host::settle_outbox`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutboxSettled {
-    /// How many changes it wrote, each queued for the door.
+    /// How many changes it wrote, each queued for the API.
     pub written: usize,
     /// It marked an effect as being handed over, which the next settle hands over: whoever
     /// settles owes another settle, without waiting for anything else to happen.
@@ -171,7 +171,7 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Principal,
     packages: RefCell<Vec<Rc<Package>>>,
-    /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
+    /// Suggestions an agent's code raised on the API, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
@@ -219,7 +219,7 @@ pub struct Opening<'a> {
     pub wake: Option<crate::background::Waker>,
 }
 
-/// What the door's closures hold in place of the host: see the module docs.
+/// What the API's closures hold in place of the host: see the module docs.
 #[derive(Clone)]
 pub struct HostHandle {
     id: u64,
@@ -294,7 +294,7 @@ pub(crate) fn value_of(
     value_of_ty(host, meta, json, &parse_ty(ty, &meta.app)?)
 }
 
-/// The value of the type `ty` an argument given as `json` stands for, as the door publishes the
+/// The value of the type `ty` an argument given as `json` stands for, as the API publishes the
 /// parameter ([`crate::surface::published_param`]): a record by the catalogue's reference to it
 /// (or its resource id), a plain enum by the name of its case, a principal as the workspace
 /// subject it is, lists and options as plain JSON. A value encoded as the runtime stores it
@@ -471,7 +471,7 @@ fn published_roots(meta: &Meta) -> Meta {
     meta
 }
 
-/// The argument `value` of the type `ty`, as the door takes it: in the shape the action's
+/// The argument `value` of the type `ty`, as the API takes it: in the shape the action's
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
 /// before it delivers, and which [`value_of`] reads back as the same value. A record by the
 /// catalogue's reference to it, of its own type, so a union or a type of another app says which
@@ -604,7 +604,7 @@ impl HostInner {
         planned
     }
 
-    /// The argument `value` of `param` as an invocation records it: as the door takes it, so
+    /// The argument `value` of `param` as an invocation records it: as the API takes it, so
     /// the recorded invocation reads back as it ran ([`argument_json`]).
     fn recorded(
         &self,
@@ -751,7 +751,7 @@ impl HostInner {
         {
             return Err(reason);
         }
-        // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
+        // The runtime sees the invoker the API admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
             || self.viewer.clone(),
@@ -835,7 +835,7 @@ impl HostInner {
         Ok(planned)
     }
 
-    /// The action's arguments as its invocation records them: those the door was given, and
+    /// The action's arguments as its invocation records them: those the API was given, and
     /// each left out that has a default computed now, on the invoker's state, since what the
     /// person saw is the argument. `None` when the line typed names no item, so the action
     /// does not run at all.
@@ -855,7 +855,7 @@ impl HostInner {
             given.push(Some(Value::resource(&target)));
             params.next();
         }
-        // What a person typed as one line, when the action takes an entry and the door was
+        // What a person typed as one line, when the action takes an entry and the API was
         // given it: the words it holds fill the parameters they name, and the entry takes the
         // rest, so one line from a palette makes the same task as one from the app's entry.
         let entry = action.params.iter().find(|param| param.entry);
@@ -1086,7 +1086,7 @@ impl Host {
             .set_unshared(&self.inner.runtime.unshared());
     }
 
-    /// The handle the door's closures hold.
+    /// The handle the API's closures hold.
     #[must_use]
     pub fn handle(&self) -> HostHandle {
         HostHandle {
@@ -1110,7 +1110,7 @@ impl Host {
 
     /// Carry out the outside effects of this device that wait in the record
     /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
-    /// what became of it is queued for the door like any other change. What `delivery(r)`
+    /// what became of it is queued for the API like any other change. What `delivery(r)`
     /// reads follows the record either way.
     ///
     /// # Errors
@@ -1187,7 +1187,7 @@ impl Host {
         self.inner.offered_reading(resource, &id)
     }
 
-    /// The action the door publishes as `action` on `resource`: one of the package whose
+    /// The action the API publishes as `action` on `resource`: one of the package whose
     /// resource it is (`tl:<app>:<id>`, `tl:<app>`), by the name the app publishes it under or
     /// the id its declaration keeps
     /// ([`MetaExt::action_published_as`](crate::meta::MetaExt::action_published_as)).
@@ -1205,7 +1205,7 @@ impl Host {
         })
     }
 
-    /// Run `encode`, the door building an invocation the record applies as soon as it is built:
+    /// Run `encode`, the API building an invocation the record applies as soon as it is built:
     /// the action it plans keeps what it wrote, so the store's writes are the change the record
     /// commits ([`crate::store::TiloStore::commit_action`]) and the action does not run a second
     /// time. It writes as `author`, whose change it is. Every other plan is a trial and is taken
@@ -1277,7 +1277,7 @@ impl Host {
 
     /// [`Self::load_bundle`], with each package it uses for which `other` holds loaded as
     /// another app's ([`Self::load_foreign_package`]): an app of its own, whose records stay in
-    /// its own record and are read from there, and whose actions run at its own door.
+    /// its own record and are read from there, and whose actions run at its own api.
     pub fn load_bundle_using(
         &self,
         bundle: &crate::bundle::Bundle,
@@ -1312,7 +1312,7 @@ impl Host {
         let _schemas = schemas.enter();
         meta.register_schemas();
         // The package's own table too: an action applied or described outside this store (a
-        // receiver replaying it, a task's door) resolves its record's type by this version.
+        // receiver replaying it, a task's api) resolves its record's type by this version.
         crate::schema::register_package(&meta, &id);
         self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.load(&id, &meta);
@@ -1336,7 +1336,7 @@ impl Host {
 
     /// Load the package of an app this host does not run, trusted: its views draw resources of
     /// that app from the readings the session hands in ([`tilolang_runtime::Runtime::set_reading`]),
-    /// and what they change is sent to those resources' doors through the runtime's invoker.
+    /// and what they change is sent to those resources' apis through the runtime's invoker.
     /// The store keeps none of its records, so the package is not among [`Self::packages`];
     /// its code is decided by the host's authority as the app's own, as a loaded package's is.
     ///
@@ -1644,7 +1644,7 @@ impl Host {
             .open_resource(&self.inner.viewer, resource, view)?)
     }
 
-    /// Plan an action as the door would, without a door.
+    /// Plan an action as the API would, without an API.
     ///
     /// # Errors
     /// As [`Planner::plan`].
@@ -1719,7 +1719,7 @@ impl Host {
     }
 
     /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
-    /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
+    /// `json` gives, read as the API reads an invocation's arguments: a resource by its id, a
     /// case by its name, a person as the workspace subject they are.
     pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
         value_of(&self.inner, meta, json, ty)

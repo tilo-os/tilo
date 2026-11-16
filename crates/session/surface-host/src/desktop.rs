@@ -431,7 +431,7 @@ impl DesktopHost {
         &self,
         address: &ui::tilo_actions::ActionAddress,
         look: &mut crate::Look<'_>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::DoorError>
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
     {
         use tilo_desktop_surface::window;
         let reads = address.action == "look" || address.action == "read";
@@ -443,7 +443,7 @@ impl DesktopHost {
         let Some(shown) = handle.read(|tree| window::shown(tree, tab)) else {
             // Not a window this session does not run: the tree publishes no
             // read action of it, so the address names nothing.
-            return Err(ui::tilo_actions::DoorError::Unknown(address.clone()));
+            return Err(ui::tilo_actions::ApiError::Unknown(address.clone()));
         };
         if address.action == "look" {
             // A window whose app keeps what it shows to itself is never
@@ -451,14 +451,14 @@ impl DesktopHost {
             // while it is withheld, and a catalogue read before then does not
             // outlive it.
             if handle.withholds(&shown.app_id) {
-                return Err(ui::tilo_actions::DoorError::Unavailable {
+                return Err(ui::tilo_actions::ApiError::Unavailable {
                     code: "withheld".into(),
                     reason: "this app's window keeps what it shows to itself".into(),
                 });
             }
             let shot = look
                 .window(shown.window, &shown.workspace)
-                .map_err(|reason| ui::tilo_actions::DoorError::Unavailable {
+                .map_err(|reason| ui::tilo_actions::ApiError::Unavailable {
                     code: "no_picture".into(),
                     reason,
                 })?;
@@ -486,7 +486,7 @@ impl DesktopHost {
         )))
     }
 
-    /// Answer the platform search door (`tilo.host:search`'s `open`) with the
+    /// Answer the platform search API (`tilo.host:search`'s `open`) with the
     /// desktop's own search: a window's search control, its toolbar's magnifier,
     /// Ctrl+K and an agent all ask the platform to search, and the platform's
     /// search is the one that knows the person's apps, their files, what apps
@@ -496,7 +496,7 @@ impl DesktopHost {
     /// front; opening it here means the same search every way into search
     /// reaches.
     ///
-    /// `None` when `address` is not the platform search door.
+    /// `None` when `address` is not the platform search API.
     fn open_platform_search(
         &self,
         address: &ui::tilo_actions::ActionAddress,
@@ -597,7 +597,7 @@ impl crate::Published for DesktopHost {
     fn revision(&self) -> Option<u64> {
         // What the desktop publishes is its tree's as drawn — the windows, its fields and its
         // controls — and its search, which the host above the windows moves as the person types
-        // there and the rows come in. A frame it drew may have moved any of them, and the door
+        // there and the rows come in. A frame it drew may have moved any of them, and the API
         // tells a frame that moved nothing it publishes from one that did.
         let desktop = self.desktop.borrow();
         let handle = desktop.policy.handle();
@@ -613,7 +613,7 @@ impl crate::Published for DesktopHost {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut crate::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
         }
@@ -634,7 +634,7 @@ impl crate::Published for DesktopHost {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut crate::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
         }
@@ -963,7 +963,7 @@ impl WindowFollowers {
 
 impl StripPolicy {
     /// Tell `observer` the process of each window the compositor maps, as the
-    /// desktop gives it a place: the app's door opens to it from then on.
+    /// desktop gives it a place: the app's API opens to it from then on.
     pub fn set_window_mapped(&mut self, observer: Rc<dyn Fn(u32)>) {
         self.followers.set_window_mapped(observer);
     }

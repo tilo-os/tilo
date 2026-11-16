@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
-use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_content::ContentStore;
 use tilo_relay_protocol::live::LiveAnchor;
@@ -582,18 +582,18 @@ impl ConfinedReplica {
         }
     }
 
-    /// Perform one published operation through the resource's own door:
+    /// Perform one published operation through the resource's own API:
     /// [`crate::Replica::invoke`].
     pub fn invoke(
         &self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_with(None, None, address, arguments, confirm)
     }
 
-    /// [`Self::invoke`] showing the appearance the door admitted:
+    /// [`Self::invoke`] showing the appearance the API admitted:
     /// [`crate::Replica::invoke_appearing`].
     ///
     /// # Errors
@@ -605,7 +605,7 @@ impl ConfinedReplica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
         appearance: Option<&tilo_actions::Appearance>,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(None, None, appearance, address, arguments, confirm)
     }
 
@@ -622,7 +622,7 @@ impl ConfinedReplica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(None, context, appearance, address, arguments, confirm)
     }
 
@@ -639,11 +639,11 @@ impl ConfinedReplica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         self.invoke_within(invoker, context, None, address, arguments, confirm)
     }
 
-    /// [`Self::invoke_with`] showing `appearance`, which only a door that
+    /// [`Self::invoke_with`] showing `appearance`, which only an API that
     /// admitted it passes.
     pub(crate) fn invoke_within(
         &self,
@@ -653,14 +653,14 @@ impl ConfinedReplica {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
-    ) -> Result<ActionOutput, DoorError> {
+    ) -> Result<ActionOutput, ApiError> {
         // A render is made in the host's render service, never the worker.
         if let Some(rendered) =
             crate::render::route(self, self.content.as_ref(), address, arguments)
         {
             return rendered;
         }
-        let unavailable = |reason: String| DoorError::Unavailable {
+        let unavailable = |reason: String| ApiError::Unavailable {
             code: "app_worker".into(),
             reason,
         };
@@ -717,8 +717,8 @@ impl ConfinedReplica {
         drop(inner);
         match reply {
             Ok(Reply::Output(text)) => serde_json::from_str(&text)
-                .map_err(|error| DoorError::Failed(format!("the output did not decode: {error}"))),
-            Ok(Reply::Refused(error)) => Err(error.into_door(address)),
+                .map_err(|error| ApiError::Failed(format!("the output did not decode: {error}"))),
+            Ok(Reply::Refused(error)) => Err(error.into_api(address)),
             Ok(Reply::Failed(reason)) => Err(unavailable(reason)),
             Ok(_) => Err(unavailable("the worker answered out of turn".into())),
             Err(error) => Err(unavailable(error.to_string())),

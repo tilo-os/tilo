@@ -76,7 +76,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
         false,
     );
     chrome.set_tilo(TiloOverview {
-        door: Some(Server {
+        server: Some(Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![Grant {
                 id: "g1".into(),

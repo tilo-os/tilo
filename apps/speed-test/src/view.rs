@@ -601,7 +601,7 @@ mod tests {
     use crate::resource::SpeedTestShell;
     use ui::framework::ResourceApp;
     use ui::prelude::{Replica, TestApp};
-    use ui::tilo_actions::{Availability, DoorError};
+    use ui::tilo_actions::{ApiError, Availability};
     use ui::vello::kurbo::Rect;
 
     fn availability(app: &mut TestApp<SpeedTestShell>, id: &str) -> Availability {
@@ -646,7 +646,7 @@ mod tests {
         ));
         let refused = app.effect(&SpeedEffect::Stop);
         assert!(
-            matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "idle"),
+            matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "idle"),
             "{refused:?}"
         );
         app.invoke(SpeedTest::RECORD.with((

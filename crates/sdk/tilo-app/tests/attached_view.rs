@@ -209,7 +209,7 @@ tilo_test_env::scenario! {
         assert!(view.operations().is_empty());
         assert!(matches!(
             view.invoke_typed(&Tally::BUMP.invoke(), false),
-            Err(tilo_actions::door::DoorError::Unknown(_))
+            Err(tilo_actions::api::ApiError::Unknown(_))
         ));
         assert_eq!(count(&view), 0);
     }

@@ -1,6 +1,6 @@
 //! A place on the shell's canvas that names another app's record composes that app's own view
 //! over the record's reading as the session publishes it, and an edit in the composed view
-//! goes to the record's door: the note the notes app reads is the note the place shows.
+//! goes to the record's API: the note the notes app reads is the note the place shows.
 
 #![allow(
     clippy::unwrap_used,
@@ -168,7 +168,7 @@ fn follow(link: &SessionLink, layout: &LayoutReading, service: &RecordService) -
     link.follow_places(layout, &service.resources(), |id| service.read(id))
 }
 
-/// Run what the shell asked against the note's door, as the session's turn does.
+/// Run what the shell asked against the note's API, as the session's turn does.
 fn serve(link: &SessionLink, service: &mut RecordService) {
     link.serve(|ask| {
         let arguments: Map<String, Json> = ask
@@ -265,7 +265,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     );
     assert!(link.has_asks(), "the edit is asked of the note's door");
 
-    // The edit went to the note's door, as the session's turn runs what the shell asked.
+    // The edit went to the note's API, as the session's turn runs what the shell asked.
     serve(&link, &mut service);
     let reading = service.read(&note).unwrap();
     assert_eq!(

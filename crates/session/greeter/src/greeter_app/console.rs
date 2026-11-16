@@ -621,7 +621,7 @@ mod tests {
                     "configure-session-diagnostics",
                 ] {
                     assert!(
-                        ui::tilo_actions::door::resolve(
+                        ui::tilo_actions::api::resolve(
                             &resources,
                             &ui::tilo_actions::ActionAddress::new(PROVIDER, action),
                         )
@@ -633,7 +633,7 @@ mod tests {
 
             app.phase = AuthPhase::Idle;
             let resources = ui::resources::resources(&app, &AutoCommit::new());
-            let encoded = ui::tilo_actions::door::resolve(
+            let encoded = ui::tilo_actions::api::resolve(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new(PROVIDER, "choose-session"),
             )
@@ -1277,7 +1277,7 @@ mod authentication_tests {
         let catalogue = catalog::enumerate(PROVIDER, &resources, "");
         assert!(!catalogue.to_string().contains(SECRET));
         let reply = if door == "surface" {
-            let encoded = ui::tilo_actions::door::resolve(
+            let encoded = ui::tilo_actions::api::resolve(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new(PROVIDER, "sign-in"),
             )

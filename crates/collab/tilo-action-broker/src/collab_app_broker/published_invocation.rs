@@ -314,17 +314,17 @@ impl OriginalInvocationData {
 
     /// Whether an application invoked this itself on its own connection, as
     /// the person who admitted it (a button in its window running its own
-    /// published action), rather than the person at one of the host's doors,
+    /// published action), rather than the person at one of the host's apis,
     /// an agent or another member asking for it.
-    pub(super) fn through_app_door(&self) -> bool {
+    pub(super) fn through_app_api(&self) -> bool {
         matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
     }
 
-    /// Whether application `app` invoked this itself through its own door,
-    /// as [`Self::through_app_door`], rather than the person on a
+    /// Whether application `app` invoked this itself through its own api,
+    /// as [`Self::through_app_api`], rather than the person on a
     /// connection of their own.
-    pub(super) fn through_door_of(&self, app: &str) -> bool {
-        self.through_app_door()
+    pub(super) fn through_api_of(&self, app: &str) -> bool {
+        self.through_app_api()
             && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
     }
 

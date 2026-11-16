@@ -331,7 +331,7 @@ pub struct TabBar {
     /// tab whose window has no History.
     history_rects: Vec<Rect>,
     /// The History control each tab's window offers, by tab id: the window's
-    /// History door, shown as one more chip in the pill's cluster.
+    /// History API, shown as one more chip in the pill's cluster.
     history: HashMap<u64, HistoryControl>,
     new_tab_rect: Rect,
     /// Keyed by tab id with the title and style it was measured at, so a rename or theme change
@@ -3542,7 +3542,7 @@ pub const WINDOW_HISTORY_TARGET: &str = "window-history";
 pub const WINDOW_MAXIMIZE_TARGET: &str = "window-maximize";
 pub const WINDOW_COLLAPSE_TARGET: &str = "window-collapse";
 pub const WINDOW_CLOSE_TARGET: &str = "window-close";
-/// Action target of a window's new-tab door, as assistive technology and
+/// Action target of a window's new-tab API, as assistive technology and
 /// automation address it.
 pub const NEW_TAB_TARGET: &str = "tab-new";
 /// Where a window bar's row starts: the leading glyph then sits as far from
@@ -9353,7 +9353,7 @@ mod tests {
         }
 
         phase the_new_tab_control_stands_as_its_glyph_and_names_itself_at_every_width;
-        // The strip's own door to another application is a control of the bar as much as the app's
+        // The strip's own API to another application is a control of the bar as much as the app's
         // slots are: the bar reads it at every width, always as the "+" every browser and tabbed
         // app wears, and never in words — they would start a one-tab window's bar with a label
         // ahead of the app's controls.

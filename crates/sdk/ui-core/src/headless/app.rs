@@ -5,12 +5,12 @@
 //! A test that drove a component had four ways in, and each proved something else: clicking a named
 //! control proves where a widget sits, reading the Automerge document proves what the app stored, a
 //! headless scenario proves the same clicks from a JSON file, and the control socket proves the
-//! door an agent uses. Only the last is the app's public surface, and
+//! API an agent uses. Only the last is the app's public surface, and
 //! [`FrameHarness::invoke_action`](super::FrameHarness::invoke_action) already speaks it — but
 //! reaching it from a test meant mounting a `TileHost` by hand, wrapping it in a frame, and knowing
 //! which of `call_on`, `invoke_published` and `invoke_bound_action` takes which address.
 //!
-//! [`HeadlessApp`] mounts an application's component in one frame and opens the door on it:
+//! [`HeadlessApp`] mounts an application's component in one frame and opens the API on it:
 //! ```ignore
 //! let host = ProbeHost::new();
 //! let component = host.component(11);
@@ -61,7 +61,7 @@ pub fn fixture_runner_inputs() -> ComponentRunnerInputs {
 /// headless runner's default is.
 pub const MOUNT_VIEWPORT: (u32, u32) = (800, 600);
 
-/// An application component mounted in a frame, with its door open.
+/// An application component mounted in a frame, with its API open.
 pub struct HeadlessApp {
     frame: FrameHarness,
 }
@@ -106,7 +106,7 @@ impl HeadlessApp {
         &mut self,
         address: &ActionAddress,
         arguments: serde_json::Map<String, Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.frame.invoke_action(address, &arguments, false, None)
     }
 
@@ -116,7 +116,7 @@ impl HeadlessApp {
         &mut self,
         address: &ActionAddress,
         arguments: serde_json::Map<String, Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.frame.invoke_action(address, &arguments, true, None)
     }
 
@@ -127,9 +127,9 @@ impl HeadlessApp {
         resource: &str,
         action: &str,
         arguments: Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -142,9 +142,9 @@ impl HeadlessApp {
         resource: &str,
         action: &str,
         arguments: Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let Value::Object(arguments) = arguments else {
-            return Err(tilo_actions::DoorError::InvalidArguments(
+            return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
             ));
         };
@@ -168,7 +168,7 @@ impl HeadlessApp {
     /// execution and result — or `None` when the app does not publish it.
     #[must_use]
     pub fn contract(&self, resource: &str, action: &str) -> Option<tilo_actions::ActionSpec> {
-        tilo_actions::door::resolve(&self.resources(), &ActionAddress::new(resource, action))
+        tilo_actions::api::resolve(&self.resources(), &ActionAddress::new(resource, action))
             .cloned()
     }
 

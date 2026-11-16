@@ -28,11 +28,11 @@ use std::sync::Mutex;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{
-    ActionAddress, ActionOutput, ActionParam, ActionSpec, DoorError, EncodedAction, OperationKind,
+    ActionAddress, ActionOutput, ActionParam, ActionSpec, ApiError, EncodedAction, OperationKind,
     ParamType, ResourceSpec,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_session_core::door::Published;
+use tilo_session_core::surfaces::Published;
 use ui::host_operation::ResourceOperationStart;
 
 use crate::i18n::t;
@@ -206,25 +206,25 @@ impl Published for Served {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        _look: &mut tilo_session_core::door::Look<'_>,
-    ) -> Result<ResourceOperationStart, DoorError> {
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ResourceOperationStart, ApiError> {
         if address.resource != RESOURCE {
-            return Err(DoorError::Unknown(address.clone()));
+            return Err(ApiError::Unknown(address.clone()));
         }
-        let text = |name: &str| -> Result<String, DoorError> {
+        let text = |name: &str| -> Result<String, ApiError> {
             arguments
                 .get(name)
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .ok_or_else(|| {
-                    DoorError::InvalidArguments(format!("`{}` takes `{name}`", address.action))
+                    ApiError::InvalidArguments(format!("`{}` takes `{name}`", address.action))
                 })
         };
         let answer = match address.action.as_str() {
             "make-it-mine" => make_it_mine(&text("style")?),
             "check" => check(&text("package")?),
             "install" => install(&text("package")?),
-            _ => return Err(DoorError::Unknown(address.clone())),
+            _ => return Err(ApiError::Unknown(address.clone())),
         };
         let (package, answer) = match answer {
             Ok((package, answer)) => (package, Ok(answer)),
@@ -257,7 +257,7 @@ impl Published for Served {
                 value: Some(value),
                 resources: Vec::new(),
             })),
-            Err(reason) => Err(DoorError::Failed(reason)),
+            Err(reason) => Err(ApiError::Failed(reason)),
         }
     }
 

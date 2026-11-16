@@ -233,7 +233,7 @@ mod durable_local_matrix {
             }
         }
         /// A connection for `app_id`, which publishes the actions it reaches
-        /// through its own door: the application a person launched.
+        /// through its own api: the application a person launched.
         async fn app_caller(
             &self,
             env: &Environment,
@@ -421,7 +421,7 @@ mod durable_local_matrix {
     include!("kept_agent_route_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
-    include!("app_open_door_tests.rs");
+    include!("app_open_api_tests.rs");
     include!("app_child_request_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
     include!("store_directory_publication_tests.rs");

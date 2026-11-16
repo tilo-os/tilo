@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{InvokeArgument, RemoteActionTarget};
-use crate::door::ActionAddress;
+use crate::api::ActionAddress;
 
 /// The provider the session serves workspace activity under.
 pub const PROVIDER: &str = "tilo.activity";

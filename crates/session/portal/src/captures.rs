@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect;
 use tilo_service::{Started, decode, offer};
@@ -217,9 +217,9 @@ impl crate::Published for Captures {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Option<Result<Started, DoorError>> {
+    ) -> Option<Result<Started, ApiError>> {
         let opaque = resource.strip_prefix(CAPTURE_PREFIX)?;
-        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        let unknown = || ApiError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         Some(
             decode::<CaptureEffect>(published, resource, action, arguments).and_then(|_| {
                 let mut broker = self.broker.lock_recover();

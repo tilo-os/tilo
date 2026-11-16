@@ -1,7 +1,7 @@
-//! Applications on the action door under their own identity.
+//! Applications on the action api under their own identity.
 //!
 //! An application declares in its signed manifest what it may do on the
-//! door beyond its own actions ([`AppActionAccess`]): read the catalogue,
+//! api beyond its own actions ([`AppActionAccess`]): read the catalogue,
 //! invoke other apps' actions. The declaration is a ceiling, never a grant:
 //! using another app's action still needs the person's own answer.
 //!

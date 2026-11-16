@@ -66,7 +66,7 @@ mod suggest;
 mod surface;
 mod sync;
 mod task;
-mod task_door;
+mod task_api;
 mod tasks;
 mod tasks_places;
 mod tasks_today;

@@ -1,5 +1,5 @@
 use serde_json::{Map, Value, json};
-use tilo_actions::{ConfirmationPolicy, DoorError, ResourceSpec};
+use tilo_actions::{ApiError, ConfirmationPolicy, ResourceSpec};
 use tilo_service::{Service, Services};
 
 use super::{INDEX, SettingsService, setting_resource};
@@ -71,7 +71,7 @@ fn turning_off_a_switch_that_guards_the_lock_asks_first() {
     );
     assert_eq!(
         services.invoke(&resource, "switch", &Map::new()),
-        Some(Err(DoorError::ConfirmationRequired))
+        Some(Err(ApiError::ConfirmationRequired))
     );
     services
         .invoke_confirmed(&resource, "switch", &Map::new())
@@ -134,7 +134,7 @@ fn a_timer_takes_a_value_and_a_longer_lock_asks_first() {
     let never = arguments(json!({ "value": "0" }));
     assert_eq!(
         services.invoke(&resource, "set", &never),
-        Some(Err(DoorError::ConfirmationRequired)),
+        Some(Err(ApiError::ConfirmationRequired)),
         "never locking weakens the lock"
     );
     services

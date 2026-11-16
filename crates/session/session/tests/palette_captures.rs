@@ -112,7 +112,7 @@ fn capture() -> Vec<ResourceSpec> {
 /// What the app publishes: the capture as it crosses the wire, which carries no execution locus of
 /// its own.
 fn surface() -> Vec<runtime_collab::ExportedAction> {
-    tilo_actions::door::survey(&capture())
+    tilo_actions::api::survey(&capture())
         .iter()
         .map(runtime_collab::ExportedAction::from)
         .collect()

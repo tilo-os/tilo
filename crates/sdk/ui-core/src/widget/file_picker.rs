@@ -398,7 +398,7 @@ enum SaveNameError {
     NotAllowed(PathBuf),
 }
 
-#[crate::component::not_a_component(system, "files open through the system's file door")]
+#[crate::component::not_a_component(system, "files open through the system's file API")]
 pub struct FilePicker {
     rect: Rect,
     title: String,

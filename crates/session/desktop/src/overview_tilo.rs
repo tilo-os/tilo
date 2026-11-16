@@ -17,7 +17,7 @@
 //! overview shows; a press on one is an [`OverviewPick`] the host carries
 //! out, as every pick of the overview is.
 //!
-//! The agents' rows are the MCP server's ([`door::DoorRead`]): the read the
+//! The agents' rows are the MCP server's ([`server::ApiRead`]): the read the
 //! host serves, followed while the overview is up, so the rows say who was
 //! let in, what each may reach and what is working, as that changes. An
 //! agent is drawn as presence draws it everywhere, so it reads as itself
@@ -26,7 +26,7 @@
 //! Revoke, which asks on its row first ([`Confirm`]). A press on the row
 //! itself opens the agent's card, as its face does anywhere else.
 
-pub mod door;
+pub mod api;
 
 use std::time::Duration;
 
@@ -49,7 +49,7 @@ pub struct TiloOverview {
     /// ([`tilo_actions::remote::host_account::ACCOUNT`]).
     pub hosts: Vec<HostAccount>,
     /// The MCP server's answer, when one answers ([`mcp_server::SERVER`]).
-    pub door: Option<mcp_server::Server>,
+    pub server: Option<mcp_server::Server>,
 }
 
 /// One row below the workspaces.
@@ -336,10 +336,15 @@ pub fn rows(shell: &TiloOverview) -> Vec<TiloRow> {
             rows.push(TiloRow::Item(host_row(index, host)));
         }
     }
-    if let Some(door) = shell.door.as_ref().filter(|door| !door.grants.is_empty()) {
+    if let Some(server) = shell
+        .server
+        .as_ref()
+        .filter(|server| !server.grants.is_empty())
+    {
         rows.push(TiloRow::Caption(t("overview-tilo-agents")));
         rows.extend(
-            door.grants
+            server
+                .grants
                 .iter()
                 .map(|grant| TiloRow::Item(agent_row(grant))),
         );

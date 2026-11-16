@@ -41,7 +41,7 @@ use desktop_entry::downloaded::{
 };
 use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps as wire;
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading};
@@ -804,7 +804,7 @@ impl Service for Downloaded {
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
-    ) -> Result<Started, DoorError> {
+    ) -> Result<Started, ApiError> {
         let published = self.resources();
         if resource == RESOURCE {
             let effect = decode::<DownloadedAppsAction>(&published, resource, action, arguments)?;
@@ -820,7 +820,7 @@ impl Service for Downloaded {
             return Ok(Started::Accepted);
         }
         let Some(desktop_id) = resource.strip_prefix(wire::APP_PREFIX) else {
-            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+            return Err(ApiError::Unknown(ActionAddress::new(resource, action)));
         };
         let desktop_id = desktop_id.to_owned();
         let effect = decode::<DownloadedAppAction>(&published, resource, action, arguments)?;

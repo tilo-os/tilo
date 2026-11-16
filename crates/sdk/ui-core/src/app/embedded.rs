@@ -1063,10 +1063,10 @@ impl AppWidget for EmbeddedApp {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.runs();
         if !self.device_local {
-            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+            return Err(tilo_actions::ApiError::Unknown(address.clone()));
         }
         let started = self.app.invoke_local_resource_action(address, arguments);
         self.wants_frame.set(true);

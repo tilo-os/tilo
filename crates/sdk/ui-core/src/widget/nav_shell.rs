@@ -493,7 +493,7 @@ struct Inputs {
     /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
     toolbar_in_bar: bool,
     /// The host lists the window's actions where the person reaches them; actions that do not fit
-    /// give way with no other door.
+    /// give way with no other API.
     actions_listed: bool,
     titled: [bool; 4],
     actions: [usize; 4],
@@ -871,11 +871,11 @@ impl NavShell {
             toggle: Box::new(toggle),
             back: Box::new(back),
             inspector_toggle: Box::new(inspector_toggle),
-            history_open: Box::new(crate::history_mode::door::history_control_button(
+            history_open: Box::new(crate::history_mode::api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Closed,
             )),
-            history_close: Box::new(crate::history_mode::door::history_control_button(
+            history_close: Box::new(crate::history_mode::api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Open,
             )),
@@ -3650,7 +3650,7 @@ impl crate::widget::controls::ActionControls for NavShell {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.for_each_owned_mut(|child| {
             if !child.has_separate_document_owner() {
