@@ -1729,7 +1729,7 @@ impl AppCheck<'_> {
             staged.open(resource.clone());
             self.run(staged, &format!("{title}, then a {} opened", view.name))?;
             // An app whose rows open where they stand (a task opened in its list) answers the
-            // record's own door with its place: its page is still a view the app draws, from the
+            // record's own action API with its place: its page is still a view the app draws, from the
             // row's menu, so the run opens it by its name as that menu row does.
             if !shows(&self.shown, &self.meta.app, &view.name) {
                 staged.open_with(&resource, &view.id);

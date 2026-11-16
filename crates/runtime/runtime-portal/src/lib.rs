@@ -14,7 +14,7 @@ pub mod environment_socket;
 #[cfg(unix)]
 pub mod launch_handoff;
 pub mod local_socket;
-/// The messages that travel over a connected door: Unix sockets and the
+/// The messages that travel over a connected socket: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.
 #[cfg(unix)]
 pub mod message;

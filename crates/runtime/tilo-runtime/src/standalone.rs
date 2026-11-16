@@ -97,7 +97,7 @@ pub struct Standalone {
     _personal: PeerPersonal,
     /// The store open to the person's other devices for as long as this
     /// runtime runs, and the workspaces' store answered on the same router.
-    _personal_door: tilo_action_broker::personal::Links,
+    _personal_links: tilo_action_broker::personal::Links,
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
@@ -273,7 +273,7 @@ impl Standalone {
             _files: files,
             _media: media,
             _personal: personal.sync.store(),
-            _personal_door: personal.links,
+            _personal_links: personal.links,
             _personal_router: personal.router,
             _lock: lock,
         })
@@ -383,7 +383,7 @@ fn broker_services(
         .joined
         .offer_plane()
         .and_then(|(plane, endpoint, runtime)| {
-            crate::offload::offer_door(plane, endpoint, runtime, Arc::clone(&record_content))
+            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&record_content))
         });
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
@@ -769,7 +769,7 @@ impl ActionHost for RuntimeActionHost {
             {
                 return session.host.query(caller, query);
             }
-            // Existing general catalogue/builtin doors retain the exact
+            // Existing general catalogue/builtin APIs retain the exact
             // authenticated run. They make no SDK original-custody claim.
             let answer = self.broker.state().action_query(&session.acting(), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);

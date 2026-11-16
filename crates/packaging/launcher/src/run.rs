@@ -272,7 +272,7 @@ pub struct RunOptions {
     /// data.
     pub tilolang_hosted: bool,
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
-    /// the app reach it over the door the launcher hands it.
+    /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
 }
 
@@ -3220,28 +3220,28 @@ pub(crate) fn run_with_context(
         )? {
             resolved.push(stats);
         }
-        // An origin connector's door, which the session released it with as a window's: the instances
+        // An origin connector's socket, which the session released it with as a window's: the instances
         // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
-            && let Some(door) = crate::registration_gate::take_window_channel()
+            && let Some(channel) = crate::registration_gate::take_window_channel()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
-                host: door,
+                host: channel,
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
-        // The shell opens the app's later windows in this process through the door it released this
+        // The shell opens the app's later windows in this process through the channel it released this
         // launch with (`runtime_portal::windows`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
-            && let Some(door) = crate::registration_gate::take_window_channel()
+            && let Some(channel) = crate::registration_gate::take_window_channel()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::windows::SERVICE.to_owned(),
-                host: door,
+                host: channel,
                 child_fd: runtime_portal::windows::CHILD_FD,
             });
         }
@@ -3916,7 +3916,7 @@ fn run_with_capture_spawn<T>(
     }
     validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox builder, and a policy with
-    // one enforced door is a door beside it.
+    // one enforced route is a route beside it.
     validate_launch_mode(manifest, opts)?;
     validate_interfaces(manifest)?;
     crate::manifest::enforce_fs_policy(manifest)?;

@@ -1531,7 +1531,7 @@ inputs = [
   "apps/tl/tasks/",
   "apps/tl/chat/",
   "apps/tl/mail/",
-  # The mount's door tests hold the session's table to the launcher's service
+  # The mount's service tests hold the session's table to the launcher's service
   # routing and to the protocol crates that name a service, and read every
   # app's declared services.
   "crates/packaging/launcher/src/services.rs",
@@ -1577,7 +1577,7 @@ package = "tilo-session-client"
 # The actual microphone fixture serves the production web modules to
 # Chromium and carries the page's pictures to a native participant of its call;
 # the device's refusal test reads how each refusal travels as the CLI, the front
-# door and the page read it. The page tests' driver serves the runtime module
+# and the page read it. The page tests' driver serves the runtime module
 # built beside the page's sources: a run that is handed none builds it with the
 # script the CI setup uses, so that script and the build it runs are read too.
 inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]

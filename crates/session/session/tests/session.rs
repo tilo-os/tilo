@@ -1158,8 +1158,8 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_liveness_door_beside_the_control_socket_answers_a_heartbeat;
-    // Beside the development control socket, the session serves the liveness door: the loop answers a
+    phase the_liveness_socket_beside_the_control_socket_answers_a_heartbeat;
+    // Beside the development control socket, the session serves the liveness socket: the loop answers a
     // heartbeat asked from outside it, so a session whose loop has stopped can be told apart from a
     // slow machine.
     {
@@ -1172,7 +1172,7 @@ tilo_test_env::scenario! {
             ..Options::default()
         });
         let mut client = std::os::unix::net::UnixStream::connect(tilo_liveness::socket_path(&control))
-            .expect("the door is bound beside the control socket");
+            .expect("the socket is bound beside the control socket");
         client
             .set_read_timeout(Some(Duration::from_millis(50)))
             .expect("a read deadline");
@@ -1185,20 +1185,20 @@ tilo_test_env::scenario! {
         loop {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the door answers: {answer:?}"
+                "the socket answers: {answer:?}"
             );
             session
                 .step(Duration::from_millis(1))
                 .expect("a turn of the session");
             match std::io::BufRead::read_line(&mut reader, &mut answer) {
-                Ok(0) => panic!("the door hung up: {answer:?}"),
+                Ok(0) => panic!("the socket hung up: {answer:?}"),
                 Ok(_) => break,
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) => {}
-                Err(error) => panic!("the door does not answer: {error}"),
+                Err(error) => panic!("the socket does not answer: {error}"),
             }
         }
         assert!(

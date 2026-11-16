@@ -329,16 +329,16 @@ impl Session {
         }
         self.store.ensure()?;
         let resolved = self.resolve()?;
-        let door = crate::mcp_server::open_for(
+        let socket = crate::mcp_server::open_for(
             &self.store,
             &self.environment_id(&resolved.key),
             &resolved.environment,
         );
-        self.opts.mcp_server = door.as_ref().map(|door| door.path().to_path_buf());
+        self.opts.mcp_server = socket.as_ref().map(|socket| socket.path().to_path_buf());
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.run_guest(&resolved, &session_dir);
-        drop(door);
+        drop(socket);
         crate::guest::remove_dir_all_forced(&session_dir);
         outcome
     }
@@ -2341,13 +2341,13 @@ mod tests {
     }
 
     #[test]
-    fn an_environment_asks_for_its_door_in_its_records_workspace_and_binds_it() {
+    fn an_environment_asks_for_its_socket_in_its_records_workspace_and_binds_it() {
         use std::io::{BufRead as _, Write as _};
         const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
         crate::require_trusted_loader!();
         let dir = tempfile::tempdir().unwrap();
-        let door = dir.path().join("agent.sock");
-        let listener = tilo_files::native::socket::bind(&door).unwrap();
+        let socket = dir.path().join("agent.sock");
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
         let session_side = std::thread::spawn(move || {
             let mut asked = Vec::new();
             for _ in 0..2 {
@@ -2382,23 +2382,23 @@ mod tests {
             .for_workspace(&w1);
         let resolved = session.resolve().unwrap();
         let lease = crate::mcp_server::open_at(
-            &door,
+            &socket,
             &session.store,
             &session.environment_id(&resolved.key),
             &resolved.environment,
         )
-        .expect("the session opened a door");
+        .expect("the session opened a socket");
         assert_eq!(lease.workspace(), W1);
 
         let primary = session_in(&dir.path().join("primary"));
         let primary_resolved = primary.resolve().unwrap();
         let front = crate::mcp_server::open_at(
-            &door,
+            &socket,
             &primary.store,
             &primary.environment_id(&primary_resolved.key),
             &primary_resolved.environment,
         )
-        .expect("the session opened a door");
+        .expect("the session opened a socket");
         assert_eq!(front.workspace(), "front", "the session chose");
 
         let asked = session_side.join().unwrap();

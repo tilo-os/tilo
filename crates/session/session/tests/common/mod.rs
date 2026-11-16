@@ -97,7 +97,7 @@ pub const TITLES: [&str; 12] = [
     "Plumber quotes",
 ];
 
-/// A directory only this user reaches, for the door, the plane and the test-control socket.
+/// A directory only this user reaches, for the server, the plane and the test-control socket.
 pub fn private_home() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the session in");
@@ -888,7 +888,7 @@ pub fn seeded_session_at(
 }
 
 /// A headless session with the shell as the whole screen, the notes [`notebook`] published, its
-/// MCP server and action plane at `root`, the questions the door's admission is asked through,
+/// MCP server and action plane at `root`, the questions the server's admission is asked through,
 /// and the programs named as admitted to act as the person ahead of time.
 pub fn repl_session(
     root: &Path,
@@ -990,12 +990,12 @@ pub struct Repl {
 }
 
 impl Repl {
-    /// Connect to the door at `socket` as `tilolang repl` does: asking to act as the person.
+    /// Connect to the server at `socket` as `tilolang repl` does: asking to act as the person.
     pub fn connect(socket: &Path) -> Self {
         Self::asking(socket, true)
     }
 
-    /// Connect to the door at `socket` , asking to act as the person (`as_person`) or as an agent
+    /// Connect to the server at `socket` , asking to act as the person (`as_person`) or as an agent
     /// of theirs.
     pub fn asking(socket: &Path, as_person: bool) -> Self {
         let socket = socket.to_path_buf();
@@ -1003,12 +1003,12 @@ impl Repl {
         let (answer, answers) = std::sync::mpsc::channel::<Value>();
         std::thread::spawn(move || {
             let stream = UnixStream::connect(&socket).expect("the MCP server's socket");
-            let mut writer = stream.try_clone().expect("a second handle on the door");
+            let mut writer = stream.try_clone().expect("a second handle on the server");
             let mut reader = BufReader::new(stream);
             for request in asked {
                 writer
                     .write_all(format!("{request}\n").as_bytes())
-                    .expect("the door reads");
+                    .expect("the server reads");
                 let Some(id) = request.get("id").cloned() else {
                     continue;
                 };
@@ -1050,7 +1050,7 @@ impl Repl {
 
     /// The answer to the last request, running the session until it is in.
     pub fn answer(&self, session: &mut Session) -> Value {
-        wait_for(session, "the door's answer", |_| {
+        wait_for(session, "the server's answer", |_| {
             self.answers.try_recv().ok()
         })
     }
@@ -1063,7 +1063,7 @@ impl Repl {
 
     /// Send `method` with `params`, and answer nothing here: the caller runs the session until it
     /// likes, and reads the answer with [`Self::answer`] when it is in. What a test that drives
-    /// frames meanwhile, or counts them, needs: the door's thread works on while the loop passes.
+    /// frames meanwhile, or counts them, needs: the server's thread works on while the loop passes.
     pub fn send(&mut self, method: &str, params: &Value) {
         self.next = self.next.saturating_add(1);
         self.asks
@@ -1071,7 +1071,7 @@ impl Repl {
             .unwrap();
     }
 
-    /// Call the door's tool `name` : its text, and whether it is an error.
+    /// Call the server's tool `name` : its text, and whether it is an error.
     pub fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
         let reply = self.ask(
             session,
@@ -1109,7 +1109,7 @@ impl Repl {
             .collect()
     }
 
-    /// Run the program `program` through the door's `tilo` tool: its answer, and whether it is an
+    /// Run the program `program` through the server's `tilo` tool: its answer, and whether it is an
     /// error.
     pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
         self.call(session, "tilo", &json!({"program": program}))
@@ -1239,7 +1239,7 @@ pub fn drawn_name(session: &Session, record: &str) -> String {
         )
 }
 
-/// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and wait
+/// Place what "Inbox" finds on the canvas through the server, as the REPL's program does, and wait
 /// until the place shows the seeded conversation.
 pub fn place_the_inbox(session: &mut Session, root: &Path) {
     let mut repl = Repl::connect(&root.join("agent.sock"));

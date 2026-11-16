@@ -367,7 +367,7 @@ impl AgentSessions {
             connection
                 .environment
                 .as_ref()
-                .is_some_and(|entered| entered.door == environment)
+                .is_some_and(|entered| entered.socket == environment)
         })
     }
 
@@ -548,7 +548,7 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Entered {
     /// The server's number among those this session opened: what its sessions are stopped by.
-    pub(crate) door: u64,
+    pub(crate) socket: u64,
     /// The environment's id on this device, `<workspace>/<record>`.
     pub(crate) id: String,
     /// What the person calls the environment.
@@ -786,7 +786,7 @@ mod tests {
     fn a_session_from_an_environment_is_listed_with_that_environment_beside_its_name() {
         let sessions = AgentSessions::new();
         let entered = Entered {
-            door: 7,
+            socket: 7,
             id: "w1/Dev.Box".to_owned(),
             name: "Dev box".to_owned(),
         };

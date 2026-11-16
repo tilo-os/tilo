@@ -1300,11 +1300,11 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
     let runtime = dir.path().join("rt");
     let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);
     std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENTS_DIR)).unwrap();
-    let door = session_dir.join(tilo_paths::login::AGENT_SOCKET_FILE);
+    let socket = session_dir.join(tilo_paths::login::AGENT_SOCKET_FILE);
     let environment_server = session_dir
         .join(tilo_paths::login::ENVIRONMENTS_DIR)
         .join("e1.sock");
-    let session = fake_session(&door, environment_server.clone());
+    let session = fake_session(&socket, environment_server.clone());
 
     let command = format!(
         "printf 'SOCK=%s\\n' \"$TILO_AGENT_SOCK\"; test -e '{}' || printf 'UNSEEN\\n'; \
@@ -1336,7 +1336,7 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
             "SOCK={}\nUNSEEN\n{{\"answered\":1}}\n",
             tilo_paths::login::GUEST_AGENT_SOCKET
         ),
-        "the guest's own door, not the host's path, answered"
+        "the guest's own socket, not the host's path, answered"
     );
     let (asked, inside, said) = session.join().unwrap();
     assert_eq!(
@@ -1352,11 +1352,11 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
 }
 
 fn fake_session(
-    door: &Path,
+    socket: &Path,
     serving: PathBuf,
 ) -> std::thread::JoinHandle<(runtime_portal::environment_socket::Request, bool, String)> {
     use runtime_portal::environment_socket::{Reply, Request};
-    let listener = tilo_files::native::socket::bind(door).unwrap();
+    let listener = tilo_files::native::socket::bind(socket).unwrap();
     std::thread::spawn(move || {
         let (lease, _) = listener.accept().unwrap();
         let holder = peer_pid(&lease);
@@ -1364,7 +1364,7 @@ fn fake_session(
         BufReader::new(lease.try_clone().unwrap())
             .read_until(b'\n', &mut line)
             .unwrap();
-        let asked = Request::of(line.trim_ascii_end()).expect("an environment's door request");
+        let asked = Request::of(line.trim_ascii_end()).expect("an environment's socket request");
         let own = tilo_files::native::socket::bind(&serving).unwrap();
         (&lease)
             .write_all(

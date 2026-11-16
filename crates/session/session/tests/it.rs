@@ -195,8 +195,8 @@ mod questions;
 mod refused_writes;
 #[path = "region_formats.rs"]
 mod region_formats;
-#[path = "repl_door.rs"]
-mod repl_door;
+#[path = "repl_api.rs"]
+mod repl_api;
 #[path = "rotation.rs"]
 mod rotation;
 #[path = "rust_views.rs"]

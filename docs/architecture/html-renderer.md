@@ -70,7 +70,7 @@ Input:
   id). Keys then reach the editor as they do on the canvas, and the edit
   comes back in the next frame's composition.
 - A field is the page's own `<input>`: what the person types goes to the
-  widget as its value through the semantic action door.
+  widget as its value through the semantic action API.
 - A scroller is native: the page scrolls it, and the offset goes back to the
   widget (`dom_scrolled`), which composes what came into view.
 - Pictures are asked for after the frame was handed over (`dom_picture`);

@@ -9,7 +9,7 @@
 //! What this proves is the whole path and nothing test-only about it: a search action an instance
 //! runs queues an outside effect, the session hands the effect to the connector over the socket it
 //! started, and the answer lands in the client's record — its videos and the search's settled state
-//! — which the session publishes and its door reads.
+//! — which the session publishes and its plane reads.
 //! Before this work the session started no connector at all: the effect stayed in the instance's
 //! own process, and nothing outside ever asked `YouTube` .
 
@@ -49,21 +49,21 @@ fn youtube_connector_child() {
     if std::env::var_os(CHILD_ENV).is_none() {
         return;
     }
-    // The launcher's release: the descriptor the connector's door came in on. The stand-in
-    // launcher is the launcher's sandbox here: it hands the door straight into this process,
+    // The launcher's release: the descriptor the connector's socket came in on. The stand-in
+    // launcher is the launcher's sandbox here: it hands the socket straight into this process,
     // where a real launch would hand it in as the `tilolang-origin` service.
     if runtime_portal::registration_gate::wait_on_stdin().is_err() {
         return;
     }
-    let Some(door) = runtime_portal::registration_gate::take_window_channel() else {
+    let Some(socket) = runtime_portal::registration_gate::take_window_channel() else {
         return;
     };
     let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&door) {
+        match runtime_portal::origin_connector::receive_attachment(&socket) {
             Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
             Ok(None) => None,
             Err(error) => {
-                eprintln!("the connector's door failed: {error}");
+                eprintln!("the connector's socket failed: {error}");
                 None
             }
         }
@@ -218,7 +218,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         "the answer's video is not in the record before the search"
     );
 
-    // The person's search, through the session's door as any action: the outside effect it queues
+    // The person's search, through the session's plane as any action: the outside effect it queues
     // goes to the connector the session started for the app's origin.
     let root = session
         .resources()
@@ -251,7 +251,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         .expect("the search action runs");
 
     // The answer lands in the client's record: the video the scripted service found and the channel
-    // it names, each a resource of the client's the door reads, and the search settled
+    // it names, each a resource of the client's the plane reads, and the search settled
     // (`search_state` `done` , so the client's view stops saying it searches).
     crate::common::until(&mut session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
@@ -269,7 +269,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
 }
 
 /// The client's items of the kind `kind` (`Video`, `Channel` ): each its published id and the text
-/// of each of its fields that is a text, read through the session's door.
+/// of each of its fields that is a text, read through the session's plane.
 fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     let Some(root) = session
         .resources()
@@ -385,7 +385,7 @@ fn placed(session: &Session) -> Vec<(String, String)> {
     crate::common::placed_resources(session)
 }
 
-/// Whether any of the client's records holds `text` in a text field, as the session's door reads
+/// Whether any of the client's records holds `text` in a text field, as the session's plane reads
 /// them.
 fn record_says(session: &Session, text: &str) -> bool {
     ["Video", "Channel"].into_iter().any(|kind| {

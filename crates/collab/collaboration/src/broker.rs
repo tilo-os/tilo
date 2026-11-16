@@ -265,7 +265,7 @@ pub(super) enum PublishedCommand {
         first: mpsc::SyncSender<Result<String, String>>,
         cancel: tokio::sync::watch::Receiver<()>,
     },
-    /// Take an action of one, answering the door's verdict.
+    /// Take an action of one, answering the action API's verdict.
     Invoke {
         resource: Arc<str>,
         action: String,

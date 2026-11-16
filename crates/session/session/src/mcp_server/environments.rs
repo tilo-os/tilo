@@ -97,7 +97,7 @@ impl Origin {
         match self {
             Self::Host => None,
             Self::Environment(environment) => Some(crate::agent_sessions::Entered {
-                door: environment.socket,
+                socket: environment.socket,
                 id: environment.id.clone(),
                 name: environment.name.clone(),
             }),

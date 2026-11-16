@@ -190,7 +190,7 @@ mod tests {
             assert_eq!(Request::of(b"{\"jsonrpc\":\"2.0\"}"), None);
         }
 
-        phase a_lease_holds_the_door_the_session_answered_until_it_is_dropped;
+        phase a_lease_holds_the_socket_the_session_answered_until_it_is_dropped;
         {
             use std::io::Read as _;
             let directory = tempfile::tempdir().unwrap();

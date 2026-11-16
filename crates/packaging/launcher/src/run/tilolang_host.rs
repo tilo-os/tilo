@@ -327,7 +327,7 @@ mod tests {
             assert!(!on_gone_tilolang.runs_here());
         }
 
-        phase a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only;
+        phase a_tilolang_host_holds_its_runtime_its_storage_and_its_socket_only;
         // The host holds the runtime read-only, its storage, its socket, and nothing an app would: no
         // display, no bus, no service, no network, no home, no app storage.
         {
