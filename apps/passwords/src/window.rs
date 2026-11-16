@@ -113,7 +113,7 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
 
 pub struct PasswordsWindow {
     core: Shared,
-    requests: Requests,
+    pub(crate) requests: Requests,
     shell: NavShell,
     built_page: Option<(u64, bool)>,
     built_list: Option<u64>,

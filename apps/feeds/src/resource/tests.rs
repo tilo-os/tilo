@@ -1221,3 +1221,34 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+#[test]
+fn exporting_opml_writes_the_subscriptions_where_the_person_chose() {
+    let directory = std::env::temp_dir().join(format!("feeds-export-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Subscriptions Grün 🌍.opml");
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let mut app = sample_app();
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+    app.effect(&FeedsEffect::ExportOpml).unwrap();
+    app.settle();
+    assert_eq!(recorder.pick_requests()[0].title(), "Export OPML");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        crate::opml::export(&app.state())
+    );
+    let said = app
+        .with_widget(|feeds: &mut FeedsApp| feeds.notice())
+        .unwrap();
+    assert_eq!(said.as_deref(), Some("Exported subscriptions"));
+
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+    app.effect(&FeedsEffect::ExportOpml).unwrap();
+    app.settle();
+    let said = app
+        .with_widget(|feeds: &mut FeedsApp| feeds.notice())
+        .unwrap();
+    assert_eq!(said.as_deref(), Some("Export cancelled"));
+    std::fs::remove_dir_all(directory).unwrap();
+}

@@ -394,7 +394,7 @@ tilo_test_env::scenario! {
             let doc = AutoCommit::new();
             let mut app = PasswordsWindow::demo();
             let (tx, rx) = std::sync::mpsc::channel();
-            app.core_mut().export_portal = Some(crate::transfer::Saving::Path(rx));
+            app.core_mut().import_portal = Some(crate::transfer::Choosing::File(rx));
             let at = ui::time::now();
             let wake_at = |t| ui::time::testing::with_monotonic_time(t, || app.core().next_wake());
             let first = wake_at(at).unwrap();
@@ -402,7 +402,7 @@ tilo_test_env::scenario! {
                 wake_at(at + std::time::Duration::from_millis(2)),
                 Some(first)
             );
-            tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
+            tx.send(ui::portal::OpenFileOutcome::Cancelled).unwrap();
             Widget::sync(&mut app, &doc, &automerge::ROOT);
             assert!(app.core().next_wake().is_none());
         }
@@ -817,89 +817,19 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    eprintln!("phase a plaintext export needs the acknowledgement and round trips");
-    {
-        let root = temp_root("export-store");
-        let out = temp_root("export");
-        let mut model = crate::PasswordsModel::open_in(&root);
-        let mut login = accounts::SecretItem::login("Example", "ada", "export-secret");
-        login.add_origin("https://example.com").unwrap();
-        model.save_item(&mut login).unwrap();
-        let mut app = PasswordsWindow::new(model);
-        request(&mut app, Request::Export);
-        request(&mut app, Request::ConfirmExport);
-        assert!(app.core().export_portal.is_none());
-        assert!(matches!(
-            app.core().dialog,
-            Some(Dialog::ExportPlaintext { reminded: true, .. })
-        ));
-        request(&mut app, Request::Acknowledge(true));
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.clone()));
-        ui::host::scoped(&services, || {
-            request(&mut app, Request::ConfirmExport);
-        });
-        assert_eq!(
-            recorder.pick_requests()[0].title(),
-            "Export passwords as CSV"
-        );
-        app.core_mut().poll_transfers();
-        let written = out.with_extension("csv");
-        let rows =
-            crate::transfer::parse_browser_csv(std::fs::File::open(&written).unwrap()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].password.as_str(), "export-secret");
-        let _ = std::fs::remove_file(written);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     eprintln!("phase an encrypted backup restores complete items");
     {
         let base = temp_root("backup-flow");
-        let destination = base.join("portable-vault");
+        let backup_path = base.join("portable-vault.tilopw");
         std::fs::create_dir_all(&base).unwrap();
-        let mut source = crate::PasswordsModel::open_in(&base.join("source"));
         let mut item = SecretItem::login("Studio", "ada", "private-token");
         item.fields.insert("workspace".into(), "design".into());
         item.tags.extend(["work".into(), "favorite".into()]);
-        source.save_item(&mut item).unwrap();
-
-        let mut app = PasswordsWindow::new(source);
-        request(&mut app, Request::Backup);
-        app.core_mut().backup_password = Zeroizing::new("a memorable backup password".into());
-        app.core_mut().backup_confirmation = Zeroizing::new("a different password!".into());
-        request(&mut app, Request::ConfirmBackup);
-        assert!(matches!(
-            app.core().dialog,
-            Some(Dialog::Backup { error: Some(_) })
-        ));
-        app.core_mut().backup_confirmation = Zeroizing::new("a memorable backup password".into());
+        let backup =
+            crate::transfer::export_encrypted_backup(&[item], "a memorable backup password")
+                .unwrap();
+        std::fs::write(&backup_path, backup.as_slice()).unwrap();
         let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
-        ui::host::scoped(&services, || {
-            request(&mut app, Request::ConfirmBackup);
-        });
-        assert_eq!(
-            recorder.pick_requests()[0].title(),
-            "Back up password vault"
-        );
-        app.core_mut().poll_transfers();
-        let backup_path = destination.with_extension("tilopw");
-        assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&backup_path)
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-        assert!(app.core().backup_password.is_empty());
-
         let mut restored =
             PasswordsWindow::new(crate::PasswordsModel::open_in(&base.join("restored")));
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -912,7 +842,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             request(&mut restored, Request::Restore);
         });
         assert_eq!(
-            recorder.pick_requests()[1].title(),
+            recorder.pick_requests()[0].title(),
             "Restore password vault"
         );
         restored.core_mut().poll_transfers();

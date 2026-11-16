@@ -107,29 +107,6 @@ impl Choosing {
     }
 }
 
-pub enum Saving {
-    Path(ui::portal::PortalChannel),
-    Contents(ui::portal::SaveChannel, usize),
-}
-
-impl Saving {
-    /// Open `request`'s Save chooser; `bytes` makes what is saved, with how many items it
-    /// holds, for a host that takes the bytes up front.
-    pub fn send(
-        request: ui::portal::PickRequest,
-        bytes: impl FnOnce() -> Result<(Zeroizing<Vec<u8>>, usize), String>,
-    ) -> Result<Self, String> {
-        if tilo_files::available(tilo_files::Feature::NativePaths) {
-            return Ok(Self::Path(request.send()));
-        }
-        let (bytes, count) = bytes()?;
-        Ok(Self::Contents(
-            request.send_save_contents(bytes.to_vec()),
-            count,
-        ))
-    }
-}
-
 pub fn read_encrypted_backup(mut reader: impl Read) -> Result<Zeroizing<Vec<u8>>, String> {
     let mut bytes = Zeroizing::new(Vec::new());
     reader

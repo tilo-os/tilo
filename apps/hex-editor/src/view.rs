@@ -33,7 +33,6 @@ use ui::format::memory as format_bytes;
 use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
-    SaveChannel, SaveOutcome,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -72,8 +71,6 @@ fn file_save_request(suggested_name: &str) -> PickRequest {
 enum FileIo {
     Open(PortalChannel),
     OpenContents(ContentsChannel),
-    Save(PortalChannel),
-    SaveContents(SaveChannel),
 }
 
 const NEW_FILE_NAME: &str = "Untitled.bin";
@@ -313,17 +310,23 @@ impl Editor {
         self.io = Some((io, reply));
     }
 
-    /// Start the host's Save chooser for a buffer with no file on this device.
-    fn begin_save_as(&mut self, reply: EffectReply) {
-        let name = self.suggested_name();
-        let io = if tilo_files::available(tilo_files::Feature::NativePaths) {
-            FileIo::Save(file_save_request(&name).send())
-        } else {
-            FileIo::SaveContents(
-                file_save_request(&name).send_save_contents(self.model.bytes().to_vec()),
-            )
-        };
-        self.io = Some((io, reply));
+    /// Ask where a buffer with no file on this device is saved, and save it there: the
+    /// window shows that file from then on.
+    fn save_as_chosen(&self, cx: &mut EffectCx<HexEditor, HexView>) -> Effected {
+        let bytes = self.model.bytes().to_vec();
+        cx.save_document(
+            file_save_request(&self.suggested_name()),
+            move |_| Ok(bytes),
+            |window, saved, _| {
+                let Some(destination) = saved else {
+                    return Err(CANCELLED.into());
+                };
+                let mut editor = window.editor.borrow_mut();
+                editor.saved_now();
+                editor.path = destination.location().map(std::path::Path::to_path_buf);
+                Ok(Effected::done())
+            },
+        )
     }
 
     /// The name the Save chooser seeds with: the current name, or a default for a
@@ -426,32 +429,11 @@ impl Editor {
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => disconnected(),
             },
-            FileIo::SaveContents(rx) => match rx.try_recv() {
-                Ok(SaveOutcome::Saved) => {
-                    self.saved_now();
-                    Some(Ok(()))
-                }
-                Ok(SaveOutcome::Cancelled) => Some(Err(CANCELLED.into())),
-                Ok(SaveOutcome::Failed(reason)) => {
-                    self.problem("Couldn't save the file", reason.clone());
-                    Some(Err(reason))
-                }
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => disconnected(),
-            },
-            FileIo::Open(rx) | FileIo::Save(rx) => match rx.try_recv() {
-                Ok(PortalOutcome::Opened(path)) => Some(match io {
-                    FileIo::Open(_) => self.open_path(path),
-                    _ => self.write_to(&path),
-                }),
+            FileIo::Open(rx) => match rx.try_recv() {
+                Ok(PortalOutcome::Opened(path)) => Some(self.open_path(path)),
                 Ok(PortalOutcome::Cancelled) => Some(Err(CANCELLED.into())),
                 Ok(PortalOutcome::Failed(reason)) => {
-                    let title = if matches!(io, FileIo::Open(_)) {
-                        "Couldn't open the file"
-                    } else {
-                        "Couldn't save the file"
-                    };
-                    self.problem(title, reason.clone());
+                    self.problem("Couldn't open the file", reason.clone());
                     Some(Err(reason))
                 }
                 Err(TryRecvError::Empty) => None,
@@ -911,7 +893,7 @@ impl Editor {
     pub(crate) fn answer(
         &mut self,
         effect: HexEffect,
-        cx: &mut EffectCx<HexEditor>,
+        cx: &mut EffectCx<HexEditor, HexView>,
     ) -> EffectAnswer {
         self.follow_document();
         let panel = match effect {
@@ -953,8 +935,7 @@ impl Editor {
                     cx.show_file(&path);
                     Ok(Effected::done())
                 } else {
-                    self.begin_save_as(cx.reply());
-                    Ok(Effected::Pending)
+                    Ok(self.save_as_chosen(cx))
                 }
             }
         }

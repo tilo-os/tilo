@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
+use ui::framework::Effected;
 use ui::lock::MutexRecover as _;
 use ui::widget::NavPane;
 use vello::kurbo::Rect;
@@ -351,8 +352,8 @@ pub(crate) struct Core {
     pub(crate) recovery_error: Option<String>,
     pub(crate) import_portal: Option<crate::transfer::Choosing>,
     pub(crate) import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
-    pub(crate) export_portal: Option<crate::transfer::Saving>,
-    pub(crate) backup_portal: Option<crate::transfer::Saving>,
+    /// Where a save runs while the person chooses where it goes; none outside a window.
+    pub(crate) jobs: Option<ui::framework::Jobs<crate::Passwords>>,
     pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
     pub(crate) writing: bool,
@@ -404,8 +405,7 @@ impl Core {
             recovery_error: None,
             import_portal: None,
             import_parse: None,
-            export_portal: None,
-            backup_portal: None,
+            jobs: None,
             restore_portal: None,
             transfer_poll_deadline: std::cell::Cell::new(None),
             backup_password: Zeroizing::new(String::new()),
@@ -1275,19 +1275,84 @@ impl Core {
             self.touch_page();
             return;
         }
-        if self.export_portal.is_some() {
-            return;
-        }
         self.dialog = None;
         self.touch_page();
-        let saving = crate::transfer::Saving::send(crate::transfer::export_request(), || {
-            self.plaintext_export()
-                .map(|(csv, count)| (Zeroizing::new(csv.as_bytes().to_vec()), count))
+        self.save_chosen(
+            crate::transfer::export_request(),
+            "csv",
+            |vault| {
+                vault
+                    .plaintext_export()
+                    .map(|(csv, count)| (Zeroizing::new(csv.as_bytes().to_vec()), count))
+            },
+            |_| None,
+        );
+    }
+
+    /// Ask where `request` saves, then write what `make` makes there: in place, readable by
+    /// this person only and named with `extension`, where the file has a path; through the
+    /// host where it keeps the file. `said` words what a finished save says.
+    fn save_chosen(
+        &self,
+        request: ui::portal::PickRequest,
+        extension: &'static str,
+        make: impl FnOnce(&Self) -> Result<(Zeroizing<Vec<u8>>, usize), String> + 'static,
+        said: fn(usize) -> Option<String>,
+    ) {
+        let Some(jobs) = &self.jobs else {
+            return;
+        };
+        let key = request.worker_name().to_owned();
+        jobs.start::<crate::window::PasswordsWindow>(key, move |cx| {
+            Ok(cx.choose_destination(request, move |window, chosen, cx| {
+                let Some(destination) = chosen else {
+                    return Ok(Effected::done());
+                };
+                let vault = window.vault();
+                let made = make(&vault.borrow());
+                let finish = move |vault: &mut Self, written: Result<usize, String>| {
+                    match written {
+                        Ok(count) => {
+                            if let Some(said) = said(count) {
+                                vault.toast(said);
+                            }
+                        }
+                        Err(error) => vault.toast(error),
+                    }
+                    Effected::done()
+                };
+                let (bytes, count) = match made {
+                    Ok(made) => made,
+                    Err(error) => return Ok(finish(&mut vault.borrow_mut(), Err(error))),
+                };
+                if let Some(path) = destination.location() {
+                    let mut path = path.to_path_buf();
+                    if path
+                        .extension()
+                        .and_then(|v| v.to_str())
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case(extension))
+                    {
+                        path.set_extension(extension);
+                    }
+                    let written = tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
+                        .map(|()| count)
+                        .map_err(|_| "Could not finish writing the file".to_string());
+                    return Ok(finish(&mut vault.borrow_mut(), written));
+                }
+                Ok(
+                    cx.write_destination(
+                        &destination,
+                        bytes.to_vec(),
+                        move |window, written, _| {
+                            let written = written
+                                .map(|()| count)
+                                .map_err(|error| format!("Could not save the file: {error}"));
+                            Ok(finish(&mut window.vault().borrow_mut(), written))
+                        },
+                    ),
+                )
+            }))
         });
-        match saving {
-            Ok(saving) => self.export_portal = Some(saving),
-            Err(error) => self.toast(error),
-        }
     }
 
     pub(crate) fn clear_backup_form(&mut self) {
@@ -1334,7 +1399,7 @@ impl Core {
     }
 
     pub(crate) fn begin_encrypted_backup(&mut self) {
-        if !matches!(self.dialog, Some(Dialog::Backup { .. })) || self.backup_portal.is_some() {
+        if !matches!(self.dialog, Some(Dialog::Backup { .. })) {
             return;
         }
         if let Some(error) = self.backup_form_error(true) {
@@ -1345,16 +1410,13 @@ impl Core {
         self.dialog = None;
         self.touch_page();
         let passphrase = self.backup_password.clone();
-        let saving = crate::transfer::Saving::send(crate::transfer::backup_request(), || {
-            self.encrypted_backup(&passphrase)
-        });
-        match saving {
-            Ok(saving) => self.backup_portal = Some(saving),
-            Err(error) => {
-                self.clear_backup_form();
-                self.toast(error);
-            }
-        }
+        self.clear_backup_form();
+        self.save_chosen(
+            crate::transfer::backup_request(),
+            "tilopw",
+            move |vault| vault.encrypted_backup(&passphrase),
+            |count| Some(format!("Backed up {count} items")),
+        );
     }
 
     pub(crate) fn apply_encrypted_restore(&mut self) {
@@ -1473,24 +1535,6 @@ impl Core {
         Ok((backup, items.len()))
     }
 
-    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
-        let (csv, count) = self.plaintext_export()?;
-        tilo_files::native::atomic::write_with_mode(path, csv.as_bytes(), 0o600)
-            .map_err(|_| "Could not finish writing the file".to_string())?;
-        Ok(count)
-    }
-
-    fn write_encrypted_backup(
-        &self,
-        path: &std::path::Path,
-        passphrase: &str,
-    ) -> Result<usize, String> {
-        let (backup, count) = self.encrypted_backup(passphrase)?;
-        tilo_files::native::atomic::write_with_mode(path, &backup, 0o600)
-            .map_err(|_| "Could not finish writing the backup".to_string())?;
-        Ok(count)
-    }
-
     /// Learn whether the vault's last edits are kept yet: a browser page writes its storage
     /// asynchronously, and on the frame loop a writer thread writes the disk, so a save is
     /// kept a moment after it shows.
@@ -1512,19 +1556,12 @@ impl Core {
         self.writing
             || self.import_portal.is_some()
             || self.import_parse.is_some()
-            || self.export_portal.is_some()
-            || self.backup_portal.is_some()
             || self.restore_portal.is_some()
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "drains each transfer channel in turn; keeping the states together keeps the vault update ordering visible"
-    )]
     pub(crate) fn poll_transfers(&mut self) {
-        use crate::transfer::{Chosen, Saving};
+        use crate::transfer::Chosen;
         use std::sync::mpsc::TryRecvError;
-        use ui::portal::{PortalOutcome, SaveOutcome};
 
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard. Try again.");
@@ -1599,108 +1636,6 @@ impl Core {
                 Err(TryRecvError::Disconnected) => {
                     self.import_parse = None;
                     self.toast("Reading the file stopped unexpectedly");
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(Saving::Contents(rx, _)) = self.export_portal.as_ref() {
-            match rx.try_recv() {
-                Ok(SaveOutcome::Saved | SaveOutcome::Cancelled) => self.export_portal = None,
-                Ok(SaveOutcome::Failed(error)) => {
-                    self.export_portal = None;
-                    self.toast(format!("Could not save the file: {error}"));
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.export_portal = None;
-                    self.toast("The save dialog closed unexpectedly");
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(Saving::Contents(rx, count)) = self.backup_portal.as_ref() {
-            let count = *count;
-            match rx.try_recv() {
-                Ok(SaveOutcome::Saved) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                    self.toast(format!("Backed up {count} items"));
-                }
-                Ok(SaveOutcome::Cancelled) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                }
-                Ok(SaveOutcome::Failed(error)) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                    self.toast(format!("Could not save the backup: {error}"));
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                    self.toast("The save dialog closed unexpectedly");
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(Saving::Path(rx)) = self.export_portal.as_ref() {
-            match rx.try_recv() {
-                Ok(PortalOutcome::Opened(mut path)) => {
-                    self.export_portal = None;
-                    if path
-                        .extension()
-                        .and_then(|v| v.to_str())
-                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("csv"))
-                    {
-                        path.set_extension("csv");
-                    }
-                    match self.write_plaintext_export(&path) {
-                        Ok(_) => {}
-                        Err(error) => self.toast(error),
-                    }
-                }
-                Ok(PortalOutcome::Cancelled) => self.export_portal = None,
-                Ok(PortalOutcome::Failed(error)) => {
-                    self.export_portal = None;
-                    self.toast(format!("Could not open the save dialog: {error}"));
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.export_portal = None;
-                    self.toast("The save dialog closed unexpectedly");
-                }
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(Saving::Path(rx)) = self.backup_portal.as_ref() {
-            match rx.try_recv() {
-                Ok(PortalOutcome::Opened(mut path)) => {
-                    self.backup_portal = None;
-                    if path
-                        .extension()
-                        .and_then(|v| v.to_str())
-                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("tilopw"))
-                    {
-                        path.set_extension("tilopw");
-                    }
-                    let passphrase = self.backup_password.clone();
-                    match self.write_encrypted_backup(&path, &passphrase) {
-                        Ok(count) => self.toast(format!("Backed up {count} items")),
-                        Err(error) => self.toast(error),
-                    }
-                    self.clear_backup_form();
-                }
-                Ok(PortalOutcome::Cancelled) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                }
-                Ok(PortalOutcome::Failed(error)) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                    self.toast(format!("Could not open the save dialog: {error}"));
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.backup_portal = None;
-                    self.clear_backup_form();
-                    self.toast("The save dialog closed unexpectedly");
                 }
                 Err(TryRecvError::Empty) => {}
             }

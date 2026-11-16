@@ -180,7 +180,7 @@ impl ResourceApp for HexEditorShell {
             .borrow_mut()
             .attach(cx.live().clone(), cx.dispatcher());
         let effects = Rc::clone(&editor);
-        cx.effects(move |effect: HexEffect, cx| {
+        cx.window_host_effects(move |_: &mut HexView, effect: HexEffect, cx| {
             let answer = effects.borrow_mut().answer(effect, cx);
             // What it asked of the window happens on its next frame.
             cx.waker().wake();

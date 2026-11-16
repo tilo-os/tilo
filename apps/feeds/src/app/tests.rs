@@ -979,27 +979,18 @@ fn the_window_shell_adapts_to_its_width() {
     }
 }
 
-/// OPML import persists every new feed once; the export and import portals
-/// never report success on cancel or failure.
+/// OPML import persists every new feed once, and never reports success on
+/// cancel or failure.
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario per portal outcome, kept together"
 )]
 #[test]
-fn opml_portal_import_and_export_report_honestly() {
+fn opml_portal_import_reports_honestly() {
     // The host reads and writes the chosen file as background work; pump it
     // so its answer is there when the app next looks.
     let work = ui::background::Pumped::new();
     let _work = work.background().enter();
-    let export_with = |a: &FeedsApp, outcome: PortalOutcome| {
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(outcome);
-        ui::host::scoped(&services, || a.core_mut().export_opml());
-        work.run_pending();
-        let picks = recorder.pick_requests();
-        assert_eq!(picks.len(), 1);
-        assert_eq!(picks[0].title(), "Export OPML");
-    };
     let import_with = |a: &FeedsApp, outcome: PortalOutcome| {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(outcome);
@@ -1027,52 +1018,6 @@ fn opml_portal_import_and_export_report_honestly() {
             a.core_mut()
                 .apply_opml_import(opml::sample_opml(), &mut ui::widget::Edits::lend(&mut doc))
                 .is_empty()
-        );
-    }
-
-    {
-        let mut a = app();
-        let doc = synced(&mut a);
-        let directory = std::env::temp_dir().join(format!("feeds-export-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("Subscriptions Grün 🌍.opml");
-        let xml = opml::export(&a.core().store);
-        export_with(&a, PortalOutcome::Opened(path.clone()));
-        assert!(a.next_wake_deadline().is_some());
-        a.sync(&doc, &automerge::ROOT);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
-        assert!(a.core().export_rx.is_none());
-        assert!(
-            a.shell()
-                .toast_text()
-                .is_some_and(|t| t.starts_with("Exported subscriptions"))
-        );
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    for outcome in [
-        PortalOutcome::Cancelled,
-        PortalOutcome::Failed("test denial".into()),
-    ] {
-        let mut a = app();
-        let doc = synced(&mut a);
-        export_with(&a, outcome.clone());
-        a.sync(&doc, &automerge::ROOT);
-        let message = a.shell().toast_text().map(str::to_owned).unwrap();
-        match outcome {
-            PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
-            PortalOutcome::Failed(reason) => {
-                assert_eq!(message, format!("Export failed: {reason}"));
-            }
-            PortalOutcome::Opened(_) => unreachable!(),
-        }
-        let tree = a.accessibility().unwrap();
-        assert!(
-            tree.children.iter().any(|node| {
-                node.name.as_deref() == Some(message.as_str())
-                    && node.live == Some(Politeness::Polite)
-            }),
-            "the outcome is announced"
         );
     }
 

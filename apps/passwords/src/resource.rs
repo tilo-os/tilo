@@ -69,6 +69,7 @@ impl ResourceApp for PasswordsShell {
         cx.on_stage(window.stager());
         window.wake_through(cx.waker());
         answer_effects(cx, &window.vault());
+        window.vault().borrow_mut().jobs = Some(cx.window_jobs::<PasswordsWindow>());
         let vault = window.vault();
         let (rows, row, entries, unlocked) = (vault.clone(), vault.clone(), vault.clone(), vault);
         cx.publishing(
@@ -124,6 +125,7 @@ mod tests {
     use accounts::SecretItem;
     use ui::prelude::TestApp;
     use ui::tilo_actions::{self, ConfirmationPolicy, OperationKind};
+    use zeroize::Zeroizing;
 
     use super::*;
     use crate::actions::item_resource_id;
@@ -487,6 +489,93 @@ mod tests {
             })
         }
         find(&app.harness().resources(), id)
+    }
+
+    /// Export and backup ask where the file goes, then write it there readable by this
+    /// person only, named for what it holds.
+    #[test]
+    fn export_and_backup_write_private_files_where_the_person_chose() {
+        use crate::vault::{Dialog, Request};
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut login = SecretItem::login("Example", "ada", "export-secret");
+        login.add_origin("https://example.com").unwrap();
+        model.save_item(&mut login).unwrap();
+        drop(model);
+        let out = tempfile::tempdir().unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        let ask = |app: &mut TestApp<PasswordsShell>, request: Request| {
+            app.surface::<PasswordsWindow, _>(|window| {
+                window.requests.borrow_mut().push(request);
+                window.settle();
+            })
+            .unwrap();
+            app.settle();
+        };
+        let private = |path: &std::path::Path| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        };
+
+        ask(&mut app, Request::Export);
+        ask(&mut app, Request::ConfirmExport);
+        let reminded = app
+            .surface::<PasswordsWindow, _>(|window| {
+                matches!(
+                    window.core().dialog,
+                    Some(Dialog::ExportPlaintext { reminded: true, .. })
+                )
+            })
+            .unwrap();
+        assert!(reminded, "a plaintext export needs the acknowledgement");
+        assert!(recorder.pick_requests().is_empty());
+        ask(&mut app, Request::Acknowledge(true));
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.path().join("export")));
+        ask(&mut app, Request::ConfirmExport);
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Export passwords as CSV"
+        );
+        let written = out.path().join("export.csv");
+        let rows =
+            crate::transfer::parse_browser_csv(std::fs::File::open(&written).unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].password.as_str(), "export-secret");
+        private(&written);
+
+        ask(&mut app, Request::Backup);
+        app.surface::<PasswordsWindow, _>(|window| {
+            let mut vault = window.core_mut();
+            vault.backup_password = Zeroizing::new("a memorable backup password".into());
+            vault.backup_confirmation = Zeroizing::new("a memorable backup password".into());
+        })
+        .unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.path().join("vault")));
+        ask(&mut app, Request::ConfirmBackup);
+        assert_eq!(
+            recorder.pick_requests()[1].title(),
+            "Back up password vault"
+        );
+        let backup = out.path().join("vault.tilopw");
+        let items = crate::transfer::import_encrypted_backup(
+            &std::fs::read(&backup).unwrap(),
+            "a memorable backup password",
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        private(&backup);
+        let cleared = app
+            .surface::<PasswordsWindow, _>(|window| window.core().backup_password.is_empty())
+            .unwrap();
+        assert!(cleared, "the backup password is not kept");
     }
 
     #[test]

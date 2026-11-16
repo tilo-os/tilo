@@ -246,7 +246,7 @@ pub enum FeedsEffect {
     #[effect(view)]
     NewFolderForm,
     /// Export OPML…
-    #[effect(attended, kind = "read")]
+    #[effect(attended, job, kind = "read")]
     ExportOpml,
     /// Reveal tagged articles
     #[effect(view, row, idempotent)]

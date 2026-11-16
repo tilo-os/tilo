@@ -22,7 +22,6 @@ use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
-    SaveChannel, SaveOutcome,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -421,7 +420,6 @@ pub(crate) struct Core {
     pending_reads: Vec<Id>,
     pub(crate) awaited: Vec<Awaited>,
     pub(crate) import_rx: Option<ContentsChannel>,
-    pub(crate) export_rx: Option<SaveChannel>,
     open_link_rx: Option<LaunchChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     pub(crate) worker: Option<FetchWorker>,
@@ -466,7 +464,6 @@ impl Core {
             pending_reads: Vec::new(),
             awaited: Vec::new(),
             import_rx: None,
-            export_rx: None,
             open_link_rx: None,
             background_poll_deadline: Cell::new(None),
             worker: None,
@@ -500,6 +497,13 @@ impl Core {
             .is_some_and(|id| articles.iter().any(|a| a.id == id));
         if !in_list {
             self.selected = articles.first().map(|a| a.id.clone());
+        }
+    }
+
+    /// Run one of the window's effects as a control or the palette would.
+    fn invoke(&self, effect: &FeedsEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(effect);
         }
     }
 
@@ -864,38 +868,29 @@ impl Core {
         }
     }
 
-    pub(crate) fn export_opml(&mut self) {
-        if self.import_rx.is_some() || self.export_rx.is_some() || self.store.feeds.is_empty() {
-            return;
+    /// Ask where the subscriptions go, then write them there as OPML.
+    fn export_opml(&self, cx: &mut EffectCx<Library, FeedsApp>) -> EffectAnswer {
+        if self.store.feeds.is_empty() {
+            return Err("there are no subscriptions to export".into());
         }
         let xml = opml::export(&self.store);
-        self.export_rx = Some(opml_export_request().send_save_contents(xml.into_bytes()));
-    }
-
-    fn drain_export(&mut self) {
-        let Some(rx) = &self.export_rx else {
-            return;
-        };
-        let outcome = match rx.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                SaveOutcome::Failed("the file chooser closed without a result".into())
-            }
-        };
-        self.export_rx = None;
-        match outcome {
-            SaveOutcome::Saved => self.set_toast("Exported subscriptions"),
-            SaveOutcome::Cancelled => self.set_toast("Export cancelled"),
-            SaveOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
-        }
+        Ok(
+            cx.save_file(opml_export_request(), xml.into_bytes(), |app, saved, _| {
+                app.core.borrow_mut().set_toast(if saved {
+                    "Exported subscriptions"
+                } else {
+                    "Export cancelled"
+                });
+                Ok(Effected::done())
+            }),
+        )
     }
 
     /// Ask the host for an `.opml` file's contents, which every host can
     /// hand over, a browser page included. The chooser runs off the UI
     /// thread; the contents arrive over a channel drained each frame.
     pub(crate) fn request_import(&mut self) {
-        if self.import_rx.is_some() || self.export_rx.is_some() {
+        if self.import_rx.is_some() {
             return;
         }
         self.import_rx = Some(opml_import_request().send_contents());
@@ -1074,7 +1069,7 @@ impl Core {
                 }
             }
             MenuAction::Import => self.request_import(),
-            MenuAction::Export => self.export_opml(),
+            MenuAction::Export => self.invoke(&FeedsEffect::ExportOpml),
             MenuAction::ToggleRead => self.toggle_read(doc),
             MenuAction::EditTags => self.open_tag_editor(),
         }
@@ -1319,7 +1314,6 @@ impl Core {
         self.synced = true;
         self.adopt_read_settings();
         self.drain_fetches_live();
-        self.drain_export();
         self.drain_open_link();
     }
 
@@ -1458,7 +1452,7 @@ impl Core {
                 "r" => self.refresh_all(),
                 "a" => self.mark_all_read(doc),
                 "n" => self.open_add_subscription(),
-                "e" => self.export_opml(),
+                "e" => self.invoke(&FeedsEffect::ExportOpml),
                 "i" => self.request_import(),
                 "1" => self.set_filter(Filter::All),
                 "2" => self.set_filter(Filter::Unread),
@@ -1472,7 +1466,6 @@ impl Core {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         if self.import_rx.is_none()
-            && self.export_rx.is_none()
             && self
                 .worker
                 .as_ref()
@@ -1498,7 +1491,6 @@ impl Core {
             || self.refresh.visible()
             || !self.pending_landings.is_empty()
             || self.import_rx.is_some()
-            || self.export_rx.is_some()
             || self.toast.is_some()
     }
 }
@@ -2549,7 +2541,11 @@ impl Core {
         self.synced = true;
     }
 
-    fn answer(&mut self, effect: FeedsEffect, cx: &mut EffectCx<Library>) -> EffectAnswer {
+    fn answer(
+        &mut self,
+        effect: FeedsEffect,
+        cx: &mut EffectCx<Library, FeedsApp>,
+    ) -> EffectAnswer {
         self.follow_document();
         match effect {
             FeedsEffect::RefreshAll => {
@@ -2562,7 +2558,7 @@ impl Core {
             }
             FeedsEffect::ImportOpml => self.request_import(),
             FeedsEffect::NewFolderForm => self.requests.borrow_mut().push(Request::NewFolder),
-            FeedsEffect::ExportOpml => self.export_opml(),
+            FeedsEffect::ExportOpml => return self.export_opml(cx),
             FeedsEffect::RevealTag { tag } => {
                 if !self.store.has_tag(&tag) {
                     return Err("no article carries that tag".into());
@@ -2624,10 +2620,11 @@ pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
     }
     // A picked search hit (or an agent's `open`) shows its item.
     cx.on_open_item(app.opener());
-    let core = Rc::clone(&app.core);
     let statuses = Rc::clone(&app.core);
-    cx.effects(move |effect: FeedsEffect, cx| core.borrow_mut().answer(effect, cx))
-        .status(move || statuses.borrow().effect_statuses());
+    cx.window_host_effects(|app: &mut FeedsApp, effect: FeedsEffect, cx| {
+        app.core.borrow_mut().answer(effect, cx)
+    })
+    .status(move || statuses.borrow().effect_statuses());
     let pending = Rc::clone(&app.pending_scenario);
     cx.on_stage(move |scenario| {
         if let Some(name) = scenario {
