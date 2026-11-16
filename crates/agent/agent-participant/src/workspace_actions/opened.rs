@@ -225,6 +225,10 @@ impl Worker {
                 reason: "the workspace was not joined".into(),
             })
         })?;
+        // Another person's own: the host never sends it here, so nothing waits for it.
+        if workspace.not_yours.contains(route) {
+            return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+        }
         // Held, or sent by the host under the route of what it names.
         if workspace.holds(route)
             || (workspace.answered.contains(route) && !workspace.absent.contains(route))
@@ -235,15 +239,10 @@ impl Worker {
             app_id: &route.app_id,
             record: &route.record,
         };
+        // Asked for now: the same call goes through once it arrived, which the caller waits for
+        // as the workspace's state rather than a reason to read.
         if workspace.ask(workspace_id, needs) {
-            let record = if route.record.is_empty() {
-                format!("{}'s own record", route.app_id)
-            } else {
-                format!("{} record {}", route.app_id, route.record)
-            };
-            return Err(Outcome::Rejected(ActionHostError::Unavailable {
-                reason: format!("the workspace's {record} is on its way"),
-            }));
+            return Err(Outcome::Rejected(ActionHostError::NotReady));
         }
         Ok(false)
     }

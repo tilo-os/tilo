@@ -366,7 +366,11 @@ impl Task {
     /// Take the host's answer to the write it answered as `op`: durable, or refused with the
     /// host's `refusal` (it can never become durable). Answers retire from custody together
     /// ([`Self::retire_answered`]).
-    pub(super) fn acknowledge(&mut self, op: [u8; 16], outcome: Result<u64, String>) {
+    pub(super) fn acknowledge(
+        &mut self,
+        op: [u8; 16],
+        outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
+    ) {
         let Some((workspace, id)) = self
             .sending
             .iter_mut()
@@ -374,20 +378,24 @@ impl Task {
         else {
             return;
         };
-        // A host that was not ready for the write takes it a moment later: it stays in custody
-        // and goes again after a wait, a few times, before anyone is told.
-        if let Err(reason) = &outcome
-            && tilo_relay_protocol::refusal::retry_helps(reason)
+        // A host that was not ready for the write takes it once it says the workspace is ready:
+        // the write stays in custody and goes again then. One the host refuses as not ready
+        // after it said it was is refused: the host will not take it on this connection.
+        if let Err(refusal) = &outcome
+            && refusal.passes_once_ready()
+            && self.not_ready.insert(id)
         {
-            let tries = self.not_ready.entry(id).or_default();
-            if let Some(wait) = tilo_relay_protocol::refusal::RETRY_NOT_READY_MS.get(*tries) {
-                *tries = tries.saturating_add(1);
-                tracing::debug!(%reason, wait_ms = wait, "the host was not ready for a write; it goes again");
-                if let Some(sending) = self.sending.get_mut(&workspace) {
-                    sending.send_again_at(id, tilo_clock::unix_now_ms().saturating_add(*wait));
+            tracing::debug!(%refusal, "the host was not ready for a write; it goes again once it is");
+            let ready = self
+                .reports
+                .read(|status| status.workspaces.get(&workspace).copied().unwrap_or(false));
+            if let Some(sending) = self.sending.get_mut(&workspace) {
+                sending.send_once_ready(id);
+                if ready {
+                    sending.ready();
                 }
-                return;
             }
+            return;
         }
         self.not_ready.remove(&id);
         // What the refused write would have brought, as its envelope claims it: read before the
@@ -401,7 +409,7 @@ impl Task {
                     Some(crate::Event::Refused {
                         route: DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?)?,
                         changes: tilo_peer_state::document_frame::claimed_changes(&entry.1),
-                        reason: reason.clone(),
+                        refusal: reason.clone(),
                     })
                 }),
             Ok(_) => None,
@@ -454,7 +462,7 @@ impl Task {
             // The host read this commit and would not take it: the session is
             // fine, and saying so keeps the app connected. What the host said is
             // what the person is owed, so it travels with the refusal.
-            let refusal = outcome.err().map(|reason| refusal_text(&reason));
+            let refusal = outcome.err().map(|refusal| refusal_text(&refusal));
             let (waiting, done): (Vec<_>, Vec<_>) = std::mem::take(&mut self.barriers)
                 .into_iter()
                 .map(|(mut owed, mut refused, complete)| {
@@ -473,8 +481,8 @@ impl Task {
 }
 
 /// What this session reports when the host would not take a change it read.
-fn refusal_text(reason: &str) -> String {
-    format!("{REFUSAL}: {}", reason.trim())
+fn refusal_text(refusal: &tilo_relay_protocol::refusal::Refusal) -> String {
+    format!("{REFUSAL}: {refusal}")
 }
 
 /// The phrasing this session uses for the one answer that is a refusal.

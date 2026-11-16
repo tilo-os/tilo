@@ -204,12 +204,15 @@ pub enum Event {
     Refused {
         route: DocumentRoute,
         changes: Vec<[u8; 32]>,
-        reason: String,
+        refusal: tilo_relay_protocol::refusal::Refusal,
     },
     /// The host did not pass on content this device sent in `ws`: its person's content budget
-    /// is spent. `reason` is the host's, which says when it holds content again
-    /// (`tilo_relay_protocol::refusal::plain_reason` reads it for a person).
-    ContentRefused { ws: Topic, reason: String },
+    /// is spent, and the refusal says when it holds content again
+    /// ([`tilo_relay_protocol::refusal::Refusal::plain`] reads it for a person).
+    ContentRefused {
+        ws: Topic,
+        refusal: tilo_relay_protocol::refusal::Refusal,
+    },
     /// A live frame the device `from` published on `ws`, opened with its record's channel keys.
     Live {
         ws: Topic,
@@ -261,6 +264,13 @@ pub enum Event {
     },
     /// What the host said about this device's calls.
     Voice(VoiceEvent),
+    /// A joined workspace moved to `state` on this session.
+    Workspace {
+        ws: Topic,
+        state: crate::states::WorkspaceState,
+    },
+    /// Whether this device's writes are with its host changed.
+    Sync(crate::states::SyncState),
     /// One of the person's devices proved itself, or proved itself anew.
     Sibling {
         peer: EndpointId,

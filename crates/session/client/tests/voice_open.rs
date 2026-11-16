@@ -46,7 +46,7 @@ async fn session(
     .into_client();
     native(&client, |envelope| match envelope {
         Envelope::Ready { .. } => Some(()),
-        Envelope::NotAuthorised { reason, .. } => panic!("device not admitted: {reason}"),
+        Envelope::NotAuthorised { refusal, .. } => panic!("device not admitted: {refusal}"),
         _ => None,
     })
     .await;

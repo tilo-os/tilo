@@ -110,9 +110,9 @@ use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
 use crate::workspace_access::{self, Decision, RelayTrust, WorkspaceOperation};
-use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_protocol::refusal::Refusal;
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
 /// queueing; saturation disconnects the recipient for replay on reconnect.

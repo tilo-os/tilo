@@ -37,6 +37,14 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         (**self).next_change(caller, id)
     }
 
+    fn session_state(&self, caller: &Caller) -> Option<super::SessionState> {
+        (**self).session_state(caller)
+    }
+
+    fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
+        (**self).session_state_changed(caller)
+    }
+
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         (**self).cancel(caller, id)
     }

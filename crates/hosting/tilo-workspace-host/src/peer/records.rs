@@ -28,24 +28,26 @@ pub(super) async fn handle_open_record(
     else {
         return Ok(None);
     };
-    let refused = |reason: &str| {
+    let refused = |refusal: tilo_relay_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: reason.into(),
+            refusal,
         }))
     };
+    // A record opened before the subscription goes through once the host
+    // says the workspace is ready.
     if !subscribed.contains(&workspace_id) {
-        return refused("open a record of a subscribed workspace");
+        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
     }
     // A browser environment's device opens its own record and no other.
     if session
         .environment(&peer.device_public_key)
         .is_some_and(|scope| !scope.reaches(Some(channel)))
     {
-        return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.reason());
+        return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused("workspace not bound on this relay");
+        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
     };
     // A chain's head names whichever part is the chain's newest: that part
     // is what is sent.
@@ -58,7 +60,9 @@ pub(super) async fn handle_open_record(
     let (store, governed) = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
-            return refused("device not in workspace membership");
+            return refused(tilo_relay_protocol::refusal::Refusal::NotAMember(
+                "device not in workspace membership".into(),
+            ));
         }
         // Another person's own record is theirs alone: this device is told so,
         // and is sent nothing of it. A host the workspace is attached to keeps

@@ -425,7 +425,7 @@ pub(super) async fn handle_delta(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: "workspace not bound on this relay".into(),
+            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
         }));
     };
     // A host attached to the workspace carries its members' changes under
@@ -443,9 +443,9 @@ pub(super) async fn handle_delta(
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
         return Ok(None);
     }
-    if let Some(full) = super::over_storage(peer, session, &ws).await {
+    if super::over_storage(peer, session, &ws).await {
         // Neither kept nor forwarded, as above.
-        tracing::warn!(%full, device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
+        tracing::warn!(device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
         return Ok(None);
     }
     // A page asks a record's channel for access on a plane of its own, and is
@@ -468,7 +468,7 @@ pub(super) async fn handle_delta(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
+            refusal: refused_reason(&runtime, &asker.trust(), peer, op, channel),
         }));
     };
     trace_native_publication("server_authorized", &env, None);
@@ -529,7 +529,7 @@ async fn change_refusal(
     attached: bool,
     claimed: [u8; 32],
     env: &Envelope,
-) -> Option<String> {
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let Envelope::Delta { delta, .. } = env else {
         return None;
     };
@@ -543,10 +543,10 @@ async fn change_refusal(
         .await;
     let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
         .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
-    if let Some(reason) = refused {
-        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
-        file_refusal_of(ws, env, &reason).await;
-        return Some(reason);
+    if let Some(refusal) = refused {
+        tracing::warn!(%refusal, device = %hex::encode(peer.device_public_key), "refused a document change");
+        file_refusal_of(ws, env, &refusal.to_string()).await;
+        return Some(refusal);
     }
     let author = deciding_author(peer, attached, own_device, &claimed);
     if let Some(reason) = desktop_refusal(ws, author, env).await {
@@ -568,7 +568,7 @@ pub(super) async fn governor_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
-) -> Option<String> {
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let body = governor_notice(env)?;
     let authority = ws.lock().await.workspace_authority.clone()?;
     let workspaces = authority.workspaces()?;
@@ -579,7 +579,7 @@ pub(super) async fn governor_refusal(
     // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
     tracing::warn!(%reason, device = %hex::encode(author), "refused a change the workspace does not take in");
-    Some(reason)
+    Some(tilo_relay_protocol::refusal::Refusal::NotAllowed(reason))
 }
 
 /// File `ws`'s verdict on `env`, a change this host refused for `reason`, in
@@ -653,7 +653,7 @@ pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
-) -> Option<String> {
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let body = governor_notice(env)?;
     if !crate::workspaces::writes_desktop(&body) {
         return None;
@@ -668,7 +668,7 @@ pub(super) async fn desktop_refusal(
     // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
     tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
-    Some(reason)
+    Some(tilo_relay_protocol::refusal::Refusal::NotAllowed(reason))
 }
 
 /// What the workspace's governor follows of `env`, a member's state change: its
@@ -716,7 +716,7 @@ pub(super) async fn handle_delta_prefix(
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: "workspace not bound on this relay".into(),
+            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
         }));
     };
     if author_device_public_key != &peer.device_public_key
@@ -741,7 +741,7 @@ pub(super) async fn handle_delta_prefix(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
+            refusal: refused_reason(&runtime, &asker.trust(), peer, op, channel),
         }));
     };
     trace_all(&envelopes, "server_authorized");
@@ -865,12 +865,12 @@ pub(super) fn refused_reason(
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
     channel: Option<[u8; 32]>,
-) -> &'static str {
+) -> tilo_relay_protocol::refusal::Refusal {
     let outside = crate::environment::environment_of(trust.environments, &peer.device_public_key)
         .filter(|environment| !environment.reaches(channel))
-        .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.reason());
+        .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     match workspace_access::decide(runtime, trust, peer, op) {
-        workspace_access::Decision::Deny(reason) => reason.reason(),
+        workspace_access::Decision::Deny(reason) => reason.refusal(),
         workspace_access::Decision::Admit | workspace_access::Decision::AdmitAndEnrol => {
             outside.unwrap_or_else(unpublished)
         }
@@ -885,6 +885,6 @@ fn trace_all(envelopes: &[Envelope], step: &str) {
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace.
-pub(super) fn unpublished() -> &'static str {
-    "workspace membership changed"
+pub(super) fn unpublished() -> tilo_relay_protocol::refusal::Refusal {
+    tilo_relay_protocol::refusal::Refusal::NotAMember("workspace membership changed".into())
 }

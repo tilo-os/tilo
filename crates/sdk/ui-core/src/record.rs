@@ -1864,7 +1864,7 @@ pub enum RecordOpenOutcome {
 }
 
 /// What a workspace's hosts answered of a record a store asked them for and does not hold.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceAnswer {
     /// They hold none of it: it is new to whoever may start it.
     HoldsNone,

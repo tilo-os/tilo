@@ -55,7 +55,7 @@ struct Hosted {
     link: DirectSync,
     /// What the host answers of the member's writes, subscribed before the member dialled.
     answers: tokio::sync::broadcast::Receiver<Answered>,
-    running: Vec<tokio::task::JoinHandle<Result<(), String>>>,
+    running: Vec<tokio::task::JoinHandle<Result<(), tilo_relay_protocol::refusal::Refusal>>>,
     router: Router,
     endpoints: [iroh::Endpoint; 2],
     _state: [tempfile::TempDir; 3],

@@ -196,9 +196,9 @@ async fn subscribe(client: &RelayClient, workspace_id: WorkspaceId) -> Result<()
     loop {
         match client.recv().await {
             Some(Envelope::Ready { .. }) => return Ok(()),
-            Some(Envelope::NotAuthorised { reason, .. }) => {
+            Some(Envelope::NotAuthorised { refusal, .. }) => {
                 return Err(format!(
-                    "the workspace does not admit this device: {reason}"
+                    "the workspace does not admit this device: {refusal}"
                 ));
             }
             None => return Err("the session closed".into()),
@@ -259,7 +259,9 @@ async fn call(
                     )),
                 };
             }
-            Some(Envelope::RemoteActionUndeliverable { reason, .. }) => return Err(reason),
+            Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
+                return Err(refusal.to_string());
+            }
             None => return Err("the session closed".into()),
             Some(_) => {}
         }

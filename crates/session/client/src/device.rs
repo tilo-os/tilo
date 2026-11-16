@@ -29,11 +29,6 @@ use tilo_relay_protocol::WorkspaceId;
 
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
-/// How often a join looks at the session while it waits.
-const POLL: Wait = Wait::from_millis(100);
-/// How often an entry looks at its session while it waits for the host's answer: a page
-/// waits for nothing else, so it looks often.
-const ENTRY_POLL: Wait = Wait::from_millis(5);
 /// How long a workspace's host has to answer an operation of its own.
 const ANSWERING: u32 = 20_000;
 /// How long an operation of the host's own that was still running past
@@ -241,24 +236,19 @@ impl Device {
 
     /// Whether the session is in `workspace_id`, waiting for its host to say so.
     pub async fn admitted(&self, workspace_id: WorkspaceId) -> bool {
-        let started = tilo_clock::now();
-        loop {
-            let status = self.peer.status();
-            if status.workspaces.get(&workspace_id) == Some(&true) {
-                return true;
-            }
-            if status
-                .failures
-                .iter()
-                .any(|failure| failure.code == "not-admitted")
-            {
-                return false;
-            }
-            if started.elapsed() >= ADMITTING {
-                return false;
-            }
-            n0_future::time::sleep(POLL).await;
-        }
+        self.peer
+            .until(ADMITTING, |status| {
+                if status.workspaces.get(&workspace_id) == Some(&true) {
+                    return Some(true);
+                }
+                status
+                    .failures
+                    .iter()
+                    .any(|failure| failure.code == "not-admitted")
+                    .then_some(false)
+            })
+            .await
+            .unwrap_or(false)
     }
 
     /// Redeem `invitation`, which admits this very device to a workspace, shown to its people as
@@ -327,26 +317,24 @@ impl Device {
     /// # Errors
     /// The host refused the session, or it did not connect in time.
     pub async fn connected(&self) -> Result<(), HostRefusal> {
-        let started = tilo_clock::now();
-        loop {
-            let status = self.peer.status();
-            match status.phase {
-                TransportPhase::Connected => return Ok(()),
+        self.peer
+            .until(ADMITTING, |status| match status.phase {
+                TransportPhase::Connected => Some(Ok(())),
                 TransportPhase::Failed | TransportPhase::Closed => {
-                    return Err(status.failures.last().map_or_else(
+                    Some(Err(Box::new(status.failures.last().map_or_else(
                         || HostRefusal::unanswered("the session with the host ended"),
                         |failure| HostRefusal::failed(&failure.message),
-                    ));
+                    ))))
                 }
-                _ => {}
-            }
-            if started.elapsed() >= ADMITTING {
-                return Err(HostRefusal::unanswered(
+                _ => None,
+            })
+            .await
+            .unwrap_or_else(|| {
+                Err(Box::new(HostRefusal::unanswered(
                     "the workspace's host did not take the session in time",
-                ));
-            }
-            n0_future::time::sleep(POLL).await;
-        }
+                )))
+            })
+            .map_err(|refusal| *refusal)
     }
 
     /// The person's own workspace on the host, and the invitation into it: its `name` makes
@@ -837,23 +825,21 @@ pub async fn entry_request(
 /// The entry or the workspace refused (the entry's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
 pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
-    let started = tilo_clock::now();
     let waits = ADMITTING.max(tilo_relay_protocol::entering::ENTERING_DEADLINE);
-    loop {
-        let status = peer.status();
-        match status.entry {
+    peer.until(waits, |status| {
+        match &status.entry {
             Some(crate::Entry::Admitted {
                 workspace,
                 workspace_id,
                 name,
                 role,
             }) => {
-                return Ok(Admission {
-                    workspace,
-                    workspace_id,
-                    name,
-                    role,
-                });
+                return Some(Ok(Admission {
+                    workspace: workspace.clone(),
+                    workspace_id: *workspace_id,
+                    name: name.clone(),
+                    role: *role,
+                }));
             }
             Some(crate::Entry::Refused {
                 code,
@@ -861,30 +847,29 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
                 retry_after_secs,
                 entry,
             }) => {
-                return Err(HostRefusal {
-                    code: code.to_owned(),
-                    message,
+                return Some(Err(Box::new(HostRefusal {
+                    code: (*code).to_owned(),
+                    message: message.clone(),
                     refusal: None,
                     retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
-                    entry,
-                });
+                    entry: entry.clone(),
+                })));
             }
             None => {}
         }
-        if let Some(failure) = status
+        status
             .failures
             .iter()
             .find(|_| status.phase == TransportPhase::Failed)
-        {
-            return Err(HostRefusal::failed(&failure.message));
-        }
-        if started.elapsed() >= waits {
-            return Err(HostRefusal::unanswered(
-                "the workspace's host did not answer the entry in time",
-            ));
-        }
-        n0_future::time::sleep(ENTRY_POLL).await;
-    }
+            .map(|failure| Err(Box::new(HostRefusal::failed(&failure.message))))
+    })
+    .await
+    .unwrap_or_else(|| {
+        Err(Box::new(HostRefusal::unanswered(
+            "the workspace's host did not answer the entry in time",
+        )))
+    })
+    .map_err(|refusal| *refusal)
 }
 
 /// Why a workspace's host did not do what a device asked of it, as the host said it: what every
@@ -930,12 +915,7 @@ impl HostRefusal {
     pub fn of(error: &ActionHostError) -> Self {
         match error {
             ActionHostError::Refused { reason } => Self::said(error.code(), reason),
-            ActionHostError::Unavailable { reason } => {
-                tilo_relay_protocol::refusal::busy_wait(reason).map_or_else(
-                    || Self::plain(error),
-                    |wait| Self::rate_limited(u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
-                )
-            }
+            ActionHostError::Busy { retry_after_ms } => Self::rate_limited(*retry_after_ms),
             other => Self::plain(other),
         }
     }
@@ -1114,14 +1094,7 @@ mod tests {
 
         phase a_busy_host_reads_as_rate_limited_with_its_wait_through_any_entry;
         {
-            let busy = ActionHostError::Unavailable {
-                reason: format!(
-                    "backpressure: {}",
-                    tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(
-                        480
-                    ))
-                ),
-            };
+            let busy = ActionHostError::Busy { retry_after_ms: 480 };
             let refused = HostRefusal::of(&busy);
             assert_eq!(refused.code, HostRefusal::RATE_LIMITED);
             assert_eq!(refused.retry_after_ms, Some(480));

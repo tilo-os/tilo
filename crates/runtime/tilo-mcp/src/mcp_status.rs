@@ -4,7 +4,7 @@
 //! stands, so an agent that lost an id, or wonders what is still running,
 //! asks the same tool.
 
-use super::{ActionHost, McpServer, Reply, answer_of, invocation_id, link, outcome};
+use super::{ActionHost, Failure, McpServer, Reply, answer_of, invocation_id, link, outcome};
 use serde::Deserialize;
 use std::fmt::Write as _;
 use tilo_lock::MutexRecover as _;
@@ -29,7 +29,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
         args: &AgentStatusArgs,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         let Some(id) = args.invocation_id.as_deref() else {
             if args.cancel || args.undo {
                 return Err("cancel and undo act on one invocation: name its invocation_id".into());
@@ -47,8 +47,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.host()
                 .cancel(&self.caller(), &invocation)
                 .await
-                .ok_or("the host dropped the request")?
-                .map_err(|error| error.to_string())?;
+                .ok_or("the host dropped the request")??;
         }
         let value = self.status(invocation).await?;
         let mut reply = outcome(&value);

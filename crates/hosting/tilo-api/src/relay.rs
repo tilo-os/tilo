@@ -82,7 +82,10 @@ impl std::fmt::Display for RelayError {
             // agent relaying it) reads what they can do about it.
             Self::Refused(reason) => {
                 tracing::info!(reason, "the relay refused a call");
-                f.write_str(&tilo_relay_protocol::refusal::plain_reason(reason))
+                match tilo_actions::remote::host_account::Refusal::from_reason(reason) {
+                    Some(refusal) => f.write_str(&refusal.message),
+                    None => f.write_str(tilo_relay_protocol::refusal::PLAIN_REFUSED),
+                }
             }
             Self::Unavailable(reason) => {
                 tracing::debug!(reason, "the relay was not reached");

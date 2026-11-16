@@ -39,7 +39,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
-    ) -> Result<Done, String> {
+    ) -> Result<Done, super::Failure> {
         let (value, reply) =
             Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
         Ok(Done::Launched { value, reply })
@@ -130,5 +130,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await
+        .map_err(String::from)
     }
 }

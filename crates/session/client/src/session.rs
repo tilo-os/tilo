@@ -336,7 +336,7 @@ fn session_task(
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
         sending: BTreeMap::new(),
-        not_ready: BTreeMap::new(),
+        not_ready: BTreeSet::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         compactions: Vec::new(),
@@ -396,8 +396,8 @@ struct Answered {
     workspace: tilo_desktop_model::WorkspaceId,
     /// The custody entry.
     id: [u8; 32],
-    /// Durable at this order, or refused with the host's reason.
-    outcome: Result<u64, String>,
+    /// Durable at this order, or refused, and why.
+    outcome: Result<u64, tilo_relay_protocol::refusal::Refusal>,
     /// What a refusal withdraws from the replica.
     withdrawn: Option<Event>,
 }
@@ -500,9 +500,9 @@ struct Task {
     barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
     /// What this connection sent its host of each workspace's custody.
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
-    /// The writes the host was not ready for, by how often it said so: each is sent again after
-    /// a wait ([`tilo_relay_protocol::refusal::RETRY_NOT_READY_MS`]) before it is refused.
-    not_ready: BTreeMap<[u8; 32], usize>,
+    /// The writes the host was not ready for: each is sent again once the host says the
+    /// workspace is ready, and refused if the host turns it away again.
+    not_ready: BTreeSet<[u8; 32]>,
     /// Writes the owner holds for an app surface this page does not have, by that surface: the
     /// routes the host replays once it arrived.
     awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,
@@ -1321,8 +1321,10 @@ impl Task {
         }
         // A host that keeps nothing of this person forgot them: the session
         // stops as not admitted, and the page joins again through its entry.
-        if let Envelope::NotAuthorised { reason, .. } = &envelope
-            && reason == tilo_relay_protocol::refusal::NOT_ADMITTED
+        if let Envelope::NotAuthorised {
+            refusal: tilo_relay_protocol::refusal::Refusal::NotAdmitted,
+            ..
+        } = &envelope
         {
             return Err(Exit::Refused(NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()));
         }
@@ -1373,7 +1375,7 @@ impl Task {
             self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
-                reason: NOT_CONNECTED.into(),
+                refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
             }));
             return;
         };
@@ -1383,7 +1385,9 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
-                    reason: "outside a workspace, only the host itself is asked".into(),
+                    refusal: tilo_relay_protocol::refusal::Refusal::Invalid(
+                        "outside a workspace, only the host itself is asked".into(),
+                    ),
                 }));
                 return;
             }
@@ -1396,7 +1400,9 @@ impl Task {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id: dropped.workspace_id,
                     to: dropped.to,
-                    reason: "too many actions waited for the workspace's admission".into(),
+                    refusal: tilo_relay_protocol::refusal::Refusal::Other(
+                        "too many actions waited for the workspace's admission".into(),
+                    ),
                 }));
             }
             self.held_actions.push(HeldAction {

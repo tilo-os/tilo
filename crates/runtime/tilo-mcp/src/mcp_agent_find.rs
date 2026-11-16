@@ -18,7 +18,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
         args: FindArgs,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         if args.query.trim().is_empty() {
             return Err("query needs a word to look for".into());
         }
@@ -33,8 +33,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let found = search
             .find(&self.caller, &args.query)
             .await
-            .ok_or("the host's search stopped answering")?
-            .map_err(|error| error.to_string())?;
+            .ok_or("the host's search stopped answering")??;
         if found.is_empty() {
             return Ok(Reply::ok(format!(
                 "nothing matches {}; tilo_ls shows the apps and what is in them",

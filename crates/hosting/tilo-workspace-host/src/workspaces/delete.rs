@@ -4,7 +4,7 @@
 //!
 //! Releasing a workspace ([`Workspaces::release`]) stops serving it and keeps
 //! its files, because it lives on elsewhere. Deleting it ends it: everyone in
-//! it is told it was deleted ([`WORKSPACE_DELETED`]) while their session is
+//! it is told it was deleted ([`Refusal::WorkspaceDeleted`]) while their session is
 //! still open, and let in no more; its record, the state and history it
 //! retained, and whatever else this host lists for it go from the disk and
 //! from memory, so the storage it took no longer counts against its owner;
@@ -31,7 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tilo_peer_state::GovernedAccess;
-use tilo_relay_protocol::refusal::WORKSPACE_DELETED;
+use tilo_relay_protocol::refusal::Refusal;
 
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
@@ -110,7 +110,7 @@ impl Workspaces {
             bound
                 .lock()
                 .await
-                .refuse_every_live_member(WORKSPACE_DELETED);
+                .refuse_every_live_member(&Refusal::WorkspaceDeleted);
         }
         self.inner
             .host
@@ -139,7 +139,7 @@ impl Workspaces {
 
     /// Whether the workspace whose relay workspace is `workspace_id` was
     /// deleted here: whoever asks for it is told so
-    /// ([`WORKSPACE_DELETED`]), the same on every lane.
+    /// ([`Refusal::WorkspaceDeleted`]), the same on every lane.
     #[must_use]
     pub fn deleted(&self, workspace_id: WorkspaceId) -> bool {
         self.inner.direct.deleted(workspace_id)

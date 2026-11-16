@@ -70,6 +70,8 @@ mod host_order;
 mod invitation_entry;
 #[path = "late_join.rs"]
 mod late_join;
+#[path = "lifecycle_states.rs"]
+mod lifecycle_states;
 #[path = "login_codes.rs"]
 mod login_codes;
 #[path = "lounge_fresh_page.rs"]

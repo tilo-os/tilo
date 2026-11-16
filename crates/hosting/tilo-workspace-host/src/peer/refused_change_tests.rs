@@ -336,12 +336,16 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     )
     .await
     .unwrap();
-    let Some(Envelope::CommitRefused { reason, .. }) = answer else {
+    let Some(Envelope::CommitRefused { refusal, .. }) = answer else {
         panic!("a change the workspace refuses is not kept, got {answer:?}");
     };
     assert!(
-        reason.contains("not granted") || reason.contains("membership"),
-        "the workspace's own reason for refusing it, got {reason}"
+        matches!(
+            refusal,
+            tilo_relay_protocol::refusal::Refusal::NotGranted(_)
+                | tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+        ),
+        "the workspace's own reason for refusing it, got {refusal}"
     );
     assert!(
         lounge.kept().await.is_empty(),

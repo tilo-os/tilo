@@ -45,7 +45,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.at_host(false, move |host, caller| host.confirm(caller, &asked)),
         )
         .await
-        .map_err(|_| BridgeError::from("ConfirmationRequired; the person did not answer in time"))?
+        .map_err(|_| {
+            BridgeError::Host(tilo_actions::remote::ActionHostError::confirmation_required())
+        })?
         .ok_or_else(|| BridgeError::from("Unavailable"))?
         .map_err(BridgeError::Host)?;
         edited.clone_from(&witnessed.arguments);
@@ -54,12 +56,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// Whether `message`, a refusal a call got, says the person is being asked:
-/// the host's own answer ([`tilo_actions::remote::ActionHostError::ConfirmationRequired`]),
-/// or this bridge's timeout while they decide. A typed caller is answered
-/// `pending` for it instead of waiting.
-pub(super) fn needs_the_person(message: &str) -> bool {
-    message.contains("requires confirmation")
-        || message.contains("ConfirmationRequired")
-        || message.contains("action_confirmation_required")
+/// Whether `failure`, a refusal a call got, is the person being asked: the
+/// host's own answer ([`tilo_actions::remote::ActionHostError::ConfirmationRequired`]),
+/// which this bridge also answers while the person decides past its patience.
+/// A typed caller is answered `pending` for it instead of waiting.
+pub(super) const fn needs_the_person(failure: &super::Failure) -> bool {
+    matches!(
+        failure.host,
+        Some(tilo_actions::remote::ActionHostError::ConfirmationRequired { .. })
+    )
 }

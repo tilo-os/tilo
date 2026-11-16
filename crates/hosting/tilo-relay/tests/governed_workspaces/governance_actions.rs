@@ -104,7 +104,9 @@ pub(super) async fn try_ask(
                 Some(Envelope::RemoteAction { frame, .. }) => {
                     break Ok(RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Some(Envelope::RemoteActionUndeliverable { reason, .. }) => break Err(reason),
+                Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => {
+                    break Err(refusal.to_string());
+                }
                 None => break Err("the session closed".to_owned()),
                 Some(_) => {}
             }

@@ -227,8 +227,8 @@ pub enum Inbound {
     CommitRefused {
         /// The commit's id, as the session sent it.
         op: [u8; 16],
-        /// The host's reason, for tracing.
-        reason: String,
+        /// Why.
+        refusal: tilo_relay_protocol::refusal::Refusal,
     },
 }
 

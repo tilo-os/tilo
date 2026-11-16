@@ -1017,7 +1017,7 @@ impl Joined {
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut landed: BTreeSet<DocumentRoute> = BTreeSet::new();
-        let mut refusals: Vec<(DocumentRoute, Vec<[u8; 32]>, String)> = Vec::new();
+        let mut refusals = Vec::new();
         let mut opened: Vec<(DocumentRoute, WorkspaceAnswer)> = Vec::new();
         let mut content_arrived = false;
         for event in self.events.drain() {
@@ -1049,14 +1049,14 @@ impl Joined {
                 Event::Refused {
                     route,
                     changes,
-                    reason,
+                    refusal,
                 } if route.cluster_id == self.uuid => {
-                    refusals.push((route, changes, reason));
+                    refusals.push((route, changes, refusal));
                 }
                 Event::ContentRefused {
                     ws: workspace_id,
-                    reason,
-                } if workspace_id == self.workspace => self.content_refused(&reason),
+                    refusal,
+                } if workspace_id == self.workspace => self.content_refused(&refusal),
                 Event::RecordOpened {
                     ws: workspace_id,
                     route: Some(route),
@@ -1071,8 +1071,8 @@ impl Joined {
         self.follow_members(&mut woken);
         // Withdrawn before what arrived since is merged: a peer's change can
         // never build on one the workspace refused.
-        for (route, changes, reason) in refusals {
-            self.withdraw(&route, &changes, &reason, &mut woken);
+        for (route, changes, refusal) in refusals {
+            self.withdraw(&route, &changes, &refusal, &mut woken);
         }
         let settled =
             std::mem::take(&mut *self.settled.lock().unwrap_or_else(PoisonError::into_inner));
@@ -1232,11 +1232,11 @@ impl Joined {
 
     /// The host did not pass on content this page shared: say so over every desktop the page
     /// shows, with when to try again, as the host said it.
-    fn content_refused(&self, reason: &str) {
+    fn content_refused(&self, refusal: &tilo_relay_protocol::refusal::Refusal) {
         warn(&format!(
-            "the workspace did not pass on shared content: {reason}"
+            "the workspace did not pass on shared content: {refusal}"
         ));
-        let plain = tilo_relay_protocol::refusal::plain_reason(reason);
+        let plain = refusal.plain();
         for mounted in self.mounts.values() {
             if let Some((handle, _)) = &mounted.attachment.desktop {
                 handle.acknowledge(plain.to_string());
@@ -1252,11 +1252,11 @@ impl Joined {
         &mut self,
         route: &DocumentRoute,
         changes: &[[u8; 32]],
-        reason: &str,
+        refusal: &tilo_relay_protocol::refusal::Refusal,
         woken: &mut HashSet<u64>,
     ) {
         warn(&format!(
-            "{}/{}: the workspace refused a change: {reason}",
+            "{}/{}: the workspace refused a change: {refusal}",
             route.app_id, route.record
         ));
         if route.app_id == DESKTOP_APP {
@@ -1269,7 +1269,7 @@ impl Joined {
             .iter()
             .map(|hash| ui::automerge::ChangeHash(*hash))
             .collect();
-        let plain = tilo_relay_protocol::refusal::plain_reason(reason);
+        let plain = refusal.plain();
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.app_and_home().0 != route.app_id {

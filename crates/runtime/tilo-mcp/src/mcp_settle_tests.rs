@@ -484,28 +484,35 @@ tilo_test_env::scenario! {
         });
     }
 
-    phase a_stale_invoke_says_what_to_do_rather_than_a_code;
-    // An invoke that named a revision the directory left behind is the one
-    // answer a caller cannot act on by itself: what happened, which revision
-    // it named, which it is at now, and what to do next.
+    phase a_stale_invoke_runs_again_at_the_current_revision_or_says_what_to_do;
+    // An invoke that named a revision the directory left behind is after the
+    // action, not that snapshot: it runs once more with the revision omitted.
+    // A refusal that still says stale is told as what happened and what to do.
     {
         let host = GatedHost {
             at_once: true,
             stale: Some(Stale::Invokes),
             ..GatedHost::default()
         };
-        let server = gated_server(host);
+        let server = gated_server(host.clone());
         run(async {
             initialized(&server).await;
             let mut args = current_invoke();
             args["revision"] = json!("0");
             let reply = tool(&server, "tilo_invoke", args).await;
-            let text = reply.to_string();
-            for expected in ["changed", "now", "omit revision", "tilo_query"] {
-                assert!(text.contains(expected), "{expected}: {text}");
-            }
-            assert!(!text.contains("invalid request"), "{text}");
+            assert_eq!(
+                reply["structuredContent"]["update"]["state"], "succeeded",
+                "{reply}"
+            );
+            assert_eq!(revisions_and_reads(&host).0.last(), Some(&None), "{reply}");
         });
+        let told = String::from(BridgeError::Host(
+            tilo_actions::remote::ActionHostError::StaleRevision,
+        ));
+        for expected in ["changed", "now", "omit revision", "tilo_query"] {
+            assert!(told.contains(expected), "{expected}: {told}");
+        }
+        assert!(!told.contains("invalid request"), "{told}");
     }
 }
 

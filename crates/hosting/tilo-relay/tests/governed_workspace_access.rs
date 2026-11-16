@@ -169,9 +169,11 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
     assert!(
         matches!(
             &told,
-            Some(Envelope::NotAuthorised { workspace_id, reason })
+            Some(Envelope::NotAuthorised { workspace_id, refusal })
                 if *workspace_id == WorkspaceId::from_u128(701)
-                    && reason == "workspace membership changed"
+                    && *refusal == tilo_relay_protocol::refusal::Refusal::NotAMember(
+                        "workspace membership changed".into()
+                    )
         ),
         "{told:?}"
     );

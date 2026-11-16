@@ -2,7 +2,7 @@
 //! ([`tilo_actions::remote::RecordReads`]): its content as a structured value whatever app keeps
 //! it, decided as the agent may read it now, and woken by the next write to it.
 
-use super::{ActionHost, McpServer, Reply};
+use super::{ActionHost, Failure, McpServer, Reply};
 use tilo_actions::remote::{RecordAddress, RecordAsk, read_records};
 
 /// How long a record read waits for a write past the revision it was given.
@@ -18,7 +18,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         (app, record): (&str, &str),
         parts: bool,
         after: Option<String>,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         let reads = self
             .host()
             .record_reads()
@@ -49,7 +49,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "the record reads as {} characters, more than {RECORD_CHARS}: read its parts one \
                  at a time, each by its own record id",
                 text.len()
-            ));
+            )
+            .into());
         }
         Ok(Reply {
             text,

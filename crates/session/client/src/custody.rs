@@ -371,8 +371,9 @@ pub struct Sending {
     sent: std::collections::BTreeSet<[u8; 32]>,
     /// How many writes in custody the last pass held back: they may not leave now.
     held: usize,
-    /// Writes the host was not ready for, each with when (Unix ms) it goes again.
-    later: std::collections::BTreeMap<[u8; 32], u64>,
+    /// Writes the host was not ready for: each goes again once the host says the workspace is
+    /// ready ([`Self::ready`]).
+    awaiting_ready: std::collections::BTreeSet<[u8; 32]>,
 }
 
 impl Sending {
@@ -432,14 +433,12 @@ impl Sending {
     ) -> bool {
         let queued: std::collections::BTreeSet<_> = queued.collect();
         self.sent.retain(|id| queued.contains(id));
-        self.later.retain(|id, _| queued.contains(id));
-        let now = tilo_clock::unix_now_ms();
+        self.awaiting_ready.retain(|id| queued.contains(id));
         for write in writes {
             let id = write.id;
-            if self.sent.contains(&id) || self.later.get(&id).is_some_and(|at| *at > now) {
+            if self.sent.contains(&id) || self.awaiting_ready.contains(&id) {
                 continue;
             }
-            self.later.remove(&id);
             if !send(write) {
                 return false;
             }
@@ -448,10 +447,19 @@ impl Sending {
         true
     }
 
-    /// Send write `id` again at `at_ms` (Unix ms), not before: the host was not ready for it.
-    pub fn send_again_at(&mut self, id: [u8; 32], at_ms: u64) {
+    /// Send write `id` again once the host says the workspace is ready, not before: the host
+    /// was not ready for it.
+    pub fn send_once_ready(&mut self, id: [u8; 32]) {
         self.sent.remove(&id);
-        self.later.insert(id, at_ms);
+        self.awaiting_ready.insert(id);
+    }
+
+    /// The host says the workspace is ready on this connection: every write it was not ready
+    /// for goes again on the next pass. Whether any was waiting.
+    pub fn ready(&mut self) -> bool {
+        let waited = !self.awaiting_ready.is_empty();
+        self.awaiting_ready.clear();
+        waited
     }
 
     /// The write this connection sent whose id begins with `prefix`, taken out of what it sent:
@@ -536,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn a_write_the_host_was_not_ready_for_goes_again_once_its_wait_is_over() {
+    fn a_write_the_host_was_not_ready_for_goes_again_once_it_is() {
         let mut sending = Sending::default();
         let sent = std::cell::Cell::new(0_u32);
         let count = |_: Outgoing<'_>| {
@@ -547,16 +555,17 @@ mod tests {
         sending.pass(queued(), std::iter::once(write(4)), count);
         assert_eq!(sending.answered(&[4; 16]), Some([4; 32]));
         // Not ready: it waits, still in custody, and is not sent meanwhile.
-        sending.send_again_at([4; 32], tilo_clock::unix_now_ms().saturating_add(60_000));
+        sending.send_once_ready([4; 32]);
         sending.pass(queued(), std::iter::once(write(4)), count);
         assert_eq!(
             sent.get(),
             1,
-            "a write waiting to go again does not leave early"
+            "a write waiting for the host does not leave before it is ready"
         );
-        sending.send_again_at([4; 32], tilo_clock::unix_now_ms());
+        assert!(sending.ready());
         sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(sent.get(), 2, "once its wait is over, it leaves again");
+        assert_eq!(sent.get(), 2, "once the host is ready, it leaves again");
+        assert!(!sending.ready(), "nothing waits any more");
     }
 
     #[test]

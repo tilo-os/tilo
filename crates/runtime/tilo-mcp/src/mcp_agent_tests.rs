@@ -64,7 +64,7 @@ struct Notes {
     /// What the workspace says of its installed apps.
     workspace: Arc<Mutex<Installed>>,
     /// Why the session cannot say which apps run, when it cannot.
-    unreachable: Arc<Mutex<Option<String>>>,
+    unreachable: Arc<Mutex<Option<ActionHostError>>>,
     /// Notes the notebook holds beyond Todo and Groceries, each with its
     /// body beside it: a notebook grown as an agent's work grows it.
     more: Arc<Mutex<usize>>,
@@ -660,8 +660,8 @@ impl Notes {
     /// say which apps run, or the workspace's installed apps cannot be read.
     fn refused(&self, query: &CatalogueQuery) -> Option<ActionHostError> {
         let unreachable = self.unreachable.lock().unwrap().clone();
-        if let Some(reason) = unreachable {
-            return Some(ActionHostError::Unavailable { reason });
+        if let Some(error) = unreachable {
+            return Some(error);
         }
         let installed = *self.workspace.lock().unwrap();
         (query.provider.as_deref() == Some(WORKSPACE) && installed == Installed::Unreadable).then(
@@ -860,8 +860,8 @@ impl tilo_actions::remote::ResourceSearch for Notes {
         needle: &str,
     ) -> Pending<Result<Vec<tilo_actions::remote::Found>, ActionHostError>> {
         let unreachable = self.unreachable.lock().unwrap().clone();
-        if let Some(reason) = unreachable {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
+        if let Some(error) = unreachable {
+            return Pending::ready(Err(error));
         }
         let words = page::needle_words(needle);
         if words.is_empty() {
@@ -1113,7 +1113,12 @@ async fn tool<H: ActionHost + Send + Sync + 'static>(
         .await
         .unwrap();
     let result = &reply["result"];
-    assert!(result.get("structuredContent").is_none(), "{reply}");
+    // Typed only when a host's refusal decided it: its code beside the words.
+    let typed = result.get("structuredContent");
+    assert!(
+        typed.is_none_or(|typed| typed.pointer("/error/code").is_some()),
+        "{reply}"
+    );
     (
         result["content"][0]["text"]
             .as_str()
@@ -1215,14 +1220,11 @@ tilo_test_env::scenario! {
             // The session's actions do not answer for this agent: it is told
             // why, not handed an empty list.
             let unreachable = Notes::new(true);
-            *unreachable.unreachable.lock().unwrap() = Some(
-                "agent claude-code is no longer a member of workspace Home who may read it".into(),
-            );
+            *unreachable.unreachable.lock().unwrap() = Some(ActionHostError::Unavailable {
+                reason: "no longer a member of workspace Home".into(),
+            });
             let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
-            assert!(
-                failed && text.contains("no longer a member of workspace Home"),
-                "{text}"
-            );
+            assert!(failed && text.contains("no longer a member"), "{text}");
             let (text, failed) =
                 tool(&agent(&unreachable), "tilo_find", json!({"query": "notes"})).await;
             assert!(failed && text.contains("no longer a member"), "{text}");
@@ -1418,18 +1420,22 @@ tilo_test_env::scenario! {
     {
         run(async {
             let busy = Notes::new(true);
-            *busy.unreachable.lock().unwrap() = Some(format!(
-                "backpressure: {}",
-                tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
-            ));
+            *busy.unreachable.lock().unwrap() =
+                Some(ActionHostError::Busy { retry_after_ms: 480 });
             let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
             assert!(failed, "{typed}");
             assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
             assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
-            // Anything else the host is short of stays a plain failure.
-            *busy.unreachable.lock().unwrap() = Some("offline: the device left".into());
-            let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
-            assert_eq!(typed["error"]["code"], "failed", "{typed}");
+            let left = ActionHostError::Unavailable { reason: "left".into() };
+            for (error, code) in [
+                (ActionHostError::NotReady, "not_ready"),
+                (ActionHostError::Unanswered, "unanswered"),
+                (left, "remote_actions_unavailable"),
+            ] {
+                *busy.unreachable.lock().unwrap() = Some(error);
+                let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+                assert_eq!(typed["error"]["code"], code, "{typed}");
+            }
         });
     }
 

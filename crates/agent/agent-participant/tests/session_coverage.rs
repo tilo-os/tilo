@@ -101,8 +101,8 @@ async fn ask(
                     answer
                         .get_or_insert_with(|| RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Event::Remote(Heard::Undeliverable { reason, .. }) => {
-                    panic!("undeliverable: {reason}")
+                Event::Remote(Heard::Undeliverable { refusal, .. }) => {
+                    panic!("undeliverable: {refusal}")
                 }
                 _ => {}
             }

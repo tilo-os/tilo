@@ -998,8 +998,12 @@ impl AttachedView {
     /// The workspace's hosts sent all they hold of `record`, none of it
     /// ([`RecordStore::note_workspace_answered`]); the view takes it up at its
     /// next frame.
-    pub fn workspace_answered(&mut self, record: ui_core::record::RecordId) {
-        self.records.note_workspace_answered(record);
+    pub fn workspace_answered(
+        &mut self,
+        record: ui_core::record::RecordId,
+        answer: ui_core::record::WorkspaceAnswer,
+    ) {
+        self.records.note_workspace_answer(record, answer);
         self.unsettle();
     }
 

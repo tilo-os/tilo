@@ -1002,6 +1002,8 @@ struct Workspace {
     answered: HashSet<DocumentRoute>,
     /// Of those, the records the host answered it holds none of.
     absent: HashSet<DocumentRoute>,
+    /// Records the host answered are another person's own: never sent here, and never founded.
+    not_yours: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
     /// Records whose writes landed in the session's replica that it cannot open yet: their
@@ -1049,6 +1051,7 @@ impl Workspace {
             asked: HashSet::new(),
             answered: HashSet::new(),
             absent: HashSet::new(),
+            not_yours: HashSet::new(),
             gave_up: GaveUp::default(),
             undecided: BTreeSet::new(),
             records: None,
@@ -1091,8 +1094,14 @@ impl Workspace {
                     // means it holds none of it. Another person's own record
                     // is answered as theirs: not absent, never founded here.
                     if self.asked.remove(&route) {
-                        if answer == (tilo_session_client::RecordAnswer::Sent { frames: 0 }) {
-                            self.absent.insert(route.clone());
+                        match answer {
+                            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
+                                self.absent.insert(route.clone());
+                            }
+                            tilo_session_client::RecordAnswer::NotYours => {
+                                self.not_yours.insert(route.clone());
+                            }
+                            tilo_session_client::RecordAnswer::Sent { .. } => {}
                         }
                         self.answered.insert(route);
                     }

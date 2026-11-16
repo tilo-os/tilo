@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
+use tilo_relay_protocol::refusal::Refusal;
 
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{
@@ -53,24 +54,11 @@ const ASKED_AGAIN_AT_MOST: u8 = 3;
 /// its host right now. A connection that comes back carries what waited for it.
 pub const NOT_CONNECTED: &str = "not connected to the host";
 
-/// The token that leads the refusal of a request whose connection is no longer
-/// the device's (`UnavailableReason::Superseded` on the wire): a newer
-/// connection of the same device took over, so what it asked is asked again on
-/// that one.
-const SUPERSEDED: &str = "superseded";
-
-/// Whether the refusal `reason` says the connection that carried the request
-/// is no longer the device's.
-fn superseded(reason: &str) -> bool {
-    let token = reason.split_once(':').map_or(reason, |(token, _)| token);
-    token.trim() == SUPERSEDED
-}
-
 /// Whether a refused request is asked again instead of answered: the session
-/// could not carry it, and nothing ran, so the same request works once a
-/// connection that is the device's carries it.
-fn worth_asking_again(reason: &str) -> bool {
-    reason == NOT_CONNECTED || superseded(reason)
+/// could not carry it, or the host was not ready for it, and nothing ran, so
+/// the same request works once a connection that is the device's carries it.
+const fn worth_asking_again(refusal: &Refusal) -> bool {
+    refusal.passes_once_ready()
 }
 
 /// What a host's session heard for the asks here, since the last call.
@@ -89,7 +77,7 @@ pub enum Heard {
     Undeliverable {
         workspace_id: WorkspaceId,
         to: [u8; 32],
-        reason: String,
+        refusal: Refusal,
     },
 }
 
@@ -128,6 +116,22 @@ pub trait RemoteSession: Send + Sync {
     /// device's: a newer connection of the same device took over, and this one
     /// is on its way out.
     fn connect_again(&self) {}
+
+    /// Where `workspace_id` and this device's writes stand on the session; `None` for a session
+    /// that does not say.
+    fn session_state(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<tilo_actions::remote::SessionState> {
+        let _ = workspace_id;
+        None
+    }
+
+    /// Resolves the next time the session's states may have changed; `None` for a session that
+    /// does not say.
+    fn state_changed(&self) -> Option<Pending<()>> {
+        None
+    }
 }
 
 /// One device's actions in one workspace, asked through the session: the last clone dropped stops
@@ -227,6 +231,22 @@ fn unavailable(reason: impl Into<String>) -> ActionHostError {
     }
 }
 
+/// What a caller is answered for a request the host would not carry: typed
+/// where the caller can act on it (wait, or ask again once the workspace is
+/// ready), the host's words otherwise.
+fn refused(refusal: &Refusal) -> ActionHostError {
+    match refusal {
+        Refusal::TooFast { wait_ms } => ActionHostError::Busy {
+            retry_after_ms: *wait_ms,
+        },
+        Refusal::NotReady | Refusal::Superseded => ActionHostError::NotReady,
+        Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
+            ActionHostError::NotPermitted
+        }
+        other => unavailable(other.to_string()),
+    }
+}
+
 impl Waiting {
     /// Every waiting request, answered with `error`.
     fn fail_all(&mut self, error: &ActionHostError, give: &mut Vec<Give>) {
@@ -264,7 +284,7 @@ impl Waiting {
 
     /// The requests past their deadline, answered as unanswered.
     fn expire(&mut self, now: Instant, give: &mut Vec<Give>) {
-        let late = || unavailable("the device did not answer in time");
+        let late = || ActionHostError::Unanswered;
         for asked in expired(&mut self.catalogues, now) {
             give.push(giving(asked, Err(late())));
         }
@@ -571,8 +591,7 @@ impl SessionActions {
         &self,
         step: tilo_actions::remote::ContentPutStep,
     ) -> Answered<ContentPutAnswer> {
-        in_time(self.put_step(step))
-            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+        in_time(self.put_step(step)).unwrap_or(Err(ActionHostError::Unanswered))
     }
 
     /// Ask the device for a piece of `content`, waiting for its answer.
@@ -596,7 +615,7 @@ impl SessionActions {
         if let Some(error) = failed {
             return Err(error);
         }
-        in_time(answered).unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+        in_time(answered).unwrap_or(Err(ActionHostError::Unanswered))
     }
 
     /// The actions of the device `device` in `workspace_id`, asked through `session`.
@@ -726,21 +745,21 @@ impl Inner {
                 Heard::Undeliverable {
                     workspace_id,
                     to,
-                    reason,
+                    refusal,
                 } if workspace_id == self.workspace_id && to == self.device => {
                     // A connection that is not the device's any more, or none at
                     // all, ran nothing: what waits is asked again on the
                     // connection that is. Any other refusal is the answer.
                     // The connection it was refused on counts first: the one it
                     // is asked again on is a later one.
-                    let kept = worth_asking_again(&reason) && self.refused();
-                    if superseded(&reason) {
+                    let kept = worth_asking_again(&refusal) && self.refused();
+                    if refusal == Refusal::Superseded {
                         self.session.connect_again();
                     }
                     if !kept {
                         self.waiting
                             .lock_recover()
-                            .fail_all(&unavailable(reason), &mut give);
+                            .fail_all(&refused(&refusal), &mut give);
                     }
                 }
                 _ => {}
@@ -862,6 +881,15 @@ impl Inner {
 }
 
 impl ActionHost for SessionActions {
+    /// Where the workspace these actions are asked in stands on the session.
+    fn session_state(&self, _caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
+        self.0.session.session_state(self.0.workspace_id)
+    }
+
+    fn session_state_changed(&self, _caller: &Caller) -> Option<Pending<()>> {
+        self.0.session.state_changed()
+    }
+
     /// The device's own search of its workspace, asked over the session.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         Some(Arc::new(workspace::SessionSearch(self.clone())))
@@ -1213,11 +1241,11 @@ mod tests {
         }
 
         /// Say the session could not carry a frame to this device, and why.
-        fn undeliverable(&self, reason: &str) {
+        fn undeliverable(&self, refusal: Refusal) {
             self.heard.lock_recover().push(Heard::Undeliverable {
                 workspace_id: WorkspaceId::from_u128(1),
                 to: DEVICE,
-                reason: reason.to_owned(),
+                refusal,
             });
             let wake = self.wake.lock_recover().clone();
             if let Some(wake) = wake {
@@ -1323,8 +1351,7 @@ mod tests {
             if self.connections.lock_recover().1 {
                 return self.device.send_remote_action(workspace_id, to, frame);
             }
-            self.device
-                .undeliverable("superseded: a newer connection of this device took over");
+            self.device.undeliverable(Refusal::Superseded);
             Ok(())
         }
 

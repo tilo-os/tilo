@@ -1144,12 +1144,8 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
 /// the caller must act on.
 #[test]
 fn a_busy_relay_answers_rate_limited_with_its_wait() {
-    let busy = tilo_actions::remote::ActionHostError::Unavailable {
-        reason: format!(
-            "{}: {}",
-            tilo_relay_protocol::refusal::BACKPRESSURE,
-            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
-        ),
+    let busy = tilo_actions::remote::ActionHostError::Busy {
+        retry_after_ms: 480,
     };
     let relay = relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&busy));
     assert_eq!(

@@ -44,6 +44,7 @@ mod replica;
 /// This session's presence tracks, as a participant's client says on them.
 pub mod saying;
 pub mod session;
+pub mod states;
 pub mod surfaces;
 pub mod voice;
 pub mod way_in;
@@ -67,6 +68,7 @@ pub use saying::saying;
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{Lent, start_session_lent};
 pub use session::{PeerConfig, SessionMemberHost, member_host, start_session};
+pub use states::{SyncState, WorkspaceState};
 pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.

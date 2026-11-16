@@ -241,8 +241,8 @@ impl Page {
                     self.answers
                         .push(RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Some(Event::Remote(Heard::Undeliverable { reason, .. })) => {
-                    panic!("undeliverable: {reason}")
+                Some(Event::Remote(Heard::Undeliverable { refusal, .. })) => {
+                    panic!("undeliverable: {refusal}")
                 }
                 Some(_) | None => {}
             }

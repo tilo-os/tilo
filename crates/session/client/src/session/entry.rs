@@ -131,7 +131,13 @@ impl Task {
             }
             Entered::Refused(refused) => {
                 let entry = refused_entry(&refused);
-                self.reports.change(|status| status.entry = Some(entry));
+                // A refused entry stops the session: one change says both, so
+                // whoever waits on the answer reads a session that stopped.
+                self.reports.change(|status| {
+                    status.entry = Some(entry);
+                    status.phase = TransportPhase::Failed;
+                    status.authenticated = false;
+                });
                 Some(Exit::Refused(
                     refusal_code(&refused),
                     refused.reason().to_owned(),

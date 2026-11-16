@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// is alive this often.
 const LOOK_MS: u64 = 15_000;
 /// The phases a run ends in.
-const ENDED: [&str; 3] = ["succeeded", "failed", "cancelled"];
+const ENDED: [&str; 4] = ["succeeded", "failed", "cancelled", "refused"];
 
 /// One workspace's events, read as a session's run.
 pub struct Watch {

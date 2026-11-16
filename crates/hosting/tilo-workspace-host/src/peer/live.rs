@@ -15,28 +15,29 @@ pub(super) async fn handle_live_join(
     subscribed: &[WorkspaceId],
     workspace_id: WorkspaceId,
 ) -> Result<Option<Envelope>, PeerError> {
-    const UNSUBSCRIBED: &str = "live join requires a subscription";
-    let refused = |reason: &str| {
+    let refused = |refusal: tilo_relay_protocol::refusal::Refusal| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: reason.into(),
+            refusal,
         }))
     };
+    // A live join before the subscription, or before the workspace is open
+    // here, goes through once the host says the workspace is ready.
     if !subscribed.contains(&workspace_id) {
         match subscription_refusal(session, peer, workspace_id).await? {
-            Some(reason) => return refused(reason),
-            None => return refused(UNSUBSCRIBED),
+            Some(refusal) => return refused(refusal),
+            None => return refused(tilo_relay_protocol::refusal::Refusal::NotReady),
         }
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused(UNSUBSCRIBED);
+        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
     };
     let members = ws
         .lock()
         .await
         .live_join(peer.device_public_key, workspace_id);
     let Some(members) = members else {
-        return refused(UNSUBSCRIBED);
+        return refused(tilo_relay_protocol::refusal::Refusal::NotReady);
     };
     for device in members {
         // Live state is never authority: a member notice lost to a full
@@ -59,14 +60,14 @@ async fn subscription_refusal(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
     workspace_id: WorkspaceId,
-) -> Result<Option<&'static str>, PeerError> {
+) -> Result<Option<tilo_relay_protocol::refusal::Refusal>, PeerError> {
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
     let runtime = crate::workspace_io::fresh_membership(&ws).await?;
     Ok(
         match session.decide(&runtime, peer, WorkspaceOperation::Subscribe) {
-            Decision::Deny(reason) => Some(reason.reason()),
+            Decision::Deny(reason) => Some(reason.refusal()),
             Decision::Admit | Decision::AdmitAndEnrol => None,
         },
     )
@@ -524,7 +525,7 @@ pub(super) async fn route_record_content(
         if limits.tell_refused(&peer.user_public_key, tilo_clock::now()) {
             let _ = session.outbound.try_send(Envelope::RecordContentRefused {
                 workspace_id,
-                reason: limited.to_string(),
+                refusal: limited.refusal(),
             });
         }
         return;

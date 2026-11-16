@@ -112,6 +112,9 @@ pub struct PeerStatus {
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
     pub workspaces: BTreeMap<WorkspaceId, bool>,
+    /// The joined workspaces whose governance admits this device: their records read as a
+    /// member's ([`crate::WorkspaceState::Serving`]).
+    pub serving: BTreeSet<WorkspaceId>,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -157,6 +160,7 @@ impl PeerStatus {
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
             workspaces: BTreeMap::new(),
+            serving: BTreeSet::new(),
             local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
@@ -316,17 +320,25 @@ impl Reports {
         read(&self.lock().status)
     }
 
-    /// Apply `change` to the status, bump its generation and wake the watchers once the lock is
-    /// released.
+    /// Apply `change` to the status, bump its generation, publish the states it moved
+    /// ([`crate::states`]) and wake the watchers once the lock is released.
     pub fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
+        let moved = {
             let mut reported = self.lock();
+            let before = crate::states::of(&reported.status);
             change(&mut reported.status);
             reported.status.generation = reported.status.generation.wrapping_add(1);
-            reported.wakes_now()
+            crate::states::changes(&before, &reported.status)
         };
-        for wake in &wakes {
-            wake();
+        if moved.is_empty() {
+            let wakes = self.lock().wakes_now();
+            for wake in &wakes {
+                wake();
+            }
+        }
+        // Each state's event wakes everyone, the status's change with it.
+        for event in &moved {
+            self.emit(event);
         }
     }
 
@@ -440,6 +452,11 @@ impl Drop for Events {
 }
 
 impl Events {
+    /// Another handle on the same queue, which keeps it alive as long as it is held.
+    fn queue(&self) -> Queue {
+        Arc::clone(&self.queue)
+    }
+
     /// Take every event produced since the last call.
     #[must_use]
     pub fn drain(&self) -> Vec<Event> {
@@ -663,6 +680,44 @@ impl Link {
         self.reports.lock().wakes.push(wake);
     }
 
+    /// What `read` first answers of the session's status, woken by each change of it rather
+    /// than looking again on a timer; `None` when it answered nothing within `within`.
+    pub async fn until<R>(
+        &self,
+        within: web_time::Duration,
+        mut read: impl FnMut(&PeerStatus) -> Option<R>,
+    ) -> Option<R> {
+        let started = tilo_clock::now();
+        loop {
+            // Listened for before the status is read, so a change in between still wakes it.
+            let (changed, change) = crate::answer::<()>();
+            let changed = Mutex::new(Some(changed));
+            let listening = self.reports.events(|_| false);
+            self.reports.listen(
+                &listening,
+                Arc::new(move || {
+                    let changed = changed.lock_recover().take();
+                    if let Some(changed) = changed {
+                        let _ = changed.send(());
+                    }
+                }),
+            );
+            if let Some(found) = self.reports.read(&mut read) {
+                return Some(found);
+            }
+            let left = within.checked_sub(started.elapsed())?;
+            let woken = async { change.await.is_ok() };
+            let late = async {
+                n0_future::time::sleep(left).await;
+                false
+            };
+            if !n0_future::future::or(woken, late).await {
+                return self.reports.read(&mut read);
+            }
+            drop(listening);
+        }
+    }
+
     /// Serve what another device addresses to this device on this session, from
     /// now on: a window this session holds is reached through the host that way.
     pub fn serve_inbound(&self, inbound: Arc<dyn InboundActions>) {
@@ -751,6 +806,38 @@ impl crate::remote::RemoteSession for Asking {
 
     fn connections(&self) -> u64 {
         self.reports.read(|status| status.connections)
+    }
+
+    fn session_state(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<tilo_actions::remote::SessionState> {
+        self.reports
+            .read(|status| status.session_state(workspace_id))
+    }
+
+    fn state_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        let (woken, changed) = tilo_actions::remote::pending();
+        let listening = self
+            .reports
+            .events(|event| matches!(event, Event::Workspace { .. } | Event::Sync(_)));
+        // The wake keeps the queue it listens on until a state's event reaches it, then lets
+        // both go: every other change of the session passes it by.
+        let held = Mutex::new(Some((woken, listening.queue())));
+        self.reports.listen(
+            &listening,
+            Arc::new(move || {
+                let mut held = held.lock_recover();
+                if held
+                    .as_ref()
+                    .is_some_and(|(_, queue)| !queue.lock_recover().is_empty())
+                    && let Some((woken, _queue)) = held.take()
+                {
+                    woken.complete(());
+                }
+            }),
+        );
+        Some(changed)
     }
 
     fn connect_again(&self) {

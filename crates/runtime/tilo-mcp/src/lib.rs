@@ -231,6 +231,10 @@ impl OpenFiles {
     }
 }
 
+#[path = "mcp_failure.rs"]
+mod failure;
+pub(crate) use failure::Failure;
+
 /// Why a step of this bridge did not happen: the action host's refusal,
 /// kept typed so the bridge decides by its variant and never by its
 /// wording, or the bridge's own words. It becomes text only where an MCP
@@ -2119,6 +2123,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms: a.wait_ms,
         }))
         .await
+        .map_err(String::from)
     }
     /// Wait until no other call of this session runs the caller-chosen
     /// `invocation`, then hold it for this one. An id that is no UUID holds
@@ -2160,7 +2165,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             results.push(match value {
                 Ok(value) if !failed => succeeded_step(value),
                 Ok(value) => value,
-                Err(error) => json!({ "error": error }),
+                Err(error) => json!({ "error": String::from(error) }),
             });
             if failed {
                 stopped = Some(index);
@@ -2196,12 +2201,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
-    async fn invoke_one(&self, mut a: OneCall) -> Result<Value, String> {
+    async fn invoke_one(&self, mut a: OneCall) -> Result<Value, Failure> {
         let named = a.revision.clone();
         match self.start_one(a.clone()).await {
             Ok(value) => Ok(value),
             Err(error) => {
-                let moved = error.contains(tilo_actions::remote::STALE_REVISION_REASON);
+                let moved = matches!(
+                    error.host,
+                    Some(tilo_actions::remote::ActionHostError::StaleRevision)
+                );
                 match self
                     .maybe_retry_stale(&mut a, named.as_deref(), moved)
                     .await
@@ -2227,7 +2235,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         a: &mut OneCall,
         named: Option<&str>,
         moved: bool,
-    ) -> Option<Result<Value, String>> {
+    ) -> Option<Result<Value, Failure>> {
         if !moved || named.is_none_or(str::is_empty) {
             return None;
         }
@@ -2236,7 +2244,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// [`Self::invoke_one`] for one revision: the action started, or the
     /// host's refusal.
-    async fn start_one(&self, mut a: OneCall) -> Result<Value, String> {
+    async fn start_one(&self, mut a: OneCall) -> Result<Value, Failure> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -2300,7 +2308,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     self.addressed(Some(peer), None, false).await?;
                 }
                 let Some(named) = self.named_resource(&target).await? else {
-                    return Err(self.not_offered(&target).await?);
+                    return Err(self.not_offered(&target).await?.into());
                 };
                 target.address.resource = named;
                 match self
@@ -2317,7 +2325,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     Err(BridgeError::Host(
                         tilo_actions::remote::ActionHostError::UnknownAction,
                     )) => {
-                        return Err(self.not_offered(&target).await?);
+                        return Err(self.not_offered(&target).await?.into());
                     }
                     ran => ran?,
                 }

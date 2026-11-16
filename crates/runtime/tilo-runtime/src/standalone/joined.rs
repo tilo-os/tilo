@@ -454,10 +454,10 @@ impl Joined {
         let mut sending = tilo_session_client::custody::Sending::default();
         let ended = loop {
             tokio::select! {
-                ended = &mut running => break ended,
+                ended = &mut running => break ended.map_err(|refusal| refusal.to_string()),
                 caught = async { caught_up.wait_for(|up| *up).await.is_ok() }, if !live => {
                     if !caught {
-                        break Err("the link closed".into());
+                        break Err("the link closed".to_owned());
                     }
                     live = true;
                     self.set_live(workspace, Some((Arc::clone(&link), host)));
@@ -469,10 +469,10 @@ impl Joined {
                         self.publish(&scope, &link, &mut sending).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        break Err("the session fell behind the workspace's frames".into());
+                        break Err("the session fell behind the workspace's frames".to_owned());
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        break Err("the link closed".into());
+                        break Err("the link closed".to_owned());
                     }
                 },
                 () = wake.notified() => self.publish(&scope, &link, &mut sending).await,

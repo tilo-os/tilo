@@ -326,7 +326,7 @@ pub mod prelude {
     pub use ui_core::arriving::{Arrival, Arriving};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{
-        RECORD_ID_XATTR, RecordCheckout, RecordId, RecordKind, RecordSaveStatus,
+        RECORD_ID_XATTR, RecordCheckout, RecordId, RecordKind, RecordSaveStatus, WorkspaceAnswer,
     };
     pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::tilo_actions;

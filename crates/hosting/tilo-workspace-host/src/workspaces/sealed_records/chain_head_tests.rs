@@ -77,8 +77,8 @@ async fn replay(guest: &crate::RelayClient) -> (BTreeSet<[u8; 32]>, bool) {
                     records_when_opened,
                     ..
                 }) => return (replayed, records_when_opened),
-                Some(crate::Envelope::NotAuthorised { reason, .. }) => {
-                    panic!("the guest was refused: {reason}")
+                Some(crate::Envelope::NotAuthorised { refusal, .. }) => {
+                    panic!("the guest was refused: {refusal}")
                 }
                 Some(envelope) => replayed.extend(frame_channel(&envelope)),
                 None => panic!("the host closed the guest's session"),

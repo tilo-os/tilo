@@ -283,7 +283,7 @@ async fn admit_subscription(
     {
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
-            reason: tilo_relay_protocol::refusal::WORKSPACE_DELETED.into(),
+            refusal: tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted,
         }));
     }
     // An agent outside its delegation never gets a workspace bound for it.
@@ -293,7 +293,7 @@ async fn admit_subscription(
     {
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
-            reason: reason.reason().into(),
+            refusal: reason.refusal(),
         }));
     }
     // Only the relay owner's own devices can be enrolled into an autobound
@@ -312,10 +312,10 @@ async fn admit_subscription(
             .is_some_and(|workspaces| workspaces.knows(&peer.user_public_key));
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
-            reason: if known {
-                "workspace not bound on this relay".into()
+            refusal: if known {
+                tilo_relay_protocol::refusal::Refusal::NotReady
             } else {
-                tilo_relay_protocol::refusal::NOT_ADMITTED.into()
+                tilo_relay_protocol::refusal::Refusal::NotAdmitted
             },
         }));
     };
@@ -359,7 +359,7 @@ async fn admit_subscription(
         Decision::Deny(reason) => {
             return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
                 workspace_id,
-                reason: reason.reason().into(),
+                refusal: reason.refusal(),
             }));
         }
     }

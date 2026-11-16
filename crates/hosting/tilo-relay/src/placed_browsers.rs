@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::linux_apps::{self, AppLaunch, OpenApp};
-use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
+use tilo_actions::remote::{
+    ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionPlane, RemoteDevice};
 use tilo_relay_protocol::hosted::Material;
@@ -312,22 +314,48 @@ fn follow(
     // Who asks is the plane's device: the caller here is only what the trait
     // asks for, never sent.
     let caller = Caller::local_app("tilo.relay");
-    let receipt = placed_shells::settled(device.invoke(&caller, request))
-        .map_err(|error| {
-            tracing::warn!(%error, "asking a machine to start a session failed");
-            OnMember::Error("The machine couldn't start it.".to_owned())
-        })?
-        .map_err(|error| {
-            tracing::warn!(%error, "a machine refused to start a session");
-            OnMember::Error("The machine couldn't start it.".to_owned())
-        })?;
+    let until = Instant::now().checked_add(OPEN_PATIENCE);
+    // The same invocation asked again runs once: a machine that did not answer, or was busy
+    // (after the wait it said), is asked again within the open's patience. Any other answer is
+    // the answer.
+    let receipt = loop {
+        let asked = placed_shells::settled(device.invoke(&caller, request.clone()));
+        let again = match &asked {
+            Err(_) | Ok(Err(ActionHostError::Unanswered)) => Some(Duration::ZERO),
+            Ok(Err(ActionHostError::Busy { retry_after_ms })) => {
+                Some(Duration::from_millis(*retry_after_ms))
+            }
+            Ok(_) => None,
+        };
+        let in_time = |wait: Duration| {
+            until.is_none_or(|until| {
+                Instant::now()
+                    .checked_add(wait)
+                    .is_some_and(|at| at < until)
+            })
+        };
+        match (asked, again) {
+            (Ok(Ok(receipt)), _) => break receipt,
+            (asked, Some(wait)) if in_time(wait) => {
+                tracing::info!(
+                    ?asked,
+                    ?wait,
+                    "a machine did not take a session's start yet; asking again"
+                );
+                std::thread::sleep(wait);
+            }
+            (asked, _) => {
+                tracing::warn!(?asked, "a machine did not start a session");
+                return Err(OnMember::Error("The machine couldn't start it.".to_owned()));
+            }
+        }
+    };
     if let ReceiptStatus::Rejected { error } = receipt.status {
         tracing::warn!(%error, "a machine refused a session");
         return Err(OnMember::Refused(
             "The machine couldn't start it.".to_owned(),
         ));
     }
-    let until = Instant::now().checked_add(OPEN_PATIENCE);
     loop {
         if until.is_some_and(|until| Instant::now() >= until) {
             return Err(OnMember::Error(
@@ -375,10 +403,6 @@ fn follow(
     }
 }
 
-/// The waits before a Browser start that failed on the way is tried again;
-/// past the last, the person is told.
-const START_AGAIN_AFTER: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
-
 /// What the relay's Browser asks of a workspace's VM, on the VM host the
 /// placer names.
 impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
@@ -389,25 +413,15 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
             tracing::warn!(%error, "the Browser's material could not be written");
             "Browser couldn't start. Try again in a minute.".to_owned()
         })?;
-        // A start that failed on the way (the machine was slow to answer, or
-        // to start the session) is tried again, with a wait between, before the
-        // person is told: what they see is one Browser that opens, a little
-        // later. A refusal (no room, the plan) is said at once.
-        let mut waits = START_AGAIN_AFTER.iter();
-        let opened = loop {
-            match self.open(&material.workspace, &written) {
-                Ok(opened) => break opened,
-                Err(OpenError::Refused(words)) => return Err(words),
-                Err(OpenError::Error(words)) => {
-                    let Some(wait) = waits.next() else {
-                        tracing::warn!(%words, "opening the workspace's Browser failed");
-                        return Err(
-                            "Browser couldn't start. Open it again to try once more.".to_owned()
-                        );
-                    };
-                    tracing::info!(%words, ?wait, "opening the workspace's Browser failed; trying again");
-                    std::thread::sleep(*wait);
-                }
+        // A machine that did not answer the start yet is asked again under the same
+        // invocation ([`follow`]); a start that failed, or a refusal (no room, the plan), is
+        // said at once.
+        let opened = match self.open(&material.workspace, &written) {
+            Ok(opened) => opened,
+            Err(OpenError::Refused(words)) => return Err(words),
+            Err(OpenError::Error(words)) => {
+                tracing::warn!(%words, "opening the workspace's Browser failed");
+                return Err("Browser couldn't start. Open it again to try once more.".to_owned());
             }
         };
         Ok(Window {

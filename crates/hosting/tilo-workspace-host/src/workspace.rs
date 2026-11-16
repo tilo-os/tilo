@@ -745,17 +745,29 @@ impl WorkspaceRuntime {
     /// without an authenticated refusal. The subscriber is then unregistered
     /// so a follow-up write closes instead of emitting a second refusal.
     pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
-        self.refuse_live_members(removed, "workspace membership changed");
+        self.refuse_live_members(
+            removed,
+            &tilo_relay_protocol::refusal::Refusal::NotAMember(
+                "workspace membership changed".into(),
+            ),
+        );
     }
 
     /// Tell every live device of the workspace it is no longer authorised,
     /// and why, then unregister them: the workspace was deleted.
-    pub(crate) fn refuse_every_live_member(&mut self, reason: &str) {
+    pub(crate) fn refuse_every_live_member(
+        &mut self,
+        refusal: &tilo_relay_protocol::refusal::Refusal,
+    ) {
         let live: Vec<[u8; 32]> = self.subscribers.keys().copied().collect();
-        self.refuse_live_members(&live, reason);
+        self.refuse_live_members(&live, refusal);
     }
 
-    fn refuse_live_members(&mut self, removed: &[[u8; 32]], reason: &str) {
+    fn refuse_live_members(
+        &mut self,
+        removed: &[[u8; 32]],
+        refusal: &tilo_relay_protocol::refusal::Refusal,
+    ) {
         if removed.is_empty() {
             return;
         }
@@ -766,7 +778,7 @@ impl WorkspaceRuntime {
             };
             let _ = sub.tx.try_send(Envelope::NotAuthorised {
                 workspace_id,
-                reason: reason.into(),
+                refusal: refusal.clone(),
             });
         }
         for device in removed {

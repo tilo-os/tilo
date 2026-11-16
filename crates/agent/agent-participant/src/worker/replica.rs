@@ -84,7 +84,7 @@ struct Inner {
     /// The record's store asks its workspace's hosts for what it lacks
     /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
     /// answered they hold none of: told again to a worker that replaces it.
-    asks_workspace: Option<BTreeSet<String>>,
+    asks_workspace: Option<BTreeMap<String, ui::record::WorkspaceAnswer>>,
 }
 
 impl Inner {
@@ -346,8 +346,9 @@ impl ConfinedReplica {
                 // So do what the workspace was asked and answered.
                 if let Some(answered) = &inner.asks_workspace {
                     let told = std::iter::once(Request::AskWorkspace).chain(answered.iter().map(
-                        |record| Request::Answered {
+                        |(record, answer)| Request::Answered {
                             record: record.clone(),
+                            answer: *answer,
                         },
                     ));
                     for request in told {
@@ -379,7 +380,7 @@ impl ConfinedReplica {
         if inner.asks_workspace.is_some() {
             return Ok(());
         }
-        inner.asks_workspace = Some(BTreeSet::new());
+        inner.asks_workspace = Some(BTreeMap::new());
         let reply = self.call(&mut inner, &Request::AskWorkspace);
         drop(inner);
         done(reply)
@@ -405,15 +406,20 @@ impl ConfinedReplica {
     /// # Errors
     ///
     /// The worker could not be told.
-    pub fn workspace_answered(&self, record: &RecordId) -> Result<(), AppError> {
+    pub fn workspace_answered(
+        &self,
+        record: &RecordId,
+        answer: ui::record::WorkspaceAnswer,
+    ) -> Result<(), AppError> {
         let mut inner = self.lock();
         if let Some(answered) = &mut inner.asks_workspace {
-            answered.insert(record.as_str().to_owned());
+            answered.insert(record.as_str().to_owned(), answer);
         }
         let reply = self.call(
             &mut inner,
             &Request::Answered {
                 record: record.as_str().to_owned(),
+                answer,
             },
         );
         drop(inner);

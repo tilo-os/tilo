@@ -63,8 +63,8 @@ async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {
                     );
                     return;
                 }
-                Heard::Undeliverable { reason, .. } => {
-                    panic!("the host refused a request the page made as it joined: {reason}")
+                Heard::Undeliverable { refusal, .. } => {
+                    panic!("the host refused a request the page made as it joined: {refusal}")
                 }
             }
         }

@@ -1033,8 +1033,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
-    pub fn workspace_answered(&mut self, id: RecordId) {
-        self.records.note_workspace_answered(id);
+    pub fn workspace_answered(&mut self, id: RecordId, answer: ui_core::record::WorkspaceAnswer) {
+        self.records.note_workspace_answer(id, answer);
     }
 
     /// The workspace's default records of the app's windows kept on this
@@ -1586,7 +1586,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The workspace refused `changes` (Automerge hashes) of this window's
     /// record, `reason` what a person is told (a host replicating the
     /// record reads it from the workspace's words with
-    /// `tilo_relay_protocol::refusal::plain_reason`): withdraw them and what
+    /// `tilo_relay_protocol::refusal::Refusal::plain`): withdraw them and what
     /// was built on them, as that host does, and run the frame that tells
     /// the app. Whether anything was withdrawn.
     pub fn refused_by_workspace(

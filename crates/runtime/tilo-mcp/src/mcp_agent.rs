@@ -19,8 +19,8 @@
 //! whether the first one worked.
 use super::{
     ActionHost, Addressed, CatalogueLimits, CatalogueQuery, CatalogueRow, DEFAULT_WAIT_MS,
-    Deserialize, MAX_CALLS, McpServer, OneCall, RemoteActionTarget, Value, batch_invocation,
-    invocation_id, json, page, parse,
+    Deserialize, Failure, MAX_CALLS, McpServer, OneCall, RemoteActionTarget, Value,
+    batch_invocation, invocation_id, json, page, parse,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1771,37 +1771,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let result = match name {
             "tilo_ls" => match parse(args) {
                 Ok(args) => self.agent_ls(args, structured).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_read" => match parse(args) {
                 Ok(args) => Box::pin(self.agent_read(args, structured)).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_do" => match parse(args) {
                 Ok(args) => self.agent_do(args, structured).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_link" => match parse(args) {
                 Ok(args) => self.agent_link(args, structured).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_find" => match parse(args) {
                 Ok(args) => self.agent_find(args, structured).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_status" => match parse(args) {
                 Ok(args) => self.agent_status(&args, structured).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo" => match parse(args) {
                 Ok(args) => Box::pin(self.agent_tilo(args, structured)).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
             "tilo_watch" => match parse(args) {
                 Ok(args) => self.agent_watch(args).await,
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             },
-            _ => Err("Unknown tool".to_owned()),
+            _ => Err("Unknown tool".into()),
         };
         // A program may have run steps before the one refused: running it
         // again would run them twice.
@@ -1829,7 +1829,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         clippy::too_many_lines,
         reason = "one listing, its text lines and its typed rows in the order it writes them"
     )]
-    async fn agent_ls(&self, args: LsArgs, structured: bool) -> Result<Reply, String> {
+    async fn agent_ls(&self, args: LsArgs, structured: bool) -> Result<Reply, Failure> {
         let cursor = match args.cursor.as_deref() {
             None | Some("") => LsCursor {
                 offset: 0,
@@ -1844,7 +1844,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             None | Some("") => (true, true),
             Some("resources") => (true, false),
             Some("actions") => (false, true),
-            Some(other) => return Err(format!("kind is resources or actions, not {other}")),
+            Some(other) => {
+                return Err(format!("kind is resources or actions, not {other}").into());
+            }
         };
         let path = args.path.as_deref().map(str::trim).unwrap_or_default();
         if path.is_empty() {
@@ -2082,7 +2084,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         offset: usize,
         limit: usize,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         let (_, running) = self.providers().await?;
         let mut lines: Vec<String> = Vec::new();
         let mut rows: Vec<Value> = Vec::new();
@@ -2180,7 +2182,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, String> {
+    async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
         if let Some((app, record)) = tilo_actions::remote::record_parts(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
             return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
@@ -2316,7 +2318,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(None)
     }
 
-    async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, String> {
+    async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, Failure> {
         let wait_ms = args.wait_ms;
         // A typed caller follows an invocation that waits for the person by
         // its id, so the call names one even when the caller did not: the same
@@ -2332,7 +2334,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             (None, Some(calls)) => {
                 if calls.is_empty() || calls.len() > MAX_CALLS {
-                    return Err(format!("calls must hold 1 to {MAX_CALLS} steps"));
+                    return Err(format!("calls must hold 1 to {MAX_CALLS} steps").into());
                 }
                 let _running = self.hold_invocation(invocation_id.as_deref()).await;
                 let total = calls.len();
@@ -2398,6 +2400,38 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Run the one action `path` names.
+    /// The answer to a call that did not run to its end: held for the person, who allows it
+    /// or not in their tab (a watch is told so at once, the typed caller is answered pending,
+    /// and the same id answers how it ended once they did), or refused.
+    fn not_done(
+        &self,
+        failure: Failure,
+        path: &str,
+        asked: Option<&str>,
+        structured: bool,
+    ) -> Result<Reply, Failure> {
+        let id = asked.unwrap_or_default();
+        if !(path.contains('#') && super::confirm::needs_the_person(&failure)) {
+            if asked.is_some() {
+                self.watch_run_ended(id, "refused");
+            }
+            return Err(failure);
+        }
+        self.watch_run_held(id);
+        if !structured {
+            return Err(failure);
+        }
+        let mut reply = Reply::ok(String::from(failure));
+        reply.failed = false;
+        reply.structured = Some(json!({
+            "status": "pending",
+            "invocation_id": id,
+            "path": path,
+            "ask": {"invocation_id": id},
+        }));
+        Ok(reply)
+    }
+
     async fn do_one(
         &self,
         path: &str,
@@ -2405,7 +2439,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         // Every call is an invocation of the session's own, named here when
         // the caller named none, so `tilo_status` and a watch know it too.
         let invocation =
@@ -2416,25 +2450,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let answer = Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await;
         let answer = match answer {
-            Err(message)
-                if structured
-                    && path.contains('#')
-                    && super::confirm::needs_the_person(&message) =>
-            {
-                // The person is being asked; the typed caller is told so rather
-                // than left waiting, and the same id answers it once they do.
-                let id = asked.as_deref().unwrap_or_default();
-                let mut reply = Reply::ok(message);
-                reply.failed = false;
-                reply.structured = Some(json!({
-                    "status": "pending",
-                    "invocation_id": id,
-                    "path": path,
-                    "ask": {"invocation_id": id},
-                }));
-                return Ok(reply);
-            }
-            answer => answer?,
+            Err(failure) => return self.not_done(failure, path, asked.as_deref(), structured),
+            Ok(answer) => answer,
         };
         match answer {
             Done::Launched { value, mut reply } => {
@@ -2569,13 +2586,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Run the one action `path` names, answering what the host answered as it is.
+    /// The program forms an app declares, when `parsed` names a segment by one.
+    async fn forms_named(&self, parsed: &ParsedPath) -> Option<ProgramForms> {
+        if parsed
+            .segments
+            .iter()
+            .any(|segment| is_program_form(segment))
+        {
+            self.program_forms().await
+        } else {
+            None
+        }
+    }
+
     async fn do_one_value(
         &self,
         path: &str,
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
-    ) -> Result<Done, String> {
+    ) -> Result<Done, Failure> {
         let parsed = parse_path(path)?;
         let action = parsed.action.clone().ok_or_else(|| {
             format!("name the action: {path}#<action>; tilo_ls {path} lists them")
@@ -2585,7 +2615,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let Some((app_id, provider, pinned)) = self.acting_in(&parsed, &action, wait_ms).await?
         else {
             let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
-                return Err(format!("{} started while it was asked to", parsed.app));
+                return Err(format!("{} started while it was asked to", parsed.app).into());
             };
             return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
                 .await;
@@ -2593,15 +2623,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
         // a form no app declares is read plainly, as a title may be.
-        let forms = if parsed
-            .segments
-            .iter()
-            .any(|segment| is_program_form(segment))
-        {
-            self.program_forms().await
-        } else {
-            None
-        };
+        let forms = self.forms_named(&parsed).await;
         let mut resolved = if pinned {
             self.resolve_in(
                 &parsed,
@@ -2631,55 +2653,56 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             };
         }
         self.acted_in(&resolved);
-        let (named_at, descriptor) = if let Some(descriptor) =
-            self.action_named(&resolved, &action).await?
-        {
-            (resolved.path.clone(), descriptor)
-        } else {
-            // Not one of the target's actions by its id: what the target
-            // offers decides (a label, the start of an id), as listing it
-            // shows. A path naming the app alone means the app's own
-            // actions and those it publishes on its resources.
-            if let Some(node) = resolved.node.clone() {
-                let mut levels = std::mem::take(&mut resolved.levels);
-                let here = self
-                    .level(&resolved.provider, &node.id, &mut levels)
-                    .await?;
-                resolved.actions = if here.own.is_empty() {
-                    node.actions.clone()
-                } else {
-                    here.own
-                };
-            }
-            // `notes#open` is what the listing of a stopped app says to
-            // call; once the app runs, it answers what is in it.
-            let opens = parsed.segments.is_empty() && arguments.is_empty();
-            // There it names the app's own verb, never an action whose id only begins with it
-            // (Notes' `open-link`): one by its whole id was asked above.
-            if opens && starts_app(&action) {
-                return Ok(self.running(&resolved, &action).await);
-            }
-            // With arguments the word that starts an app is no other action's either: it names
-            // an action of the running app only where the app calls one that, by its id or its
-            // label, never another whose id merely begins with it, which nobody asked for.
-            let starts = parsed.segments.is_empty() && starts_app(&action);
-            let picked = self.pick_action_in(&action, &resolved).await;
-            // Found, and refused below as the word that starts an app: the word only begins
-            // the id of another action the app offers.
-            let begins_another = starts && picked.is_ok();
-            match named_beyond_its_start(starts, &action, &resolved.path, picked) {
-                Ok(found) => found,
-                // The open's own arguments are a file, which reaches the app's open whether
-                // the app runs or not. Arguments that name no file are another action's where
-                // the app offers one the word begins: the caller is told which, and nothing
-                // is run.
-                Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
-                    let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
-                    return self.launched(opening, arguments, invocation, wait_ms).await;
+        let (named_at, descriptor) =
+            if let Some(descriptor) = self.action_named(&resolved, &action).await? {
+                (resolved.path.clone(), descriptor)
+            } else {
+                // Not one of the target's actions by its id: what the target
+                // offers decides (a label, the start of an id), as listing it
+                // shows. A path naming the app alone means the app's own
+                // actions and those it publishes on its resources.
+                if let Some(node) = resolved.node.clone() {
+                    let mut levels = std::mem::take(&mut resolved.levels);
+                    let here = self
+                        .level(&resolved.provider, &node.id, &mut levels)
+                        .await?;
+                    resolved.actions = if here.own.is_empty() {
+                        node.actions.clone()
+                    } else {
+                        here.own
+                    };
                 }
-                Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
-            }
-        };
+                // `notes#open` is what the listing of a stopped app says to
+                // call; once the app runs, it answers what is in it.
+                let opens = parsed.segments.is_empty() && arguments.is_empty();
+                // There it names the app's own verb, never an action whose id only begins with it
+                // (Notes' `open-link`): one by its whole id was asked above.
+                if opens && starts_app(&action) {
+                    return Ok(self.running(&resolved, &action).await);
+                }
+                // With arguments the word that starts an app is no other action's either: it names
+                // an action of the running app only where the app calls one that, by its id or its
+                // label, never another whose id merely begins with it, which nobody asked for.
+                let starts = parsed.segments.is_empty() && starts_app(&action);
+                let picked = self.pick_action_in(&action, &resolved).await;
+                // Found, and refused below as the word that starts an app: the word only begins
+                // the id of another action the app offers.
+                let begins_another = starts && picked.is_ok();
+                match named_beyond_its_start(starts, &action, &resolved.path, picked) {
+                    Ok(found) => found,
+                    // The open's own arguments are a file, which reaches the app's open whether
+                    // the app runs or not. Arguments that name no file are another action's where
+                    // the app offers one the word begins: the caller is told which, and nothing
+                    // is run.
+                    Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
+                        let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
+                        return self.launched(opening, arguments, invocation, wait_ms).await;
+                    }
+                    Err(error) => {
+                        return Err(format!("{error}; tilo_ls {} lists them", resolved.path).into());
+                    }
+                }
+            };
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: resolved.provider.clone(),

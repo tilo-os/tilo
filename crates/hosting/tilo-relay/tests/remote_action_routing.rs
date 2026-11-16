@@ -15,10 +15,10 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_delivery_protocol::refusal::UnavailableReason;
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient, WorkspaceId};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_relay_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
@@ -190,7 +190,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             .unwrap();
         assert!(matches!(
             next(&a_client, "A").await,
-            Envelope::RemoteActionUndeliverable { reason, .. } if reason.contains("does not serve apps")
+            Envelope::RemoteActionUndeliverable { refusal: Refusal::Other(reason), .. } if reason.contains("does not serve apps")
         ));
         assert!(!relay.relay.handle().advertised_services().app_serving);
 
@@ -218,7 +218,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             .unwrap();
         assert!(matches!(
             next(&a_client, "A").await,
-            Envelope::RemoteActionUndeliverable { reason, .. } if reason.contains("version")
+            Envelope::RemoteActionUndeliverable { refusal: Refusal::Invalid(reason), .. } if reason.contains("version")
         ));
     }
     // Phase `an_app_serving_host_answers_frames_addressed_to_itself`.
@@ -269,21 +269,16 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
     }
 }
 
-/// How the relay answered a frame it must refuse: the typed reason it led
-/// with, or `None` when the access audit closed the session first —
+/// How the relay answered a frame it must refuse: its typed refusal, or `None` when the access audit closed the session first —
 /// either way nothing was served. A served frame fails the test.
-async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
+async fn refusal(client: &RelayClient, who: &str) -> Option<Refusal> {
     loop {
         match tokio::time::timeout(tilo_test_env::hang_bound(), client.recv())
             .await
             .unwrap_or_else(|_| panic!("{who} timed out"))
         {
             None => return None,
-            Some(Envelope::RemoteActionUndeliverable { reason, .. }) => {
-                let typed = UnavailableReason::from_wire_reason(&reason);
-                assert!(typed.is_some(), "{reason} leads with a wire token");
-                return typed;
-            }
+            Some(Envelope::RemoteActionUndeliverable { refusal, .. }) => return Some(refusal),
             Some(Envelope::NotAuthorised { .. }) => {}
             Some(other) => panic!("{who} expected a refusal, got {other:?}"),
         }
@@ -363,15 +358,11 @@ async fn remote_action_to_removed_target_is_refused() {
     match next(&a_client, "A").await {
         Envelope::RemoteActionUndeliverable {
             to_device_public_key,
-            reason,
+            refusal,
             ..
         } => {
             assert_eq!(to_device_public_key, c.device_pubkey());
-            assert_eq!(
-                UnavailableReason::from_wire_reason(&reason),
-                Some(UnavailableReason::NotAuthorised),
-                "{reason}"
-            );
+            assert!(matches!(refusal, Refusal::NotAMember(_)), "{refusal}");
         }
         other => panic!("A expected a refusal, got {other:?}"),
     }
@@ -495,7 +486,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     let _ = client.send(to_host(frame(invoke(InvocationId::new()))));
     let refused = refusal(&client, "agent").await;
     assert!(
-        refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
+        matches!(refused, None | Some(Refusal::NotAMember(_))),
         "got {refused:?}"
     );
     assert_eq!(

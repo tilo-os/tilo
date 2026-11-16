@@ -28,34 +28,36 @@ impl AgentParticipant {
         if !self.asked_records.contains(&route) {
             return;
         }
-        if answer == tilo_session_client::RecordAnswer::NotYours {
-            // Another person's own record: never this agent's, and never one it founds.
-            tracing::debug!(
-                app = %route.app_id,
-                record = %route.record,
-                "agent: the record is another person's own"
-            );
-            return;
-        }
-        if answer == (tilo_session_client::RecordAnswer::Sent { frames: 0 }) {
-            tracing::debug!(
-                app = %route.app_id,
-                record = %route.record,
-                "agent: the workspace holds no such record"
-            );
-            // What a held record asked for of what it keeps beside it (a
-            // chain's head or part) is told to it.
-            if let Some(record) = ui::record::RecordId::parse(&route.record) {
-                for (held, app) in &self.apps {
-                    if held.app_id == route.app_id
-                        && let Err(error) = app.workspace_answered(&record)
-                    {
-                        tracing::warn!(%error, "agent: a record was not told the workspace's answer");
-                    }
+        let told = match answer {
+            // Another person's own record: never this agent's, never one it founds, and what
+            // asked for it is told so rather than left waiting.
+            tilo_session_client::RecordAnswer::NotYours => ui::record::WorkspaceAnswer::NotYours,
+            tilo_session_client::RecordAnswer::Sent { frames: 0 } => {
+                ui::record::WorkspaceAnswer::HoldsNone
+            }
+            tilo_session_client::RecordAnswer::Sent { .. } => return,
+        };
+        tracing::debug!(
+            app = %route.app_id,
+            record = %route.record,
+            ?told,
+            "agent: the workspace answered a record it does not send"
+        );
+        // What a held record asked for of what it keeps beside it (a chain's head or part) is
+        // told to it.
+        if let Some(record) = ui::record::RecordId::parse(&route.record) {
+            for (held, app) in &self.apps {
+                if held.app_id == route.app_id
+                    && let Err(error) = app.workspace_answered(&record, told)
+                {
+                    tracing::warn!(%error, "agent: a record was not told the workspace's answer");
                 }
             }
-            self.absent_records.insert(route);
         }
+        match told {
+            ui::record::WorkspaceAnswer::NotYours => self.not_yours.insert(route),
+            ui::record::WorkspaceAnswer::HoldsNone => self.absent_records.insert(route),
+        };
     }
 
     /// Have the record held at `route` read what it lacks through the
@@ -114,7 +116,10 @@ impl AgentParticipant {
         if self.apps.contains_key(route) || self.unopened.changed(route).is_some() {
             return false;
         }
-        if !self.when_opened || self.absent_records.contains(route) {
+        if !self.when_opened
+            || self.absent_records.contains(route)
+            || self.not_yours.contains(route)
+        {
             return false;
         }
         if self.asked_records.insert(route.clone())

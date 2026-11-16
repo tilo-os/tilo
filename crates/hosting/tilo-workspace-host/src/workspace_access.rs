@@ -256,7 +256,17 @@ pub enum DenyReason {
 }
 
 impl DenyReason {
-    /// The refusal as wire text.
+    /// The refusal a device is sent for it.
+    #[must_use]
+    pub fn refusal(self) -> tilo_relay_protocol::refusal::Refusal {
+        use tilo_relay_protocol::refusal::Refusal;
+        match self {
+            Self::OutOfEnvironmentScope => Refusal::NotAllowed(self.reason().into()),
+            _ => Refusal::NotAMember(self.reason().into()),
+        }
+    }
+
+    /// The refusal as text, for the log.
     pub const fn reason(self) -> &'static str {
         match self {
             Self::CertExpired => "device certificate expired",

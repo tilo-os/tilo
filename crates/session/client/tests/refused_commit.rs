@@ -17,7 +17,7 @@
 use collab_types::DocumentMutation;
 use tilo_app::prelude::*;
 use tilo_relay::member_limits::MemberLimitsConfig;
-use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
+use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, Refusal};
 use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -61,7 +61,7 @@ enum Answer {
     Committed,
     Refused {
         changes: Vec<[u8; 32]>,
-        reason: String,
+        refusal: Refusal,
     },
 }
 
@@ -80,8 +80,8 @@ async fn answer(peer: &Link, events: &Events) -> Answer {
         .into_iter()
         .find_map(|event| match event {
             Event::Refused {
-                changes, reason, ..
-            } => Some(Answer::Refused { changes, reason }),
+                changes, refusal, ..
+            } => Some(Answer::Refused { changes, refusal }),
             _ => None,
         })
         .expect("a refused commit is told with its changes")
@@ -93,9 +93,9 @@ fn withdrawn_as_refused(
     app: &mut TestApp<BoardApp>,
     pinned: usize,
     changes: &[[u8; 32]],
-    reason: &str,
+    refusal: &Refusal,
 ) {
-    assert_eq!(reason, tilo_relay_protocol::refusal::TOO_MANY_CHANGES);
+    assert!(matches!(refusal, Refusal::TooFast { .. }), "{refusal}");
     assert!(!changes.is_empty(), "the refusal names the change it was");
     assert_eq!(
         app.state().notes.len().checked_sub(1),
@@ -106,10 +106,7 @@ fn withdrawn_as_refused(
 
     // The page withdraws what the workspace refused, and the app hears of it as
     // a refusal of the verb it invoked, for the note it would have pinned.
-    assert!(
-        app.refused_by_workspace(changes, &plain_reason(reason))
-            .unwrap()
-    );
+    assert!(app.refused_by_workspace(changes, &refusal.plain()).unwrap());
     assert_eq!(app.state().notes.len(), pinned, "the refused note is gone");
     assert!(
         app.state()
@@ -206,8 +203,8 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
             DocumentMutation::Incremental(app.read_document(|doc| doc.clone().save_after(&heads)))
         };
         peer.write(route.clone(), &mutation).unwrap();
-        if let Answer::Refused { changes, reason } = answer(&peer, &events).await {
-            refused = Some((pinned, changes, reason));
+        if let Answer::Refused { changes, refusal } = answer(&peer, &events).await {
+            refused = Some((pinned, changes, refusal));
             break;
         }
     }

@@ -9,6 +9,7 @@ use super::{
 use crate::member_limits::Standing;
 use crate::workspace_access::WorkspaceOperation;
 use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_protocol::refusal::Refusal;
 
 /// Spends `peer`'s budget for one change as its `standing` is, unless the
 /// relay's own user sent it: the host device and the bots a host-held root
@@ -63,29 +64,31 @@ pub(super) fn change_standing(
     }
 }
 
-/// Why `ws` keeps no more of `peer`'s writes: it is a person's own workspace
-/// and keeps as much as they may ([`crate::workspaces::Workspaces::storage_refusal`]),
-/// as the typed refusal's text. The relay's own user is never refused: the
-/// host's own writes keep the workspace whole.
+/// Whether `ws` keeps no more of `peer`'s writes: it is a person's own
+/// workspace and keeps as much as they may
+/// ([`crate::workspaces::Workspaces::storage_refusal`]). The relay's own user
+/// is never refused: the host's own writes keep the workspace whole.
 pub(super) async fn over_storage(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     ws: &SharedWorkspace,
-) -> Option<String> {
+) -> bool {
     if peer.user_public_key == *session.own_user_public_key {
-        return None;
+        return false;
     }
     let runtime = ws.lock().await;
-    let authority = runtime.workspace_authority.as_ref()?;
-    let workspaces = authority.workspaces()?;
+    let Some(authority) = runtime.workspace_authority.as_ref() else {
+        return false;
+    };
+    let Some(workspaces) = authority.workspaces() else {
+        return false;
+    };
     let workspace = authority.workspace().to_owned();
     drop(runtime);
     // Measuring walks the workspace's files.
-    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace))
+    tokio::task::spawn_blocking(move || workspaces.storage_refusal(&workspace).is_some())
         .await
-        .ok()
-        .flatten()
-        .map(|refusal| refusal.to_reason())
+        .unwrap_or(false)
 }
 
 /// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
@@ -196,32 +199,33 @@ async fn admit_commit(
             "handle_commit called with a non-Commit envelope".into(),
         ));
     };
-    let refused = |reason: &str| {
+    let refused = |refusal: Refusal| {
         Ok(CommitAdmission::Answered(Some(Envelope::CommitRefused {
             workspace_id,
             op,
-            reason: reason.into(),
+            refusal,
         })))
     };
-    if !subscribed.contains(&workspace_id) {
-        return refused("commit sent before subscribing to workspace");
-    }
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused("workspace not bound on this relay");
+    // Not subscribed or not open here yet: it goes through once ready.
+    let open = session.workspaces.lock().await.get(&workspace_id).cloned();
+    let Some(ws) = open.filter(|_| subscribed.contains(&workspace_id)) else {
+        return refused(Refusal::NotReady);
     };
     // A commit carries its session's own device's change: a host this
     // workspace is attached to carries its members' instead.
     if author_device_public_key != peer.device_public_key
         && !ws.lock().await.attached(&peer.device_public_key)
     {
-        return refused("author does not match authenticated device");
+        return refused(Refusal::Invalid(
+            "author does not match authenticated device".into(),
+        ));
     }
     let standing = change_standing(peer, &*ws.lock().await);
     if let Some(limited) = over_change_limit(peer, session, standing) {
-        return refused(&limited.to_string());
+        return refused(limited.refusal());
     }
-    if let Some(full) = over_storage(peer, session, &ws).await {
-        return refused(&full);
+    if over_storage(peer, session, &ws).await {
+        return refused(Refusal::Full);
     }
     let channel = crate::peer::admission::channel_of(&delta);
     let Some(source) =
@@ -257,8 +261,8 @@ async fn admit_commit(
         delta,
         signature: [0; 64],
     };
-    if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
-        return refused(&reason);
+    if let Some(refusal) = commit_refusal(&ws, author_device_public_key, &delta).await {
+        return refused(refusal);
     }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
@@ -344,7 +348,7 @@ async fn commit_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     delta: &Envelope,
-) -> Option<String> {
+) -> Option<Refusal> {
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
     };
@@ -353,18 +357,18 @@ async fn commit_refusal(
             crate::surfaces::refusal(payloads, bytes, standings).is_some()
         })
         .await;
-    if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
-        tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
-        file_refusal_of(ws, delta, &reason).await;
-        return Some(reason);
+    if let Some(refusal) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
+        tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
+        file_refusal_of(ws, delta, &refusal.to_string()).await;
+        return Some(refusal);
     }
-    if let Some(reason) = desktop_refusal(ws, author, delta).await {
-        return Some(reason);
+    if let Some(refusal) = desktop_refusal(ws, author, delta).await {
+        return Some(refusal);
     }
-    if let Some(reason) = crate::surfaces::role_refusal(bytes, standings.as_deref(), author) {
-        tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
-        file_refusal_of(ws, delta, &reason).await;
-        return Some(reason);
+    if let Some(refusal) = crate::surfaces::role_refusal(bytes, standings.as_deref(), author) {
+        tracing::warn!(%refusal, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+        file_refusal_of(ws, delta, &refusal.to_string()).await;
+        return Some(refusal);
     }
     super::governor_refusal(ws, author, delta).await
 }
@@ -422,7 +426,7 @@ fn resent_commit(
         return Envelope::CommitRefused {
             workspace_id,
             op: admitted.op,
-            reason: "operation id already committed with different content".into(),
+            refusal: Refusal::Conflict,
         };
     }
     tracing::debug!(

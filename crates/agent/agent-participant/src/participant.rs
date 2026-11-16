@@ -301,6 +301,9 @@ pub struct AgentParticipant {
     /// The records the host answered it holds none of: the ones this agent
     /// may make itself.
     absent_records: BTreeSet<DocumentRoute>,
+    /// Records the host answered are another person's own: never sent to this agent, never
+    /// founded by it, and refused when it opens them.
+    not_yours: BTreeSet<DocumentRoute>,
     /// When the workspace last delivered a record the agent had not seen, since
     /// it was admitted: a newly joined agent plans once the workspace's records
     /// stop arriving ([`WORKSPACE_SETTLE`]).
@@ -454,6 +457,7 @@ impl AgentParticipant {
             when_opened: false,
             asked_records: BTreeSet::new(),
             absent_records: BTreeSet::new(),
+            not_yours: BTreeSet::new(),
             settling: None,
             finishing: None,
             starting: None,
@@ -1983,6 +1987,12 @@ impl AgentParticipant {
                             changes: vec![saved?],
                         };
                         (seed, Some(route))
+                    }
+                    None if self.not_yours.contains(&route) => {
+                        return Err(format!(
+                            "the {app_id} record {record} is another person's own: only their \
+                             devices open it"
+                        ));
                     }
                     // The workspace may hold the record and send it only now
                     // that it is opened: it is never founded here meanwhile.

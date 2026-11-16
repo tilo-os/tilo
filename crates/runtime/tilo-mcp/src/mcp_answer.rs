@@ -1,17 +1,19 @@
 //! What an agent tool answers typed: one answer for a call that ran, one
 //! for a call that did not, and the rows a listing and a refusal carry.
 use super::render::render_value;
-use super::{ActionDescriptor, Reply, Value, json};
+use super::{ActionDescriptor, Failure, Reply, Value, json};
 use crate::UNTRUSTED;
 use std::fmt::Write as _;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
-/// second rendering would be read twice. A call that ran nothing more than
-/// what is safe to run again (`retry_safe`) and was refused by a host busy
-/// with the person's changes answers `rate_limited`, with the wait.
+/// second rendering would be read twice. A call the host refused for a reason
+/// it can act on is answered with the host's code: `rate_limited` with the
+/// wait, `not_ready` until the workspace serves it, `unanswered` to ask again
+/// under the same invocation id. A call that ran more than is safe to run
+/// again (`retry_safe` false) is never told to.
 pub(super) fn text_result(
-    result: Result<Reply, String>,
+    result: Result<Reply, Failure>,
     structured: bool,
     retry_safe: bool,
 ) -> Value {
@@ -38,31 +40,68 @@ pub(super) fn text_result(
             })
         }
         Ok(reply) => json!({"content":[{"type":"text","text":reply.text}],"isError":reply.failed}),
-        Err(message) if structured => {
-            let answer = refused(&message, retry_safe);
+        Err(failure) if structured => {
+            let answer = refused(&failure, retry_safe);
             json!({
                 "content":[{"type":"text","text":answer.to_string()}],
                 "structuredContent":answer,
                 "isError":true
             })
         }
-        Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
+        // A host's refusal: the caller reads the words, and a program reads
+        // the typed refusal beside them, so it never matches the words.
+        Err(failure) if failure.host.is_some() => {
+            let typed = refused(&failure, retry_safe);
+            json!({
+                "content":[{"type":"text","text":String::from(failure)}],
+                "structuredContent":typed,
+                "isError":true
+            })
+        }
+        Err(failure) => {
+            json!({"content":[{"type":"text","text":String::from(failure)}],"isError":true})
+        }
     }
 }
 
 /// The typed answer of a call that did not run: what it was, and what would
 /// work instead.
-fn refused(message: &str, retry_safe: bool) -> Value {
-    if retry_safe && let Some(wait) = tilo_relay_protocol::refusal::busy_wait(message) {
-        let wait = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
-        return json!({"status":"failed","error":{
-            "code": "rate_limited",
-            "message": message,
-            "retry_after_ms": wait,
-            "next_steps": [format!("wait {wait} ms and retry the same call")],
-        }});
+fn refused(failure: &Failure, retry_safe: bool) -> Value {
+    use tilo_actions::remote::ActionHostError;
+    let message = failure.message.as_str();
+    let (code, next, wait) = match &failure.host {
+        Some(ActionHostError::Busy { retry_after_ms }) if retry_safe => (
+            "rate_limited",
+            format!("wait {retry_after_ms} ms and retry the same call"),
+            Some(*retry_after_ms),
+        ),
+        Some(ActionHostError::NotReady) if retry_safe => (
+            "not_ready",
+            "retry the same call once what it waits for arrived: tilo_watch says when the \
+             workspace serves this session"
+                .to_owned(),
+            None,
+        ),
+        Some(ActionHostError::Unanswered) => (
+            "unanswered",
+            "call again with the same invocation_id: it answers what the call did, and runs it \
+             once if it never arrived"
+                .to_owned(),
+            None,
+        ),
+        Some(other) => (other.code(), String::new(), None),
+        None => ("failed", String::new(), None),
+    };
+    let mut error = json!({"code": code, "message": message});
+    if let Some(fields) = error.as_object_mut() {
+        if let Some(wait) = wait {
+            fields.insert("retry_after_ms".into(), wait.into());
+        }
+        if !next.is_empty() {
+            fields.insert("next_steps".into(), json!([next]));
+        }
     }
-    json!({"status":"failed","error":{"code":"failed","message":message}})
+    json!({"status":"failed","error":error})
 }
 
 /// The typed answer of one invocation's answer (`{invocation_id, update,

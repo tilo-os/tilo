@@ -437,9 +437,9 @@ impl Session<'_> {
             }
             Envelope::NotAuthorised {
                 workspace_id,
-                reason,
+                refusal,
             } => {
-                tracing::warn!(workspace_id = %workspace_id, %reason, "attach session refused subscribe");
+                tracing::warn!(workspace_id = %workspace_id, %refusal, "attach session refused subscribe");
             }
             Envelope::Ping => {
                 let _ = self.client.send(Envelope::Pong);

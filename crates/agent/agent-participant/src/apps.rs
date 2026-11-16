@@ -1189,9 +1189,10 @@ impl Replica {
         self.view.wanted_records()
     }
 
-    /// The workspace's hosts hold none of `record`, which this replica asked for.
-    pub fn workspace_answered(&mut self, record: RecordId) {
-        self.view.workspace_answered(record);
+    /// The workspace's hosts answered `record`, which this replica asked for: they hold none
+    /// of it, or it is another person's own, which never reaches this replica.
+    pub fn workspace_answered(&mut self, record: RecordId, answer: ui::record::WorkspaceAnswer) {
+        self.view.workspace_answered(record, answer);
     }
 
     /// The records held beside this one ([`Self::keeps_beside`]), by id.

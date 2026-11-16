@@ -561,20 +561,20 @@ impl RelayCoeditSession {
                 Envelope::CommitRefused {
                     workspace_id,
                     op,
-                    reason,
+                    refusal,
                 } if workspace_id == self.workspace_id => {
-                    return Some(Inbound::CommitRefused { op, reason });
+                    return Some(Inbound::CommitRefused { op, refusal });
                 }
                 Envelope::NotAuthorised { .. } => return None,
                 Envelope::RemoteActionUndeliverable {
                     workspace_id,
                     to_device_public_key,
-                    reason,
+                    refusal,
                 } if workspace_id == self.workspace_id => {
                     tracing::warn!(
                         workspace_id = %workspace_id,
                         to = %hex::encode(to_device_public_key),
-                        %reason,
+                        %refusal,
                         "the host could not deliver a remote action sent on this session"
                     );
                 }

@@ -1157,8 +1157,8 @@ fn unexpected() -> tilo_actions::remote::ActionHostError {
     unavailable("the device answered with an unexpected message")
 }
 
-fn unanswered() -> tilo_actions::remote::ActionHostError {
-    unavailable("the device did not answer in time")
+const fn unanswered() -> tilo_actions::remote::ActionHostError {
+    tilo_actions::remote::ActionHostError::Unanswered
 }
 
 /// The terminal update a receipt amounts to; `None` while it runs.

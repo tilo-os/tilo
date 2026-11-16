@@ -248,8 +248,8 @@ pub(super) async fn commit(
             match envelope {
                 Envelope::Committed { op: acked, seq, .. } if acked == op => return Ok(seq),
                 Envelope::CommitRefused {
-                    op: acked, reason, ..
-                } if acked == op => return Err(reason),
+                    op: acked, refusal, ..
+                } if acked == op => return Err(refusal.to_string()),
                 _ => {}
             }
         }

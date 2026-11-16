@@ -261,7 +261,7 @@ pub(crate) fn role_refusal(
     delta: &[u8],
     standings: Option<&crate::workspace::Standings>,
     author_device: [u8; 32],
-) -> Option<String> {
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
     // What a role says about a document change it sends: an app's record or the
     // workspace's own. A plane's key material and presence frames are no
     // document change and pass.
@@ -281,13 +281,13 @@ pub(crate) fn role_refusal(
     {
         return None;
     }
-    Some(
+    Some(tilo_relay_protocol::refusal::Refusal::NotGranted(
         collab_types::ReceiptRefusal::NotGranted {
             node: tilo_action_policy::TreePath::workspace(&standing.policy.workspace).to_string(),
             kind: tilo_action_policy::ActionKind::Undoable,
         }
         .to_string(),
-    )
+    ))
 }
 
 /// Whether `message` is a change of `person`'s own record, which only they
@@ -314,7 +314,7 @@ pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,
     delta: &[u8],
     standings: Option<&crate::workspace::Standings>,
-) -> Option<String> {
+) -> Option<tilo_relay_protocol::refusal::Refusal> {
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let (route, envelope) = payloads.open_document(body)?;
     let record = collab_types::Record {
@@ -344,7 +344,12 @@ pub(crate) fn refusal(
         &allows,
     )
     .err()
-    .map(|refusal| refusal.to_string())
+    .map(|refusal| match refusal {
+        collab_types::ReceiptRefusal::NotGranted { .. } => {
+            tilo_relay_protocol::refusal::Refusal::NotGranted(refusal.to_string())
+        }
+        other => tilo_relay_protocol::refusal::Refusal::NotAllowed(other.to_string()),
+    })
 }
 
 #[cfg(test)]

@@ -124,7 +124,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     }
     let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
     let Some(Envelope::RemoteActionUndeliverable {
-        reason,
+        refusal,
         to_device_public_key,
         ..
     }) = refused
@@ -132,10 +132,12 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         panic!("an invalidated device is answered as undeliverable, got {refused:?}");
     };
     assert_eq!(to_device_public_key, host.device_public_key);
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::NotAuthorised),
-        "{reason}"
+    assert!(
+        matches!(
+            refusal,
+            tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+        ),
+        "{refusal}"
     );
     assert_eq!(served(), 1, "an invalidated device never reaches the plane");
 }
@@ -248,19 +250,17 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
     }
     assert_eq!(served(), 2, "within the burst, the host runs them");
     let refused = handle_remote_action(&a, &session, &[id], route(), invoke()).await;
-    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = refused else {
+    let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
         panic!("a spent budget is refused, got {refused:?}");
     };
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::Backpressure),
-        "{reason}"
-    );
     // One change per hour: the refusal says the next comes in about an hour.
-    let wait = tilo_relay_protocol::refusal::busy_wait(&reason).unwrap();
+    let wait = refusal.wait().unwrap();
     assert!(
-        (3500..=3600).contains(&wait.as_secs()),
-        "the refusal says when to ask again: {reason}"
+        matches!(
+            refusal,
+            tilo_relay_protocol::refusal::Refusal::TooFast { .. }
+        ) && (3500..=3600).contains(&wait.as_secs()),
+        "the refusal says when to ask again: {refusal}"
     );
     assert_eq!(served(), 2, "a refused action never reaches the host");
     // The same person's server key (its certificate says so) spends the
@@ -430,13 +430,16 @@ async fn requests_the_plane_does_not_answer_are_refused() {
 
     // A workspace request the plane leaves unanswered is undeliverable at once.
     let answer = handle_remote_action(&a, &session, &[id], route(), catalogue_request()).await;
-    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = answer else {
+    let Some(Envelope::RemoteActionUndeliverable {
+        refusal: undelivered,
+        ..
+    }) = answer
+    else {
         panic!("an unanswered request is refused, got {answer:?}");
     };
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::UnsupportedPeer),
-        "{reason}"
+    assert!(
+        matches!(undelivered, tilo_relay_protocol::refusal::Refusal::Other(_)),
+        "{undelivered}"
     );
 
     // A host operation the plane does not serve is refused at once.

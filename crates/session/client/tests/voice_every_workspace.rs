@@ -68,7 +68,7 @@ async fn subscribe(
     .into_client();
     let answer = native(&client, |envelope| match envelope {
         Envelope::Ready { .. } => Some(Ok(())),
-        Envelope::NotAuthorised { reason, .. } => Some(Err(reason)),
+        Envelope::NotAuthorised { refusal, .. } => Some(Err(refusal.to_string())),
         _ => None,
     })
     .await;

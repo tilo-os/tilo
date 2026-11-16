@@ -919,7 +919,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
         .unwrap();
     assert_eq!(
         ended,
-        Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
+        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     // A member that was away dials it again, and hears the same.
     let again = tokio::time::timeout(
@@ -930,7 +930,7 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     .expect("the dial is answered");
     assert_eq!(
         again,
-        Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
+        Err(tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted)
     );
     assert!(serving.link(workspace_id()).is_none());
 }

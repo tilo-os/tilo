@@ -63,6 +63,8 @@ mod providers;
 mod record_read;
 mod search;
 pub mod session_actions;
+mod session_state;
+pub use session_state::{SessionState, SyncState, WorkspaceState};
 mod shared_host;
 pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
@@ -643,7 +645,8 @@ impl InvocationState {
 /// [`ApiError::ConfirmationRequired`]: crate::api::ApiError::ConfirmationRequired
 pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
-/// Why a host would not do what was asked. Every variant means nothing ran.
+/// Why a host would not do what was asked. Every variant but [`Self::Unanswered`] means
+/// nothing ran.
 ///
 /// On the wire it keeps the shape peers decoded before
 /// [`Self::StaleRevision`] existed: that variant travels as the
@@ -692,6 +695,20 @@ pub enum ActionHostError {
     /// The host refused for a reason of its own.
     #[error("refused: {reason}")]
     Refused { reason: String },
+    /// The host is busy with this person's changes: the same call works
+    /// once `retry_after_ms` passed.
+    #[error("the host is busy with this person's changes; retry in {retry_after_ms} ms")]
+    Busy { retry_after_ms: u64 },
+    /// The workspace is not serving this caller here yet: the same call
+    /// works once it is (its `serving` state).
+    #[error("the workspace is not ready for this call yet")]
+    NotReady,
+    /// The device or host that runs the call did not answer in time. Unlike
+    /// every other variant this one does not say that nothing ran: the same
+    /// call under the same invocation id is answered by what it did, and runs
+    /// it once if it never arrived.
+    #[error("the action's host did not answer in time")]
+    Unanswered,
 }
 
 impl ActionHostError {
@@ -718,7 +735,18 @@ impl ActionHostError {
             Self::InvocationConflict => "invocation_conflict",
             Self::NotCancellable { .. } => "not_cancellable",
             Self::Refused { .. } => "refused",
+            Self::Busy { .. } => "rate_limited",
+            Self::NotReady => "not_ready",
+            Self::Unanswered => "unanswered",
         }
+    }
+
+    /// Whether the same call, under the same invocation id, is worth making
+    /// again: after [`Self::Busy`]'s wait, once the workspace serves the
+    /// caller ([`Self::NotReady`]), or at once ([`Self::Unanswered`]).
+    #[must_use]
+    pub const fn ask_again(&self) -> bool {
+        matches!(self, Self::Busy { .. } | Self::NotReady | Self::Unanswered)
     }
 
     /// Whether the host refused a directory action that asks for
@@ -760,6 +788,11 @@ enum WireHostError {
     Refused {
         reason: String,
     },
+    Busy {
+        retry_after_ms: u64,
+    },
+    NotReady,
+    Unanswered,
 }
 
 impl From<ActionHostError> for WireHostError {
@@ -779,6 +812,9 @@ impl From<ActionHostError> for WireHostError {
             ActionHostError::InvocationConflict => Self::InvocationConflict,
             ActionHostError::NotCancellable { reason } => Self::NotCancellable { reason },
             ActionHostError::Refused { reason } => Self::Refused { reason },
+            ActionHostError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
+            ActionHostError::NotReady => Self::NotReady,
+            ActionHostError::Unanswered => Self::Unanswered,
         }
     }
 }
@@ -800,6 +836,9 @@ impl From<WireHostError> for ActionHostError {
             WireHostError::InvocationConflict => Self::InvocationConflict,
             WireHostError::NotCancellable { reason } => Self::NotCancellable { reason },
             WireHostError::Refused { reason } => Self::Refused { reason },
+            WireHostError::Busy { retry_after_ms } => Self::Busy { retry_after_ms },
+            WireHostError::NotReady => Self::NotReady,
+            WireHostError::Unanswered => Self::Unanswered,
         }
     }
 }
@@ -863,6 +902,21 @@ pub trait ActionHost {
     /// checks its deadline only when woken.
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         let _ = (caller, id);
+        None
+    }
+
+    /// Where `caller`'s workspace and this device's writes stand on the session that serves
+    /// it; `None` for a host that serves from no session.
+    fn session_state(&self, caller: &Caller) -> Option<SessionState> {
+        let _ = caller;
+        None
+    }
+
+    /// Resolves the next time [`Self::session_state`] changed, so a waiter reads it again then
+    /// instead of on a timer; `None` when this host cannot tell. It may never resolve when
+    /// nothing changes: a waiter bounds its own wait.
+    fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
+        let _ = caller;
         None
     }
 

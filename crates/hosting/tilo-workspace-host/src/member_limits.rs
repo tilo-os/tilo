@@ -30,14 +30,24 @@ pub enum Limited {
     Content { retry_after: Duration },
 }
 
+impl Limited {
+    /// The refusal a device is sent for it.
+    #[must_use]
+    pub fn refusal(self) -> tilo_relay_protocol::refusal::Refusal {
+        match self {
+            Self::Changes { retry_after } => {
+                tilo_relay_protocol::refusal::Refusal::too_fast(retry_after)
+            }
+            Self::Content { retry_after } => {
+                tilo_relay_protocol::refusal::Refusal::too_much_content(retry_after)
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for Limited {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Changes { .. } => f.write_str(tilo_relay_protocol::refusal::TOO_MANY_CHANGES),
-            Self::Content { retry_after } => f.write_str(
-                &tilo_relay_protocol::refusal::too_much_content(*retry_after),
-            ),
-        }
+        self.refusal().fmt(f)
     }
 }
 

@@ -1690,15 +1690,15 @@ async fn an_environment_writes_its_record_and_no_other() {
     let refusal = next(&environment, "environment").await;
     let Envelope::NotAuthorised {
         workspace_id,
-        reason,
+        refusal,
     } = refusal
     else {
         panic!("a write to another record is refused: {refusal:?}");
     };
     assert_eq!(workspace_id, WS);
     assert!(
-        reason.contains("environment"),
-        "the refusal names the rule: {reason}"
+        matches!(&refusal, tilo_relay_protocol::refusal::Refusal::NotAllowed(rule) if rule.contains("environment")),
+        "the refusal names the rule: {refusal}"
     );
 
     environment
@@ -1749,7 +1749,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .unwrap();
     let refusal = next(&environment, "environment").await;
     assert!(
-        matches!(&refusal, Envelope::NotAuthorised { reason, .. } if reason.contains("environment")),
+        matches!(&refusal, Envelope::NotAuthorised { refusal, .. } if refusal.to_string().contains("environment")),
         "another record does not open for it: {refusal:?}"
     );
     environment

@@ -168,8 +168,12 @@ pub(crate) enum Request {
     AskWorkspace,
     /// What the held record's store asks its workspace's hosts for.
     Wanted,
-    /// The workspace's hosts hold none of `record`, which it asked for.
-    Answered { record: String },
+    /// The workspace's hosts answered `record`, which it asked for: they hold none of it, or
+    /// it is another person's own.
+    Answered {
+        record: String,
+        answer: ui::record::WorkspaceAnswer,
+    },
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
     ViewsLoad { app_id: String, doc: Vec<u8> },

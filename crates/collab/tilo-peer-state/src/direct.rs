@@ -53,6 +53,7 @@ use iroh::{Endpoint, EndpointAddr};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_relay_protocol::refusal::Refusal;
 use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
@@ -322,10 +323,11 @@ impl Dialed {
     ///
     /// As [`DirectSync::connect`]; a link the other device refused ends with
     /// the reason it gave ([`DirectSync::end`]).
-    pub async fn run(self, link: &DirectSync) -> Result<(), String> {
+    pub async fn run(self, link: &DirectSync) -> Result<(), Refusal> {
         let ran = link
             .link(&self.connection, Some(self.device), self.control, self.live)
-            .await;
+            .await
+            .map_err(Refusal::Other);
         refusal(&self.connection).map_or(ran, Err)
     }
 }
@@ -396,12 +398,18 @@ fn answers_writes(connection: &Connection) -> bool {
 }
 
 /// Why the device on the other end of `connection` refused it, when it did.
-fn refusal(connection: &Connection) -> Option<String> {
+fn refusal(connection: &Connection) -> Option<Refusal> {
     match connection.close_reason()? {
         iroh::endpoint::ConnectionError::ApplicationClosed(close)
             if close.error_code == REFUSED.into() =>
         {
-            Some(String::from_utf8_lossy(&close.reason).into_owned())
+            Some(match postcard::from_bytes(&close.reason) {
+                Ok(refusal) => refusal,
+                Err(error) => {
+                    tracing::warn!(%error, "a device's refusal did not decode; kept as its text");
+                    Refusal::Other(String::from_utf8_lossy(&close.reason).into_owned())
+                }
+            })
         }
         _ => None,
     }
@@ -455,7 +463,7 @@ struct Inner {
     /// against that governance, so the history waits for it.
     catch_up_written: watch::Sender<bool>,
     /// Why the workspace ended for good here, once it did ([`DirectSync::end`]).
-    ended: watch::Sender<Option<String>>,
+    ended: watch::Sender<Option<Refusal>>,
     /// Asks the link this device dialled to read the other device's retained
     /// history again ([`DirectSync::ask_replay`]).
     replay: Arc<tokio::sync::Notify>,
@@ -969,10 +977,13 @@ impl DirectSync {
         &self,
         endpoint: &Endpoint,
         addr: impl Into<EndpointAddr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Refusal> {
         let addr = addr.into();
         let device = *addr.id.as_bytes();
-        let dialed = self.dial(endpoint, addr, device).await?;
+        let dialed = self
+            .dial(endpoint, addr, device)
+            .await
+            .map_err(Refusal::Other)?;
         dialed.run(self).await
     }
 
@@ -1060,7 +1071,10 @@ impl DirectSync {
     pub async fn serve(&self, connection: Connection) -> Result<(), String> {
         let (named, send, recv) = dialed_workspace(&connection).await?;
         if named != self.workspace()? {
-            return Err(refuse(&connection, "this device holds no such workspace"));
+            return Err(refuse(
+                &connection,
+                &Refusal::Other("this device holds no such workspace".into()),
+            ));
         }
         let live = self.0.outgoing.subscribe();
         self.link(&connection, None, Control { send, recv }, live)
@@ -1112,7 +1126,7 @@ impl DirectSync {
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
         if !dialing && let Err(reason) = self.admits(remote) {
-            return Err(refuse(connection, &reason));
+            return Err(refuse(connection, &Refusal::NotAMember(reason)));
         }
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
@@ -1220,8 +1234,8 @@ impl DirectSync {
     /// The workspace ended for good on this device, for `reason`: every link of
     /// it closes, refused with that reason, which the device on the other end
     /// reads ([`Dialed::run`]).
-    pub fn end(&self, reason: &str) {
-        self.0.ended.send_replace(Some(reason.to_owned()));
+    pub fn end(&self, refusal: Refusal) {
+        self.0.ended.send_replace(Some(refusal));
     }
 
     /// Ask the other device for the history this device lacks, round by round
@@ -2006,14 +2020,20 @@ async fn dialed_workspace(
         .await
         .map_err(|error| error.to_string())?;
     let Some(LinkFrame::Workspace(named)) = read_link(&mut recv, MAX_FRAME_BYTES).await? else {
-        return Err(refuse(connection, "the device did not name its workspace"));
+        return Err(refuse(
+            connection,
+            &Refusal::Invalid("the device did not name its workspace".into()),
+        ));
     };
     Ok((named, send, recv))
 }
 
-fn refuse(connection: &Connection, reason: &str) -> String {
-    connection.close(REFUSED.into(), reason.as_bytes());
-    reason.to_owned()
+/// Close `connection`, refused for `refusal`, which the device on the other
+/// end reads typed ([`refusal`]); its text, for this side's log.
+fn refuse(connection: &Connection, refusal: &Refusal) -> String {
+    let said = postcard::to_allocvec(refusal).unwrap_or_default();
+    connection.close(REFUSED.into(), &said);
+    refusal.to_string()
 }
 
 impl ProtocolHandler for DirectSync {
@@ -2080,14 +2100,14 @@ impl Serving {
 
     /// `workspace` was deleted here, for good: every link of it ends and a
     /// device that names it from now on is refused, each told
-    /// [`WORKSPACE_DELETED`](tilo_relay_protocol::refusal::WORKSPACE_DELETED).
+    /// [`Refusal::WorkspaceDeleted`].
     /// A device that knows the workspace's random id learns nothing more than
     /// that it is gone.
     pub fn delete(&self, workspace: WorkspaceId) {
         self.deleted.write_recover().insert(workspace);
         let link = self.links.write_recover().remove(&workspace);
         if let Some(link) = link {
-            link.end(tilo_relay_protocol::refusal::WORKSPACE_DELETED);
+            link.end(Refusal::WorkspaceDeleted);
         }
     }
 
@@ -2109,14 +2129,14 @@ impl ProtocolHandler for Serving {
         let serve = async {
             let (named, send, recv) = dialed_workspace(&connection).await?;
             if self.deleted(named) {
-                return Err(refuse(
-                    &connection,
-                    tilo_relay_protocol::refusal::WORKSPACE_DELETED,
-                ));
+                return Err(refuse(&connection, &Refusal::WorkspaceDeleted));
             }
-            let link = self
-                .link(named)
-                .ok_or_else(|| refuse(&connection, "this host holds no such workspace"))?;
+            let link = self.link(named).ok_or_else(|| {
+                refuse(
+                    &connection,
+                    &Refusal::Other("this host holds no such workspace".into()),
+                )
+            })?;
             let live = link.0.outgoing.subscribe();
             link.link(&connection, None, Control { send, recv }, live)
                 .await
@@ -2312,7 +2332,7 @@ impl ProtocolHandler for Owning {
             let (named, send, recv) = dialed_workspace(&connection).await?;
             let link = match self.link(named) {
                 Ok(link) => link,
-                Err(reason) => return Err(refuse(&connection, &reason)),
+                Err(reason) => return Err(refuse(&connection, &Refusal::Other(reason))),
             };
             let live = link.0.outgoing.subscribe();
             link.link(&connection, None, Control { send, recv }, live)

@@ -722,7 +722,10 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
     assert!(
         !matches!(
             &answers[0],
-            Some(Envelope::CommitRefused { reason, .. }) if reason.contains("slow down")
+            Some(Envelope::CommitRefused {
+                refusal: tilo_relay_protocol::refusal::Refusal::TooFast { .. },
+                ..
+            })
         ),
         "{:?}",
         answers[0]
@@ -731,7 +734,10 @@ async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
     // the session stays open (no error).
     assert!(matches!(
         &answers[1],
-        Some(Envelope::CommitRefused { reason, .. }) if reason == "too many changes; slow down"
+        Some(Envelope::CommitRefused {
+            refusal: tilo_relay_protocol::refusal::Refusal::TooFast { .. },
+            ..
+        })
     ));
 }
 

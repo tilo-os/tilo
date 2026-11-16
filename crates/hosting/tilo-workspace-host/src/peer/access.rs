@@ -3,8 +3,8 @@
 //! subscriber audit that ends a session whose access lapsed.
 
 use super::{
-    AuthenticatedPeer, Decision, Envelope, PeerError, SessionCtx, UnavailableReason,
-    WorkspaceOperation, mpsc, unix_now_ns, workspace_access,
+    AuthenticatedPeer, Decision, Envelope, PeerError, Refusal, SessionCtx, WorkspaceOperation,
+    mpsc, unix_now_ns, workspace_access,
 };
 use tilo_relay_protocol::WorkspaceId;
 
@@ -89,13 +89,15 @@ pub(super) fn action_peer_admitted(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-) -> Result<(), UnavailableReason> {
+) -> Result<(), Refusal> {
     // Private authority is explicit and current: a same-owner workspace enrols an
     // owner device on Subscribe, never here.
     if !session_peer_authorized(peer, session)
         || !session.admits(wr, peer, WorkspaceOperation::RemoteAction)
     {
-        return Err(UnavailableReason::NotAuthorised);
+        return Err(Refusal::NotAMember(
+            "the device may not act in the workspace".into(),
+        ));
     }
     Ok(())
 }
@@ -103,11 +105,11 @@ pub(super) fn action_peer_admitted(
 pub(super) fn unavailable_target(
     wr: &crate::workspace::WorkspaceRuntime,
     target: &[u8; 32],
-) -> UnavailableReason {
+) -> Refusal {
     if wr.membership.contains(target) {
-        UnavailableReason::Offline
+        Refusal::Offline
     } else {
-        UnavailableReason::NotAuthorised
+        Refusal::NotAMember("addressed device is not in the workspace".into())
     }
 }
 

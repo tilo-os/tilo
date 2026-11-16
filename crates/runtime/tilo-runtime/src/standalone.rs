@@ -826,6 +826,23 @@ impl ActionHost for RuntimeActionHost {
         self.broker.state().here(&on_this_device(caller))
     }
 
+    /// Where the session's workspace stands, for a caller of it: authorized
+    /// exactly as [`Self::here`]. A runtime that serves from no session says
+    /// nothing.
+    fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
+        let session = self.session.as_ref()?;
+        session.check(caller, &self.joined).ok()?;
+        session.host.session_state(session.admission.caller())
+    }
+
+    fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
+        let session = self.session.as_ref()?;
+        session.check(caller, &self.joined).ok()?;
+        session
+            .host
+            .session_state_changed(session.admission.caller())
+    }
+
     /// Routed and authorized exactly as [`Self::observe`]: a caller that may
     /// not observe an invocation may not wait on it either.
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {

@@ -73,6 +73,9 @@ struct Cursor {
     /// a watch of no path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     feed: Option<String>,
+    /// Where the workspace and this device's writes stood when last answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<tilo_actions::remote::SessionState>,
 }
 
 impl Cursor {
@@ -131,6 +134,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         ended(&mut self.runs.lock_recover(), invocation, phase);
     }
 
+    /// Note that `invocation` is held for the person, who allows it or not in their tab.
+    pub(super) fn watch_run_held(&self, invocation: &str) {
+        held(&mut self.runs.lock_recover(), invocation);
+    }
+
     /// The run a watch attributes this session's calls to: the title a call
     /// grouped under, else the connection's own run.
     fn run_named(&self) -> (String, String) {
@@ -145,7 +153,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// [`WatchArgs`] as one answer: what happened since `cursor`, or nothing
     /// with a cursor to ask again from.
-    pub(super) async fn agent_watch(&self, args: WatchArgs) -> Result<Reply, String> {
+    pub(super) async fn agent_watch(&self, args: WatchArgs) -> Result<Reply, Failure> {
         let wait = args.wait_ms.unwrap_or(DEFAULT_WATCH_MS).min(MAX_WATCH_MS);
         let deadline = std::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(wait))
@@ -156,7 +164,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(text) => Cursor::parse(text)?,
         };
         loop {
+            // Listened for before anything is read, so a state that moves in between still
+            // wakes this watch.
+            let state_moved = self.host.session_state_changed(&self.caller());
             let mut events = Vec::new();
+            self.watch_states(&mut cursor, &mut events);
             self.watch_runs(&mut cursor, &mut events).await;
             self.watch_here(&mut cursor, &mut events);
             self.watch_changes(path, &mut cursor, &mut events).await?;
@@ -170,7 +182,40 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 reply.structured = Some(answer);
                 return Ok(reply);
             }
-            tokio::time::sleep(LOOK_AGAIN).await;
+            // A state's move wakes the watch at once; the sources that signal nothing (the
+            // feed, a resource's history, the roster) are looked at again after a while.
+            let look_again = tokio::time::sleep(LOOK_AGAIN);
+            match state_moved {
+                Some(moved) => {
+                    tokio::select! {
+                        _ = moved => {}
+                        () = look_again => {}
+                    }
+                }
+                None => look_again.await,
+            }
+        }
+    }
+
+    /// Where the workspace and this device's writes stand, when that changed since the cursor:
+    /// a `workspace` event when the workspace moved (`admitting`, `open`, `serving`), a `sync`
+    /// event when the writes fell behind or caught up.
+    fn watch_states(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
+        let Some(now) = self.host.session_state(&self.caller()) else {
+            return;
+        };
+        let told = cursor.state.replace(now);
+        if told.is_none_or(|told| told.workspace != now.workspace) {
+            events.push(json!({"kind": "workspace", "state": now.workspace}));
+        }
+        if told.is_none_or(|told| {
+            std::mem::discriminant(&told.sync) != std::mem::discriminant(&now.sync)
+        }) {
+            let mut sync = json!(now.sync);
+            if let Some(fields) = sync.as_object_mut() {
+                fields.insert("kind".into(), "sync".into());
+            }
+            events.push(sync);
         }
     }
 
@@ -187,6 +232,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             here: self.here_now().map(|(fingerprint, _)| fingerprint),
             change: last_change(self.history_page(path).await?.as_deref()),
             feed,
+            state: self.host.session_state(&self.caller()),
         })
     }
 
@@ -484,6 +530,25 @@ fn ended(runs: &mut [Run], invocation: &str, phase: &str) {
     }
 }
 
+/// Note that `invocation` is held for its person, as one run event: it moves on to how it
+/// ended once they answered.
+fn held(runs: &mut [Run], invocation: &str) {
+    let seq = next_seq(runs);
+    if let Some(run) = runs
+        .iter_mut()
+        .rev()
+        .find(|run| run.invocation == invocation)
+        && !is_terminal(&run.phase)
+        && run.phase != HELD
+    {
+        HELD.clone_into(&mut run.phase);
+        run.seq = seq;
+    }
+}
+
+/// The phase of a run held for its person.
+const HELD: &str = "held_for_person";
+
 /// Let go of the oldest of `runs` past [`RUNS_KEPT`], those that ended first. The one told
 /// last stays: the next sequence number counts on from it, so a cursor never sees a number twice.
 fn keep_latest(runs: &mut Vec<Run>) {
@@ -518,7 +583,7 @@ fn next_seq(runs: &[Run]) -> u64 {
 
 /// Whether `phase` is one an invocation never leaves.
 fn is_terminal(phase: &str) -> bool {
-    matches!(phase, "succeeded" | "failed" | "cancelled")
+    matches!(phase, "succeeded" | "failed" | "cancelled" | "refused")
 }
 
 #[cfg(test)]
@@ -583,6 +648,24 @@ mod tests {
             ended(&mut runs, "a", "succeeded");
             ended(&mut runs, "a", "failed");
             assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
+        }
+
+        phase a_run_held_for_its_person_is_told_then_how_it_ended;
+        // A run the person is asked about is told as held, once; their answer
+        // moves it on to how it ended, and a refused call ends it.
+        {
+            let mut runs = vec![started("a", 1), started("b", 2)];
+            held(&mut runs, "a");
+            assert_eq!((runs[0].phase.as_str(), runs[0].seq), (HELD, 3));
+            held(&mut runs, "a");
+            assert_eq!(runs[0].seq, 3, "held is told once");
+            assert!(!is_terminal(HELD));
+            ended(&mut runs, "a", "succeeded");
+            assert_eq!(runs[0].phase, "succeeded");
+            ended(&mut runs, "b", "refused");
+            assert!(is_terminal(&runs[1].phase));
+            held(&mut runs, "b");
+            assert_eq!(runs[1].phase, "refused", "an ended run is never held again");
         }
 
         phase history_entries_are_read_whole;

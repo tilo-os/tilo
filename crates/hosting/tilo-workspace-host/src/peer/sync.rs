@@ -21,14 +21,16 @@ pub(super) async fn handle_sync_request(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: "workspace not bound on this relay".into(),
+            refusal: tilo_relay_protocol::refusal::Refusal::NotReady,
         }));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     if !session.admits(&wr, peer, WorkspaceOperation::State) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: "device not in workspace membership".into(),
+            refusal: tilo_relay_protocol::refusal::Refusal::NotAMember(
+                "device not in workspace membership".into(),
+            ),
         }));
     }
     let expected = wr

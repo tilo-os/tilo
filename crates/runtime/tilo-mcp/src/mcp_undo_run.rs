@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use super::watch::history_entries;
-use super::{ActionHost, Addressed, McpServer, OneCall, Reply, Value, json};
+use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, Value, json};
 use tilo_lock::MutexRecover as _;
 
 /// How many of a record's changes are read to find a run's.
@@ -92,7 +92,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
         invocation: &str,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         let (run, targets) = self.run_targets(invocation)?;
         let mut plans = Vec::new();
         let mut refusals = Vec::new();
@@ -110,12 +110,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                  back that record's step alone with `<path>#undo {{\"step\": <change>}}`, which \
                  keeps their work",
                 refusals.join("; ")
-            ));
+            )
+            .into());
         }
         if plans.is_empty() {
             return Err(format!(
                 "run {invocation} has nothing left to take back: what it changed is undone"
-            ));
+            )
+            .into());
         }
         let mut undone = Vec::new();
         let mut text = String::new();

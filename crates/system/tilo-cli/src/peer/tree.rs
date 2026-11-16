@@ -279,8 +279,8 @@ impl Sync {
     fn take(&self, event: Event) {
         match event {
             Event::HostReady { ws, .. } if ws == self.workspace => self.open(),
-            Event::Refused { route, reason, .. } if route == self.route => {
-                tracing::warn!(%reason, workspace = %self.workspace, "the workspace refused a change to its files");
+            Event::Refused { route, refusal, .. } if route == self.route => {
+                tracing::warn!(%refusal, workspace = %self.workspace, "the workspace refused a change to its files");
             }
             Event::RecordContent { ws, frame, .. } if ws == self.workspace => {
                 self.content.piece(&frame);

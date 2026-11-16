@@ -436,8 +436,8 @@ pub(super) fn inbound_bytes(frame: &EnvelopeV2) -> usize {
             .len()
             .saturating_mul(8)
             .saturating_add(256),
-        EnvelopeV2::State(Envelope::NotAuthorised { reason, .. }) => {
-            reason.len().saturating_add(256)
+        EnvelopeV2::State(Envelope::NotAuthorised { refusal, .. }) => {
+            refusal.to_string().len().saturating_add(256)
         }
         // Bounds all non-state/private controls without serializing payloads.
         _ => 64 * 1024,

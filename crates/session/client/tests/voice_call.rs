@@ -49,7 +49,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
         .unwrap();
     browser(&page_link, |envelope| match envelope {
         Envelope::Ready { .. } => Some(()),
-        Envelope::NotAuthorised { reason, .. } => panic!("browser not admitted: {reason}"),
+        Envelope::NotAuthorised { refusal, .. } => panic!("browser not admitted: {refusal}"),
         _ => None,
     })
     .await;

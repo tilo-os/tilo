@@ -193,8 +193,8 @@ pub enum Envelope {
     /// workspace not bound here, peer not a member.
     NotAuthorised {
         workspace_id: WorkspaceId,
-        /// Human-readable reason (for tracing / logging).
-        reason: String,
+        /// Why.
+        refusal: crate::refusal::Refusal,
     },
 
     /// Ping/keep-alive. Not required but useful for the peer to
@@ -280,8 +280,8 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         /// The device it was addressed to.
         to_device_public_key: [u8; 32],
-        /// Human-readable reason (for tracing / logging).
-        reason: String,
+        /// Why.
+        refusal: crate::refusal::Refusal,
     },
 
     /// A [`Envelope::Delta`] whose author wants to know when the host has
@@ -320,8 +320,8 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         /// The commit's id.
         op: [u8; 16],
-        /// Human-readable reason (for tracing / logging).
-        reason: String,
+        /// Why.
+        refusal: crate::refusal::Refusal,
     },
 
     /// Join the workspace's live plane: the host answers with the members
@@ -684,12 +684,12 @@ pub enum Envelope {
 
     /// The host did not pass on a piece of record content this device sent
     /// ([`Envelope::RecordContent`]): its person's content budget is spent.
-    /// `reason` says so and when the budget holds the piece again
-    /// ([`crate::refusal::too_much_content`]); the device's person is told
-    /// ([`crate::refusal::plain_reason`]). Said at most once a minute.
+    /// `refusal` says when the budget holds the piece again
+    /// ([`crate::refusal::Refusal::TooMuchContent`]); the device's person is
+    /// told ([`crate::refusal::Refusal::plain`]). Said at most once a minute.
     RecordContentRefused {
         workspace_id: WorkspaceId,
-        reason: String,
+        refusal: crate::refusal::Refusal,
     },
 }
 
@@ -893,9 +893,9 @@ mod tests {
                 (
                     Envelope::NotAuthorised {
                         workspace_id: WorkspaceId::from_u128(7),
-                        reason: "no".into(),
+                        refusal: crate::refusal::Refusal::NotAMember("no".into()),
                     },
-                    [vec![5], id(7), vec![2, 110, 111]].concat(),
+                    [vec![5], id(7), vec![6, 2, 110, 111]].concat(),
                 ),
                 (Envelope::Ping, vec![6]),
                 (Envelope::Pong, vec![7]),

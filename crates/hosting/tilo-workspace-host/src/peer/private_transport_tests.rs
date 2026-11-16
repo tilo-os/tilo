@@ -841,14 +841,10 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
         observer.join().unwrap(),
         "fresh membership read held routing lock"
     );
-    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = refused else {
+    let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
         panic!("a replaced session's action is undeliverable, got {refused:?}");
     };
-    assert_eq!(
-        UnavailableReason::from_wire_reason(&reason),
-        Some(UnavailableReason::Superseded),
-        "{reason}"
-    );
+    assert_eq!(refusal, tilo_relay_protocol::refusal::Refusal::Superseded);
     assert!(brx.try_recv().is_err(), "nothing reached the target");
 }
 
@@ -937,13 +933,15 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
         });
         let refused = handle_remote_action(&a, &session, &[id], route(), frame()).await;
         revoke.join().unwrap();
-        let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = refused else {
+        let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
             panic!("an action with a device revoked mid-read is undeliverable, got {refused:?}");
         };
-        assert_eq!(
-            UnavailableReason::from_wire_reason(&reason),
-            Some(UnavailableReason::NotAuthorised),
-            "{reason}"
+        assert!(
+            matches!(
+                refusal,
+                tilo_relay_protocol::refusal::Refusal::NotAMember(_)
+            ),
+            "{refusal}"
         );
         assert!(
             brx.try_recv().is_err(),

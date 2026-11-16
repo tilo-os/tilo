@@ -5,13 +5,14 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 49
+version = 50
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
 sources = [
     "crates/hosting/tilo-relay-protocol/src/auth.rs",
     "crates/hosting/tilo-relay-protocol/src/transport.rs",
+    "crates/hosting/tilo-relay-protocol/src/refusal.rs",
     "crates/hosting/tilo-relay-protocol/src/entering.rs",
     "crates/hosting/tilo-relay-protocol/src/directory.rs",
     "crates/hosting/tilo-relay-protocol/src/workspaces.rs",
@@ -241,7 +242,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::Commit.workspace_id" = "#0 WorkspaceId"
 "Envelope::CommitRefused" = "#15 struct"
 "Envelope::CommitRefused.op" = "#1 [u8; 16]"
-"Envelope::CommitRefused.reason" = "#2 String"
+"Envelope::CommitRefused.refusal" = "#2 Refusal"
 "Envelope::CommitRefused.workspace_id" = "#0 WorkspaceId"
 "Envelope::Committed" = "#14 struct"
 "Envelope::Committed.op" = "#1 [u8; 16]"
@@ -278,7 +279,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::LiveLeave" = "#17 struct"
 "Envelope::LiveLeave.workspace_id" = "#0 WorkspaceId"
 "Envelope::NotAuthorised" = "#5 struct"
-"Envelope::NotAuthorised.reason" = "#1 String"
+"Envelope::NotAuthorised.refusal" = "#1 Refusal"
 "Envelope::NotAuthorised.workspace_id" = "#0 WorkspaceId"
 "Envelope::OpenRecord" = "#34 struct"
 "Envelope::OpenRecord.channel" = "#1 [u8; 32]"
@@ -300,7 +301,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::RecordContent.to_device_public_key" = "#1 [u8; 32]"
 "Envelope::RecordContent.workspace_id" = "#0 WorkspaceId"
 "Envelope::RecordContentRefused" = "#51 struct"
-"Envelope::RecordContentRefused.reason" = "#1 String"
+"Envelope::RecordContentRefused.refusal" = "#1 Refusal"
 "Envelope::RecordContentRefused.workspace_id" = "#0 WorkspaceId"
 "Envelope::RecordContentWant" = "#39 struct"
 "Envelope::RecordContentWant.frame" = "#2 Vec<u8> with=serde_bytes"
@@ -318,7 +319,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::RemoteAction.version" = "#1 u16"
 "Envelope::RemoteAction.workspace_id" = "#0 WorkspaceId"
 "Envelope::RemoteActionUndeliverable" = "#12 struct"
-"Envelope::RemoteActionUndeliverable.reason" = "#2 String"
+"Envelope::RemoteActionUndeliverable.refusal" = "#2 Refusal"
 "Envelope::RemoteActionUndeliverable.to_device_public_key" = "#1 [u8; 32]"
 "Envelope::RemoteActionUndeliverable.workspace_id" = "#0 WorkspaceId"
 "Envelope::RetiredHereReply" = "#43 struct"
@@ -727,6 +728,23 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "RecordAnswer::NotYours" = "#1 unit"
 "RecordAnswer::Sent" = "#0 struct"
 "RecordAnswer::Sent.frames" = "#0 u32"
+"Refusal" = "enum external"
+"Refusal::Conflict" = "#12 unit"
+"Refusal::Full" = "#3 unit"
+"Refusal::Invalid" = "#11 tuple(String)"
+"Refusal::NotAMember" = "#6 tuple(String)"
+"Refusal::NotAdmitted" = "#7 unit"
+"Refusal::NotAllowed" = "#5 tuple(String)"
+"Refusal::NotGranted" = "#4 tuple(String)"
+"Refusal::NotReady" = "#0 unit"
+"Refusal::Offline" = "#9 unit"
+"Refusal::Other" = "#13 tuple(String)"
+"Refusal::Superseded" = "#10 unit"
+"Refusal::TooFast" = "#1 struct"
+"Refusal::TooFast.wait_ms" = "#0 u64"
+"Refusal::TooMuchContent" = "#2 struct"
+"Refusal::TooMuchContent.wait_ms" = "#0 u64"
+"Refusal::WorkspaceDeleted" = "#8 unit"
 "RefusalReason" = "enum external"
 "RefusalReason::Conflict" = "#6 unit"
 "RefusalReason::Expired" = "#1 unit"

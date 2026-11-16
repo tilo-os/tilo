@@ -71,6 +71,9 @@ impl Task {
             return false;
         }
         self.admitted_here.insert(workspace_id);
+        self.reports.change(|status| {
+            status.serving.insert(workspace_id);
+        });
         true
     }
 
@@ -83,6 +86,9 @@ impl Task {
             return;
         }
         self.admitted_here.insert(workspace_id);
+        self.reports.change(|status| {
+            status.serving.insert(workspace_id);
+        });
         let waiting: Vec<(DocumentRoute, Option<[u8; 32]>)> = self
             .unadmitted
             .extract_if(.., |route, _| {
@@ -95,12 +101,16 @@ impl Task {
     }
 
     /// The host no longer lets this device into `workspace_id`, for
-    /// `reason`: its owner deleted it, or this device may not.
-    fn not_authorised(&mut self, workspace_id: WorkspaceId, reason: String) {
-        if reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED {
+    /// `refusal`: its owner deleted it, or this device may not.
+    fn not_authorised(
+        &mut self,
+        workspace_id: WorkspaceId,
+        refusal: &tilo_relay_protocol::refusal::Refusal,
+    ) {
+        if *refusal == tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted {
             self.workspace_deleted(workspace_id);
         } else {
-            self.fail("permission-required", reason);
+            self.fail("permission-required", refusal.to_string());
         }
     }
 
@@ -117,6 +127,7 @@ impl Task {
         self.emptied = nothing_left;
         self.reports.change(|status| {
             status.workspaces.remove(&workspace_id);
+            status.serving.remove(&workspace_id);
             if nothing_left {
                 status.phase = TransportPhase::Failed;
             }
@@ -133,6 +144,10 @@ impl Task {
         // The workspace is ready once what the host replayed before it is in the replica:
         // whoever waits for it reads every write the replay carried.
         self.keep_arrived();
+        // What the host was not ready for before goes on the next pass of custody.
+        if let Some(sending) = self.sending.get_mut(&workspace_id) {
+            sending.ready();
+        }
         // A host is dialled by its certified key, so a session that got this far holds a valid one.
         if let Ok(peer) =
             iroh_base::EndpointId::from_bytes(&self.config.host_cert.device_public_key)
@@ -160,8 +175,8 @@ impl Task {
             } => self.ready(workspace_id, records_when_opened),
             Envelope::NotAuthorised {
                 workspace_id,
-                reason,
-            } => self.not_authorised(workspace_id, reason),
+                refusal,
+            } => self.not_authorised(workspace_id, &refusal),
             Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,
@@ -207,9 +222,12 @@ impl Task {
             }
             answer @ Envelope::AgentSessionAnswer { .. } => self.agent_run_answered(answer),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
-            Envelope::CommitRefused { op, reason, .. } => {
-                self.fail("protocol-rejected", reason.clone());
-                self.acknowledge(op, Err(reason));
+            Envelope::CommitRefused { op, refusal, .. } => {
+                // A host not ready for the write yet takes it once it is: nothing failed.
+                if !refusal.passes_once_ready() {
+                    self.fail("protocol-rejected", refusal.to_string());
+                }
+                self.acknowledge(op, Err(refusal));
             }
             content @ Envelope::RecordContent { .. } => self.record_content(content, now),
             envelope => {
@@ -779,19 +797,19 @@ fn addressed(envelope: Envelope, host: [u8; 32], host_user: [u8; 32]) -> Option<
         }),
         Envelope::RecordContentRefused {
             workspace_id,
-            reason,
+            refusal,
         } => Some(Event::ContentRefused {
             ws: workspace_id,
-            reason,
+            refusal,
         }),
         Envelope::RemoteActionUndeliverable {
             workspace_id,
             to_device_public_key,
-            reason,
+            refusal,
         } => Some(Event::Remote(Heard::Undeliverable {
             workspace_id,
             to: to_device_public_key,
-            reason,
+            refusal,
         })),
         _ => None,
     }

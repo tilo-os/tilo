@@ -3598,8 +3598,8 @@ fn host_event(
         // by the relay session the call itself holds, and a host keeps what a
         // link's store kept.
         HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
-        HostInbound::CommitRefused { reason, .. } => {
-            tracing::warn!(ws = %ws, host = %host, %reason, "the host did not keep a sealed write");
+        HostInbound::CommitRefused { refusal, .. } => {
+            tracing::warn!(ws = %ws, host = %host, %refusal, "the host did not keep a sealed write");
             return None;
         }
         HostInbound::RemoteAction { from, frame } => {
@@ -3768,7 +3768,7 @@ fn spawn_direct_pump(
                 },
                 result = &mut running => {
                     if let Err(reason) = result {
-                        deleted = reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED;
+                        deleted = reason == tilo_relay_protocol::refusal::Refusal::WorkspaceDeleted;
                         tracing::debug!(ws = %ws, %reason, "a workspace's link ended");
                     }
                     break;

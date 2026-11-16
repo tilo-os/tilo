@@ -316,8 +316,8 @@ async fn action_answer(client: &RelayClient) -> RemoteActionMessage {
                 Envelope::RemoteAction { frame, .. } => {
                     break RemoteActionFrame::decode(&frame).unwrap().message;
                 }
-                Envelope::RemoteActionUndeliverable { reason, .. } => {
-                    panic!("the relay did not answer: {reason}")
+                Envelope::RemoteActionUndeliverable { refusal, .. } => {
+                    panic!("the relay did not answer: {refusal}")
                 }
                 _ => {}
             }

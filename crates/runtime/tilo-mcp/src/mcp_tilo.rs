@@ -35,7 +35,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tilo_actions::ActionDescriptor;
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
+use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, app_names};
 
 /// How long a program waits for an action it invoked to settle before it gives up on the
 /// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
@@ -962,7 +962,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
         args: TiloArgs,
         structured: bool,
-    ) -> Result<Reply, String> {
+    ) -> Result<Reply, Failure> {
         let (mut reply, answer, _) = Box::pin(self.tilo_step(args)).await?;
         if structured {
             reply.structured = Some(self.program_answer(answer.as_ref(), &reply));
@@ -1022,9 +1022,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return self
                     .undo_steps(false)
                     .await
-                    .map(|reply| (reply, None, None));
+                    .map(|reply| (reply, None, None))
+                    .map_err(String::from);
             }
-            "undo task" => return self.undo_steps(true).await.map(|reply| (reply, None, None)),
+            "undo task" => {
+                return self
+                    .undo_steps(true)
+                    .await
+                    .map(|reply| (reply, None, None))
+                    .map_err(String::from);
+            }
             "history task" => return Ok((Reply::ok(self.history()), None, None)),
             "catalogue" => {
                 return self
@@ -1438,8 +1445,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // program cannot go on as if it had not.
                 _ => json!({"failed": super::outcome(&value).text}),
             },
-            Err(why) if refusal(&why) => json!({"refused": format!("{action}: {why}")}),
-            Err(why) => json!({"failed": why}),
+            Err(why) if refused(&why) => json!({"refused": format!("{action}: {why}")}),
+            Err(why) => json!({"failed": String::from(why)}),
         }
     }
 
@@ -1495,16 +1502,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 type Providers = BTreeMap<String, Addressed>;
 
 /// Whether the API's error `why` is the policy's refusal, not a failure of the action.
-fn refusal(why: &str) -> bool {
-    [
-        "may not invoke",
-        "refused:",
-        "requires confirmation",
-        "ConfirmationRequired",
-        "no such action is offered",
-    ]
-    .iter()
-    .any(|said| why.contains(said))
+const fn refused(why: &super::Failure) -> bool {
+    use tilo_actions::remote::ActionHostError;
+    matches!(
+        why.host,
+        Some(
+            ActionHostError::NotPermitted
+                | ActionHostError::Refused { .. }
+                | ActionHostError::ConfirmationRequired { .. }
+                | ActionHostError::UnknownAction
+        )
+    )
 }
 
 /// The text of a program's answer in `programs`' session, and whether it is an error.
@@ -1698,7 +1706,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Take back the last step that is in effect, or with `all` every step of this task, newest
     /// first.
-    async fn undo_steps(&self, all: bool) -> Result<Reply, String> {
+    async fn undo_steps(&self, all: bool) -> Result<Reply, Failure> {
         let mut text = String::new();
         loop {
             let next = {
@@ -1924,10 +1932,16 @@ mod tests {
 
         phase the_policys_refusals_are_told_from_failures;
         {
-            assert!(refusal("the caller may not invoke this action"));
-            assert!(refusal("refused: asks the person first"));
-            assert!(refusal("no such action is offered"));
-            assert!(!refusal("the action failed: no such note"));
+            use tilo_actions::remote::ActionHostError;
+            let host = |error: ActionHostError| {
+                crate::Failure::from(crate::BridgeError::Host(error))
+            };
+            assert!(refused(&host(ActionHostError::NotPermitted)));
+            assert!(refused(&host(ActionHostError::Refused {
+                reason: "asks the person first".into()
+            })));
+            assert!(refused(&host(ActionHostError::UnknownAction)));
+            assert!(!refused(&crate::Failure::from("the action failed: no such note")));
         }
 
         phase undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back;

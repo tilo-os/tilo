@@ -230,8 +230,8 @@ async fn call(
                     _ => None,
                 }
             }
-            Event::Remote(Heard::Undeliverable { reason, .. }) => {
-                panic!("undeliverable: {reason}")
+            Event::Remote(Heard::Undeliverable { refusal, .. }) => {
+                panic!("undeliverable: {refusal}")
             }
             _ => None,
         });

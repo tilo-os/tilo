@@ -381,7 +381,10 @@ fn an_earlier_part_the_workspace_lacks_ends_in_a_final_state(ada: &mut Window) {
     assert_eq!(held(&mut bo), vec![0, 1, 2]);
     assert_eq!(chain_of(&mut bo).waiting(0), Some(PartArrival::Arriving));
 
-    bo.workspace_answered(crate::parts::part(0));
+    bo.workspace_answered(
+        crate::parts::part(0),
+        ui::prelude::WorkspaceAnswer::HoldsNone,
+    );
     bo.harness().relayout();
     let state = |bo: &mut Window| {
         bo.with_chat(|surface| {
@@ -478,9 +481,15 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     );
 
     // The workspace has no part of it: the chat starts with its first part.
-    bo.workspace_answered(crate::parts::chain().chain_head());
+    bo.workspace_answered(
+        crate::parts::chain().chain_head(),
+        ui::prelude::WorkspaceAnswer::HoldsNone,
+    );
     assert!(!chain.head_arriving());
-    bo.workspace_answered(crate::parts::part(0));
+    bo.workspace_answered(
+        crate::parts::part(0),
+        ui::prelude::WorkspaceAnswer::HoldsNone,
+    );
     assert_eq!(held(&mut bo), [0], "the waiting post started it");
     assert!(chain.unwritten().is_none(), "the post was written");
     assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), Some(0));

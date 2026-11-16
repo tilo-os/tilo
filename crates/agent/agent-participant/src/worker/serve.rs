@@ -624,9 +624,9 @@ fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
                 .map(|record| record.as_str().to_owned())
                 .collect(),
         ),
-        Request::Answered { record } => match parse_record(&record) {
+        Request::Answered { record, answer } => match parse_record(&record) {
             Some(record) => {
-                replica.workspace_answered(record);
+                replica.workspace_answered(record, answer);
                 Reply::Done
             }
             None => Reply::Failed("invalid record id".into()),

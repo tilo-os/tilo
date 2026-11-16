@@ -20,11 +20,8 @@ use serde_json::{Value, json};
 const ACTION_WAIT: Duration = Duration::from_secs(120);
 /// How long a step waits for its person to allow it in their tab.
 const PERSON_WAIT: Duration = Duration::from_secs(6 * 60);
-/// How often a step waiting for its person is asked how it stands.
-const STATUS_EVERY: Duration = Duration::from_secs(2);
-/// How often a step the workspace was too slow to answer is asked again, the pause doubling from
-/// two seconds each time (about four minutes in all): a connection busy carrying a large folder
-/// can keep the workspace from answering for a minute or more.
+/// How often a step the workspace said to ask again is asked again before the run gives up: each
+/// ask waits for the workspace itself ([`ACTION_WAIT`]), or for the wait it said.
 const ACTION_TRIES: u32 = 7;
 /// The largest piece of an upload one call carries (the session's own bound).
 const PUT_CHUNK: usize = 512 * 1024;
@@ -176,33 +173,51 @@ impl Held {
             })
             .unwrap_or_default();
         if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            bail!("{text}");
+            let code = result
+                .pointer("/structuredContent/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("failed")
+                .to_owned();
+            let retry_after_ms = result
+                .pointer("/structuredContent/error/retry_after_ms")
+                .and_then(Value::as_u64);
+            return Err(Refused {
+                code,
+                text,
+                retry_after_ms,
+            }
+            .into());
         }
         Ok(text)
     }
 }
 
-impl Held {
-    /// How `invocation` of `action` ended, asked again until it did: it waits on its person,
-    /// who allows or refuses it in their tab, for at most [`PERSON_WAIT`].
-    fn answered(&mut self, invocation: &str, action: &str) -> Result<String> {
-        let until = std::time::Instant::now()
-            .checked_add(PERSON_WAIT)
-            .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
-        loop {
-            std::thread::sleep(STATUS_EVERY);
-            let status =
-                pending_or(self.tool("tilo_status", &json!({"invocation_id": invocation}), None))?;
-            if !status.starts_with("pending") {
-                return Ok(status);
-            }
-            if std::time::Instant::now() >= until {
-                bail!(
-                    "{action} is waiting for the person to allow it in their Tilo tab. Allow it \
-                     there, then run the same command again; what it did so far is kept."
-                );
-            }
-        }
+/// A call the workspace did not run, as its typed answer says: its code, its words, and the
+/// wait it asked for.
+#[derive(Debug)]
+pub(super) struct Refused {
+    code: String,
+    text: String,
+    retry_after_ms: Option<u64>,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+impl Refused {
+    /// Whether the workspace said the same step works when asked again: it was busy (after the
+    /// wait it said), not serving yet, or did not answer. Asked again under its same id, a step
+    /// runs once.
+    fn asks_again(&self) -> bool {
+        matches!(
+            self.code.as_str(),
+            "rate_limited" | "not_ready" | "unanswered"
+        )
     }
 }
 
@@ -213,19 +228,6 @@ pub(super) fn pending_or(answer: Result<String>) -> Result<String> {
         Err(error) if format!("{error:#}").starts_with("pending") => Ok(format!("{error:#}")),
         other => other,
     }
-}
-
-/// Whether the workspace said it was too slow to answer, rather than that it refused. A step it
-/// does not know (`Unknown or unowned invocation`) never reached it while the connection was
-/// busy, and one whose save its host did not confirm in time (`save_unconfirmed`) may or may not
-/// be saved: asked again under its same id, either runs once.
-fn slow(error: &anyhow::Error) -> bool {
-    let said = format!("{error:#}");
-    said.contains("did not answer within")
-        || said.contains("not connected to the host")
-        || said.contains("did not answer in time")
-        || said.contains("Unknown or unowned invocation")
-        || said.contains("save_unconfirmed")
 }
 
 impl Workspace for Held {
@@ -245,21 +247,41 @@ impl Workspace for Held {
         let call =
             json!({"path": action, "args": args, "wait_ms": wait, "invocation_id": invocation});
         let mut tries = 0_u32;
+        let until = std::time::Instant::now()
+            .checked_add(PERSON_WAIT)
+            .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
         let answer = loop {
-            match self.tool("tilo_do", &call, Some(run.meta())) {
-                Err(error) if tries < ACTION_TRIES && slow(&error) => {
-                    std::thread::sleep(Duration::from_secs(2_u64 << tries.min(6)));
-                    tries = tries.saturating_add(1);
-                }
-                other => break pending_or(other)?,
+            let answer = match self.tool("tilo_do", &call, Some(run.meta())) {
+                Err(error) if tries < ACTION_TRIES => match error.downcast_ref::<Refused>() {
+                    Some(refused) if refused.asks_again() => {
+                        if let Some(wait) = refused.retry_after_ms {
+                            std::thread::sleep(Duration::from_millis(wait));
+                        }
+                        tries = tries.saturating_add(1);
+                        continue;
+                    }
+                    _ => pending_or(Err(error))?,
+                },
+                other => pending_or(other)?,
+            };
+            // An action the person allows first (an outside one, as adding an account is) is
+            // pending while their tab asks them: the same call under the same id waits for it
+            // to move, held by the workspace, until their answer.
+            // A save its host did not confirm in time may or may not be kept: asked again under
+            // its same id, it runs once.
+            if answer.starts_with("failed: save_unconfirmed:") && tries < ACTION_TRIES {
+                tries = tries.saturating_add(1);
+                continue;
             }
-        };
-        // An action the person allows first (an outside one, as adding an account is) is
-        // pending while their tab asks them: the run waits for their answer.
-        let answer = if answer.starts_with("pending") {
-            self.answered(&invocation, action)?
-        } else {
-            answer
+            if !answer.starts_with("pending") {
+                break answer;
+            }
+            if std::time::Instant::now() >= until {
+                bail!(
+                    "{action} is waiting for the person to allow it in their Tilo tab. Allow it \
+                     there, then run the same command again; what it did so far is kept."
+                );
+            }
         };
         if let Some(why) = answer.strip_prefix("failed:") {
             bail!("{action}: {}", why.trim());
@@ -323,25 +345,5 @@ impl Workspace for Held {
             bail!("the workspace kept the upload under no reference: {finished}");
         }
         Ok(reference)
-    }
-}
-
-#[cfg(test)]
-mod slow_tests {
-    use super::slow;
-
-    #[test]
-    fn a_step_a_busy_workspace_lost_is_asked_again_and_a_refusal_is_not() {
-        for said in [
-            "Unknown or unowned invocation",
-            "remote actions are unavailable: the device did not answer in time",
-            "the host did not answer within 30 s",
-            "failed: save_unconfirmed: the host has not confirmed saving the change within a minute",
-        ] {
-            assert!(slow(&anyhow::anyhow!(said)), "{said}");
-        }
-        assert!(!slow(&anyhow::anyhow!(
-            "notes#import-markdown: no such page"
-        )));
     }
 }
