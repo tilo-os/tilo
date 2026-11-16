@@ -67,6 +67,22 @@
  * step; another tab's change reaches this one as a `storage` event.
  */
 export const SETUP = 'tilo-setup';
+/**
+ * What the first screen shows (the prompts, the agent's steps, the heading),
+ * kept apart from the setup for the next first paint (first-run.inline.js),
+ * with the code it was drawn for (`code`). A redraw writes only this: every
+ * tab keeps its own cached copy of storage, so a tab rewriting the setup on a
+ * redraw would put back the step another tab just left.
+ */
+export const SHOWN = 'tilo-setup-shown';
+
+/** What the first screen showed last (`SHOWN`), or `null`. */
+export function readShown(storage = globalThis.localStorage) {
+  try {
+    const shown = JSON.parse(storage?.getItem(SHOWN) ?? 'null');
+    return shown && typeof shown === 'object' ? shown : null;
+  } catch { return null; }
+}
 /** The steps a setup is kept at: kept for later (`later`: the person
  * arrived by an invitation and joined that workspace first), on the start
  * (`start`), following a code (`waiting`), its code ran out (`expired`), the
@@ -319,11 +335,15 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
   let heldBack = Boolean(heldAtPaint);
   // What the screen shows now, kept with the setup for the next first paint.
   const frame = {offer: null, prompt: null, lines: null, heading: null, mode: 'setup', copied: false, handed: false};
+  // What the screen shows, for the next first paint: its own key, never the
+  // setup, so a redraw changes no step (`SHOWN`).
+  let keptFrame = null;
   const keepFrame = () => {
-    if (closed) return;
-    const kept = readSetup(storage);
-    if (!kept || kept.step === 'done' || JSON.stringify(kept.shown ?? null) === JSON.stringify(frame)) return;
-    writeSetup({...kept, shown: {...frame}}, storage);
+    if (closed || !storage) return;
+    const next = JSON.stringify({...frame, code: state.code?.code ?? null});
+    if (next === keptFrame) return;
+    keptFrame = next;
+    try { storage.setItem(SHOWN, next); } catch { /* The next first paint draws less of it. */ }
   };
   const view = new Proxy(drawn, {get: (target, name) => (...args) => {
     // A closed screen draws nothing: the person is done with it, or the page
@@ -345,17 +365,19 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     keepFrame();
     return result;
   }});
-  // Keep `patch` as the setup now, over whatever another tab kept since.
-  // A save that names no step (a code made ahead, say) leaves a held step
+  // Keep `patch` as the setup now, merged into what storage holds at this
+  // moment (another tab may have moved it on). Only a change of the setup
+  // itself saves: a code taken up, Back, an answer heard. A save that names no step (a code made ahead, say) leaves a held step
   // in storage, and this screen where it is: read back as the step, `later`
   // would take the shown code off the screen (`onScreen`), and the host would
   // forget a code the person may still hand their agent.
   const save = patch => {
     if (closed) return;
     const kept = readSetup(storage) ?? state;
-    const next = {...kept, ...patch, shown: {...frame}, at: now()};
+    const next = {...kept, ...patch, at: now()};
     writeSetup(next, storage);
     state = 'step' in patch || !held(kept.step) ? next : {...next, step: state.step};
+    keepFrame();
   };
   const sameState = (a, b) => JSON.stringify({...onStart(a), shown: null, at: null})
     === JSON.stringify({...onStart(b), shown: null, at: null});
@@ -752,8 +774,9 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     if (next.step === 'done') { close(); reload(); return; }
     if (next.step === 'opening') {
       if (!leaving) {
-        connectedShown = Boolean(next.shown?.heading);
-        if (connectedShown) frame.heading = next.shown.heading;
+        const shown = readShown(storage);
+        connectedShown = Boolean(shown?.heading);
+        if (connectedShown) frame.heading = shown.heading;
         leave();
       }
       return;

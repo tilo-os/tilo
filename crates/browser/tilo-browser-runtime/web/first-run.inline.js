@@ -63,7 +63,9 @@ root.setAttribute('data-first-run',step==='opening'?'connected':step);
 // (index.html calls this right after it), so a resumed setup shows its
 // step at the first frame; first-run.mjs takes over and asks the host.
 globalThis.__tiloSetupPaint=function(){
- var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown=setup.shown||{};
+ var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown={};
+ // What the screen showed last, kept apart from the setup (first-run.mjs `SHOWN`), for the code it was drawn for.
+ try{var drawn=JSON.parse(localStorage.getItem('tilo-setup-shown')||'null');if(drawn&&typeof drawn==='object'&&(drawn.code||null)===((code&&code.code)||null))shown=drawn;}catch(e){}
  // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
  var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;

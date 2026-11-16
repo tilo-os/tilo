@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, codeWait, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
-  manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
+  manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
   signInPrompt, startFirstRun, stepLines, minutesLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -749,7 +749,7 @@ test('a reload mid-way shows the step that was kept at once, then follows the sa
   await first.tick();
   assert.equal(first.kept().step, 'waiting');
   assert.deepEqual(first.kept().polled.steps, ['resolved', 'logged-in'], 'what the agent did is kept');
-  assert.deepEqual(first.kept().shown.lines.map(({text}) => text).slice(0, 2), ['Tilo is installed', 'Claude Code logged in as you'],
+  assert.deepEqual(readShown({getItem: key => stored.get(key)}).lines.map(({text}) => text).slice(0, 2), ['Tilo is installed', 'Claude Code logged in as you'],
     'and what the screen drew, for the next first paint');
   // Loaded again: the page has no codes to offer yet.
   const again = fixture({stored});
@@ -910,6 +910,61 @@ test('a second tab follows the first: the same prompt on the start, the same cod
   assert.equal(b.state.reloads, 1, 'done in another tab: this one loads where the page opens now');
 });
 
+test('Back in a second tab reaches the first, though the first redraws on its own copy of storage before it hears it', async () => {
+  // Each tab reads and writes a copy of storage of its own, and hears another
+  // tab's write later, as a browser's tabs do: `deliver` hands each tab's
+  // writes to the other, with the storage event that tells it. A tab whose
+  // own write of a key is not through yet keeps its value over one that
+  // arrives meanwhile, though it is told of that one all the same.
+  const tabs = {};
+  const sent = [];
+  const copyOf = name => Object.assign(new Map(), {
+    pending: new Map(),
+    set(key, value) {
+      Map.prototype.set.call(this, key, value);
+      this.pending.set(key, (this.pending.get(key) ?? 0) + 1);
+      sent.push({name, key, value});
+      return this;
+    },
+  });
+  const deliver = async () => {
+    while (sent.length) {
+      const {name, key, value} = sent.shift();
+      const from = tabs[name].stored;
+      from.pending.set(key, from.pending.get(key) - 1);
+      for (const [other, tab] of Object.entries(tabs)) {
+        if (other === name) continue;
+        if (!tab.stored.pending.get(key)) Map.prototype.set.call(tab.stored, key, value);
+        if (key === SETUP) tab.run.sync();
+      }
+      await settle();
+    }
+  };
+  const code = fakeCode();
+  tabs.a = fixture({stored: copyOf('a')});
+  tabs.a.run.offerSetup(maker(code, fakeCode({code: NEXT})).make, resumer(code));
+  await settle();
+  await tabs.a.run.copy();
+  await settle();
+  await deliver();
+  // The second tab opens on the same code, and draws its own screen.
+  const second = copyOf('b');
+  for (const [key, value] of tabs.a.stored) Map.prototype.set.call(second, key, value);
+  tabs.b = fixture({stored: second});
+  tabs.b.run.offerSetup(maker().make, resumer(code));
+  await settle();
+  assert.equal(tabs.b.last('waiting')?.[2]?.text, setupPrompt(CODE), 'the second tab waits on the same code');
+  await deliver();
+  // Back in the second tab; the first redraws (its next round of asking the
+  // host) before that reaches it.
+  tabs.b.run.back();
+  await tabs.a.tick();
+  await deliver();
+  assert.equal(tabs.b.kept().step, 'start', 'the second tab stays at the start');
+  assert.equal(tabs.a.kept().step, 'start', 'the first tab keeps the start the second saved');
+  assert.ok(tabs.a.names().lastIndexOf('start') > tabs.a.names().lastIndexOf('waiting'), 'and is drawn back at the start');
+});
+
 test('reloaded on the start, the kept prompt shows and copies before the page can follow codes, then is followed', async () => {
   const stored = new Map();
   const code = fakeCode();
@@ -1062,7 +1117,8 @@ test('a setup reopened from the card asks for a fresh code, not one an earlier v
   const {document} = stubDocument();
   const kept = {step: 'done', offer: {code: CODE, expiresAt: Date.now() + 600_000, follow: 'ab'.repeat(32)}};
   const stored = [];
-  const storage = {getItem: () => JSON.stringify(kept), setItem: (_key, value) => stored.push(JSON.parse(value))};
+  const storage = {getItem: key => (key === SETUP ? JSON.stringify(kept) : null),
+    setItem: (key, value) => { if (key === SETUP) stored.push(JSON.parse(value)); }};
   const run = openFirstRun(document, {storage});
   assert.ok(run);
   assert.equal(stored.at(-1)?.offer, null, 'the code an earlier visit kept is spent or run out, never offered again');
