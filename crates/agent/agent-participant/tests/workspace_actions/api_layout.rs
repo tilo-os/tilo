@@ -75,9 +75,22 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_layout() {
     };
     assert_eq!(agent.initialize().await.0, 200);
 
+    // The layout is Ada's page's, written as a page first shows the workspace; her page
+    // leaves, and no page is open while the agent works.
+    {
+        let mut ada_page = super::resource_support::open_admitted_peer(
+            &on_relay.hosted,
+            &page_device,
+            &on_relay.host,
+            &workspace,
+        )
+        .await;
+        ada_page.put_layout();
+        ada_page.durable().await;
+    }
+
     // The agent uploads the applicant's form and fills a field in a run it
-    // names, then writes a letter outside it, exported as Word; nobody's page
-    // is open meanwhile.
+    // names, then writes a letter outside it, exported as Word.
     let (status, put) = upload(&agent, &workspace, &application_pdf()).await;
     assert_eq!(status, 201, "{put}");
     let form = put["content"].as_str().unwrap().to_owned();
