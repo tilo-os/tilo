@@ -114,6 +114,9 @@ pub struct Metrics {
     pub row_slider_width: f32,
     pub row_slider_min_width: f32,
     pub row_slider_valued_width: f32,
+    /// The narrowest a list row's title keeps when a trailing value shares the row: a
+    /// value wider than what is left elides instead of running under the name.
+    pub row_title_min_width: f32,
     pub meter_height: f32,
     pub chart_height: f32,
     pub aside_min_width: f32,
@@ -197,6 +200,7 @@ impl Metrics {
         row_slider_width: 172.0,
         row_slider_min_width: 88.0,
         row_slider_valued_width: 184.0,
+        row_title_min_width: 72.0,
         meter_height: 6.0,
         chart_height: 168.0,
         aside_min_width: 240.0,
@@ -315,6 +319,7 @@ impl Metrics {
             row_slider_width: self.row_slider_width * factor,
             row_slider_min_width: self.row_slider_min_width * factor,
             row_slider_valued_width: self.row_slider_valued_width * factor,
+            row_title_min_width: self.row_title_min_width * factor,
             meter_height: self.meter_height * factor,
             chart_height: self.chart_height * factor,
             aside_min_width: self.aside_min_width * factor,

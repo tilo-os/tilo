@@ -3608,6 +3608,14 @@ impl TextInput {
         (!item.is_empty()).then(|| format!("{field}:{item}"))
     }
 
+    /// The id the field's accessibility node and its control bindings share: what it edits
+    /// when it edits an item, else its own id.
+    fn control_identity(&self) -> String {
+        self.semantic_target()
+            .or_else(|| self.test_id().map(str::to_owned))
+            .unwrap_or_else(|| "text_input".to_string())
+    }
+
     /// Set the stable label announced for this field by assistive technology.
     /// Placeholder text is intentionally not used as the label because it
     /// disappears after entry and often describes format rather than purpose.
@@ -5797,7 +5805,7 @@ impl Widget for TextInput {
             node = node.with_semantic_key(&self.id);
         }
         if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
-            node = node.with_action_target(self.test_id().unwrap_or("text_input"));
+            node = node.with_action_target(self.control_identity());
         }
         if secret {
             node = node.with_value_length(self.text.encode_utf16().count());
@@ -6230,16 +6238,16 @@ impl TextInput {
     }
 
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("text_input");
-        let mut bindings = self.value_bindings(control_id);
+        let control_id = self.control_identity();
+        let mut bindings = self.value_bindings(&control_id);
         if let Some(action) = &self.submit_action {
-            bindings.push(action.metadata(control_id));
+            bindings.push(action.metadata(control_id.clone()));
         }
         if let Some((action, _)) = &self.submit_view {
-            bindings.push(action.metadata(control_id));
+            bindings.push(action.metadata(control_id.clone()));
         }
         if let Some(verb) = &self.change_verb {
-            bindings.push(verb.metadata(control_id));
+            bindings.push(verb.metadata(&control_id));
         }
         bindings
     }

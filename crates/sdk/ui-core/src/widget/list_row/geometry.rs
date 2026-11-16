@@ -427,7 +427,9 @@ impl ListRowFace<'_> {
             if !actions && self.author.is_some() {
                 facts += RowMetrics::avatar(theme, false) + m.column_gap;
             }
-            let room = (right - geo.text_x - super::MIN_TEXT_W - facts).max(0.0);
+            let room =
+                (right - geo.text_x - f64::from(theme.tokens.metrics.row_title_min_width) - facts)
+                    .max(0.0);
             let width = self.value_width(m, text).min(room);
             geo.value_left = right - width;
             if width > 0.0 {
