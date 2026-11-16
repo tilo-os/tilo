@@ -374,6 +374,20 @@ export async function launch({args = []} = {}) {
       reject: error => { clearTimeout(timer); reject(error); }});
     ws.send(JSON.stringify({id: n, method, params, sessionId}));
   });
+  // Why a page's renderer ended, as the browser itself reports it: the
+  // per-page `Inspector.targetCrashed` says only that it died, while
+  // `Target.targetCrashed` says how — `killed` with the signal the process
+  // exited by (9 for an OOM kill's SIGKILL, 11 for a fault in native code),
+  // or `oom` where the browser ended it for memory. A run then names the
+  // reason instead of only the death.
+  const crashedTargets = new Map();
+  send('Target.setDiscoverTargets', {discover: true}).catch(() => {});
+  listeners.add(message => {
+    if (message.method !== 'Target.targetCrashed') return;
+    const {targetId, status, errorCode} = message.params ?? {};
+    crashedTargets.set(targetId, `${status ?? 'no status'}${errorCode === undefined ? '' : `, exit code ${errorCode}`}`);
+  });
+  const crashOf = targetId => crashedTargets.get(targetId) ?? null;
 
   /** A tab: navigate, evaluate (awaiting promises), collect errors. In
    * `context` (from `context()`) when given, else the browser's own profile.
@@ -390,8 +404,17 @@ export async function launch({args = []} = {}) {
     const listener = message => {
       if (message.sessionId !== sessionId) return;
       if (message.method === 'Inspector.targetCrashed') {
-        dead = 'the renderer process died';
+        // Why, where the browser has said: its own report for this page's
+        // target, which names the exit or says it ended it for memory.
+        dead = `the renderer process died${crashOf(targetId) ? ` (${crashOf(targetId)})` : ''}`;
         log.push(`CRASH ${dead} (the browser: ${died() || 'said nothing'})`);
+        // The browser's own report can land a moment after this event.
+        setTimeout(() => {
+          const why = crashOf(targetId);
+          if (!why) return;
+          dead = `the renderer process died (${why})`;
+          log.push(`CRASH the browser reported: ${why}`);
+        }, 1_000).unref?.();
         return;
       }
       if (message.method === 'Runtime.exceptionThrown') {
@@ -448,8 +471,10 @@ export async function launch({args = []} = {}) {
       targetId,
       sessionId,
       log,
-      /** Why the tab's renderer is gone, or `null` while it answers. */
-      crash: () => dead,
+      /** Why the tab's renderer is gone, or `null` while it answers: the
+       * browser's own report of how it ended once that has landed, since the
+       * death alone tells a run nothing it can act on. */
+      crash: () => (dead && crashOf(targetId) ? `the renderer process died (${crashOf(targetId)})` : dead),
       send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,

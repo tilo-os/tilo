@@ -181,7 +181,12 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
     // came after a navigation names one of these.
     else if (method === 'Page.frameNavigated' && !params.frame.parentId) tab.log.push(`PAGE now at ${params.frame.url.replace(/#.*/, '#…')}`);
     else if (method === 'Page.javascriptDialogOpening') tab.log.push(`PAGE dialog ${params.type}: ${params.message}`);
-    else if (method === 'Inspector.targetCrashed') tab.log.push(`PAGE the renderer crashed; the browser said: ${browser.crashLines?.() || '(nothing)'}`);
+    else if (method === 'Inspector.targetCrashed') {
+      tab.log.push(`PAGE the renderer crashed; the browser said: ${browser.crashLines?.() || '(nothing)'}`);
+      // The browser's own report of how it ended (a signal, or memory) comes
+      // a moment after the page's.
+      setTimeout(() => tab.log.push(`PAGE why: ${tab.crash?.() ?? 'the browser gave no reason'}`), 1_500).unref?.();
+    }
     else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
       tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 500));
     }

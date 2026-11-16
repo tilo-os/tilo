@@ -216,7 +216,9 @@ const visit = async name => {
     else if (method === 'Inspector.targetCrashed') {
       tab.log.push(`${at()} PAGE the renderer crashed; just before, ${lastMemory}`);
       tab.log.push(`${at()} PAGE memory now: ${browserMemory()}`);
-      // The browser reports a renderer's end a moment after the event.
+      // The browser reports a renderer's end, and how it ended, a moment
+      // after the page's own event.
+      setTimeout(() => tab.log.push(`${at()} PAGE why: ${tab.crash() ?? 'the browser gave no reason'}`), 1_500);
       setTimeout(() => tab.log.push(`${at()} PAGE the browser said:\n${browser.crashLines() || '(nothing)'}`), 1000);
     }
     else if (method === 'Page.loadEventFired') tab.log.push(`${at()} PAGE loaded`);
