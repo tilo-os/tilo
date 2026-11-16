@@ -116,6 +116,22 @@ pub enum PlanError {
     ContentUnavailable { app: String },
 }
 
+impl PlanError {
+    /// The app this refusal is about, as the launch named it, when it names one: what a shell
+    /// showing the refusal to a person says in that app's own name instead.
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        match self {
+            Self::NotInstalled(app)
+            | Self::Grants { app, .. }
+            | Self::Authority { app, .. }
+            | Self::NotARecord { app, .. }
+            | Self::ContentUnavailable { app } => Some(app),
+            Self::Host(_) | Self::NothingToStart(_) | Self::NoLauncher => None,
+        }
+    }
+}
+
 /// A launch as the process it starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Planned {

@@ -81,6 +81,7 @@ shell-record-not-opened-detail = They could not be read this time ({ $reason }).
 
 ## A window this device left open whose app did not come back.
 shell-window-not-installed = { $app } is not installed on this machine
+shell-window-installed-nowhere = It is not installed on this machine
 shell-window-would-not-start = { $app } could not be started
 shell-window-did-not-open = { $app } started but did not open a window
 shell-window-waits-for-host = { $app } is waiting for { $host } to take this device in

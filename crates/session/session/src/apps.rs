@@ -45,6 +45,23 @@ fn not_opened(policy: &tilo_desktop_policy::DesktopPolicy, asked: &str, why: &st
         .retryable(t("answer-try-again"))
 }
 
+/// Why a launch this session planned starts nothing, said where a person reads it: an app this
+/// device does not have says what is missing once, under the card's title, and any other refusal
+/// names the app as the shell names it, never by its package id.
+fn refusal_said(error: &tilo_app_launch::PlanError) -> String {
+    let Some(app) = error.app() else {
+        return error.to_string();
+    };
+    let name = tilo_desktop_search::names::app_name(app);
+    match error {
+        // The card above already names the app: the reason says what is missing, once.
+        tilo_app_launch::PlanError::NotInstalled(_) => {
+            crate::i18n::t("shell-window-installed-nowhere")
+        }
+        other => other.to_string().replace(app, &name),
+    }
+}
+
 /// The apps this session starts, and everything that asks it for one.
 pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
@@ -1742,7 +1759,7 @@ impl Apps {
         self.plan(launch, workspace, new_window, instance)
             .map_err(|error| {
                 tilo_startup_metrics::launch_failed(timed);
-                DoorError::Failed(error.to_string())
+                DoorError::Failed(refusal_said(&error))
             })
     }
 
@@ -1772,7 +1789,7 @@ impl Apps {
         };
         let mut planned = self
             .plan(launch, workspace, false, None)
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(|error| DoorError::Failed(refusal_said(&error)))?;
         planned
             .env
             .insert(ui::window_door::WINDOWLESS_ENV.to_owned(), "1".to_owned());
@@ -2697,6 +2714,25 @@ mod tests {
         assert!(
             shown.iter().any(|text| text.contains("could not open")),
             "the tab says Canvas could not open: {shown:?}"
+        );
+    }
+
+    /// What a person reads when a launch starts nothing: an app this device does not have says so
+    /// under the card's title, and no refusal shows a package id.
+    #[test]
+    fn a_refusal_names_the_app_as_the_shell_names_it() {
+        let activity = tilo_app_launch::PlanError::NotInstalled("so.tilo.activity".into());
+        assert_eq!(
+            refusal_said(&activity),
+            "It is not installed on this machine"
+        );
+        let content = tilo_app_launch::PlanError::ContentUnavailable {
+            app: "so.tilo.activity".into(),
+        };
+        assert!(
+            !refusal_said(&content).contains("so.tilo."),
+            "no package id: {}",
+            refusal_said(&content)
         );
     }
 

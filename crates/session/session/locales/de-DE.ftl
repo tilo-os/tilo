@@ -84,6 +84,7 @@ shell-record-not-opened-detail = Sie konnten diesmal nicht gelesen werden ({ $re
 
 ## Ein Fenster, das dieses Gerät offen ließ und dessen App nicht zurückkam.
 shell-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
+shell-window-installed-nowhere = Es ist auf diesem Rechner nicht installiert
 shell-window-would-not-start = { $app } konnte nicht gestartet werden
 shell-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
 shell-window-waits-for-host = { $app } wartet darauf, dass { $host } dieses Gerät aufnimmt
