@@ -41,8 +41,8 @@ pub fn entry_resource_id(path: &std::path::Path) -> String {
     format!("files.entry:{}", path_identity_suffix(path))
 }
 
-pub fn record_resource_id(record_id: uuid::Uuid) -> String {
-    format!("files.record:{record_id}")
+pub fn record_resource_id(document_id: uuid::Uuid) -> String {
+    format!("files.record:{document_id}")
 }
 
 #[derive(Clone)]
@@ -178,7 +178,7 @@ impl CollaborativeRecordSearch {
         for entry in entries {
             snapshot
                 .records
-                .insert(record_resource_id(entry.record_id), entry.clone());
+                .insert(record_resource_id(entry.document_id), entry.clone());
         }
         true
     }
@@ -192,13 +192,13 @@ impl CollaborativeRecordSearch {
             .values()
             .map(|entry| {
                 SearchEntry::new(entry.name.clone(), String::new())
-                    .anchored(record_resource_id(entry.record_id))
+                    .anchored(record_resource_id(entry.document_id))
                     .grouped(self.kind.clone())
                     .subtitled(crate::i18n::t_args(
                         "files-search-record-provenance",
                         &[
                             crate::i18n::arg("path", entry.path.display().to_string()),
-                            crate::i18n::arg("record", entry.record_id.to_string()),
+                            crate::i18n::arg("record", entry.document_id.to_string()),
                         ],
                     ))
                     .with_icon(ui::icons::icon_for_path(&entry.path, entry.is_dir).name())
@@ -206,12 +206,12 @@ impl CollaborativeRecordSearch {
             .collect()
     }
 
-    pub(crate) fn record(&self, record_id: uuid::Uuid) -> Option<WorkspaceRecord> {
+    pub(crate) fn record(&self, document_id: uuid::Uuid) -> Option<WorkspaceRecord> {
         self.snapshot
             .read()
             .ok()?
             .records
-            .get(&record_resource_id(record_id))
+            .get(&record_resource_id(document_id))
             .cloned()
     }
 
@@ -221,7 +221,7 @@ impl CollaborativeRecordSearch {
             ResourceSpec::new(id, "files.record", record.name).with_action(
                 crate::effects::row_action(
                     &crate::effects::FilesEffect::Reveal {
-                        record: record.record_id.to_string(),
+                        record: record.document_id.to_string(),
                     },
                     REVEAL_ACTION,
                     crate::i18n::CATALOG.t("files-reveal"),
@@ -360,7 +360,7 @@ mod tests {
 
     fn collaborative_entry(name: &str) -> WorkspaceRecord {
         WorkspaceRecord {
-            record_id: uuid::Uuid::nil(),
+            document_id: uuid::Uuid::nil(),
             name: name.into(),
             path: PathBuf::from(name),
             is_dir: false,
@@ -610,16 +610,16 @@ mod tests {
             }
         }
 
-        phase collaborative_search_uses_stable_record_identity;
+        phase collaborative_search_uses_stable_document_identity;
         {
             {
-                let record_id = uuid::Uuid::from_u128(0x51);
+                let document_id = uuid::Uuid::from_u128(0x51);
                 let mut entry = collaborative_entry("old-name.txt");
                 entry.path = PathBuf::from("/Workspace/old-name.txt");
-                entry.record_id = record_id;
+                entry.document_id = document_id;
                 let provider = source(CollaborativeRecordSearch::new(&[entry]).entries());
                 let hit = provider.search("workspace").pop().expect("path matches");
-                assert_eq!(hit.action_id, record_resource_id(record_id));
+                assert_eq!(hit.action_id, record_resource_id(document_id));
                 assert!(hit.subtitle.unwrap().contains("/Workspace/old-name.txt"));
             }
 
@@ -629,7 +629,7 @@ mod tests {
                     .flat_map(|index| {
                         let id = uuid::Uuid::from_u128(index as u128 + 1);
                         let mut first = collaborative_entry(&format!("file-{index}"));
-                        first.record_id = id;
+                        first.document_id = id;
                         let duplicate = first.clone();
                         [first, duplicate]
                     })
@@ -651,7 +651,7 @@ mod tests {
                                     row.text
                                 };
                                 let mut entry = collaborative_entry(&name);
-                                entry.record_id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                                entry.document_id = uuid::Uuid::from_u128(row.index as u128 + 1);
                                 entry.path = PathBuf::from(format!("/Workspace/{name}"));
                                 entry
                             })

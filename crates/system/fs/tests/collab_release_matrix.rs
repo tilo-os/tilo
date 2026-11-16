@@ -25,7 +25,7 @@ fn structural_projection(
     let trashed = namespace
         .directly_trashed()
         .into_iter()
-        .filter_map(|id| namespace.record_id_for_id(&id))
+        .filter_map(|id| namespace.document_id_for_id(&id))
         .collect::<BTreeSet<_>>();
     let mut pending = vec![ROOT_INO];
     let mut visited = BTreeSet::new();
@@ -45,7 +45,7 @@ fn structural_projection(
         .iter()
         .copied()
         .map(|record| {
-            let live = namespace.ino_for_record_id(record).and_then(|ino| {
+            let live = namespace.ino_for_document_id(record).and_then(|ino| {
                 namespace
                     .signed_binding_for(ino, actor, 1)
                     .and_then(|binding| Some((binding.parent?, binding.name.as_bytes().to_vec())))
@@ -110,7 +110,7 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     let source = seed
         .create_file(left_dir, "source.txt", Some(&hash(1)), 1, 1)
         .unwrap();
-    let source_record = seed.record_id_for(source).unwrap();
+    let source_record = seed.document_id_for(source).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("move-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("move-right", &baseline).unwrap();
@@ -121,7 +121,7 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(right.rename(right_parent, "source.txt", right_parent, "renamed.txt", 2));
     let (mut moved_left, mut moved_right) =
         converge_structural_partition(&left.save(), &right.save(), &[source_record]);
-    assert!(moved_left.ino_for_record_id(source_record).is_some());
+    assert!(moved_left.ino_for_document_id(source_record).is_some());
     assert_eq!(
         structural_projection(&mut moved_left, &[source_record]),
         structural_projection(&mut moved_right, &[source_record])
@@ -131,7 +131,7 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     let source = seed
         .create_file(ROOT_INO, "delete-me.txt", Some(&hash(2)), 1, 1)
         .unwrap();
-    let source_record = seed.record_id_for(source).unwrap();
+    let source_record = seed.document_id_for(source).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("delete-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("delete-right", &baseline).unwrap();
@@ -140,11 +140,11 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(right.rename(ROOT_INO, "delete-me.txt", ROOT_INO, "renamed.txt", 2));
     let (mut deleted_left, mut deleted_right) =
         converge_structural_partition(&left.save(), &right.save(), &[source_record]);
-    assert!(deleted_left.ino_for_record_id(source_record).is_none());
+    assert!(deleted_left.ino_for_document_id(source_record).is_none());
     let deleted_id = deleted_left
         .directly_trashed()
         .into_iter()
-        .find(|id| deleted_left.record_id_for_id(id) == Some(source_record))
+        .find(|id| deleted_left.document_id_for_id(id) == Some(source_record))
         .unwrap();
     assert_eq!(deleted_left.deleted_hash(&deleted_id), Some(hash(2)));
     assert_eq!(
@@ -160,8 +160,8 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     let victim = seed
         .create_file(ROOT_INO, "target.txt", Some(&hash(4)), 1, 1)
         .unwrap();
-    let source_record = seed.record_id_for(source).unwrap();
-    let victim_record = seed.record_id_for(victim).unwrap();
+    let source_record = seed.document_id_for(source).unwrap();
+    let victim_record = seed.document_id_for(victim).unwrap();
     let baseline = seed.save();
     let mut left = Namespace::from_bytes("replace-left", &baseline).unwrap();
     let mut right = Namespace::from_bytes("replace-right", &baseline).unwrap();
@@ -179,8 +179,8 @@ fn concurrent_structural_conflicts_preserve_sources_and_converge_after_restart()
     assert!(projection.iter().all(|(_, state)| {
         state.is_some()
             || replaced_left.directly_trashed().iter().any(|id| {
-                replaced_left.record_id_for_id(id) == Some(source_record)
-                    || replaced_left.record_id_for_id(id) == Some(victim_record)
+                replaced_left.document_id_for_id(id) == Some(source_record)
+                    || replaced_left.document_id_for_id(id) == Some(victim_record)
             })
     }));
 }

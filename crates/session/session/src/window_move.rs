@@ -736,7 +736,7 @@ impl Moves {
                 token,
                 successor: Successor {
                     workspace: crossing.to_id.clone(),
-                    record: target,
+                    document: target,
                     by: shared.person.clone(),
                 },
             },
@@ -826,7 +826,7 @@ impl Moves {
         let origin = arrived.origin.clone();
         let successor = Successor {
             workspace: crossing.to_id.clone(),
-            record: arrived.target.id.as_str().to_owned(),
+            document: arrived.target.id.as_str().to_owned(),
             by: shared.person.clone(),
         };
         if let Err(error) = window_transfer::off_loop_detached(move || {
@@ -1606,7 +1606,7 @@ mod tests {
         shell.land();
         let successor = Successor {
             workspace: shell.to_id.clone(),
-            record: arrived.as_str().to_owned(),
+            document: arrived.as_str().to_owned(),
             by: shell.session.shared.person.clone(),
         };
         let source = Shell::profile(&shell.from);

@@ -23,7 +23,7 @@ pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
 pub const METADATA_XATTR: &str = "user.tilo.metadata";
 /// Revisioned, pageable workspace-root catalog of every record visible through
 /// a mount without an ACL. Paths are mutable provenance; consumers activate by
-/// stable `record_id` and resolve the latest path from a fresh page. The
+/// stable `document_id` and resolve the latest path from a fresh page. The
 /// manifest is deliberately tiny; pages are requested as
 /// `user.tilo.record-index.v2.<revision>.<offset>`. A stale revision is absent
 /// rather than silently serving a different ordering.
@@ -153,14 +153,14 @@ impl SyncState {
 #[serde(deny_unknown_fields)]
 pub struct MetadataProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     pub properties: FilePropertiesV1,
 }
 
 impl MetadataProjectionV1 {
     /// Validate the metadata projection schema, scope, and bounded properties.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != METADATA_PROJECTION_VERSION || self.record_id.0.is_nil() {
+        if self.schema_version != METADATA_PROJECTION_VERSION || self.document_id.0.is_nil() {
             return Err("invalid metadata projection scope");
         }
         self.properties
@@ -183,7 +183,7 @@ impl MetadataProjectionV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordIndexEntryV1 {
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     /// Absolute path within this mount, never global authority.
     pub path: String,
     pub is_dir: bool,
@@ -248,7 +248,7 @@ fn valid_record_index_path(path: &str) -> bool {
 fn strictly_ascending(records: &[RecordIndexEntryV1]) -> bool {
     records
         .windows(2)
-        .all(|pair| matches!(pair, [first, second] if first.record_id < second.record_id))
+        .all(|pair| matches!(pair, [first, second] if first.document_id < second.document_id))
 }
 
 impl RecordIndexManifestV2 {
@@ -426,7 +426,7 @@ pub enum AvailabilityPolicy {
 #[serde(deny_unknown_fields)]
 pub struct AvailabilityProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     pub current_version: Option<FileVersionId>,
     pub residency: Residency,
     pub transfer: ProjectedTransfer,
@@ -538,7 +538,7 @@ impl AvailabilityProjectionV1 {
 #[serde(deny_unknown_fields)]
 pub struct HistoryProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     pub total_versions: u64,
     pub versions_truncated: bool,
     pub heads: Vec<FileVersionId>,
@@ -571,13 +571,13 @@ impl HistoryProjectionV1 {
         }
         for version in &value.versions {
             version.validate()?;
-            if version.record_id != value.record_id {
+            if version.document_id != value.document_id {
                 return Err(ProjectionError::WrongRecord);
             }
         }
         for conflict in &value.conflicts {
             conflict.validate()?;
-            if conflict.record_id != value.record_id {
+            if conflict.document_id != value.document_id {
                 return Err(ProjectionError::WrongRecord);
             }
         }
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn shared_record_index_decoders_keep_the_wire_schema() {
         let record = RecordIndexEntryV1 {
-            record_id: FileDocumentId(Uuid::from_u128(7)),
+            document_id: FileDocumentId(Uuid::from_u128(7)),
             path: "/Documents/report.txt".into(),
             is_dir: false,
         };
@@ -666,7 +666,7 @@ mod tests {
     fn availability_json(replicas: &serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
-            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
             "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
             "residency": {"state": "resident", "bytes": 42},
             "transfer": {
@@ -695,7 +695,7 @@ mod tests {
         {
             let projection = MetadataProjectionV1 {
                 schema_version: METADATA_PROJECTION_VERSION,
-                record_id: FileDocumentId(Uuid::from_u128(7)),
+                document_id: FileDocumentId(Uuid::from_u128(7)),
                 properties: FilePropertiesV1 {
                     schema_version: crate::files::FILE_PROPERTIES_VERSION,
                     image_width: Some(800),
@@ -762,13 +762,13 @@ mod tests {
         {
             let history = serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "total_versions": 1,
                 "versions_truncated": false,
                 "heads": ["a0d4e23f-c7cb-4ded-a427-b32cf9da9342"],
                 "versions": [{
                     "id": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
-                    "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                    "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                     "parents": [],
                     "actor": {"person": vec![1; 32], "device": vec![2; 32]},
                     "timestamp_ms": 9,

@@ -237,7 +237,7 @@ impl FileController {
         &self,
     ) -> Option<(uuid::Uuid, uuid::Uuid, fs_protocol::FileDocumentId)> {
         self.scope
-            .map(|scope| (scope.workspace_id, scope.mount_lifetime, scope.record_id))
+            .map(|scope| (scope.workspace_id, scope.mount_lifetime, scope.document_id))
     }
     pub fn selected(&self) -> Option<FileVersionId> {
         self.key.selection
@@ -346,7 +346,7 @@ impl FileController {
     ) -> bool {
         record == self.target.record
             && self.scope.is_none_or(|s| {
-                s.workspace_id == workspace && s.mount_lifetime == mount && s.record_id == record
+                s.workspace_id == workspace && s.mount_lifetime == mount && s.document_id == record
             })
     }
     fn hide(&mut self) {
@@ -385,7 +385,7 @@ impl FileController {
                 if self.visible_identity(
                     scope.workspace_id,
                     scope.mount_lifetime,
-                    scope.record_id,
+                    scope.document_id,
                 ) =>
             {
                 self.live_updates = self
@@ -485,7 +485,7 @@ impl FileController {
                         if self.visible_identity(
                             after.scope.workspace_id,
                             after.scope.mount_lifetime,
-                            after.scope.record_id,
+                            after.scope.document_id,
                         ) && Some(after.version.id) == self.key.selection =>
                     {
                         self.activity_recovery_message = None;
@@ -521,7 +521,7 @@ impl FileController {
                                 && self.visible_identity(
                                     review.workspace_id,
                                     review.mount_lifetime,
-                                    review.record_id,
+                                    review.document_id,
                                 ) =>
                         {
                             if matches!(operation,Operation::Restore { version_id } if Some(version_id)!=self.key.selection)
@@ -611,16 +611,16 @@ fn load_all(
             || page.versions.len() > fs_protocol::files::MAX_HISTORY_PAGE_VERSIONS
             || page.scope.workspace_id.is_nil()
             || page.scope.mount_lifetime.is_nil()
-            || page.scope.record_id.0.is_nil()
+            || page.scope.document_id.0.is_nil()
             || page.current_revision.is_some_and(|revision| {
-                revision.validate().is_err() || revision.record_id != page.scope.record_id
+                revision.validate().is_err() || revision.document_id != page.scope.document_id
             })
         {
             return Err(Error::InvalidRequest);
         }
         expected = Some(metadata);
         for version in &page.versions {
-            if version.record_id != page.scope.record_id
+            if version.document_id != page.scope.document_id
                 || version.validate().is_err()
                 || !seen.insert(version.id)
             {
@@ -712,7 +712,7 @@ fn read_snapshot(
     };
     if actual != scope
         || version.id != version_id
-        || version.record_id != scope.record_id
+        || version.document_id != scope.document_id
         || version.validate().is_err()
     {
         return Err(Error::InvalidRequest);
@@ -797,14 +797,14 @@ mod tests {
             schema_version: 1,
             workspace_id: scope().workspace_id,
             mount_lifetime: scope().mount_lifetime,
-            record_id: scope().record_id,
+            document_id: scope().document_id,
             frontier,
         }
     }
     fn version(id: u128) -> FileVersionV1 {
         FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id: scope().record_id,
+            document_id: scope().document_id,
             parents: vec![],
             actor: fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
@@ -884,7 +884,7 @@ mod tests {
             }
             let version = |id| FileVersionV1 {
                 id: FileVersionId(uuid::Uuid::from_u128(id)),
-                record_id: scope().record_id,
+                document_id: scope().document_id,
                 parents: vec![],
                 actor: fs_protocol::FileActor {
                     person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
@@ -1083,7 +1083,7 @@ mod tests {
         Scope {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
+            document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }
@@ -1236,7 +1236,7 @@ mod tests {
             controller.drain();
             assert!(controller.review.is_none());
             let mut foreign = scope();
-            foreign.record_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
+            foreign.document_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
             controller
                 .tx
                 .send(Completion {

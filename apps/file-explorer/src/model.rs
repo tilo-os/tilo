@@ -72,7 +72,7 @@ pub fn read_content_hash(path: &Path) -> Option<[u8; 32]> {
     bytes.as_slice().try_into().ok()
 }
 
-pub fn read_record_id(path: &Path) -> Option<[u8; 16]> {
+pub fn read_document_id(path: &Path) -> Option<[u8; 16]> {
     let bytes = xattr::get(path, DOCUMENT_ID_XATTR).ok()??;
     bytes.as_slice().try_into().ok()
 }
@@ -121,12 +121,12 @@ struct TestV2Source {
 struct RecordIndexCursor {
     revision: String,
     offset: usize,
-    last_record_id: Option<fs_protocol::FileDocumentId>,
+    last_document_id: Option<fs_protocol::FileDocumentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRecord {
-    pub record_id: uuid::Uuid,
+    pub document_id: uuid::Uuid,
     pub name: String,
     pub path: PathBuf,
     pub is_dir: bool,
@@ -178,7 +178,7 @@ fn read_record_index_page_v2(
         || page
             .records
             .windows(2)
-            .any(|pair| matches!(pair, [first, second] if first.record_id >= second.record_id))
+            .any(|pair| matches!(pair, [first, second] if first.document_id >= second.document_id))
     {
         return None;
     }
@@ -219,16 +219,16 @@ fn read_record_index_page_v3(
         && value
             .records
             .windows(2)
-            .all(|pair| matches!(pair, [first, second] if first.record_id < second.record_id)))
+            .all(|pair| matches!(pair, [first, second] if first.document_id < second.document_id)))
     .then_some(value)
 }
 
 pub fn resolve_workspace_record(
     roots: &[PathBuf],
-    record_id: uuid::Uuid,
+    document_id: uuid::Uuid,
 ) -> Option<WorkspaceRecord> {
     for root in roots {
-        let name = format!("{RECORD_INDEX_BY_ID_XATTR_PREFIX}{record_id}");
+        let name = format!("{RECORD_INDEX_BY_ID_XATTR_PREFIX}{document_id}");
         let Some(bytes) = xattr::get(root, name).ok().flatten() else {
             continue;
         };
@@ -240,7 +240,7 @@ pub fn resolve_workspace_record(
         };
         if projection.schema_version != RECORD_INDEX_V2_VERSION
             || !valid_record_index_revision(&projection.revision)
-            || projection.record.record_id.0 != record_id
+            || projection.record.document_id.0 != document_id
         {
             continue;
         }
@@ -308,14 +308,14 @@ fn project_record_entries(
             |name| name.to_string_lossy().into(),
         );
         records.push(WorkspaceRecord {
-            record_id: entry.record_id.0,
+            document_id: entry.document_id.0,
             name,
             path,
             is_dir: entry.is_dir,
         });
     }
-    records.sort_by_key(|record| record.record_id);
-    records.dedup_by_key(|record| record.record_id);
+    records.sort_by_key(|record| record.document_id);
+    records.dedup_by_key(|record| record.document_id);
     (records, truncated)
 }
 
@@ -408,7 +408,9 @@ impl WorkspaceRecordIndexPager {
                 .min(source.records);
             let records = ((offset + 1)..=end)
                 .map(|ordinal| RecordIndexEntryV1 {
-                    record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(ordinal as u128)),
+                    document_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(
+                        ordinal as u128,
+                    )),
                     path: if ordinal == source.records {
                         "/late-target.txt".into()
                     } else {
@@ -540,7 +542,7 @@ impl WorkspaceRecordIndexPager {
                         truncated: true,
                     };
                 };
-                let prior_record_id =
+                let prior_document_id =
                     self.opaque_cursor
                         .as_ref()
                         .and_then(|(revision, _, previous)| {
@@ -548,10 +550,10 @@ impl WorkspaceRecordIndexPager {
                                 .then_some(*previous)
                                 .flatten()
                         });
-                if prior_record_id.is_some_and(|previous| {
+                if prior_document_id.is_some_and(|previous| {
                     page.records
                         .first()
-                        .is_some_and(|record| record.record_id <= previous)
+                        .is_some_and(|record| record.document_id <= previous)
                 }) {
                     self.root_index += 1;
                     self.opaque_cursor = None;
@@ -562,11 +564,11 @@ impl WorkspaceRecordIndexPager {
                         truncated: true,
                     };
                 }
-                let last_record_id = page.records.last().map(|record| record.record_id);
+                let last_document_id = page.records.last().map(|record| record.document_id);
                 let (records, malformed) = project_record_entries(&root, page.records);
                 truncated |= malformed;
                 if let Some(next) = page.next_cursor {
-                    self.opaque_cursor = Some((manifest.revision, next, last_record_id));
+                    self.opaque_cursor = Some((manifest.revision, next, last_document_id));
                 } else {
                     self.root_index += 1;
                     self.opaque_cursor = None;
@@ -588,9 +590,9 @@ impl WorkspaceRecordIndexPager {
                     truncated: true,
                 };
             };
-            let (offset, prior_record_id) = match &self.cursor {
+            let (offset, prior_document_id) = match &self.cursor {
                 Some(cursor) if cursor.revision == manifest.revision => {
-                    (cursor.offset, cursor.last_record_id)
+                    (cursor.offset, cursor.last_document_id)
                 }
                 Some(_) => {
                     self.root_index = 0;
@@ -602,7 +604,7 @@ impl WorkspaceRecordIndexPager {
                     self.cursor = Some(RecordIndexCursor {
                         revision: manifest.revision.clone(),
                         offset: 0,
-                        last_record_id: None,
+                        last_document_id: None,
                     });
                     (0, None)
                 }
@@ -623,10 +625,10 @@ impl WorkspaceRecordIndexPager {
                 };
             };
             let next = page.next_offset;
-            if prior_record_id.is_some_and(|prior| {
+            if prior_document_id.is_some_and(|prior| {
                 page.records
                     .first()
-                    .is_some_and(|record| record.record_id <= prior)
+                    .is_some_and(|record| record.document_id <= prior)
             }) {
                 self.root_index += 1;
                 self.cursor = None;
@@ -637,7 +639,7 @@ impl WorkspaceRecordIndexPager {
                     truncated: true,
                 };
             }
-            let last_record_id = page.records.last().map(|record| record.record_id);
+            let last_document_id = page.records.last().map(|record| record.document_id);
             let terminal = next.is_none();
             let valid_next = terminal && offset < manifest.records
                 || matches!(next, Some(next) if next > offset && next <= manifest.records && next % manifest.page_entries == 0);
@@ -657,7 +659,7 @@ impl WorkspaceRecordIndexPager {
                 self.cursor = Some(RecordIndexCursor {
                     revision: manifest.revision,
                     offset: next,
-                    last_record_id,
+                    last_document_id,
                 });
             } else {
                 self.root_index += 1;
@@ -757,7 +759,7 @@ pub struct Entry {
     pub mime: String,
     pub sync_state: Option<SyncState>,
     pub content_hash: Option<[u8; 32]>,
-    pub record_id: Option<[u8; 16]>,
+    pub document_id: Option<[u8; 16]>,
     pub availability: Option<AvailabilityProjectionV1>,
     pub history: Option<HistoryProjectionV1>,
     pub rich_metadata: Option<MetadataProjectionV1>,
@@ -939,8 +941,8 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
         } else {
             None
         };
-        let record_id = if in_workspace {
-            read_record_id(&path)
+        let document_id = if in_workspace {
+            read_document_id(&path)
         } else {
             None
         };
@@ -968,7 +970,7 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             mime,
             sync_state,
             content_hash,
-            record_id,
+            document_id,
             availability,
             history,
             app: None,
@@ -1190,12 +1192,12 @@ pub(crate) mod sync_state_tests {
                 let d = tempfile::tempdir().unwrap();
                 let f = d.path().join("shared.txt");
                 std::fs::write(&f, b"content").unwrap();
-                assert_eq!(read_record_id(&f), None);
+                assert_eq!(read_document_id(&f), None);
                 let id = [0x7bu8; 16];
                 xattr::set(&f, DOCUMENT_ID_XATTR, &id).unwrap();
-                assert_eq!(read_record_id(&f), Some(id));
+                assert_eq!(read_document_id(&f), Some(id));
                 xattr::set(&f, DOCUMENT_ID_XATTR, &[0u8; 15]).unwrap();
-                assert_eq!(read_record_id(&f), None);
+                assert_eq!(read_document_id(&f), None);
             }
         }
 
@@ -1242,7 +1244,7 @@ pub(crate) mod sync_state_tests {
                         .iter()
                         .find(|e| e.name == "b-projected.bin")
                         .unwrap()
-                        .record_id,
+                        .document_id,
                     Some(projected_record),
                     "record identity projects independently of path and bytes"
                 );
@@ -1265,11 +1267,11 @@ pub(crate) mod sync_state_tests {
 
             {
                 let root = tempfile::tempdir().unwrap();
-                let record_id = uuid::Uuid::from_u128(7);
+                let document_id = uuid::Uuid::from_u128(7);
                 set_record_index(
                     root.path(),
                     &[serde_json::json!({
-                        "record_id": record_id,
+                        "document_id": document_id,
                         "path": "/deep/report.pdf",
                         "is_dir": false
                     })],
@@ -1278,7 +1280,7 @@ pub(crate) mod sync_state_tests {
                 let index = read_workspace_record_index(&[root.path().to_path_buf()]);
                 assert!(!index.truncated);
                 assert_eq!(index.records.len(), 1);
-                assert_eq!(index.records[0].record_id, record_id);
+                assert_eq!(index.records[0].document_id, document_id);
                 assert_eq!(index.records[0].path, root.path().join("deep/report.pdf"));
             }
 
@@ -1286,18 +1288,18 @@ pub(crate) mod sync_state_tests {
                 let root = tempfile::tempdir().unwrap();
                 for records in [
                     serde_json::json!([{
-                        "record_id": uuid::Uuid::from_u128(1),
+                        "document_id": uuid::Uuid::from_u128(1),
                         "path": "/../outside",
                         "is_dir": false
                     }]),
                     serde_json::json!([
                         {
-                            "record_id": uuid::Uuid::from_u128(2),
+                            "document_id": uuid::Uuid::from_u128(2),
                             "path": "/b",
                             "is_dir": false
                         },
                         {
-                            "record_id": uuid::Uuid::from_u128(1),
+                            "document_id": uuid::Uuid::from_u128(1),
                             "path": "/a",
                             "is_dir": false
                         }
@@ -1320,7 +1322,7 @@ pub(crate) mod sync_state_tests {
                 set_record_index(
                     root.path(),
                     &[serde_json::json!({
-                        "record_id": uuid::Uuid::from_u128(9),
+                        "document_id": uuid::Uuid::from_u128(9),
                         "path": "/visible.txt",
                         "is_dir": false,
                     })],
@@ -1345,7 +1347,7 @@ pub(crate) mod sync_state_tests {
                 set_record_index(
                     &share,
                     &[serde_json::json!({
-                        "record_id": uuid::Uuid::from_u128(1),
+                        "document_id": uuid::Uuid::from_u128(1),
                         "path": "/not-an-authority-record",
                         "is_dir": false,
                     })],
@@ -1379,7 +1381,7 @@ pub(crate) mod sync_state_tests {
                 let first = (1..=RECORD_INDEX_PAGE_ENTRIES)
                     .map(|id| {
                         serde_json::json!({
-                            "record_id": uuid::Uuid::from_u128(id as u128),
+                            "document_id": uuid::Uuid::from_u128(id as u128),
                             "path": format!("/row-{id}"),
                             "is_dir": false,
                         })
@@ -1391,7 +1393,7 @@ pub(crate) mod sync_state_tests {
                         RECORD_INDEX_PAGE_ENTRIES,
                         None,
                         vec![serde_json::json!({
-                            "record_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
+                            "document_id": uuid::Uuid::from_u128(RECORD_INDEX_PAGE_ENTRIES as u128),
                             "path": "/aliased",
                             "is_dir": false,
                         })],
@@ -1426,7 +1428,7 @@ pub(crate) mod sync_state_tests {
     fn availability_json(replicas: &serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
-            "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+            "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
             "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
             "residency": {"state": "resident", "bytes": 42},
             "transfer": {

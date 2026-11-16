@@ -52,8 +52,8 @@ tilo_test_env::scenario! {
         assert_eq!(reopened.indexed_record_count() as u64, nodes);
 
         let ino = reopened.lookup(ROOT_INO, "f1").unwrap().ino.0;
-        let record_id = reopened.record_id_for(ino).unwrap();
-        assert_eq!(reopened.ino_for_record_id(record_id), Some(ino));
+        let document_id = reopened.document_id_for(ino).unwrap();
+        assert_eq!(reopened.ino_for_document_id(document_id), Some(ino));
 
         let before = reopened.node_lookup_count();
         reopened.rebuild_record_index();
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
     {
         let saved = saved_tree(8);
         let mut ns = Namespace::from_bytes("a", &saved).unwrap();
-        let root_record = ns.record_id_for(ROOT_INO).unwrap();
+        let root_record = ns.document_id_for(ROOT_INO).unwrap();
         let rows = ns.indexed_record_count();
         let revision = ns.indexed_record_revision().to_owned();
 
@@ -263,7 +263,7 @@ tilo_test_env::scenario! {
             revision,
             "the reserved id moved the record catalogue"
         );
-        assert_eq!(ns.record_id_for(ROOT_INO), Some(root_record));
+        assert_eq!(ns.document_id_for(ROOT_INO), Some(root_record));
         assert!(!ns.record_index_ambiguous.contains(&root_record));
         assert!(ns.tree.nodes_of(own_record).any(|id| id == ROOT_ID));
         assert!(!ns.tree.nodes_of(root_record).any(|id| id == ROOT_ID));
@@ -449,7 +449,7 @@ fn measure<T>(
 }
 
 fn indexed_path(ns: &Namespace, ino: u64) -> String {
-    ns.indexed_record(ns.record_id_for(ino).unwrap())
+    ns.indexed_record(ns.document_id_for(ino).unwrap())
         .expect("a live node has a catalogue row")
         .path
 }
@@ -503,7 +503,7 @@ fn peer_changes(ns: &mut Namespace, rebuild_ms: u128) {
     assert_eq!(indexed_path(ns, created), "/dir-003/created");
 
     let doomed = ns.lookup(here, "f-0002").unwrap().ino.0;
-    let doomed_record = ns.record_id_for(doomed);
+    let doomed_record = ns.document_id_for(doomed);
     let theirs = peer.lookup(peer_dir, "f-0002").unwrap().ino.0;
     assert!(peer.remove(theirs));
     measure("delete", ns, 64, quarter, rebuild_ms, |ns| {

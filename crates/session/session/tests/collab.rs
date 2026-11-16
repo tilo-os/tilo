@@ -289,7 +289,7 @@ fn page_working_in(sync: &Client, from: u8, app: &str) {
         size: [WIDTH.cast_unsigned(), HEIGHT.cast_unsigned()],
         windows: vec![collab_types::presence::ShellWindow {
             app: app.to_owned(),
-            record: [0; 8],
+            document: [0; 8],
             rect: [0, 0, 10_000, 10_000],
             focused: true,
         }],
@@ -1089,7 +1089,7 @@ fn screen_of(
             .map(
                 |(app, record, rect, focused)| collab_types::presence::ShellWindow {
                     app: app.to_owned(),
-                    record,
+                    document: record,
                     rect,
                     focused,
                 },

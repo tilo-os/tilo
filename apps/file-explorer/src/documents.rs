@@ -156,7 +156,7 @@ mod tests {
         let availability = |last_error: Option<&str>| {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
-                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "document_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
                 "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null, "last_error": last_error,

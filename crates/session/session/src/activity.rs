@@ -824,19 +824,19 @@ fn read_workspace_records(
     // the packages it opened, and a computer's folder writes are its versions.
     let tree_id = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
     if seen.insert((fs_protocol::tree::FILES_APP.to_owned(), tree_id.clone()))
-        && let Some(record_id) = DocumentId::parse(&tree_id)
+        && let Some(document_id) = DocumentId::parse(&tree_id)
         && let Some(document) = crate::platform::records::document(
             store,
             fs_protocol::tree::FILES_APP,
             workspace,
-            record_id.route(),
+            document_id.route(),
         )
     {
         noted(document.get_actor());
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
             checkout: DocumentCheckout::new(
-                record_id,
+                document_id,
                 ResourceType::new(fs_protocol::tree::TREE_KIND),
             ),
             document: Some(document),

@@ -608,7 +608,7 @@ fn a_card_moved_across_chunks_keeps_its_id_and_history_and_undo_brings_it_back()
         commit
             .parts
             .iter()
-            .map(|part| part.record.clone())
+            .map(|part| part.document.clone())
             .collect::<Vec<_>>(),
         [String::new(), chunk::record_id("", 1)],
         "one part per chunk record"

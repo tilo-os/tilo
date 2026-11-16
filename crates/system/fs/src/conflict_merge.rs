@@ -332,7 +332,7 @@ mod tests {
     fn graph_version(id: u128, parents: &[u128]) -> FileVersionV1 {
         FileVersionV1 {
             id: version(id),
-            record_id: FileDocumentId(uuid::Uuid::from_u128(99)),
+            document_id: FileDocumentId(uuid::Uuid::from_u128(99)),
             parents: parents.iter().copied().map(version).collect(),
             actor: FileActor {
                 person: collab_types::Ed25519PublicKey([1; 32]),

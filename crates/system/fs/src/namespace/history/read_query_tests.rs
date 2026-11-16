@@ -19,7 +19,7 @@ fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapsho
     for index in 0..count {
         let version = FileVersionV1 {
             id: FileVersionId::new(),
-            record_id: record,
+            document_id: record,
             parents: parent.into_iter().collect(),
             actor: FileActor {
                 person: Ed25519PublicKey([1; 32]),
@@ -40,7 +40,7 @@ fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapsho
     versions.sort_by_key(|version| version.id);
     let head = versions.last().map(|version| version.id);
     RecordHistorySnapshot {
-        record_id: record,
+        document_id: record,
         versions,
         heads: head.into_iter().collect(),
         conflicts: Vec::new(),
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
             mount_lifetime: Uuid::new_v4(),
-            record_id: record,
+            document_id: record,
             frontier: [7; 32],
         };
         let Value::Page(first) = snapshot
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
             mount_lifetime: Uuid::new_v4(),
-            record_id: record,
+            document_id: record,
             frontier: [7; 32],
         };
         let scribe = fs_protocol::FileAttributionV1 {

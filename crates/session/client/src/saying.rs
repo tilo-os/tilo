@@ -151,7 +151,7 @@ mod tests {
         assert!(heard.agent, "an agent says it is one");
         assert_eq!(heard.activity.as_deref(), Some("New note"));
         assert_eq!(
-            heard.focus.as_ref().map(|focus| focus.record.clone()),
+            heard.focus.as_ref().map(|focus| focus.document.clone()),
             Some(hex::encode(focus.short_digest()))
         );
     }

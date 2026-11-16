@@ -5,7 +5,7 @@
 //! it, so History reads the same record the rows do, named with the same directory, from
 //! the window's launch on. Nothing is copied and the view keeps no second handle for History.
 
-use fs_protocol::tree::{FILES_APP, FilesTree, record_id};
+use fs_protocol::tree::{FILES_APP, FilesTree, document_id};
 use ui_core::history_mode::folder::{FolderHistorySource, FolderVersions};
 
 use super::People;
@@ -37,7 +37,7 @@ pub(crate) fn show(
     storage: &super::settings::ViewStorage,
     people: &People,
 ) {
-    if let Some(tree) = storage.shared_record::<FilesTree>(FILES_APP, &record_id()) {
+    if let Some(tree) = storage.shared_record::<FilesTree>(FILES_APP, &document_id()) {
         source.show(std::rc::Rc::new(WorkspaceFolder {
             tree,
             people: people.clone(),

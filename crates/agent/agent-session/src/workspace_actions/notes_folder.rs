@@ -147,7 +147,7 @@ pub(super) struct NoteEdit {
 /// whose device signed it, and the agent or program that wrote for them. `None` when the
 /// tree records no version of it.
 fn writer(tree: &Namespace, doc: &AutoCommit, id: &str) -> Option<Caller> {
-    let record = tree.record_id_for_id(id)?;
+    let record = tree.document_id_for_id(id)?;
     let (version, attribution) = fs_protocol::history::latest(doc, record)?;
     let caller = Caller::authenticated(version.actor.person.0, version.actor.device.0);
     Some(match attribution.map(|attributed| attributed.attribution) {
@@ -262,7 +262,7 @@ fn follow(
         let Some(by) = writer(tree, tree_doc, id) else {
             tracing::debug!(
                 page = %note.id,
-                record = ?tree.record_id_for_id(id),
+                record = ?tree.document_id_for_id(id),
                 "notes folder: a note's file changed with no version saying who wrote it"
             );
             return None;

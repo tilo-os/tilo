@@ -17,7 +17,7 @@ impl History {
         Self(namespace)
     }
 
-    pub(crate) fn snapshot(&self, record_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
-        self.0.lock_recover().record_history(record_id)
+    pub(crate) fn snapshot(&self, document_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
+        self.0.lock_recover().record_history(document_id)
     }
 }

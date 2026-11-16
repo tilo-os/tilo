@@ -163,7 +163,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let ino = namespace
         .create_file(fs::ROOT_INO, "report.txt", Some(&live_hash), 20, 1)
         .unwrap();
-    let record = namespace.record_id_for(ino).unwrap();
+    let record = namespace.document_id_for(ino).unwrap();
     let old = fs_protocol::FileVersionId(uuid::Uuid::from_u128(101));
     let current = fs_protocol::FileVersionId(uuid::Uuid::from_u128(102));
     let workspace = uuid::Uuid::new_v4();
@@ -197,7 +197,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     ] {
         versions.push(fs_protocol::FileVersionV1 {
             id,
-            record_id: record,
+            document_id: record,
             parents,
             actor,
             timestamp_ms: time,
@@ -381,7 +381,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .namespace
             .lock()
             .unwrap()
-            .record_id_for(reopened_ino),
+            .document_id_for(reopened_ino),
         Some(record)
     );
     let FileHistoryReadValueV1::Page(page) = reopened
@@ -412,18 +412,18 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             path: &std::path::Path,
             record: u128,
         ) -> (fs_protocol::FileDocumentId, fs_protocol::FileVersionId) {
-            let record_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(record));
+            let document_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(record));
             let id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(record + 100));
             std::fs::write(path, b"live file").unwrap();
             let scope = FileHistoryReadScopeV1 {
                 workspace_id: uuid::Uuid::from_u128(1),
                 mount_lifetime: uuid::Uuid::from_u128(2),
-                record_id,
+                document_id,
                 frontier: [record as u8; 32],
             };
             let version = fs_protocol::FileVersionV1 {
                 id,
-                record_id,
+                document_id,
                 parents: vec![],
                 actor: fs_protocol::FileActor {
                     person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
@@ -490,14 +490,14 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                         schema_version: 1,
                         workspace_id: scope.workspace_id,
                         mount_lifetime: scope.mount_lifetime,
-                        record_id,
+                        document_id,
                         frontier: scope.frontier,
                     }),
                 })
                 .unwrap(),
             )
             .unwrap();
-            (record_id, id)
+            (document_id, id)
         }
         let directory = tempfile::tempdir().unwrap();
         let a = directory.path().join("A");
@@ -597,7 +597,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         );
         let revision = |id| fs_protocol::ContentRevisionV1 {
             schema_version: 1,
-            record_id: record_a,
+            document_id: record_a,
             version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(id)),
             content_hash: Some(fs_protocol::ContentHash([5; 32])),
             byte_len: 16,
@@ -608,7 +608,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             intent_id: original.intent_id,
             workspace_id: original.review.workspace_id,
             mount_lifetime: original.review.mount_lifetime,
-            record_id: record_a,
+            document_id: record_a,
             selected_version: version_a,
             prior_revision: revision(200),
             restored_revision: revision(201),

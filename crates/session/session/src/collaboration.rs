@@ -241,7 +241,7 @@ fn shell(
             .iter()
             .map(|window| ShellWindow {
                 app: window.app.clone(),
-                record: window.record,
+                document: window.record,
                 rect: window.rect,
                 focused: window.focused,
             })
@@ -410,7 +410,7 @@ mod tests {
             };
             assert_eq!(window.app, NOTES_APP);
             assert_eq!(
-                window.record,
+                window.document,
                 LiveRecord {
                     app: NOTES_APP.to_owned(),
                     record: RECORD.to_owned(),

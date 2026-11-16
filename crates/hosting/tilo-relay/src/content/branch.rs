@@ -83,7 +83,7 @@ impl crate::workspaces::BranchContent for StoresBranches {
 /// The Files tree among `records`, read; `None` when the branch took none, or
 /// it does not read.
 fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::Tree> {
-    let tree = fs_protocol::tree::record_id();
+    let tree = fs_protocol::tree::document_id();
     records
         .iter()
         .find(|((app, record), _)| app == fs_protocol::tree::FILES_APP && *record == tree)

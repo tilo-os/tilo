@@ -40,7 +40,7 @@ pub enum FileInviteSubject {
 pub struct FileInviteV1 {
     pub id: Uuid,
     pub workspace_id: Uuid,
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     pub subject: FileInviteSubject,
     pub permission: FilePermission,
     pub expires_at_ms: Option<u64>,
@@ -54,7 +54,7 @@ pub struct FileInviteV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileInviteSpec {
     pub workspace_id: Uuid,
-    pub record_id: FileDocumentId,
+    pub document_id: FileDocumentId,
     pub subject: FileInviteSubject,
     pub permission: FilePermission,
     pub expires_at_ms: Option<u64>,
@@ -83,7 +83,7 @@ struct FileInviteView<'a> {
     tag: &'a str,
     id: Uuid,
     workspace_id: Uuid,
-    record_id: FileDocumentId,
+    document_id: FileDocumentId,
     subject: &'a FileInviteSubject,
     permission: FilePermission,
     expires_at_ms: Option<u64>,
@@ -97,7 +97,7 @@ impl FileInviteV1 {
             tag: FILE_INVITE_DOMAIN_TAG,
             id: self.id,
             workspace_id: self.workspace_id,
-            record_id: self.record_id,
+            document_id: self.document_id,
             subject: &self.subject,
             permission: self.permission,
             expires_at_ms: self.expires_at_ms,
@@ -169,7 +169,7 @@ fn mint_file_invite_inner(
     let mut token = FileInviteV1 {
         id: Uuid::new_v4(),
         workspace_id: spec.workspace_id,
-        record_id: spec.record_id,
+        document_id: spec.document_id,
         subject: spec.subject,
         permission: spec.permission,
         expires_at_ms: spec.expires_at_ms,
@@ -214,7 +214,7 @@ mod tests {
     fn spec(subject: FileInviteSubject) -> FileInviteSpec {
         FileInviteSpec {
             workspace_id: Uuid::new_v4(),
-            record_id: FileDocumentId::new(),
+            document_id: FileDocumentId::new(),
             subject,
             permission: FilePermission::View,
             expires_at_ms: Some(2_000),
@@ -265,7 +265,7 @@ mod tests {
             ));
 
             let mut tampered = token;
-            tampered.record_id = FileDocumentId::new();
+            tampered.document_id = FileDocumentId::new();
             assert!(matches!(
                 tampered.verify_at(1_000),
                 Err(FileInviteError::BadSignature(_))

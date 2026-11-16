@@ -53,10 +53,10 @@ pub fn retirement(doc: &AutoCommit) -> Option<Retirement> {
     if field("reason").as_deref() == Some("abandoned") {
         return Some(Retirement::Abandoned);
     }
-    let successor = match (field("workspace"), field("record"), field("by")) {
-        (Some(workspace), Some(record), Some(by)) => Some(Successor {
+    let successor = match (field("workspace"), field("document"), field("by")) {
+        (Some(workspace), Some(document), Some(by)) => Some(Successor {
             workspace,
-            record,
+            document,
             by,
         }),
         _ => None,

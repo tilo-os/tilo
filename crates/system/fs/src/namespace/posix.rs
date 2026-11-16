@@ -100,7 +100,7 @@ mod tests {
                 .create_file(crate::namespace::ROOT_INO, "tool", None, 0, 1)
                 .unwrap();
             assert_eq!(ns.getattr(ino).unwrap().perm, 0o644);
-            let record = ns.record_id_for(ino).unwrap();
+            let record = ns.document_id_for(ino).unwrap();
             assert!(ns.put_posix_attrs(record, &PosixAttrs::of_local(0o104_755, false, false)));
             assert_eq!(
                 ns.getattr(ino).unwrap().perm,

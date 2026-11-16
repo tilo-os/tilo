@@ -253,7 +253,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     assert_eq!(
         view.focus
             .as_ref()
-            .map(|focus| (focus.app.as_str(), focus.record.clone())),
+            .map(|focus| (focus.app.as_str(), focus.document.clone())),
         Some((WRITER, hex::encode(wrote_in.short_digest())))
     );
 

@@ -254,7 +254,7 @@ mod worker {
                 let mut changed_directories = changes.directories;
                 for record in records {
                     if let Some(parent) = ns
-                        .ino_for_record_id(record)
+                        .ino_for_document_id(record)
                         .and_then(|ino| ns.parent_ino(ino))
                     {
                         changed_directories.insert(parent);

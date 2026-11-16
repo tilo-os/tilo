@@ -162,9 +162,9 @@ impl FileRestoreSession {
                     || receipt.intent_id != request.intent_id
                     || receipt.workspace_id != request.review.workspace_id
                     || receipt.mount_lifetime != request.review.mount_lifetime
-                    || receipt.record_id != request.review.record_id
-                    || receipt.prior_revision.record_id != request.review.record_id
-                    || receipt.restored_revision.record_id != request.review.record_id
+                    || receipt.document_id != request.review.document_id
+                    || receipt.prior_revision.document_id != request.review.document_id
+                    || receipt.restored_revision.document_id != request.review.document_id
                     || receipt.prior_revision.validate().is_err()
                     || receipt.restored_revision.validate().is_err()
                     || match request.operation {
@@ -256,7 +256,7 @@ mod tests {
             assert!(session.receive(request, Outcome::Unavailable));
             assert_eq!(session.request, Some(request));
             let mut foreign = request;
-            foreign.review.record_id = FileDocumentId(uuid::Uuid::from_u128(6));
+            foreign.review.document_id = FileDocumentId(uuid::Uuid::from_u128(6));
             assert!(!session.receive(foreign, Outcome::NotVisible));
             assert_eq!(session.request, Some(request));
         }
@@ -334,7 +334,7 @@ mod tests {
             schema_version: 1,
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: FileDocumentId(uuid::Uuid::from_u128(3)),
+            document_id: FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }

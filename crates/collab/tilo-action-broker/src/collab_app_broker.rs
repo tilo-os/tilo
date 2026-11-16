@@ -14489,7 +14489,7 @@ pub mod tests {
                 None,
                 None,
             );
-            let channel = "dev.tilo.notes#workspace:test#record:daily";
+            let channel = "dev.tilo.notes#workspace:test#document:daily";
             let mut first = state.subscribe_context(channel, 7, None);
             let mut second = state.subscribe_context(channel, 9, None);
             let _requester = state.subscribe_context(channel, 12, None);
@@ -14500,7 +14500,7 @@ pub mod tests {
                 Ok(ContextUpdate::SnapshotRequested)
             ));
             assert!(second.try_recv().is_err(), "only one holder may respond");
-            let requester_only_channel = "dev.tilo.notes#workspace:test#record:empty";
+            let requester_only_channel = "dev.tilo.notes#workspace:test#document:empty";
             let mut requester_only = state.subscribe_context(requester_only_channel, 12, None);
             assert!(
                 !state.request_document_snapshot(requester_only_channel, 12),
@@ -14898,7 +14898,7 @@ mod host_worker_capacity_tests {
             worker_registration: Some(PrivateWorkerRegistration {
                 identity: uuid::Uuid::from_u128(record as u128),
                 route: CrdtRoute::from_channel_key(&format!(
-                    "{}#app:so.tilo.notes#record:tab:{record:016x}",
+                    "{}#app:so.tilo.notes#document:tab:{record:016x}",
                     uuid::Uuid::from_u128(7)
                 )),
                 certificate: certificate.clone(),

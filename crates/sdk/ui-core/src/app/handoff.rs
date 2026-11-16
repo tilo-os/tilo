@@ -270,7 +270,7 @@ mod tests {
     fn successor() -> Successor {
         Successor {
             workspace: "3f2b1c00-0000-4000-8000-0000000000f1".into(),
-            record: "uuid:arrived".into(),
+            document: "uuid:arrived".into(),
             by: "person:ada".into(),
         }
     }

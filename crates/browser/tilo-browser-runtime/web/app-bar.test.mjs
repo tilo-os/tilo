@@ -45,11 +45,11 @@ function fakeDocument() {
   };
 }
 
-const here = {app: 'so.tilo.notes', record: '0123456789abcdef'};
+const here = {app: 'so.tilo.notes', document: '0123456789abcdef'};
 
 test('the people here are each person once, those in this document first, never this page’s own person', () => {
   const members = [
-    {publisher: 'd1', user: 'ada', label: 'Ada', colour: '#ff0000', focus: {app: 'so.tilo.chat', record: 'ffff'}},
+    {publisher: 'd1', user: 'ada', label: 'Ada', colour: '#ff0000', focus: {app: 'so.tilo.chat', document: 'ffff'}},
     {publisher: 'd2', user: 'ada', label: 'Ada', colour: '#ff0000', focus: here},
     {publisher: 'd3', user: 'me', label: 'Me', focus: here},
     {publisher: 'd4', user: 'bo', label: 'Bo', focus: null},

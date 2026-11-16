@@ -21,7 +21,7 @@ export const MAX_FACES = 3;
 /**
  * Everyone here as the bar shows them: one entry per person (by their
  * user root, else their device), not this page's own person, those whose
- * focus is `here` (`{app, record}`, the record as its 16-hex digest) first,
+ * focus is `here` (`{app, document}`, the document as its 16-hex digest) first,
  * then by name. `{key, label, colour, agent, here}`.
  */
 export function peopleHere(members, {self = null, here = null} = {}) {
@@ -29,7 +29,7 @@ export function peopleHere(members, {self = null, here = null} = {}) {
   for (const member of members ?? []) {
     const key = member.user ?? member.publisher;
     if (!key || key === self) continue;
-    const inHere = Boolean(here && member.focus && member.focus.app === here.app && member.focus.record === here.record);
+    const inHere = Boolean(here && member.focus && member.focus.app === here.app && member.focus.document === here.document);
     const known = people.get(key);
     if (known && (known.here || !inHere)) continue;
     people.set(key, {key, label: member.label || 'Someone', colour: member.colour ?? null,
@@ -222,7 +222,7 @@ export function startAppBar({page, appName = id => id, workspaceName = () => '',
   };
   const refresh = () => {
     // The mount names the document it shows as its presence does (its
-    // app and record digest), so the bar matches members against that.
+    // app and document digest), so the bar matches members against that.
     const state = page.mount?.state?.();
     const here = state?.livePlace?.focus ?? null;
     if (state?.pageTheme && state.pageTheme !== theme && applyTheme(root.style, state.pageTheme)) {

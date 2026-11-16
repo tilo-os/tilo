@@ -26,7 +26,7 @@ use crate::hydration::Hydrator;
 #[derive(Clone)]
 pub(super) struct UnavailableNote {
     pub(super) registry: Arc<Mutex<AvailabilityRegistry>>,
-    pub(super) record_id: FileDocumentId,
+    pub(super) document_id: FileDocumentId,
     /// What the read fetches, when it is the file's committed content.
     pub(super) content: Option<NotedContent>,
 }
@@ -71,7 +71,7 @@ struct StoredState {
 }
 
 struct FoundWhole {
-    record_id: FileDocumentId,
+    document_id: FileDocumentId,
     version: FileVersionId,
     hash: Hash,
 }
@@ -161,8 +161,8 @@ async fn write_stored(
         registry.lock_recover().batch(|registry| {
             for (file, bytes) in whole {
                 let resident = Residency::Resident { bytes };
-                let mut record = registry.get(file.record_id).cloned().unwrap_or_else(|| {
-                    let mut record = RecordAvailability::new(file.record_id, RecordKind::File);
+                let mut record = registry.get(file.document_id).cloned().unwrap_or_else(|| {
+                    let mut record = RecordAvailability::new(file.document_id, RecordKind::File);
                     record.current_version = Some(file.version);
                     record
                 });
@@ -189,9 +189,9 @@ impl UnavailableNote {
     fn mark(&self, now_ms: u64) {
         let mut registry = self.registry.lock_recover();
         let mut record = registry
-            .get(self.record_id)
+            .get(self.document_id)
             .cloned()
-            .unwrap_or_else(|| RecordAvailability::new(self.record_id, RecordKind::File));
+            .unwrap_or_else(|| RecordAvailability::new(self.document_id, RecordKind::File));
         if record.transfer.phase != TransferPhase::Idle
             || record.transfer.retry_count > 0
             || record.transfer.last_error.is_some()
@@ -219,7 +219,7 @@ impl UnavailableNote {
             None => None,
         };
         let mut registry = self.registry.lock_recover();
-        let current = registry.get(self.record_id);
+        let current = registry.get(self.document_id);
         let queue = match (&self.content, whole) {
             (Some(content), Some(bytes)) => current.is_none_or(|record| {
                 record.current_version == Some(content.version)
@@ -250,7 +250,7 @@ impl UnavailableNote {
         if queue && let Some(content) = &self.content {
             content.stored.add(
                 FoundWhole {
-                    record_id: self.record_id,
+                    document_id: self.document_id,
                     version: content.version,
                     hash: content.hash,
                 },
@@ -309,7 +309,7 @@ mod tests {
         ));
         let note = UnavailableNote {
             registry,
-            record_id: FileDocumentId::new(),
+            document_id: FileDocumentId::new(),
             content: None,
         };
         (dir, note)
@@ -318,7 +318,7 @@ mod tests {
     fn projection(note: &UnavailableNote) -> fs_protocol::AvailabilityProjectionV1 {
         note.registry
             .lock_recover()
-            .get(note.record_id)
+            .get(note.document_id)
             .expect("the read noted the file")
             .projection()
     }
@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn a_transfer_that_owns_the_record_keeps_its_own_state() {
         let (_dir, note) = note();
-        let mut record = RecordAvailability::new(note.record_id, RecordKind::File);
+        let mut record = RecordAvailability::new(note.document_id, RecordKind::File);
         record.transfer.phase = TransferPhase::Downloading;
         note.registry.lock_recover().put(record).unwrap();
 
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(state.transfer.phase, TransferPhase::Downloading);
         assert_eq!(state.transfer.last_error, None);
 
-        let mut retrying = RecordAvailability::new(note.record_id, RecordKind::File);
+        let mut retrying = RecordAvailability::new(note.document_id, RecordKind::File);
         retrying.transfer.phase = TransferPhase::Queued;
         retrying.transfer.retry_count = 1;
         retrying.transfer.retry_at_ms = Some(9_000);
@@ -407,7 +407,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            note.registry.lock_recover().get(note.record_id),
+            note.registry.lock_recover().get(note.document_id),
             Some(&retrying),
             "a pin's retry still to come is the pin's to report"
         );
@@ -443,7 +443,7 @@ mod tests {
             .unwrap();
         stored.settled().await;
         assert_eq!(
-            note.registry.lock_recover().get(note.record_id),
+            note.registry.lock_recover().get(note.document_id),
             None,
             "a file with bytes still missing is not recorded stored"
         );
@@ -456,7 +456,7 @@ mod tests {
         let record = note
             .registry
             .lock_recover()
-            .get(note.record_id)
+            .get(note.document_id)
             .cloned()
             .expect("the read that completed the file wrote its record");
         assert_eq!(
@@ -493,7 +493,7 @@ mod tests {
             .unwrap();
         stored.settled().await;
         assert_eq!(
-            note.registry.lock_recover().get(note.record_id),
+            note.registry.lock_recover().get(note.document_id),
             Some(&moved),
             "bytes of an older version say nothing of the current one"
         );
@@ -522,10 +522,10 @@ mod tests {
             (registry.persist_count(), registry.hydration_generation())
         };
 
-        for (record_id, hash, _) in &files {
+        for (document_id, hash, _) in &files {
             let read = UnavailableNote {
                 registry: Arc::clone(&note.registry),
-                record_id: *record_id,
+                document_id: *document_id,
                 content: Some(NotedContent {
                     hydrator: Arc::clone(&hydrator),
                     hash: *hash,
@@ -549,7 +549,7 @@ mod tests {
             let registry = note.registry.lock_recover();
             let records: Vec<_> = files
                 .iter()
-                .map(|(record_id, _, _)| registry.get(*record_id).cloned())
+                .map(|(document_id, _, _)| registry.get(*document_id).cloned())
                 .collect();
             (
                 records,
@@ -569,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn bytes_after_a_retry_that_ended_make_the_file_available_again() {
         let (_dir, note) = note();
-        let mut retried = RecordAvailability::new(note.record_id, RecordKind::File);
+        let mut retried = RecordAvailability::new(note.document_id, RecordKind::File);
         retried.transfer.retry_count = 1;
         retried.transfer.last_error = Some(TransferError {
             message: NO_PEER_DELIVERED_ERROR.into(),

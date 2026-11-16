@@ -26,8 +26,7 @@ use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::runtime::Actor;
-use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::Principal;
 
 use crate::common::{PERSON, Repl, until, wait_for};
 
@@ -129,8 +128,7 @@ fn shown_by_tasks(bytes: &[u8]) -> Vec<String> {
         .expect("Tasks is installed");
     let bundle = Bundle::read(&tasks.payload_root).expect("Tasks' payload");
     let record = tilo_resource::Doc::load(bytes).expect("the record is a document");
-    let host =
-        Host::new(&record, Actor::Member(MemberId::person(PERSON)), || None).expect("a host");
+    let host = Host::new(&record, Principal::new(PERSON), || None).expect("a host");
     host.load_bundle(&bundle).expect("Tasks' package loads");
     host.wait_index();
     let view = host.open_main(TASKS).expect("Tasks' main view");
@@ -292,19 +290,18 @@ fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
     let planned = reads
         .plan(
             &json!({"app": TASKS, "resource": task, "action": "check", "arguments": {"done": true}}),
-            Some(&tilolang_tilo::publish::Caller {
-                actor: MemberId::person(person).into(),
+            &tilolang_tilo::publish::Caller {
+                actor: person.to_owned(),
                 agent: false,
                 on_behalf_of: None,
-            }),
+            },
         )
         .expect("the window plans the check");
     let action: tilolang_tilo::action::DynAction =
         serde_json::from_value(planned).expect("a planned action");
     let mut record = tilo_resource::Doc::load(bytes).expect("the record is a document");
     let before = record.get_heads();
-    let host =
-        Host::new(&record, Actor::Member(MemberId::person(person)), || None).expect("a host");
+    let host = Host::new(&record, Principal::new(person), || None).expect("a host");
     host.load_bundle(&tasks_bundle())
         .expect("Tasks' package loads");
     let encoded = action.encode().expect("the action encodes");
@@ -368,12 +365,8 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     // The kind of record Tasks keeps its resources in, as its window names it: its root type's.
     let kind = {
         use tilolang_tilo::meta::MetaExt as _;
-        let host = Host::new(
-            &tilo_resource::Doc::new(),
-            Actor::Member(MemberId::person(&person)),
-            || None,
-        )
-        .expect("a host");
+        let host = Host::new(&tilo_resource::Doc::new(), Principal::new(&person), || None)
+            .expect("a host");
         host.load_bundle(&tasks_bundle())
             .expect("Tasks' package loads")
             .meta

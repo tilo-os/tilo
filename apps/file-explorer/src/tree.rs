@@ -165,7 +165,7 @@ impl TreeBrowser {
         // when it finds a file by what it says.
         let tree = cx.shared_record::<fs_protocol::tree::FilesTree>(
             FILES_APP,
-            &fs_protocol::tree::record_id(),
+            &fs_protocol::tree::document_id(),
         );
         let mut browser = Self {
             live: cx.live().clone(),
@@ -376,10 +376,10 @@ impl TreeBrowser {
     /// it: the person whose device signed it, and the agent that wrote for them
     /// when one did. `None` for a node the tree holds no version of.
     fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
-        let record_id = node.record_id?;
+        let document_id = node.document_id?;
         let tree = self.tree.as_ref()?;
         let (version, attribution) =
-            tree.read(|doc| fs_protocol::history::latest(doc, record_id))??;
+            tree.read(|doc| fs_protocol::history::latest(doc, document_id))??;
         let registry = self.people.registry();
         let folder = node
             .parent
@@ -698,7 +698,7 @@ mod tests {
             size,
             mtime: 1_767_225_600_000,
             author: Some("ada".to_owned()),
-            record_id: None,
+            document_id: None,
             codec: None,
         };
         (id.to_owned(), entry)
@@ -708,7 +708,7 @@ mod tests {
     /// `notes.txt` beside it, written by Ada.
     fn workspace() -> Tree {
         Tree {
-            root_record_id: None,
+            root_document_id: None,
             nodes: [
                 node("docs", ROOT_ID, "docs", None),
                 node("plan", "docs", "plan.md", Some(("ab".repeat(32), 2048))),
@@ -803,14 +803,14 @@ mod window_tests {
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
 
-    /// A version of `record_id` written by an agent session for the person at `[7; 32]`.
-    fn write_version(doc: &mut AutoCommit, record_id: fs_protocol::FileDocumentId, id: u128) {
+    /// A version of `document_id` written by an agent session for the person at `[7; 32]`.
+    fn write_version(doc: &mut AutoCommit, document_id: fs_protocol::FileDocumentId, id: u128) {
         use ui::automerge::ScalarValue;
         use ui::tilo_resource::Slot;
 
         let version = FileVersionV1 {
             id: FileVersionId(uuid::Uuid::from_u128(id)),
-            record_id,
+            document_id,
             parents: Vec::new(),
             actor: FileActor {
                 person: Ed25519PublicKey([7; 32]),
@@ -824,7 +824,7 @@ mod window_tests {
         let root = Slot::Key(&ui::automerge::ROOT, "history")
             .object(doc, ObjType::Map)
             .unwrap();
-        let record = Slot::Key(&root, &record_id.0.to_string())
+        let record = Slot::Key(&root, &document_id.0.to_string())
             .object(doc, ObjType::Map)
             .unwrap();
         let versions = Slot::Key(&record, "versions")
@@ -863,7 +863,7 @@ mod window_tests {
         let tree = app
             .shared_record::<fs_protocol::tree::FilesTree>(
                 FILES_APP,
-                &fs_protocol::tree::record_id(),
+                &fs_protocol::tree::document_id(),
             )
             .expect("the window holds the workspace's tree");
         // The tree as a device that mounts the folder writes it: the record's own document,
@@ -882,8 +882,8 @@ mod window_tests {
             (1_000, &hex::encode([9_u8; 32])),
         )
         .unwrap();
-        let record_id = held.node(&placed.id).unwrap().record_id.unwrap();
-        write_version(&mut doc, record_id, 1);
+        let document_id = held.node(&placed.id).unwrap().document_id.unwrap();
+        write_version(&mut doc, document_id, 1);
         let folder = fs_protocol::tree::place(
             &mut doc,
             &mut held,
@@ -905,7 +905,7 @@ mod window_tests {
             (2_500, &hex::encode([9_u8; 32])),
         )
         .unwrap();
-        let folder_record = held.node(&folder.id).unwrap().record_id.unwrap();
+        let folder_record = held.node(&folder.id).unwrap().document_id.unwrap();
         write_version(&mut doc, folder_record, 2);
         tree.record()
             .merge_peer_document(doc.save())

@@ -5253,7 +5253,7 @@ tilo_test_env::scenario! {
             None,
             vec![collab_types::CommitPart {
                 app: "chat".into(),
-                record: "main".into(),
+                document: "main".into(),
                 changes: vec![[1; 32]],
             }],
         );

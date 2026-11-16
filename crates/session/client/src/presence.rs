@@ -305,7 +305,7 @@ pub fn view(
 fn window(focus: &LiveRecord) -> ShellWindow {
     ShellWindow {
         app: focus.app.clone(),
-        record: focus.short_digest(),
+        document: focus.short_digest(),
         rect: [0, 0, 10_000, 10_000],
         focused: true,
     }

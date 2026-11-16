@@ -20,7 +20,7 @@ fn of_shell(shown: &mut Shown, shell: Option<&ShellPresence>) {
     shown.reaction.clone_from(&shell.reaction);
     shown.focus = shell.focus().map(|(app, record)| ShownFocus {
         app: app.to_owned(),
-        record: hex::encode(record),
+        document: hex::encode(record),
     });
     shown.layout = Some(ShownLayout {
         size: [
@@ -32,7 +32,7 @@ fn of_shell(shown: &mut Shown, shell: Option<&ShellPresence>) {
             .iter()
             .map(|window| collab_types::presence::ShownWindow {
                 app: window.app.clone(),
-                record: hex::encode(window.record),
+                document: hex::encode(window.document),
                 rect: window.rect,
                 focused: window.focused,
             })

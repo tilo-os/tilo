@@ -1108,7 +1108,7 @@ tilo_test_env::scenario! {
                 size: [1280, 764],
                 windows: vec![collab_types::presence::ShellWindow {
                     app: "so.tilo.notes".to_owned(),
-                    record: [1; 8],
+                    document: [1; 8],
                     rect: [0, 0, 10_000, 10_000],
                     focused: true,
                 }],

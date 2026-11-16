@@ -308,7 +308,7 @@ impl KeptHistory {
             let mut ino = |record: FileDocumentId| {
                 *inodes
                     .entry(record)
-                    .or_insert_with(|| namespace.ensure_ino_for_record_id(record))
+                    .or_insert_with(|| namespace.ensure_ino_for_document_id(record))
             };
             pairs
                 .into_iter()
@@ -358,7 +358,7 @@ impl KeptHistory {
             let mut record = |ino: u64| {
                 *records
                     .entry(ino)
-                    .or_insert_with(|| namespace.record_id_for(ino))
+                    .or_insert_with(|| namespace.document_id_for(ino))
             };
             pairs
                 .into_iter()

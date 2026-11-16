@@ -70,14 +70,14 @@ mod availability_control_tests {
         registry: &Arc<Mutex<AvailabilityRegistry>>,
     ) -> PinnedCandidate {
         let hash = Hash::from([0x7a; 32]);
-        let (record_id, parent) = {
+        let (document_id, parent) = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
                 .create_file(ROOT_INO, "pinned.bin", Some(&hash), 1, 1)
                 .unwrap();
             (
-                namespace.record_id_for(ino).unwrap(),
-                namespace.record_id_for(ROOT_INO),
+                namespace.document_id_for(ino).unwrap(),
+                namespace.document_id_for(ROOT_INO),
             )
         };
         let root = parent.unwrap();
@@ -86,12 +86,12 @@ mod availability_control_tests {
             .unwrap()
             .put(RecordAvailability::new(root, RecordKind::Directory))
             .unwrap();
-        let mut record = RecordAvailability::new(record_id, RecordKind::File);
+        let mut record = RecordAvailability::new(document_id, RecordKind::File);
         record.parent = parent;
         record.policy = AvailabilityPolicy::Pinned;
         registry.lock().unwrap().put(record).unwrap();
         PinnedCandidate {
-            record_id,
+            document_id,
             parent,
             kind: RecordKind::File,
             version: None,
@@ -146,11 +146,11 @@ mod availability_control_tests {
             let candidate = current_pinned_candidate(&namespace, &registry);
             let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
             let cancellation_registry = Arc::clone(&registry);
-            let record_id = candidate.record_id;
+            let document_id = candidate.document_id;
             let unpin = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 let mut registry = cancellation_registry.lock().unwrap();
-                let mut record = registry.get(record_id).unwrap().clone();
+                let mut record = registry.get(document_id).unwrap().clone();
                 record.policy = AvailabilityPolicy::Automatic;
                 registry.put(record).unwrap();
                 drop(registry);
@@ -288,7 +288,7 @@ mod availability_control_tests {
 
             drop((fs, registry));
             let reopened = AvailabilityRegistry::open(registry_path).unwrap();
-            let folder_id = namespace.lock_recover().record_id_for(folder).unwrap();
+            let folder_id = namespace.lock_recover().document_id_for(folder).unwrap();
             assert_eq!(
                 reopened.get(folder_id).map(|record| record.policy),
                 Some(AvailabilityPolicy::Pinned)
@@ -317,9 +317,9 @@ mod availability_control_tests {
 
             assert_eq!(fs.check_access(ino, Access::Write), Err(EROFS));
             fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
-            let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
+            let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
             assert_eq!(
-                registry.lock_recover().get(record_id).unwrap().policy,
+                registry.lock_recover().get(document_id).unwrap().policy,
                 AvailabilityPolicy::Pinned
             );
         }
@@ -354,11 +354,11 @@ mod availability_control_tests {
             .unwrap()
             .create_file(folder, "later.txt", Some(&first), 20, 2)
             .unwrap();
-        let record_id = namespace.lock().unwrap().record_id_for(child).unwrap();
+        let document_id = namespace.lock().unwrap().document_id_for(child).unwrap();
         let first_version = fs_protocol::FileVersionId::new();
         let first_revision = fs_protocol::ContentRevisionV1 {
             schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
+            document_id,
             version_id: first_version,
             content_hash: Some(fs_protocol::ContentHash(*first.as_bytes())),
             byte_len: 20,
@@ -371,7 +371,7 @@ mod availability_control_tests {
                 .set_content_revision(child, &first_revision, 2)
         );
         fs.wake_pinned_hydration();
-        wait_for_availability(&registry, record_id, |record| {
+        wait_for_availability(&registry, document_id, |record| {
             record.transfer.last_error.is_some()
                 && record.transfer.retry_count > 0
                 && record.transfer.retry_at_ms.is_some()
@@ -388,7 +388,7 @@ mod availability_control_tests {
         let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
-        wait_for_availability(&registry, record_id, |record| {
+        wait_for_availability(&registry, document_id, |record| {
             record.current_version == Some(first_version)
                 && record.residency == Residency::Resident { bytes: 20 }
                 && record.transfer.last_error.is_none()
@@ -409,7 +409,7 @@ mod availability_control_tests {
                 .set_content_revision(child, &second_revision, 3)
         );
         fs.wake_pinned_hydration();
-        wait_for_availability(&registry, record_id, |record| {
+        wait_for_availability(&registry, document_id, |record| {
             record.current_version == Some(second_version)
                 && record.residency == Residency::Resident { bytes: 21 }
                 && record.transfer.last_error.is_none()
@@ -616,7 +616,7 @@ mod availability_control_tests {
                     .create_file(folder, format!("empty-{index}"), None, 0, 1)
                     .unwrap();
             }
-            (folder, namespace.record_id_for(last).unwrap())
+            (folder, namespace.document_id_for(last).unwrap())
         };
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
@@ -652,7 +652,7 @@ mod availability_control_tests {
             let ino = namespace
                 .create_file(folder, "arrived-remotely", None, 0, 2)
                 .unwrap();
-            namespace.record_id_for(ino).unwrap()
+            namespace.document_id_for(ino).unwrap()
         };
         wait_for_availability(&registry, late, |record| {
             record.residency == Residency::Resident { bytes: 0 }
@@ -676,7 +676,7 @@ mod availability_control_tests {
             let mut namespace = namespace.lock().unwrap();
             let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
             let first = namespace.create_file(folder, "first", None, 0, 1).unwrap();
-            (folder, namespace.record_id_for(first).unwrap())
+            (folder, namespace.document_id_for(first).unwrap())
         };
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
@@ -697,7 +697,7 @@ mod availability_control_tests {
             let ino = namespace
                 .create_file(folder, "arrived-remotely", None, 0, 2)
                 .unwrap();
-            namespace.record_id_for(ino).unwrap()
+            namespace.document_id_for(ino).unwrap()
         };
         wait_for_availability(&registry, remote, |record| {
             record.residency == Residency::Resident { bytes: 0 }
@@ -713,9 +713,9 @@ mod availability_control_tests {
                 .create_file(other, "inside", Some(&local), 12, 3)
                 .unwrap();
             (
-                namespace.record_id_for(ROOT_INO).unwrap(),
-                namespace.record_id_for(other).unwrap(),
-                namespace.record_id_for(inside).unwrap(),
+                namespace.document_id_for(ROOT_INO).unwrap(),
+                namespace.document_id_for(other).unwrap(),
+                namespace.document_id_for(inside).unwrap(),
             )
         };
         let turns = worker_turns(&fs);
@@ -776,8 +776,8 @@ mod availability_control_tests {
                 .unwrap();
             (
                 folder,
-                namespace.record_id_for(empty).unwrap(),
-                namespace.record_id_for(resident).unwrap(),
+                namespace.document_id_for(empty).unwrap(),
+                namespace.document_id_for(resident).unwrap(),
             )
         };
         let registry = Arc::new(Mutex::new(
@@ -865,7 +865,7 @@ mod availability_control_tests {
                 .lock_recover()
                 .create_file(ROOT_INO, "retry.txt", Some(&hash), 17, 1)
                 .unwrap();
-            let record = namespace.lock_recover().record_id_for(ino).unwrap();
+            let record = namespace.lock_recover().document_id_for(ino).unwrap();
 
             fs.retry_transfer(ino).unwrap();
             tilo_test_env::within("the retry completion event", async {
@@ -899,7 +899,7 @@ mod availability_control_tests {
                 .lock_recover()
                 .create_file(ROOT_INO, "empty.txt", None, 0, 1)
                 .unwrap();
-            let record = namespace.lock_recover().record_id_for(ino).unwrap();
+            let record = namespace.lock_recover().document_id_for(ino).unwrap();
 
             fs.retry_transfer(ino).unwrap();
             assert_eq!(
@@ -927,7 +927,7 @@ mod availability_control_tests {
             .lock_recover()
             .create_file(ROOT_INO, "missing.txt", Some(&missing), 4, 1)
             .unwrap();
-        let record = namespace.lock_recover().record_id_for(ino).unwrap();
+        let record = namespace.lock_recover().document_id_for(ino).unwrap();
 
         fs.retry_transfer(ino).unwrap();
         tilo_test_env::within("the retry failure event", async {
@@ -962,18 +962,18 @@ mod availability_control_tests {
             .lock_recover()
             .create_file(ROOT_INO, "empty.txt", None, 0, 1)
             .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
+        let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
         let version_id = fs_protocol::FileVersionId::new();
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
-        let mut availability = RecordAvailability::new(record_id, RecordKind::File);
+        let mut availability = RecordAvailability::new(document_id, RecordKind::File);
         availability.current_version = Some(version_id);
         availability.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(availability).unwrap();
         let mut queue = EvictionQueue::open(dir.path().join("evictions.json")).unwrap();
         let plan = crate::eviction::EvictionPlan {
-            record_id,
+            document_id,
             version_id,
             mode: crate::eviction::EvictionMode::Safe,
             reclaimable: Vec::new(),
@@ -995,7 +995,7 @@ mod availability_control_tests {
         ));
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
         let newer_version = fs_protocol::FileVersionId::new();
-        let mut current = registry.lock_recover().get(record_id).cloned().unwrap();
+        let mut current = registry.lock_recover().get(document_id).cloned().unwrap();
         current.current_version = Some(newer_version);
         current.residency = Residency::Resident { bytes: 0 };
         registry.lock_recover().put(current).unwrap();
@@ -1006,7 +1006,7 @@ mod availability_control_tests {
 
         fs.resume_pending_evictions();
         assert_eq!(
-            registry.lock_recover().get(record_id).unwrap().residency,
+            registry.lock_recover().get(document_id).unwrap().residency,
             Residency::Resident { bytes: 0 }
         );
     }
@@ -1293,8 +1293,8 @@ mod predictive_tests {
                     .create_file(ROOT_INO, "hidden.txt", Some(&Hash::from([2; 32])), 20, 1)
                     .unwrap();
                 (
-                    ns.record_id_for(visible).unwrap(),
-                    ns.record_id_for(hidden).unwrap(),
+                    ns.document_id_for(visible).unwrap(),
+                    ns.document_id_for(hidden).unwrap(),
                 )
             };
             let mut acl = WorkspaceAcl::new();
@@ -1311,13 +1311,13 @@ mod predictive_tests {
             )
             .unwrap();
             assert!(projection.records.iter().any(|entry| {
-                entry.record_id == visible_record && entry.path == "/folder/visible.txt"
+                entry.document_id == visible_record && entry.path == "/folder/visible.txt"
             }));
             assert!(
                 projection
                     .records
                     .iter()
-                    .all(|entry| entry.record_id != hidden_record),
+                    .all(|entry| entry.document_id != hidden_record),
                 "a record outside the mount's ACL-filtered view cannot enter search metadata"
             );
         }
@@ -1401,7 +1401,7 @@ mod predictive_tests {
                         .unwrap();
                 }
                 let ino = ns.create_file(ROOT_INO, "visible.txt", None, 0, 1).unwrap();
-                ns.record_id_for(ino).unwrap()
+                ns.document_id_for(ino).unwrap()
             };
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/visible.txt");
@@ -1418,7 +1418,7 @@ mod predictive_tests {
             )
             .unwrap();
             assert_eq!(first.records.len(), 1);
-            assert_eq!(first.records[0].record_id, visible_record);
+            assert_eq!(first.records[0].document_id, visible_record);
             assert!(first.next_cursor.is_none());
             assert!(
                 fs.record_index_page_v3(&manifest.revision, "00000000-0000-0000-0000-000000000000")
@@ -1442,7 +1442,7 @@ mod predictive_tests {
             let first_record = {
                 let mut ns = namespace.lock_recover();
                 let ino = ns.create_file(ROOT_INO, "first.txt", None, 0, 1).unwrap();
-                ns.record_id_for(ino).unwrap()
+                ns.document_id_for(ino).unwrap()
             };
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/");
@@ -1536,7 +1536,7 @@ mod predictive_tests {
             assert_eq!(second.records.len(), 1);
             assert!(second.next_cursor.is_none());
             assert!(
-                fs.record_index_by_id_v2(first.records[0].record_id)
+                fs.record_index_by_id_v2(first.records[0].document_id)
                     .is_some()
             );
             assert_eq!(
@@ -1670,7 +1670,7 @@ mod predictive_tests {
             let mut ns = namespace.lock_recover();
             ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
             assert!(ns.rename(ROOT_INO, "hidden-000", visible, "revealed.txt", 2));
-            ns.entry_at("visible/revealed.txt").unwrap().record_id
+            ns.entry_at("visible/revealed.txt").unwrap().document_id
         };
         fs.refresh_acl_visible_record_index();
         let incremental = fs.acl_visible_record_index().unwrap();
@@ -1712,7 +1712,7 @@ mod history_integration_tests {
             .lock_recover()
             .create_file(crate::namespace::ROOT_INO, "before.txt", None, 0, 1)
             .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
+        let document_id = namespace.lock_recover().document_id_for(ino).unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
         let actor = FileActor {
@@ -1723,12 +1723,12 @@ mod history_integration_tests {
             .with_history(actor)
             .unwrap();
 
-        let baseline = history.snapshot(record_id).unwrap();
+        let baseline = history.snapshot(document_id).unwrap();
         assert_eq!(baseline.versions.len(), 1);
         assert_eq!(baseline.versions[0].provenance, FileProvenance::Create);
 
         fs.commit_content(ino, b"durable bytes").unwrap();
-        let after_edit = history.snapshot(record_id).unwrap();
+        let after_edit = history.snapshot(document_id).unwrap();
         assert_eq!(after_edit.versions.len(), 2);
         assert_eq!(after_edit.versions[1].provenance, FileProvenance::Edit);
         assert_eq!(after_edit.versions[1].parents, baseline.heads);
@@ -1741,7 +1741,7 @@ mod history_integration_tests {
         );
         fs.commit_content(ino, b"durable bytes").unwrap();
         assert_eq!(
-            history.snapshot(record_id).unwrap().versions.len(),
+            history.snapshot(document_id).unwrap().versions.len(),
             2,
             "flush/fsync/release of unchanged bytes must not invent versions"
         );
@@ -1753,17 +1753,20 @@ mod history_integration_tests {
             "after.txt",
         )
         .unwrap();
-        let after_rename = history.snapshot(record_id).unwrap();
+        let after_rename = history.snapshot(document_id).unwrap();
         assert_eq!(after_rename.versions.len(), 3);
         assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
-        assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
+        assert_eq!(
+            namespace.lock_recover().document_id_for(ino),
+            Some(document_id)
+        );
 
         drop(fs);
         drop(history);
         let reopened =
             Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
         assert_eq!(
-            reopened.record_history(record_id).unwrap().versions.len(),
+            reopened.record_history(document_id).unwrap().versions.len(),
             3
         );
     }
@@ -1796,7 +1799,7 @@ mod history_integration_tests {
         let doc = namespace
             .create_document(crate::namespace::ROOT_INO, "notes.md", "md", 1)
             .unwrap();
-        let record_id = namespace.record_id_for(doc).unwrap();
+        let document_id = namespace.document_id_for(doc).unwrap();
         let (fs, history) = history_fs(&endpoint, namespace);
         assert!(fs.is_document(doc));
 
@@ -1804,7 +1807,7 @@ mod history_integration_tests {
         for edit in edits {
             assert_eq!(fs.commit_bytes(doc, edit), Ok(()));
         }
-        let snapshot = history.snapshot(record_id).unwrap();
+        let snapshot = history.snapshot(document_id).unwrap();
         let edited = snapshot
             .versions
             .iter()

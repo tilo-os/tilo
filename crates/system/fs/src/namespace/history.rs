@@ -143,16 +143,16 @@ impl Namespace {
 
     pub(crate) fn record_versions(
         &self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
-        fs_protocol::history::record_versions(&*self.doc, record_id)
+        fs_protocol::history::record_versions(&*self.doc, document_id)
     }
 
     pub(crate) fn record_conflicts(
         &self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
     ) -> BTreeMap<Uuid, FileConflictV1> {
-        fs_protocol::history::record_conflicts(&*self.doc, record_id)
+        fs_protocol::history::record_conflicts(&*self.doc, document_id)
     }
 
     /// The maps under `key` of `parent`: two devices that both wrote it each made one.
@@ -168,9 +168,9 @@ impl Namespace {
             .collect()
     }
 
-    fn history_slot(&mut self, record_id: FileDocumentId) -> Result<ObjId, HistoryError> {
+    fn history_slot(&mut self, document_id: FileDocumentId) -> Result<ObjId, HistoryError> {
         let root = self.ensure_history_root()?;
-        let key = record_id.0.to_string();
+        let key = document_id.0.to_string();
         if let Some(record) = object(self.doc.get(&root, &key)?) {
             return Ok(record);
         }
@@ -186,10 +186,10 @@ impl Namespace {
 
     fn write_version(
         &mut self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         version: &FileVersionV1,
     ) -> Result<(), HistoryError> {
-        let record = self.history_slot(record_id)?;
+        let record = self.history_slot(document_id)?;
         let versions = self.sub_map(&record, VERSIONS_KEY)?;
         let bytes = collab_types::canonical_bytes(version)?;
         self.doc.put(&versions, version.id.0.to_string(), bytes)?;
@@ -198,39 +198,39 @@ impl Namespace {
 
     fn write_conflict(
         &mut self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         conflict: &FileConflictV1,
     ) -> Result<(), HistoryError> {
-        let record = self.history_slot(record_id)?;
+        let record = self.history_slot(document_id)?;
         let conflicts = self.sub_map(&record, CONFLICTS_KEY)?;
         let bytes = collab_types::canonical_bytes(conflict)?;
         self.doc.put(&conflicts, conflict.id.to_string(), bytes)?;
         Ok(())
     }
 
-    pub fn record_history(&self, record_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
-        fs_protocol::history::record_history(&*self.doc, record_id)
+    pub fn record_history(&self, document_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
+        fs_protocol::history::record_history(&*self.doc, document_id)
     }
 
     pub fn record_history_projection(
         &self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
     ) -> Option<HistoryProjectionV1> {
-        fs_protocol::history::record_history_projection(&*self.doc, record_id)
+        fs_protocol::history::record_history_projection(&*self.doc, document_id)
     }
 
-    pub fn record_history_heads(&self, record_id: FileDocumentId) -> Vec<FileVersionId> {
-        fs_protocol::history::computed_heads(&self.record_versions(record_id))
+    pub fn record_history_heads(&self, document_id: FileDocumentId) -> Vec<FileVersionId> {
+        fs_protocol::history::computed_heads(&self.record_versions(document_id))
             .into_iter()
             .collect()
     }
 
     pub fn record_version(
         &self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         version_id: FileVersionId,
     ) -> (Option<FileVersionV1>, Vec<FileVersionId>) {
-        let versions = self.record_versions(record_id);
+        let versions = self.record_versions(document_id);
         let heads = fs_protocol::history::computed_heads(&versions);
         (
             versions.get(&version_id).cloned(),
@@ -245,8 +245,8 @@ impl Namespace {
             BTreeMap::new();
         for version in versions {
             let current = known
-                .entry(version.record_id)
-                .or_insert_with(|| self.record_versions(version.record_id));
+                .entry(version.document_id)
+                .or_insert_with(|| self.record_versions(version.document_id));
             check_version(current, version)?;
             current.insert(version.id, version.clone());
         }
@@ -268,8 +268,8 @@ impl Namespace {
         let mut accepted = Vec::new();
         for version in versions {
             let current = known
-                .entry(version.record_id)
-                .or_insert_with(|| self.record_versions(version.record_id));
+                .entry(version.document_id)
+                .or_insert_with(|| self.record_versions(version.document_id));
             if check_version(current, version)? {
                 current.insert(version.id, version.clone());
                 accepted.push(version.clone());
@@ -279,7 +279,7 @@ impl Namespace {
             }
         }
         for version in &accepted {
-            self.write_version(version.record_id, version)?;
+            self.write_version(version.document_id, version)?;
         }
         Ok(appended)
     }
@@ -299,16 +299,19 @@ impl Namespace {
         conflict: &FileConflictV1,
     ) -> Result<bool, HistoryError> {
         conflict.validate()?;
-        let versions = self.record_versions(conflict.record_id);
+        let versions = self.record_versions(conflict.document_id);
         if versions.is_empty() {
-            return Err(HistoryError::UnknownRecord(conflict.record_id));
+            return Err(HistoryError::UnknownRecord(conflict.document_id));
         }
         check_conflict(&versions, conflict)?;
-        match self.record_conflicts(conflict.record_id).get(&conflict.id) {
+        match self
+            .record_conflicts(conflict.document_id)
+            .get(&conflict.id)
+        {
             Some(existing) if existing == conflict => Ok(false),
             Some(_) => Err(HistoryError::ConflictIdCollision(conflict.id)),
             None => {
-                self.write_conflict(conflict.record_id, conflict)?;
+                self.write_conflict(conflict.document_id, conflict)?;
                 Ok(true)
             }
         }
@@ -317,11 +320,15 @@ impl Namespace {
     /// Resolve a conflict with a version that made the resolution.
     pub fn resolve_history_conflict(
         &mut self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         conflict_id: Uuid,
         resolution: &ConflictResolution,
     ) -> Result<bool, HistoryError> {
-        let Some(conflict) = self.record_conflicts(record_id).get(&conflict_id).cloned() else {
+        let Some(conflict) = self
+            .record_conflicts(document_id)
+            .get(&conflict_id)
+            .cloned()
+        else {
             return Err(HistoryError::UnknownConflict(conflict_id));
         };
         if let Some(existing) = &conflict.resolution
@@ -329,7 +336,7 @@ impl Namespace {
         {
             return Ok(false);
         }
-        let versions = self.record_versions(record_id);
+        let versions = self.record_versions(document_id);
         let result = versions
             .get(&resolution.result)
             .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
@@ -346,49 +353,52 @@ impl Namespace {
         resolved.status = ConflictStatus::Resolved;
         resolved.resolution = Some(resolution.clone());
         resolved.validate()?;
-        self.write_conflict(record_id, &resolved)?;
+        self.write_conflict(document_id, &resolved)?;
         Ok(true)
     }
 
     pub(crate) fn record_attributions(
         &self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
-        fs_protocol::history::record_attributions(&*self.doc, record_id)
+        fs_protocol::history::record_attributions(&*self.doc, document_id)
     }
 
-    pub fn version_attributions(&self, record_id: FileDocumentId) -> Vec<FileVersionAttributionV1> {
-        let mut versions = self.record_versions(record_id);
-        self.record_attributions(record_id)
+    pub fn version_attributions(
+        &self,
+        document_id: FileDocumentId,
+    ) -> Vec<FileVersionAttributionV1> {
+        let mut versions = self.record_versions(document_id);
+        self.record_attributions(document_id)
             .into_iter()
             .filter(|(version_id, _)| versions.remove(version_id).is_some())
             .map(|(_, attributed)| attributed)
             .collect()
     }
 
-    /// Record which agent caused this device's `attributed` version of `record_id`.
+    /// Record which agent caused this device's `attributed` version of `document_id`.
     /// The version must already be the record's, and the same attribution again is a
     /// no-op.
     pub fn attribute_version(
         &mut self,
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         attributed: &FileVersionAttributionV1,
     ) -> Result<bool, HistoryError> {
         attributed.attribution.validate()?;
         if !self
-            .record_versions(record_id)
+            .record_versions(document_id)
             .contains_key(&attributed.version_id)
         {
             return Err(HistoryError::UnknownVersion(attributed.version_id));
         }
         match self
-            .record_attributions(record_id)
+            .record_attributions(document_id)
             .get(&attributed.version_id)
         {
             Some(existing) if existing == attributed => Ok(false),
             Some(_) => Err(HistoryError::VersionIdCollision(attributed.version_id)),
             None => {
-                let record = self.history_slot(record_id)?;
+                let record = self.history_slot(document_id)?;
                 let map = self.sub_map(&record, ATTRIBUTIONS_KEY)?;
                 let bytes = collab_types::canonical_bytes(&attributed)?;
                 self.doc
@@ -455,13 +465,13 @@ impl Namespace {
             return Some(revision);
         }
         let id = self.ino_to_id.get(&ino)?;
-        let record_id = self.record_id_for_id(id)?;
+        let document_id = self.document_id_for_id(id)?;
         let obj = self.node(id)?;
         let content_hash = str_at(&self.doc, &obj, "hash")
             .and_then(|hash| hash_from_hex(&hash))
             .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         let byte_len = read_u64(&self.doc, &obj, "size");
-        let versions = self.record_versions(record_id);
+        let versions = self.record_versions(document_id);
         let heads = fs_protocol::history::computed_heads(&versions);
         let version = versions
             .values()
@@ -475,7 +485,7 @@ impl Namespace {
             })?;
         Some(fs_protocol::ContentRevisionV1 {
             schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
+            document_id,
             version_id: version.id,
             content_hash,
             byte_len,
@@ -483,8 +493,8 @@ impl Namespace {
         })
     }
 
-    pub fn has_history(&self, record_id: FileDocumentId) -> bool {
-        !self.record_versions(record_id).is_empty()
+    pub fn has_history(&self, document_id: FileDocumentId) -> bool {
+        !self.record_versions(document_id).is_empty()
     }
 }
 
@@ -520,14 +530,14 @@ mod tests {
     }
 
     fn version(
-        record_id: FileDocumentId,
+        document_id: FileDocumentId,
         parents: Vec<FileVersionId>,
         provenance: FileProvenance,
         timestamp_ms: u64,
     ) -> FileVersionV1 {
         FileVersionV1 {
             id: FileVersionId::new(),
-            record_id,
+            document_id,
             parents,
             actor: actor(),
             timestamp_ms,
@@ -650,7 +660,7 @@ mod tests {
                 .unwrap();
             let conflict = FileConflictV1 {
                 id: Uuid::new_v4(),
-                record_id: record,
+                document_id: record,
                 versions: vec![left.id, right.id],
                 status: ConflictStatus::Open,
                 resolution: None,

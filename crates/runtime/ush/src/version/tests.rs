@@ -19,7 +19,7 @@ fn actor() -> FileActor {
 fn version(id: u128, parents: Vec<u128>, change: FileProvenance) -> FileVersionV1 {
     FileVersionV1 {
         id: FileVersionId(uuid::Uuid::from_u128(id)),
-        record_id: FileDocumentId(uuid::Uuid::from_u128(99)),
+        document_id: FileDocumentId(uuid::Uuid::from_u128(99)),
         parents: parents
             .into_iter()
             .map(|parent| FileVersionId(uuid::Uuid::from_u128(parent)))
@@ -36,7 +36,7 @@ fn scope(frontier: [u8; 32]) -> FileHistoryReadScopeV1 {
     FileHistoryReadScopeV1 {
         workspace_id: uuid::Uuid::from_u128(1),
         mount_lifetime: uuid::Uuid::from_u128(2),
-        record_id: FileDocumentId(uuid::Uuid::from_u128(99)),
+        document_id: FileDocumentId(uuid::Uuid::from_u128(99)),
         frontier,
     }
 }

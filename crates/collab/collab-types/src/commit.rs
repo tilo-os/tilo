@@ -1,13 +1,13 @@
 //! One action, one workspace commit.
 //!
 //! A workspace's state is split into storage units: one Automerge document per
-//! app and record, a chat's parts, a host's records. An action can write more
-//! than one of them (creating a child writes the child's record and the
+//! app and document, a chat's parts, a host's records. An action can write more
+//! than one of them (creating a child writes the child's document and the
 //! parent's reference to it), and publishing each unit on its own lets a peer
 //! see half an action and leaves history without a name for the whole of it.
 //!
 //! A [`WorkspaceCommit`] is that name. It lists every unit the action wrote —
-//! the app and record, and the hash of each change it made there — under one
+//! the app and document, and the hash of each change it made there — under one
 //! author, one time, and the invocation and run it was made in. A part's
 //! document frame carries the commit inside its signed payload
 //! ([`WorkspaceCommit::frame`]), so the device signature over that payload
@@ -75,36 +75,36 @@ pub struct CommitGroup {
     pub kind: String,
 }
 
-/// One unit an action wrote: which app's record, and the hashes of the
+/// One unit an action wrote: which app's document, and the hashes of the
 /// changes it made there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitPart {
-    /// The app whose record the unit belongs to.
+    /// The app whose document the unit belongs to.
     pub app: String,
-    /// The record the unit belongs to; empty for the app's route without a
-    /// record (one document per app and workspace).
-    pub record: String,
+    /// The document the unit belongs to; empty for the app's route without a
+    /// document (one document per app and workspace).
+    pub document: String,
     /// The hash of every change the action made in this unit, in the order it
     /// made them.
     pub changes: Vec<[u8; 32]>,
 }
 
 impl CommitPart {
-    /// Whether this part is the unit of `app`'s `record`.
+    /// Whether this part is the unit of `app`'s `document`.
     #[must_use]
-    pub fn is(&self, app: &str, record: &str) -> bool {
-        self.app == app && self.record == record
+    pub fn is(&self, app: &str, document: &str) -> bool {
+        self.app == app && self.document == document
     }
 }
 
 /// One unit and what changed in it, as the publisher of a pass holds it.
 #[derive(Clone, Copy)]
 pub struct UnitMutation<'a> {
-    /// The app whose record the unit belongs to.
+    /// The app whose document the unit belongs to.
     pub app: &'a str,
-    /// The record the unit belongs to.
-    pub record: &'a str,
+    /// The document the unit belongs to.
+    pub document_id: &'a str,
     /// What changed in the unit during the pass.
     pub mutation: &'a DocumentMutation,
     /// The unit's document, holding the mutation's changes, when the
@@ -158,11 +158,11 @@ pub enum CommitError {
     #[error("workspace commit names no part")]
     NoParts,
     /// Two parts name the same unit.
-    #[error("workspace commit names {app:?}/{record:?} twice")]
-    DuplicatePart { app: String, record: String },
+    #[error("workspace commit names {app:?}/{document:?} twice")]
+    DuplicatePart { app: String, document: String },
     /// A part names no change.
-    #[error("workspace commit part {app:?}/{record:?} names no change")]
-    EmptyPart { app: String, record: String },
+    #[error("workspace commit part {app:?}/{document:?} names no change")]
+    EmptyPart { app: String, document: String },
     /// The commit is larger than [`MAX_COMMIT_BYTES`].
     #[error("workspace commit is {actual} bytes; maximum is {max}")]
     TooLarge { actual: usize, max: usize },
@@ -203,7 +203,7 @@ impl WorkspaceCommit {
     }
 
     /// The commit for one action that published `mutation` as the unit of
-    /// `app`'s `record`: the hash of every change it carries, the time the
+    /// `app`'s `document`: the hash of every change it carries, the time the
     /// latest of them was made, and the invocation and run they agree on.
     /// `None` for a mutation that carries no change (a snapshot, or an empty
     /// set).
@@ -213,13 +213,13 @@ impl WorkspaceCommit {
     pub fn of_mutation(
         workspace: &str,
         app: &str,
-        record: &str,
+        document: &str,
         author: &CommitAuthor,
         mutation: &DocumentMutation,
     ) -> Result<Option<Self>, CommitError> {
         let unit = UnitMutation {
             app,
-            record,
+            document_id: document,
             mutation,
             document: None,
         };
@@ -375,7 +375,7 @@ impl WorkspaceCommit {
                 .into_iter()
                 .map(|part| CommitPart {
                     app: part.app,
-                    record: part.record,
+                    document: part.document,
                     changes: part.changes,
                 })
                 .collect(),
@@ -410,34 +410,34 @@ impl WorkspaceCommit {
             if part.changes.is_empty() {
                 return Err(CommitError::EmptyPart {
                     app: part.app.clone(),
-                    record: part.record.clone(),
+                    document: part.document.clone(),
                 });
             }
             if self
                 .parts
                 .iter()
                 .take(index)
-                .any(|earlier| earlier.is(&part.app, &part.record))
+                .any(|earlier| earlier.is(&part.app, &part.document))
             {
                 return Err(CommitError::DuplicatePart {
                     app: part.app.clone(),
-                    record: part.record.clone(),
+                    document: part.document.clone(),
                 });
             }
         }
         Ok(())
     }
 
-    /// The part of `app`'s `record`, when the action wrote it.
+    /// The part of `app`'s `document`, when the action wrote it.
     #[must_use]
-    pub fn part(&self, app: &str, record: &str) -> Option<&CommitPart> {
-        self.parts.iter().find(|part| part.is(app, record))
+    pub fn part(&self, app: &str, document: &str) -> Option<&CommitPart> {
+        self.parts.iter().find(|part| part.is(app, document))
     }
 
-    /// Whether the action wrote the unit of `app`'s `record`.
+    /// Whether the action wrote the unit of `app`'s `document`.
     #[must_use]
-    pub fn covers(&self, app: &str, record: &str) -> bool {
-        self.part(app, record).is_some()
+    pub fn covers(&self, app: &str, document: &str) -> bool {
+        self.part(app, document).is_some()
     }
 
     /// The change `hash` is, as this commit names it: the unit and the position
@@ -578,13 +578,13 @@ struct CommitActionV1 {
 #[serde(deny_unknown_fields)]
 struct CommitPartV1 {
     app: String,
-    record: String,
+    document: String,
     changes: Vec<[u8; 32]>,
 }
 
 /// One unit's changes, read for the commit that names them.
 struct Read {
-    /// The unit as the commit names it: which app's record, which changes.
+    /// The unit as the commit names it: which app's document, which changes.
     part: CommitPart,
     /// The one invocation every change of the unit ran under, when they all
     /// ran under the same one: the action they are all part of.
@@ -610,7 +610,7 @@ impl Read {
         let mut read = Self {
             part: CommitPart {
                 app: unit.app.to_owned(),
-                record: unit.record.to_owned(),
+                document: unit.document_id.to_owned(),
                 changes: Vec::with_capacity(changes.len()),
             },
             signature: None,
@@ -679,10 +679,10 @@ mod tests {
         }
     }
 
-    fn part(app: &str, record: &str, change: u8) -> CommitPart {
+    fn part(app: &str, document: &str, change: u8) -> CommitPart {
         CommitPart {
             app: app.to_owned(),
-            record: record.to_owned(),
+            document: document.to_owned(),
             changes: vec![[change; 32]],
         }
     }
@@ -731,7 +731,7 @@ mod tests {
             assert!(!commit.covers("tasks", "c"));
             assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
             assert_eq!(
-                commit.change(&[2; 32]).map(|part| part.record.as_str()),
+                commit.change(&[2; 32]).map(|part| part.document.as_str()),
                 Some("b")
             );
             assert_eq!(commit.change(&[3; 32]), None);
@@ -782,7 +782,7 @@ mod tests {
                 WorkspaceCommit::decode(&twice.encode()),
                 Err(CommitError::DuplicatePart {
                     app: "tasks".to_owned(),
-                    record: "a".to_owned()
+                    document: "a".to_owned()
                 })
             );
 
@@ -792,7 +792,7 @@ mod tests {
                 WorkspaceCommit::decode(&empty.encode()),
                 Err(CommitError::EmptyPart {
                     app: "tasks".to_owned(),
-                    record: "b".to_owned()
+                    document: "b".to_owned()
                 })
             );
 
@@ -820,7 +820,7 @@ mod tests {
                 },
                 parts: vec![CommitPartV1 {
                     app: "tasks".to_owned(),
-                    record: "a".to_owned(),
+                    document: "a".to_owned(),
                     changes: vec![[5; 32]],
                 }],
             };
@@ -905,31 +905,31 @@ mod tests {
             let units = [
                 UnitMutation {
                     app: "tasks",
-                    record: "a",
+                    document_id: "a",
                     mutation: &title,
                     document: None,
                 },
                 UnitMutation {
                     app: "tasks",
-                    record: "b",
+                    document_id: "b",
                     mutation: &body,
                     document: None,
                 },
                 UnitMutation {
                     app: "chat",
-                    record: "t",
+                    document_id: "t",
                     mutation: &elsewhere,
                     document: None,
                 },
                 UnitMutation {
                     app: "tasks",
-                    record: "mixed",
+                    document_id: "mixed",
                     mutation: &mixed,
                     document: None,
                 },
                 UnitMutation {
                     app: "tasks",
-                    record: "s",
+                    document_id: "s",
                     mutation: &snapshot,
                     document: None,
                 },
@@ -1077,7 +1077,7 @@ mod tests {
             let first = doc.get_changes(&[])[0].hash();
             let unit = |mutation, document| UnitMutation {
                 app: "notes",
-                record: "",
+                document_id: "",
                 mutation,
                 document,
             };

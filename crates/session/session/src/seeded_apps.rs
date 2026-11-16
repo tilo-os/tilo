@@ -25,8 +25,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::notices::NOTICE_TAGS;
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Actor;
-use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::Principal;
 
 use crate::platform::notice::Toolkit;
 
@@ -85,12 +84,8 @@ pub fn seeded_from_env(person: &str) -> Result<Vec<RecordService>, String> {
 /// # Errors
 /// The document's host does not open.
 pub fn session_document(person: &str) -> Result<RecordService, String> {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person(person)),
-        || None,
-    )
-    .map_err(|e| e.to_string())?;
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
+        .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
     Ok(told(RecordService::session_document(host, person)))
 }
@@ -98,12 +93,8 @@ pub fn session_document(person: &str) -> Result<RecordService, String> {
 /// The record of the installed app `app`: its root made and filled by its first scenario as
 /// steps its authorship names, in a record of its own.
 fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String> {
-    let host = Host::new(
-        &tilo_resource::Doc::new(),
-        Actor::Member(MemberId::person(person)),
-        || None,
-    )
-    .map_err(|e| e.to_string())?;
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
+        .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
     // The packages the app is made with ride in its own bundle, and keep their records in its
     // record.
@@ -117,10 +108,7 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<RecordService, String>
         .map_err(|error| format!("{name}'s root: {error}"))?;
     if let Some(scenario) = package.meta.scenarios.first() {
         host.runtime()
-            .invoke_action(
-                &Actor::Member(MemberId::person(person)),
-                (scenario.action.as_str(), vec![]),
-            )
+            .invoke_action(&Principal::new(person), (scenario.action.as_str(), vec![]))
             .map_err(|error| format!("{name} {:?}: {error}", scenario.name))?;
     }
     Ok(RecordService::of_app(name, host, person))

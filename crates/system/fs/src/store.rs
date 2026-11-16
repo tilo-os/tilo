@@ -94,23 +94,23 @@ pub enum BlobRecordLookupError {
     InvalidLimits,
     #[error(transparent)]
     Namespace(#[from] LiveRecordBlobScanError),
-    #[error("live record {record_id:?} manifest {manifest} is not locally available")]
+    #[error("live record {document_id:?} manifest {manifest} is not locally available")]
     ManifestUnavailable {
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
         manifest: Hash,
     },
-    #[error("live record {record_id:?} manifest exceeds {limit} encoded bytes")]
+    #[error("live record {document_id:?} manifest exceeds {limit} encoded bytes")]
     ManifestTooLarge {
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
         limit: usize,
     },
-    #[error("live record {record_id:?} has a malformed manifest")]
+    #[error("live record {document_id:?} has a malformed manifest")]
     MalformedManifest {
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
     },
-    #[error("live record {record_id:?} manifest exceeds {limit} chunks")]
+    #[error("live record {document_id:?} manifest exceeds {limit} chunks")]
     TooManyChunks {
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
         limit: usize,
     },
 }
@@ -921,7 +921,7 @@ impl ContentStore {
     /// The lookup is bounded and fail-closed: it never returns paths or other records' metadata, and an
     /// unavailable or malformed manifest prevents a partial authorization result.
     #[cfg(feature = "filesystem")]
-    pub async fn live_record_ids_for_blob(
+    pub async fn live_document_ids_for_blob(
         &self,
         namespace: &Namespace,
         requested: Hash,
@@ -935,12 +935,12 @@ impl ContentStore {
             return Err(BlobRecordLookupError::InvalidLimits);
         }
         let roots = namespace.live_record_blob_roots(limits.max_live_records)?;
-        self.live_record_ids_for_blob_roots(roots, requested, limits)
+        self.live_document_ids_for_blob_roots(roots, requested, limits)
             .await
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn live_record_ids_for_blob_roots(
+    pub(crate) async fn live_document_ids_for_blob_roots(
         &self,
         roots: Vec<LiveRecordBlobRoots>,
         requested: Hash,
@@ -956,31 +956,31 @@ impl ContentStore {
         let mut records = std::collections::BTreeSet::new();
         for roots in roots {
             if roots.manifest == Some(requested) || roots.thumbnail == Some(requested) {
-                records.insert(roots.record_id);
+                records.insert(roots.document_id);
             }
             let Some(manifest_hash) = roots.manifest else {
                 continue;
             };
             let bytes = self.local(manifest_hash).await.ok_or(
                 BlobRecordLookupError::ManifestUnavailable {
-                    record_id: roots.record_id,
+                    document_id: roots.document_id,
                     manifest: manifest_hash,
                 },
             )?;
             if bytes.len() > limits.max_manifest_bytes {
                 return Err(BlobRecordLookupError::ManifestTooLarge {
-                    record_id: roots.record_id,
+                    document_id: roots.document_id,
                     limit: limits.max_manifest_bytes,
                 });
             }
             let manifest = crate::content::Manifest::decode(&bytes).map_err(|_| {
                 BlobRecordLookupError::MalformedManifest {
-                    record_id: roots.record_id,
+                    document_id: roots.document_id,
                 }
             })?;
             if manifest.chunks().len() > limits.max_chunks_per_record {
                 return Err(BlobRecordLookupError::TooManyChunks {
-                    record_id: roots.record_id,
+                    document_id: roots.document_id,
                     limit: limits.max_chunks_per_record,
                 });
             }
@@ -989,7 +989,7 @@ impl ContentStore {
                 .iter()
                 .any(|chunk| Hash::from(chunk.hash) == requested)
             {
-                records.insert(roots.record_id);
+                records.insert(roots.document_id);
             }
         }
         Ok(records.into_iter().collect())
@@ -1001,7 +1001,7 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
         version_id: fs_protocol::FileVersionId,
         manifest_hash: Hash,
     ) -> Result<VersionPayload> {
@@ -1025,7 +1025,7 @@ impl ContentStore {
             });
         }
         Ok(VersionPayload {
-            record_id,
+            document_id,
             version_id,
             manifest: BlobExtent {
                 hash: manifest_hash,
@@ -1513,7 +1513,7 @@ mod tests {
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
             let revision = fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: fs_protocol::FileDocumentId::new(),
+                document_id: fs_protocol::FileDocumentId::new(),
                 version_id: fs_protocol::FileVersionId::new(),
                 content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
                 byte_len: 13,
@@ -1533,7 +1533,7 @@ mod tests {
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
 
             let make_plan = |hash| EvictionPlan {
-                record_id: fs_protocol::FileDocumentId::new(),
+                document_id: fs_protocol::FileDocumentId::new(),
                 version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
@@ -1630,13 +1630,13 @@ mod tests {
             };
             let catalog = EvictionCatalog::new([
                 VersionPayload {
-                    record_id: target_id,
+                    document_id: target_id,
                     version_id: target_version,
                     manifest: extent(target_only, target_bytes.len() as u64),
                     chunks: vec![extent(shared, 6)],
                 },
                 VersionPayload {
-                    record_id: other_id,
+                    document_id: other_id,
                     version_id: other_version,
                     manifest: extent(other_only, 10),
                     chunks: vec![extent(shared, 6)],
@@ -1768,13 +1768,13 @@ mod tests {
             };
             let catalog = EvictionCatalog::new([
                 VersionPayload {
-                    record_id: target_id,
+                    document_id: target_id,
                     version_id: target_version,
                     manifest: extent(hash, 14),
                     chunks: Vec::new(),
                 },
                 VersionPayload {
-                    record_id: other_id,
+                    document_id: other_id,
                     version_id: other_version,
                     manifest: extent(other_hash, 10),
                     chunks: vec![extent(hash, 14)],
@@ -1849,16 +1849,16 @@ mod tests {
                 .await
                 .unwrap();
 
-            let record_id = fs_protocol::FileDocumentId::new();
+            let document_id = fs_protocol::FileDocumentId::new();
             let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-            let mut record = RecordAvailability::new(record_id, RecordKind::File);
+            let mut record = RecordAvailability::new(document_id, RecordKind::File);
             record.current_version = Some(version_id);
             record.residency = Residency::Resident { bytes: 20 };
             registry.put(record).unwrap();
             let catalog = EvictionCatalog::new([VersionPayload {
-                record_id,
+                document_id,
                 version_id,
                 manifest: BlobExtent {
                     hash,
@@ -1871,7 +1871,7 @@ mod tests {
             let plan = plan_destructive_eviction(
                 &registry,
                 &catalog,
-                record_id,
+                document_id,
                 1,
                 EvictionRequirements::default(),
             )
@@ -1979,21 +1979,21 @@ mod tests {
                     1,
                 )
                 .unwrap();
-            let first_record = namespace.record_id_for(first).unwrap();
-            let second_record = namespace.record_id_for(second).unwrap();
+            let first_record = namespace.document_id_for(first).unwrap();
+            let second_record = namespace.document_id_for(second).unwrap();
             assert!(namespace.set_thumb(first, &thumbnail));
             let limits = BlobRecordLookupLimits::default();
 
             assert_eq!(
                 store
-                    .live_record_ids_for_blob(&namespace, first_manifest, limits)
+                    .live_document_ids_for_blob(&namespace, first_manifest, limits)
                     .await
                     .unwrap(),
                 vec![first_record]
             );
             assert_eq!(
                 store
-                    .live_record_ids_for_blob(&namespace, shared_chunk, limits)
+                    .live_document_ids_for_blob(&namespace, shared_chunk, limits)
                     .await
                     .unwrap(),
                 vec![first_record, second_record]
@@ -2004,21 +2004,21 @@ mod tests {
             );
             assert_eq!(
                 store
-                    .live_record_ids_for_blob(&namespace, second_only_chunk, limits)
+                    .live_document_ids_for_blob(&namespace, second_only_chunk, limits)
                     .await
                     .unwrap(),
                 vec![second_record]
             );
             assert_eq!(
                 store
-                    .live_record_ids_for_blob(&namespace, thumbnail, limits)
+                    .live_document_ids_for_blob(&namespace, thumbnail, limits)
                     .await
                     .unwrap(),
                 vec![first_record]
             );
             assert!(
                 store
-                    .live_record_ids_for_blob(&namespace, Hash::from([88; 32]), limits)
+                    .live_document_ids_for_blob(&namespace, Hash::from([88; 32]), limits)
                     .await
                     .unwrap()
                     .is_empty()
@@ -2027,7 +2027,7 @@ mod tests {
             tight_limits.max_chunks_per_record = 1;
             assert!(matches!(
                 store
-                    .live_record_ids_for_blob(&namespace, shared_chunk, tight_limits)
+                    .live_document_ids_for_blob(&namespace, shared_chunk, tight_limits)
                     .await,
                 Err(BlobRecordLookupError::TooManyChunks { limit: 1, .. })
             ));
@@ -2035,12 +2035,12 @@ mod tests {
             assert!(namespace.remove(first));
             assert_eq!(
                 store
-                    .live_record_ids_for_blob(&namespace, shared_chunk, limits)
+                    .live_document_ids_for_blob(&namespace, shared_chunk, limits)
                     .await
                     .unwrap(),
                 vec![second_record]
             );
-            assert_eq!(namespace.record_id_for(second), Some(second_record));
+            assert_eq!(namespace.document_id_for(second), Some(second_record));
         }
         {
             let store = ContentStore::memory();
@@ -2055,19 +2055,19 @@ mod tests {
                     1,
                 )
                 .unwrap();
-            let record_id = namespace.record_id_for(ino).unwrap();
+            let document_id = namespace.document_id_for(ino).unwrap();
             assert!(matches!(
                 store
-                    .live_record_ids_for_blob(
+                    .live_document_ids_for_blob(
                         &namespace,
                         missing,
                         BlobRecordLookupLimits::default()
                     )
                     .await,
                 Err(BlobRecordLookupError::ManifestUnavailable {
-                    record_id: found,
+                    document_id: found,
                     manifest: found_manifest,
-                }) if found == record_id && found_manifest == missing
+                }) if found == document_id && found_manifest == missing
             ));
 
             let limits = BlobRecordLookupLimits {
@@ -2076,7 +2076,7 @@ mod tests {
             };
             assert!(matches!(
                 store
-                    .live_record_ids_for_blob(&namespace, missing, limits)
+                    .live_document_ids_for_blob(&namespace, missing, limits)
                     .await,
                 Err(BlobRecordLookupError::Namespace(
                     LiveRecordBlobScanError::InvalidLimit

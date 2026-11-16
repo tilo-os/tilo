@@ -74,7 +74,7 @@ impl ScreenWindow {
         window: &MemberWindow,
         name_of: &impl Fn(&str, &str) -> Option<String>,
     ) -> Option<Self> {
-        let record = <[u8; 8]>::try_from(hex::decode(&window.record).ok()?).ok()?;
+        let record = <[u8; 8]>::try_from(hex::decode(&window.document).ok()?).ok()?;
         let [x0, y0, x1, y1] = window.rect.map(f64::from);
         if window.app.is_empty() || x0 > x1 || y0 > y1 || x1 > UNITS || y1 > UNITS {
             return None;
@@ -84,7 +84,7 @@ impl ScreenWindow {
             record,
             rect: Rect::new(x0 / UNITS, y0 / UNITS, x1 / UNITS, y1 / UNITS),
             focused: window.focused,
-            name: name_of(&window.app, &window.record),
+            name: name_of(&window.app, &window.document),
         })
     }
 }
@@ -96,7 +96,7 @@ mod tests {
     fn window(app: &str, record: &str, rect: [u16; 4]) -> MemberWindow {
         MemberWindow {
             app: app.into(),
-            record: record.into(),
+            document: record.into(),
             rect,
             focused: false,
         }

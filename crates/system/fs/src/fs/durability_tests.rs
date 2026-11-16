@@ -61,8 +61,8 @@ impl Fixture {
         loaded
     }
 
-    fn versions(&self, record_id: fs_protocol::FileDocumentId) -> usize {
-        self.history.snapshot(record_id).unwrap().versions.len()
+    fn versions(&self, document_id: fs_protocol::FileDocumentId) -> usize {
+        self.history.snapshot(document_id).unwrap().versions.len()
     }
 }
 
@@ -120,7 +120,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         let fixture = Fixture::new().await;
         let fs = fixture.mount(true);
         let (ino, fh) = create_open(&fs, "notes.txt");
-        let record_id = fs.ns().record_id_for(ino).unwrap();
+        let document_id = fs.ns().document_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
         *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
@@ -152,13 +152,13 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         assert!(!fs.buffers().contains_key(&ino));
         assert_eq!(committed_bytes(&fs, ino).await, b"preciousBYTESs");
         assert!(fixture.staged().is_empty());
-        assert_eq!(fixture.versions(record_id), 2);
+        assert_eq!(fixture.versions(document_id), 2);
     }
     {
         let fixture = Fixture::new().await;
         let fs = fixture.mount(false);
         let (ino, fh) = create_open(&fs, "plain.bin");
-        let record_id = fs.ns().record_id_for(ino).unwrap();
+        let document_id = fs.ns().document_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"abc").unwrap();
         *fs.commit_fault.lock().unwrap() = Some((ino, EIO));
         assert_eq!(fs.fsync_inode(ino), Err(EIO));
@@ -167,7 +167,7 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         *fs.commit_fault.lock().unwrap() = None;
         assert_eq!(fs.fsync_inode(ino), Ok(()));
         assert_eq!(committed_bytes(&fs, ino).await, b"abc");
-        assert_eq!(fixture.versions(record_id), 2);
+        assert_eq!(fixture.versions(document_id), 2);
     }
 }
 
@@ -245,17 +245,17 @@ async fn a_file_backed_stage_syncs_commits_and_preserves_from_its_file() {
             .unwrap();
         fs.publish();
         let fh = open_handle(&fs, ino, true);
-        let record_id = fs.ns().record_id_for(ino).unwrap();
+        let document_id = fs.ns().document_id_for(ino).unwrap();
         fs.record_version(ino, fs_protocol::FileProvenance::Create, None);
         fs.write_buffer(ino, 0, &bytes).unwrap();
         assert!(fs.stage(ino).unwrap().lock().is_file_backed());
         assert_eq!(fs.fsync_inode(ino), Ok(()));
         assert_eq!(fixture.staged()[0].bytes, bytes);
-        assert_eq!(fixture.versions(record_id), 1);
+        assert_eq!(fixture.versions(document_id), 1);
         assert_eq!(fs.flush_inode(ino), Ok(()));
         assert_eq!(fs.release_handle(ino, fh), Ok(()));
         assert_eq!(committed_bytes(&fs, ino).await, bytes);
-        assert_eq!(fixture.versions(record_id), 2);
+        assert_eq!(fixture.versions(document_id), 2);
         assert!(fixture.staged().is_empty());
     }
     {
@@ -294,7 +294,7 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
     let mut fixture = Fixture::new().await;
     let on_disk = Arc::new(Mutex::new(fixture.namespace.lock().unwrap().save()));
     let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let record_id = {
+    let document_id = {
         let fs = fixture.mount(true);
         fs.set_durability_hook({
             let namespace = Arc::clone(&fixture.namespace);
@@ -324,7 +324,7 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
             fs.staged_bytes(other).as_deref(),
             Some(b"never synced".as_slice())
         );
-        fs.ns().record_id_for(ino).unwrap()
+        fs.ns().document_id_for(ino).unwrap()
     };
 
     let bytes = on_disk.lock().unwrap().clone();
@@ -338,7 +338,7 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
         .expect("a synced file keeps its name across a crash")
         .ino
         .0;
-    assert_eq!(fs.ns().record_id_for(ino), Some(record_id));
+    assert_eq!(fs.ns().document_id_for(ino), Some(document_id));
     assert!(fs.recover_unsaved_writes() >= 1);
     assert_eq!(committed_bytes(&fs, ino).await, b"committed transaction");
     assert!(

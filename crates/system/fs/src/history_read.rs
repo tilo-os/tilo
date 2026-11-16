@@ -39,14 +39,14 @@ impl QuickFS {
         {
             return Err(Error::NotVisible);
         }
-        let record_id = namespace.record_id_for(ino).ok_or(Error::NotVisible)?;
+        let document_id = namespace.document_id_for(ino).ok_or(Error::NotVisible)?;
         let snapshot = namespace
-            .record_history(record_id)
+            .record_history(document_id)
             .ok_or(Error::Unavailable)?;
         let current_revision = namespace.content_revision_for(ino);
         if let Some(revision) = current_revision
             && (revision.validate().is_err()
-                || revision.record_id != record_id
+                || revision.document_id != document_id
                 || !snapshot.versions.iter().any(|v| {
                     v.id == revision.version_id
                         && v.content_hash == revision.content_hash
@@ -62,7 +62,7 @@ impl QuickFS {
             "tilo.history-read.v1",
             workspace_id,
             self.mount_lifetime,
-            record_id,
+            document_id,
             &path,
             &snapshot,
             current_revision,
@@ -72,7 +72,7 @@ impl QuickFS {
             Scope {
                 workspace_id,
                 mount_lifetime: self.mount_lifetime,
-                record_id,
+                document_id,
                 frontier: *blake3::hash(&bytes).as_bytes(),
             },
             snapshot,
@@ -83,14 +83,14 @@ impl QuickFS {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
         // Read after the history snapshot released the namespace and history
         // locks: the record repository is never taken under them.
-        let attributions = self.version_attributions(scope.record_id);
+        let attributions = self.version_attributions(scope.document_id);
         snapshot.read_query(scope, current_revision, query, &attributions)
     }
     fn version_attributions(
         &self,
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
     ) -> Vec<fs_protocol::FileVersionAttributionV1> {
-        self.ns().version_attributions(record_id)
+        self.ns().version_attributions(document_id)
     }
 
     /// Read a version preview, provided the history frontier still matches.
@@ -158,7 +158,7 @@ impl QuickFS {
         let (current, snapshot, _) = self.history_read_snapshot(ino)?;
         if current.workspace_id != scope.workspace_id
             || current.mount_lifetime != scope.mount_lifetime
-            || current.record_id != scope.record_id
+            || current.document_id != scope.document_id
         {
             return Err(Error::Stale);
         }

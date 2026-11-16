@@ -1,6 +1,6 @@
 //! The routing key one connection names on the collaboration wire.
 //!
-//! An app's traffic is addressed by `(app_id, cluster_id, record_id)`,
+//! An app's traffic is addressed by `(app_id, cluster_id, document_id)`,
 //! but a join carries a single channel string, so the triple travels *inside* the channel id. This pair of
 //! functions is the only place the encoding is written down, so the two
 //! halves cannot drift apart.
@@ -8,11 +8,11 @@
 //! # Shape
 //!
 //! ```text
-//! <cluster>[#app:<app_id>][#record:<record_id>]
+//! <cluster>[#app:<app_id>][#document:<document_id>]
 //! ```
 //!
-//! A uuid contains no `#`. `#record:` is stripped first and takes
-//! everything after it, so a `#`-containing record id (a file path may
+//! A uuid contains no `#`. `#document:` is stripped first and takes
+//! everything after it, so a `#`-containing document id (a file path may
 //! have one) stays intact. Both suffixes are optional, so a missing
 //! `#app:` yields an empty app id rather than failing to parse — needed
 //! for the earlier two-field keys chrome traffic still rides.
@@ -22,31 +22,31 @@
 //! the workspace.
 
 /// Encode a route triple into one channel id.
-pub fn format(app_id: &str, cluster_id: &str, record_id: &str) -> String {
+pub fn format(app_id: &str, cluster_id: &str, document_id: &str) -> String {
     let mut key = String::from(cluster_id);
     if !app_id.is_empty() {
         key.push_str("#app:");
         key.push_str(app_id);
     }
-    if !record_id.is_empty() {
-        key.push_str("#record:");
-        key.push_str(record_id);
+    if !document_id.is_empty() {
+        key.push_str("#document:");
+        key.push_str(document_id);
     }
     key
 }
 
-/// Decode a channel id into `(app_id, cluster_id, record_id)`. Total:
+/// Decode a channel id into `(app_id, cluster_id, document_id)`. Total:
 /// every string decodes, and one naming no marker is a bare cluster.
 pub fn parse(key: &str) -> (String, String, String) {
-    let (head, record_id) = match key.split_once("#record:") {
-        Some((head, record)) => (head, record.to_string()),
+    let (head, document_id) = match key.split_once("#document:") {
+        Some((head, document)) => (head, document.to_string()),
         None => (key, String::new()),
     };
     let (cluster, app_id) = match head.split_once("#app:") {
         Some((cluster, app)) => (cluster, app.to_string()),
         None => (head, String::new()),
     };
-    (app_id, cluster.to_string(), record_id)
+    (app_id, cluster.to_string(), document_id)
 }
 
 #[cfg(test)]
@@ -57,16 +57,16 @@ mod tests {
     fn channel_keys_round_trip_every_field_combination_and_legacy_form() {
         // Case `round_trips_every_combination_of_present_fields`.
         {
-            for (app, cluster, record) in [
+            for (app, cluster, document) in [
                 ("", "c", ""),
                 ("app", "c", ""),
                 ("", "c", "rec"),
                 ("app", "c", "rec"),
             ] {
-                let key = format(app, cluster, record);
+                let key = format(app, cluster, document);
                 assert_eq!(
                     parse(&key),
-                    (app.to_string(), cluster.to_string(), record.to_string()),
+                    (app.to_string(), cluster.to_string(), document.to_string()),
                     "key {key:?} did not round-trip",
                 );
             }
@@ -81,7 +81,7 @@ mod tests {
                 (String::new(), "cluster-1".into(), String::new()),
             );
             assert_eq!(
-                parse("cluster-1#record:/notes/a.md"),
+                parse("cluster-1#document:/notes/a.md"),
                 (String::new(), "cluster-1".into(), "/notes/a.md".into()),
             );
         }
@@ -89,7 +89,7 @@ mod tests {
         // Case `a_record_id_containing_a_hash_survives`.
         {
             // Record ids are file paths and a path may contain `#`.
-            // Stripping `#record:` first and keeping the whole tail is
+            // Stripping `#document:` first and keeping the whole tail is
             // what makes that safe.
             let key = format("app", "c", "/notes/draft#2.md");
             assert_eq!(

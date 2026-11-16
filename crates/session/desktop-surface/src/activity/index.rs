@@ -619,13 +619,13 @@ mod folder_rows_tests {
 
     fn write_version(
         doc: &mut AutoCommit,
-        record_id: fs_protocol::FileDocumentId,
+        document_id: fs_protocol::FileDocumentId,
         id: u128,
         agent: Option<fs_protocol::AttributedWriter>,
     ) {
         let version = FileVersionV1 {
             id: FileVersionId(Uuid::from_u128(id)),
-            record_id,
+            document_id,
             parents: Vec::new(),
             actor: FileActor {
                 person: Ed25519PublicKey(person()),
@@ -643,7 +643,7 @@ mod folder_rows_tests {
                 .unwrap(),
         };
         let record = doc
-            .put_object(&root, record_id.0.to_string(), automerge::ObjType::Map)
+            .put_object(&root, document_id.0.to_string(), automerge::ObjType::Map)
             .unwrap();
         let versions = doc
             .put_object(&record, "versions", automerge::ObjType::Map)
@@ -708,11 +708,11 @@ mod folder_rows_tests {
                 (1_000, &hex::encode(device())),
             )
             .unwrap();
-            let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+            let document_id = tree.node(&placed.id).unwrap().document_id.unwrap();
             // One session's run: two versions, minutes apart, coalesced into one row.
             write_version(
                 &mut doc,
-                record_id,
+                document_id,
                 1,
                 Some(fs_protocol::AttributedWriter::agent_session(
                     "claude", "abc",
@@ -720,7 +720,7 @@ mod folder_rows_tests {
             );
             write_version(
                 &mut doc,
-                record_id,
+                document_id,
                 2,
                 Some(fs_protocol::AttributedWriter::agent_session(
                     "claude", "abc",
@@ -758,10 +758,10 @@ mod folder_rows_tests {
                     (1_000, &hex::encode(device())),
                 )
                 .unwrap();
-                let record_id = tree.node(&placed.id).unwrap().record_id.unwrap();
+                let document_id = tree.node(&placed.id).unwrap().document_id.unwrap();
                 write_version(
                     &mut doc,
-                    record_id,
+                    document_id,
                     u128::from(name.len() as u64) + 10,
                     None,
                 );

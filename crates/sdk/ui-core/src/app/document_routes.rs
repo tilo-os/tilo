@@ -724,7 +724,7 @@ fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::Workspace
         let workspace = part.route.cluster_id;
         let unit = collab_types::UnitMutation {
             app: &part.route.app_id,
-            record: part.route.record.as_deref().unwrap_or(""),
+            document_id: part.route.record.as_deref().unwrap_or(""),
             mutation: &part.mutation,
             document: Some(part.document.document()),
         };

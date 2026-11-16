@@ -38,7 +38,7 @@ fn signed_file_invite_keeps_its_wire_bytes_and_signature() {
     let bytes = hex::decode(SIGNED_FILE_INVITE).unwrap();
     let invite: FileInviteV1 = from_canonical_bytes(&bytes).unwrap();
     invite.verify_at(0).unwrap();
-    assert_eq!(invite.record_id, record(0x66));
+    assert_eq!(invite.document_id, record(0x66));
     assert_eq!(invite.permission, FilePermission::View);
     assert_eq!(
         invite.subject,
@@ -62,11 +62,11 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
     ]
     .into_iter()
     .enumerate()
-    .map(|(index, (record_id, role))| {
+    .map(|(index, (document_id, role))| {
         let offset = u128::try_from(index).unwrap();
         let proposed_version = FileVersionV1 {
             id: version(0x301 + offset),
-            record_id,
+            document_id,
             parents: vec![version(0x401 + offset)],
             actor,
             timestamp_ms: 44,
@@ -79,12 +79,12 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             },
         };
         let mut participant = FileMutationParticipant {
-            record_id,
+            document_id,
             role,
             expected_version: version(0x401 + offset),
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
-                record_id,
+                document_id,
                 parent: Some(destination_parent),
                 name: "destination.txt".into(),
                 kind: FileNodeKind::File,
@@ -94,7 +94,7 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
             },
             proposed_content_revision: Some(ContentRevisionV1 {
                 schema_version: CONTENT_REVISION_VERSION,
-                record_id,
+                document_id,
                 version_id: proposed_version.id,
                 content_hash: proposed_version.content_hash,
                 byte_len: 0,

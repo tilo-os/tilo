@@ -197,7 +197,7 @@ impl Commits {
 }
 
 fn key(part: &CommitPart) -> (String, String) {
-    (part.app.clone(), part.record.clone())
+    (part.app.clone(), part.document.clone())
 }
 
 /// Actions this endpoint holds parts of, waiting for the rest. Bounded so a
@@ -336,13 +336,13 @@ mod tests {
         let units = [
             collab_types::UnitMutation {
                 app: "tasks",
-                record: "a",
+                document_id: "a",
                 mutation: &first_mutation,
                 document: None,
             },
             collab_types::UnitMutation {
                 app: "discussion",
-                record: "thread",
+                document_id: "thread",
                 mutation: &second_mutation,
                 document: None,
             },
@@ -415,7 +415,7 @@ mod tests {
                 &publisher(),
                 &[collab_types::UnitMutation {
                     app: "discussion",
-                    record: "thread",
+                    document_id: "thread",
                     mutation: &mutation(&mut second.clone()),
                     document: None,
                 }],
@@ -573,13 +573,13 @@ mod tests {
                 &[
                     collab_types::UnitMutation {
                         app: "tasks",
-                        record: "a",
+                        document_id: "a",
                         mutation: &undo_first,
                         document: None,
                     },
                     collab_types::UnitMutation {
                         app: "discussion",
-                        record: "thread",
+                        document_id: "thread",
                         mutation: &undo_second,
                         document: None,
                     },
@@ -699,12 +699,12 @@ mod tests {
                     vec![
                         CommitPart {
                             app: "tasks".to_owned(),
-                            record: "a".to_owned(),
+                            document: "a".to_owned(),
                             changes: vec![first_change],
                         },
                         CommitPart {
                             app: "tasks".to_owned(),
-                            record: "b".to_owned(),
+                            document: "b".to_owned(),
                             changes: vec![[u8::try_from(index).unwrap(); 32]],
                         },
                     ],

@@ -1362,7 +1362,7 @@ impl InstanceRecord {
             .zip(&records)
             .map(|((_, mutation), record)| collab_types::UnitMutation {
                 app: &self.route.app_id,
-                record,
+                document_id: record,
                 mutation,
                 document: None,
             })

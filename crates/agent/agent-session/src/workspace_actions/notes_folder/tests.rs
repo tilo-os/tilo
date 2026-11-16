@@ -45,15 +45,15 @@ fn written_by_agent(
     let ino = tree.resolve_path_ino(path).or_else(|| {
         // A deleted file is no longer at its path: its node is in the trash.
         let id = tree.directly_trashed().into_iter().next()?;
-        tree.record_id_for_id(&id)
-            .and_then(|record| tree.ino_for_record_id(record))
+        tree.document_id_for_id(&id)
+            .and_then(|record| tree.ino_for_document_id(record))
     });
     let record = tree
-        .record_id_for(ino.expect("the file"))
+        .document_id_for(ino.expect("the file"))
         .expect("its record");
     let version = FileVersionV1 {
         id: FileVersionId(uuid::Uuid::new_v4()),
-        record_id: record,
+        document_id: record,
         parents: Vec::new(),
         actor: FileActor {
             person: Ed25519PublicKey(PERSON),

@@ -1052,7 +1052,7 @@ impl TilolangHost {
                 .iter()
                 .map(|(app, record, mutation)| collaboration::UnitMutation {
                     app,
-                    record,
+                    document_id: record,
                     mutation,
                     document: None,
                 })

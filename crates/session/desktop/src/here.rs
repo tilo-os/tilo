@@ -1303,7 +1303,7 @@ fn window_of(tree: &Layout, records: &[(TabId, String, String)], focus: &Focus) 
     records
         .iter()
         .find(|(tab, app, record)| {
-            *record == focus.record && *app == focus.app && shown.contains(tab)
+            *record == focus.document && *app == focus.app && shown.contains(tab)
         })
         .map(|(tab, _, _)| *tab)
 }
