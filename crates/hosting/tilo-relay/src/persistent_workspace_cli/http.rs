@@ -121,6 +121,11 @@ async fn handle<B>(http: &Http, request: Request<B>) -> Response<Full<Bytes>> {
     if request.method() != Method::GET {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
+    let wants_a_page = request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|accept| accept.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
     let path = request.uri().path().to_owned();
     let query = request.uri().query().unwrap_or_default().to_owned();
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -133,6 +138,11 @@ async fn handle<B>(http: &Http, request: Request<B>) -> Response<Full<Bytes>> {
         })),
         ["avatars", name] => avatar(http, name).await,
         ["discord", "callback"] => http.callback(&query).await,
+        // A browser that opened an address here asks for a page, not for a
+        // text body: it goes to the site, which has one.
+        _ if wants_a_page && http.web_entry.is_some() => {
+            redirect(http.web_entry.as_deref().unwrap_or_default())
+        }
         _ => error(StatusCode::NOT_FOUND, "not found"),
     }
 }
@@ -189,8 +199,9 @@ impl Http {
     }
 }
 
-/// A sign-in with Discord that linked nothing: a plain page saying why and
-/// what to do, with the way back into Tilo.
+/// A sign-in with Discord that linked nothing: the product's own card saying
+/// why, with the one way on — back to Tilo, where Connect Discord starts it
+/// again.
 fn failed_page(said: &str, web_entry: &str) -> Response<Full<Bytes>> {
     let escape = |text: &str| {
         text.replace('&', "&amp;")
@@ -199,11 +210,29 @@ fn failed_page(said: &str, web_entry: &str) -> Response<Full<Bytes>> {
             .replace('"', "&quot;")
     };
     let page = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
-         <title>Linking Discord didn't work</title>\
-         <body style=\"font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1c1c1e\">\
-         <h1 style=\"font-size:1.4rem\">Linking Discord didn't work</h1><p>{}</p>\
-         <p><a href=\"{}\" style=\"color:#5865f2\">Back to Tilo</a></p>",
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+<meta name=viewport content=\"width=device-width,initial-scale=1\">\
+<title>Discord didn't link</title>\
+<style>\
+:root{{color-scheme:dark;--ground:#121214;--card:#1c1d21;--line:#2c2e34;--shadow:rgb(0 0 0/45%);--ink:#ddd;--heading:#f2f2f4;--text:#b9b9c0;--primary-bg:#f2f2f4;--primary-ink:#121214;--primary-hover:#fff}}\
+@media (prefers-color-scheme:light){{:root{{color-scheme:light;--ground:#f5f5f7;--card:#fff;--line:#e2e3e8;--shadow:rgb(15 18 32/12%);--ink:#26272b;--heading:#121214;--text:#55565e;--primary-bg:#1b1c20;--primary-ink:#fff;--primary-hover:#000}}}}\
+html,body{{margin:0;min-height:100%;background:var(--ground);color:var(--ink);font:14px/1.5 system-ui,sans-serif}}\
+body{{display:grid;place-items:center;box-sizing:border-box;padding:16px}}\
+.card{{display:grid;gap:18px;box-sizing:border-box;width:min(380px,100%);padding:26px;border-radius:14px;background:var(--card);border:1px solid var(--line);box-shadow:0 12px 40px var(--shadow)}}\
+.card svg{{display:block}}\
+h1{{margin:0;font-size:19px;font-weight:600;line-height:1.35;color:var(--heading);text-wrap:balance}}\
+p{{margin:0;color:var(--text)}}\
+a.primary{{justify-self:start;display:inline-block;padding:8px 14px;border-radius:8px;background:var(--primary-bg);color:var(--primary-ink);font-weight:500;text-decoration:none}}\
+a.primary:hover{{background:var(--primary-hover)}}\
+a.primary:focus-visible{{outline:2px solid #9ab4ff;outline-offset:2px}}\
+</style></head>\
+<body><main class=card aria-labelledby=heading>\
+<svg aria-hidden=true viewBox=\"0 0 100 100\" width=40 height=40>\
+<path d=\"M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z\" fill=\"#3b4376\"/>\
+<path d=\"M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z\" fill=\"#3b4376\"/>\
+<rect x=29 y=16 width=42 height=68 rx=6 fill=\"#6f82ff\"/></svg>\
+<h1 id=heading>Discord didn't link</h1><p>{}</p>\
+<a class=primary href=\"{}\">Back to Tilo</a></main></body></html>",
         escape(said),
         escape(web_entry)
     );

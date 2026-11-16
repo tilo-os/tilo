@@ -648,6 +648,50 @@ async fn a_browser_that_opens_a_link_at_the_host_is_sent_to_its_site() {
     stop(relay, serving).await;
 }
 
+/// A browser that opens an address this host does not serve asks for a page,
+/// not for a text body: it is sent on to the site the host belongs to. A
+/// caller that asks for data keeps its answer.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay holds the shelf until it shuts down at the end"
+)]
+async fn a_browser_that_opens_an_unknown_address_is_sent_to_the_site() {
+    let root = SigningKey::from_bytes(&[151; 32]);
+    let host = host(&root, 152, tilo_user_identity::DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let site = "https://app.example";
+    let (addr, serving) = serve_web(Arc::new(web_of_at(
+        &relay,
+        &host,
+        Some(&format!("{site}/")),
+    )))
+    .await;
+
+    let browser = "GET /somewhere HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: text/html\r\n\r\n";
+    let (status, head, _) = exchange(addr, browser, b"").await;
+    assert_eq!(status, 302, "{head}");
+    assert_eq!(
+        header_value(&head, "location"),
+        Some(site),
+        "the browser lands on the site, which has a page for it: {head}"
+    );
+
+    // A request for data is answered as a host answers one it cannot take.
+    let data = "GET /somewhere HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: application/json\r\n\r\n";
+    let (status, head, _) = exchange(addr, data, b"").await;
+    assert_eq!(status, 405, "{head}");
+
+    // A host that knows no site answers as it always has.
+    let (unhosted, second) = serve_web(Arc::new(web_of(&relay, &host))).await;
+    let (status, head, _) = exchange(unhosted, browser, b"").await;
+    assert_eq!(status, 405, "{head}");
+    second.abort();
+
+    stop(relay, serving).await;
+}
+
 /// A link is pasted into a message and read days later, so what it names
 /// outlives the relay that was handed it: an invitation left before a restart
 /// is fetched back, and taken back, on the relay that comes up next on the same

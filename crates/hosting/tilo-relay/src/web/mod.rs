@@ -689,6 +689,40 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
     reply(status, message.as_bytes().to_vec())
 }
 
+/// Whether the request asks for a page a person reads, as a browser opening an
+/// address does, rather than for a body a caller takes as data.
+pub(super) fn wants_a_page(request: &Request<hyper::body::Incoming>) -> bool {
+    request
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|accept| accept.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"))
+}
+
+/// The answer to a browser that opened the host's own address: on to the page
+/// that can take it, a redirect the browser follows by itself.
+pub(super) fn redirect_to(location: &str) -> Response<Body> {
+    let mut response = reply(StatusCode::FOUND, Vec::new());
+    if let Ok(location) = header::HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, location);
+    }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// Where a browser that asked this host for a page it does not serve goes:
+/// the site the host belongs to, when it knows one.
+fn site_for_a_page(web: &Web, request: &Request<hyper::body::Incoming>) -> Option<Response<Body>> {
+    if request.method() != Method::GET || !wants_a_page(request) {
+        return None;
+    }
+    let site = web.site.as_ref()?;
+    (!site.served_it(request)).then(|| redirect_to(&site.origin))
+}
+
 fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Body> {
     match serde_json::to_vec(value) {
         Ok(json) => {
@@ -917,7 +951,10 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())
     } else if request.method() != Method::POST {
-        status(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+        // A browser that opened an address here asks for a page, not for a
+        // text body: it goes to the site the host belongs to, which has one.
+        site_for_a_page(web, &request)
+            .unwrap_or_else(|| status(StatusCode::METHOD_NOT_ALLOWED, "POST only"))
     } else {
         route(web, request)
             .await

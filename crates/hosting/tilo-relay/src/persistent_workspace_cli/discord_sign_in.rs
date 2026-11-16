@@ -74,10 +74,10 @@ impl Failed {
         match self {
             Self::Declined => "Linking was cancelled on Discord.",
             Self::Malformed => {
-                "This address doesn't carry a sign-in from Discord. Go back to Tilo and choose Connect Discord again."
+                "This link doesn't carry a Discord sign-in. Start Connect Discord again from Tilo."
             }
             Self::Discord => {
-                "Discord didn't confirm the sign-in. It may have taken too long. Go back to Tilo and choose Connect Discord again."
+                "Discord didn't confirm the sign-in. It may have taken too long. Start Connect Discord again from Tilo."
             }
         }
     }
