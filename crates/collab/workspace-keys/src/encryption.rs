@@ -1870,21 +1870,10 @@ impl SharedKeys {
         workspace: WorkspaceId,
         envelope: &SignedOp,
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
-        let retention = metadata
-            .retention()
-            .ok_or("the write is not sealed with a content key")?;
         let (KeyAccess::Ready(keys), _) = self.access(workspace) else {
             return Err("this device holds no key for the write's group".into());
         };
-        let plaintext = keys
-            .open_content(envelope.artifact, &metadata, &envelope.payload)
-            .map_err(|error| error.to_string())?;
-        if metadata.epoch == keys.epoch() {
-            return Ok((metadata, envelope.payload.clone()));
-        }
-        keys.seal_content(envelope.artifact, retention, &plaintext)
-            .map_err(|error| error.to_string())
+        crate::history::HistoryKeys::from(keys).renew(envelope)
     }
 
     /// See [`WorkspaceKeys::pump`].

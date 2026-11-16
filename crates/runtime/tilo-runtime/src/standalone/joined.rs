@@ -134,7 +134,7 @@ impl Joined {
             .map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
         let keys = KeyProvider::default();
-        owner.keep_sealed_histories(Arc::new(tilo_session_client::engine::HistoryKeys(
+        owner.keep_sealed_histories(Arc::new(tilo_session_client::engine::HistoryKeys::new(
             keys.clone(),
         )));
         let joined = Arc::new_cyclic(|this| Self {

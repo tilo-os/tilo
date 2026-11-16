@@ -60,6 +60,8 @@ mod forgotten_device;
 mod fresh_person;
 #[path = "guest_opens_chat.rs"]
 mod guest_opens_chat;
+#[path = "handed_history.rs"]
+mod handed_history;
 #[path = "headless_audio_lifetime.rs"]
 mod headless_audio_lifetime;
 #[path = "held_document_keys.rs"]

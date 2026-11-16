@@ -47,6 +47,48 @@ impl HistoryKeys {
             .map(|plaintext| plaintext.to_vec())
             .map_err(|error| error.to_string())
     }
+
+    /// Seal `cleartext`, the merged history of `app`'s `record`, as that record's checkpoint
+    /// under the epoch these keys seal with now. The plaintext never leaves this call.
+    pub fn seal_checkpoint(
+        &self,
+        app: &str,
+        record: &str,
+        cleartext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let artifact =
+            collab_types::document_artifact_id(app, &self.0.workspace().to_string(), record);
+        // A compaction's snapshot too large for one op goes as segments, the
+        // later ones following its first in a store's retained tail.
+        self.0
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::of_frame(cleartext),
+                cleartext,
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    /// The payload a renewal of `envelope`, a sealed write of this device, carries under a
+    /// fresh timestamp and sequence: the identical ciphertext while its epoch is the one these
+    /// keys seal with, else its content re-sealed under that epoch. The plaintext never leaves
+    /// this call.
+    pub fn renew(&self, envelope: &SignedOp) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let retention = metadata
+            .retention()
+            .ok_or("the write is not sealed with a content key")?;
+        let plaintext = self
+            .0
+            .open_content(envelope.artifact, &metadata, &envelope.payload)
+            .map_err(|error| error.to_string())?;
+        if metadata.epoch == self.0.epoch() {
+            return Ok((metadata, envelope.payload.clone()));
+        }
+        self.0
+            .seal_content(envelope.artifact, retention, &plaintext)
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl SharedKeys {
@@ -88,19 +130,10 @@ impl SharedKeys {
         record: &str,
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let name = workspace.to_string();
-        let artifact = collab_types::document_artifact_id(app, &name, record);
         let (access, _) = self.access(workspace);
         let KeyAccess::Ready(keys) = access else {
             return Err("this device holds no current key for the record's group".into());
         };
-        // A compaction's snapshot too large for one op goes as segments, the
-        // later ones following its first in a store's retained tail.
-        keys.seal_content(
-            artifact,
-            collab_types::ContentRetention::of_frame(cleartext),
-            cleartext,
-        )
-        .map_err(|error| error.to_string())
+        HistoryKeys(keys).seal_checkpoint(app, record, cleartext)
     }
 }
