@@ -101,7 +101,7 @@ fn relay(arguments: &[&str]) -> String {
     let output = std::process::Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("NO_COLOR", "1")
         .args(arguments)
-        .output()
+        .output_locked()
         .expect("tilo-relay runs");
     let said = format!(
         "{}{}",
