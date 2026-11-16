@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, codeWait, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstRun, FOLLOW_MS, MAKE_MS,
-  manualCommands, MCP_URL, OFFER_MS, openFirstRun, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
+  manualCommands, MCP_URL, OFFER_MS, openFirstRun, openSignIn, PASSKEY_WAIT_MS, RENEW_MS, readSetup, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
   signInPrompt, startFirstRun, stepLines, minutesLeft} from './first-run.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -1040,6 +1040,22 @@ test('the agent setup can be shown again from the person\'s card, in the same pl
   document.getElementById('first-run').dataset.closing = '';
   assert.notEqual(screen().removed, true, 'the same screen is shown the next time');
   assert.equal(openFirstRun({getElementById: () => null}), null, 'a page without one shows nothing');
+});
+
+test('signing in from the wait list as the setup screen fades out keeps the sign-in on the page', async () => {
+  const {document, root} = stubDocument();
+  root.setAttribute('data-first-run', '');
+  // The wait list closes the first visit's setup screen: it fades, then leaves the page.
+  domView(document).close();
+  // "Sign in with your agent", pressed before the fade is over.
+  assert.ok(openSignIn(document));
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(root.getAttribute('data-first-run'), '', 'the sign-in screen is still shown once the fade is over');
+  assert.equal(document.getElementById('first-run').getAttribute('data-closing'), null, 'and nothing on it is fading');
+  // A close nothing opened again after still takes the screen off the page.
+  domView(document).close();
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.equal(root.getAttribute('data-first-run'), null, 'a closed screen leaves the page');
 });
 
 test('a setup reopened from the card asks for a fresh code, not one an earlier visit kept', () => {

@@ -1172,11 +1172,14 @@ export function domView(document) {
     signingIn(busy) { $('first-run-passkey').setAttribute('aria-busy', String(busy)); },
     signInFailed() { say('That passkey did not sign you in. Try another, or sign in with your agent.'); },
     close() {
-      $('first-run').dataset.closing = '';
+      $('first-run').setAttribute('data-closing', '');
       // The screen fades, then leaves the page: reduced motion skips the fade. It stays in the
       // document, hidden, so the person's card can show it again ("Connect an agent"): the
-      // setup is one flow, wherever it is opened.
+      // setup is one flow, wherever it is opened. Opened again during the fade (signing in
+      // from the wait list the moment it shows), the screen is no longer closing, and the
+      // fade's end leaves it on the page.
       const done = () => {
+        if ($('first-run')?.getAttribute('data-closing') === null) return;
         root.removeAttribute('data-first-run');
         $('first-run')?.removeAttribute('data-closing');
       };
