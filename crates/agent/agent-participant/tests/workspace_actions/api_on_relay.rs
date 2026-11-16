@@ -73,7 +73,7 @@ pub struct OnRelay {
     /// Where its workspaces' Terminal sessions keep their files, when it runs
     /// them: under the system's temporary directory, which a shell's sandbox
     /// grants, unlike the shared memory the state is kept in.
-    _shells: Option<tempfile::TempDir>,
+    pub shells: Option<tempfile::TempDir>,
 }
 
 impl OnRelay {
@@ -212,7 +212,7 @@ async fn start(
         hosted,
         _site: site,
         state,
-        _shells: shells,
+        shells,
     }
 }
 
@@ -230,7 +230,7 @@ impl OnRelay {
             hosted,
             _site: site,
             state,
-            _shells,
+            shells,
             ..
         } = self;
         let Hosted {
@@ -276,7 +276,7 @@ impl OnRelay {
             hosted,
             _site: site,
             state,
-            _shells,
+            shells,
         }
     }
 }
