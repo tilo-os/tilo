@@ -13,6 +13,7 @@ use ui_core::application::{
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
+use ui_core::permissions::MemberId;
 use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
 use ui_core::record::{RecordId, RecordKind};
 use ui_core::storage::AppStorage;
