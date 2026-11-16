@@ -15,7 +15,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
 rsync on `PATH`). Headless and vkms
-slots need no GPU, so every row runs them.
+accounts need no GPU, so every row runs them.
 
 ## Linux: libvirt's user session
 

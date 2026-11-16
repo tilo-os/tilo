@@ -54,8 +54,8 @@ def start_management(current: TiloVm, startup: TiloVm, source: Path | None,
 def bootstrap_management(base: TiloVm, current: TiloVm, source: Path, ref: str) -> dict:
     """Use ordinary swap admission; the new client's readback enforces its protocol."""
     head = source_commit(source)
-    result = read_json(base.run("--json", "swap", "vmd", "--slot", "vm", "--builder", "host",
-                                 timeout=5400, slot=False, cwd=source))
+    result = read_json(base.run("--json", "swap", "vmd", "--account", "vm", "--builder", "host",
+                                 timeout=5400, account=False, cwd=source))
     try:
         receipt_path = Path(result["receipt"])
         if not receipt_path.is_absolute():
@@ -63,21 +63,21 @@ def bootstrap_management(base: TiloVm, current: TiloVm, source: Path, ref: str) 
         receipt = json.loads(receipt_path.read_text())
     except (KeyError, OSError, ValueError, TypeError) as exc:
         raise VmError("management bootstrap has no readable successful swap receipt") from exc
-    if (receipt.get("status"), receipt.get("component"), receipt.get("slot"), receipt.get("vm")) != (
+    if (receipt.get("status"), receipt.get("component"), receipt.get("account"), receipt.get("vm")) != (
             "success", "vmd", "vm", current.vm):
         raise VmError("management bootstrap receipt does not name this VM's vmd swap")
     if source_commit(source) != head:
         raise VmError("management bootstrap source changed during the swap")
-    shown = read_json(current.run("--json", "slot", "show", "vm", timeout=120, slot=False))
-    layers = (shown.get("slot") or {}).get("components") or {}
+    shown = read_json(current.run("--json", "account", "show", "vm", timeout=120, account=False))
+    layers = (shown.get("account") or {}).get("components") or {}
     layer = layers.get("vmd")
     if not isinstance(layer, str) or not re.fullmatch(r"[0-9a-f]{64}", layer):
         raise VmError("management bootstrap has no verified vmd layer readback")
     if receipt.get("layer") != layer:
         raise VmError("management bootstrap layer differs from its activation receipt")
     return {"ref": ref, "commit": head, "components": [
-        {"component": "vmd", "slot": "vm", "result": result, "layer": layer}],
-        "slot_layers": {"vm": layers}}
+        {"component": "vmd", "account": "vm", "result": result, "layer": layer}],
+        "account_layers": {"vm": layers}}
 
 
 if __name__ == "__main__":

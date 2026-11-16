@@ -21,7 +21,7 @@ enum Command {
     Rpc {
         #[command(flatten)]
         state: State,
-        /// `SELinux` domain of a greetd session; slot sessions must match it.
+        /// `SELinux` domain of a greetd session; account sessions must match it.
         #[arg(long, default_value = tilo_vmd::daemon::DEFAULT_DOMAIN)]
         expect_domain: String,
     },
@@ -37,9 +37,9 @@ enum Command {
         #[command(flatten)]
         state: State,
     },
-    /// Bring every slot back after boot: record the booted image, merge the
-    /// vm and device slots' layers, re-create headful seats and start each
-    /// slot's session (run once by tilo-vm-restore.service).
+    /// Bring every account back after boot: record the booted image, merge the
+    /// vm and device accounts' layers, re-create headful seats and start each
+    /// account's session (run once by tilo-vm-restore.service).
     Restore {
         #[command(flatten)]
         state: State,
@@ -47,9 +47,9 @@ enum Command {
         #[arg(long, hide = true)]
         booted: Option<String>,
     },
-    /// Record the booted OS image and report the slots that keep layers
+    /// Record the booted OS image and report the accounts that keep layers
     /// built on the image before (run at boot by
-    /// tilo-vm-reconcile-image.service). Never changes a slot.
+    /// tilo-vm-reconcile-image.service). Never changes an account.
     ReconcileImage {
         #[command(flatten)]
         state: State,
@@ -57,13 +57,13 @@ enum Command {
         #[arg(long, hide = true)]
         booted: Option<String>,
     },
-    /// Run one command as a slot sees the system: in its session's mount
+    /// Run one command as an account sees the system: in its session's mount
     /// namespace, as its user; output streams, and the run is bounded.
     Exec {
         #[command(flatten)]
         state: State,
         #[arg(long)]
-        slot: String,
+        account: String,
         /// Seconds before the command is killed (exit 124).
         #[arg(long, default_value_t = tilo_vm_protocol::EXEC_TIMEOUT_SECONDS)]
         timeout: u64,
@@ -80,11 +80,11 @@ enum Command {
         seat: String,
         #[arg(long)]
         socket: PathBuf,
-        /// Absolute pointer range, e.g. 3200x1080: the slot's logical
+        /// Absolute pointer range, e.g. 3200x1080: the account's logical
         /// desktop (default: the seat's first connected output's mode).
         #[arg(long, value_parser = parse_extent, requires = "touch_extent")]
         extent: Option<(u32, u32)>,
-        /// Touchscreen and pen range: the slot's first output's mode.
+        /// Touchscreen and pen range: the account's first output's mode.
         #[arg(long, value_parser = parse_extent, requires = "extent")]
         touch_extent: Option<(u32, u32)>,
     },
@@ -104,8 +104,8 @@ enum Command {
         #[arg(required = true)]
         packages: Vec<String>,
     },
-    /// Give the slot's outputs these modes and scales through the display
-    /// settings, as the Settings app does (run by tilo-vmd as the slot user).
+    /// Give the account's outputs these modes and scales through the display
+    /// settings, as the Settings app does (run by tilo-vmd as the account user).
     DisplayApply {
         /// Outputs left to right, e.g. 2560x1600@2,1920x1080@1.
         #[arg(long, value_delimiter = ',', required = true)]
@@ -115,7 +115,7 @@ enum Command {
         timeout: u64,
     },
     /// Exit 0 if the caller's active identity owns this device, 1 if not
-    /// (run by tilo-vmd as the slot user: identity records open only for
+    /// (run by tilo-vmd as the account user: identity records open only for
     /// the account that owns them).
     DeviceOwner {
         /// The account's identity directory.
@@ -137,7 +137,7 @@ fn parse_extent(text: &str) -> Result<(u32, u32), String> {
 
 #[derive(Args)]
 struct State {
-    /// State root holding layers/, slots/ and src/.
+    /// State root holding layers/, accounts/ and src/.
     #[arg(long, default_value = "/var/lib/tilo-vm")]
     root: PathBuf,
     /// Component manifest used when a swap does not carry the component's scope.
@@ -272,7 +272,7 @@ fn reconcile_image(state: &State, booted: Option<String>) -> ExitCode {
                 eprintln!("tilo-vmd: {line}");
             }
             if change.kept.is_empty() {
-                eprintln!("tilo-vmd: the image changed to {booted}; no slot runs layers");
+                eprintln!("tilo-vmd: the image changed to {booted}; no account runs layers");
             }
             ExitCode::SUCCESS
         }
@@ -290,8 +290,8 @@ fn restore(state: &State, booted: Option<String>) -> ExitCode {
         .restore(booted.or_else(tilo_vmd::image::running_image).as_deref());
     for issue in &issues {
         eprintln!(
-            "tilo-vmd: slot {}: {} ({})",
-            issue.slot, issue.problem, issue.hint
+            "tilo-vmd: account {}: {} ({})",
+            issue.account, issue.problem, issue.hint
         );
     }
     if issues.is_empty() {
@@ -342,13 +342,13 @@ fn main() -> ExitCode {
         Command::Restore { state, booted } => restore(&state, booted),
         Command::Exec {
             state,
-            slot,
+            account,
             timeout,
             max_bytes,
             command,
         } => {
             let limit = std::time::Duration::from_secs(timeout);
-            match state.daemon().exec(&slot, &command, limit, max_bytes) {
+            match state.daemon().exec(&account, &command, limit, max_bytes) {
                 Ok(ended) => {
                     match ended {
                         tilo_vmd::exec::Ended::TimedOut => eprintln!(

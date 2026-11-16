@@ -1,8 +1,8 @@
 """The suite's only way into the VM: the `tilo-vm` CLI.
 
 Everything goes through `tilo-vm control` (the compositor's control socket:
-semantic ops first), `tilo-vm input` (uinput devices on the slot's own seat),
-`tilo-vm shot` and `tilo-vm slot exec` (what the slot's session sees). Nothing
+semantic ops first), `tilo-vm input` (uinput devices on the account's own seat),
+`tilo-vm shot` and `tilo-vm account exec` (what the account's session sees). Nothing
 here uses raw ssh or copies files into the VM.
 """
 
@@ -24,7 +24,7 @@ LISTING_ATTEMPTS = 6
 WRITE_CHUNK = 64 * 1024
 
 
-# What the tool says of a VM or a slot another of its commands still holds, and how long
+# What the tool says of a VM or an account another of its commands still holds, and how long
 # each further try waits first: a little over seven seconds in all.
 BUSY = "is busy with another tilo-vm command"
 BUSY_WAITS = (0.5, 1.0, 2.0, 4.0)
@@ -82,27 +82,27 @@ def command_failure(stdout: str, stderr: str) -> str:
 
 
 class TiloVm:
-    def __init__(self, binary: str, vm: str, slot: str, log: Path):
+    def __init__(self, binary: str, vm: str, account: str, log: Path):
         self.binary = binary
         self.vm = vm
-        self.slot = slot
+        self.account = account
         self.log = log
-        # Why the slot session could not be restarted, once that happened (`restart_session`).
+        # Why the account session could not be restarted, once that happened (`restart_session`).
         self.restart_failed: str | None = None
 
     def run(self, *args: str, timeout: float = 120, check: bool = True,
-            slot: bool = True, cwd: Path | None = None) -> str:
+            account: bool = True, cwd: Path | None = None) -> str:
         env = dict(os.environ, TILO_VM=self.vm)
-        if slot:
-            env["TILO_VM_SLOT"] = self.slot
+        if account:
+            env["TILO_VM_ACCOUNT"] = self.account
         cmd = [self.binary, *args]
-        # The tool holds a VM or a slot for the length of one command and refuses
+        # The tool holds a VM or an account for the length of one command and refuses
         # the next while it still does, saying to wait and retry: so a refusal
         # of that kind is waited out a few times before it is the answer.
         for wait in (*BUSY_WAITS, None):
             started = time.monotonic()
             try:
-                # Slot output may be cut at a byte count (R09 reads the session
+                # Account output may be cut at a byte count (R09 reads the session
                 # log through `cut -c1-400`), splitting a multi-byte character;
                 # one bad byte must not lose the whole check.
                 proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
@@ -202,7 +202,7 @@ class TiloVm:
     def control(self, *args: str) -> str:
         return self.run("control", *args)
 
-    # -- real input on the slot's seat (uinput through libinput) ------------
+    # -- real input on the account's seat (uinput through libinput) ------------
 
     def key(self, *combos: str) -> None:
         self.run("input", "key", *combos)
@@ -210,7 +210,7 @@ class TiloVm:
     def input(self, *args: str) -> str:
         return self.run("input", *args)
 
-    # -- pictures and the slot's view of the system -------------------------
+    # -- pictures and the account's view of the system -------------------------
 
     def shot(self, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,10 +229,10 @@ class TiloVm:
         self.run("shot", "-o", str(path), timeout=90)
         return path
 
-    # -- the slot's session ---------------------------------------------------
+    # -- the account's session ---------------------------------------------------
 
     def restart_session(self, timeout: float = 60) -> None:
-        """Restart the slot's session on its current generation and wait until its control
+        """Restart the account's session on its current generation and wait until its control
         socket answers again: a fresh compositor, unlocked, with no windows open. Counted in
         `requested_restarts`, so the session-restart guard knows this ending was asked for."""
         if getattr(self, "restart_failed", None):
@@ -241,14 +241,14 @@ class TiloVm:
             raise VmError(f"not restarted again: {self.restart_failed}")
         self.requested_restarts = getattr(self, "requested_restarts", 0) + 1
         try:
-            self.run("slot", "restart", self.slot, timeout=300, slot=False)
+            self.run("account", "restart", self.account, timeout=300, account=False)
             self.wait_answering(timeout)
         except VmError as exc:
-            self.restart_failed = f"restarting the slot session failed: {exc.reason()}"
+            self.restart_failed = f"restarting the account session failed: {exc.reason()}"
             raise
 
     def wait_answering(self, timeout: float = 60) -> dict:
-        """The state dump, once the slot's compositor answers its control socket with at
+        """The state dump, once the account's compositor answers its control socket with at
         least one display."""
         def answering():
             try:
@@ -280,22 +280,22 @@ class TiloVm:
             raise VmError(f"the session listed no applications within {timeout:.0f}s")
 
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
-        """Run a POSIX sh script as the slot's user, in its session's view."""
-        return self.run("slot", "exec", "--", "sh", "-c", script,
+        """Run a POSIX sh script as the account's user, in its session's view."""
+        return self.run("account", "exec", "--", "sh", "-c", script,
                         timeout=timeout, check=check)
 
     def root_exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
-        (it is not dumpable, so slot exec cannot), or a check's setup of this throwaway VM."""
+        (it is not dumpable, so account exec cannot), or a check's setup of this throwaway VM."""
         return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout, check=check)
 
-    def slot_uid(self) -> int:
+    def account_uid(self) -> int:
         if not hasattr(self, "_uid"):
             self._uid = int(self.exec("id -u").split()[0])
         return self._uid
 
     def write_home_file(self, rel: str, data: bytes) -> None:
-        """Write a file under the slot user's home, as that user's apps do."""
+        """Write a file under the account user's home, as that user's apps do."""
         blob = base64.b64encode(data).decode()
         q = shlex.quote(rel)
         # The script travels as one argument, which the kernel caps at 128 KiB: a larger
@@ -308,7 +308,7 @@ class TiloVm:
                       + (f' && mv -f {q}.acc-tmp {q}' if last else ''))
 
     def vm_cmd(self, *args: str, timeout: float = 900, check: bool = True) -> str:
-        return self.run("vm", *args, timeout=timeout, check=check, slot=False)
+        return self.run("vm", *args, timeout=timeout, check=check, account=False)
 
 
 def wait_until(predicate, timeout: float, interval: float = 0.5):

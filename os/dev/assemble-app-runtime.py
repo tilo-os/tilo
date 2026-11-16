@@ -3,7 +3,7 @@
 
 No OS/kernel build and no host /usr writes. The caller owns the normal native
 build admission. The result is only a staged component; tilo-vmd still owns
-source authority, import, activation and the slot lifecycle.
+source authority, import, activation and the account lifecycle.
 """
 import argparse
 import hashlib

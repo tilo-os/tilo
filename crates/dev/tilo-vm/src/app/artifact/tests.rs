@@ -24,10 +24,10 @@ for line in sys.stdin:
   if case in ['signature','publisher','runtime','incomplete','activation']:
    error={'code':4,'message':'cohort verification: '+case,'hint':'supply a valid cohort'}
   else:
-   installed[params['component']]=params['layer'] if case!='slot-layer' else 'f'*64
-   result={'slot':params['slot'],'generation':1,'changed':False,'policy':'no_restart','actions':[]}
- elif method=='slot.show':
-  result={'slot':{'name':params['name'],'kind':'headless','owner':{'branch':'test'},'user':'test','generation':1,'generations':[0,1],'components':installed,'session':'active','seat':None},'files':[]}
+   installed[params['component']]=params['layer'] if case!='account-layer' else 'f'*64
+   result={'account':params['account'],'generation':1,'changed':False,'policy':'no_restart','actions':[]}
+ elif method=='account.show':
+  result={'account':{'name':params['name'],'kind':'headless','owner':{'branch':'test'},'user':'test','generation':1,'generations':[0,1],'components':installed,'session':'active','seat':None},'files':[]}
  else: raise RuntimeError(method)
  response={'jsonrpc':'2.0','id':request['id']}
  response['error' if error else 'result']=error if error else result
@@ -35,7 +35,7 @@ for line in sys.stdin:
 ";
 
 #[test]
-fn imported_cohort_uses_verified_import_and_addressed_slot_readback() {
+fn imported_cohort_uses_verified_import_and_addressed_account_readback() {
     for case in [
         "valid",
         "import-hash",
@@ -45,7 +45,7 @@ fn imported_cohort_uses_verified_import_and_addressed_slot_readback() {
         "runtime",
         "incomplete",
         "activation",
-        "slot-layer",
+        "account-layer",
     ] {
         let (dir, request) = crate::artifact::tests::fixture(false);
         let mut prepared = prepare(&request).unwrap();
@@ -80,11 +80,11 @@ fn imported_cohort_uses_verified_import_and_addressed_slot_readback() {
             "signature" | "publisher" | "runtime" | "incomplete" | "activation"
         ) {
             assert!(
-                !calls.contains("slot.show\n"),
+                !calls.contains("account.show\n"),
                 "failed apply must stop immediately"
             );
         } else {
-            assert!(calls.ends_with("slot.show\n"));
+            assert!(calls.ends_with("account.show\n"));
         }
     }
 }

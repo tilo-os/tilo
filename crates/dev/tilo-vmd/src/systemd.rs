@@ -10,15 +10,15 @@ use std::process::Command;
 use tilo_vm_protocol::layer_hash::walk;
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
+use crate::accounts::{DeviceSession, Login};
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, write_atomic};
 use crate::input;
-use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
-/// Drop-ins that bind a slot's session view, a mount that exists only until the machine shuts down,
+/// Drop-ins that bind an account's session view, a mount that exists only until the machine shuts down,
 /// live here and go with it. Kept in `/etc` they outlived the view: after a reboot, or on an image
 /// without `tilo-vmd` to mount it again, the session bound an empty directory over `/usr` and never
 /// started. `tilo-vm-restore` writes them again at boot.
@@ -57,7 +57,7 @@ const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 const TILO_CONTROL: &str = "/usr/libexec/tilo/tilo-control";
 /// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity` reads the
 /// machine's device key, which provisioning an identity needs, and `video` opens `/dev/dri`.
-const SLOT_USER_GROUPS: &str = "tilo-identity,video";
+const ACCOUNT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
@@ -168,7 +168,7 @@ fn parse_logind_session(id: &str, text: &str) -> LogindSession {
 }
 
 /// The owner's login among `sessions`: a local user session on seat0 that greetd started, whose
-/// session worker leads it. The greeter's own session is of class `greeter`, and a slot's session
+/// session worker leads it. The greeter's own session is of class `greeter`, and an account's session
 /// is started by systemd, not greetd.
 fn greetd_login(
     sessions: &[LogindSession],
@@ -248,7 +248,7 @@ fn compositor_of(wrapper: u32) -> Option<u32> {
 /// The session's own process: the one whose environment and mount namespace are the session's. A
 /// login's is its compositor, else the `tilo-session` around it. A device's session unit supervises
 /// a seat that runs as root and starts the compositor in a unit of its own, so the supervisor is
-/// the machine's, not the session's. A stand-in slot's unit runs the compositor itself.
+/// the machine's, not the session's. A stand-in account's unit runs the compositor itself.
 fn session_process_pid(
     session: &Session,
     unit_pid: impl Fn(&str) -> Option<u32>,
@@ -356,7 +356,7 @@ fn login_session() -> Option<DeviceSession> {
         .collect();
     let login = greetd_login(&sessions, greetd, parent_of)?;
     let uid = uid_of(&login.name)?;
-    // A Tilo login runs `tilo-session` as its user; another desktop is not the device slot.
+    // A Tilo login runs `tilo-session` as its user; another desktop is not the device account.
     let wrapper = cgroup_members(login.leader).into_iter().find(|pid| {
         comm(*pid).as_deref() == Some(LOGIN_WRAPPER)
             && proc_field(*pid, "Uid:").and_then(|u| u.split_whitespace().next().map(str::to_owned))
@@ -549,20 +549,20 @@ impl Apply for SystemdApply {
     }
     fn session_layer_dropin(
         &mut self,
-        slot: &str,
+        account: &str,
         generation: u64,
         layers: &[PathBuf],
     ) -> Result<String, DaemonError> {
         self.cohort_view = None;
-        let view = crate::session_view::prepare(&self.views_dir, slot, layers)?;
+        let view = crate::session_view::prepare(&self.views_dir, account, layers)?;
         Ok(format!(
-            "# Written by tilo-vmd: slot {slot}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
+            "# Written by tilo-vmd: account {account}, generation {generation}. Do not edit.\n[Service]\nExtensionDirectories=\nBindReadOnlyPaths={}/usr:/usr {}/opt:/opt\n",
             view.display(),
             view.display()
         ))
     }
-    fn remove_session_view(&mut self, slot: &str) -> Result<(), DaemonError> {
-        crate::session_view::remove(&self.views_dir, slot)
+    fn remove_session_view(&mut self, account: &str) -> Result<(), DaemonError> {
+        crate::session_view::remove(&self.views_dir, account)
     }
     fn boot_kernel(
         &mut self,
@@ -619,7 +619,7 @@ impl Apply for SystemdApply {
         if let Some(uid) = uid_of(user) {
             run(
                 "usermod",
-                Command::new("usermod").args(["--append", "--groups", SLOT_USER_GROUPS, user]),
+                Command::new("usermod").args(["--append", "--groups", ACCOUNT_USER_GROUPS, user]),
             )?;
             return Ok(uid);
         }
@@ -630,9 +630,9 @@ impl Apply for SystemdApply {
                 "--create-home",
                 "--user-group",
                 "--comment",
-                "Tilo dev slot",
+                "Tilo dev account",
                 "--groups",
-                SLOT_USER_GROUPS,
+                ACCOUNT_USER_GROUPS,
                 user,
             ]),
         )?;
@@ -682,12 +682,12 @@ impl Apply for SystemdApply {
         })
     }
 
-    fn slot_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
+    fn account_identity_environment(&mut self, user: &str) -> Result<String, DaemonError> {
         let home = home_of(user).ok_or_else(|| DaemonError::Apply {
-            step: "resolve slot identity home".into(),
+            step: "resolve account identity home".into(),
             detail: format!("no home directory for {user}"),
         })?;
-        crate::apply::slot_identity_environment(Path::new(&home))
+        crate::apply::account_identity_environment(Path::new(&home))
     }
 
     fn machine_identity(&mut self) -> crate::apply::MachineIdentity {
@@ -802,7 +802,7 @@ impl Apply for SystemdApply {
             return Ok(());
         };
         // Label as if the layer were mounted at `/`: `usr/bin/*` → `bin_t`, and so on. Unlabelled
-        // `var_lib_t` files cannot be executed through the slot.
+        // `var_lib_t` files cannot be executed through the account.
         let mut command = Command::new("setfiles");
         command.arg("-r").arg(layer).arg(&contexts);
         for top in ["usr", "opt"] {
@@ -878,10 +878,10 @@ impl Apply for SystemdApply {
             .map_err(DaemonError::io(format!("make {} readable", path.display())))
     }
 
-    fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
+    fn allocate_seat(&mut self, account: &str, connectors: u32) -> Result<String, DaemonError> {
         // The configfs device, the logind seat and the uinput `phys` tag share one name; the
         // shipped `72-vkms-seat.rules` maps the card to the seat.
-        let seat = format!("seat-{slot}");
+        let seat = format!("seat-{account}");
         let device = Path::new(VKMS_CONFIGFS).join(&seat);
         if !device.exists() {
             run(
@@ -903,7 +903,7 @@ impl Apply for SystemdApply {
 
     fn apply_display(
         &mut self,
-        _slot: &str,
+        _account: &str,
         user: &str,
         outputs: &[OutputSpec],
     ) -> Result<String, DaemonError> {
@@ -950,7 +950,7 @@ impl Apply for SystemdApply {
         Ok(())
     }
 
-    fn release_seat(&mut self, _slot: &str, seat: &str) -> Result<(), DaemonError> {
+    fn release_seat(&mut self, _account: &str, seat: &str) -> Result<(), DaemonError> {
         let device = Path::new(VKMS_CONFIGFS).join(seat);
         if device.exists() {
             vkms_remove(&device).map_err(DaemonError::io(format!("remove vkms device {seat}")))?;
@@ -985,7 +985,7 @@ impl Apply for SystemdApply {
             .session_pid(session)
             .ok_or_else(|| DaemonError::Apply {
                 step: "tilo-control".into(),
-                detail: "the slot's session is not running".into(),
+                detail: "the account's session is not running".into(),
             })?;
         if !Path::new(&format!("/proc/{pid}/root{TILO_CONTROL}")).exists() {
             return Err(DaemonError::ControlMissing(TILO_CONTROL.into()));
@@ -1014,7 +1014,7 @@ impl Apply for SystemdApply {
         use std::process::Stdio;
         let pid = self
             .session_pid(session)
-            .ok_or_else(|| DaemonError::InvalidParams("slot session is not running".into()))?;
+            .ok_or_else(|| DaemonError::InvalidParams("account session is not running".into()))?;
         let env = self.session_environment(session);
         let mut child = control_command(pid, &session.user, &session.control_socket, env, args)
             .stdin(Stdio::piped())
@@ -1113,7 +1113,7 @@ impl Apply for SystemdApply {
 
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         let main = self.session_pid(session)?;
-        // `Type=simple` returns once forked, so wait for the switch to the slot user; a process
+        // `Type=simple` returns once forked, so wait for the switch to the account user; a process
         // still root is systemd setting the session up, not yet a session to judge.
         let switched = || {
             proc_field(main, "Uid:").is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
@@ -1178,20 +1178,20 @@ impl Apply for SystemdApply {
 
     fn input(
         &mut self,
-        slot: &str,
+        account: &str,
         seat: &str,
         geometry: Option<input::Geometry>,
         actions: &[InputAction],
     ) -> Result<u64, DaemonError> {
-        let socket = input::socket_path(slot);
+        let socket = input::socket_path(account);
         let reply = match input::send(&socket, actions) {
             Ok(reply) if reply.seat == seat && reply.geometry == geometry => reply,
-            // Not running yet, or its devices belong to the seat the slot had before a seat0 claim
+            // Not running yet, or its devices belong to the seat the account had before a seat0 claim
             // or release: (re)create them.
             _ => {
-                start_input_server(slot, seat, geometry, &socket)?;
+                start_input_server(account, seat, geometry, &socket)?;
                 input::send(&socket, actions).map_err(|e| DaemonError::Apply {
-                    step: format!("send input to {}", input::unit_name(slot)),
+                    step: format!("send input to {}", input::unit_name(account)),
                     detail: e.to_string(),
                 })?
             }
@@ -1205,10 +1205,10 @@ impl Apply for SystemdApply {
         }
     }
 
-    fn stop_input(&mut self, slot: &str) -> Result<(), DaemonError> {
+    fn stop_input(&mut self, account: &str) -> Result<(), DaemonError> {
         // A unit that is not loaded is already stopped.
         let _ = Command::new("systemctl")
-            .args(["stop", &input::unit_name(slot)])
+            .args(["stop", &input::unit_name(account)])
             .output();
         Ok(())
     }
@@ -1222,11 +1222,11 @@ impl Apply for SystemdApply {
         session: &Session,
         layers: &[PathBuf],
     ) -> Result<(), DaemonError> {
-        // Another RPC process may have replaced this slot's mounted view since the last request, so
+        // Another RPC process may have replaced this account's mounted view since the last request, so
         // an earlier connection's cached identity is never reused.
         self.cohort_view = None;
-        let view = crate::session_view::prepare(&self.views_dir, &session.slot, layers)?;
-        self.cohort_view = Some((session.slot.clone(), layers.to_vec(), view));
+        let view = crate::session_view::prepare(&self.views_dir, &session.account, layers)?;
+        self.cohort_view = Some((session.account.clone(), layers.to_vec(), view));
         Ok(())
     }
 
@@ -1238,7 +1238,7 @@ impl Apply for SystemdApply {
         let view = self
             .cohort_view
             .as_ref()
-            .filter(|(slot, current, _)| slot == &session.slot && current == layers)
+            .filter(|(account, current, _)| account == &session.account && current == layers)
             .map(|(_, _, view)| view.clone())
             .ok_or_else(|| DaemonError::InvalidParams("no current cohort view".into()))?;
         let uid = self.account_uid(&session.user)?;
@@ -1274,7 +1274,7 @@ impl Apply for SystemdApply {
             &self.views_dir,
             &format!(
                 "{}-cohort-{}",
-                session.slot,
+                session.account,
                 if prior { "prior" } else { "candidate" }
             ),
             layers,
@@ -1287,7 +1287,9 @@ impl Apply for SystemdApply {
         layers: &[PathBuf],
     ) -> Result<String, DaemonError> {
         let view = match &self.cohort_view {
-            Some((slot, existing, view)) if slot == &session.slot && existing == layers => {
+            Some((account, existing, view))
+                if account == &session.account && existing == layers =>
+            {
                 view.clone()
             }
             _ => {
@@ -1350,13 +1352,13 @@ fn install_app_in_session(
     tapp: &Path,
     preserve_held: bool,
 ) -> Result<String, DaemonError> {
-    // The installed runtime and publisher pins are part of the resolved slot's verified `/usr`
+    // The installed runtime and publisher pins are part of the resolved account's verified `/usr`
     // view, not the daemon's global namespace.
     let pid = apply
         .session_pid(session)
         .ok_or_else(|| DaemonError::Apply {
             step: "tilo-install".into(),
-            detail: "the slot has no live session mount namespace".into(),
+            detail: "the account has no live session mount namespace".into(),
         })?;
     let user = &session.user;
     let uid = uid_of(user).ok_or_else(|| DaemonError::Apply {
@@ -1364,7 +1366,7 @@ fn install_app_in_session(
         detail: format!("no user {user}"),
     })?;
     let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
-    // The slot user must read the package; the state root is root's.
+    // The account user must read the package; the state root is root's.
     let dir = Path::new("/var/tmp").join(format!("tilo-vm-app-{}", uuid::Uuid::new_v4().simple()));
     fs::create_dir_all(&dir).map_err(DaemonError::io("stage the app package"))?;
     let staged = dir.join("app.tapp");
@@ -1400,7 +1402,7 @@ fn with_staged_app(
     result
 }
 
-/// A transient system service gets the same readonly slot view as the final session, independently
+/// A transient system service gets the same readonly account view as the final session, independently
 /// of the old compositor's retained namespace. systemd sets the existing session account; no caller
 /// command or identity is accepted.
 fn cohort_view_command(
@@ -1550,15 +1552,15 @@ fn wait_desktop(wrapper: u32, settle: std::time::Duration) -> Result<(), String>
     }
 }
 
-/// Start `tilo-vmd input-serve` for `slot` as a transient unit, and wait until its socket answers
+/// Start `tilo-vmd input-serve` for `account` as a transient unit, and wait until its socket answers
 /// and udev has handed the devices to the seat.
 fn start_input_server(
-    slot: &str,
+    account: &str,
     seat: &str,
     geometry: Option<input::Geometry>,
     socket: &Path,
 ) -> Result<(), DaemonError> {
-    let unit = input::unit_name(slot);
+    let unit = input::unit_name(account);
     let _ = Command::new("systemctl").args(["stop", &unit]).output();
     let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
     let mut command = Command::new("systemd-run");
@@ -1566,7 +1568,7 @@ fn start_input_server(
         .arg(format!("--unit={unit}"))
         .args(["--collect", "--quiet"])
         .arg(format!(
-            "--description=tilo-vm input devices for slot {slot}"
+            "--description=tilo-vm input devices for account {account}"
         ))
         .arg(exe)
         .args(["input-serve", "--seat", seat, "--socket"])
@@ -1868,7 +1870,7 @@ mod tests {
             );
         }
 
-        phase app_install_uses_the_verified_slot_namespace_and_never_ignores_runtime;
+        phase app_install_uses_the_verified_account_namespace_and_never_ignores_runtime;
         {
             let command = super::app_install_command(
                 123,
@@ -1939,7 +1941,7 @@ mod tests {
         {
             let root = tempfile::tempdir().unwrap();
             let session = super::Session {
-                slot: "missing".into(),
+                account: "missing".into(),
                 unit: "tilo-test-missing-install-session.service".into(),
                 user: "missing-user".into(),
                 units: vec![],
@@ -1952,7 +1954,7 @@ mod tests {
                 super::Apply::install_app(&mut apply, &session, &root.path().join("missing.tapp"))
                     .unwrap_err();
             assert!(
-                matches!(error, super::DaemonError::Apply { step, detail } if step == "tilo-install" && detail == "the slot has no live session mount namespace")
+                matches!(error, super::DaemonError::Apply { step, detail } if step == "tilo-install" && detail == "the account has no live session mount namespace")
             );
         }
     }
@@ -2173,8 +2175,8 @@ mod tests {
         }
 
         phase the_device_session_of_a_laptop_is_the_owners_greetd_login;
-        // On a laptop the device slot is the owner's greetd login: the session
-        // greetd's worker leads on seat0, never the greeter's or a slot's.
+        // On a laptop the device account is the owner's greetd login: the session
+        // greetd's worker leads on seat0, never the greeter's or an account's.
         {
             {
                 let shown = |id: &str, text: &str| parse_logind_session(id, text);
@@ -2186,7 +2188,7 @@ mod tests {
                     "2",
                     "Name=tester\nSeat=\nClass=user\nRemote=yes\nState=active\nLeader=700\nScope=session-2.scope\n",
                 );
-                let slot = shown(
+                let account = shown(
                     "4",
                     "Name=tds-a\nSeat=seat0\nClass=user\nRemote=no\nState=active\nLeader=800\nScope=session-4.scope\n",
                 );
@@ -2201,7 +2203,7 @@ mod tests {
                     900 | 901 => Some(500),
                     _ => Some(1),
                 };
-                let sessions = [greeter, ssh, slot, owner];
+                let sessions = [greeter, ssh, account, owner];
                 assert_eq!(
                     greetd_login(&sessions, 500, parent).map(|s| s.id.as_str()),
                     Some("3")
@@ -2274,7 +2276,7 @@ mod userspace_tests {
     #[test]
     fn a_device_sessions_process_is_the_compositor_its_seat_started() {
         let session = Session {
-            slot: "device".into(),
+            account: "device".into(),
             user: "quickuser".into(),
             unit: "tilo-board-headless-session@quickuser.service".into(),
             units: vec!["tilo-board-drm-session.service".into()],
@@ -2295,14 +2297,14 @@ mod userspace_tests {
         // Neither runs the session: its supervisor is the machine's, so no
         // process here is the session's.
         assert_eq!(session_process_pid(&session, no_drm, || None), None);
-        // A stand-in slot's own unit runs the compositor.
+        // A stand-in account's own unit runs the compositor.
         let stand_in = Session {
             stand_in: true,
-            unit: "tilo-vm-slot-review.service".into(),
+            unit: "tilo-vm-account-review.service".into(),
             units: Vec::new(),
             ..session
         };
-        let own = |unit: &str| (unit == "tilo-vm-slot-review.service").then_some(900);
+        let own = |unit: &str| (unit == "tilo-vm-account-review.service").then_some(900);
         assert_eq!(
             session_process_pid(&stand_in, own, || panic!("no seat")),
             Some(900)
@@ -2351,7 +2353,7 @@ mod userspace_tests {
         phase cohort_installer_uses_the_candidate_view_and_existing_account_without_restart;
         {
             let session = Session {
-                slot: "owned".into(),
+                account: "owned".into(),
                 user: "existing-person".into(),
                 unit: "session-3.scope".into(),
                 units: Vec::new(),

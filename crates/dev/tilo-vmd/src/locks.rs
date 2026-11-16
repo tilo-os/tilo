@@ -1,7 +1,7 @@
 //! Advisory locks between concurrent `tilo-vmd rpc` processes, one per SSH
 //! connection. VM-wide work (vm-scope swaps, gc, upgrades, shutdown) takes the VM
 //! lock exclusively; everything else takes it shared plus an exclusive lock on the
-//! slot it changes. Locks are never waited for: a busy lock is reported so the
+//! account it changes. Locks are never waited for: a busy lock is reported so the
 //! caller can retry. Host-side tooling takes the same lock with `flock
 //! <root>/locks/vm.lock <command>`.
 
@@ -82,12 +82,12 @@ impl Locks {
     }
 
     /// # Errors
-    /// [`DaemonError::Busy`] while another operation changes this slot.
-    pub fn slot(&self, name: &str) -> Result<Guard, DaemonError> {
+    /// [`DaemonError::Busy`] while another operation changes this account.
+    pub fn account(&self, name: &str) -> Result<Guard, DaemonError> {
         self.take(
-            &format!("slot-{name}.lock"),
+            &format!("account-{name}.lock"),
             true,
-            &format!("slot '{name}'"),
+            &format!("account '{name}'"),
         )
     }
 }
@@ -107,9 +107,9 @@ mod tests {
         let held = locks.vm_exclusive().unwrap();
         assert!(matches!(locks.vm_shared(), Err(DaemonError::Busy(_))));
         drop(held);
-        let slot = locks.slot("a").unwrap();
-        assert!(matches!(locks.slot("a"), Err(DaemonError::Busy(_))));
-        assert!(locks.slot("b").is_ok());
-        drop(slot);
+        let account = locks.account("a").unwrap();
+        assert!(matches!(locks.account("a"), Err(DaemonError::Busy(_))));
+        assert!(locks.account("b").is_ok());
+        drop(account);
     }
 }

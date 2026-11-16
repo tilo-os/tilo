@@ -535,7 +535,7 @@ def _expect_snapshot_refused_while_locked(ctx) -> None:
 def _ensure_unlocked(ctx, passcode: str) -> str:
     """Leave the session unlocked on every exit path, and say how. First the way a person
     does it: clear the lock's field (Escape), type the passcode on the real keyboard, Return.
-    Still locked after that, restart the slot's session (a fresh compositor starts unlocked).
+    Still locked after that, restart the account's session (a fresh compositor starts unlocked).
     Never raises, so it cannot replace the failure that brought it here."""
     if _locked(ctx) is False:
         return "none"
@@ -550,18 +550,18 @@ def _ensure_unlocked(ctx, passcode: str) -> str:
     try:
         ctx.vm.restart_session()
     except VmError as exc:
-        return f"failed: still locked, and restarting the slot session failed: {exc.reason()}"
-    return "slot session restarted" if _locked(ctx) is False else "failed: still locked after a slot restart"
+        return f"failed: still locked, and restarting the account session failed: {exc.reason()}"
+    return "account session restarted" if _locked(ctx) is False else "failed: still locked after an account restart"
 
 
 @check("W21", AREA, "Touch unlock: the lock screen refuses to be snapshotted, and the passcode typed "
                     "after a touch unlocks the session")
 def touch_unlock(ctx, res):
     ctx.reset()
-    # The slot user's account password is what the lock verifies (PAM through
+    # The account user's account password is what the lock verifies (PAM through
     # the unlock helper). This throwaway VM's account gets a known one.
     passcode = "touch7"
-    uid = ctx.vm.slot_uid()
+    uid = ctx.vm.account_uid()
     ctx.vm.root_exec(f'user=$(getent passwd {uid} | cut -d: -f1) && '
                      f'echo "$user:{passcode}" | chpasswd')
     # Every later check shares this session, so whatever fails in here, it ends unlocked

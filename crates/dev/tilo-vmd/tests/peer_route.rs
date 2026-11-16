@@ -59,7 +59,7 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
     env.set("TILO_DEVICE_ADMIN", &helper)
         .remove("TILO_VM_SSH")
         .remove("TILO_VM")
-        .remove("TILO_VM_SLOT")
+        .remove("TILO_VM_ACCOUNT")
         .remove("TILO_VM_CONFIG");
     let registry_path = dir.path().join("vms.toml");
     let mut registry = Registry {
@@ -112,10 +112,10 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         status.text
     );
     assert_eq!(status.data["route"]["peer"]["device"], "dd22");
-    let created = run(&["slot", "create", "peer-slot", "--headless"])
+    let created = run(&["account", "create", "peer-account", "--headless"])
         .map_err(|e| e.render())
         .unwrap();
-    assert!(created.text.contains("peer-slot"), "{}", created.text);
+    assert!(created.text.contains("peer-account"), "{}", created.text);
     let dials = std::fs::read_to_string(&log).unwrap();
     assert_eq!(dials.lines().count(), 2, "{dials}");
     assert!(
@@ -130,9 +130,9 @@ fn a_device_beyond_the_lan_is_driven_over_the_peer_network() {
         "{}",
         refused.text
     );
-    let error = match run(&["slot", "list"]) {
+    let error = match run(&["account", "list"]) {
         Err(error) => error,
-        Ok(outcome) => panic!("listed slots on a device that refused: {}", outcome.text),
+        Ok(outcome) => panic!("listed accounts on a device that refused: {}", outcome.text),
     };
     assert!(
         matches!(

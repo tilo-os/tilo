@@ -24,7 +24,7 @@ FIRST_FRAME_WAIT_S = 5.0
 LAUNCHER = "tilo-launcher"
 
 # pid, the stat fields after the command name, the cgroup and the command line of
-# every process the slot's user owns.
+# every process the account's user owns.
 _PROC_SCRIPT = ("for d in /proc/[0-9]*; do u=$(stat -c %u $d 2>/dev/null); "
                 "[ \"$u\" = \"$(id -u)\" ] || continue; "
                 "st=$(sed 's/.*) //' $d/stat 2>/dev/null) || continue; "
@@ -394,7 +394,7 @@ def x11(ctx, res):
     cands = x11_clients()
     if not cands and not ctx.facts.get("apps_installed"):
         try:
-            ctx.vm.run("slot", "apps", "install", "--set", "verification", timeout=900)
+            ctx.vm.run("account", "apps", "install", "--set", "verification", timeout=900)
             ctx.facts["apps_installed"] = True
             # The install restarts the session, whose app catalogue lists the new
             # packages only once its scan has run: wait for it, not a fixed pause.

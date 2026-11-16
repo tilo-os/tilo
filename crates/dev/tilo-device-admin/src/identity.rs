@@ -15,7 +15,7 @@ pub const SYSTEM_ROOT: &str = "/var/lib/tilo";
 
 /// The transport secret of the device's admin endpoint, derived from its device key. The route is
 /// served by its own process beside the session's endpoint, and one endpoint id published by two
-/// processes would take each other's relay slot, so the route gets its own id. The device key itself
+/// processes would take each other's relay account, so the route gets its own id. The device key itself
 /// still proves who answers, in the handshake.
 pub fn transport_secret(device_key: &SigningKey) -> [u8; 32] {
     blake3::derive_key(

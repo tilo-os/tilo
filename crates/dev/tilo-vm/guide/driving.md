@@ -1,7 +1,7 @@
-# Driving a slot
+# Driving an account
 
 There is one driving story: `tilo-control`. `tilo-vm control` runs the VM's
-copy against your slot's session; it never reimplements it.
+copy against your account's session; it never reimplements it.
 
 ```sh
 tilo-vm control actions list                 # what this desktop can do
@@ -9,7 +9,7 @@ tilo-vm control actions invoke PROVIDER ID   # do it, no coordinates
 tilo-vm control state-dump --pretty          # what it believes is on screen
 tilo-vm control list-targets                 # named rects
 tilo-vm control click NAME                   # also click-at, drag, key, type
-tilo-vm shot -o target/slot.png              # the slot compositor's own frame
+tilo-vm shot -o target/account.png              # the account compositor's own frame
 tilo-vm logs -n 200                          # the session's journal
 ```
 
@@ -19,19 +19,19 @@ users and agents depend on. On the host, without a VM, the same story is
 
 ## Screenshots: `shot` and `vm shot`
 
-- `tilo-vm shot` asks the slot's compositor to render its current scene into
-  a PNG (`tilo-control snapshot`). Headless slot, headful slot on its vkms
-  seat, or a slot holding seat0: the same call, the compositor's own frame.
+- `tilo-vm shot` asks the account's compositor to render its current scene into
+  a PNG (`tilo-control snapshot`). Headless account, headful account on its vkms
+  seat, or an account holding seat0: the same call, the compositor's own frame.
   It never reads a display, so it cannot show what the kernel scanned out.
 - `tilo-vm vm shot` is the hypervisor's screenshot of the VM's real display,
-  seat0: greetd's greeter, or the slot that claimed it. Headless and vkms
-  slots never appear there. It needs no SSH.
+  seat0: greetd's greeter, or the account that claimed it. Headless and vkms
+  accounts never appear there. It needs no SSH.
 
-## Real input devices (headful slots)
+## Real input devices (headful accounts)
 
-A headful slot has its own seat, and `tilo-vm input` sends through a
+A headful account has its own seat, and `tilo-vm input` sends through a
 keyboard and a pointer plugged into that seat (uinput devices with
-`phys=seat-<slot>`), so libinput, key maps and hit-testing run for real:
+`phys=seat-<account>`), so libinput, key maps and hit-testing run for real:
 
 ```sh
 tilo-vm input key ctrl+alt+t        # combos, pressed in order
@@ -41,7 +41,7 @@ tilo-vm input click left --at 400 300
 ```
 
 Touch, pen and game controllers work the same way. Each is a uinput device
-plugged into the slot's seat the first time a command needs it, so the
+plugged into the account's seat the first time a command needs it, so the
 compositor sees a real touchscreen (libinput touch events), a real pen
 (libinput tablet tool) and a real controller (evdev, opened through the
 seat's device access):
@@ -58,33 +58,33 @@ tilo-vm input gamepad dpad down down
 tilo-vm input gamepad stick left 0 -100 --duration 600
 ```
 
-Touch and pen coordinates are pixels of the slot's first output: the
+Touch and pen coordinates are pixels of the account's first output: the
 compositor puts a touchscreen that names no output on the primary one.
 
-Headless slots have no seat and refuse `input`; use `tilo-vm control
-key|type|click` there. While a slot holds seat0, its input goes to seat0.
+Headless accounts have no seat and refuse `input`; use `tilo-vm control
+key|type|click` there. While an account holds seat0, its input goes to seat0.
 
 ## Opening apps: a throwaway identity
 
 Everything in this guide drives the desktop over the control socket the image
 binds at `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, and the shell that
-bound it is gone. A slot therefore fails these commands — `tilo-control` finds
+bound it is gone. An account therefore fails these commands — `tilo-control` finds
 no socket there — instead of accepting them. The session serves a socket of
 its own, but only where the command line names one: `tilo-session
 --test-control PATH`, or `TILO_TEST_CONTROL=PATH`
 (development builds) answers `snapshot`, `click_at` and
 `provision_test_identity`, not input or named controls.
 
-A control-socket session skips the first-login flow, so a new slot's user
+A control-socket session skips the first-login flow, so a new account's user
 has no identity and every app refuses to start. `--identity` gives it one:
 
 ```sh
-tilo-vm slot create apps --headful --identity
-tilo-vm control --slot apps actions list
+tilo-vm account create apps --headful --identity
+tilo-vm control --account apps actions list
 ```
 
 The session mints it through a control op (`provision_test_identity`); a
-release build refuses it. The op belongs to the shell's socket, so a slot
+release build refuses it. The op belongs to the shell's socket, so an account
 whose session is `tilo-session` cannot be given an identity this way yet, and
 `--identity device` needs the shell too: it presses the onboarding controls by
 name, which no session serves. The identity is
@@ -96,23 +96,23 @@ with fresh desktop state: tilo-vmd stops the session, removes the user's
 again, since a workspace made before the identity belongs to the Unix user
 and hides app launches. Running the same create again keeps the identity and the layout.
 
-Stand-in slots set `TILO_IDENTITY_ROOT` to the account's actual home followed
+Stand-in accounts set `TILO_IDENTITY_ROOT` to the account's actual home followed
 by `/.local/share/tilo/test-identity`, for both the session and user manager.
 The device key, owner public key and all device certificates stay there;
 new throwaway personal identities use owner-only secret files in the same
 user's identity config directory, even when normal sessions use a platform
 secret store.
-`slot exec` inherits that identity root. The supported `tilo-vm slot rm NAME`
+`account exec` inherits that identity root. The supported `tilo-vm account rm NAME`
 stops the session and user manager, removes their drop-ins, and deletes the
-account and home, including both identity trees. Real `device`/`vm` slots do
+account and home, including both identity trees. Real `device`/`vm` accounts do
 not receive this override and cannot be removed this way.
 
 To test what needs the machine's own identity (fs, home servers, anything
-behind `/var/lib/tilo/device/cert.bin`), make one slot this VM's person
+behind `/var/lib/tilo/device/cert.bin`), make one account this VM's person
 instead:
 
 ```sh
-tilo-vm slot create me --headful --identity device
+tilo-vm account create me --headful --identity device
 ```
 
 Its session gets no `TILO_IDENTITY_ROOT`, so it shows the first-login
@@ -121,21 +121,21 @@ the acknowledgements, create, skip the backup and tour, enter) the way a
 person's clicks would. Onboarding creates the identity and certifies the
 machine's device key, exactly as on a device; that certificate starts
 `fs.service`, which the create waits for. Nothing is minted or copied in. One
-slot per VM can be its person, and only on a VM whose identity tree holds no
+account per VM can be its person, and only on a VM whose identity tree holds no
 one yet: the create refuses otherwise and never replaces or adopts an
-identity. Removing that slot removes the account, not the machine's
+identity. Removing that account removes the account, not the machine's
 certificate; use a fresh VM for another person.
 
 A throwaway cannot use the shared `/var/lib/tilo` identity tree. Its device
 certificates expire after 24 hours; after expiry, remove and recreate the
-slot instead of treating a copied certificate as lasting access. Setting
+account instead of treating a copied certificate as lasting access. Setting
 `TILO_IDENTITY_ROOT` alone in a manual fixture does **not** isolate personal
 identity records: also use a dedicated `HOME`/`XDG_CONFIG_HOME` and dispose of
 both trees. Never point the override at a real account's device identity.
 
-After upgrading the daemon, restart an existing stand-in slot before asking
+After upgrading the daemon, restart an existing stand-in account before asking
 it to mint an identity, so its new environment takes effect. Older versions
-could leave identity-keyed certificates in the shared tree after slot
+could leave identity-keyed certificates in the shared tree after account
 removal. This fix does not sweep or revoke those certificates: their roots
 must be identified and reviewed individually, without deleting real-device
 trust. Legacy throwaway secrets in a platform store also need reviewed
@@ -146,20 +146,20 @@ also does not revoke copies held by peers.
 ## Several monitors, mixed scale
 
 ```sh
-tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1
-tilo-vm shot -o target/dual.png --slot dual
-tilo-vm input --slot dual click left --at 1500 400   # on the second monitor
+tilo-vm account create dual --headful --outputs 2560x1600@2,1920x1080@1
+tilo-vm shot -o target/dual.png --account dual
+tilo-vm input --account dual click left --at 1500 400   # on the second monitor
 ```
 
 Each `--outputs` entry is one vkms connector (`Virtual-1`, `Virtual-2`, ...)
 with its own CRTC, laid out left to right, top-aligned, the first one
 primary. vkms offers the standard VESA (DMT) 60 Hz modes, like a monitor
 without an EDID. The mode and scale are not injected: tilo-vmd stages them
-as a display change in the slot user's settings, the compositor applies it,
+as a display change in the account user's settings, the compositor applies it,
 and tilo-vmd confirms it, exactly as the Settings app does, so the
 compositor remembers the layout for that set of monitors. Outputs are fixed
-when the slot is created; running the same `slot create` again re-applies
-the layout, and a different list needs `tilo-vm slot rm` first.
+when the account is created; running the same `account create` again re-applies
+the layout, and a different list needs `tilo-vm account rm` first.
 
 With `--outputs`, `input move` and `click --at` take logical desktop
 pixels: `2560x1600@2,1920x1080` is 1280 + 1920 wide, and x 1280 is the left
@@ -172,8 +172,8 @@ theming, dialogs as sheets, the tray, MIME handlers) need that software in
 the VM. It is not in any image; install a set when you need it:
 
 ```sh
-tilo-vm slot apps list                        # the sets, what each app checks
-tilo-vm slot apps install --set verification  # xterm, xeyes, gtk4 demos, zenity, mupdf, nm-applet
+tilo-vm account apps list                        # the sets, what each app checks
+tilo-vm account apps install --set verification  # xterm, xeyes, gtk4 demos, zenity, mupdf, nm-applet
 tilo-vm input key super                       # start one from the launcher:
 tilo-vm input type xterm
 tilo-vm input key Return                      # then type try commands into xterm
@@ -181,8 +181,8 @@ tilo-vm input key Return                      # then type try commands into xter
 
 tilo-vmd runs the VM's own install line (`dnf install --transient` on the
 dev image), so the packages sit in a transient overlay on `/usr` until the
-next VM reboot, and restarts your slot's session so it sees them. Other
-slots see them after their next restart. The sets are data:
+next VM reboot, and restarts your account's session so it sees them. Other
+accounts see them after their next restart. The sets are data:
 `crates/dev/tilo-vm/data/app-sets.toml`.
 
 ## seat0
@@ -193,7 +193,7 @@ tilo-vm vm shot -o target/seat0.png  # what the hypervisor window shows now
 tilo-vm seat release                 # back to your own seat; greetd returns
 ```
 
-Only one slot holds seat0. A claim on a held seat fails and names the holder;
+Only one account holds seat0. A claim on a held seat fails and names the holder;
 `--steal` takes it anyway and moves the holder back to its own seat.
 
 ## When SSH is down

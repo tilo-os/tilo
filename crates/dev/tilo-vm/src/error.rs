@@ -85,10 +85,10 @@ pub enum CliError {
     TargetConflict { target: String, name: String },
     #[error("{path}: {detail}")]
     Config { path: String, detail: String },
-    #[error("not inside a git worktree, so there is no default slot")]
+    #[error("not inside a git worktree, so there is no default account")]
     NotInWorktree,
-    #[error("branch '{branch}' does not make a usable slot name")]
-    SlotName { branch: String },
+    #[error("branch '{branch}' does not make a usable account name")]
+    AccountName { branch: String },
     #[error("device '{vm}' does not answer at {address} ({detail}){lookup}: it is asleep or gone")]
     DeviceAsleep {
         vm: String,
@@ -162,10 +162,10 @@ pub enum CliError {
     UnknownComponent { name: String, known: Vec<String> },
     #[error("'{name}' is a boot component; swapping cannot replace what the VM booted from")]
     BootComponent { name: String, driver: String },
-    #[error("'{component}' has {scope} scope and cannot go into slot '{slot}'")]
+    #[error("'{component}' has {scope} scope and cannot go into account '{account}'")]
     ScopeMismatch {
         component: String,
-        slot: String,
+        account: String,
         scope: String,
     },
     #[error("this host is {host} but the VM would be {requested}")]
@@ -320,9 +320,9 @@ impl CliError {
                 "use --target {target} without a positional target, or omit --target and use {name}"
             ),
             Self::Config { path, .. } => format!("fix or remove {path}; tilo-vm doctor re-checks it"),
-            Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot tilo-session".into(),
-            Self::SlotName { .. } => {
-                "name the slot explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm slot create my-slot"
+            Self::NotInWorktree => "name the account explicitly, e.g. tilo-vm swap --account my-account tilo-session".into(),
+            Self::AccountName { .. } => {
+                "name the account explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm account create my-account"
                     .into()
             }
             Self::DeviceAsleep { vm, wakeable: true, .. } => format!(
@@ -413,10 +413,10 @@ impl CliError {
                 "use the boot scenario driver instead: {driver}   (of the boot components only the kernel swaps: tilo-vm swap kernel)"
             ),
             Self::ScopeMismatch { component, scope, .. } if scope == "vm" => {
-                format!("VM-wide components go into the vm slot: tilo-vm swap --slot vm {component}")
+                format!("VM-wide components go into the vm account: tilo-vm swap --account vm {component}")
             }
             Self::ScopeMismatch { component, .. } => {
-                format!("session components go into your own slot: tilo-vm swap {component}")
+                format!("session components go into your own account: tilo-vm swap {component}")
             }
             Self::ArchMismatch { .. } => {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
@@ -500,7 +500,7 @@ impl CliError {
                 "wait for the other command to finish and retry, or pass --force to go ahead anyway".into()
             }
             Self::UnknownAppSet { known, .. } => format!(
-                "pick one of: {}   (tilo-vm slot apps list shows what each installs)",
+                "pick one of: {}   (tilo-vm account apps list shows what each installs)",
                 known.join(", ")
             ),
             Self::PackagesFailed { .. } => {
@@ -516,7 +516,7 @@ impl CliError {
                 "the build output above names the cause (full log: {log}); fix os/kernel/config-fragments/ or os/kernel/patches/ and rerun tilo-vm swap kernel   (os/kernel/dev-build.sh runs the same build by hand)"
             ),
             Self::KernelNotRunning { vm, .. } => format!(
-                "the VM fell back to its default boot entry. Watch the new kernel boot on the console: tilo-vm vm serial {vm}   (tilo-vm vm shot {vm} for the screen); fix it and swap again, or go back: tilo-vm rollback --slot vm"
+                "the VM fell back to its default boot entry. Watch the new kernel boot on the console: tilo-vm vm serial {vm}   (tilo-vm vm shot {vm} for the screen); fix it and swap again, or go back: tilo-vm rollback --account vm"
             ),
             Self::ImageRefused { fix, .. } | Self::Branch { fix, .. } => fix.clone(),
             Self::BaseOlder { .. } => {
@@ -564,7 +564,7 @@ impl CliError {
             | Self::WakeTimeout { .. }
             | Self::PeerRoute { .. }
             | Self::NotEnrolledAdmin { .. } => "devices",
-            Self::NotInWorktree | Self::SlotName { .. } | Self::Branch { .. } => "concepts",
+            Self::NotInWorktree | Self::AccountName { .. } | Self::Branch { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
             | Self::UnknownComponent { .. }
@@ -664,7 +664,7 @@ mod tests {
                 detail: "d".into(),
             },
             CliError::NotInWorktree,
-            CliError::SlotName { branch: "b".into() },
+            CliError::AccountName { branch: "b".into() },
             CliError::Unreachable {
                 vm: "dev".into(),
                 detail: "d".into(),
@@ -767,12 +767,12 @@ mod tests {
             },
             CliError::ScopeMismatch {
                 component: "fs".into(),
-                slot: "a".into(),
+                account: "a".into(),
                 scope: "vm".into(),
             },
             CliError::ScopeMismatch {
                 component: "shell".into(),
-                slot: "vm".into(),
+                account: "vm".into(),
                 scope: "session".into(),
             },
             CliError::ArchMismatch {
@@ -1018,7 +1018,7 @@ mod tests {
                 | CliError::TargetConflict { .. }
                 | CliError::Config { .. }
                 | CliError::NotInWorktree
-                | CliError::SlotName { .. }
+                | CliError::AccountName { .. }
                 | CliError::Unreachable { .. }
                 | CliError::DeviceAsleep { .. }
                 | CliError::PeerRoute { .. }
@@ -1213,10 +1213,10 @@ mod tests {
                 let error = CliError::Remote(RpcError {
                     code: 5,
                     message: "scope".into(),
-                    hint: "tilo-vm swap --slot vm fs".into(),
+                    hint: "tilo-vm swap --account vm fs".into(),
                     see: Some("tilo-vm guide swapping".into()),
                 });
-                assert_eq!(error.hint(), "tilo-vm swap --slot vm fs");
+                assert_eq!(error.hint(), "tilo-vm swap --account vm fs");
                 assert_eq!(error.see().as_deref(), Some("tilo-vm guide swapping"));
             }
         }

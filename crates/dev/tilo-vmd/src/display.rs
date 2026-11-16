@@ -1,6 +1,6 @@
-//! `tilo-vmd display-apply`: give a headful slot's monitors the modes and scales
-//! `--outputs` asked for, the way the Settings app does. It runs as the slot's
-//! user, reads the monitors the slot's compositor published, stages the layout as a
+//! `tilo-vmd display-apply`: give a headful account's monitors the modes and scales
+//! `--outputs` asked for, the way the Settings app does. It runs as the account's
+//! user, reads the monitors the account's compositor published, stages the layout as a
 //! display transaction in the user's settings, waits for the compositor to apply it
 //! and confirms it. Nothing here talks to the compositor directly, so the display
 //! path is the production one.
@@ -117,7 +117,7 @@ fn sizes(modes: &[OutputMode]) -> String {
         .join(", ")
 }
 
-/// Stage, wait for and confirm the layout for `specs`, as the slot's user with its `HOME` and
+/// Stage, wait for and confirm the layout for `specs`, as the account's user with its `HOME` and
 /// `XDG_RUNTIME_DIR`.
 pub fn apply(specs: &[OutputSpec], timeout: Duration) -> Result<String, String> {
     let started = Instant::now();

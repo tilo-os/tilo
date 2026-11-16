@@ -12,9 +12,9 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use sha2::Digest as _;
 
 use tilo_vm_protocol::{
-    Action, Client, ClientError, ComponentInfo, Gc, LayerImport, LayerList, LayerSource, Owner,
-    PROTOCOL_VERSION, Policy, Provenance, Rollback, Scope, SeatClaim, SeatRelease, Shot,
-    SlotCreate, SlotKind, SlotList, SlotRm, SlotShow, Status, Swap, code,
+    AccountCreate, AccountKind, AccountList, AccountRm, AccountShow, Action, Client, ClientError,
+    ComponentInfo, Gc, LayerImport, LayerList, LayerSource, Owner, PROTOCOL_VERSION, Policy,
+    Provenance, Rollback, Scope, SeatClaim, SeatRelease, Shot, Status, Swap, code,
 };
 
 struct Daemon {
@@ -98,14 +98,14 @@ fn rpc_error<T: std::fmt::Debug>(result: Result<T, ClientError>) -> tilo_vm_prot
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
 )]
-fn slot_and_kernel_lifecycles_over_stdio() {
+fn account_and_kernel_lifecycles_over_stdio() {
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = Daemon::spawn(root.path());
         let client = &mut daemon.client;
 
         // Everything but hello is refused before the handshake.
-        let error = rpc_error(client.call(SlotList {}));
+        let error = rpc_error(client.call(AccountList {}));
         assert_eq!(error.code, code::VERSION_MISMATCH);
         assert!(!error.hint.is_empty());
 
@@ -114,9 +114,9 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert_eq!(hello.arch, std::env::consts::ARCH);
 
         let created = client
-            .call(SlotCreate {
+            .call(AccountCreate {
                 name: "agent-a".into(),
-                kind: SlotKind::Headless,
+                kind: AccountKind::Headless,
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
@@ -128,9 +128,9 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             unit: "tilo-vm-session@agent-a.service".into()
         }));
         let again = client
-            .call(SlotCreate {
+            .call(AccountCreate {
                 name: "agent-a".into(),
-                kind: SlotKind::Headless,
+                kind: AccountKind::Headless,
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
@@ -147,7 +147,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 
         let session = ComponentInfo::new(Scope::Session, vec![]);
         let swap = |layer: &str| Swap {
-            slot: "agent-a".into(),
+            account: "agent-a".into(),
             component: "shell".into(),
             layer: layer.into(),
             info: Some(session.clone()),
@@ -169,28 +169,28 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 
         let back = client
             .call(Rollback {
-                slot: "agent-a".into(),
+                account: "agent-a".into(),
                 to: None,
             })
             .unwrap();
         assert_eq!(back.generation, 1);
         let status = client
             .call(Status {
-                slot: Some("agent-a".into()),
+                account: Some("agent-a".into()),
             })
             .unwrap();
-        assert_eq!(status.slots[0].components["shell"], v1);
+        assert_eq!(status.accounts[0].components["shell"], v1);
         // The base generation is listed too: rollback --to 0 reaches it.
-        assert_eq!(status.slots[0].generations, [0, 1, 2]);
+        assert_eq!(status.accounts[0].generations, [0, 1, 2]);
         assert!(status.issues.is_empty(), "{:?}", status.issues);
 
-        // slot.show names each file the slot sees, its digest and its layer.
+        // account.show names each file the account sees, its digest and its layer.
         let shown = client
-            .call(SlotShow {
+            .call(AccountShow {
                 name: "agent-a".into(),
             })
             .unwrap();
-        assert_eq!(shown.slot.generation, 1);
+        assert_eq!(shown.account.generation, 1);
         assert_eq!(shown.files.len(), 1, "{:?}", shown.files);
         let file = &shown.files[0];
         assert_eq!(
@@ -204,10 +204,10 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         let digest = hex::encode(sha2::Sha256::digest(&big));
         assert_eq!(file.sha256.as_deref(), Some(digest.as_str()));
 
-        // VM-scope component into a user slot: refused, with the right redirect.
+        // VM-scope component into a user account: refused, with the right redirect.
         let fs_layer = import(client, "fs", &tarball("usr/bin/fs", b"fs"));
         let error = rpc_error(client.call(Swap {
-            slot: "agent-a".into(),
+            account: "agent-a".into(),
             component: "fs".into(),
             layer: fs_layer.clone(),
             info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
@@ -215,14 +215,14 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         }));
         assert_eq!(error.code, code::SCOPE);
         assert!(
-            error.hint.contains("tilo-vm swap --slot vm fs"),
+            error.hint.contains("tilo-vm swap --account vm fs"),
             "{}",
             error.hint
         );
 
         let vm = client
             .call(Swap {
-                slot: "vm".into(),
+                account: "vm".into(),
                 component: "fs".into(),
                 layer: fs_layer,
                 info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
@@ -240,9 +240,9 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 
         // seat0 is a lease: a second claimant is told who holds it, unless it steals.
         client
-            .call(SlotCreate {
+            .call(AccountCreate {
                 name: "agent-b".into(),
-                kind: SlotKind::Headful,
+                kind: AccountKind::Headful,
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
@@ -257,7 +257,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert!(
             client
                 .call(SeatClaim {
-                    slot: "agent-a".into(),
+                    account: "agent-a".into(),
                     owner,
                     steal: false
                 })
@@ -265,7 +265,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 .changed
         );
         let error = rpc_error(client.call(SeatClaim {
-            slot: "agent-b".into(),
+            account: "agent-b".into(),
             owner: Owner::default(),
             steal: false,
         }));
@@ -277,7 +277,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert!(error.hint.contains("--steal"));
         let stolen = client
             .call(SeatClaim {
-                slot: "agent-b".into(),
+                account: "agent-b".into(),
                 owner: Owner::default(),
                 steal: true,
             })
@@ -285,7 +285,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert!(stolen.changed);
         let released = client
             .call(SeatRelease {
-                slot: "agent-b".into(),
+                account: "agent-b".into(),
             })
             .unwrap();
         assert_eq!(released.seat, "seat-agent-b");
@@ -296,7 +296,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert!(
             !client
                 .call(Shot {
-                    slot: "agent-a".into()
+                    account: "agent-a".into()
                 })
                 .unwrap()
                 .png
@@ -318,10 +318,10 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         assert_eq!(
             client
                 .call(Status {
-                    slot: Some("agent-a".into())
+                    account: Some("agent-a".into())
                 })
                 .unwrap()
-                .slots[0]
+                .accounts[0]
                 .generations,
             [0, 1, 2]
         );
@@ -360,7 +360,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 
         assert!(
             client
-                .call(SlotRm {
+                .call(AccountRm {
                     name: "agent-a".into()
                 })
                 .unwrap()
@@ -368,7 +368,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         );
         assert!(
             !client
-                .call(SlotRm {
+                .call(AccountRm {
                     name: "agent-a".into()
                 })
                 .unwrap()
@@ -376,7 +376,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             "rm is idempotent"
         );
         assert_eq!(
-            client.call(SlotList {}).unwrap().len(),
+            client.call(AccountList {}).unwrap().len(),
             2,
             "agent-b and vm remain"
         );
@@ -403,7 +403,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         );
         let swapped = client
             .call(Swap {
-                slot: "vm".into(),
+                account: "vm".into(),
                 component: "kernel".into(),
                 layer: layer.clone(),
                 info: Some(kernel.clone()),
@@ -436,7 +436,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         // The same layer again: nothing to boot.
         let again = client
             .call(Swap {
-                slot: "vm".into(),
+                account: "vm".into(),
                 component: "kernel".into(),
                 layer,
                 info: Some(kernel),
@@ -448,7 +448,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
         // Back to the base generation: the image's kernel is the next boot.
         let back = client
             .call(Rollback {
-                slot: "vm".into(),
+                account: "vm".into(),
                 to: None,
             })
             .unwrap();
@@ -461,7 +461,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
 }
 
 #[test]
-fn rpc_requests_are_validated_and_routed_per_slot() {
+fn rpc_requests_are_validated_and_routed_per_account() {
     {
         use std::io::{BufRead, Write};
         let root = tempfile::tempdir().unwrap();
@@ -498,9 +498,9 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
         let mut daemon = Daemon::spawn(root.path());
         let client = &mut daemon.client;
         client.hello("test").unwrap();
-        for (name, kind) in [("a", SlotKind::Headless), ("b", SlotKind::Headful)] {
+        for (name, kind) in [("a", AccountKind::Headless), ("b", AccountKind::Headful)] {
             client
-                .call(SlotCreate {
+                .call(AccountCreate {
                     name: name.into(),
                     kind,
                     owner: Owner::default(),
@@ -514,21 +514,21 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
             combos: vec!["ctrl+alt+t".into()],
         }];
         let error = rpc_error(client.call(Input {
-            slot: "a".into(),
+            account: "a".into(),
             actions: keys.clone(),
         }));
         assert_eq!(error.code, code::INVALID);
         assert!(error.hint.contains("tilo-vm control"), "{}", error.hint);
         let sent = client
             .call(Input {
-                slot: "b".into(),
+                account: "b".into(),
                 actions: keys,
             })
             .unwrap();
         assert_eq!(sent.seat, "seat-b");
         assert!(sent.events > 0);
         let error = rpc_error(client.call(Input {
-            slot: "b".into(),
+            account: "b".into(),
             actions: vec![InputAction::Key {
                 combos: vec!["ctrl+nokey".into()],
             }],
@@ -539,15 +539,15 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
         let upload = client.upload(&b"tapp bytes"[..]).unwrap();
         let installed = client
             .call(AppInstall {
-                slot: "b".into(),
+                account: "b".into(),
                 source: LayerSource::Upload(upload),
             })
             .unwrap();
-        assert_eq!(installed.slot, "b");
+        assert_eq!(installed.account, "b");
         assert!(installed.id.is_some_and(|id| id.starts_with("so.tilo.")));
         let upload = client.upload(&b"tapp bytes"[..]).unwrap();
         let error = rpc_error(client.call(AppInstall {
-            slot: "vm".into(),
+            account: "vm".into(),
             source: LayerSource::Upload(upload),
         }));
         assert!(error.hint.contains("headful or headless"), "{}", error.hint);
@@ -555,7 +555,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
 }
 
 tilo_test_env::scenario! {
-    fn the_device_slot_is_the_machines_session_on_its_physical_seat;
+    fn the_device_account_is_the_machines_session_on_its_physical_seat;
 
     phase device_login_input_uses_the_physical_seat;
     {
@@ -570,7 +570,7 @@ tilo_test_env::scenario! {
         let sent = login
             .client
             .call(Input {
-                slot: "device".into(),
+                account: "device".into(),
                 actions: actions.clone(),
             })
             .unwrap();
@@ -581,14 +581,14 @@ tilo_test_env::scenario! {
         let mut board = Daemon::spawn_with(board_root.path(), "record-device");
         board.client.hello("test").unwrap();
         let error = rpc_error(board.client.call(Input {
-            slot: "device".into(),
+            account: "device".into(),
             actions,
         }));
         assert_eq!(error.code, code::INVALID);
         assert!(error.message.contains("headless"));
     }
 
-    phase the_device_slot_is_the_machines_own_session;
+    phase the_device_account_is_the_machines_own_session;
     {
         {
             let root = tempfile::tempdir().unwrap();
@@ -597,7 +597,7 @@ tilo_test_env::scenario! {
             client.hello("test").unwrap();
             let layer = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
             let error = rpc_error(client.call(Swap {
-                slot: "device".into(),
+                account: "device".into(),
                 component: "shell".into(),
                 layer,
                 info: Some(ComponentInfo::new(Scope::Session, vec![])),
@@ -614,20 +614,20 @@ tilo_test_env::scenario! {
             client.hello("test").unwrap();
             let unit = "tilo-board-headless-session@tester.service";
             // Listed before anything was swapped into it: it is the machine's session.
-            let fresh = client.call(Status { slot: None }).unwrap();
-            assert_eq!(fresh.slots.len(), 1, "{:?}", fresh.slots);
+            let fresh = client.call(Status { account: None }).unwrap();
+            assert_eq!(fresh.accounts.len(), 1, "{:?}", fresh.accounts);
             assert_eq!(
                 (
-                    fresh.slots[0].name.as_str(),
-                    fresh.slots[0].kind,
-                    fresh.slots[0].generation
+                    fresh.accounts[0].name.as_str(),
+                    fresh.accounts[0].kind,
+                    fresh.accounts[0].generation
                 ),
-                ("device", SlotKind::Device, 0)
+                ("device", AccountKind::Device, 0)
             );
             let v1 = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
             let v2 = import(client, "shell", &tarball("usr/bin/shell", b"v2"));
             let swap = |layer: &str| Swap {
-                slot: "device".into(),
+                account: "device".into(),
                 component: "shell".into(),
                 layer: layer.into(),
                 info: Some(ComponentInfo::new(Scope::Session, vec![])),
@@ -670,23 +670,23 @@ tilo_test_env::scenario! {
                     .actions
                     .iter()
                     .any(|a| matches!(a, Action::EnsureUser { .. })),
-                "the device's account is never a slot user: {:?}",
+                "the device's account is never an account user: {:?}",
                 applied.actions
             );
             assert_eq!(client.call(swap(&v2)).unwrap().generation, 2);
 
             let status = client
                 .call(Status {
-                    slot: Some("device".into()),
+                    account: Some("device".into()),
                 })
                 .unwrap();
-            let device = &status.slots[0];
-            assert_eq!(device.kind, SlotKind::Device);
+            let device = &status.accounts[0];
+            assert_eq!(device.kind, AccountKind::Device);
             assert_eq!(device.user.as_deref(), Some("tester"));
             assert_eq!(device.components["shell"], v2);
             assert_eq!(device.generations, [0, 1, 2]);
             assert!(status.issues.is_empty(), "{:?}", status.issues);
-            let listed = client.call(SlotList {}).unwrap();
+            let listed = client.call(AccountList {}).unwrap();
             assert_eq!(
                 listed.iter().filter(|s| s.name == "device").count(),
                 1,
@@ -695,7 +695,7 @@ tilo_test_env::scenario! {
 
             let back = client
                 .call(Rollback {
-                    slot: "device".into(),
+                    account: "device".into(),
                     to: Some(0),
                 })
                 .unwrap();
@@ -706,14 +706,14 @@ tilo_test_env::scenario! {
             );
             let forward = client
                 .call(Rollback {
-                    slot: "device".into(),
+                    account: "device".into(),
                     to: Some(2),
                 })
                 .unwrap();
             assert_eq!(forward.generation, 2);
 
             let shown = client
-                .call(SlotShow {
+                .call(AccountShow {
                     name: "device".into(),
                 })
                 .unwrap();
@@ -721,7 +721,7 @@ tilo_test_env::scenario! {
             assert_eq!(shown.files[0].layer, v2);
             let picture = client
                 .call(Shot {
-                    slot: "device".into(),
+                    account: "device".into(),
                 })
                 .unwrap();
             assert!(!picture.png.is_empty());
@@ -732,38 +732,38 @@ tilo_test_env::scenario! {
             let client = &mut daemon.client;
             client.hello("test").unwrap();
             let errors = [
-                rpc_error(client.call(SlotCreate {
+                rpc_error(client.call(AccountCreate {
                     name: "device".into(),
-                    kind: SlotKind::Headless,
+                    kind: AccountKind::Headless,
                     owner: Owner::default(),
                     outputs: vec![],
                     identity: false,
                     device_identity: false,
                 })),
-                rpc_error(client.call(SlotRm {
+                rpc_error(client.call(AccountRm {
                     name: "device".into(),
                 })),
                 rpc_error(client.call(SeatClaim {
-                    slot: "device".into(),
+                    account: "device".into(),
                     owner: Owner::default(),
                     steal: false,
                 })),
                 rpc_error(client.call(SeatRelease {
-                    slot: "device".into(),
+                    account: "device".into(),
                 })),
             ];
             for error in errors {
                 assert_eq!(error.code, code::INVALID, "{error:?}");
                 assert!(
-                    error.hint.contains("rollback --slot device --to 0"),
+                    error.hint.contains("rollback --account device --to 0"),
                     "{}",
                     error.hint
                 );
             }
             let created = client
-                .call(SlotCreate {
+                .call(AccountCreate {
                     name: "agent-a".into(),
-                    kind: SlotKind::Headless,
+                    kind: AccountKind::Headless,
                     owner: Owner::default(),
                     outputs: vec![],
                     identity: false,
@@ -932,22 +932,22 @@ fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::
         .unwrap()
 }
 
-/// Layers are the person's deployed work: booting another image keeps the slot on its generation
+/// Layers are the person's deployed work: booting another image keeps the account on its generation
 /// with its layer in place, and a layer that fits neither the new base nor its interfaces is held
-/// rather than deleted and named in status. The person rolls the slot back to the image
+/// rather than deleted and named in status. The person rolls the account back to the image
 /// deliberately and can roll forward again, and a state root that never recorded an image is no
 /// change at all.
 #[test]
-fn booting_another_image_keeps_slots_and_layers_over_stdio() {
+fn booting_another_image_keeps_accounts_and_layers_over_stdio() {
     let root = tempfile::tempdir().unwrap();
     let shell = {
         let mut daemon = Daemon::spawn(root.path());
         let client = &mut daemon.client;
         client.hello("test").unwrap();
         client
-            .call(SlotCreate {
+            .call(AccountCreate {
                 name: "agent-a".into(),
-                kind: SlotKind::Headless,
+                kind: AccountKind::Headless,
                 owner: Owner::default(),
                 outputs: vec![],
                 identity: false,
@@ -957,7 +957,7 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
         let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));
         let applied = client
             .call(Swap {
-                slot: "agent-a".into(),
+                account: "agent-a".into(),
                 component: "shell".into(),
                 layer: shell.clone(),
                 info: Some(ComponentInfo::new(Scope::Session, vec![])),
@@ -978,11 +978,15 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
         let mut daemon = Daemon::spawn(root.path());
         let client = &mut daemon.client;
         client.hello("test").unwrap();
-        let status = client.call(Status { slot: None }).unwrap();
-        assert_eq!(status.slots_image.as_deref(), Some("composefs:old"));
+        let status = client.call(Status { account: None }).unwrap();
+        assert_eq!(status.accounts_image.as_deref(), Some("composefs:old"));
         assert_eq!(status.image_change, None);
-        let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
-        assert_eq!(slot.generation, 1);
+        let account = status
+            .accounts
+            .iter()
+            .find(|s| s.name == "agent-a")
+            .unwrap();
+        assert_eq!(account.generation, 1);
     }
 
     // The upgrade's first boot.
@@ -990,7 +994,7 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     assert!(upgraded.status.success(), "{upgraded:?}");
     let said = String::from_utf8_lossy(&upgraded.stderr);
     assert!(
-        said.contains("slot agent-a stays on generation 1 (shell)"),
+        said.contains("account agent-a stays on generation 1 (shell)"),
         "{said}"
     );
     let restored = boot_step(root.path(), "restore", "composefs:new");
@@ -999,13 +1003,13 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     let mut daemon = Daemon::spawn(root.path());
     let client = &mut daemon.client;
     client.hello("test").unwrap();
-    let status = client.call(Status { slot: None }).unwrap();
-    assert_eq!(status.slots_image.as_deref(), Some("composefs:new"));
+    let status = client.call(Status { account: None }).unwrap();
+    assert_eq!(status.accounts_image.as_deref(), Some("composefs:new"));
     let change = status.image_change.expect("the change is reported");
     assert_eq!(change.from.as_deref(), Some("composefs:old"));
     assert_eq!(change.to, "composefs:new");
     assert_eq!(change.kept.len(), 1);
-    assert_eq!(change.kept[0].slot, "agent-a");
+    assert_eq!(change.kept[0].account, "agent-a");
     assert_eq!(change.kept[0].components, vec!["shell".to_owned()]);
     assert!(change.dropped.is_empty());
     // Built here with neither a base digest nor interface versions: held,
@@ -1013,8 +1017,12 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     assert_eq!(change.held.len(), 1, "{:?}", change.held);
     assert_eq!(change.held[0].layer, shell);
     assert_eq!(change.held[0].component, "shell");
-    let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
-    assert_eq!(slot.generation, 1, "the slot keeps its generation");
+    let account = status
+        .accounts
+        .iter()
+        .find(|s| s.name == "agent-a")
+        .unwrap();
+    assert_eq!(account.generation, 1, "the account keeps its generation");
     assert!(
         client
             .call(LayerList {})
@@ -1026,14 +1034,14 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     // Back to the image deliberately, and forward again.
     let back = client
         .call(Rollback {
-            slot: "agent-a".into(),
+            account: "agent-a".into(),
             to: Some(0),
         })
         .unwrap();
     assert_eq!(back.generation, 0);
     let forward = client
         .call(Rollback {
-            slot: "agent-a".into(),
+            account: "agent-a".into(),
             to: Some(1),
         })
         .unwrap();

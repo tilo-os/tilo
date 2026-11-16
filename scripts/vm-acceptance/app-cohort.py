@@ -111,14 +111,14 @@ def cohort(vm, args, out):
     receipt = json.loads(args.cohort_receipt.read_text())
     source = receipt.get("cohort_source", {})
     require(receipt.get("status") == "success" and receipt.get("component") == "apps+runtime"
-            and receipt.get("vm") == args.vm and receipt.get("slot") == args.slot,
+            and receipt.get("vm") == args.vm and receipt.get("account") == args.account,
             "successful addressed canonical cohort activation receipt required")
     require(re.fullmatch(r"[0-9a-f]{40}", source.get("source_commit", ""))
             and re.fullmatch(r"[0-9a-f]{64}", source.get("dirty_tree_hash", "")),
             "full source inventory provenance required")
-    shown = first_json(vm.run("--json", "slot", "show"))
-    require(shown["slot"]["session"] == "active"
-            and shown["slot"]["components"].get("apps+runtime") == receipt["layer"], "cohort inactive or changed")
+    shown = first_json(vm.run("--json", "account", "show"))
+    require(shown["account"]["session"] == "active"
+            and shown["account"]["components"].get("apps+runtime") == receipt["layer"], "cohort inactive or changed")
     installed = {f["path"].replace("/usr/lib/tilo-runtime/", "/run/tilo-runtime/", 1): f["sha256"]
                  for f in shown["files"] if f["layer"] == receipt["layer"]
                  and f["path"].startswith("/usr/lib/tilo-runtime/")}
@@ -192,7 +192,7 @@ def flatpak_flow(api, baseline):
     api.call("flatpak-install", {"app": CALCULATOR}, timeout=600)
     item = api.settled(CALCULATOR)["detail"]
     require(item["installed"] is True, "Store did not observe installation")
-    api.vm.run("slot", "exec", "--", "flatpak", "--user", "info", CALCULATOR)
+    api.vm.run("account", "exec", "--", "flatpak", "--user", "info", CALCULATOR)
     before = windows(api.vm.state(), CALCULATOR)
     require(not before, "Calculator window already open before first launch")
     api.call("flatpak-open", {"app": CALCULATOR})
@@ -215,7 +215,7 @@ def package_flow(api, spec, local):
     api.call("install-imported-package", {"app": spec["app"], "root": spec["root"]}, timeout=300)
     result = api.settled(spec["app"])
     require(result["detail"]["installed"] is True, "installed local package unobservable")
-    inventory = first_json(api.vm.run("slot", "exec", "--", "app", "list", "--installed", "--json"))
+    inventory = first_json(api.vm.run("account", "exec", "--", "app", "list", "--installed", "--json"))
     installed = [row for row in inventory if row.get("package_id") == spec["app"]]
     require(len(installed) == 1 and installed[0]["version"] == spec["version"],
             "canonical installed inventory differs from reviewed version")
@@ -282,9 +282,9 @@ def browser_flow(api):
 def run(args):
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    vm = TiloVm(str(args.binary.resolve()), args.vm, args.slot, out / "commands.log")
+    vm = TiloVm(str(args.binary.resolve()), args.vm, args.account, out / "commands.log")
     receipt, shown, installed = cohort(vm, args, out)
-    baseline = first_json(vm.run("slot", "exec", "--", "python3", "-c", BASELINE))
+    baseline = first_json(vm.run("account", "exec", "--", "python3", "-c", BASELINE))
     require(baseline["uid"] == args.uid, "unexpected account")
     (out / "baseline.json").write_text(json.dumps(baseline, indent=2))
     flows = args.flow or ["flatpak", "catalogue", "local", "browser"]
@@ -308,7 +308,7 @@ def run(args):
         api, tab = fresh_browser(vm, out)
         mapped(vm, "browser", installed, args.uid, out)
         proof["results"]["browser"] = dict(browser_flow(api), tab=tab)
-    require(first_json(vm.run("--json", "slot", "show"))["slot"] == shown["slot"], "cohort changed during acceptance")
+    require(first_json(vm.run("--json", "account", "show"))["account"] == shown["account"], "cohort changed during acceptance")
     (out / "proof.json").write_text(json.dumps(proof, indent=2))
     print(json.dumps(proof))
 
@@ -317,7 +317,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("binary", "cohort-receipt", "out"):
         parser.add_argument("--" + name, required=True, type=Path)
-    for name in ("vm", "slot"):
+    for name in ("vm", "account"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--uid", required=True, type=int)
     parser.add_argument("--flow", action="append", choices=("flatpak", "catalogue", "local", "browser"))

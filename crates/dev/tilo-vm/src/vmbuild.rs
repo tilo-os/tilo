@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use sha2::{Digest, Sha256};
 use tilo_vm_protocol::{JobLine, JobOutput, SRC_DIR};
 
-use crate::context::{Worktree, slot_name_from};
+use crate::context::{Worktree, account_name_from};
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 use crate::remote::{self, DEFAULT_DAEMON};
@@ -21,7 +21,7 @@ pub fn worktree_id(worktree: &Worktree, host: Option<&str>) -> String {
         .root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
-        .and_then(|n| slot_name_from(&n))
+        .and_then(|n| account_name_from(&n))
         .unwrap_or_else(|| "worktree".into());
     let digest = Sha256::digest(
         format!("{}\0{}", host.unwrap_or_default(), worktree.root.display()).as_bytes(),

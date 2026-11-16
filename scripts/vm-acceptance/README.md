@@ -1,7 +1,7 @@
 # VM acceptance suite
 
 A scripted acceptance run of the desktop essentials in a real KVM session: a headful
-`tilo-vm` slot on two outputs with a test identity, driven only through `tilo-vm` — the
+`tilo-vm` account on two outputs with a test identity, driven only through `tilo-vm` — the
 control socket's semantic ops first (`actions`, `state-dump`, `list-targets`), uinput
 input (`tilo device input`) where the input path is what is under test. Every run writes
 `report.json` and `report.md` with the commit, the booted image digest, pass/fail per
@@ -76,11 +76,11 @@ so does the run itself when the suite, its driver and the files the scenarios re
 too. The script writes the provenance record itself, so P01 reads the tree's commit.
 
 `swap` (default `none`) exercises the swap path on top: run.py `--swap` runs `tilo device
-swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is
-up, session components and apps into the run's slot, VM-wide ones into `vm`; `all` swaps
+swap <component> --builder host` from a copy of the tree (`--swap-from`) after the account is
+up, session components and apps into the run's account, VM-wide ones into `vm`; `all` swaps
 every userspace component in `os/components.toml`, or name a list (`--input
 swap=tilo-session,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
-and fails unless every requested swap is the layer its slot runs.
+and fails unless every requested swap is the layer its account runs.
 
 `vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
 prebuilt signed layers through verified `swap-artifact`, the
@@ -100,7 +100,7 @@ so the producer refuses a working tree with uncommitted changes. The handoff's i
 source commit, the builder image, a random handoff number standing for the
 workflow run, and the receipt's SHA256) travels in the producer's outputs; the consumer checks them, the architecture and the
 component completeness before the VM is created, and verifies and imports through the normal
-signed cohort path. Any artifact error fails without a build fallback; slot readback and P01
+signed cohort path. Any artifact error fails without a build fallback; account readback and P01
 still describe the installed layers, and each swap entry names the consumer that installed
 it.
 
@@ -202,7 +202,7 @@ these areas (`ci_select.py`).
 
 The compositor loads the device key and is therefore non-dumpable, so the store cannot read
 its executable; it proves the device key on each bus connection instead
-(docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
+(docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the account: its
 `/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
 `binary:/usr/bin/tilo-session` with the MLS key it keeps, the sealed MLS state sits in an
 owner-only directory with no custody warning in the session log, and Passwords' portal
@@ -212,7 +212,7 @@ bus its sandbox has) comes from the store, and comes back the same after
 R08 signed in at seat0 through first use on its own control socket's `onboarding` actions:
 its identity must name `secret_ref.backend = secret-service-v1` with no key file beside it,
 and after signing out and in again the store still holds what the compositor keeps and
-the MLS state is intact. A slot's throwaway identity uses owner-only files by design, so
+the MLS state is intact. An account's throwaway identity uses owner-only files by design, so
 only a person's login shows the identity part. No secret is printed: the portal secret is
 compared with itself inside the guest. Changes to the store, its client, the MLS vault,
 the portal backend or the identity's secret providers select these checks (`ci_select.py`).
@@ -226,7 +226,7 @@ renders on a CPU rasterizer or through virgl, `files_first_frame_hw_s` (300 ms) 
 frames reach real display hardware. The compositor's request-to-present time is recorded
 too when the session logs `tilo::launch_latency` at info. A frame is not a working
 window, so A14 also walks Files' AT-SPI tree in the guest with the external AT-SPI
-client (`tools/atspi_external_client.py`, copied from the checkout into the slot user's
+client (`tools/atspi_external_client.py`, copied from the checkout into the account user's
 `~/.cache/acceptance/`; the image does not ship test tooling) and requires its folder listing to
 hold entries; it creates an `acc-files-*` folder in home first, so home is never empty.
 
@@ -279,7 +279,7 @@ run here on every full run instead, on the dev disk under KVM:
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
   `network.target`, so a network start queued before logins are allowed holds the greeter
   until NetworkManager is up.
-- R07 runs `tilo-session-report --render-gate` in the slot's session with the KVM
+- R07 runs `tilo-session-report --render-gate` in the account's session with the KVM
   budgets (`render_frame_ms` 1000, `render_frame_work_ms` 100).
 - A15 opens Files, Notes and Settings once unmeasured and then ten times each. Every
   open is requested from inside the session (`date +%s%3N; tilo-control actions invoke
@@ -300,17 +300,17 @@ run here on every full run instead, on the dev disk under KVM:
   request→spawn→map→first-present split. An open without either is unobservable.
   After the series Files opens and closes twenty times more, unmeasured: each of those
   must draw its first frame, and the session must outlive all of them (below).
-- Every check: the slot's desktop runs as the system unit `tilo-vm-session@<slot>`, whose
+- Every check: the account's desktop runs as the system unit `tilo-vm-session@<account>`, whose
   `Restart=always` brings a fresh session up two seconds after its compositor ends, with
   every window gone. `run_check` reads the unit's last exit of its main process and
   `NRestarts` after each check (A15 after each open) and fails the check in which the
-  session ended without the harness asking with "the slot's desktop session restarted on
+  session ended without the harness asking with "the account's desktop session restarted on
   its own", how its main process ended, and `data/<check>-<n>-session-restart.log`: the
   unit's state, the ended run's flight record (`previous.log`) and panic reports, and the
   kernel's, coredump's and user manager's lines (`acceptance/session_unit.py`). P03 reads
   the same unit at the end of the run.
 - A16 is `app_startup_check.py`'s judgement over every app the run launched.
-- A17 opens and closes Files, ends the slot's compositor with SIGSEGV from root (as the
+- A17 opens and closes Files, ends the account's compositor with SIGSEGV from root (as the
   crash A15 caught did), waits for `Restart=`'s next session to answer and opens Files
   twice: each must draw its first frame. A restart once left every later Files open
   refused for the rest of the session.
@@ -322,7 +322,7 @@ run here on every full run instead, on the dev disk under KVM:
   Usable is the later of the last two. It does so twice, the account's first sign-in (cold
   caches and first-login setup) and, after signing out, the next one, held to
   `sign_in_first_usable_s` and `sign_in_again_usable_s` (10 s each). It starts a second
-  compositor, so it runs after everything that measures the slot. A disk whose compositor
+  compositor, so it runs after everything that measures the account. A disk whose compositor
   predates `monotonic_us` leaves the first frame untimed, and R08 unobservable.
 
 The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
@@ -386,7 +386,7 @@ store's token.
 | `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
 | `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
-| `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the slot user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
+| `disk.runtime_mib.per_user`, `disk.runtime_builds.per_user`, `disk.app_store_mib.per_user` | MiB, count | R03 | the account user's downloaded runtime builds (`$XDG_DATA_HOME/tilo-runtime`) and app store (`$XDG_DATA_HOME/tilo-apps`) after the apps closed: what collection after each change leaves |
 | `memory.shell_anon_mib.empty` | MiB | R01 | the compositor's anonymous RSS with no app open |
 | `memory.compositor_memfd_mib{,.four_apps,.after_close}` | MiB | R01, R03 | shmem allocated to the memfds and `/dev/shm` files the compositor holds open, mapped or not (`stat -L` through `/proc/PID/fd`); `R0x-shell-smaps*.json` `shm_by_name` splits it by memfd name and `shm_fds` lists every memfd, dma-buf and DRM fd with its fdinfo |
 | `memory.shell_parts_mib.<class>`, `memory.shell_parts_mib.malloc_{in_use,free}`, `memory.shell_threads` | MiB, count | R01 (and `.after_close`, R03) | the compositor's own resident memory per kind of mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`, `anon_exec`, `gpu_memfd`, `fonts`, `binary`, `gpu_driver_libs`, `libraries`, `files_other`, …), from `mincore` over `/proc/self/maps` in the compositor (`tilo-control raw '{"op":"process_memory"}'`; Tilo's kernel has no smaps); glibc's heap in use and free (`mallinfo2`); its thread count. The whole report is `R01-shell-memory-map.json` |
@@ -402,7 +402,7 @@ and R03 write `R0x-footprint*.json` (`resources.footprint`): every user's proces
 split into anon, file and shmem (Tilo's kernel has no smaps, so there is no PSS), every
 cgroup's anon, file, shmem and kernel charge grouped into the buckets above, each tmpfs's
 use, and the guest's meminfo and zoneinfo split. A tilo-vm guest runs seat0's greeter
-beside the slot, which an installed machine ends at login, so `idle.ram_mib.installed` is
+beside the account, which an installed machine ends at login, so `idle.ram_mib.installed` is
 the number to hold against the target.
 
 The records name the commit whose code ran (the swapped ref's, else the disk's) and keep
@@ -413,7 +413,7 @@ the base disk's commit, the swapped components and the booted image digest in `m
 ### Component replacement evidence
 
 `component-replacement.py` checks captures from a **fresh disposable headless
-slot**, named `replace-<12 random hex>`. It performs no VM operations and makes
+account**, named `replace-<12 random hex>`. It performs no VM operations and makes
 no claim that the evidence is a remote attestation. Its success status is
 `captured_evidence_consistent`; live execution and artifact authentication must
 be established separately. Fixtures in its unit tests are not live evidence.
@@ -430,33 +430,33 @@ Retain these **canonical `run.json` receipts** under the names below (the CLI's
 
 | File | Production operation captured |
 | --- | --- |
-| `create-run.json` | `tilo-vm --json slot create SLOT --headless`, with `created=true`, empty generation 0 |
-| `before-run.json` | `slot show SLOT` after selecting the working session and matched runtime |
-| `activate-run.json` | `swap tilo-session --from layer:CANDIDATE` targeting SLOT, with successful session restart |
-| `active-run.json` | `slot show SLOT` after candidate readiness succeeds |
-| `fail-run.json` | `swap tilo-session --from layer:FAULT_FIXTURE` targeting SLOT, failing readiness and reporting successful recovery |
-| `recovered-run.json` | `slot show SLOT` after recovery; generation, layers, inventory and provenance must match the active capture |
-| `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
+| `create-run.json` | `tilo-vm --json account create ACCOUNT --headless`, with `created=true`, empty generation 0 |
+| `before-run.json` | `account show ACCOUNT` after selecting the working session and matched runtime |
+| `activate-run.json` | `swap tilo-session --from layer:CANDIDATE` targeting ACCOUNT, with successful session restart |
+| `active-run.json` | `account show ACCOUNT` after candidate readiness succeeds |
+| `fail-run.json` | `swap tilo-session --from layer:FAULT_FIXTURE` targeting ACCOUNT, failing readiness and reporting successful recovery |
+| `recovered-run.json` | `account show ACCOUNT` after recovery; generation, layers, inventory and provenance must match the active capture |
+| `remove-run.json` | `account rm ACCOUNT`, only after fresh ownership was acknowledged |
 
 Capture `fixture-before.json` before the fault injection and `fixture-after.json`
-after recovery through `tilo device slot exec`. Each object contains `vm`, `slot`,
+after recovery through `tilo device account exec`. Each object contains `vm`, `account`,
 `user`, `uid`, `home`, `identity_root` and `sentinel_sha256`. Read only the named
 environment fields and hash one sentinel created in this fresh user's home;
 never dump the environment, keys, personal documents or existing identities.
 The captures must be identical; the identity root must be the fixture user's
 `HOME/.local/share/tilo/test-identity`. Identity minting is unnecessary.
 
-After supported removal, independently observe teardown through manager slot
+After supported removal, independently observe teardown through manager account
 listing and read-only account/path/unit probes. `teardown.json` must carry the
-same `vm`, `slot`, `user`, `uid`, `home`, and explicitly false values for
-`slot_present`, `account_present`, `home_present`, `session_active`,
+same `vm`, `account`, `user`, `uid`, `home`, and explicitly false values for
+`account_present`, `account_present`, `home_present`, `session_active`,
 `user_manager_active`, `session_dropins_present`, `user_dropins_present`.
 An unavailable observation fails; it cannot be replaced by assuming removal
 succeeded. Keep the probe commands/output with the captures for review.
 
 ```sh
 python3 scripts/vm-acceptance/component-replacement.py PATH_TO_CAPTURES \
-  --vm OWNED_VM --slot replace-012345abcdef --source FULL_CANDIDATE_COMMIT
+  --vm OWNED_VM --account replace-012345abcdef --source FULL_CANDIDATE_COMMIT
 ```
 
 The result hashes every input file. An absent receipt, missing provenance,
@@ -481,12 +481,12 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 
 | Area | Checks |
 |---|---|
-| provenance | P01 image ↔ commit, P02 headful slot on two outputs with an identity, P03 no failed or restart-looping session units, and no restart of the slot's session unit |
+| provenance | P01 image ↔ commit, P02 headful account on two outputs with an identity, P03 no failed or restart-looping session units, and no restart of the account's session unit |
 | window | W01–W21: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, the strips ribbon, touch, touchpad, animation pacing (frame trace), real keyboard typing, touch that never drives the cursor (a launchpad card tapped open, the cursor hidden until the mouse moves), the on-screen keyboard (shown for a tapped field, typing into it, hidden by the physical keyboard), the on-screen keyboard typing into the shell's own search field, unlocking the session after a touch (and the lock refusing a control-socket snapshot) |
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget; A17 Files opens after the session's compositor ended abruptly |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, workspace activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the account user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys applied to the physical keys, B05 display modes, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,
@@ -504,7 +504,7 @@ while locked the compositor refuses every action invocation and snapshot with
 `session_locked` (on purpose; W21 asserts the snapshot refusal), and each later check would
 report that instead of its subject. The harness enforces it: after every check `run_check`
 reads the state dump, and a check that ended with the session locked fails ("left the
-session locked") and the slot's session is restarted (`tilo device slot restart`) before the next
+session locked") and the account's session is restarted (`tilo device account restart`) before the next
 one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
@@ -514,10 +514,10 @@ For the same reason no check may leave a modal, overlay, prompt or dialog open: 
 the keyboard from the window behind it, and the next check's typing lands in it (run 89618's
 A01 typed its Terminal command into the Invite composer W20's first touch had opened on the
 launchpad). After the lock guard, `run_check` reads the state dump again (`core.open_surfaces`:
-the surfaces the shell shows over the windows in `chrome.overlays`, one flag per slot — search,
+the surfaces the shell shows over the windows in `chrome.overlays`, one flag per account — search,
 quick settings, the menus, the notification centre, the overview and the strips). A check that ended with one open
 fails ("left a dialog open (…)"), and the harness closes it the way a person cancels: Escape,
-then a slot session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
+then an account session restart if Escape does not do it. Nothing is ever confirmed to clean up. The
 report's `dialog_recovered_after` lists each such check, what was open and how it was closed.
 `ctx.reset()` dismisses the same surfaces. A touch that is not itself under test lands where it
 activates nothing (W20 picks a point on no launchpad card).
@@ -525,7 +525,7 @@ activates nothing (W20 picks a point on no launchpad card).
 Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
 English one: the shell takes its language from the session's environment, so the run
 sets the system locale the way the installer seeds it (`localectl set-locale
-LANG=de_DE.UTF-8`, inherited through the session's PAM login) and restarts the slot;
+LANG=de_DE.UTF-8`, inherited through the session's PAM login) and restarts the account;
 if the restarted compositor is not German those checks fail as unobservable.
 
 An app's processes (A01–A07) are the `tilo-launcher` the open started for that app, its
@@ -564,7 +564,7 @@ the notification the compositor listens for.
 
 ## Terminal after a userspace cohort update
 
-`terminal-cohort.py` exercises an already active owner-controlled slot without
+`terminal-cohort.py` exercises an already active owner-controlled account without
 power, session, permission, keyboard or screenshot operations. It uses the same
 `TiloVm` control transport and bounded wait helper as this suite. First close any
 existing **test** Terminal through its declared tab action: the runner refuses an
@@ -574,21 +574,21 @@ existing Terminal or ambiguous/stale binding rather than touching its contents.
 TILO_VM_CONFIG=/absolute/path/to/vms.toml \
   python3 scripts/vm-acceptance/terminal-cohort.py \
   --binary /absolute/path/to/tilo-vm --vm sysapps \
-  --slot yoga-app-acceptance-1006 --uid 1002 \
+  --account yoga-app-acceptance-1006 --uid 1002 \
   --cohort-receipt /absolute/path/to/successful-cohort/run.json \
   --out target/terminal-cohort-new-run
 ```
 
 The receipt must be the successful canonical `swap apps+runtime` receipt for
-this VM and slot, with full source commit and inventory digest. The output
+this VM and account, with full source commit and inventory digest. The output
 folder must be new. The runner checks that exact layer is installed, discovers
 Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
 workspace/record/opaque connection, and invokes a unique harmless `printf` exactly
 once. Broker acceptance is insufficient: every job must reach success. Read
 must report the same Default session, the marker as a standalone output line,
-and a subsequent Default prompt. A slot process probe reads only UID, process
+and a subsequent Default prompt. An account process probe reads only UID, process
 identity, runtime mappings and ELF hashes; the mapped runtime must equal the
-SDK ELF in that installed layer, and the slot generation/components must remain
+SDK ELF in that installed layer, and the account generation/components must remain
 unchanged. Unobservable, ambiguous, stale, refused or truncated subjects fail.
 
 `proof.json`, contracts, job receipts, installed file metadata and the maintained
@@ -614,12 +614,12 @@ For the independently observable Flatpak and Browser portion:
 ```bash
 python3 scripts/vm-acceptance/app-cohort.py \
   --binary /absolute/path/to/qualified/tilo-vm \
-  --vm yoga --slot device --uid 1000 \
+  --vm yoga --account device --uid 1000 \
   --cohort-receipt /absolute/path/to/actual-apps-runtime-receipt.json \
   --flow flatpak --flow browser --out target/yoga-app-acceptance-UNIQUE
 ```
 
-Use the owned acceptance VM's name, slot and UID instead to qualify the recipe
+Use the owned acceptance VM's name, account and UID instead to qualify the recipe
 before physical delivery. Each output directory must be new. This explicit
 partial invocation proves only those two flows. Omitting `--flow` requires
 all four flows and refuses missing package fixtures or trusted attestors
@@ -684,9 +684,9 @@ record refusal; they do not claim physical installation or presentation.
 
 After the deployment owner confirms the matched apps/runtime, Shell/control,
 launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
-owner console actions through `tilo device slot exec`. It opens no private app socket,
+owner console actions through `tilo device account exec`. It opens no private app socket,
 does not stage bytes or grant publisher trust, and submits no raw path to Store.
-The owner console must admit the actual slot user; it never falls back to an
+The owner console must admit the actual account user; it never falls back to an
 Agent, a synthetic actor, or a different socket when refused.
 
 First acquire the public ARM package through a canonically verified official
@@ -704,7 +704,7 @@ an undeclared path. With no other chooser active, run:
 
 ```bash
 python3 scripts/vm-acceptance/store-chooser.py \
-  --tilo-vm /ABS/PATH/tilo-vm --vm yoga --slot YOUR_SLOT \
+  --tilo-vm /ABS/PATH/tilo-vm --vm yoga --account YOUR_ACCOUNT \
   --cohort-receipt /ABS/PATH/successful-apps-runtime-receipt.json \
   --fixture /ABS/PATH/verified-offer.json \
   --initial-up 1 --directories Downloads official-tapp-acceptance \
@@ -743,7 +743,7 @@ clicks, retries, or trust changes. Review completion alone is not installation.
 Mapped SDK verification reads only public runtime metadata through maintained
 `tilo device vm ssh` maintenance transport, as root where Linux requires that access.
 This does not change the identity or authority of any semantic action: Store and
-chooser actions still execute as the actual slot owner on the owner console.
+chooser actions still execute as the actual account owner on the owner console.
 The probe opens the exact `/proc/PID/map_files/START-END` kernel object and hashes
 that descriptor; it never substitutes `/proc/PID/root/...` or a readlink pathname.
 It checks process start-time, stable selected VMA identities and unchanged FD
@@ -777,7 +777,7 @@ Open or navigation of an existing page.
 
 When the published base disk uses a different management protocol, CI builds a
 second `tilo-vm` from that exact base commit. It creates and starts the throwaway
-VM with that client, then runs the ordinary `swap vmd --slot vm --builder host`
+VM with that client, then runs the ordinary `swap vmd --account vm --builder host`
 from the clean target checkout. The target client must read back the VM-wide
 management layer before any session is created. P01 records this explicit
 management swap even with `swap=none`; equal-protocol `swap=none` tests the base

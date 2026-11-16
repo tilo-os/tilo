@@ -1,6 +1,6 @@
 [Unit]
-Description=Bring tilo-vm slots back after boot
-# vkms seats need configfs and udev; slot sessions need logind.
+Description=Bring tilo-vm accounts back after boot
+# vkms seats need configfs and udev; account sessions need logind.
 After=systemd-logind.service systemd-udevd.service sys-kernel-config.mount systemd-user-sessions.service
 Wants=systemd-logind.service
 

@@ -1,4 +1,4 @@
-# uinput devices whose phys is "seat-<slot>" belong to logind seat
-# "seat-<slot>". ATTRS matches the inputN parent, so both inputN and its
+# uinput devices whose phys is "seat-<account>" belong to logind seat
+# "seat-<account>". ATTRS matches the inputN parent, so both inputN and its
 # eventN child get ID_SEAT.
 SUBSYSTEM=="input", ATTRS{phys}=="seat-*", ENV{ID_SEAT}="$attr{phys}"

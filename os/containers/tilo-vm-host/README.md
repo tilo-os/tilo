@@ -47,6 +47,6 @@ workspace's Linux programs and its Browser in one jailed Firecracker VM
 | | |
 | --- | --- |
 | service | uid/gid 10001 (`tilo-hosted`), socket `/run/tilo-hosted/hosted.sock` |
-| VM slots | 1024 (as many as any node's memory holds), uids 200000–202047 |
+| VM accounts | 1024 (as many as any node's memory holds), uids 200000–202047 |
 | VM network | pasta per VM, DNS 1.1.1.1, 200 Mbit/s each way |
 | Firecracker | 1.17.0, with its jailer |

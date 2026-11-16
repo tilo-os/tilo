@@ -127,7 +127,7 @@ def keyboard_diagnosis(ctx) -> str:
     # refuses is never added, and neither reaches the compositor's own log.
     try:
         found["journal"] = ctx.vm.root_exec(
-            f"journalctl --since -2min --no-pager -o cat -u {session_unit.unit(ctx.vm.slot)} "
+            f"journalctl --since -2min --no-pager -o cat -u {session_unit.unit(ctx.vm.account)} "
             "-u systemd-logind.service | grep -aiE 'libinput|evdev|event[0-9]|device|seat|048d' "
             "| tail -n 30 | cut -c1-300 || true", timeout=60).splitlines()
     except VmError as exc:
@@ -245,8 +245,8 @@ def layout_survives_hotplug(ctx, res):
                     "released behind it do not stay down once unlocked")
 def stuck_modifiers(ctx, res):
     ctx.reset()
-    # The lock verifies the slot user's account password (see W21): give this throwaway VM's one.
-    ctx.vm.root_exec(f'user=$(getent passwd {ctx.vm.slot_uid()} | cut -d: -f1) && '
+    # The lock verifies the account user's account password (see W21): give this throwaway VM's one.
+    ctx.vm.root_exec(f'user=$(getent passwd {ctx.vm.account_uid()} | cut -d: -f1) && '
                      f'echo "$user:{PASSCODE}" | chpasswd')
     held, result = [], {}
     try:
@@ -414,7 +414,7 @@ def scanning_out(blocks: list[dict], connectors) -> dict:
 
 
 class Kms:
-    """The slot's DRM card as the kernel holds it, read from outside the compositor: its atomic
+    """The account's DRM card as the kernel holds it, read from outside the compositor: its atomic
     state and its CRTCs' output CRCs (vkms computes one per composed frame), from debugfs in
     this throwaway VM."""
 
@@ -424,7 +424,7 @@ class Kms:
             for path in ctx.vm.root_exec(f"ls -d /sys/class/drm/card*-{name} 2>/dev/null").split():
                 cards.add(path.rsplit("/", 1)[1].split("-", 1)[0])
         if len(cards) != 1:
-            raise Unobservable(f"the slot's connectors {connectors} are not on one DRM card: {cards}")
+            raise Unobservable(f"the account's connectors {connectors} are not on one DRM card: {cards}")
         self.ctx, self.connectors = ctx, connectors
         self.dri = f"/sys/kernel/debug/dri/{cards.pop().removeprefix('card')}"
         ctx.vm.root_exec("mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug; true")
@@ -479,8 +479,8 @@ def _suspend_and_resume(ctx, res) -> None:
        calibrating=CALIBRATING)
 def wake_from_sleep(ctx, res):
     ctx.reset()
-    # Suspend locks the session; it is unlocked with the slot user's password, as in I04.
-    ctx.vm.root_exec(f'user=$(getent passwd {ctx.vm.slot_uid()} | cut -d: -f1) && '
+    # Suspend locks the session; it is unlocked with the account user's password, as in I04.
+    ctx.vm.root_exec(f'user=$(getent passwd {ctx.vm.account_uid()} | cut -d: -f1) && '
                      f'echo "$user:{PASSCODE}" | chpasswd')
     try:
         with plugged(ctx, KEYBOARD):
@@ -540,7 +540,7 @@ def wake_from_sleep(ctx, res):
             locked_crcs = {c: kms.crc(after[c]) for c in connectors}
             res.metrics["crc_locked"] = locked_crcs
             if not all(locked_crcs.values()):
-                raise Unobservable(f"the kernel gives no output CRCs for the slot's CRTCs: {locked_crcs}")
+                raise Unobservable(f"the kernel gives no output CRCs for the account's CRTCs: {locked_crcs}")
             held = _log_lines_after(ctx, mark, "DRM input: wake=resume seat_session=active")
             res.metrics["input_after_wake"] = held
             expect(any(KEYBOARD_ID["name"] in l for l in held),

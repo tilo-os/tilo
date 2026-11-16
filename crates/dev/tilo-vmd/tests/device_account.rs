@@ -1,5 +1,5 @@
 //! A device reached as its owner's account: `tilo-vm` registers it, then creates a
-//! slot, swaps a layer into it, takes a picture and rolls back, every remote
+//! account, swaps a layer into it, takes a picture and rolls back, every remote
 //! command going through `sudo -n` to a real `tilo-vmd rpc` (the side-effect-free
 //! `record` apply backend over a temporary root).
 //!
@@ -126,7 +126,7 @@ tilo_test_env::scenario! {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_VM_SSH", device.bin.join("ssh"))
             .remove("TILO_VM")
-            .remove("TILO_VM_SLOT")
+            .remove("TILO_VM_ACCOUNT")
             .remove("TILO_VM_CONFIG");
         let endpoint = SshEndpoint::parse("me@device").unwrap();
 
@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
 
         {
             let created = device
-                .run(&["slot", "create", "mine", "--headless"])
+                .run(&["account", "create", "mine", "--headless"])
                 .unwrap();
             assert!(!created.failed, "{}", created.text);
             let layer = {
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
                 .run(&[
                     "swap",
                     "cli-shim",
-                    "--slot",
+                    "--account",
                     "mine",
                     "--from",
                     &format!("layer:{layer}"),
@@ -213,11 +213,11 @@ tilo_test_env::scenario! {
             );
             let png = device.dir.path().join("shot.png");
             let shot = device
-                .run(&["shot", "--slot", "mine", "-o", png.to_str().unwrap()])
+                .run(&["shot", "--account", "mine", "-o", png.to_str().unwrap()])
                 .unwrap();
             assert!(!shot.failed, "{}", shot.text);
             assert!(std::fs::read(&png).unwrap().starts_with(b"\x89PNG"));
-            let back = device.run(&["rollback", "--slot", "mine"]).unwrap();
+            let back = device.run(&["rollback", "--account", "mine"]).unwrap();
             assert_eq!(
                 back.data["generation"],
                 serde_json::json!(0),
@@ -288,7 +288,7 @@ tilo_test_env::scenario! {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_VM_SSH", device.bin.join("ssh"))
             .remove("TILO_VM")
-            .remove("TILO_VM_SLOT")
+            .remove("TILO_VM_ACCOUNT")
             .remove("TILO_VM_CONFIG");
         assert!(
             !device
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             !device
-                .run(&["slot", "create", "mine", "--headless"])
+                .run(&["account", "create", "mine", "--headless"])
                 .unwrap()
                 .failed
         );
@@ -345,7 +345,7 @@ print('tilo-vm-layer-end '+hashlib.sha256(data).hexdigest()+' '+str(len(data)),f
                 "tilo-vm",
                 "swap",
                 "cli-shim",
-                "--slot",
+                "--account",
                 "mine",
                 "--builder",
                 "remote",

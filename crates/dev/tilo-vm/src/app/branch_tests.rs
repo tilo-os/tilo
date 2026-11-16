@@ -750,7 +750,7 @@ impl Guests for World {
     fn read(
         &mut self,
         vm: &str,
-        _slots: Option<&BTreeSet<String>>,
+        _accounts: Option<&BTreeSet<String>>,
         _wake: bool,
     ) -> Result<Option<Guest>, CliError> {
         self.log.borrow_mut().push(format!("read {vm}"));
@@ -786,7 +786,7 @@ fn taken_in(vm: &str) -> Guest {
     Guest {
         key: Some(format!("key of {vm}")),
         recorded: true,
-        slots: BTreeMap::from([(
+        accounts: BTreeMap::from([(
             "me".to_owned(),
             Some(vec![Held {
                 workspace: "workspace-shell".into(),
@@ -804,7 +804,7 @@ fn coming_up(vm: &str) -> VecDeque<Option<Guest>> {
     before.recorded = false;
     before.key = Some("key of dev".into());
     let mut waiting = taken_in(vm);
-    if let Some(Some(held)) = waiting.slots.get_mut("me") {
+    if let Some(Some(held)) = waiting.accounts.get_mut("me") {
         held[0].awaiting = true;
     }
     VecDeque::from([
@@ -957,7 +957,7 @@ tilo_test_env::scenario! {
         let mut hv = shared_hv(&log);
         let mut world = World::shared(&log);
         let mut waiting = taken_in("a");
-        if let Some(Some(held)) = waiting.slots.get_mut("me") {
+        if let Some(Some(held)) = waiting.accounts.get_mut("me") {
             held[0].awaiting = true;
         }
         world
@@ -970,7 +970,7 @@ tilo_test_env::scenario! {
         assert!(
             error
                 .to_string()
-                .contains("a: Shell (slot me) has not taken it in yet"),
+                .contains("a: Shell (account me) has not taken it in yet"),
             "{error}"
         );
         assert!(
@@ -1415,7 +1415,7 @@ tilo_test_env::scenario! {
     // addresses, not after the whole timeout. One that does is waited for.
     {
         let mut waiting = taken_in("a");
-        if let Some(Some(held)) = waiting.slots.get_mut("me") {
+        if let Some(Some(held)) = waiting.accounts.get_mut("me") {
             held[0].awaiting = true;
         }
         let fx = Fixture::new("libvirt");

@@ -19,12 +19,12 @@ spec.loader.exec_module(app)
 
 
 class OwnerVm(TiloVm):
-    """Canonical CLI on the same authenticated owner console, via slot exec."""
+    """Canonical CLI on the same authenticated owner console, via account exec."""
     def control_json(self, *args, timeout=60):
-        uid = self.slot_uid()
+        uid = self.account_uid()
         command = ["env", "-u", "TILO_TEST_CONTROL", f"XDG_RUNTIME_DIR=/run/user/{uid}",
                    "/usr/libexec/tilo/tilo-control", "--socket", f"/run/user/{uid}/tilo-session/admin-control.sock", *args]
-        return first_json(self.run("slot", "exec", "--", *command, timeout=timeout))
+        return first_json(self.run("account", "exec", "--", *command, timeout=timeout))
 
 
 def workspace(vm, expected_workspace_id):
@@ -172,10 +172,10 @@ def install_open(api, fixture, installed_before, out):
     api.call("install-imported-package", {"app": package, "root": offer["tapp_root_hash_hex"]}, 300)
     require(api.settled(package)["detail"]["installed"] is True, "Store install readback absent")
     audit = Path(__file__).with_name("acceptance") / "official_runtime.py"
-    verified = first_json(vm.run("slot", "exec", "--", "python3", "-c", audit.read_text(),
+    verified = first_json(vm.run("account", "exec", "--", "python3", "-c", audit.read_text(),
         package, offer["tapp_root_hash_hex"], offer["version"], offer["target"]["runtime"],
         fixture["publisher"], timeout=300))
-    require(verified.get("uid") == vm.slot_uid() and verified.get("files"),
+    require(verified.get("uid") == vm.account_uid() and verified.get("files"),
             "canonical installed official runtime audit unavailable")
     (out / "official-runtime.json").write_text(json.dumps(verified, indent=2))
     opened = api.call("open-app", {"app": package})
@@ -191,7 +191,7 @@ def install_open(api, fixture, installed_before, out):
     require(selected, "installed app has no observable public tab/record association")
     require(selected[0] not in before, "Open reused a pre-existing window instead of its observed launch")
     require(subject() == selected, "opened worker association changed before mapped-backing audit")
-    app.mapped(vm, "calculator", verified["files"], vm.slot_uid(), out,
+    app.mapped(vm, "calculator", verified["files"], vm.account_uid(), out,
                executable=verified["executable_sha256"])
     require(subject() == selected,
             "official app public association changed during mapped-backing audit")
@@ -205,7 +205,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tilo-vm", default="tilo-vm")
     parser.add_argument("--vm", required=True)
-    parser.add_argument("--slot", required=True)
+    parser.add_argument("--account", required=True)
     parser.add_argument("--cohort-receipt", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True, help="canonical verified-offer.json audit receipt")
     parser.add_argument("--initial-up", type=int, choices=range(17), default=0,
@@ -217,7 +217,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    vm = OwnerVm(args.tilo_vm, args.vm, args.slot, args.out / "commands.log")
+    vm = OwnerVm(args.tilo_vm, args.vm, args.account, args.out / "commands.log")
     _, _, installed_sdk = app.cohort(vm, args, args.out)
     fixture = json.loads(args.fixture.read_text())
     require(fixture.get("package_id") == "so.tilo.calculator" and fixture.get("independent_owner") ==
@@ -225,7 +225,7 @@ def main():
             and fixture.get("offer", {}).get("target", {}).get("architecture") == "aarch64",
             "expected independently verified official ARM fixture receipt required")
     api = app.store(vm, args.out)
-    app.mapped(vm, "store", installed_sdk, vm.slot_uid(), args.out)
+    app.mapped(vm, "store", installed_sdk, vm.account_uid(), args.out)
     first = review(api, fixture, args.thin, args.directories, args.out, args.initial_up)
     review(api, fixture, args.full, args.directories, args.out, args.initial_up)
     result = {"reviewed_full_and_thin": True, "installed_before": first["detail"]["installed"],

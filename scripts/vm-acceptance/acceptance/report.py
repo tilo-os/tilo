@@ -127,7 +127,7 @@ def _markdown(meta, summary, results, owners, overall) -> str:
         ("Booted image digest", f"`{p.get('booted_digest')}`"),
         ("Swapped in", _swapped(p.get("swap"))),
         ("VM", f"{meta.get('vm')} ({meta.get('vm_memory_mb')} MiB, {meta.get('vm_cpus')} vCPU, gl={meta.get('gl')})"),
-        ("Slot", f"{meta.get('slot')} headful, outputs {', '.join(meta.get('outputs', []))}"),
+        ("Account", f"{meta.get('account')} headful, outputs {', '.join(meta.get('outputs', []))}"),
         ("Renderer", str(meta.get("renderer"))),
         ("Started / finished", f"{meta.get('started')} / {meta.get('finished')}"),
         ("Suite", f"`{meta.get('suite_commit')}` — {meta.get('command')}"),
@@ -172,7 +172,7 @@ def _markdown(meta, summary, results, owners, overall) -> str:
 def _swapped(swap) -> str:
     if not swap:
         return "nothing: the disk's image as built"
-    parts = [f"{c['component']} → {c['slot']}" + (f" (failed: {c['error']})" if c.get("error") else "")
+    parts = [f"{c['component']} → {c['account']}" + (f" (failed: {c['error']})" if c.get("error") else "")
              for c in swap["components"]]
     return f"from `{swap['ref']}` (`{swap['commit'][:12]}`): " + ", ".join(parts)
 

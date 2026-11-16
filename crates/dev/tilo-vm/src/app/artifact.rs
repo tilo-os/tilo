@@ -2,7 +2,7 @@
 //! RPCs: `apps+runtime` never skips the daemon's signed SDK, publisher, runtime
 //! or ISA checks.
 
-use tilo_vm_protocol::{ApplyResult, LayerImport, LayerSource, LayerVerify, SlotShow, Swap};
+use tilo_vm_protocol::{AccountShow, ApplyResult, LayerImport, LayerSource, LayerVerify, Swap};
 
 use super::{App, Outcome, describe_apply, wait_for_session};
 use crate::artifact::{PreparedLayer, prepare};
@@ -42,25 +42,27 @@ fn import(remote: &mut Remote, layer: &mut PreparedLayer) -> Result<String, CliE
 
 fn activate(
     remote: &mut Remote,
-    slot: &str,
+    account: &str,
     layer: &PreparedLayer,
     info: Option<tilo_vm_protocol::manifest::ComponentInfo>,
 ) -> Result<ApplyResult, CliError> {
     let result = remote.call(Swap {
-        slot: slot.into(),
+        account: account.into(),
         component: layer.receipt.component.clone(),
         layer: layer.receipt.layer_hash.clone(),
         info,
         partner: None,
     })?;
-    let installed = remote.call(SlotShow { name: slot.into() })?;
-    if result.slot != slot
-        || installed.slot.name != slot
-        || installed.slot.components.get(&layer.receipt.component)
+    let installed = remote.call(AccountShow {
+        name: account.into(),
+    })?;
+    if result.account != account
+        || installed.account.name != account
+        || installed.account.components.get(&layer.receipt.component)
             != Some(&layer.receipt.layer_hash)
     {
         return Err(CliError::InvalidInput(
-            "artifact activation did not install the addressed layer into the requested slot"
+            "artifact activation did not install the addressed layer into the requested account"
                 .into(),
         ));
     }
@@ -68,7 +70,7 @@ fn activate(
 }
 
 /// A cohort installs only from a checkout at exactly its producing commit: the
-/// manifest, scopes and slot come from this checkout. The refusal names the
+/// manifest, scopes and account come from this checkout. The refusal names the
 /// checkout it read and what it saw there, so a check that could not observe
 /// its subject says why instead of reporting a mismatch.
 fn consumer_checkout(worktree: &Worktree, source: &str) -> Result<(), CliError> {
@@ -101,7 +103,7 @@ impl App {
                 .display()
                 .to_string(),
         })?;
-        let slot = self.slot_name(request.slot.clone())?;
+        let account = self.account_name(request.account.clone())?;
         let order: Vec<&str> = if request.component == "apps+runtime" {
             vec!["launcher", "install", "shell", "apps+runtime"]
         } else {
@@ -128,7 +130,7 @@ impl App {
             ));
         }
         self.check_vm_space(&mut remote, &vm)?;
-        self.receipt.set("slot", &slot);
+        self.receipt.set("account", &account);
         self.receipt.set("component", &request.component);
         self.receipt.set("artifact_source", &request.source);
         self.receipt.set("artifact_builder", &request.builder_image);
@@ -157,14 +159,14 @@ impl App {
             let result = self.receipt.phase("apply", || {
                 activate(
                     &mut remote,
-                    &slot,
+                    &account,
                     layer,
                     manifest.get(name).map(|c| c.info.clone()),
                 )
             })?;
             if result.changed && result.policy == tilo_vm_protocol::Policy::SessionRestart {
                 self.receipt
-                    .phase("session-ready", || wait_for_session(&mut remote, &slot));
+                    .phase("session-ready", || wait_for_session(&mut remote, &account));
             }
             self.warnings.extend(result.warnings.iter().cloned());
             outcomes.push(serde_json::json!({"component": name, "layer": layer.receipt.layer_hash, "result": result}));

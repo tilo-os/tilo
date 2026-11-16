@@ -74,10 +74,10 @@ for line in sys.stdin:
  if method=='hello':
   result={'protocol':int(protocol),'daemon_version':'test','root':'test','arch':'x86_64','awake':{'held':True,'until':123,'hold_until':456}}
  elif method=='swap':
-  assert request['params']['slot']=='test-slot'
+  assert request['params']['account']=='test-account'
   assert request['params']['component']=='shell'
   assert request['params']['layer']=='a'*64
-  result={'slot':'test-slot','generation':8,'changed':False,'policy':'no_restart','actions':[]}
+  result={'account':'test-account','generation':8,'changed':False,'policy':'no_restart','actions':[]}
  else: raise RuntimeError(method)
  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 ";
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
                 assert_eq!(lease.hold_until, Some(456));
                 let applied = remote
                     .call(Swap {
-                        slot: "test-slot".into(),
+                        account: "test-account".into(),
                         component: "shell".into(),
                         layer: "a".repeat(64),
                         info: None,
@@ -242,13 +242,13 @@ for line in sys.stdin:
  if method=='hello':
   result={'protocol':int(os.environ['TILO_SWAP_WAKE_PROTOCOL']),'daemon_version':'test','root':'test','arch':'x86_64'}
  elif method=='status':
-  result={'protocol':int(os.environ['TILO_SWAP_WAKE_PROTOCOL']),'daemon_version':'test','slots':[],'seat0':None,'storage':{'layers_bytes':0,'free_bytes':None,'total_bytes':None},'issues':[]}
+  result={'protocol':int(os.environ['TILO_SWAP_WAKE_PROTOCOL']),'daemon_version':'test','accounts':[],'seat0':None,'storage':{'layers_bytes':0,'free_bytes':None,'total_bytes':None},'issues':[]}
   open(root+'/state','w').write('pmsuspended')
  elif method=='swap':
-  assert request['params']['slot']=='test-slot'
+  assert request['params']['account']=='test-account'
   assert request['params']['component']=='shell'
   assert request['params']['layer']=='a'*64
-  result={'slot':'test-slot','generation':8,'changed':False,'policy':'no_restart','actions':[]}
+  result={'account':'test-account','generation':8,'changed':False,'policy':'no_restart','actions':[]}
  else: raise RuntimeError(method)
  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 ";
@@ -318,7 +318,7 @@ fn run_component_swap(root: &Path) {
     };
     let outcome = app
         .swap(
-            Some("test-slot".into()),
+            Some("test-account".into()),
             "shell".into(),
             &format!("layer:{}", "a".repeat(64)),
             None,

@@ -1,9 +1,9 @@
-//! `tilo-vm swap kernel` and the kernel half of `tilo-vm rollback --slot vm`.
+//! `tilo-vm swap kernel` and the kernel half of `tilo-vm rollback --account vm`.
 //!
 //! The kernel is the one boot component a dev VM can swap; its manifest entry names the script that
 //! builds it (`dev_build`, kept incremental under `~/.cache/tilo-kernel/`). Either
 //!
-//! * install: the staged `usr/lib/modules/<release>/` goes to the VM as a layer in the `vm` slot, so
+//! * install: the staged `usr/lib/modules/<release>/` goes to the VM as a layer in the `vm` account, so
 //!   generations and rollback work as for any VM-wide component, and the VM reboots onto it;
 //! * or `--direct`: the hypervisor boots the host-built vmlinuz and a generic initramfs itself, for
 //!   pure boot testing.
@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tilo_vm_protocol::manifest::Component;
 use tilo_vm_protocol::{
     ApplyResult, BootConfirm, BootConfirmResult, LayerImport, LayerSource, Policy, Provenance,
-    Rollback, Swap, VM_SLOT,
+    Rollback, Swap, VM_ACCOUNT,
 };
 
 use super::{App, KernelFlags, Outcome, Resolved, describe_apply, human_bytes, on_path, short};
@@ -137,7 +137,7 @@ fn seconds(since: Instant) -> f64 {
 impl App {
     pub(super) fn swap_kernel(
         &mut self,
-        slot: Option<&str>,
+        account: Option<&str>,
         component: &Component,
         from: &str,
         flags: KernelFlags,
@@ -147,14 +147,14 @@ impl App {
             jobs,
             cmdline,
         } = flags;
-        if let Some(slot) = slot.filter(|s| *s != VM_SLOT) {
+        if let Some(account) = account.filter(|s| *s != VM_ACCOUNT) {
             return Err(CliError::ScopeMismatch {
                 component: component.name.clone(),
-                slot: slot.to_owned(),
+                account: account.to_owned(),
                 scope: "vm".into(),
             });
         }
-        self.receipt.set("slot", VM_SLOT);
+        self.receipt.set("account", VM_ACCOUNT);
         self.receipt.set("component", &component.name);
         let started = Instant::now();
         if let Some(hash) = from.strip_prefix("layer:") {
@@ -327,7 +327,7 @@ impl App {
         let applied = Instant::now();
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
-                slot: VM_SLOT.into(),
+                account: VM_ACCOUNT.into(),
                 component: component.name.clone(),
                 layer: layer.to_owned(),
                 info: Some(component.info.clone()),
@@ -339,12 +339,15 @@ impl App {
         if !result.changed {
             return Ok(Outcome::new(
                 format!(
-                    "the vm slot already runs kernel layer {}; nothing to do",
+                    "the vm account already runs kernel layer {}; nothing to do",
                     short(layer)
                 ),
                 json!({ "apply": result }),
             )
-            .next(&["tilo-vm vm ssh -- uname -a", "tilo-vm rollback --slot vm"]));
+            .next(&[
+                "tilo-vm vm ssh -- uname -a",
+                "tilo-vm rollback --account vm",
+            ]));
         }
         let expect = built.map(|b| b.uts_version.as_str());
         let (confirm, reboot_seconds) = self.reboot_and_confirm(vm, &result, expect)?;
@@ -529,7 +532,7 @@ impl App {
             });
         }
         let text = format!(
-            "kernel {} is running in VM {} by direct boot ({version})\n  build {:.0}s (compile and stage {:.0}s, {} jobs), boot {reboot_seconds:.0}s, {:.0}s in all\n  booted from {} with a generic initramfs; nothing was installed in the VM: its modules outside the initramfs are absent\n  tilo-vm rollback --slot vm boots the VM's disk again",
+            "kernel {} is running in VM {} by direct boot ({version})\n  build {:.0}s (compile and stage {:.0}s, {} jobs), boot {reboot_seconds:.0}s, {:.0}s in all\n  booted from {} with a generic initramfs; nothing was installed in the VM: its modules outside the initramfs are absent\n  tilo-vm rollback --account vm boots the VM's disk again",
             built.kver,
             vm.name,
             built.build_seconds,
@@ -542,7 +545,7 @@ impl App {
             text,
             json!({ "vm": vm.name, "kver": built.kver, "version": version, "direct": true, "build": built, "boot_seconds": reboot_seconds, "seconds": seconds(started) }),
         )
-        .next(&["tilo-vm vm ssh -- uname -a", "tilo-vm vm serial", "tilo-vm rollback --slot vm"]))
+        .next(&["tilo-vm vm ssh -- uname -a", "tilo-vm vm serial", "tilo-vm rollback --account vm"]))
     }
 
     fn redefine_and_restart(
@@ -648,7 +651,7 @@ impl App {
         }
         let _ = write!(
             text,
-            "\n  vm slot generation {}; tilo-vm rollback --slot vm returns to the previous kernel",
+            "\n  vm account generation {}; tilo-vm rollback --account vm returns to the previous kernel",
             result.generation
         );
         Outcome::new(
@@ -667,7 +670,7 @@ impl App {
         )
         .next(&[
             "tilo-vm vm ssh -- uname -a",
-            "tilo-vm rollback --slot vm",
+            "tilo-vm rollback --account vm",
             "tilo-vm guide kernel",
         ])
     }
@@ -679,7 +682,7 @@ impl App {
             let ((running, version), boot_seconds) = self.redefine_and_restart(&vm, None)?;
             return Ok(Outcome::new(
                 format!(
-                    "VM {} boots its own disk again: kernel {running} ({version}); the direct kernel {} is off\n  boot {boot_seconds:.0}s; the vm slot's generations are unchanged",
+                    "VM {} boots its own disk again: kernel {running} ({version}); the direct kernel {} is off\n  boot {boot_seconds:.0}s; the vm account's generations are unchanged",
                     vm.name, direct.kver
                 ),
                 json!({ "vm": vm.name, "kver": running, "version": version, "direct": false, "seconds": seconds(started) }),
@@ -690,7 +693,7 @@ impl App {
         let applied = Instant::now();
         let result = self.receipt.phase("apply", || {
             remote.call(Rollback {
-                slot: VM_SLOT.into(),
+                account: VM_ACCOUNT.into(),
                 to,
             })
         })?;

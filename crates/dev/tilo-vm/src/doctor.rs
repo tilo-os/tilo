@@ -83,7 +83,7 @@ pub fn host_checks(facts: &HostFacts) -> Vec<Check> {
     )];
     for (tool, purpose) in [
         ("ssh", "reach the VM"),
-        ("git", "name your slot and record provenance"),
+        ("git", "name your account and record provenance"),
         ("rsync", "sync this worktree into the VM for in-VM builds"),
         ("curl", "download the published dev disk"),
     ] {

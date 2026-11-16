@@ -36,7 +36,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 thiserror.workspace = true
-# Parses the slot user's package registry from a descriptor opened without following links.
+# Parses the account user's package registry from a descriptor opened without following links.
 toml.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 # Onboarding's controls and the walk through them, shared with the legacy stream.

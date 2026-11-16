@@ -4,7 +4,7 @@
     scripts/vm-acceptance/run.py --disk ~/vm-images/tilo-dev-x86-<sha>.qcow2 --commit <sha>
     scripts/vm-acceptance/run.py --vm tilofix --commit <sha>          # a VM you already have
 
-Creates (or uses) a dev VM and a headful slot on two outputs (with a throwaway
+Creates (or uses) a dev VM and a headful account on two outputs (with a throwaway
 identity where tilo-vm can mint one), drives it only through tilo-vm (control
 socket first, real uinput input second), and writes report.json and report.md with shots under
 target/vm-acceptance/<run>/. A check that cannot observe its subject fails.
@@ -97,7 +97,7 @@ BUDGETS = {
     "userspace_to_greeter_s": 10.0, "sign_in_first_usable_s": 10.0, "sign_in_again_usable_s": 10.0,
 }
 
-# Run in a German session (a second slot), after the main pass.
+# Run in a German session (a second account), after the main pass.
 DE_PASS = ("U03", "U04", "S03")
 # A14 runs before anything else opens Files, so it times the session's first launch. R05
 # runs last but P03, so the adapter lines of every app the run opened are in the log; R07
@@ -106,7 +106,7 @@ DE_PASS = ("U03", "U04", "S03")
 # opens apps in a workspace of its own, so it comes late, but before R07, A16
 # and R05, which judge the apps it opens too. R08 signs the dev account in at seat0's
 # greeter, which starts a second compositor: it runs after every check that measures or
-# renders the slot's session. K01 sets the VM's clock back and restarts the session, so it
+# renders the account's session. K01 sets the VM's clock back and restarts the session, so it
 # runs after the checks that judge what the run opened, and before R08. C01 opens Notes, so it
 # runs before R05 judges the apps the run opened. C02 takes the account R08 signed in through first use and signs it
 # in again, so it follows R08.
@@ -232,12 +232,12 @@ def renderer(vm: TiloVm, without_3d: bool = False) -> tuple[str, dict]:
     return label + text, display
 
 
-def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
-    helptext = vm.run("slot", "create", "--help", slot=False)
-    args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
-    # The run's VM is fresh and disposable: its slot is the VM's person, made through the
+def account_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
+    helptext = vm.run("account", "create", "--help", account=False)
+    args = ["account", "create", vm.account, "--headful", "--outputs", ",".join(outputs)]
+    # The run's VM is fresh and disposable: its account is the VM's person, made through the
     # session's own onboarding as a device's first login does, so the machine's device key is
-    # certified and fs runs (`slot create --identity device`). A tilo-vm without it mints a
+    # certified and fs runs (`account create --identity device`). A tilo-vm without it mints a
     # throwaway test identity in a private root instead (`--identity`), where fs never runs.
     if "--identity device" in helptext:
         args += ["--identity", "device"]
@@ -245,11 +245,11 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
-    vm.run(*args, timeout=300, slot=False)
+    vm.run(*args, timeout=300, account=False)
 
 
 def session_environment(vm: TiloVm) -> str:
-    """Start the slot's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
+    """Start the account's session with what `TILO_ACCEPTANCE_SESSION_ENV` asks (`KEY=VALUE` words: its
     log level, the launcher's debug output), from its first start on. A run without it writes
     nothing. Says what it wrote, or why it wrote nothing, on the run's output too."""
     # Each word goes into the drop-in as it is: one a shell would have to quote is left out.
@@ -261,7 +261,7 @@ def session_environment(vm: TiloVm) -> str:
         print(f"session environment: {said}", flush=True)
         return said
     try:
-        wrote = vm.root_exec(session_unit.environment_script(vm.slot, pairs), timeout=90, check=True)
+        wrote = vm.root_exec(session_unit.environment_script(vm.account, pairs), timeout=90, check=True)
     except VmError as exc:
         wrote = f"could not run the writer: {exc}"
     said = " | ".join(line.strip() for line in wrote.splitlines() if line.strip()) or "(the writer said nothing)"
@@ -269,13 +269,13 @@ def session_environment(vm: TiloVm) -> str:
     return said
 
 
-def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
-    """What the slot's compositor and tilo-vmd said, for a run that could not set up its
-    session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
+def keep_account_logs(vm: TiloVm, out: Path) -> Path | None:
+    """What the account's compositor and tilo-vmd said, for a run that could not set up its
+    session: `tilo-vm logs <account>`, which the throwaway VM takes with it when it goes."""
     try:
-        text = vm.run("logs", vm.slot, "-n", "20000", timeout=120, check=False, slot=False)
+        text = vm.run("logs", vm.account, "-n", "20000", timeout=120, check=False, account=False)
     except VmError as exc:
-        text = f"tilo-vm logs {vm.slot} failed: {exc}"
+        text = f"tilo-vm logs {vm.account} failed: {exc}"
     # The compositor's per-frame and per-second statistics drown what it said at start-up
     # (its identity, onboarding, the services it waited for): the journal since the boot,
     # without them.
@@ -283,7 +283,7 @@ def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
     text = "\n".join(line for line in text.splitlines() if not any(n in line for n in noise))
     if not text.strip():
         return None
-    path = out / "data" / f"P00-{vm.slot}-logs.txt"
+    path = out / "data" / f"P00-{vm.account}-logs.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     return path
@@ -368,8 +368,8 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
                     artifact: dict | None = None) -> dict:
     """Build each component from `source` and swap it into the VM:
     optional artifacts enter through verified import; the default path builds on the host.
-    session components and apps into the run's slot, VM-wide ones into `vm`. Then read back the
-    layer each slot runs, so P01 states what was tested: the base image plus these, from `ref`."""
+    session components and apps into the run's account, VM-wide ones into `vm`. Then read back the
+    layer each account runs, so P01 states what was tested: the base image plus these, from `ref`."""
     scopes = component_scopes(source)
     head = git("rev-parse", "HEAD", repo=source)
     if artifact:
@@ -380,53 +380,53 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path,
     # The artifact consumer verifies the cohort; it may be a newer CLI than the ref's
     # own (the workflow's checkout), so a branch older than a consumer fix stays testable.
     consumer = (artifact or {}).get("consumer") or vm
-    swapped, slots = [], set()
+    swapped, accounts = [], set()
     for component in components:
-        slot = "vm" if scopes.get(component) == "vm" else vm.slot
-        entry = {"component": component, "slot": slot}
+        account = "vm" if scopes.get(component) == "vm" else vm.account
+        entry = {"component": component, "account": account}
         if artifact:
             entry["consumer"] = consumer.binary
         started = time.monotonic()
         try:
             if artifact:
                 expected = artifact["expected"]
-                out = consumer.run("--json", "swap-artifact", component, "--slot", slot,
+                out = consumer.run("--json", "swap-artifact", component, "--account", account,
                              "--receipt", str(artifact["receipt"]),
                              "--source", expected["source_commit"],
                              "--builder-image", expected["builder_image"],
                              "--run-id", str(expected["run_id"]),
                              "--run-attempt", str(expected["run_attempt"]),
                              "--receipt-sha256", artifact["sha256"],
-                             timeout=5400, slot=False, cwd=source)
+                             timeout=5400, account=False, cwd=source)
             else:
-                out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
-                             timeout=5400, slot=False, cwd=source)
+                out = vm.run("--json", "swap", component, "--account", account, "--builder", "host",
+                             timeout=5400, account=False, cwd=source)
             entry["seconds"] = round(time.monotonic() - started)
             entry["result"] = whole_json(out)
-            slots.add(slot)
+            accounts.add(account)
         except VmError as exc:
             entry["error"] = exc.reason()
-        print(f"swap {component} into {slot}: " + entry.get("error", f"done in {entry.get('seconds')}s"),
+        print(f"swap {component} into {account}: " + entry.get("error", f"done in {entry.get('seconds')}s"),
               flush=True)
         swapped.append(entry)
     layers = {}
-    for slot in sorted(slots):
+    for account in sorted(accounts):
         try:
-            shown = whole_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False))
-            layers[slot] = (shown.get("slot") or {}).get("components") or {}
+            shown = whole_json(vm.run("--json", "account", "show", account, timeout=120, account=False))
+            layers[account] = (shown.get("account") or {}).get("components") or {}
         except VmError as exc:
-            layers[slot] = {"error": exc.reason()}
+            layers[account] = {"error": exc.reason()}
     for entry in swapped:
-        entry["layer"] = layers.get(entry["slot"], {}).get(entry["component"])
-    return {"ref": ref, "commit": head, "components": swapped, "slot_layers": layers}
+        entry["layer"] = layers.get(entry["account"], {}).get(entry["component"])
+    return {"ref": ref, "commit": head, "components": swapped, "account_layers": layers}
 
 
 def switch_locale(vm: TiloVm, lang: str) -> None:
     """Set the system locale as the installer seeds it (/etc/locale.conf, which the
-    session's PAM login inherits from systemd) and restart the slot's session in it."""
+    session's PAM login inherits from systemd) and restart the account's session in it."""
     vm.vm_cmd("ssh", "--", f"localectl set-locale LANG={lang} && systemctl daemon-reload", timeout=60)
     vm.restart_session()
-    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x tilo-session | head -1)/environ "
+    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.account}) -x tilo-session | head -1)/environ "
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
@@ -439,10 +439,10 @@ def main() -> int:
     src.add_argument("--disk", type=Path, help="dev disk (qcow2) to create a throwaway VM from")
     src.add_argument("--vm", help="an existing VM from vms.toml")
     ap.add_argument("--commit", help="the commit the disk must be built from (sha or ref)")
-    ap.add_argument("--slot", default="acceptance")
+    ap.add_argument("--account", default="acceptance")
     # The second output is fractionally scaled, so apps are checked at a fractional scale too.
     ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
-    ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
+    ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German account)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
     ap.add_argument("--shard", choices=sorted(SHARDS),
                     help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
@@ -531,14 +531,14 @@ def main() -> int:
         if entry is None:
             sys.exit(f"VM {vm_name} is not in vms.toml")
         disk = Path(entry["image"]).expanduser() if entry.get("image") else None
-    vm = TiloVm(binary, vm_name, args.slot, out / "tilo-vm.log")
+    vm = TiloVm(binary, vm_name, args.account, out / "tilo-vm.log")
     if artifact and args.artifact_tilo_vm:
         # Exactly the named consumer: no fallback to another tilo-vm on PATH.
         if not os.access(args.artifact_tilo_vm, os.X_OK) or not Path(args.artifact_tilo_vm).is_file():
             sys.exit(f"--artifact-tilo-vm {args.artifact_tilo_vm} is not an executable file")
-        artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.slot, out / "tilo-vm.log")
+        artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.account, out / "tilo-vm.log")
 
-    startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.slot, out / "tilo-vm.log")
+    startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.account, out / "tilo-vm.log")
                   if args.bootstrap_tilo_vm else vm)
 
     others = [n for n in running_vms() if n != vm_name]
@@ -560,7 +560,7 @@ def main() -> int:
         "commit": want_commit, "commit_short": (want_commit or "unknown")[:9],
         "commit_subject": git("log", "-1", "--format=%s", want_commit) if want_commit else None,
         "vm": vm_name, "vm_memory_mb": args.memory_mb, "vm_cpus": args.cpus, "gl": args.gl,
-        "slot": args.slot, "outputs": outputs, "budgets": BUDGETS, "budget_mode": args.budgets,
+        "account": args.account, "outputs": outputs, "budgets": BUDGETS, "budget_mode": args.budgets,
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
@@ -585,11 +585,11 @@ def main() -> int:
         meta["provenance"] = facts["provenance"]
         meta["session_environment"] = session_environment(vm)
         try:
-            slot_create(vm, outputs, None)
+            account_create(vm, outputs, None)
         except VmError:
-            logs = keep_slot_logs(vm, out)
+            logs = keep_account_logs(vm, out)
             if logs:
-                print(f"the slot's logs: {logs}", file=sys.stderr)
+                print(f"the account's logs: {logs}", file=sys.stderr)
             raise
         if swaps:
             # Outside the report: an engine is hundreds of megabytes.
@@ -613,7 +613,7 @@ def main() -> int:
                 if swapped["commit"] != management["commit"]:
                     raise VmError("management and session swaps have different source commits")
                 swapped["components"] = management["components"] + swapped["components"]
-                swapped["slot_layers"].update(management["slot_layers"])
+                swapped["account_layers"].update(management["account_layers"])
             facts["provenance"]["swap"] = swapped
         vm.wait_catalogue()
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
@@ -662,7 +662,7 @@ def main() -> int:
             # The checks after which the harness restarted a session left locked.
             meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
         if ctx is not None and ctx.facts.get("session_restarted_during"):
-            # Where the slot's session unit restarted on its own: each lost every window.
+            # Where the account's session unit restarted on its own: each lost every window.
             meta["session_restarted_during"] = ctx.facts["session_restarted_during"]
         if ctx is not None and ctx.facts.get("dialog_recovered_after"):
             # The checks that left a dialog open, what it was, and how the harness closed it.
@@ -717,7 +717,7 @@ SHARDS = {
 }
 # The checks a part names by id, which their areas' parts leave out.
 _BY_ID = {w for part in SHARDS.values() for w in part.split(",") if w[:1].isupper()}
-# What every run states: the image it runs, and that its slot is up.
+# What every run states: the image it runs, and that its account is up.
 FRAME = {"P01", "P02"}
 # The checks that judge everything a session did rather than one area: no failed or looping
 # service, every presented frame within the render budgets, every app launch within its budget.

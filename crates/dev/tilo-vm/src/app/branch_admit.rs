@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tilo_vm_protocol::{SlotKind, SlotRestart, Status};
+use tilo_vm_protocol::{AccountKind, AccountRestart, Status};
 
 use super::{App, Resolved, StopGraces, control_json, stop_escalating};
 use crate::config::Registry;
@@ -37,7 +37,7 @@ pub(super) struct Reach {
 pub(super) struct Guest {
     pub key: Option<String>,
     pub recorded: bool,
-    pub slots: BTreeMap<String, Option<Vec<Held>>>,
+    pub accounts: BTreeMap<String, Option<Vec<Held>>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub(super) trait Guests {
     fn read(
         &mut self,
         vm: &str,
-        slots: Option<&BTreeSet<String>>,
+        accounts: Option<&BTreeSet<String>>,
         wake: bool,
     ) -> Result<Option<Guest>, CliError>;
     /// What `vm` says of the host network, asked to reach `to` on it; `None` when it does not
@@ -72,8 +72,8 @@ fn waits_for_host(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>)
         return false;
     };
     let mut waits = false;
-    for (slot, held_workspaces) in expected {
-        let Some(Some(held)) = guest.slots.get(slot) else {
+    for (account, held_workspaces) in expected {
+        let Some(Some(held)) = guest.accounts.get(account) else {
             return false;
         };
         for want in held_workspaces {
@@ -93,21 +93,23 @@ fn pending(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> Opt
     if !guest.recorded {
         return Some("it has not given itself a new device key yet".into());
     }
-    for (slot, held_workspaces) in expected {
-        let Some(Some(held)) = guest.slots.get(slot) else {
-            return Some(format!("its session in slot {slot} does not answer yet"));
+    for (account, held_workspaces) in expected {
+        let Some(Some(held)) = guest.accounts.get(account) else {
+            return Some(format!(
+                "its session in account {account} does not answer yet"
+            ));
         };
         for want in held_workspaces {
             match held.iter().find(|h| h.workspace == want.workspace) {
                 None => {
                     return Some(format!(
-                        "its session in slot {slot} does not hold {} yet",
+                        "its session in account {account} does not hold {} yet",
                         want.name
                     ));
                 }
                 Some(h) if h.awaiting => {
                     return Some(format!(
-                        "{} (slot {slot}) has not taken it in yet",
+                        "{} (account {account}) has not taken it in yet",
                         want.name
                     ));
                 }
@@ -264,7 +266,7 @@ impl App {
         let deadline = guests.elapsed().saturating_add(timeout);
         let source = loop {
             let guest = guests.read(src, None, wake_source)?;
-            if let Some(guest) = guest.filter(|g| g.slots.values().all(Option::is_some)) {
+            if let Some(guest) = guest.filter(|g| g.accounts.values().all(Option::is_some)) {
                 break guest;
             }
             if guests.elapsed() >= deadline {
@@ -280,19 +282,19 @@ impl App {
             guests.pause();
         };
         let expected: BTreeMap<String, Vec<Held>> = source
-            .slots
+            .accounts
             .iter()
-            .filter_map(|(slot, held)| {
+            .filter_map(|(account, held)| {
                 let hosted: Vec<Held> = held
                     .iter()
                     .flatten()
                     .filter(|h| h.hosted_here)
                     .cloned()
                     .collect();
-                (!hosted.is_empty()).then(|| (slot.clone(), hosted))
+                (!hosted.is_empty()).then(|| (account.clone(), hosted))
             })
             .collect();
-        let slots: BTreeSet<String> = expected.keys().cloned().collect();
+        let accounts: BTreeSet<String> = expected.keys().cloned().collect();
         for batch in plan {
             for name in batch {
                 let vm = self.resolve_vm(Some(name))?;
@@ -311,7 +313,7 @@ impl App {
             loop {
                 let mut still = Vec::new();
                 for name in &waiting {
-                    let guest = guests.read(name, Some(&slots), true)?;
+                    let guest = guests.read(name, Some(&accounts), true)?;
                     if waits_for_host(guest.as_ref(), &expected) {
                         let since = *waits_since
                             .entry(name.clone())
@@ -487,7 +489,7 @@ fn timed_out(src: &str, still: &[(String, String)], rerun: &str) -> CliError {
     refuse_admit(
         format!("{src}'s branches were not taken in in time: {what}"),
         format!(
-            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --slot <slot> raw '{{\"op\":\"workspace_hosts\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
+            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --account <account> raw '{{\"op\":\"workspace_hosts\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
         ),
     )
 }
@@ -538,7 +540,7 @@ impl Guests for LiveGuests {
     fn read(
         &mut self,
         vm: &str,
-        slots: Option<&BTreeSet<String>>,
+        accounts: Option<&BTreeSet<String>>,
         wake: bool,
     ) -> Result<Option<Guest>, CliError> {
         let resolved = self.app.resolve_vm(Some(vm))?;
@@ -547,7 +549,7 @@ impl Guests for LiveGuests {
             Err(CliError::Unreachable { .. } | CliError::DaemonMissing { .. }) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let Ok(status) = remote.call(Status { slot: None }) else {
+        let Ok(status) = remote.call(Status { account: None }) else {
             // A daemon that drops the call mid-boot is read again; one that never answers is
             // what the admission's timeout names.
             return Ok(None);
@@ -561,31 +563,31 @@ impl Guests for LiveGuests {
             guest.recorded |= line.trim() == "RECORDED=yes";
         }
         let mut worst = Duration::ZERO;
-        for slot in status.slots.iter().filter(|s| s.kind != SlotKind::Vm) {
-            if slots.is_some_and(|only| !only.contains(&slot.name)) {
+        for account in status.accounts.iter().filter(|s| s.kind != AccountKind::Vm) {
+            if accounts.is_some_and(|only| !only.contains(&account.name)) {
                 continue;
             }
-            let held = if slot.session == "active" {
+            let held = if account.session == "active" {
                 control_json(
                     &mut remote,
-                    &slot.name,
+                    &account.name,
                     &HOSTS.map(str::to_owned),
                     &mut worst,
                 )
                 .ok()
                 .map(|answer| held_of(&answer))
             } else {
-                if wake && self.woken.insert(format!("{vm}:{}", slot.name)) {
-                    remote.call(SlotRestart {
-                        name: slot.name.clone(),
+                if wake && self.woken.insert(format!("{vm}:{}", account.name)) {
+                    remote.call(AccountRestart {
+                        name: account.name.clone(),
                     })?;
                 }
-                if !wake && slots.is_none() {
+                if !wake && accounts.is_none() {
                     continue;
                 }
                 None
             };
-            guest.slots.insert(slot.name.clone(), held);
+            guest.accounts.insert(account.name.clone(), held);
         }
         Ok(Some(guest))
     }

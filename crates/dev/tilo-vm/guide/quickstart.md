@@ -1,7 +1,7 @@
 # Quickstart
 
 `tilo-vm` puts your build of a Tilo component into a shared dev VM without a
-new VM or a reboot. You get your own **slot** in the VM: a Linux user, a
+new VM or a reboot. You get your own **account** in the VM: a Linux user, a
 session, and a stack of layers over the VM's `/usr`.
 
 ## Get a VM
@@ -78,12 +78,12 @@ devices`). Every command below then works on it.
 ## Use it
 
 ```sh
-tilo-vm                      # where am I: VM, slot, generation, session, next steps
-tilo-vm slot create --headless
+tilo-vm                      # where am I: VM, account, generation, session, next steps
+tilo-vm account create --headless
 tilo-vm swap tilo-session    # sync this worktree, build in the VM, restart your session
 tilo-vm shot -o target/shot.png
 tilo-vm control actions list
-tilo-vm slot exec -- sha256sum /usr/bin/tilo-session   # what your slot sees (guide swapping)
+tilo-vm account exec -- sha256sum /usr/bin/tilo-session   # what your account sees (guide swapping)
 tilo-vm rollback             # back to the previous generation
 tilo-vm rollback --forward   # and forward again
 ```
@@ -91,10 +91,10 @@ tilo-vm rollback --forward   # and forward again
 ## Headful: your desktop on a real display path
 
 ```sh
-tilo-vm slot create --headful       # own vkms display and seat: real DRM and libinput
+tilo-vm account create --headful       # own vkms display and seat: real DRM and libinput
 tilo-vm swap tilo-session           # your build, session restarted
-tilo-vm shot -o target/headful.png  # the slot compositor's own frame
-tilo-vm input key super             # real keyboard events on the slot's seat
+tilo-vm shot -o target/headful.png  # the account compositor's own frame
+tilo-vm input key super             # real keyboard events on the account's seat
 
 tilo-vm seat claim                  # move the session onto seat0, the hypervisor window
 tilo-vm vm shot -o target/seat0.png # the hypervisor's picture of seat0
@@ -103,34 +103,34 @@ tilo-vm seat release                # give seat0 back to greetd
 
 What each picture is:
 
-- `tilo-vm shot` asks the slot's compositor to render its current scene into
-  a PNG (`tilo-control snapshot`). It is the same for a headless slot, a
-  headful slot on its vkms seat, and a slot holding seat0; it never reads a
+- `tilo-vm shot` asks the account's compositor to render its current scene into
+  a PNG (`tilo-control snapshot`). It is the same for a headless account, a
+  headful account on its vkms seat, and an account holding seat0; it never reads a
   display.
 - `tilo-vm vm shot` is the hypervisor's screenshot of the VM's real display,
-  seat0: greetd's greeter, or the slot that claimed it. Headless and vkms
-  slots never appear there. It works without SSH.
+  seat0: greetd's greeter, or the account that claimed it. Headless and vkms
+  accounts never appear there. It works without SSH.
 
 ## Rules
 
 - The VM comes from `TILO_VM`, then `.tilo-vm` in the worktree, then the
   default in `vms.toml`.
-- Your slot is named after your branch, unless `TILO_VM_SLOT` or
-  `slot = "<name>"` in the worktree's `.tilo-vm` names another.
-- Every command that works on a slot accepts `--slot <name>`: `status`,
+- Your account is named after your branch, unless `TILO_VM_ACCOUNT` or
+  `account = "<name>"` in the worktree's `.tilo-vm` names another.
+- Every command that works on an account accepts `--account <name>`: `status`,
   `swap`, `swap-artifact`, `input`, `control`, `rollback`, `logs`, `shot`,
-  `seat claim|release`, `slot create|show|exec|restart|rm` and
-  `slot apps install`. All but
+  `seat claim|release`, `account create|show|exec|restart|rm` and
+  `account apps install`. All but
   `status`, `swap`, `swap-artifact`, `input` and `control` also take the name as a
   positional argument (`tilo-vm logs review-a`).
-- After a command on a slot other than your default one, its `next:` hints
-  carry the same `--slot`.
+- After a command on an account other than your default one, its `next:` hints
+  carry the same `--account`.
 - Every command takes `--json`; a failure is one object,
   `{"error","hint","see"}`, at the top level (also inside `status` reports).
   Commands that change something or run long (create, start, restart, swap,
   rollback, seat, gc, `vm ssh --raw`, ...) write a receipt under
   `target/dev-runs/`; looking around (status, doctor, guide, lists, logs,
-  `slot show`, `slot exec`, `vm ssh` without `--raw`) does not.
+  `account show`, `account exec`, `vm ssh` without `--raw`) does not.
 - Commands are idempotent: rerunning one that succeeded changes nothing.
 
 Never deploy with raw `ssh`/`scp` into the VM. It bypasses generations, so

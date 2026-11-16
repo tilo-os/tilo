@@ -11,7 +11,7 @@ Everything goes through the production paths: the shell's `new-workspace` and
 `switch-workspace`, Terminal opened from the app catalogue, its own actions (`create-environment`, `open-in`,
 `run`, `read`), the sheet's own answers (`so.tilo.portal-sheet`) and the shell's Stop
 (`session:agents` `stop-agent`). The harness reads the agents' transcripts and the workspace
-trees through the slot's own account (`tilo-vm slot exec`), never through ush or the server.
+trees through the account's own account (`tilo-vm account exec`), never through ush or the server.
 
 The checks share one scenario and run in order (E01..E07, `run.py` E2E_ORDER); each needs
 the ones before it. `t test e2e-agents` runs this area alone (tools/ci/vm-acceptance.sh
@@ -249,20 +249,20 @@ def enter_environment(terminal: Terminal, name: str) -> dict:
     return {"record": record, "inspect": info}
 
 
-# -- the slot's own view of the trees -----------------------------------------------------
+# -- the account's own view of the trees -----------------------------------------------------
 
 
-def slot_write(ctx, path: str, data: bytes) -> None:
+def account_write(ctx, path: str, data: bytes) -> None:
     blob = base64.b64encode(data).decode()
     q = shlex.quote(path)
     ctx.vm.exec(f"mkdir -p \"$(dirname {q})\" && echo {blob} | base64 -d > {q}.e2e-tmp && mv -f {q}.e2e-tmp {q}")
 
 
-def slot_append(ctx, path: str, line: str) -> None:
+def account_append(ctx, path: str, line: str) -> None:
     ctx.vm.exec(f"printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(path)}")
 
 
-def slot_read(ctx, path: str) -> str | None:
+def account_read(ctx, path: str) -> str | None:
     out = ctx.vm.exec(f"if [ -f {shlex.quote(path)} ]; then echo E2E-FILE; cat {shlex.quote(path)}; fi",
                       check=False)
     head, sep, rest = out.partition("E2E-FILE\n")
@@ -270,7 +270,7 @@ def slot_read(ctx, path: str) -> str | None:
 
 
 def find_tree(ctx, probe: str) -> str:
-    """Where, on the device, the tree is whose `~/<probe>` a guest just wrote: the slot's
+    """Where, on the device, the tree is whose `~/<probe>` a guest just wrote: the account's
     account searches for it as any program of the login would."""
     out = ctx.vm.exec(
         "find / -maxdepth 8 \\( -path /proc -o -path /sys -o -path /usr -o -path /sysroot "
@@ -278,7 +278,7 @@ def find_tree(ctx, probe: str) -> str:
         "| head -5", timeout=180, check=False)
     hits = [line.strip() for line in out.splitlines() if line.strip().endswith(probe)]
     if len(hits) != 1:
-        raise Unobservable(f"the slot's account finds the guest's ~/{probe} at {hits or 'no path'}")
+        raise Unobservable(f"the account's account finds the guest's ~/{probe} at {hits or 'no path'}")
     return hits[0].rsplit("/", 1)[0]
 
 
@@ -331,13 +331,13 @@ class Agent:
         # Started from the shell, as a person starts Claude Code, and left running beside it.
         self.env["terminal"].bash(f"(bash ~/{AGENTS_DIR}/mcp_agent.sh {self.guest_dir} {self.server}"
                                   " </dev/null >/dev/null 2>&1 &)")
-        hello = wait_until(lambda: slot_read(self.ctx, f"{self.host_dir}/hello"), 30, interval=0.5)
+        hello = wait_until(lambda: account_read(self.ctx, f"{self.host_dir}/hello"), 30, interval=0.5)
         if hello is None:
             raise CheckFailed(f"{self.name}: the client did not start in {self.env['name']}")
         self.hello = json.loads(hello)
 
     def lines(self) -> list[dict]:
-        text = slot_read(self.ctx, f"{self.host_dir}/out") or ""
+        text = account_read(self.ctx, f"{self.host_dir}/out") or ""
         out = []
         for line in text.splitlines():
             try:
@@ -352,7 +352,7 @@ class Agent:
         if not notify:
             self.next_id += 1
             want = message["id"] = self.next_id
-        slot_append(self.ctx, f"{self.host_dir}/in", json.dumps(message))
+        account_append(self.ctx, f"{self.host_dir}/in", json.dumps(message))
         return want
 
     def reply(self, want: int, timeout: float = REPLY_S) -> dict | None:
@@ -383,12 +383,12 @@ class Agent:
                                         "clientInfo": {"name": CLIENT, "version": "1"}})
 
     def quit(self) -> None:
-        slot_append(self.ctx, f"{self.host_dir}/in", "quit")
+        account_append(self.ctx, f"{self.host_dir}/in", "quit")
 
     def keep(self) -> None:
         self.ctx.write(f"{self.name}-transcript.json", json.dumps(
             {"hello": getattr(self, "hello", None), "out": self.lines(),
-             "err": slot_read(self.ctx, f"{self.host_dir}/err")}, indent=1))
+             "err": account_read(self.ctx, f"{self.host_dir}/err")}, indent=1))
 
 
 def text_of(reply) -> str:
@@ -567,7 +567,7 @@ def environments(ctx, res):
         want(other["tilo_workspace"] not in trees, f"{e['name']}: its shell lists {other['name']}'s tree among {trees}")
     for e in envs:
         e["tree"] = find_tree(ctx, e["probe"])
-        slot_write(ctx, f"{e['tree']}/{AGENTS_DIR}/mcp_agent.sh", AGENT.read_bytes())
+        account_write(ctx, f"{e['tree']}/{AGENTS_DIR}/mcp_agent.sh", AGENT.read_bytes())
     want(one["tree"] != two["tree"], f"both workspaces' files are one tree: {one['tree']}")
     res.metrics["trees"] = {e["name"]: e["tree"] for e in envs}
     # The agents' checks run on the shell set up here, whatever of it was wrong.
@@ -698,7 +698,7 @@ def journal(ctx, word: str, lines: int = 25) -> str:
     """The session journal's last `lines` lines naming `word`, kept beside the report too: what the
     box said about it when a check needs it."""
     try:
-        out = ctx.vm.run("logs", ctx.vm.slot, timeout=90, check=False)
+        out = ctx.vm.run("logs", ctx.vm.account, timeout=90, check=False)
     except VmError as exc:
         return f"no journal: {exc}"
     text = out if isinstance(out, str) else str(out)
@@ -838,9 +838,9 @@ def asked_change(ctx, res):
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
                             f"(tilo_ls terminal: {seen[:500]!r})")
             continue
-        if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
+        if account_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
             problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
-        if slot_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
+        if account_read(ctx, f"{other['tree']}/{files[e['name']]}") is not None:
             problems.append(f"{e['name']}: the agent's file landed in {other['name']}'s files")
     if problems:
         raise CheckFailed("; ".join(problems))
@@ -1018,7 +1018,7 @@ def host_agent_seated(ctx, res) -> None:
 
     def run():
         try:
-            held["out"] = ctx.vm.run("slot", "exec", "--timeout", "180", "--", "sh", "-c",
+            held["out"] = ctx.vm.run("account", "exec", "--timeout", "180", "--", "sh", "-c",
                                      f'python3 -c {shlex.quote(HOST_AGENT)} "$HOME/{done}"',
                                      timeout=210, check=False)
         except VmError as exc:

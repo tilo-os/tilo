@@ -119,7 +119,7 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
   # The PAM entry point and compositor share the session-recovery contract.
-  # A fresh slot login must run this source's wrapper, not the base image's.
+  # A fresh account login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
   # The interface versions this image serves. The session serves its
   # interfaces and judges apps against this file, so the file it reads must
@@ -142,7 +142,7 @@ files = [
   # store also ships as an app.
   { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },
   # Quick Settings is one too: the bar's tray press opens the desktop's
-  # overlay stack, and the stack's quick-settings slot starts this program.
+  # overlay stack, and the stack's quick-settings account starts this program.
   { from = "tilo-quick-settings", to = "/usr/bin/tilo-quick-settings", mode = "0755" },
   { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
 ]

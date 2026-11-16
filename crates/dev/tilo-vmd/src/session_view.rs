@@ -1,6 +1,6 @@
 //! One readonly overlay per stand-in session, independent of the host sysext. A
 //! nonrecursive bind of the boot root retains its underlying `/usr` rather than the
-//! overmount `systemd-sysext` installs, so slot services bind the combined view and
+//! overmount `systemd-sysext` installs, so account services bind the combined view and
 //! never stack a third overlay over the host's `/usr`.
 
 use std::ffi::CString;
@@ -12,12 +12,12 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 
 fn io(error: std::io::Error) -> DaemonError {
-    DaemonError::io("prepare the readonly slot filesystem view")(error)
+    DaemonError::io("prepare the readonly account filesystem view")(error)
 }
 
 fn text(path: &Path) -> Result<CString, DaemonError> {
     CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| DaemonError::InvalidParams("invalid slot view path".into()))
+        .map_err(|_| DaemonError::InvalidParams("invalid account view path".into()))
 }
 
 fn mount(
@@ -82,7 +82,7 @@ fn directory(path: &Path) -> Result<(), DaemonError> {
     let metadata = fs::symlink_metadata(path).map_err(io)?;
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
         return Err(DaemonError::InvalidParams(
-            "slot view directory is not root controlled".into(),
+            "account view directory is not root controlled".into(),
         ));
     }
     if path
@@ -92,7 +92,7 @@ fn directory(path: &Path) -> Result<(), DaemonError> {
         .any(|byte| byte.is_ascii_whitespace() || b":,\\".contains(byte))
     {
         return Err(DaemonError::InvalidParams(
-            "unsafe slot view mount path".into(),
+            "unsafe account view mount path".into(),
         ));
     }
     Ok(())
@@ -247,44 +247,48 @@ fn hierarchy(base: &Path, view: &Path, layers: &[PathBuf], name: &str) -> Result
     )
 }
 
-/// Build the slot's fixed mount points; existing service namespaces keep their old bind mounts
+/// Build the account's fixed mount points; existing service namespaces keep their old bind mounts
 /// until the ordinary session restart closes them.
-pub(crate) fn prepare(root: &Path, slot: &str, layers: &[PathBuf]) -> Result<PathBuf, DaemonError> {
+pub(crate) fn prepare(
+    root: &Path,
+    account: &str,
+    layers: &[PathBuf],
+) -> Result<PathBuf, DaemonError> {
     let manager = fs::metadata("/proc/1/ns/mnt").map_err(io)?;
     let own = fs::metadata("/proc/self/ns/mnt").map_err(io)?;
     if manager.dev() != own.dev() || manager.ino() != own.ino() {
         return Err(DaemonError::InvalidParams(
-            "slot views must be prepared in the service manager mount namespace".into(),
+            "account views must be prepared in the service manager mount namespace".into(),
         ));
     }
-    prepare_from(root, slot, layers, Path::new("/"))
+    prepare_from(root, account, layers, Path::new("/"))
 }
 
 fn prepare_from(
     root: &Path,
-    slot: &str,
+    account: &str,
     layers: &[PathBuf],
     boot_root: &Path,
 ) -> Result<PathBuf, DaemonError> {
-    if !tilo_vm_protocol::valid_slot_name(slot) || layers.len() > 512 {
+    if !tilo_vm_protocol::valid_account_name(account) || layers.len() > 512 {
         return Err(DaemonError::InvalidParams(
-            "invalid slot view or excessive layer count".into(),
+            "invalid account view or excessive layer count".into(),
         ));
     }
     directory(root)?;
     let base = base(root, boot_root)?;
-    let view = root.join(format!("slot-{slot}"));
+    let view = root.join(format!("account-{account}"));
     directory(&view)?;
     hierarchy(&base, &view, layers, "usr")?;
     hierarchy(&base, &view, layers, "opt")?;
     Ok(view)
 }
 
-pub(crate) fn remove(root: &Path, slot: &str) -> Result<(), DaemonError> {
-    if !tilo_vm_protocol::valid_slot_name(slot) {
-        return Err(DaemonError::InvalidParams("invalid slot view".into()));
+pub(crate) fn remove(root: &Path, account: &str) -> Result<(), DaemonError> {
+    if !tilo_vm_protocol::valid_account_name(account) {
+        return Err(DaemonError::InvalidParams("invalid account view".into()));
     }
-    let view = root.join(format!("slot-{slot}"));
+    let view = root.join(format!("account-{account}"));
     for name in ["usr", "opt"] {
         unmount(&view.join(name))?;
     }

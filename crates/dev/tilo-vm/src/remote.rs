@@ -723,7 +723,7 @@ mod tests {
     #[cfg(unix)]
     fn imported_daemon_handoff_applies_through_new_rpc_and_leaves_old_process_intact() {
         use std::os::unix::fs::PermissionsExt as _;
-        use tilo_vm_protocol::{Scope, Swap, VM_SLOT, manifest::ComponentInfo};
+        use tilo_vm_protocol::{Scope, Swap, VM_ACCOUNT, manifest::ComponentInfo};
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let hash = "ab".repeat(32);
@@ -746,7 +746,7 @@ for line in sys.stdin:
   print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'legacy ExtensionDirectories third overlay: /usr Invalid argument','hint':'upgrade applying daemon'}}),flush=True)
   continue
  elif method=='swap':
-  result={'slot':'vm','generation':1,'changed':True,'policy':'vm_refresh','actions':[],'warnings':[]}
+  result={'account':'vm','generation':1,'changed':True,'policy':'vm_refresh','actions':[],'warnings':[]}
  else: raise AssertionError(method)
  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
 ";
@@ -766,7 +766,7 @@ for line in sys.stdin:
         };
         let mut old_remote = Remote::connect_line("fixture", &old_line, &endpoint, vec![]).unwrap();
         let swap = || Swap {
-            slot: VM_SLOT.into(),
+            account: VM_ACCOUNT.into(),
             component: "vmd".into(),
             layer: hash.clone(),
             info: Some(ComponentInfo::new(Scope::Vm, vec![])),

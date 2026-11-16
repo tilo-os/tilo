@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict Terminal proof in an already activated, owner-controlled cohort slot."""
+"""Strict Terminal proof in an already activated, owner-controlled cohort account."""
 import argparse
 import hashlib
 import json
@@ -55,33 +55,33 @@ print(json.dumps({'uid':os.getuid(),'processes':rows}))
 
 
 def processes(vm):
-    return first_json(vm.run("slot", "exec", "--", "python3", "-c", PROCESS_PROBE))
+    return first_json(vm.run("account", "exec", "--", "python3", "-c", PROCESS_PROBE))
 
 
 def run(args):
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    vm = TiloVm(str(args.binary.resolve()), args.vm, args.slot, out / "commands.log")
+    vm = TiloVm(str(args.binary.resolve()), args.vm, args.account, out / "commands.log")
     receipt = json.loads(args.cohort_receipt.read_text())
     source = receipt.get("cohort_source", {})
     require(receipt.get("status") == "success" and receipt.get("component") == "apps+runtime",
             "successful canonical cohort activation receipt required")
-    require(receipt.get("vm") == args.vm and receipt.get("slot") == args.slot,
-            "cohort receipt does not address this VM/slot")
+    require(receipt.get("vm") == args.vm and receipt.get("account") == args.account,
+            "cohort receipt does not address this VM/account")
     require(re.fullmatch(r"[0-9a-f]{40}", source.get("source_commit", "")) is not None
             and re.fullmatch(r"[0-9a-f]{64}", source.get("dirty_tree_hash", "")) is not None,
             "full source inventory provenance required")
-    shown = first_json(vm.run("--json", "slot", "show"))
-    require(shown["slot"]["session"] == "active", "slot session inactive")
+    shown = first_json(vm.run("--json", "account", "show"))
+    require(shown["account"]["session"] == "active", "account session inactive")
     layer = receipt["layer"]
-    require(shown["slot"]["components"].get("apps+runtime") == layer, "installed cohort differs")
+    require(shown["account"]["components"].get("apps+runtime") == layer, "installed cohort differs")
     runtime_files = [f for f in shown["files"] if f["layer"] == layer
                      and f["path"].endswith("/lib/libruntime_dylib.so")]
     require(len(runtime_files) == 1, "closed SDK runtime unobservable or ambiguous")
     expected = runtime_files[0]
     (out / "cohort-files.json").write_text(json.dumps(shown, indent=2))
     before = processes(vm)
-    require(before["uid"] == args.uid, "unexpected slot account")
+    require(before["uid"] == args.uid, "unexpected account")
     require(not before["processes"], "Terminal already open; close its own declared tab before fresh proof")
     rows = terminal_actions(vm)
     require(not terminal_rows(rows), "stale Terminal binding present before fresh launch")
@@ -135,10 +135,10 @@ def run(args):
             and any("/libstd-" in f["path"] for f in runtime), "native SDK/libstd mappings missing")
     require(all(installed.get(f["path"]) == f["sha256"] for f in runtime),
             "mapped SDK closure differs from installed verified layer")
-    final = first_json(vm.run("--json", "slot", "show"))
-    require(final["slot"] == shown["slot"], "slot cohort changed during proof")
+    final = first_json(vm.run("--json", "account", "show"))
+    require(final["account"] == shown["account"], "account cohort changed during proof")
     proof = {"source": source, "layer": layer, "cohort_receipt_sha256": hashlib.sha256(args.cohort_receipt.read_bytes()).hexdigest(),
-             "vm": args.vm, "slot": args.slot, "session": session, "binding": bound,
+             "vm": args.vm, "account": args.account, "session": session, "binding": bound,
              "marker": marker, "process": process, "standalone_output_and_returned_prompt": True}
     (out / "proof.json").write_text(json.dumps(proof, indent=2))
     print(json.dumps(proof))
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--vm", required=True)
-    parser.add_argument("--slot", required=True)
+    parser.add_argument("--account", required=True)
     parser.add_argument("--uid", required=True, type=int)
     parser.add_argument("--cohort-receipt", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)

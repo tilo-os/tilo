@@ -448,7 +448,7 @@ def _app_gone(ctx, app: str) -> dict | None:
 
 def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
                 restarts: list[str] | None = None, label: str = "") -> dict | None:
-    """Open `app` from the slot's session as a person's request does, wait for its first
+    """Open `app` from the account's session as a person's request does, wait for its first
     frame, close every window and wait until its processes are gone. Returns the open's
     `open_times`, its `open_segments` and the compositor's `launch_latency` fields; appends
     the compositor's anonymous RSS once the app is gone to `shell_anon`, and to `restarts`
@@ -502,7 +502,7 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
         raise CheckFailed(f"{app}'s processes were still running {EXIT_WAIT_S} s after its window closed, "
                           "so the next open would not start it afresh")
     if shell_anon is not None:
-        anon = shell_anon_mib(table, ctx.vm.slot_uid())
+        anon = shell_anon_mib(table, ctx.vm.account_uid())
         if anon is not None:
             shell_anon.append(anon)
     return result
@@ -683,7 +683,7 @@ def every_launch(ctx, res):
     res.detail = f"{len(startups)} launches of {len(apps)} apps within budget"
 
 
-# The compositor under the slot's session wrapper: its child named `shell`.
+# The compositor under the account's session wrapper: its child named `shell`.
 COMPOSITOR_PID = ("w=$(systemctl show -p MainPID --value {unit}); for d in /proc/[0-9]*; do "
                   "[ \"$(awk '/^PPid:/ {{print $2}}' \"$d/status\" 2>/dev/null)\" = \"$w\" ] && "
                   "[ \"$(cat \"$d/comm\" 2>/dev/null)\" = shell ] && echo \"${{d#/proc/}}\"; done; true")
@@ -698,7 +698,7 @@ def first_line_mentioning(text: str, words: tuple[str, ...]) -> str:
 
 @check("A17", "apps", "After the desktop session ends abruptly, Files opens on the first request")
 def files_after_session_crash(ctx, res):
-    """The slot's desktop runs as `tilo-vm-session@<slot>`; when its compositor dies,
+    """The account's desktop runs as `tilo-vm-session@<account>`; when its compositor dies,
     `Restart=` brings up a fresh session. After such a restart in A15 every later Files open
     was refused ("filesystem authority changed while the application launch was pending")
     until the session ended again. That crash came while an app was opening: open and close
@@ -709,7 +709,7 @@ def files_after_session_crash(ctx, res):
     if _timed_open(ctx, FILES, label="Files before the session ended") is None:
         raise Unobservable("Files drew no first frame before the session was ended, so whether it "
                            "reopens after the restart says nothing")
-    unit = session_unit.unit(ctx.vm.slot)
+    unit = session_unit.unit(ctx.vm.account)
     pids = ctx.vm.root_exec(COMPOSITOR_PID.format(unit=shlex.quote(unit))).split()
     if len(pids) != 1 or not pids[0].isdigit():
         raise Unobservable(f"no single compositor process under {unit} to end: {pids}")

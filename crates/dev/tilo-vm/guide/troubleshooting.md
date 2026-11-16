@@ -28,7 +28,7 @@ runs longer without tilo-vm requests needs `tilo-vm vm awake <name> --for 2h`
 first. `vm status` shows until when it is held; a lease it should hold but
 does not names the cause (`journalctl -u tilo-vm-awake` on the machine).
 Closing a laptop's lid still suspends it. A libvirt VM's firmware may boot
-it afresh rather than resume it after `vm wake`; slots come back as after
+it afresh rather than resume it after `vm wake`; accounts come back as after
 any boot.
 
 **`No route to host` or a timeout on a device.** tilo-vm retries for a
@@ -38,7 +38,7 @@ next steps.
 
 **`reached over the peer network` and a command that needs SSH fails.**
 Beyond the LAN only tilo-vmd's requests travel (`tilo-vm guide devices`,
-"Beyond the LAN"); `slot exec`, builds on the device and `vm ssh` wait until
+"Beyond the LAN"); `account exec`, builds on the device and `vm ssh` wait until
 it is on this network. `tilo-device-admin is not installed`: build it beside
 tilo-vm (`cargo build --release -p tilo-device-admin`).
 
@@ -84,13 +84,13 @@ components with `tilo-vm swap`, the image with `tilo-vm vm upgrade`.
 leaves a receipt.
 
 **Session is failed or inactive.** `tilo-vm logs`, then
-`tilo-vm slot restart`. A bad build usually shows in the first lines;
+`tilo-vm account restart`. A bad build usually shows in the first lines;
 `tilo-vm rollback` gets you back to a working generation.
 
 **An interrupted transition.** `tilo-vm status` reports it. Rerun the swap,
-or `tilo-vm slot restart` to re-apply the recorded generation.
+or `tilo-vm account restart` to re-apply the recorded generation.
 
-**Session differs from a greetd session.** A slot session must look like a
+**Session differs from a greetd session.** An account session must look like a
 production login: no ambient or effective capabilities, and the same SELinux
 user domain. `tilo-vm doctor` shows the difference. The session unit drops
 the ambient capability pam_systemd grants; if the check still fails, the dev
@@ -134,7 +134,7 @@ status` shows where builds run). `tilo-vm vm upgrade` to a current dev image;
 on a Linux host `--builder host` works meanwhile. A sync that fails with
 exit 1 from flock means another build of the same worktree is running.
 
-**Busy.** Another command holds the VM or your slot. VM-wide swaps, `gc`,
+**Busy.** Another command holds the VM or your account. VM-wide swaps, `gc`,
 upgrades and `vm stop` take the whole VM; wait and retry.
 
 **A VM that needs a fresh boot.** `tilo-vm vm restart` shuts it down under
@@ -142,7 +142,7 @@ the VM lock, waits until it is off, starts it and waits for tilo-vmd.
 
 **Receipts.** Every command that changes something or runs long leaves
 `target/dev-runs/<id>/run.json` (status, doctor, guide, lists, logs,
-`slot show`, `slot exec` and `vm ssh` do not; `vm ssh --raw` does, since it
+`account show`, `account exec` and `vm ssh` do not; `vm ssh --raw` does, since it
 may change the VM behind tilo-vm) with phase timings (sync, build, assemble, transfer, import, apply, session-ready,
 download) and flags phases slower than the goals: warm build < 60s, swap
 plus restart < 10s, cached boot < 30s.

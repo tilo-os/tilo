@@ -29,7 +29,7 @@ fn private_device_requests_bypass_the_retained_frame_even_when_the_send_fails() 
         line: r#"{"passphrase":"private-fixture-answer","confirm":true}"#.into(),
     });
     let private = crate::Control {
-        slot: "owned".into(),
+        account: "owned".into(),
         args: vec![
             "actions".into(),
             "invoke".into(),

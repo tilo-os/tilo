@@ -13,8 +13,8 @@ Everything goes through the production paths, as `agents_e2e` does: the shell's 
 (`new-workspace`, `switch-workspace`, `workspace.branch`), the apps' own actions (Notes'
 `new-note` and `read`, Terminal's `create-environment`, `open-in`, `run`, `read`), the person's
 `tilo` command, the sheet's own answers, and a scripted MCP client configured as Claude Code
-(`guest/mcp_agent.sh`). The harness reads the workspaces' trees through the slot's own account
-(`tilo-vm slot exec`).
+(`guest/mcp_agent.sh`). The harness reads the workspaces' trees through the account's own account
+(`tilo-vm account exec`).
 
 The checks share one scenario and run in order (WB01..WB07, `run.py` WSB_ORDER); each needs the
 ones before it. `t test e2e-ws-branch` runs this area alone (tools/ci/vm-acceptance.sh
@@ -284,14 +284,14 @@ def new_note(ctx, ws: dict, title: str) -> None:
 
 
 def long_exec(ctx, script: str, seconds: int) -> str:
-    """`slot exec` of a script that may take longer than its default bound: writing or reading
+    """`account exec` of a script that may take longer than its default bound: writing or reading
     the hundreds of megabytes of a workspace's data."""
-    return ctx.vm.run("slot", "exec", "--timeout", str(seconds), "--", "sh", "-c", script,
+    return ctx.vm.run("account", "exec", "--timeout", str(seconds), "--", "sh", "-c", script,
                       timeout=seconds + 60, check=False)
 
 
 def tree_read(ctx, tree: str, rel: str) -> str | None:
-    return ae.slot_read(ctx, f"{tree}/{rel}")
+    return ae.account_read(ctx, f"{tree}/{rel}")
 
 
 def tree_digest(ctx, tree: str, rel: str) -> str | None:
@@ -414,7 +414,7 @@ def in_shell(ctx, terminal: ae.Terminal, tree: str, name: str, script: str) -> N
     body = "\n".join(f"{line} || echo \"failed ($?): {line.strip()}\" >&2" if line.strip() and not
                       line.lstrip().startswith(("if ", "fi", "then", "else")) and not line.rstrip().endswith(
                           ("then", "do", "\\")) else line for line in script.strip().splitlines())
-    ae.slot_write(ctx, f"{tree}/{SCRIPTS}/{name}.sh",
+    ae.account_write(ctx, f"{tree}/{SCRIPTS}/{name}.sh",
                   (f"exec 2>/tmp/e2e-{name}.log\n{body}\ncat /tmp/e2e-{name}.log > ~/{done}\n"
                    f"echo ok >> ~/{done}\n").encode())
     terminal.bash(f"bash ~/{SCRIPTS}/{name}.sh")
@@ -1178,7 +1178,7 @@ TOLD = (r"so\.tilo\.chat|not complete|could not open|launch was refused|launch d
 
 
 def session_log(ctx, pattern: str, lines: int = 40) -> str:
-    """The lines of the slot session's own log that match `pattern`: `events.log`, the session's log
+    """The lines of the account session's own log that match `pattern`: `events.log`, the session's log
     events alone that the measurement stream does not push out, then the full record
     `core.SESSION_LOG` names, each line once."""
     logs = core.SESSION_LOG.rsplit("/", 1)[0]
@@ -1189,7 +1189,7 @@ def session_log(ctx, pattern: str, lines: int = 40) -> str:
 
 
 def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:  # noqa: ARG001
-    """What the slot session logged that matches `pattern`, from its own log files."""
+    """What the account session logged that matches `pattern`, from its own log files."""
     return session_log(ctx, pattern, lines)
 
 
@@ -1215,7 +1215,7 @@ def ensure_debug_switch(ctx) -> str:
         return f"the session started with it: {running.strip()[-500:]}"
     pairs = ["TILO_LAUNCHER_DEBUG_STDERR=1", f"RUST_LOG={SESSION_LOG_LEVEL}"]
     try:
-        wrote = ctx.vm.root_exec(session_unit.environment_script(ctx.vm.slot, pairs), timeout=90)
+        wrote = ctx.vm.root_exec(session_unit.environment_script(ctx.vm.account, pairs), timeout=90)
     except VmError as exc:
         wrote = f"the writer failed: {exc}"
     since = ctx.vm.exec("date +%s", check=False).strip()
@@ -1234,9 +1234,9 @@ def ensure_debug_switch(ctx) -> str:
 
 
 def restart_evidence(ctx, since: str) -> str:
-    """Why the slot session did not come back after a restart at `since`: its unit's state and
+    """Why the account session did not come back after a restart at `since`: its unit's state and
     journal, the kernel's word on a crash or kill, core dumps, and the session's own log."""
-    unit = f"tilo-vm-session@{ctx.vm.slot}.service"
+    unit = f"tilo-vm-session@{ctx.vm.account}.service"
     noise = "FRAME-LIFECYCLE|paint-stats|HEAP-MILESTONE|DEVICE-MEMORY|PUMP-PHASE"
     return ctx.vm.root_exec(
         f"echo '== {unit}'; systemctl status --no-pager -n 0 {unit} 2>&1 | head -n 12; "
@@ -1256,7 +1256,7 @@ def debug_switch(ctx) -> str:
     """What the running session has of the debug switch: the drop-ins, what its unit says, and
     each `tilo-session` process's own environment, with the displays it was started under."""
     try:
-        return ctx.vm.root_exec(session_unit.environment_state(ctx.vm.slot), timeout=60)
+        return ctx.vm.root_exec(session_unit.environment_state(ctx.vm.account), timeout=60)
     except VmError as exc:
         return f"(could not read it: {exc})"
 
@@ -1286,7 +1286,7 @@ def chat_journal(ctx, kind: str, lines: int = 24) -> str:
 
 
 def chat_scope_units(ctx) -> str:
-    """What the slot user's systemd still knows of each Chat scope: its state, result and when it
+    """What the account user's systemd still knows of each Chat scope: its state, result and when it
     came and went (systemd does not sample, so a scope shorter than the watcher's pass is here)."""
     return ctx.vm.exec(
         "for u in $(systemctl --user list-units --all --plain --no-legend 'app-tilo-so.tilo.chat-*' 2>/dev/null "
@@ -1644,7 +1644,7 @@ def agent_in_branch(ctx, res):
     terminal = ws_shell(ctx, ws, "agent")
     tid = ws_key(ws, scene["field"])
     env = {"name": ws["name"], "workspace": ws, "terminal": terminal, "tree": ws["tree"]}
-    ae.slot_write(ctx, f"{ws['tree']}/{ae.AGENTS_DIR}/mcp_agent.sh", ae.AGENT.read_bytes())
+    ae.account_write(ctx, f"{ws['tree']}/{ae.AGENTS_DIR}/mcp_agent.sh", ae.AGENT.read_bytes())
     agent = ae.Agent(ctx, env, "branch-agent")
     agent.start()
     problems = Problems()

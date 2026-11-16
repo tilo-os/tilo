@@ -1,10 +1,10 @@
-//! Which OS image the slots' generations run on, and which of their layers fit it.
+//! Which OS image the accounts' generations run on, and which of their layers fit it.
 //! A layer is built against one image — its libraries, its `Cargo.lock`, the
 //! interface versions its components speak — so a boot onto another image may run
 //! an old program against new ones. The layers are the person's deployed work all
-//! the same: a boot never takes them off a slot and never deletes them. Every boot
+//! the same: a boot never takes them off an account and never deletes them. Every boot
 //! records the booted image in `<root>/image.json`; when it differs from the one
-//! recorded before, each layer a slot's generations name is checked: one built
+//! recorded before, each layer an account's generations name is checked: one built
 //! against that image's base merges, otherwise its declared interface versions must
 //! match the image's `system-interfaces.toml`, otherwise it is held — kept, named
 //! in `<root>/held-layers.json`, and left out of everything merged until a swap
@@ -14,12 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_vm_protocol::{Declaration, HeldLayer, ImageChange, Provenance, SlotLayers};
+use tilo_vm_protocol::{AccountLayers, Declaration, HeldLayer, ImageChange, Provenance};
 
+use crate::accounts::{AccountStore, now};
 use crate::error::DaemonError;
 use crate::fsutil::write_atomic;
 use crate::layers::LayerStore;
-use crate::slots::{SlotStore, now};
 
 /// The image the last boot ran.
 const IMAGE_FILE: &str = "image.json";
@@ -162,7 +162,7 @@ fn remove_if_present(path: &Path, what: &str) -> Result<(), DaemonError> {
 
 /// The image recorded at the last boot.
 #[must_use]
-pub fn slots_image(root: &Path) -> Option<String> {
+pub fn accounts_image(root: &Path) -> Option<String> {
     read_json::<Recorded>(&root.join(IMAGE_FILE)).map(|r| r.image)
 }
 
@@ -209,7 +209,7 @@ pub fn held_notice(root: &Path) -> Option<String> {
         return None;
     }
     let notice = serde_json::json!({
-        "image": slots_image(root),
+        "image": accounts_image(root),
         "layers": held
             .iter()
             .map(|h| serde_json::json!({"component": h.component, "layer": h.layer, "reason": h.reason}))
@@ -218,8 +218,8 @@ pub fn held_notice(root: &Path) -> Option<String> {
     serde_json::to_string_pretty(&notice).ok()
 }
 
-/// Record `booted` as the image the slots run on (see the module docs). Returns the change when the
-/// boot before recorded another image, `None` when it recorded this one or none at all; no slot,
+/// Record `booted` as the image the accounts run on (see the module docs). Returns the change when the
+/// boot before recorded another image, `None` when it recorded this one or none at all; no account,
 /// generation or layer is changed or deleted either way.
 ///
 /// # Errors
@@ -227,7 +227,7 @@ pub fn held_notice(root: &Path) -> Option<String> {
 /// I/O failures; the image stays unrecorded, so the next boot tries again.
 pub fn reconcile(
     root: &Path,
-    slots: &SlotStore,
+    accounts: &AccountStore,
     layers: &LayerStore,
     booted: &BootedImage,
 ) -> Result<Option<ImageChange>, DaemonError> {
@@ -249,26 +249,26 @@ pub fn reconcile(
     }
     let at = now();
     let change = match recorded {
-        // Nothing says which image the slots were made on, so it is not a change.
+        // Nothing says which image the accounts were made on, so it is not a change.
         None => None,
         Some(previous) => {
             let mut kept = Vec::new();
             let mut named = BTreeSet::new();
-            for record in slots.list()? {
-                for number in slots.generations(&record.name) {
-                    if let Ok(generation) = slots.generation(&record.name, number) {
+            for record in accounts.list()? {
+                for number in accounts.generations(&record.name) {
+                    if let Ok(generation) = accounts.generation(&record.name, number) {
                         named.extend(generation.layers);
                     }
                 }
                 if record.current == 0 {
                     continue;
                 }
-                let generation = slots.generation(&record.name, record.current).ok();
+                let generation = accounts.generation(&record.name, record.current).ok();
                 if generation.as_ref().is_some_and(|g| g.layers.is_empty()) {
                     continue;
                 }
-                kept.push(SlotLayers {
-                    slot: record.name.clone(),
+                kept.push(AccountLayers {
+                    account: record.name.clone(),
                     generation: record.current,
                     components: generation
                         .map(|g| g.components.into_keys().collect())
@@ -332,7 +332,7 @@ pub fn ensure_root(root: &Path) -> Result<PathBuf, DaemonError> {
 
 #[cfg(test)]
 mod tests {
-    use tilo_vm_protocol::{ComponentInfo, Owner, Scope, SlotKind};
+    use tilo_vm_protocol::{AccountKind, ComponentInfo, Owner, Scope};
 
     use super::*;
 
@@ -356,14 +356,14 @@ mod tests {
         phase a_drop_an_older_tilo_vmd_recorded_still_reads_as_one;
         {
             let record = r#"{"from": null, "to": "composefs:1c9ab8", "at": "2026-10-19T19:32:21Z",
-            "dropped": [{"slot": "device", "generation": 106, "components": ["shell"]}],
+            "dropped": [{"account": "device", "generation": 106, "components": ["shell"]}],
             "freed_bytes": 7834890240}"#;
             let change: ImageChange = serde_json::from_str(record).unwrap();
             assert!(change.kept.is_empty() && change.held.is_empty());
             let said = change.describe().join("\n");
             assert!(said.contains("an older tilo-vmd dropped"), "{said}");
             assert!(
-                said.contains("slot device left generation 106 (shell)"),
+                said.contains("account device left generation 106 (shell)"),
                 "{said}"
             );
         }
@@ -419,72 +419,81 @@ mod tests {
         import_with(layers, name, &Provenance::local(name))
     }
 
-    fn swap(slots: &SlotStore, name: &str, component: &str, layer: &str, info: ComponentInfo) {
-        let mut record = slots.load(name).unwrap();
-        let (_, to) = slots
+    fn swap(
+        accounts: &AccountStore,
+        name: &str,
+        component: &str,
+        layer: &str,
+        info: ComponentInfo,
+    ) {
+        let mut record = accounts.load(name).unwrap();
+        let (_, to) = accounts
             .prepare_swap(&record, component, layer, info)
             .unwrap()
             .unwrap();
-        slots.set_current(&mut record, to.number).unwrap();
+        accounts.set_current(&mut record, to.number).unwrap();
     }
 
-    /// Every slot's generation and every layer, as the boot sees them.
-    fn state(slots: &SlotStore, layers: &LayerStore) -> (Vec<(String, u64, Vec<u64>)>, usize) {
-        let mut seen: Vec<(String, u64, Vec<u64>)> = slots
+    /// Every account's generation and every layer, as the boot sees them.
+    fn state(
+        accounts: &AccountStore,
+        layers: &LayerStore,
+    ) -> (Vec<(String, u64, Vec<u64>)>, usize) {
+        let mut seen: Vec<(String, u64, Vec<u64>)> = accounts
             .list()
             .unwrap()
             .into_iter()
-            .map(|r| (r.name.clone(), r.current, slots.generations(&r.name)))
+            .map(|r| (r.name.clone(), r.current, accounts.generations(&r.name)))
             .collect();
         seen.sort();
         (seen, layers.list().unwrap().len())
     }
 
     tilo_test_env::scenario! {
-        fn reconciling_the_booted_image_keeps_slots_layers_and_its_declaration;
+        fn reconciling_the_booted_image_keeps_accounts_layers_and_its_declaration;
 
         phase an_unknown_previous_image_is_no_change_and_drops_nothing;
-        // The laptop whose `vm` slot ran a swapped `tilo-vmd` that records images while the machine
+        // The laptop whose `vm` account ran a swapped `tilo-vmd` that records images while the machine
         // ran one that did not: its first boot found no `image.json`, counted that as an image change,
-        // put every slot back on the image and deleted 7.8 GB of layers. An unknown previous image is
+        // put every account back on the image and deleted 7.8 GB of layers. An unknown previous image is
         // no change: the image is recorded and nothing else moves.
         {
             let root = tempfile::tempdir().unwrap();
-            let slots = SlotStore::new(root.path());
+            let accounts = AccountStore::new(root.path());
             let layers = LayerStore::new(root.path());
-            slots
-                .create("a", SlotKind::Headless, Owner::default(), &[])
+            accounts
+                .create("a", AccountKind::Headless, Owner::default(), &[])
                 .unwrap();
             let shell = import(&layers, "shell");
             let vmd = import(&layers, "vmd");
-            swap(&slots, "a", "shell", &shell, session_info());
-            swap(&slots, "vm", "vmd", &vmd, vm_info());
+            swap(&accounts, "a", "shell", &shell, session_info());
+            swap(&accounts, "vm", "vmd", &vmd, vm_info());
             std::fs::write(root.path().join(COLLECT_MARKER), b"").unwrap();
-            let before = state(&slots, &layers);
+            let before = state(&accounts, &layers);
 
-            let change = reconcile(root.path(), &slots, &layers, &image("composefs:1c9ab8")).unwrap();
+            let change = reconcile(root.path(), &accounts, &layers, &image("composefs:1c9ab8")).unwrap();
 
             assert_eq!(change, None, "no recorded image, so no change");
             assert_eq!(last_change(root.path()), None);
             assert_eq!(
-                slots_image(root.path()).as_deref(),
+                accounts_image(root.path()).as_deref(),
                 Some("composefs:1c9ab8")
             );
-            assert_eq!(state(&slots, &layers), before, "slots and layers untouched");
+            assert_eq!(state(&accounts, &layers), before, "accounts and layers untouched");
             assert!(held(root.path()).is_empty(), "nothing held");
             assert!(!root.path().join(COLLECT_MARKER).exists());
         }
 
         phase an_image_change_merges_what_fits_and_holds_the_rest_without_deleting;
-        // Booting another image keeps every slot on its generation and every layer in the store: a
+        // Booting another image keeps every account on its generation and every layer in the store: a
         // layer built against the booted base merges, one whose interface versions match merges, any
         // other is held and announced.
         {
             let root = tempfile::tempdir().unwrap();
-            let slots = SlotStore::new(root.path());
+            let accounts = AccountStore::new(root.path());
             let layers = LayerStore::new(root.path());
             assert_eq!(
-                reconcile(root.path(), &slots, &layers, &image("composefs:one")).unwrap(),
+                reconcile(root.path(), &accounts, &layers, &image("composefs:one")).unwrap(),
                 None,
                 "a fresh machine records its image"
             );
@@ -499,18 +508,18 @@ mod tests {
             let install = import_with(&layers, "install", &same_interfaces);
             let shell = import_with(&layers, "shell", &older_interfaces);
             let greeter = import(&layers, "greeter");
-            let device = device_login(&slots);
+            let device = device_login(&accounts);
             for (component, layer) in [
                 ("launcher", &launcher),
                 ("install", &install),
                 ("shell", &shell),
             ] {
-                swap(&slots, &device, component, layer, session_info());
+                swap(&accounts, &device, component, layer, session_info());
             }
-            swap(&slots, "vm", "greeter", &greeter, vm_info());
-            let before = state(&slots, &layers);
+            swap(&accounts, "vm", "greeter", &greeter, vm_info());
+            let before = state(&accounts, &layers);
 
-            let change = reconcile(root.path(), &slots, &layers, &image("composefs:two"))
+            let change = reconcile(root.path(), &accounts, &layers, &image("composefs:two"))
                 .unwrap()
                 .expect("a change");
 
@@ -519,7 +528,7 @@ mod tests {
             let kept: Vec<(&str, u64)> = change
                 .kept
                 .iter()
-                .map(|k| (k.slot.as_str(), k.generation))
+                .map(|k| (k.account.as_str(), k.generation))
                 .collect();
             assert_eq!(kept, vec![("device", 3), ("vm", 1)]);
             let held_now: BTreeMap<&str, &str> = change
@@ -543,14 +552,14 @@ mod tests {
             );
             assert!(change.dropped.is_empty());
             assert_eq!(
-                state(&slots, &layers),
+                state(&accounts, &layers),
                 before,
-                "nothing deleted, no slot moved"
+                "nothing deleted, no account moved"
             );
             assert_eq!(held(root.path()), change.held);
 
             // What merges leaves the held layers out, in the generation's order.
-            let generation = slots.generation("device", 3).unwrap();
+            let generation = accounts.generation("device", 3).unwrap();
             assert_eq!(
                 layers.merged_paths(&generation.layers).unwrap(),
                 vec![layers.path(&launcher), layers.path(&install)]
@@ -558,12 +567,12 @@ mod tests {
             let notice = held_notice(root.path()).expect("the person is told");
             assert!(notice.contains("shell-ui 9"), "{notice}");
             let said = change.describe().join("\n");
-            assert!(said.contains("slot device stays on generation 3"), "{said}");
+            assert!(said.contains("account device stays on generation 3"), "{said}");
             assert!(said.contains("held, kept but not merged"), "{said}");
 
             // The same image again: nothing changes, the holds stay.
             assert_eq!(
-                reconcile(root.path(), &slots, &layers, &image("composefs:two")).unwrap(),
+                reconcile(root.path(), &accounts, &layers, &image("composefs:two")).unwrap(),
                 None
             );
             assert_eq!(held(root.path()), change.held);
@@ -587,22 +596,22 @@ mod tests {
         // image's.
         {
             let root = tempfile::tempdir().unwrap();
-            let slots = SlotStore::new(root.path());
+            let accounts = AccountStore::new(root.path());
             let layers = LayerStore::new(root.path());
             let mut merged = image("composefs:one");
             merged.declaration = None;
-            reconcile(root.path(), &slots, &layers, &merged).unwrap();
+            reconcile(root.path(), &accounts, &layers, &merged).unwrap();
             assert_eq!(recorded_declaration(root.path()), None);
 
             let booted = image("composefs:one");
             assert_eq!(
-                reconcile(root.path(), &slots, &layers, &booted).unwrap(),
+                reconcile(root.path(), &accounts, &layers, &booted).unwrap(),
                 None,
                 "the same image is no change"
             );
             assert_eq!(recorded_declaration(root.path()), booted.declaration);
 
-            reconcile(root.path(), &slots, &layers, &merged).unwrap();
+            reconcile(root.path(), &accounts, &layers, &merged).unwrap();
             assert_eq!(
                 recorded_declaration(root.path()),
                 booted.declaration,
@@ -611,13 +620,13 @@ mod tests {
         }
     }
 
-    /// The owner's login slot, as a laptop records it.
-    fn device_login(slots: &SlotStore) -> String {
+    /// The owner's login account, as a laptop records it.
+    fn device_login(accounts: &AccountStore) -> String {
         let apply = crate::apply::RecordingApply::with_login("owner");
-        let record = slots
-            .load_with(tilo_vm_protocol::DEVICE_SLOT, apply.device)
+        let record = accounts
+            .load_with(tilo_vm_protocol::DEVICE_ACCOUNT, apply.device)
             .unwrap();
-        slots.save(&record).unwrap();
+        accounts.save(&record).unwrap();
         record.name
     }
 }

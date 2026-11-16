@@ -26,7 +26,7 @@ pub struct Collected {
     pub young: Vec<(String, std::time::Duration)>,
 }
 
-/// One file or symlink in a layer, as the slot sees it.
+/// One file or symlink in a layer, as the account sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayerFile {
     /// Absolute, e.g. `/usr/bin/tilo-session`.

@@ -275,7 +275,7 @@ fn simple_command(words: &[String]) -> Option<String> {
             .map(|w| format!("remounts {w}")),
         "tilo-vmd" => first
             .filter(|v| DAEMON_COMMANDS.contains(v))
-            .map(|v| format!("runs tilo-vmd {v}, which acts on the VM's slots behind tilo-vm")),
+            .map(|v| format!("runs tilo-vmd {v}, which acts on the VM's accounts behind tilo-vm")),
         _ => None,
     }
 }
@@ -300,7 +300,7 @@ mod tests {
                 "tilo-vmd --help",
                 "ls /usr/bin",
                 "cat /etc/os-release",
-                "ls -la /var/lib/tilo-vm/slots",
+                "ls -la /var/lib/tilo-vm/accounts",
                 "journalctl -b -p warning",
                 "journalctl -u tilo-vmd --no-pager | tail -n 50",
                 "systemctl status tilo-vmd --no-pager | head -20; systemctl is-active sshd && echo ok",

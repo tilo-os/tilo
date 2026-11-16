@@ -1,7 +1,7 @@
 //! The normal swap story, with a single matched session cohort admission.
 
 use super::{
-    App, Builder, CliError, Instant, Outcome, Remote, Status, VM_SLOT, describe_apply, json,
+    App, Builder, CliError, Instant, Outcome, Remote, Status, VM_ACCOUNT, describe_apply, json,
 };
 use tilo_vm_protocol::{
     LayerVerify, Partner, Swap, USERSPACE_COMPONENTS, UserspaceApply, VM_RUNTIME_SERVICES,
@@ -10,7 +10,7 @@ use tilo_vm_protocol::{
 impl App {
     pub(super) fn swap_userspace(
         &mut self,
-        slot: &str,
+        account: &str,
         from: &str,
         builder: Option<Builder>,
         profile: Option<&str>,
@@ -18,11 +18,11 @@ impl App {
         if from != "worktree"
             || profile.is_some()
             || matches!(builder, Some(Builder::Host | Builder::Vm))
-            || slot == VM_SLOT
+            || account == VM_ACCOUNT
         {
             return Err(CliError::Unsupported {
                 what: "a userspace cohort outside its canonical remote worktree profiles".into(),
-                alternative: "tilo-vm swap --slot <session> userspace --builder remote".into(),
+                alternative: "tilo-vm swap --account <session> userspace --builder remote".into(),
             });
         }
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
@@ -49,7 +49,7 @@ impl App {
                 alternative: "update the maintained dev-vm-daemon component first".into(),
             });
         }
-        let observed = Self::cohort_state(&mut remote, slot)?;
+        let observed = Self::cohort_state(&mut remote, account)?;
         let expected_generation = observed.generation;
         let expected_session = observed.session.clone();
         let command = self
@@ -82,7 +82,7 @@ impl App {
             &CohortMove {
                 vm: &vm,
                 root: &worktree.root,
-                slot,
+                account,
                 manifest: &manifest,
                 command: &command,
                 inputs: &inputs,
@@ -96,7 +96,7 @@ impl App {
         self.apply_cohort(
             &mut remote,
             UserspaceApply {
-                slot: slot.into(),
+                account: account.into(),
                 expected_generation,
                 expected_session,
                 source: Box::new(inputs.provenance.clone()),
@@ -106,22 +106,22 @@ impl App {
         )
     }
 
-    fn cohort_state(remote: &mut Remote, slot: &str) -> Result<CohortState, CliError> {
-        let status = remote.call(Status { slot: None })?;
+    fn cohort_state(remote: &mut Remote, account: &str) -> Result<CohortState, CliError> {
+        let status = remote.call(Status { account: None })?;
         let current = status
-            .slots
+            .accounts
             .iter()
-            .find(|info| info.name == slot)
+            .find(|info| info.name == account)
             .ok_or_else(|| {
-                CliError::InvalidInput("the requested cohort slot does not exist".into())
+                CliError::InvalidInput("the requested cohort account does not exist".into())
             })?;
         let session = current.session_identity.clone().ok_or_else(|| {
-            CliError::InvalidInput("the cohort slot has no verified session identity".into())
+            CliError::InvalidInput("the cohort account has no verified session identity".into())
         })?;
         let services = status
-            .slots
+            .accounts
             .iter()
-            .find(|info| info.name == VM_SLOT)
+            .find(|info| info.name == VM_ACCOUNT)
             .map(|info| info.components.clone())
             .unwrap_or_default();
         Ok(CohortState {
@@ -209,7 +209,7 @@ impl App {
                 .record(&format!("stage-{service}"), start.elapsed().as_secs_f64());
             moved.push(member);
         }
-        let partner = partner_for(plan.slot, plan.current, plan.members);
+        let partner = partner_for(plan.account, plan.current, plan.members);
         for member in &moved {
             *remote = self.connect_with_wake(plan.vm, true)?;
             let info = plan
@@ -219,7 +219,7 @@ impl App {
             let phase = format!("service-{}", member.component);
             let result = self.receipt.phase(&phase, || {
                 remote.call(Swap {
-                    slot: VM_SLOT.into(),
+                    account: VM_ACCOUNT.into(),
                     component: member.component.clone(),
                     layer: member.layer.clone(),
                     info,
@@ -243,7 +243,7 @@ struct CohortState {
 struct CohortMove<'a> {
     vm: &'a super::Resolved,
     root: &'a std::path::Path,
-    slot: &'a str,
+    account: &'a str,
     manifest: &'a tilo_vm_protocol::manifest::Manifest,
     command: &'a [String],
     inputs: &'a crate::source_inputs::Snapshot,
@@ -253,7 +253,7 @@ struct CohortMove<'a> {
 }
 
 fn partner_for(
-    slot: &str,
+    account: &str,
     current: &std::collections::BTreeMap<String, String>,
     members: &[tilo_vm_protocol::UserspaceMember],
 ) -> Partner {
@@ -262,7 +262,7 @@ fn partner_for(
         components.insert(member.component.clone(), member.layer.clone());
     }
     Partner {
-        slot: slot.to_owned(),
+        account: account.to_owned(),
         components,
     }
 }
@@ -294,7 +294,7 @@ mod tests {
             &current,
             &[member("tilo-session", "cc"), member("app-host", "dd")],
         );
-        assert_eq!(partner.slot, "device");
+        assert_eq!(partner.account, "device");
         assert_eq!(partner.components.get("tilo-session").unwrap(), "cc");
         assert_eq!(partner.components.get("app-host").unwrap(), "dd");
         assert_eq!(partner.components.get("model-manager").unwrap(), "bb");

@@ -1,6 +1,6 @@
 # Image-level changes
 
-`swap` replaces components inside a slot. Everything else lives in the VM's
+`swap` replaces components inside an account. Everything else lives in the VM's
 image: `os/Containerfile` and `os/Containerfile.dev`, systemd units, `/etc`,
 packages, the pieces `os/components.toml` does not list. For those, rebuild the
 image and move the running VM onto it:
@@ -16,12 +16,12 @@ the VM pins it in its channel's place
 (`tilo-update-channel pin`) and its own `tilo-verified-update` checks the
 signature and stages it.
 
-No new disk and no new VM: slots, layers and in-VM build dirs live in `/var`,
+No new disk and no new VM: accounts, layers and in-VM build dirs live in `/var`,
 which bootc keeps across images. Sessions restart with the reboot.
 
-Slots keep their layers across the change: they are your deployed work, and
+Accounts keep their layers across the change: they are your deployed work, and
 only an explicit `tilo-vm rollback` or `tilo-vm gc` deletes any (gc never the
-device slot's current generation or one with a held layer). Each layer was
+device account's current generation or one with a held layer). Each layer was
 built against the image before, though, so the first boot of a new image
 (`tilo-vm-reconcile-image.service` records every booted image) checks each one:
 built against the new base, it merges; otherwise it still merges when the
@@ -46,7 +46,7 @@ needed and how much is free.
 | anything else, on a branch | `tilo-vm vm upgrade --from local`, or build on another machine (below) and `vm upgrade --image target/tilo-vm/image` |
 
 Swap whatever it can swap. An image upgrade reboots the VM and restarts every
-slot's session, including other agents'.
+account's session, including other agents'.
 
 ## From a published build: `--from sha:<commit>`
 

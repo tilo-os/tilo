@@ -1,4 +1,4 @@
-//! Input for headful slots: what `tilo-vm input` asks for, and how key names, text and gamepad
+//! Input for headful accounts: what `tilo-vm input` asks for, and how key names, text and gamepad
 //! buttons map to Linux evdev codes (US layout, the kernel's `input-event-codes.h`). They travel
 //! through per-seat uinput devices, so the compositor sees them through the real kernel path
 //! (libinput, or evdev for game controllers), like hardware plugged into that seat.

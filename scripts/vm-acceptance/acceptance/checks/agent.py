@@ -8,7 +8,7 @@ tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which ans
 (`scripts/headless-examples/agent-sessions-proof.py`) covers the protocol and its refusals
 against a compositor with no session around it; only a session has the MCP server.
 
-The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the
+The client is `guest/mcp_client.py`, run in the guest through `tilo-vm account exec` (the
 session's view, as the account's own process). The MCP server asks the person on its own sheet
 (`so.tilo.portal-sheet`, `session.mcp-server`), and the harness answers as the person does:
 it presses the sheet's "Allow once" and then Allow, or its Deny (`acceptance/sheets.py`).
@@ -48,7 +48,7 @@ NO_MCP_SERVER = ("the session serves no MCP server ($XDG_RUNTIME_DIR/tilo-sessio
 
 
 def parse_transcript(output: str) -> dict:
-    """The client's one `ACC-MCP <json>` line out of `tilo-vm slot exec` output."""
+    """The client's one `ACC-MCP <json>` line out of `tilo-vm account exec` output."""
     for line in reversed(output.splitlines()):
         if line.startswith(MARK):
             return json.loads(line[len(MARK):])

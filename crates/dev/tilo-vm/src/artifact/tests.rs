@@ -80,7 +80,7 @@ pub(crate) fn fixture(binary: bool) -> (tempfile::TempDir, ArtifactSwap) {
         dir,
         ArtifactSwap {
             component: "apps+runtime".into(),
-            slot: Some("review".into()),
+            account: Some("review".into()),
             receipt: path,
             source,
             builder_image: receipt.builder_image,

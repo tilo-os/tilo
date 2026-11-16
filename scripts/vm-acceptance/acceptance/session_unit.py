@@ -1,6 +1,6 @@
-"""The slot's session unit, and a restart of it nobody asked for.
+"""The account's session unit, and a restart of it nobody asked for.
 
-The slot's desktop runs as the system unit `tilo-vm-session@<slot>.service`
+The account's desktop runs as the system unit `tilo-vm-session@<account>.service`
 (crates/dev/tilo-vmd/data/tilo-vm-session@.service): its main process is
 `tilo-session`, the wrapper that runs the compositor and exits when it does.
 `Restart=always` starts a fresh session two seconds later, with every window gone.
@@ -8,7 +8,7 @@ Nothing else in the run would notice: the user journal P03 reads does not hold a
 system unit, and a check that was opening an app only sees its app not arrive.
 
 systemd counts those restarts in the unit's `NRestarts` and stamps each exit of the
-main process in `ExecMainExitTimestamp`; a requested restart (`tilo-vm slot restart`,
+main process in `ExecMainExitTimestamp`; a requested restart (`tilo-vm account restart`,
 the harness's own after a check left the session locked) does not count up, may reset
 the counter, and is known to the harness (`TiloVm.requested_restarts`). `run_check`
 reads both after every check and fails the check during which the session ended on its
@@ -27,8 +27,8 @@ SHOW_FIELDS = ("NRestarts", "Result", "ExecMainCode", "ExecMainStatus", "MainPID
                "ExecMainStartTimestamp", "ExecMainExitTimestamp")
 
 
-def unit(slot: str) -> str:
-    return f"tilo-vm-session@{slot}.service"
+def unit(account: str) -> str:
+    return f"tilo-vm-session@{account}.service"
 
 
 def parse_show(text: str) -> dict[str, str]:
@@ -42,11 +42,11 @@ def parse_show(text: str) -> dict[str, str]:
 
 
 def show(ctx) -> dict[str, str] | None:
-    """The slot session unit's `SHOW_FIELDS`, read as root over ssh so a session that is
+    """The account session unit's `SHOW_FIELDS`, read as root over ssh so a session that is
     down or restarting still answers. None when it cannot be read."""
     fields = " ".join(f"-p {name}" for name in SHOW_FIELDS)
     try:
-        text = ctx.vm.root_exec(f"systemctl show {fields} {shlex.quote(unit(ctx.vm.slot))}", timeout=60)
+        text = ctx.vm.root_exec(f"systemctl show {fields} {shlex.quote(unit(ctx.vm.account))}", timeout=60)
     except (VmError, AttributeError):
         return None
     parsed = parse_show(text)
@@ -100,14 +100,14 @@ def how_it_ended(fields: dict[str, str], journal: str = "") -> str:
     return "tilo-session ended; systemd no longer holds how (the next session already runs)"
 
 
-def dump_script(slot: str) -> str:
-    """A root shell script that prints what the slot session's last run left behind: the
+def dump_script(account: str) -> str:
+    """A root shell script that prints what the account session's last run left behind: the
     unit's state and systemd's lines on it, the compositor's flight records (the run that
     ended is `previous.log` once the next has started, `latest.log` before; its end record
     names the exit status), its panic reports, and the kernel's (a `segfault at` line names
     the faulting library), coredump's and the user manager's view of the same seconds."""
-    u = shlex.quote(unit(slot))
-    ident = shlex.quote(f"tilo-session-{slot}")
+    u = shlex.quote(unit(account))
+    ident = shlex.quote(f"tilo-session-{account}")
     noise = r"tilo-sandbox-exec\|MESA\|tilo::launch_latency"
     return (
         f"u={u}; user=$(systemctl show -p User --value $u); uid=$(id -u \"$user\" 2>/dev/null); "
@@ -174,7 +174,7 @@ def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
     last "Main process exited" line in the dump (the next session's start clears it)."""
     name = f"{label}-session-restart.log"
     try:
-        text = ctx.vm.root_exec(dump_script(ctx.vm.slot), timeout=180)
+        text = ctx.vm.root_exec(dump_script(ctx.vm.account), timeout=180)
     except (VmError, AttributeError) as exc:
         text = f"the session dump could not be read: {exc}"
     ctx.write(name, text)
@@ -188,12 +188,12 @@ def dump(ctx, label: str, fields: dict[str, str] | None) -> tuple[str, str]:
 ENVIRONMENT_DROPIN = "90-acceptance-session.conf"
 
 
-def environment_script(slot: str, pairs: list[str]) -> str:
-    """A root shell script that starts the slot session's next run with `pairs` (`KEY=VALUE`
+def environment_script(account: str, pairs: list[str]) -> str:
+    """A root shell script that starts the account session's next run with `pairs` (`KEY=VALUE`
     words a shell need not quote) and says how each step went: who runs it, the drop-in written
     to /etc and to /run (systemd reads both), the reload, the manager's own environment when
     neither file could be written, and what the unit then says it has."""
-    name = unit(slot)
+    name = unit(account)
     body = "[Service]\\n" + "".join(f"Environment={p}\\n" for p in pairs)
     return (
         f"echo \"as $(id -un) ($(id -u))\"; wrote=''; "
@@ -209,11 +209,11 @@ def environment_script(slot: str, pairs: list[str]) -> str:
     )
 
 
-def environment_state(slot: str) -> str:
-    """A root shell script that says what the slot session has of a run's environment: the
+def environment_state(account: str) -> str:
+    """A root shell script that says what the account session has of a run's environment: the
     drop-ins, what the unit says, and each running `tilo-session` process's own environment
     (the debug switch, its log level, and the displays it was started under)."""
-    name = unit(slot)
+    name = unit(account)
     return (
         f"ls -la /etc/systemd/system/{name}.d /run/systemd/system/{name}.d 2>&1 | grep -av '^total'; "
         f"systemctl show {name} -p Environment -p DropInPaths 2>&1 | cut -c1-700; "

@@ -38,17 +38,17 @@ def receipt(data, vm, command, status="success"):
     return data.get("result") if status == "success" else data.get("error")
 
 
-def shown(data, vm, slot):
-    result = receipt(data, vm, "slot show")
-    require(isinstance(result, dict) and isinstance(result.get("slot"), dict),
-            "slot show: missing slot object")
-    info = result["slot"]
-    require(info.get("name") == slot,
-            "slot show: wrong or missing slot")
+def shown(data, vm, account):
+    result = receipt(data, vm, "account show")
+    require(isinstance(result, dict) and isinstance(result.get("account"), dict),
+            "account show: missing account object")
+    info = result["account"]
+    require(info.get("name") == account,
+            "account show: wrong or missing account")
     require(type(info.get("generation")) is int and info["generation"] >= 0 and
-            isinstance(info.get("components"), dict), "slot show: invalid generation/components")
+            isinstance(info.get("components"), dict), "account show: invalid generation/components")
     require(isinstance(result.get("files"), list) and
-            all(isinstance(f, dict) for f in result["files"]), "slot show: invalid inventory")
+            all(isinstance(f, dict) for f in result["files"]), "account show: invalid inventory")
     return result
 
 
@@ -71,26 +71,26 @@ def provenance(shown, component):
     return value
 
 
-def audit(evidence, vm, slot, source):
-    """Check a fresh slot's successful session replacement and failed recovery.
+def audit(evidence, vm, account, source):
+    """Check a fresh account's successful session replacement and failed recovery.
 
     Input observations are local evidence, not a remote attestation. A passing
     result means these captures agree; it cannot substitute for running the
     acceptance journey or the independent package signature verification.
     """
-    require(re.fullmatch(r"replace-[0-9a-f]{12}", slot), "expected fresh replace-<12 hex> slot")
+    require(re.fullmatch(r"replace-[0-9a-f]{12}", account), "expected fresh replace-<12 hex> account")
     require(re.fullmatch(r"[0-9a-f]{40}", source), "expected full candidate source commit")
-    created = receipt(evidence["create-run"], vm, f"slot create {slot}")
+    created = receipt(evidence["create-run"], vm, f"account create {account}")
     require(isinstance(created, dict) and created.get("created") is True,
-            "slot create: fresh ownership not acknowledged")
-    info = created.get("slot", {})
-    user = "tds-" + slot
-    require(isinstance(info, dict) and info.get("name") == slot and info.get("kind") == "headless" and
+            "account create: fresh ownership not acknowledged")
+    info = created.get("account", {})
+    user = "tds-" + account
+    require(isinstance(info, dict) and info.get("name") == account and info.get("kind") == "headless" and
             info.get("user") == user and info.get("generation") == 0 and
-            info.get("components") == {}, "slot create: fixture is not an empty disposable slot")
-    before = shown(evidence["before-run"], vm, slot)
-    active = shown(evidence["active-run"], vm, slot)
-    recovered = shown(evidence["recovered-run"], vm, slot)
+            info.get("components") == {}, "account create: fixture is not an empty disposable account")
+    before = shown(evidence["before-run"], vm, account)
+    active = shown(evidence["active-run"], vm, account)
+    recovered = shown(evidence["recovered-run"], vm, account)
     sdk = provenance(active, "apps+runtime")
     candidate = provenance(active, SESSION)
     baseline = provenance(before, SESSION)
@@ -101,7 +101,7 @@ def audit(evidence, vm, slot, source):
     require(candidate["source_commit"] == source, f"{SESSION}: unexpected source commit")
     for field in ("source_commit", "dirty_tree_hash", "target", "toolchain", "cargo_lock_hash"):
         require(candidate.get(field) == sdk.get(field), f"{SESSION}/runtime: {field} mismatch")
-    components = active["slot"].get("components", {})
+    components = active["account"].get("components", {})
     for component in (SESSION, "apps+runtime"):
         require(re.fullmatch(r"[0-9a-f]{64}", components.get(component, "")),
                 f"{component}: active layer hash unavailable")
@@ -111,28 +111,28 @@ def audit(evidence, vm, slot, source):
                 for f in active.get("files", [])), "runtime: selected layer inventory unavailable")
     activation = evidence["activate-run"]
     applied = receipt(activation, vm, f"swap {SESSION}")
-    require(activation.get("slot") == slot and activation.get("component") == SESSION and
+    require(activation.get("account") == account and activation.get("component") == SESSION and
             activation.get("layer") == components[SESSION], "activation: target/layer mismatch")
-    require(isinstance(applied, dict) and applied.get("slot") == slot and
-            applied.get("generation") == active["slot"].get("generation") and
+    require(isinstance(applied, dict) and applied.get("account") == account and
+            applied.get("generation") == active["account"].get("generation") and
             applied.get("changed") is True and applied.get("policy") == "session_restart",
             "activation: successful session activation unavailable")
-    require(active["slot"]["generation"] > before["slot"]["generation"] and
-            components[SESSION] != before["slot"].get("components", {}).get(SESSION),
+    require(active["account"]["generation"] > before["account"]["generation"] and
+            components[SESSION] != before["account"].get("components", {}).get(SESSION),
             "activation: no replacement observed")
-    require(components["apps+runtime"] == before["slot"].get("components", {}).get("apps+runtime"),
+    require(components["apps+runtime"] == before["account"].get("components", {}).get("apps+runtime"),
             "activation: runtime cohort changed during the session replacement")
     failure = evidence["fail-run"]
     error = receipt(failure, vm, f"swap {SESSION}", "failure")
-    require(failure.get("slot") == slot and failure.get("component") == SESSION and
+    require(failure.get("account") == account and failure.get("component") == SESSION and
             re.fullmatch(r"[0-9a-f]{64}", failure.get("layer", "")) and
             failure["layer"] != components[SESSION], "failure: target/layer mismatch")
     detail = error.get("error", "") if isinstance(error, dict) else ""
-    generation = active["slot"]["generation"]
+    generation = active["account"]["generation"]
     require(re.search(rf"\brestored generation {generation}\b", detail) and "also failed" not in detail,
             "failure: successful recovery unavailable (preflight rejection is not rollback)")
     for field in ("name", "user", "generation", "components"):
-        require(recovered["slot"].get(field) == active["slot"].get(field),
+        require(recovered["account"].get(field) == active["account"].get(field),
                 f"recovery: {field} changed")
     require(recovered.get("provenance") == active.get("provenance"),
             "recovery: provenance changed")
@@ -140,7 +140,7 @@ def audit(evidence, vm, slot, source):
     fixture = evidence["fixture-before"]
     require(isinstance(fixture, dict), "fixture: missing observation")
     require(fixture == evidence["fixture-after"], "recovery: fixture state changed")
-    require(fixture.get("vm") == vm and fixture.get("slot") == slot and
+    require(fixture.get("vm") == vm and fixture.get("account") == account and
             fixture.get("user") == user and type(fixture.get("uid")) is int and
             fixture["uid"] > 0, "fixture: dedicated user unavailable")
     home = fixture.get("home", "")
@@ -148,17 +148,17 @@ def audit(evidence, vm, slot, source):
             fixture.get("identity_root") == home + "/.local/share/tilo/test-identity" and
             re.fullmatch(r"[0-9a-f]{64}", fixture.get("sentinel_sha256", "")),
             "fixture: isolated home, identity root or sentinel unavailable")
-    removed = receipt(evidence["remove-run"], vm, f"slot rm {slot}")
+    removed = receipt(evidence["remove-run"], vm, f"account rm {account}")
     require(isinstance(removed, dict) and removed.get("removed") is True,
             "teardown: manager removal not acknowledged")
     teardown = evidence["teardown"]
-    require(isinstance(teardown, dict) and teardown.get("vm") == vm and teardown.get("slot") == slot and
+    require(isinstance(teardown, dict) and teardown.get("vm") == vm and teardown.get("account") == account and
             teardown.get("user") == user and teardown.get("uid") == fixture["uid"] and
             teardown.get("home") == home, "teardown: probe target mismatch")
-    for field in ("slot_present", "account_present", "home_present", "session_active",
+    for field in ("account_present", "account_present", "home_present", "session_active",
                   "user_manager_active", "session_dropins_present", "user_dropins_present"):
         require(teardown.get(field) is False, f"teardown: {field} absent/unproven")
-    return {"status": "captured_evidence_consistent", "vm": vm, "slot": slot,
+    return {"status": "captured_evidence_consistent", "vm": vm, "account": account,
             "source_commit": source, "layers": components,
             "live_execution": "not_performed_by_auditor"}
 
@@ -167,7 +167,7 @@ FILES = ("create-run", "before-run", "activate-run", "active-run", "fail-run",
          "recovered-run", "fixture-before", "fixture-after", "remove-run", "teardown")
 
 
-def audit_directory(directory: Path, vm: str, slot: str, source: str):
+def audit_directory(directory: Path, vm: str, account: str, source: str):
     evidence, hashes = {}, {}
     for name in FILES:
         path = directory / (name + ".json")
@@ -176,6 +176,6 @@ def audit_directory(directory: Path, vm: str, slot: str, source: str):
         require(len(raw) <= 8 * 1024 * 1024, f"{name}: evidence too large")
         evidence[name] = json.loads(raw)
         hashes[path.name] = hashlib.sha256(raw).hexdigest()
-    result = audit(evidence, vm, slot, source)
+    result = audit(evidence, vm, account, source)
     result["input_sha256"] = hashes
     return result

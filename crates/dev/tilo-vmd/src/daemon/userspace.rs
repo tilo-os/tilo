@@ -1,14 +1,15 @@
 //! One admitted, source-bound userspace generation and one final refresh.
 
 use super::{
-    Action, ApplyResult, BTreeSet, ComponentInfo, Daemon, DaemonError, Instant, Path, Policy,
-    Provenance, Scope, Session, SessionChange, SlotRecord, abi_check_verified, apply, fs, slots,
+    AccountRecord, Action, ApplyResult, BTreeSet, ComponentInfo, Daemon, DaemonError, Instant,
+    Path, Policy, Provenance, Scope, Session, SessionChange, abi_check_verified, accounts, apply,
+    fs,
 };
 use tilo_vm_protocol::{USERSPACE_COMPONENTS, UserspaceApply, UserspacePhase, UserspaceResult};
 
 struct Admitted {
-    record: SlotRecord,
-    entries: Vec<(String, slots::Entry)>,
+    record: AccountRecord,
+    entries: Vec<(String, accounts::Entry)>,
     cohort: crate::cohort::VerifiedCohort,
     warnings: Vec<String>,
 }
@@ -20,26 +21,26 @@ fn source_matches(candidate: &Provenance, source: &Provenance) -> bool {
 }
 
 impl Daemon {
-    /// The slot's record, after re-applying the generation an interrupted transition left behind,
+    /// The account's record, after re-applying the generation an interrupted transition left behind,
     /// with a note saying so. A transition marks its target pending before it activates and clears
     /// the mark once that generation is current, so a mark outliving the daemon that wrote it means
-    /// an apply was cut short, with the live slot holding part of a generation that never became
-    /// current. Re-applying the recorded one is the repair `slot restart` runs.
+    /// an apply was cut short, with the live account holding part of a generation that never became
+    /// current. Re-applying the recorded one is the repair `account restart` runs.
     fn repaired_admission(
         &mut self,
-        slot: &str,
+        account: &str,
         expected: u64,
-    ) -> Result<(SlotRecord, Option<String>), DaemonError> {
-        let record = self.load_slot(slot)?;
-        let Some(interrupted) = self.slots.pending(slot) else {
+    ) -> Result<(AccountRecord, Option<String>), DaemonError> {
+        let record = self.load_account(account)?;
+        let Some(interrupted) = self.accounts.pending(account) else {
             return Ok((record, None));
         };
         if record.current != expected {
             return Ok((record, None));
         }
-        self.restart(slot)?;
+        self.restart(account)?;
         Ok((
-            self.load_slot(slot)?,
+            self.load_account(account)?,
             Some(format!(
                 "re-applied generation {expected} after the interrupted transition to generation {interrupted}"
             )),
@@ -56,9 +57,9 @@ impl Daemon {
         base_registry: &Path,
     ) -> Result<Admitted, DaemonError> {
         let (record, repaired) =
-            self.repaired_admission(&request.slot, request.expected_generation)?;
+            self.repaired_admission(&request.account, request.expected_generation)?;
         if record.current != request.expected_generation
-            || self.slots.pending(&request.slot).is_some()
+            || self.accounts.pending(&request.account).is_some()
         {
             return Err(DaemonError::InvalidParams(
                 "userspace cohort: generation changed or a transition is pending".into(),
@@ -66,14 +67,14 @@ impl Daemon {
         }
         let session = record
             .session()
-            .ok_or_else(|| DaemonError::NoSession(request.slot.clone()))?;
+            .ok_or_else(|| DaemonError::NoSession(request.account.clone()))?;
         if session.identity() != request.expected_session {
             return Err(DaemonError::InvalidParams(
                 "userspace cohort: owner session changed during staging".into(),
             ));
         }
         if session.logged_out() {
-            return Err(DaemonError::LoggedOut(request.slot.clone()));
+            return Err(DaemonError::LoggedOut(request.account.clone()));
         }
         if request.source.source_commit.is_none()
             || request.source_inventory.len() != 64
@@ -123,7 +124,7 @@ impl Daemon {
         base_registry: &Path,
     ) -> Result<
         (
-            slots::Entry,
+            accounts::Entry,
             Option<crate::cohort::VerifiedCohort>,
             Vec<String>,
         ),
@@ -191,7 +192,7 @@ impl Daemon {
             cohort.as_ref(),
         )?;
         Ok((
-            slots::Entry {
+            accounts::Entry {
                 layer: member.layer.clone(),
                 info: component.info.clone(),
             },
@@ -221,17 +222,17 @@ impl Daemon {
         (
             Session,
             crate::SelectedApps,
-            slots::Generation,
-            slots::Generation,
+            accounts::Generation,
+            accounts::Generation,
         ),
         DaemonError,
     > {
         let session = admitted
             .record
             .session()
-            .ok_or_else(|| DaemonError::NoSession(request.slot.clone()))?;
+            .ok_or_else(|| DaemonError::NoSession(request.account.clone()))?;
         let preview = self
-            .slots
+            .accounts
             .userspace_preview(&admitted.record, &admitted.entries)?;
         self.check_interfaces(&admitted.record, &preview, None)?;
         let candidate_layers = self.system_layers(&admitted.record, self.layer_paths(&preview)?)?;
@@ -244,8 +245,8 @@ impl Daemon {
             .cohort_selected_apps(&session, &candidate_layers)?;
         if !selected.apps.is_empty() {
             let prior_generation = self
-                .slots
-                .generation(&request.slot, admitted.record.current)?;
+                .accounts
+                .generation(&request.account, admitted.record.current)?;
             let prior_layers =
                 self.system_layers(&admitted.record, self.layer_paths(&prior_generation)?)?;
             let prior = self
@@ -269,7 +270,7 @@ impl Daemon {
                 let (layer, _) = imported?;
                 admitted.entries.push((
                     "runtime-retention".into(),
-                    slots::Entry {
+                    accounts::Entry {
                         layer,
                         info: ComponentInfo::new(Scope::Session, Vec::new()),
                     },
@@ -277,7 +278,7 @@ impl Daemon {
             }
         }
         let (from, to) = self
-            .slots
+            .accounts
             .prepare_userspace(&admitted.record, &admitted.entries)?;
         Ok((session, selected, from, to))
     }
@@ -305,8 +306,8 @@ impl Daemon {
         admitted: &Admitted,
     ) -> Result<bool, DaemonError> {
         let current = self
-            .slots
-            .generation(&request.slot, admitted.record.current)?;
+            .accounts
+            .generation(&request.account, admitted.record.current)?;
         if admitted
             .entries
             .iter()
@@ -317,15 +318,15 @@ impl Daemon {
         let session = admitted
             .record
             .session()
-            .ok_or_else(|| DaemonError::NoSession(request.slot.clone()))?;
+            .ok_or_else(|| DaemonError::NoSession(request.account.clone()))?;
         let layers = self.system_layers(&admitted.record, self.layer_paths(&current)?)?;
         if !self.cohort_is_active(&session, &layers, &admitted.cohort)? {
             return Ok(false);
         }
-        let record = self.load_slot(&request.slot)?;
+        let record = self.load_account(&request.account)?;
         if record.current != request.expected_generation
             || record.session().as_ref() != Some(&session)
-            || self.slots.pending(&request.slot).is_some()
+            || self.accounts.pending(&request.account).is_some()
         {
             return Err(DaemonError::InvalidParams(
                 "userspace cohort: session changed during no-op verification".into(),
@@ -375,7 +376,7 @@ impl Daemon {
             name: "prepare-selections-and-runtime-retention".into(),
             seconds: preparation.elapsed().as_secs_f64(),
         });
-        self.slots.mark_pending(&request.slot, to.number)?;
+        self.accounts.mark_pending(&request.account, to.number)?;
         let start = Instant::now();
         let mut actions = apply::activate(
             self.apply.as_mut(),
@@ -426,7 +427,7 @@ impl Daemon {
         // Selection is individually durable, so reconcile even a partial failure; the retained old
         // SDK closure keeps held or intervening selections runnable.
         let start = Instant::now();
-        let current = self.load_slot(&request.slot)?;
+        let current = self.load_account(&request.account)?;
         if current.current != request.expected_generation
             || current.session().as_ref() != Some(&session)
         {
@@ -440,14 +441,14 @@ impl Daemon {
         let uid = apply::session_uid(self.apply.as_mut(), &session)?;
         actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
         self.verify_parity(Some(session))?;
-        self.slots.set_current(&mut admitted.record, to.number)?;
+        self.accounts.set_current(&mut admitted.record, to.number)?;
         phases.push(UserspacePhase {
             name: "refresh".into(),
             seconds: start.elapsed().as_secs_f64(),
         });
         Ok(UserspaceResult {
             apply: ApplyResult {
-                slot: request.slot,
+                account: request.account,
                 generation: to.number,
                 changed: true,
                 policy: Policy::SessionRestart,
@@ -473,7 +474,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tilo_test_env::SpawnUnderEnvLock as _;
     use tilo_vm_protocol::{
-        BaseInfo, DEVICE_SLOT, Owner, SlotKind, USERSPACE_COMPONENTS, UserspaceApply,
+        AccountKind, BaseInfo, DEVICE_ACCOUNT, Owner, USERSPACE_COMPONENTS, UserspaceApply,
         UserspaceMember, manifest::Manifest,
     };
 
@@ -517,9 +518,9 @@ mod tests {
                 source_inventory: "ab".repeat(32),
             });
         }
-        let record = daemon.load_slot(DEVICE_SLOT).unwrap();
+        let record = daemon.load_account(DEVICE_ACCOUNT).unwrap();
         UserspaceApply {
-            slot: DEVICE_SLOT.into(),
+            account: DEVICE_ACCOUNT.into(),
             expected_generation: record.current,
             expected_session: record.session().unwrap().identity(),
             source: Box::new(source),
@@ -591,13 +592,13 @@ mod tests {
         mirror.lock().unwrap().clear();
         if case == "interrupted" {
             // The daemon stopped mid-apply: its mark outlives it, and the swap that follows must
-            // repair the slot instead of refusing.
-            daemon.slots.mark_pending(&request.slot, 2).unwrap();
+            // repair the account instead of refusing.
+            daemon.accounts.mark_pending(&request.account, 2).unwrap();
             let admitted = daemon
                 .admit_userspace_against(&request, &root.join("base"))
                 .unwrap();
-            assert_eq!(daemon.slots.pending(&request.slot), None);
-            assert_eq!(daemon.load_slot(&request.slot).unwrap().current, 1);
+            assert_eq!(daemon.accounts.pending(&request.account), None);
+            assert_eq!(daemon.load_account(&request.account).unwrap().current, 1);
             assert!(
                 admitted
                     .warnings
@@ -621,7 +622,7 @@ mod tests {
                     .is_err()
             );
             assert!(mirror.lock().unwrap().is_empty());
-            assert_eq!(daemon.load_slot(&request.slot).unwrap().current, 1);
+            assert_eq!(daemon.load_account(&request.account).unwrap().current, 1);
             return;
         }
         let admitted = daemon
@@ -634,7 +635,10 @@ mod tests {
             assert!(!repeated.apply.changed);
             assert_eq!(repeated.apply.generation, 1);
             assert!(repeated.apply.actions.is_empty());
-            assert_eq!(daemon.slots.generations(&repeated.apply.slot), vec![1]);
+            assert_eq!(
+                daemon.accounts.generations(&repeated.apply.account),
+                vec![1]
+            );
             let calls = mirror.lock().unwrap().clone();
             assert!(
                 calls
@@ -745,15 +749,15 @@ mod tests {
                     ..Owner::default()
                 };
                 let (record, _) = daemon
-                    .slots
-                    .create("owned-slot", SlotKind::Headless, owner, &[])
+                    .accounts
+                    .create("owned-account", AccountKind::Headless, owner, &[])
                     .unwrap();
-                request.slot = record.name.clone();
+                request.account = record.name.clone();
                 request.expected_session = record.session().unwrap().identity();
             }
             alter_request(&mut request, case);
             mirror.lock().unwrap().clear();
-            let before = daemon.load_slot(&request.slot).unwrap();
+            let before = daemon.load_account(&request.account).unwrap();
             let result = daemon.admit_userspace_against(&request, &root.join("base"));
             if matches!(
                 case,
@@ -761,7 +765,7 @@ mod tests {
             ) {
                 assert!(result.is_err(), "{case} must fail before activation");
                 assert!(mirror.lock().unwrap().is_empty());
-                assert!(daemon.slots.generations(&request.slot).is_empty());
+                assert!(daemon.accounts.generations(&request.account).is_empty());
                 continue;
             }
             let result = daemon
@@ -773,7 +777,7 @@ mod tests {
                 result.apply.cohort_selection.len(),
                 if case == "partial" { 1 } else { 2 }
             );
-            let after = daemon.load_slot(&result.apply.slot).unwrap();
+            let after = daemon.load_account(&result.apply.account).unwrap();
             assert_eq!(before.owner, after.owner);
             assert_eq!(before.device, after.device);
             assert_eq!(after.current, 1);
@@ -794,7 +798,7 @@ mod tests {
             subject(root);
             return;
         }
-        // Every import and slot write is durable, and the subject makes
+        // Every import and account write is durable, and the subject makes
         // hundreds of them. On a worker whose disk is busy with other builds
         // each fsync waits for that writeback, which took the subject from
         // seconds to past the hang bound. What it checks is admission and

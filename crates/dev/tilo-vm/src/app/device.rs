@@ -152,7 +152,7 @@ pub fn device_checks(
             "tilo-vmd",
             error.to_string(),
             format!(
-                "slots and swaps wait for a newer image: tilo-vm vm upgrade {vm} (it needs only SSH and bootc)"
+                "accounts and swaps wait for a newer image: tilo-vm vm upgrade {vm} (it needs only SSH and bootc)"
             ),
         ),
         (true, Some(Err(error))) => Check::fail("tilo-vmd", error.to_string(), error.hint()),
@@ -171,8 +171,8 @@ pub fn device_checks(
         });
         for issue in &hello.issues {
             checks.push(Check::warn(
-                "slots",
-                format!("slot {}: {}", issue.slot, issue.problem),
+                "accounts",
+                format!("account {}: {}", issue.account, issue.problem),
                 issue.hint.clone(),
             ));
         }
@@ -315,7 +315,7 @@ impl App {
         let use_it = format!("tilo-vm vm use {}", args.name);
         Ok(Outcome::new(text, data).next(&[
             use_it.as_str(),
-            "tilo-vm slot create --headless",
+            "tilo-vm account create --headless",
             "tilo-vm guide devices",
         ]))
     }

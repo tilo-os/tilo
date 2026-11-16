@@ -784,7 +784,7 @@ if [ -n "${TILO_VALIDATION_ETC:-}" ]; then
   disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")
 fi
 # Whole-disk virtual size (disk-image.sh --size). The qcow2 stays sparse, so a
-# dev VM disk with room for builds and slot layers costs nothing until written.
+# dev VM disk with room for builds and account layers costs nothing until written.
 if [ -n "${TILO_DISK_SIZE:-}" ]; then
   disk_args+=(--size "$TILO_DISK_SIZE")
 fi

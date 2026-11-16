@@ -1,6 +1,6 @@
-//! `tilo-vmd exec`: run one command as a slot sees the system, streamed and
-//! bounded. The command joins the mount namespace of the slot's running session,
-//! where the slot's layers are stacked over `/usr`, and runs as the slot's user, so
+//! `tilo-vmd exec`: run one command as an account sees the system, streamed and
+//! bounded. The command joins the mount namespace of the account's running session,
+//! where the account's layers are stacked over `/usr`, and runs as the account's user, so
 //! it sees exactly the files the session does.
 
 use std::io::{Read, Write};
@@ -295,7 +295,7 @@ mod tests {
             }
         }
 
-        phase exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed;
+        phase exec_runs_in_the_session_as_the_account_user_bounded_and_streamed;
         {
             {
                 let env = session_env(

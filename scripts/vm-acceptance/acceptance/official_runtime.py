@@ -1,6 +1,6 @@
 """Read-only installed identity using canonical signature verifiers and OS trust.
 
-Executed as the owning slot user; never installs, grants trust, or launches.
+Executed as the owning account user; never installs, grants trust, or launches.
 The SHA inventory bridges verified signed bundle bytes to kernel map_files bytes.
 """
 import hashlib

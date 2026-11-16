@@ -210,7 +210,9 @@ impl Daemon {
             BuildTarget::Component { name, profile } => {
                 self.build_component(&job, &src, name, profile.as_deref(), user.as_ref())
             }
-            BuildTarget::App { dir, slot } => self.build_app(&job, &src, dir, slot, user.as_ref()),
+            BuildTarget::App { dir, account } => {
+                self.build_app(&job, &src, dir, account, user.as_ref())
+            }
         };
         // Record the build dir's size even after a failed build: it still costs disk.
         self.targets.measure(&job.worktree)?;
@@ -353,7 +355,7 @@ impl Daemon {
         job: &BuildJob,
         src: &Path,
         dir: &str,
-        slot: &str,
+        account: &str,
         user: Option<&BuildUser>,
     ) -> Result<JobOutput, DaemonError> {
         let apps = apps_in(src);
@@ -363,8 +365,8 @@ impl Daemon {
                 known: apps,
             });
         }
-        // Refuse before minutes of building for a slot that cannot take it.
-        self.user_slot(slot)?;
+        // Refuse before minutes of building for an account that cannot take it.
+        self.user_account(account)?;
         let sccache = on_path("sccache");
         let mut timer = Timer(BTreeMap::new());
         // The package is built output: it lands in the tree's own `target/`, which the build user
@@ -391,8 +393,8 @@ impl Daemon {
         });
         let installed = built.and_then(|()| {
             timer.time("install", || {
-                let _locks = self.slot_locks(slot)?;
-                self.install_app(slot, LayerSource::Path(tapp.display().to_string()))
+                let _locks = self.account_locks(account)?;
+                self.install_app(account, LayerSource::Path(tapp.display().to_string()))
             })
         });
         let _ = std::fs::remove_dir_all(&staging);

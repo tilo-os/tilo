@@ -35,7 +35,7 @@ fn network_wake_requires_the_normal_protocol_handshake() {
 tilo_test_env::scenario! {
     fn a_failed_swap_keeps_provenance_and_restores_the_generation;
 
-    phase slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation;
+    phase account_show_reads_imported_provenance_and_keeps_it_after_failed_activation;
     {
         let root = tempfile::tempdir().unwrap();
         let payload = tempfile::tempdir().unwrap();
@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut apply = RecordingApply::default();
         apply.readiness_replies.extend([
-            Ok(()), // fresh slot
+            Ok(()), // fresh account
             Ok(()), // baseline
             Err("candidate failed readiness".into()),
             Ok(()), // recovered baseline
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         daemon
             .create(
                 "proof",
-                SlotKind::Headless,
+                AccountKind::Headless,
                 Owner::default(),
                 &[],
                 IdentityRequest::None,
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
             .unwrap_err();
         assert!(error.to_string().contains("restored generation 1"));
         let recovered = daemon.show("proof").unwrap();
-        assert_eq!(recovered.slot.components["shell"], baseline);
+        assert_eq!(recovered.account.components["shell"], baseline);
         assert_eq!(recovered.provenance, before.provenance);
         // Old imports without metadata remain observable as unknown, rather
         // than inventing provenance from the component name or swap request.
@@ -105,19 +105,19 @@ tilo_test_env::scenario! {
         .unwrap();
         let unknown = daemon.show("proof").unwrap();
         assert!(unknown.provenance.is_empty());
-        assert_eq!(unknown.slot.components["shell"], baseline);
+        assert_eq!(unknown.account.components["shell"], baseline);
         assert!(!unknown.files.is_empty());
         let mut legacy = serde_json::to_value(&unknown).unwrap();
         legacy.as_object_mut().unwrap().remove("provenance");
-        let legacy: SlotShowResult = serde_json::from_value(legacy).unwrap();
+        let legacy: AccountShowResult = serde_json::from_value(legacy).unwrap();
         assert!(legacy.provenance.is_empty());
     }
 
     phase failed_swap_restores_generation_and_reports_failed_recovery;
     {
-        for (slot, recovery) in [
-            (DEVICE_SLOT, Ok(())),
-            (DEVICE_SLOT, Err("old desktop also failed".to_owned())),
+        for (account, recovery) in [
+            (DEVICE_ACCOUNT, Ok(())),
+            (DEVICE_ACCOUNT, Err("old desktop also failed".to_owned())),
             ("review", Ok(())),
             ("review", Err("old desktop also failed".to_owned())),
         ] {
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
             let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let mut apply = RecordingApply::with_login("owner");
             apply.mirror = Some(mirror.clone());
-            if slot != DEVICE_SLOT {
+            if account != DEVICE_ACCOUNT {
                 apply.readiness_replies.push_back(Ok(()));
             }
             apply.readiness_replies.extend([
@@ -134,11 +134,11 @@ tilo_test_env::scenario! {
                 recovery.clone(),
             ]);
             let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
-            if slot != DEVICE_SLOT {
+            if account != DEVICE_ACCOUNT {
                 daemon
                     .create(
-                        slot,
-                        SlotKind::Headless,
+                        account,
+                        AccountKind::Headless,
                         Owner::default(),
                         &[],
                         IdentityRequest::None,
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
             let info = Some(ComponentInfo::new(Scope::Session, vec![]));
             assert_eq!(
                 daemon
-                    .swap(slot, "shell", &hash, info.clone(), None)
+                    .swap(account, "shell", &hash, info.clone(), None)
                     .unwrap()
                     .generation,
                 1
@@ -160,18 +160,18 @@ tilo_test_env::scenario! {
             mirror.lock().unwrap().clear();
             let next = "cd".repeat(32);
             fs::create_dir_all(root.path().join("layers").join(&next).join("usr/bin")).unwrap();
-            let error = daemon.swap(slot, "shell", &next, info, None).unwrap_err();
+            let error = daemon.swap(account, "shell", &next, info, None).unwrap_err();
             let detail = error.to_string();
             assert!(detail.contains("new desktop failed"), "{detail}");
-            let record = daemon.load_slot(slot).unwrap();
+            let record = daemon.load_account(account).unwrap();
             assert_eq!(
                 record.current, 1,
                 "a failed candidate never becomes current"
             );
-            if slot == DEVICE_SLOT {
+            if account == DEVICE_ACCOUNT {
                 assert_eq!(record.device.as_ref().unwrap().account, "owner");
             } else {
-                assert_eq!(record.kind, SlotKind::Headless);
+                assert_eq!(record.kind, AccountKind::Headless);
             }
             let calls = mirror.lock().unwrap().clone();
             assert_eq!(
@@ -188,14 +188,14 @@ tilo_test_env::scenario! {
             );
             if recovery.is_ok() {
                 assert!(detail.contains("restored generation 1"), "{detail}");
-                assert_eq!(daemon.slots.pending(slot), None);
+                assert_eq!(daemon.accounts.pending(account), None);
             } else {
                 assert!(
                     detail.contains("recovery to generation 1 also failed"),
                     "{detail}"
                 );
                 assert!(detail.contains("old desktop also failed"), "{detail}");
-                assert_eq!(daemon.slots.pending(slot), Some(1));
+                assert_eq!(daemon.accounts.pending(account), Some(1));
             }
         }
     }
@@ -247,19 +247,25 @@ fn roll_cohort_back_to_image(
     fs::create_dir_all(layers.join(&next).join("usr/bin")).unwrap();
     let session = Some(ComponentInfo::new(Scope::Session, Vec::new()));
     let cohort = daemon
-        .swap(DEVICE_SLOT, COHORT_COMPONENT, &first, session.clone(), None)
+        .swap(
+            DEVICE_ACCOUNT,
+            COHORT_COMPONENT,
+            &first,
+            session.clone(),
+            None,
+        )
         .unwrap();
     daemon
-        .swap(DEVICE_SLOT, "shell", &next, session, None)
+        .swap(DEVICE_ACCOUNT, "shell", &next, session, None)
         .unwrap();
     // Rolling back a component the cohort does not carry is never checked.
     daemon
-        .rollback(DEVICE_SLOT, Some(cohort.generation))
+        .rollback(DEVICE_ACCOUNT, Some(cohort.generation))
         .unwrap();
     let before = mirror.lock().unwrap().len();
-    let result = daemon.rollback(DEVICE_SLOT, Some(0));
+    let result = daemon.rollback(DEVICE_ACCOUNT, Some(0));
     let after = mirror.lock().unwrap().len();
-    let current = daemon.load_slot(DEVICE_SLOT).unwrap().current;
+    let current = daemon.load_account(DEVICE_ACCOUNT).unwrap().current;
     (result, before, after, current)
 }
 
@@ -435,7 +441,7 @@ tilo_test_env::scenario! {
         };
         fs::write(daemon.lease_path(), serde_json::to_vec(&expired).unwrap()).unwrap();
         daemon
-            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
+            .handle(Request::AccountList(tilo_vm_protocol::AccountList {}))
             .unwrap();
         let renewed = awake::read(&daemon.lease_path()).unwrap();
         assert!(renewed.active(now), "{renewed:?}");
@@ -448,7 +454,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let held = fs::read(daemon.lease_path()).unwrap();
         daemon
-            .handle(Request::SlotList(tilo_vm_protocol::SlotList {}))
+            .handle(Request::AccountList(tilo_vm_protocol::AccountList {}))
             .unwrap();
         assert_eq!(fs::read(daemon.lease_path()).unwrap(), held);
     }
@@ -475,8 +481,8 @@ tilo_test_env::scenario! {
                 client_version: String::new(),
             }))
             .unwrap();
-        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-        daemon.slots.save(&device).unwrap();
+        let device = daemon.load_account(DEVICE_ACCOUNT).unwrap();
+        daemon.accounts.save(&device).unwrap();
         let before = device.current;
         fs::write(
             root.path().join("image.json"),
@@ -509,7 +515,7 @@ tilo_test_env::scenario! {
 
         let refused = daemon
             .handle(Request::Swap(tilo_vm_protocol::Swap {
-                slot: DEVICE_SLOT.into(),
+                account: DEVICE_ACCOUNT.into(),
                 component: "shell".into(),
                 layer: hash,
                 info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
@@ -522,7 +528,7 @@ tilo_test_env::scenario! {
         assert!(refused.contains("ush"), "{refused}");
         assert!(refused.contains("tilo-vm swap userspace"), "{refused}");
         assert_eq!(
-            daemon.load_slot(DEVICE_SLOT).unwrap().current,
+            daemon.load_account(DEVICE_ACCOUNT).unwrap().current,
             before,
             "the device keeps the generation it ran"
         );
@@ -535,10 +541,10 @@ tilo_test_env::scenario! {
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = device_with_shell(root.path());
-        let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
+        let vm_before = daemon.load_account(VM_ACCOUNT).unwrap().current;
         let swap_fs = |daemon: &mut Daemon, layer: String| {
             daemon.handle(Request::Swap(tilo_vm_protocol::Swap {
-                slot: VM_SLOT.into(),
+                account: VM_ACCOUNT.into(),
                 component: "fs".into(),
                 layer,
                 info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
@@ -553,9 +559,9 @@ tilo_test_env::scenario! {
         .unwrap_err()
         .to_string();
 
-        assert!(refused.contains("slot 'device'"), "{refused}");
+        assert!(refused.contains("account 'device'"), "{refused}");
         assert!(refused.contains("runtime 3"), "{refused}");
-        assert_eq!(daemon.load_slot(VM_SLOT).unwrap().current, vm_before);
+        assert_eq!(daemon.load_account(VM_ACCOUNT).unwrap().current, vm_before);
         swap_fs(
             &mut daemon,
             interface_layer(root.path(), 0xf2, "fs", IMAGE_DECLARATION, false),
@@ -565,14 +571,14 @@ tilo_test_env::scenario! {
 
     phase an_fs_swap_and_the_cohort_that_reads_it_move_together;
     // A device whose cohort moves in the same breath: the fs swap names the
-    // device slot's next generation, which reads runtime 3, so the pair is
+    // device account's next generation, which reads runtime 3, so the pair is
     // judged whole and one command moves the fleet across the interface.
     {
         let root = tempfile::tempdir().unwrap();
         let mut daemon = device_with_shell(root.path());
-        let vm_before = daemon.load_slot(VM_SLOT).unwrap().current;
+        let vm_before = daemon.load_account(VM_ACCOUNT).unwrap().current;
         let partner = tilo_vm_protocol::Partner {
-            slot: DEVICE_SLOT.into(),
+            account: DEVICE_ACCOUNT.into(),
             components: [(
                 "shell".to_owned(),
                 interface_layer(root.path(), 0x6e, "shell", NEXT_DECLARATION, true),
@@ -583,7 +589,7 @@ tilo_test_env::scenario! {
 
         let paired = daemon
             .handle(Request::Swap(tilo_vm_protocol::Swap {
-                slot: VM_SLOT.into(),
+                account: VM_ACCOUNT.into(),
                 component: "fs".into(),
                 layer: interface_layer(root.path(), 0xf4, "fs", NEXT_DECLARATION, false),
                 info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
@@ -592,12 +598,12 @@ tilo_test_env::scenario! {
             .expect("the pair moves together");
 
         assert_eq!(paired["changed"], true, "the filesystem service moved");
-        assert!(daemon.load_slot(VM_SLOT).unwrap().current > vm_before);
+        assert!(daemon.load_account(VM_ACCOUNT).unwrap().current > vm_before);
     }
 }
 
 /// A layer of `component` built for `declaration`; `ships` also writes the
-/// file a slot reads its own declaration from.
+/// file an account reads its own declaration from.
 fn interface_layer(
     root: &std::path::Path,
     hash: u8,
@@ -628,7 +634,7 @@ fn interface_layer(
 const IMAGE_DECLARATION: &str = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n";
 const NEXT_DECLARATION: &str = "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 3\n";
 
-/// A device slot running a shell from the image's tree, which reads the
+/// A device account running a shell from the image's tree, which reads the
 /// image's declaration whatever happens VM-wide.
 fn device_with_shell(root: &std::path::Path) -> Daemon {
     let mut daemon = Daemon::new(
@@ -643,8 +649,8 @@ fn device_with_shell(root: &std::path::Path) -> Daemon {
             client_version: String::new(),
         }))
         .unwrap();
-    let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-    daemon.slots.save(&device).unwrap();
+    let device = daemon.load_account(DEVICE_ACCOUNT).unwrap();
+    daemon.accounts.save(&device).unwrap();
     fs::write(
         root.join("image.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -657,7 +663,7 @@ fn device_with_shell(root: &std::path::Path) -> Daemon {
     .unwrap();
     daemon
         .handle(Request::Swap(tilo_vm_protocol::Swap {
-            slot: DEVICE_SLOT.into(),
+            account: DEVICE_ACCOUNT.into(),
             component: "shell".into(),
             layer: interface_layer(root, 0x5e, "shell", IMAGE_DECLARATION, false),
             info: Some(ComponentInfo::new(Scope::Session, Vec::new())),
@@ -683,8 +689,8 @@ tilo_test_env::scenario! {
                 client_version: String::new(),
             }))
             .unwrap();
-        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-        daemon.slots.save(&device).unwrap();
+        let device = daemon.load_account(DEVICE_ACCOUNT).unwrap();
+        daemon.accounts.save(&device).unwrap();
         let hash = "cd".repeat(32);
         fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
         let mut info = ComponentInfo::new(Scope::Vm, vec!["fs.service".into()]);
@@ -692,7 +698,7 @@ tilo_test_env::scenario! {
         let result: ApplyResult = serde_json::from_value(
             daemon
                 .handle(Request::Swap(tilo_vm_protocol::Swap {
-                    slot: VM_SLOT.into(),
+                    account: VM_ACCOUNT.into(),
                     component: "fs".into(),
                     layer: hash,
                     info: Some(info),
@@ -750,8 +756,8 @@ tilo_test_env::scenario! {
                 client_version: String::new(),
             }))
             .unwrap();
-        let device = daemon.load_slot(DEVICE_SLOT).unwrap();
-        daemon.slots.save(&device).unwrap();
+        let device = daemon.load_account(DEVICE_ACCOUNT).unwrap();
+        daemon.accounts.save(&device).unwrap();
         let mut swap = |component: &str, n: u8, outside_sessions: bool| -> ApplyResult {
             let hash = format!("{n:02x}").repeat(32);
             fs::create_dir_all(root.path().join("layers").join(&hash).join("usr/bin")).unwrap();
@@ -762,7 +768,7 @@ tilo_test_env::scenario! {
             serde_json::from_value(
                 daemon
                     .handle(Request::Swap(tilo_vm_protocol::Swap {
-                        slot: VM_SLOT.into(),
+                        account: VM_ACCOUNT.into(),
                         component: component.into(),
                         layer: hash,
                         info: Some(info),
@@ -789,10 +795,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_device_slot_merges_and_keeps_its_layers;
+    fn the_device_account_merges_and_keeps_its_layers;
 
-    phase a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot;
-    // A laptop's `device` slot (the owner's greetd login) and the `vm` slot
+    phase a_laptops_device_account_shares_the_system_wide_layers_with_the_vm_account;
+    // A laptop's `device` account (the owner's greetd login) and the `vm` account
     // merge one system-wide layer set: neither drops the other's layers, and
     // every change restarts the owner's desktop in place.
     {
@@ -815,9 +821,9 @@ tilo_test_env::scenario! {
         let mut apply = |request: Request| -> ApplyResult {
             serde_json::from_value(daemon.handle(request).unwrap()).unwrap()
         };
-        let swap = |slot: &str, component: &str, layer: &str, scope: Scope| {
+        let swap = |account: &str, component: &str, layer: &str, scope: Scope| {
             Request::Swap(tilo_vm_protocol::Swap {
-                slot: slot.into(),
+                account: account.into(),
                 component: component.into(),
                 layer: layer.into(),
                 info: Some(ComponentInfo::new(scope, Vec::new())),
@@ -828,7 +834,7 @@ tilo_test_env::scenario! {
             user: "tester".into(),
         };
 
-        let shell = apply(swap(DEVICE_SLOT, "shell", &layer(1), Scope::Session));
+        let shell = apply(swap(DEVICE_ACCOUNT, "shell", &layer(1), Scope::Session));
         assert_eq!(shell.policy, Policy::SessionRestart);
         assert!(
             shell.actions.contains(&Action::SysextRefresh),
@@ -836,10 +842,10 @@ tilo_test_env::scenario! {
             shell.actions
         );
         assert_eq!(shell.actions.last(), Some(&restarted));
-        let fs = apply(swap(VM_SLOT, "fs", &layer(2), Scope::Vm));
+        let fs = apply(swap(VM_ACCOUNT, "fs", &layer(2), Scope::Vm));
         assert!(fs.actions.contains(&restarted), "{:?}", fs.actions);
         let back = apply(Request::Rollback(tilo_vm_protocol::Rollback {
-            slot: DEVICE_SLOT.into(),
+            account: DEVICE_ACCOUNT.into(),
             to: Some(0),
         }));
         assert_eq!(back.generation, 0);
@@ -873,15 +879,15 @@ tilo_test_env::scenario! {
     phase a_board_session_running_before_restore_restarts_onto_its_merged_layers;
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let locks = Locks::new(root.path());
         let mut apply = RecordingApply::with_device("tester");
-        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
-        slots.save(&record).unwrap();
+        let mut record = accounts.load_with(DEVICE_ACCOUNT, apply.device.clone()).unwrap();
+        accounts.save(&record).unwrap();
         let hash = "07".repeat(32);
         fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
-        let (_, generation) = slots
+        let (_, generation) = accounts
             .prepare_swap(
                 &record,
                 "shell",
@@ -890,11 +896,11 @@ tilo_test_env::scenario! {
             )
             .unwrap()
             .unwrap();
-        slots.set_current(&mut record, generation.number).unwrap();
+        accounts.set_current(&mut record, generation.number).unwrap();
         let unit = "tilo-board-headless-session@tester.service";
         // Enabled at boot, it started before the restore.
         apply.start_unit(unit).unwrap();
-        let issues = restore_slots(&slots, &layers, &locks, &mut apply);
+        let issues = restore_accounts(&accounts, &layers, &locks, &mut apply);
         assert!(issues.is_empty(), "{issues:?}");
         // The seat's transient compositor unit takes no drop-in: the layers merge
         // into the host `/usr`, and the restart puts the session on them.
@@ -915,22 +921,22 @@ tilo_test_env::scenario! {
         assert!(after(&format!("start {unit}")));
     }
 
-    phase gc_never_touches_the_device_slots_current_or_held_generation;
+    phase gc_never_touches_the_device_accounts_current_or_held_generation;
     // gc deletes only what nobody holds: it never touches the device
-    // slot's current generation or a generation with a held layer, nor the
+    // account's current generation or a generation with a held layer, nor the
     // held layer itself, however few generations it is asked to keep.
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let apply = RecordingApply::with_login("owner");
-        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
-        slots.save(&record).unwrap();
+        let mut record = accounts.load_with(DEVICE_ACCOUNT, apply.device.clone()).unwrap();
+        accounts.save(&record).unwrap();
         let mut hashes = Vec::new();
         for n in 1..=4u8 {
             let hash = format!("{n:02x}").repeat(32);
             fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
-            let (_, generation) = slots
+            let (_, generation) = accounts
                 .prepare_swap(
                     &record,
                     &format!("component-{n}"),
@@ -939,12 +945,12 @@ tilo_test_env::scenario! {
                 )
                 .unwrap()
                 .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
+            accounts.set_current(&mut record, generation.number).unwrap();
             hashes.push(hash);
         }
         // Back on generation 1 (component-1 only); generation 2 added the
         // held layer, generations 3 and 4 build on it.
-        slots.set_current(&mut record, 1).unwrap();
+        accounts.set_current(&mut record, 1).unwrap();
         let held = serde_json::json!([{
             "layer": hashes[1], "component": "component-2", "reason": "speaks shell-ui 9"
         }]);
@@ -960,36 +966,36 @@ tilo_test_env::scenario! {
             })
             .unwrap();
         // Every generation from 2 on names the held layer: all are kept.
-        assert_eq!(slots.generations(DEVICE_SLOT), vec![1, 2, 3, 4]);
+        assert_eq!(accounts.generations(DEVICE_ACCOUNT), vec![1, 2, 3, 4]);
         assert!(result.removed_generations.is_empty(), "{result:?}");
         for hash in &hashes {
             assert!(layers.require(hash).is_ok(), "{hash} kept");
         }
     }
 
-    phase the_device_slot_re_merges_its_layers_at_boot;
-    // The device slot comes up on its current generation at every boot:
-    // the restore links the `vm` and `device` slots' layers and refreshes
+    phase the_device_account_re_merges_its_layers_at_boot;
+    // The device account comes up on its current generation at every boot:
+    // the restore links the `vm` and `device` accounts' layers and refreshes
     // `/usr` when the links `systemd-sysext` merged at boot were not that
     // set, and leaves a set that already was merged alone.
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let mut apply = RecordingApply::with_login("owner");
         let mut expected = Vec::new();
-        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2)] {
-            let mut record = if slot == VM_SLOT {
-                slots.load(slot).unwrap()
+        for (account, n) in [(VM_ACCOUNT, 1u8), (DEVICE_ACCOUNT, 2)] {
+            let mut record = if account == VM_ACCOUNT {
+                accounts.load(account).unwrap()
             } else {
-                slots.load_with(slot, apply.device.clone()).unwrap()
+                accounts.load_with(account, apply.device.clone()).unwrap()
             };
-            slots.save(&record).unwrap();
+            accounts.save(&record).unwrap();
             let hash = format!("{n:02x}").repeat(32);
             let path = layers.path(&hash);
             fs::create_dir_all(path.join("usr")).unwrap();
             expected.push(path);
-            let (_, generation) = slots
+            let (_, generation) = accounts
                 .prepare_swap(
                     &record,
                     "component",
@@ -998,17 +1004,17 @@ tilo_test_env::scenario! {
                 )
                 .unwrap()
                 .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
+            accounts.set_current(&mut record, generation.number).unwrap();
         }
 
         // The boot merged no links: they are put back and /usr refreshed.
-        merge_system_layers(&slots, &layers, &mut apply).unwrap();
+        merge_system_layers(&accounts, &layers, &mut apply).unwrap();
         assert_eq!(apply.sysext, expected);
         assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
 
         // Already merged: nothing is refreshed.
         apply.calls.clear();
-        merge_system_layers(&slots, &layers, &mut apply).unwrap();
+        merge_system_layers(&accounts, &layers, &mut apply).unwrap();
         assert_eq!(apply.calls, ["link_sysext 2"]);
 
         // The daemon's boot restore does the same.
@@ -1031,31 +1037,31 @@ tilo_test_env::scenario! {
         // left as they were.
         fs::remove_dir_all(&expected[1]).unwrap();
         apply.calls.clear();
-        assert!(merge_system_layers(&slots, &layers, &mut apply).is_err());
+        assert!(merge_system_layers(&accounts, &layers, &mut apply).is_err());
         assert!(apply.calls.is_empty(), "{:?}", apply.calls);
     }
 
-    phase a_board_merges_the_device_and_vm_slots_layers_whichever_applies;
+    phase a_board_merges_the_device_and_vm_accounts_layers_whichever_applies;
     // A board's own session runs in the host's mount namespace, like a laptop's
-    // login, so the `vm` slot and the `device` slot are one `/usr`: whichever of
+    // login, so the `vm` account and the `device` account are one `/usr`: whichever of
     // the two applies, the other's layers stay merged, and the boot restore
-    // merges both. A slot with a view of its own stacks the machine's layers
+    // merges both. An account with a view of its own stacks the machine's layers
     // under its own.
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         // The machine's own session, with no greeter login: a board's seat.
         let mut apply = RecordingApply::with_device("owner");
         let mut expected = Vec::new();
-        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2)] {
-            let mut record = slots.load_with(slot, apply.device.clone()).unwrap();
-            slots.save(&record).unwrap();
+        for (account, n) in [(VM_ACCOUNT, 1u8), (DEVICE_ACCOUNT, 2)] {
+            let mut record = accounts.load_with(account, apply.device.clone()).unwrap();
+            accounts.save(&record).unwrap();
             let hash = format!("{n:02x}").repeat(32);
             let path = layers.path(&hash);
             fs::create_dir_all(path.join("usr")).unwrap();
             expected.push(path);
-            let (_, generation) = slots
+            let (_, generation) = accounts
                 .prepare_swap(
                     &record,
                     "component",
@@ -1064,30 +1070,30 @@ tilo_test_env::scenario! {
                 )
                 .unwrap()
                 .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
+            accounts.set_current(&mut record, generation.number).unwrap();
         }
-        let own = |slot: &str| {
-            let record = slots.load_with(slot, apply.device.clone()).unwrap();
-            layer_paths(&layers, &slots.generation(slot, record.current).unwrap()).unwrap()
+        let own = |account: &str| {
+            let record = accounts.load_with(account, apply.device.clone()).unwrap();
+            layer_paths(&layers, &accounts.generation(account, record.current).unwrap()).unwrap()
         };
 
-        // Both directions read the same machine set; neither is the other slot's
+        // Both directions read the same machine set; neither is the other account's
         // own apply dropping it.
-        for slot in [VM_SLOT, DEVICE_SLOT] {
-            let record = slots.load_with(slot, apply.device.clone()).unwrap();
-            let system = system_layers(&slots, &layers, &record, own(slot)).unwrap();
-            assert_eq!(system, expected, "{slot} merges both slots' layers");
+        for account in [VM_ACCOUNT, DEVICE_ACCOUNT] {
+            let record = accounts.load_with(account, apply.device.clone()).unwrap();
+            let system = system_layers(&accounts, &layers, &record, own(account)).unwrap();
+            assert_eq!(system, expected, "{account} merges both accounts' layers");
         }
 
-        // A slot with its own view stacks the machine's layers under its own.
-        let mut review = slots
-            .create("review", SlotKind::Headless, Owner::default(), &[])
+        // An account with its own view stacks the machine's layers under its own.
+        let mut review = accounts
+            .create("review", AccountKind::Headless, Owner::default(), &[])
             .unwrap()
             .0;
         let hash = "03".repeat(32);
         let path = layers.path(&hash);
         fs::create_dir_all(path.join("usr")).unwrap();
-        let (_, generation) = slots
+        let (_, generation) = accounts
             .prepare_swap(
                 &review,
                 "component",
@@ -1096,23 +1102,23 @@ tilo_test_env::scenario! {
             )
             .unwrap()
             .unwrap();
-        slots.set_current(&mut review, generation.number).unwrap();
+        accounts.set_current(&mut review, generation.number).unwrap();
         let mut machine = expected.clone();
         machine.push(path);
         assert_eq!(
-            system_layers(&slots, &layers, &review, own("review")).unwrap(),
+            system_layers(&accounts, &layers, &review, own("review")).unwrap(),
             machine
         );
 
         // The boot restore merges both into `/usr`.
-        merge_system_layers(&slots, &layers, &mut apply).unwrap();
+        merge_system_layers(&accounts, &layers, &mut apply).unwrap();
         assert_eq!(apply.sysext, expected);
         assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
     }
 }
 
 tilo_test_env::scenario! {
-    fn slot_creation_applies_outputs_and_the_identity_asked_for;
+    fn account_creation_applies_outputs_and_the_identity_asked_for;
 
     phase creating_with_outputs_applies_the_layout_every_time;
     {
@@ -1130,9 +1136,9 @@ tilo_test_env::scenario! {
             }))
             .unwrap();
         let create = || {
-            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            Request::AccountCreate(tilo_vm_protocol::AccountCreate {
                 name: "a".into(),
-                kind: SlotKind::Headful,
+                kind: AccountKind::Headful,
                 owner: Owner::default(),
                 outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
                 identity: false,
@@ -1140,9 +1146,9 @@ tilo_test_env::scenario! {
             })
         };
         for _ in 0..2 {
-            let result: SlotCreateResult =
+            let result: AccountCreateResult =
                 serde_json::from_value(daemon.handle(create()).unwrap()).unwrap();
-            assert_eq!(result.slot.outputs.len(), 2);
+            assert_eq!(result.account.outputs.len(), 2);
             assert!(
                 result.actions.contains(&Action::SetOutputs {
                     outputs: "2560x1600@2,1920x1080@1".into()
@@ -1153,7 +1159,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase slot_create_identity_mints_in_the_session_and_restarts_it_fresh;
+    phase account_create_identity_mints_in_the_session_and_restarts_it_fresh;
     {
         use tilo_vm_protocol::ControlResult;
         let reply = |exit_code, stdout: &str, stderr: &str| ControlResult {
@@ -1185,9 +1191,9 @@ tilo_test_env::scenario! {
             }))
             .unwrap();
         let create = |identity| {
-            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            Request::AccountCreate(tilo_vm_protocol::AccountCreate {
                 name: "a".into(),
-                kind: SlotKind::Headless,
+                kind: AccountKind::Headless,
                 owner: Owner::default(),
                 outputs: Vec::new(),
                 identity,
@@ -1196,7 +1202,7 @@ tilo_test_env::scenario! {
         };
         let session = session_unit("a");
         {
-            let result: SlotCreateResult =
+            let result: AccountCreateResult =
                 serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
             let identity = result.identity.expect("the identity answer");
             assert!(identity.created && identity.throwaway);
@@ -1230,7 +1236,7 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let result: SlotCreateResult =
+            let result: AccountCreateResult =
                 serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
             assert_eq!(
                 result.identity.map(|identity| identity.created),
@@ -1245,7 +1251,7 @@ tilo_test_env::scenario! {
             assert!(error.to_string().contains("identity_exists"), "{error}");
         }
         {
-            let result: SlotCreateResult =
+            let result: AccountCreateResult =
                 serde_json::from_value(daemon.handle(create(false)).unwrap()).unwrap();
             assert_eq!(result.identity, None);
             assert!(result.actions.is_empty(), "{:?}", result.actions);
@@ -1258,18 +1264,18 @@ tilo_test_env::scenario! {
     // identity recovery on a device key of nobody's.
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let locks = Locks::new(root.path());
         let mut apply = RecordingApply::default();
-        let (mut me, _) = slots
-            .create("proof", SlotKind::Headless, Owner::default(), &[])
+        let (mut me, _) = accounts
+            .create("proof", AccountKind::Headless, Owner::default(), &[])
             .unwrap();
         me.device_identity = true;
-        slots.save(&me).unwrap();
+        accounts.save(&me).unwrap();
         let hash = "05".repeat(32);
         fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
-        let (_, generation) = slots
+        let (_, generation) = accounts
             .prepare_swap(
                 &me,
                 "shell",
@@ -1278,8 +1284,8 @@ tilo_test_env::scenario! {
             )
             .unwrap()
             .unwrap();
-        slots.set_current(&mut me, generation.number).unwrap();
-        assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
+        accounts.set_current(&mut me, generation.number).unwrap();
+        assert!(restore_accounts(&accounts, &layers, &locks, &mut apply).is_empty());
         for unit in ["user@60001.service", "tilo-vm-session@proof.service"] {
             let dropin = &apply.dropins[&(unit.into(), apply::LAYERS_DROPIN.into())];
             assert!(!dropin.contains("TILO_IDENTITY_ROOT"), "{unit}: {dropin}");
@@ -1319,9 +1325,9 @@ tilo_test_env::scenario! {
             }))
             .unwrap();
         let error = daemon
-            .handle(Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+            .handle(Request::AccountCreate(tilo_vm_protocol::AccountCreate {
                 name: "me".into(),
-                kind: SlotKind::Headless,
+                kind: AccountKind::Headless,
                 owner: Owner::default(),
                 outputs: Vec::new(),
                 identity: false,
@@ -1339,21 +1345,21 @@ tilo_test_env::scenario! {
 use crate::apply::RecordingApply;
 
 tilo_test_env::scenario! {
-    fn slot_views_preserve_identity_and_layers;
+    fn account_views_preserve_identity_and_layers;
 
-    phase candidate_slot_view_preserves_identity_before_generation_commit;
+    phase candidate_account_view_preserves_identity_before_generation_commit;
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let mut apply = RecordingApply::default();
-        let (mut proof, _) = slots
-            .create("proof", SlotKind::Headless, Owner::default(), &[])
+        let (mut proof, _) = accounts
+            .create("proof", AccountKind::Headless, Owner::default(), &[])
             .unwrap();
         let own_hash = "03".repeat(32);
         let own = layers.path(&own_hash);
         fs::create_dir_all(own.join("usr")).unwrap();
-        let (_, generation) = slots
+        let (_, generation) = accounts
             .prepare_swap(
                 &proof,
                 "shell",
@@ -1362,12 +1368,12 @@ tilo_test_env::scenario! {
             )
             .unwrap()
             .unwrap();
-        slots.set_current(&mut proof, generation.number).unwrap();
+        accounts.set_current(&mut proof, generation.number).unwrap();
         let candidate = layers.path(&"04".repeat(32));
         fs::create_dir_all(candidate.join("usr")).unwrap();
-        let before = slots.load(VM_SLOT).unwrap().current;
-        prepare_slot_session(
-            &slots,
+        let before = accounts.load(VM_ACCOUNT).unwrap().current;
+        prepare_account_session(
+            &accounts,
             &layers,
             &mut apply,
             &proof,
@@ -1379,7 +1385,7 @@ tilo_test_env::scenario! {
             [("proof".into(), vec![candidate, own])]
         );
         assert_eq!(
-            slots.load(VM_SLOT).unwrap().current,
+            accounts.load(VM_ACCOUNT).unwrap().current,
             before,
             "candidate view preparation must not commit a generation before readiness"
         );
@@ -1388,31 +1394,31 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase restored_slot_views_preserve_global_layers_and_refuse_missing_layers;
+    phase restored_account_views_preserve_global_layers_and_refuse_missing_layers;
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let layers = LayerStore::new(root.path());
         let locks = Locks::new(root.path());
         let mut apply = RecordingApply::with_login("owner");
         let mut expected = Vec::new();
-        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2), ("proof", 3)] {
-            let mut record = if slot == VM_SLOT {
-                slots.load(slot).unwrap()
-            } else if slot == DEVICE_SLOT {
-                slots.load_with(slot, apply.device.clone()).unwrap()
+        for (account, n) in [(VM_ACCOUNT, 1u8), (DEVICE_ACCOUNT, 2), ("proof", 3)] {
+            let mut record = if account == VM_ACCOUNT {
+                accounts.load(account).unwrap()
+            } else if account == DEVICE_ACCOUNT {
+                accounts.load_with(account, apply.device.clone()).unwrap()
             } else {
-                slots
-                    .create(slot, SlotKind::Headless, Owner::default(), &[])
+                accounts
+                    .create(account, AccountKind::Headless, Owner::default(), &[])
                     .unwrap()
                     .0
             };
-            slots.save(&record).unwrap();
+            accounts.save(&record).unwrap();
             let hash = format!("{n:02x}").repeat(32);
             let path = layers.path(&hash);
             fs::create_dir_all(path.join("usr")).unwrap();
             expected.push(path);
-            let (_, generation) = slots
+            let (_, generation) = accounts
                 .prepare_swap(
                     &record,
                     "component",
@@ -1421,9 +1427,9 @@ tilo_test_env::scenario! {
                 )
                 .unwrap()
                 .unwrap();
-            slots.set_current(&mut record, generation.number).unwrap();
+            accounts.set_current(&mut record, generation.number).unwrap();
         }
-        assert!(restore_slots(&slots, &layers, &locks, &mut apply).is_empty());
+        assert!(restore_accounts(&accounts, &layers, &locks, &mut apply).is_empty());
         assert_eq!(
             apply.prepared_session_layers,
             [("proof".into(), expected.clone())]
@@ -1444,25 +1450,25 @@ tilo_test_env::scenario! {
             .position(|call| call == &format!("start {}", session_unit("proof")))
             .unwrap();
         assert!(reload < start);
-        let held = locks.slot("proof").unwrap();
+        let held = locks.account("proof").unwrap();
         let mut busy = RecordingApply::with_login("owner");
-        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
+        let issues = restore_accounts(&accounts, &layers, &locks, &mut busy);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, "proof");
+        assert_eq!(issues[0].account, "proof");
         assert!(busy.prepared_session_layers.is_empty());
         assert!(!busy.calls.iter().any(|call| call.starts_with("start ")));
         drop(held);
         let held = locks.vm_exclusive().unwrap();
-        let issues = restore_slots(&slots, &layers, &locks, &mut busy);
+        let issues = restore_accounts(&accounts, &layers, &locks, &mut busy);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, VM_SLOT);
+        assert_eq!(issues[0].account, VM_ACCOUNT);
         assert!(busy.prepared_session_layers.is_empty());
         drop(held);
         fs::remove_dir_all(&expected[2]).unwrap();
         let mut missing = RecordingApply::with_login("owner");
-        let issues = restore_slots(&slots, &layers, &locks, &mut missing);
+        let issues = restore_accounts(&accounts, &layers, &locks, &mut missing);
         assert_eq!(issues.len(), 1);
-        assert_eq!(issues[0].slot, "proof");
+        assert_eq!(issues[0].account, "proof");
         assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
     }
 }
@@ -1477,12 +1483,12 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
             None,
             BaseInfo::default(),
         );
-        SlotStore::new(root.path())
-            .create("a", SlotKind::Headless, Owner::default(), &[])
+        AccountStore::new(root.path())
+            .create("a", AccountKind::Headless, Owner::default(), &[])
             .unwrap();
-        let run = |daemon: &mut Daemon, slot: &str| {
+        let run = |daemon: &mut Daemon, account: &str| {
             daemon
-                .exec(slot, &["true".into()], Duration::from_secs(5), 1024)
+                .exec(account, &["true".into()], Duration::from_secs(5), 1024)
                 .unwrap_err()
         };
         // The recording backend has no session process.
@@ -1491,48 +1497,55 @@ fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
             matches!(stopped, DaemonError::SessionStopped(_)),
             "{stopped}"
         );
-        assert!(stopped.hint().contains("tilo-vm slot restart --slot a"));
-        let vm = run(&mut daemon, VM_SLOT);
+        assert!(
+            stopped
+                .hint()
+                .contains("tilo-vm account restart --account a")
+        );
+        let vm = run(&mut daemon, VM_ACCOUNT);
         assert!(vm.hint().contains("tilo-vm vm ssh"), "{}", vm.hint());
         assert!(matches!(
             run(&mut daemon, "nope"),
-            DaemonError::SlotNotFound(_)
+            DaemonError::AccountNotFound(_)
         ));
     }
     {
         let root = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(root.path());
+        let accounts = AccountStore::new(root.path());
         let locks = Locks::new(root.path());
         for (name, kind) in [
-            ("a", SlotKind::Headful),
-            ("b", SlotKind::Headless),
-            ("c", SlotKind::Headful),
+            ("a", AccountKind::Headful),
+            ("b", AccountKind::Headless),
+            ("c", AccountKind::Headful),
         ] {
-            let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
-            if kind == SlotKind::Headful {
+            let (mut record, _) = accounts.create(name, kind, Owner::default(), &[]).unwrap();
+            if kind == AccountKind::Headful {
                 record.seat = Some(format!("seat-{name}"));
-                slots.save(&record).unwrap();
+                accounts.save(&record).unwrap();
             }
         }
         let mut apply = RecordingApply::default();
-        let busy = locks.slot("c").unwrap();
-        assert!(reconcile_seats(&slots, &locks, &mut apply).is_empty());
+        let busy = locks.account("c").unwrap();
+        assert!(reconcile_seats(&accounts, &locks, &mut apply).is_empty());
         assert_eq!(apply.calls, ["allocate_seat a"]);
         drop(busy);
     }
     {
         let tmp = tempfile::tempdir().unwrap();
-        let slots = SlotStore::new(tmp.path());
+        let accounts = AccountStore::new(tmp.path());
         let locks = Locks::new(tmp.path());
-        for (name, kind) in [("a", SlotKind::Headful), ("b", SlotKind::Headless)] {
-            let (mut record, _) = slots.create(name, kind, Owner::default(), &[]).unwrap();
-            if kind == SlotKind::Headful {
+        for (name, kind) in [("a", AccountKind::Headful), ("b", AccountKind::Headless)] {
+            let (mut record, _) = accounts.create(name, kind, Owner::default(), &[]).unwrap();
+            if kind == AccountKind::Headful {
                 record.seat = Some(format!("seat-{name}"));
-                slots.save(&record).unwrap();
+                accounts.save(&record).unwrap();
             }
         }
         let mut apply = RecordingApply::default();
-        assert!(restore_slots(&slots, &LayerStore::new(tmp.path()), &locks, &mut apply).is_empty());
+        assert!(
+            restore_accounts(&accounts, &LayerStore::new(tmp.path()), &locks, &mut apply)
+                .is_empty()
+        );
         let calls = &apply.calls;
         let seat = calls.iter().position(|c| c == "allocate_seat a").unwrap();
         let session = calls
@@ -1670,11 +1683,11 @@ fn onboarding_session() -> RecordingApply {
     apply
 }
 
-/// `slot create --identity device`: the session's own onboarding is pressed
+/// `account create --identity device`: the session's own onboarding is pressed
 /// through by name, which certifies the machine and starts fs; a second
 /// person, or a VM that already holds an identity, is refused.
 #[test]
-fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
+fn account_create_device_identity_goes_through_onboarding_and_starts_fs() {
     let mut apply = onboarding_session();
     let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     apply.mirror = Some(mirror.clone());
@@ -1687,16 +1700,16 @@ fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
         }))
         .unwrap();
     let create = |name: &str| {
-        Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+        Request::AccountCreate(tilo_vm_protocol::AccountCreate {
             name: name.into(),
-            kind: SlotKind::Headless,
+            kind: AccountKind::Headless,
             owner: Owner::default(),
             outputs: Vec::new(),
             identity: false,
             device_identity: true,
         })
     };
-    let result: SlotCreateResult =
+    let result: AccountCreateResult =
         serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
     let identity = result.identity.expect("the identity answer");
     assert!(identity.created && !identity.throwaway);
@@ -1735,7 +1748,7 @@ fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
         assert!(error.to_string().contains("'me'"), "{error}");
     }
     {
-        let result: SlotCreateResult =
+        let result: AccountCreateResult =
             serde_json::from_value(daemon.handle(create("me")).unwrap()).unwrap();
         assert_eq!(
             result.identity.map(|identity| identity.created),

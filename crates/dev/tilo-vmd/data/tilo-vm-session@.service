@@ -1,14 +1,14 @@
-# One dev slot's graphical session: a PAM login for tds-<slot> through the
+# One dev account's graphical session: a PAM login for tds-<account> through the
 # production greetd stack, then the production session entry point. Dev
 # image only; tilo-vmd starts, stops and configures it through drop-ins:
-#   50-tilo-vm-layers.conf  readonly combined /usr and /opt view (global + slot)
-#   50-tilo-vm-seat.conf    XDG_SEAT=seat-<slot> and the drm backend (headful),
-#                            or seat0/VT 1 while the slot holds the seat0 lease
+#   50-tilo-vm-layers.conf  readonly combined /usr and /opt view (global + account)
+#   50-tilo-vm-seat.conf    XDG_SEAT=seat-<account> and the drm backend (headful),
+#                            or seat0/VT 1 while the account holds the seat0 lease
 # Without a seat drop-in the session is headless. Provisional: seat sessions
 # are validated on a real VM; a seatless user-class session for the headless
 # backend is not yet.
 [Unit]
-Description=Tilo dev session for slot %i
+Description=Tilo dev session for account %i
 After=systemd-user-sessions.service systemd-logind.service
 Wants=systemd-logind.service
 
@@ -35,7 +35,7 @@ Environment=LIBSEAT_BACKEND=logind
 # tilo-control reaches the session here (the compositor's dev-overrides
 # feature reads TILO_TEST_CONTROL).
 Environment=TILO_TEST_CONTROL=/run/tilo-vm/%i/control.sock
-# A slot's throwaway identity joins no public site: this file names none and
+# An account's throwaway identity joins no public site: this file names none and
 # replaces both the image's and the host's community.toml.
 Environment=TILO_COMMUNITY_CONFIG=/usr/share/tilo/tilo-vm-community.toml
 RuntimeDirectory=tilo-vm/%i

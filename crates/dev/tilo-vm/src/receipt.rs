@@ -157,7 +157,7 @@ mod tests {
                 name: "build".into(),
                 seconds: 75.0,
             });
-            receipt.set("slot", "a");
+            receipt.set("account", "a");
             assert_eq!(
                 receipt.slow(),
                 ["warm component build took 75.0s (goal < 60s)"]
@@ -167,7 +167,7 @@ mod tests {
             let written: Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(written["status"], "success");
-            assert_eq!(written["slot"], "a");
+            assert_eq!(written["account"], "a");
             assert_eq!(written["result"]["generation"], 3);
             assert_eq!(written["phases"][0]["name"], "assemble");
             assert_eq!(written["slow"].as_array().unwrap().len(), 1);

@@ -149,7 +149,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
             &path,
             &job(BuildTarget::App {
                 dir: "missing-app".into(),
-                slot: "a".into(),
+                account: "a".into(),
             }),
         );
         assert!(line.error.unwrap().message.contains("apps/missing-app"));
@@ -230,7 +230,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         );
         client.hello("test").unwrap();
         assert_eq!(client.call(LayerList {}).unwrap().len(), 1);
-        let status = client.call(Status { slot: None }).unwrap();
+        let status = client.call(Status { account: None }).unwrap();
         assert!(status.storage.targets_bytes > 0);
         let gc = client
             .call(Gc {

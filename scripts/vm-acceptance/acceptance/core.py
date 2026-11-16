@@ -129,7 +129,7 @@ AWAKE_SETTLE_S = 2.0
 
 
 def keep_awake(ctx) -> None:
-    """Press Shift on the slot's seat when the last press is `AWAKE_EVERY_S` old (or there was
+    """Press Shift on the account's seat when the last press is `AWAKE_EVERY_S` old (or there was
     none), so no check meets the idle dim, blank or lock it is not about. run.py calls it
     before each check."""
     now = time.monotonic()
@@ -154,7 +154,7 @@ def run_check(ctx, chk: Check) -> Result:
         # The session stopped answering and the harness could not bring it back: this check
         # cannot observe anything, and waiting out its bounds would only delay the report.
         res.status, res.unobservable = "fail", True
-        res.detail = f"not run: the slot session was lost after {ctx.facts.get('session_lost_after', 'an earlier check')} ({lost})"
+        res.detail = f"not run: the account session was lost after {ctx.facts.get('session_lost_after', 'an earlier check')} ({lost})"
         res.seconds = 0.0
         ctx.current = None
         return res
@@ -201,14 +201,14 @@ def run_check(ctx, chk: Check) -> Result:
     return res
 
 
-LEFT_STOPPED = "left no slot session answering"
+LEFT_STOPPED = "left no account session answering"
 # How long a session that is not answering after a check is given to come back by itself
 # (systemd's Restart= after a crash, a session still starting) before the harness restarts it.
 SESSION_RETURN_S = 60
 
 
 def leave_running(ctx, chk: Check, res: Result) -> None:
-    """No check may hand the next one a slot whose session does not answer: every later
+    """No check may hand the next one an account whose session does not answer: every later
     check would fail on a missing control socket instead of its subject (after A17 ended
     the session on purpose and the next one died too, R04 and W01-W07 all failed so). A
     session that does not answer is waited for until its control socket answers again,
@@ -230,10 +230,10 @@ def leave_running(ctx, chk: Check, res: Result) -> None:
         ctx.vm.restart_session()
     except VmError as exc:
         res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s, and restarting "
-                                       f"the slot session failed: {exc.reason()}")
+                                       f"the account session failed: {exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
-                                   "restarted the slot session")
+                                   "restarted the account session")
 
 
 LEFT_STUCK = "left a window that does not close"
@@ -273,7 +273,7 @@ def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
     begins by closing every window, and one that survives fails all of them (after A05 left
     the Store open, about 30 checks failed with "windows still open after closing every
     group"). Windows a check leaves open are closed here, the way the next check would;
-    the app of one that survives its close has its processes ended, and the slot session
+    the app of one that survives its close has its processes ended, and the account session
     is restarted if its window still stays. The check that left it fails, however it ended."""
     try:
         left = {g.get("id") for g in all_groups(ctx.state())}
@@ -324,10 +324,10 @@ def leave_no_stuck_windows(ctx, chk: Check, res: Result) -> None:
         ctx.vm.restart_session()
     except VmError as exc:
         res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
-                                       f"and restarting the slot session failed: {exc.reason()}")
+                                       f"and restarting the account session failed: {exc.reason()}")
         return
     res.detail = _join(res.detail, f"{LEFT_STUCK} ({', '.join(stuck) or 'unknown app'}); {how}, "
-                                   "and the harness restarted the slot session")
+                                   "and the harness restarted the account session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -337,7 +337,7 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
     """Every check runs in the one session the run shares, so none may hand the next a locked
     one: while locked the compositor refuses every action and snapshot (on purpose), and every
     later check would report `session_locked` instead of its subject. A check that ends with
-    the session locked fails, however it ended, and the harness restarts the slot's session
+    the session locked fails, however it ended, and the harness restarts the account's session
     (a fresh compositor starts unlocked; nothing goes around the lock itself)."""
     try:
         locked = ctx.state()["chrome"].get("session_locked")
@@ -350,17 +350,17 @@ def leave_unlocked(ctx, chk: Check, res: Result) -> None:
     try:
         ctx.vm.restart_session()
     except VmError as exc:
-        res.detail = _join(res.detail, f"{LEFT_LOCKED}, and restarting the slot session failed: "
+        res.detail = _join(res.detail, f"{LEFT_LOCKED}, and restarting the account session failed: "
                                        f"{exc.reason()}")
         return
-    res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
+    res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the account session")
 
 
-SESSION_RESTARTED = "the slot's desktop session restarted on its own"
+SESSION_RESTARTED = "the account's desktop session restarted on its own"
 
 
 def session_restart(ctx, during: str) -> str | None:
-    """Why the check fails if the slot's session ended on its own since the last reading
+    """Why the check fails if the account's session ended on its own since the last reading
     (`acceptance/session_unit.py`): every window was lost, and nothing the check measured
     after it is about the session it started in. Writes what the ended run left behind as
     `data/<check>-<n>-session-restart.log` once per ending; None while the session is the
@@ -382,12 +382,12 @@ def session_restart(ctx, during: str) -> str | None:
     where, how = session_unit.dump(ctx, f"{ctx.current.id if ctx.current is not None else 'run'}-{len(seen)}",
                                    fields)
     return (f"{SESSION_RESTARTED} during {during}: {how}, and systemd starts "
-            f"{session_unit.unit(ctx.vm.slot)} again with every window gone; what the ended run "
+            f"{session_unit.unit(ctx.vm.account)} again with every window gone; what the ended run "
             f"left: {where}")
 
 
 def adopt_session(ctx) -> None:
-    """Take the slot session as it is now as the guard's baseline: for a check that ends
+    """Take the account session as it is now as the guard's baseline: for a check that ends
     the session on purpose, the way a crash would (A17), once it has recovered. Counted in
     `session_restarts_caused`, so P03 does not report that restart either."""
     ctx.facts["session_restarts_caused"] = ctx.facts.get("session_restarts_caused", 0) + 1
@@ -410,7 +410,7 @@ def open_surfaces(state: dict) -> list[str]:
     Each of these takes the keyboard from the window behind it, so one left open by a
     check receives the next check's typing: run 89618's A01 typed its Terminal command
     into the Invite composer W20 had opened. The shell publishes the stack it shows in
-    `chrome.overlays`, one flag per slot."""
+    `chrome.overlays`, one flag per account."""
     chrome = state.get("chrome") or {}
     return [f"the {name.replace('_', ' ').replace('-', ' ')} overlay"
             for name, on in (chrome.get("overlays") or {}).items() if on]
@@ -419,7 +419,7 @@ def open_surfaces(state: dict) -> list[str]:
 def dismiss_surfaces(ctx) -> str:
     """Close whatever `open_surfaces` reports, the way a person cancels: Escape, re-reading
     the dump after each press. Escape on a prompt answers it as dismissed (deny), never
-    confirmed. Still open after that, restart the slot's session: a fresh compositor opens
+    confirmed. Still open after that, restart the account's session: a fresh compositor opens
     with none of them. Returns how it went; never raises."""
     for _ in range(DISMISS_ESCAPES):
         try:
@@ -437,14 +437,14 @@ def dismiss_surfaces(ctx) -> str:
     try:
         ctx.vm.restart_session()
     except VmError as exc:
-        return f"Escape did not close it, and restarting the slot session failed: {exc.reason()}"
+        return f"Escape did not close it, and restarting the account session failed: {exc.reason()}"
     try:
         still = open_surfaces(ctx.state())
     except (VmError, KeyError, TypeError):
         still = []
     if still:
-        return f"Escape did not close it, and after a slot session restart {', '.join(still)} is still open"
-    return "Escape did not close it; the harness restarted the slot session"
+        return f"Escape did not close it, and after an account session restart {', '.join(still)} is still open"
+    return "Escape did not close it; the harness restarted the account session"
 
 
 def leave_no_dialog(ctx, chk: Check, res: Result) -> None:
@@ -1227,7 +1227,7 @@ def wait_app_exit(ctx, app: str, seconds: float) -> bool:
 
 
 def wait_log_line(ctx, path: str, first_line: int, seconds: float, *patterns: str) -> bool:
-    """Block until a line of the slot user's file `path` (sh-expanded) from line
+    """Block until a line of the account user's file `path` (sh-expanded) from line
     `first_line` on matches one of the regexes `patterns` (inotify in the guest), at most
     `seconds`."""
     return _guest_wait(lambda script, **kw: ctx.vm.exec(script.replace("__PATH__", f'"{path}"', 1), **kw),
@@ -1462,7 +1462,7 @@ def environment_refusal(journal: str) -> str | None:
 
 
 def ush_environment_refusal(ctx) -> str | None:
-    """`environment_refusal` of the slot's `tilo-ush` journal."""
+    """`environment_refusal` of the account's `tilo-ush` journal."""
     try:
         journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 400 2>&1",
                               timeout=60, check=False)

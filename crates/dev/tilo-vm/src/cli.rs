@@ -9,8 +9,8 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "tilo-vm",
     version,
-    about = "Test Tilo builds in a shared dev VM: your own slot, one-command component swaps, rollback.",
-    after_help = "Examples:\n  tilo-vm                     # current VM, slot, generation, session, next steps\n  tilo-vm swap tilo-session          # build the session from this worktree into your slot\n  tilo-vm guide quickstart    # built-in docs\n\nWith no command, tilo-vm shows `status`."
+    about = "Test Tilo builds in a shared dev VM: your own account, one-command component swaps, rollback.",
+    after_help = "Examples:\n  tilo-vm                     # current VM, account, generation, session, next steps\n  tilo-vm swap tilo-session          # build the session from this worktree into your account\n  tilo-vm guide quickstart    # built-in docs\n\nWith no command, tilo-vm shows `status`."
 )]
 pub struct Cli {
     /// Print one JSON object instead of text (errors too: {"error","hint","see"}).
@@ -24,66 +24,79 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// `--slot <name>` and a positional slot mean the same thing; fold the flag
+    /// `--account <name>` and a positional account mean the same thing; fold the flag
     /// into the positional so the rest of the tool sees one field.
     #[must_use]
     pub fn normalized(mut self) -> Self {
-        fn fold(slot: &mut Option<String>, flag: &mut Option<String>) {
-            if slot.is_none() {
-                *slot = flag.take();
+        fn fold(account: &mut Option<String>, flag: &mut Option<String>) {
+            if account.is_none() {
+                *account = flag.take();
             }
         }
         if let Some(
             Command::Rollback {
-                slot, slot_flag, ..
+                account,
+                account_flag,
+                ..
             }
             | Command::Logs {
-                slot, slot_flag, ..
+                account,
+                account_flag,
+                ..
             }
             | Command::Shot {
-                slot, slot_flag, ..
+                account,
+                account_flag,
+                ..
             }
             | Command::Flight(FlightCommand::App {
-                slot, slot_flag, ..
+                account,
+                account_flag,
+                ..
             })
             | Command::Seat(
                 SeatCommand::Claim {
-                    slot, slot_flag, ..
+                    account,
+                    account_flag,
+                    ..
                 }
-                | SeatCommand::Release { slot, slot_flag },
+                | SeatCommand::Release {
+                    account,
+                    account_flag,
+                },
             )
-            | Command::Slot(
-                SlotCommand::Create {
-                    name: slot,
-                    slot_flag,
+            | Command::Account(
+                AccountCommand::Create {
+                    name: account,
+                    account_flag,
                     ..
                 }
-                | SlotCommand::Restart {
-                    name: slot,
-                    slot_flag,
+                | AccountCommand::Restart {
+                    name: account,
+                    account_flag,
                 }
-                | SlotCommand::Rm {
-                    name: slot,
-                    slot_flag,
+                | AccountCommand::Rm {
+                    name: account,
+                    account_flag,
                 }
-                | SlotCommand::Show {
-                    name: slot,
-                    slot_flag,
+                | AccountCommand::Show {
+                    name: account,
+                    account_flag,
                 }
-                | SlotCommand::Exec {
-                    name: slot,
-                    slot_flag,
+                | AccountCommand::Exec {
+                    name: account,
+                    account_flag,
                     ..
                 }
-                | SlotCommand::Apps(SlotAppsCommand::Install {
-                    name: slot,
-                    slot_flag,
+                | AccountCommand::Apps(AccountAppsCommand::Install {
+                    name: account,
+                    account_flag,
                     ..
                 }),
             ),
         ) = &mut self.command
         {
-            fold(slot, slot_flag);
+            fold(account, account_flag);
         }
         self
     }
@@ -91,14 +104,14 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Show the current VM (and why), your slot, its generation and session, and what to do next.
+    /// Show the current VM (and why), your account, its generation and session, and what to do next.
     #[command(
-        after_help = "Examples:\n  tilo-vm status\n  tilo-vm status --slot review-a\n  tilo-vm status --json | jq .slot\n\nYour slot is named after your branch, unless TILO_VM_SLOT or `slot = \"<name>\"`\nin the worktree's .tilo-vm names another."
+        after_help = "Examples:\n  tilo-vm status\n  tilo-vm status --account review-a\n  tilo-vm status --json | jq .account\n\nYour account is named after your branch, unless TILO_VM_ACCOUNT or `account = \"<name>\"`\nin the worktree's .tilo-vm names another."
     )]
     Status {
-        /// The slot to report on (default: your slot).
+        /// The account to report on (default: your account).
         #[arg(long)]
-        slot: Option<String>,
+        account: Option<String>,
     },
     /// Check host prerequisites, the VM and its daemon; print a fix for each failure.
     #[command(after_help = "Examples:\n  tilo-vm doctor\n  tilo-vm doctor --json")]
@@ -120,30 +133,30 @@ pub enum Command {
     /// Boot a disk under QEMU: the one command line every headless boot, gate and boot-time measurement uses.
     #[command(subcommand)]
     Qemu(Box<QemuCommand>),
-    /// Manage slots: your user, session and layer stack inside a VM.
+    /// Manage accounts: your user, session and layer stack inside a VM.
     #[command(subcommand)]
-    Slot(SlotCommand),
+    Account(AccountCommand),
     /// Import an exact same-run layer artifact without invoking Cargo or a builder.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap-artifact tilo-session --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+        after_help = "Examples:\n  tilo-vm swap-artifact tilo-session --account review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
     )]
     SwapArtifact(ArtifactSwap),
-    /// Import a prebuilt local component without building, waking or swapping a slot.
+    /// Import a prebuilt local component without building, waking or swapping an account.
     #[command(
-        after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --slot <slot> --from layer:<hash>\nafterwards."
+        after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --account <account> --from layer:<hash>\nafterwards."
     )]
     ImportLayer(LocalLayerImport),
-    /// Put a build of a component (or an app) into a slot and restart what it needs.
+    /// Put a build of a component (or an app) into an account and restart what it needs.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap tilo-session                      # your slot, built in the VM from this worktree\n  tilo-vm swap tilo-session --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap tilo-session --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap tilo-session --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap tilo-session --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
+        after_help = "Examples:\n  tilo-vm swap tilo-session                      # your account, built in the VM from this worktree\n  tilo-vm swap tilo-session --profile dev        # faster compile, slower binary\n  tilo-vm swap --account vm fs               # VM-wide component into the vm account\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap tilo-session --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap tilo-session --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap tilo-session --builder host       # build on this Linux host instead\n  tilo-vm swap --account review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --account vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
         /// A component from os/components.toml, `userspace` for its matched session cohort (remote worktree build, one refresh), or `app:<dir>` for an app under apps/.
         component: String,
-        /// The slot to swap into (default: the one named after your branch;
+        /// The account to swap into (default: the one named after your branch;
         /// `vm` for VM-wide components).
         #[arg(long)]
-        slot: Option<String>,
+        account: Option<String>,
         /// `worktree` (build it), `layer:<hash>` (already in the VM),
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
@@ -170,31 +183,31 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
-        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        /// Shell only: record phase CPU timing at each stand-in account startup.
         #[arg(long)]
         frame_cpu_trace: bool,
     },
-    /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
+    /// Keyboard, pointer, touch, pen and gamepad input on a headful account's own seat (real kernel input path).
     #[command(
-        after_help = "Examples:\n  tilo-vm input key ctrl+alt+t\n  tilo-vm input key super Return\n  tilo-vm input type 'hello world'\n  tilo-vm input move 400 300\n  tilo-vm input click left --at 400 300\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n  tilo-vm input pen drag 100 100 500 300\n  tilo-vm input gamepad press a\n  tilo-vm input gamepad stick left 0 -100\n  tilo-vm input --slot review-b click right\n\nEvery device is a uinput device plugged into the slot's seat, so the\ncompositor gets it through the kernel like real hardware (libinput; the\nseat's evdev access for game controllers). Keyboard and pointer exist from\nthe first input; the touchscreen, pen and gamepad appear the first time a\ncommand uses them. Headless slots have no seat: drive them with tilo-vm\ncontrol."
+        after_help = "Examples:\n  tilo-vm input key ctrl+alt+t\n  tilo-vm input key super Return\n  tilo-vm input type 'hello world'\n  tilo-vm input move 400 300\n  tilo-vm input click left --at 400 300\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n  tilo-vm input pen drag 100 100 500 300\n  tilo-vm input gamepad press a\n  tilo-vm input gamepad stick left 0 -100\n  tilo-vm input --account review-b click right\n\nEvery device is a uinput device plugged into the account's seat, so the\ncompositor gets it through the kernel like real hardware (libinput; the\nseat's evdev access for game controllers). Keyboard and pointer exist from\nthe first input; the touchscreen, pen and gamepad appear the first time a\ncommand uses them. Headless accounts have no seat: drive them with tilo-vm\ncontrol."
     )]
     Input {
-        /// The slot whose seat gets the input (default: your slot).
+        /// The account whose seat gets the input (default: your account).
         #[arg(long)]
-        slot: Option<String>,
+        account: Option<String>,
         #[command(subcommand)]
         action: InputCommand,
     },
-    /// Switch a slot to another of its generations: back (the default), forward, or any by number.
+    /// Switch an account to another of its generations: back (the default), forward, or any by number.
     #[command(
-        after_help = "Examples:\n  tilo-vm rollback              # the generation before the current one\n  tilo-vm rollback --forward    # the next newer one again, after a rollback\n  tilo-vm rollback --to 3       # any generation, older or newer\n  tilo-vm rollback --to 0       # the bare VM image\n  tilo-vm rollback --slot vm\n\nGenerations are kept until gc; tilo-vm slot show lists them."
+        after_help = "Examples:\n  tilo-vm rollback              # the generation before the current one\n  tilo-vm rollback --forward    # the next newer one again, after a rollback\n  tilo-vm rollback --to 3       # any generation, older or newer\n  tilo-vm rollback --to 0       # the bare VM image\n  tilo-vm rollback --account vm\n\nGenerations are kept until gc; tilo-vm account show lists them."
     )]
     Rollback {
-        /// The slot (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
+        /// The account (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
         /// Generation to switch to, older or newer; default is the one before the current.
         #[arg(long)]
         to: Option<u64>,
@@ -202,48 +215,48 @@ pub enum Command {
         #[arg(long, conflicts_with = "to")]
         forward: bool,
     },
-    /// Show a slot's session journal.
+    /// Show an account's session journal.
     #[command(after_help = "Examples:\n  tilo-vm logs\n  tilo-vm logs -n 500 review-a")]
     Logs {
-        /// The slot (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
+        /// The account (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
         /// Journal lines to show.
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: u32,
     },
-    /// Hand the VM's real display (seat0) to a slot, or give it back.
+    /// Hand the VM's real display (seat0) to an account, or give it back.
     #[command(subcommand)]
     Seat(SeatCommand),
-    /// Save a PNG of the slot compositor's own frame (headless, headful, or on seat0).
+    /// Save a PNG of the account compositor's own frame (headless, headful, or on seat0).
     #[command(
-        after_help = "Examples:\n  tilo-vm shot\n  tilo-vm shot -o target/after-swap.png review-a\n\nThe slot's compositor renders its current scene into a PNG (tilo-control\nsnapshot): the same picture for a headless slot, a headful slot on its vkms\nseat, and a slot that holds seat0. It does not read any display. For the\nVM's real display (seat0) as the hypervisor shows it: tilo-vm vm shot."
+        after_help = "Examples:\n  tilo-vm shot\n  tilo-vm shot -o target/after-swap.png review-a\n\nThe account's compositor renders its current scene into a PNG (tilo-control\nsnapshot): the same picture for a headless account, a headful account on its vkms\nseat, and an account that holds seat0. It does not read any display. For the\nVM's real display (seat0) as the hypervisor shows it: tilo-vm vm shot."
     )]
     Shot {
-        /// The slot (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
+        /// The account (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
         /// Where to write the PNG.
         #[arg(short, long, default_value = "target/tilo-vm-shot.png")]
         output: PathBuf,
     },
-    /// Run the VM's tilo-control against a slot's session (the one driving story).
+    /// Run the VM's tilo-control against an account's session (the one driving story).
     #[command(
-        after_help = "Examples:\n  tilo-vm control actions list\n  tilo-vm control actions invoke notes new-note\n  tilo-vm control --slot review-a state-dump --pretty"
+        after_help = "Examples:\n  tilo-vm control actions list\n  tilo-vm control actions invoke notes new-note\n  tilo-vm control --account review-a state-dump --pretty"
     )]
     Control {
-        /// The slot whose session tilo-control drives (default: your slot).
+        /// The account whose session tilo-control drives (default: your account).
         #[arg(long)]
-        slot: Option<String>,
+        account: Option<String>,
         /// Arguments for tilo-control.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
-    /// Run measured semantic acceptance flights against a live slot.
+    /// Run measured semantic acceptance flights against a live account.
     #[command(subcommand)]
     Flight(FlightCommand),
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
@@ -299,7 +312,7 @@ pub enum Command {
         /// Keep unreferenced layers younger than this (e.g. 0, 30m, 1h, 2d; default 1h).
         #[arg(long, value_parser = parse_age)]
         min_age: Option<u64>,
-        /// Generations to keep per slot besides the current one (default from vms.toml, else 5).
+        /// Generations to keep per account besides the current one (default from vms.toml, else 5).
         #[arg(long)]
         keep: Option<u32>,
         /// In-VM build dirs to keep, most recently used first (default from vms.toml, else 2).
@@ -313,9 +326,9 @@ pub enum Command {
 pub struct ArtifactSwap {
     /// Session component to activate; apps+runtime requires the complete same-run cohort.
     pub component: String,
-    /// The slot to update (default: your slot).
+    /// The account to update (default: your account).
     #[arg(long)]
-    pub slot: Option<String>,
+    pub account: Option<String>,
     /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
     #[arg(long)]
     pub receipt: PathBuf,
@@ -365,11 +378,11 @@ pub enum FlightCommand {
         desktop_id: String,
         /// App id expected on the presented foreign surface.
         app_id: String,
-        /// The slot to test (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional slot used by other slot commands).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
+        /// The account to test (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional account used by other account commands).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
         /// Text injected after the app presents and receives focus.
         #[arg(long, default_value = "tilo-vm-flight")]
         type_text: String,
@@ -389,7 +402,7 @@ pub enum FlightCommand {
 pub enum ScenarioCommand {
     /// Boot an installer medium, install through its published actions, cold-boot the result and verify first boot.
     #[command(
-        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
+        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo account and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
     )]
     Install(InstallScenarioArgs),
 }
@@ -457,7 +470,7 @@ pub struct InstallScenarioArgs {
 }
 
 /// Does this command leave a receipt? Only commands that change state or
-/// run long do; looking around (status, doctor, guide, lists, logs, slot
+/// run long do; looking around (status, doctor, guide, lists, logs, account
 /// show and exec, vm ssh without `--raw`, a scenario's dry run) does not.
 pub fn writes_receipt(command: Option<&Command>) -> bool {
     !matches!(
@@ -473,11 +486,11 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                 | Command::Vm(
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
                 )
-                | Command::Slot(
-                    SlotCommand::List
-                        | SlotCommand::Show { .. }
-                        | SlotCommand::Exec { .. }
-                        | SlotCommand::Apps(SlotAppsCommand::List)
+                | Command::Account(
+                    AccountCommand::List
+                        | AccountCommand::Show { .. }
+                        | AccountCommand::Exec { .. }
+                        | AccountCommand::Apps(AccountAppsCommand::List)
                 )
                 | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
                     dry_run: true,
@@ -565,7 +578,7 @@ pub enum InputCommand {
     },
     /// Move the pointer to desktop pixel X, Y.
     #[command(
-        after_help = "Examples:\n  tilo-vm input move 400 300\n\nOn a slot with one output, X and Y are that output's pixels. On a slot made\nwith --outputs they are logical desktop pixels, outputs left to right: with\n2560x1600@2,1920x1080 the second monitor starts at x 1280."
+        after_help = "Examples:\n  tilo-vm input move 400 300\n\nOn an account with one output, X and Y are that output's pixels. On an account made\nwith --outputs they are logical desktop pixels, outputs left to right: with\n2560x1600@2,1920x1080 the second monitor starts at x 1280."
     )]
     Move {
         /// Pixels from the desktop's left edge.
@@ -588,13 +601,13 @@ pub enum InputCommand {
     /// Touchscreen gestures: tap, hold (long-press), drag, pinch.
     #[command(
         subcommand,
-        after_help = "Examples:\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch hold 400 300\n  tilo-vm input touch drag 400 600 400 100\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n\nX and Y are pixels of the slot's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
+        after_help = "Examples:\n  tilo-vm input touch tap 400 300\n  tilo-vm input touch hold 400 300\n  tilo-vm input touch drag 400 600 400 100\n  tilo-vm input touch pinch 640 400 --from 100 --to 400\n\nX and Y are pixels of the account's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
     )]
     Touch(TouchCommand),
     /// Pen (stylus) on the screen: tap, drag.
     #[command(
         subcommand,
-        after_help = "Examples:\n  tilo-vm input pen tap 400 300\n  tilo-vm input pen drag 100 100 500 300 --pressure 80\n\nX and Y are pixels of the slot's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
+        after_help = "Examples:\n  tilo-vm input pen tap 400 300\n  tilo-vm input pen drag 100 100 500 300 --pressure 80\n\nX and Y are pixels of the account's first output (its mode, before scaling):\nthe compositor maps a touchscreen or pen that names no output onto the\nprimary output, which is the first --outputs entry."
     )]
     Pen(PenCommand),
     /// Game controller: buttons, d-pad, sticks.
@@ -866,7 +879,7 @@ pub enum VmCommand {
     Branch(BranchArgs),
     /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device tilo-session --from sha:1a2b3c4      # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --account device tilo-session --from sha:1a2b3c4      # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
     )]
     Add(AddArgs),
     /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
@@ -943,12 +956,12 @@ pub enum VmCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
+    /// Move the VM onto another dev image with bootc and reboot into it; accounts survive in /var, and the previous image stays for rollback-image.
     #[command(
         after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or elsewhere\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks (TILO_LOCAL_TAG replaces latest in both image names), then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
     )]
     Upgrade(UpgradeArgs),
-    /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
+    /// Boot the VM's previous image again (bootc rollback) and reboot; accounts survive in /var.
     #[command(
         after_help = "Examples:\n  tilo-vm vm rollback-image\n  tilo-vm vm rollback-image --no-reboot   # takes effect at the next boot\n\nbootc keeps one previous image: the one the VM ran before its last upgrade.\nRolling back twice returns to the newer one."
     )]
@@ -967,7 +980,7 @@ pub enum VmCommand {
     },
     /// Screenshot seat0, the VM's real display, through the hypervisor.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm shot -o target/vm.png\n\nThis is what the hypervisor window shows: greetd's greeter, or the slot that\nclaimed seat0 (tilo-vm seat claim). Slots on their own seats (headless, or\nheadful on a vkms card) never appear here; use tilo-vm shot for them.\nWorks without SSH."
+        after_help = "Examples:\n  tilo-vm vm shot -o target/vm.png\n\nThis is what the hypervisor window shows: greetd's greeter, or the account that\nclaimed seat0 (tilo-vm seat claim). Accounts on their own seats (headless, or\nheadful on a vkms card) never appear here; use tilo-vm shot for them.\nWorks without SSH."
     )]
     Shot {
         /// The VM (default: the one this worktree uses).
@@ -1263,17 +1276,17 @@ pub struct UpgradeArgs {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum SlotCommand {
-    /// Create a slot (default: named after your branch) and start its session.
+pub enum AccountCommand {
+    /// Create an account (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create apps --headful --identity\n  tilo-vm slot create me --headful --identity device\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n--identity device makes the slot's user this VM's person instead: its\nsession runs on the machine's identity tree and its own onboarding creates\nthe identity, certifying the machine, which starts fs (as a first boot does).\nOne slot per VM, refused once the VM holds an identity.\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
+        after_help = "Examples:\n  tilo-vm account create --headless\n  tilo-vm account create review-a --headful\n  tilo-vm account create apps --headful --identity\n  tilo-vm account create me --headful --identity device\n  tilo-vm account create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n--identity device makes the account's user this VM's person instead: its\nsession runs on the machine's identity tree and its own onboarding creates\nthe identity, certifying the machine, which starts fs (as a first boot does).\nOne account per VM, refused once the VM holds an identity.\n\n--outputs gives a headful account one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the account\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
-        /// The slot (default: your slot).
+        /// The account (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
         /// Offscreen compositor, driven by control and shot (default).
         #[arg(long, conflicts_with = "headful")]
         headless: bool,
@@ -1289,11 +1302,11 @@ pub enum SlotCommand {
             num_args = 1
         )]
         outputs: Vec<tilo_vm_protocol::OutputSpec>,
-        /// Give the slot's user an identity, so apps open: a throwaway test
+        /// Give the account's user an identity, so apps open: a throwaway test
         /// identity in a private root (the default; needs a dev image's
         /// shell), or `device`: the user becomes this VM's person through the
         /// session's own onboarding, as a device's first login does, which
-        /// certifies the machine and starts fs. One slot per VM, on a VM that
+        /// certifies the machine and starts fs. One account per VM, on a VM that
         /// holds no identity yet.
         #[arg(
             long,
@@ -1302,32 +1315,32 @@ pub enum SlotCommand {
             default_missing_value = "throwaway",
             value_enum
         )]
-        identity: Option<SlotIdentity>,
+        identity: Option<AccountIdentity>,
     },
-    /// List the VM's slots with owner, generation and session state.
-    #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
+    /// List the VM's accounts with owner, generation and session state.
+    #[command(after_help = "Examples:\n  tilo-vm account list\n  tilo-vm account list --json")]
     List,
-    /// Show a slot's generations and every file its layers add, with SHA-256 and source layer.
+    /// Show an account's generations and every file its layers add, with SHA-256 and source layer.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot show\n  tilo-vm slot show --slot review-a\n  tilo-vm slot show --json | jq '.files[] | select(.path == \"/usr/bin/tilo-session\")'"
+        after_help = "Examples:\n  tilo-vm account show\n  tilo-vm account show --account review-a\n  tilo-vm account show --json | jq '.files[] | select(.path == \"/usr/bin/tilo-session\")'"
     )]
     Show {
-        /// The slot (default: your slot).
+        /// The account (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
     },
-    /// Run a command as the slot sees the system: its layers over /usr, as its user.
+    /// Run a command as the account sees the system: its layers over /usr, as its user.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot exec -- sha256sum /usr/bin/tilo-session\n  tilo-vm slot exec --slot review-a -- ls -l /usr/bin/tilo-session\n  tilo-vm slot exec -- sh -c 'ls -l /usr/lib/tilo | head'\n\nThe command runs in the mount namespace of the slot's running session, as\ntds-<slot>, so it sees exactly what the session sees. Output streams; the\ncommand is stopped after --timeout seconds (exit 124) or 1 MiB of output\n(exit 125). Its exit status is passed on."
+        after_help = "Examples:\n  tilo-vm account exec -- sha256sum /usr/bin/tilo-session\n  tilo-vm account exec --account review-a -- ls -l /usr/bin/tilo-session\n  tilo-vm account exec -- sh -c 'ls -l /usr/lib/tilo | head'\n\nThe command runs in the mount namespace of the account's running session, as\ntds-<account>, so it sees exactly what the session sees. Output streams; the\ncommand is stopped after --timeout seconds (exit 124) or 1 MiB of output\n(exit 125). Its exit status is passed on."
     )]
     Exec {
-        /// The slot (default: your slot).
+        /// The account (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
         /// Seconds before the command is stopped.
         #[arg(long, default_value_t = tilo_vm_protocol::EXEC_TIMEOUT_SECONDS)]
         timeout: u64,
@@ -1335,47 +1348,51 @@ pub enum SlotCommand {
         #[arg(last = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Restart a slot's session on its current generation (also repairs an interrupted swap).
-    #[command(after_help = "Examples:\n  tilo-vm slot restart\n  tilo-vm slot restart --slot vm")]
+    /// Restart an account's session on its current generation (also repairs an interrupted swap).
+    #[command(
+        after_help = "Examples:\n  tilo-vm account restart\n  tilo-vm account restart --account vm"
+    )]
     Restart {
-        /// The slot (default: your slot).
+        /// The account (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
     },
     /// Third-party apps for checking desktop features: X11 apps, GTK, dialogs, tray, MIME handlers.
     #[command(subcommand)]
-    Apps(SlotAppsCommand),
-    /// Remove a slot: its session, user and generations (layers stay until gc).
+    Apps(AccountAppsCommand),
+    /// Remove an account: its session, user and generations (layers stay until gc).
     #[command(
-        after_help = "Examples:\n  tilo-vm slot rm review-a\n  tilo-vm slot rm --slot review-a"
+        after_help = "Examples:\n  tilo-vm account rm review-a\n  tilo-vm account rm --account review-a"
     )]
     Rm {
-        /// The slot (default: your slot).
+        /// The account (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
     },
 }
 
 #[derive(Debug, Subcommand)]
-pub enum SlotAppsCommand {
+pub enum AccountAppsCommand {
     /// List the app sets and what each app checks.
-    #[command(after_help = "Examples:\n  tilo-vm slot apps list\n  tilo-vm slot apps list --json")]
-    List,
-    /// Install an app set with the VM's package manager, then restart the slot's session so it sees it.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot apps install --set verification\n  tilo-vm slot apps install --set verification --slot review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every slot on the VM can use them\nafter its session restarts; this command restarts the slot's session.\n\nThe sets and their apps are listed by tilo-vm slot apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
+        after_help = "Examples:\n  tilo-vm account apps list\n  tilo-vm account apps list --json"
+    )]
+    List,
+    /// Install an app set with the VM's package manager, then restart the account's session so it sees it.
+    #[command(
+        after_help = "Examples:\n  tilo-vm account apps install --set verification\n  tilo-vm account apps install --set verification --account review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every account on the VM can use them\nafter its session restarts; this command restarts the account's session.\n\nThe sets and their apps are listed by tilo-vm account apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
     )]
     Install {
-        /// The slot whose session restarts to see the apps (default: your slot).
+        /// The account whose session restarts to see the apps (default: your account).
         name: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
-        slot_flag: Option<String>,
-        /// The app set to install (tilo-vm slot apps list).
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "name")]
+        account_flag: Option<String>,
+        /// The app set to install (tilo-vm account apps list).
         #[arg(long, value_name = "SET")]
         set: String,
         /// Seconds before the install is stopped.
@@ -1386,35 +1403,35 @@ pub enum SlotAppsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SeatCommand {
-    /// Move a slot's session onto seat0, the display the hypervisor window shows.
+    /// Move an account's session onto seat0, the display the hypervisor window shows.
     #[command(
         after_help = "Examples:\n  tilo-vm seat claim\n  tilo-vm seat claim review-a --steal"
     )]
     Claim {
-        /// The slot (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
-        /// Take seat0 even if another slot holds it.
+        /// The account (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
+        /// Take seat0 even if another account holds it.
         #[arg(long)]
         steal: bool,
     },
-    /// Give seat0 back to greetd; the slot returns to its own seat.
+    /// Give seat0 back to greetd; the account returns to its own seat.
     #[command(after_help = "Examples:\n  tilo-vm seat release")]
     Release {
-        /// The slot (default: your slot).
-        slot: Option<String>,
-        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
-        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
-        slot_flag: Option<String>,
+        /// The account (default: your account).
+        account: Option<String>,
+        /// The account, as a flag (same as the positional; every account command takes `--account`).
+        #[arg(long = "account", value_name = "ACCOUNT", conflicts_with = "account")]
+        account_flag: Option<String>,
     },
 }
 
-/// Which identity `slot create --identity` gives the slot's user.
+/// Which identity `account create --identity` gives the account's user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum SlotIdentity {
-    /// A throwaway test identity in the slot's private root.
+pub enum AccountIdentity {
+    /// A throwaway test identity in the account's private root.
     Throwaway,
     /// This VM's person, through the session's onboarding.
     Device,
@@ -1423,7 +1440,7 @@ pub enum SlotIdentity {
 #[cfg(test)]
 mod tests {
     tilo_test_env::scenario! {
-        fn swap_and_slot_create_take_their_flags;
+        fn swap_and_account_create_take_their_flags;
 
         phase shell_swap_accepts_explicit_frame_cpu_recording;
         {
@@ -1457,58 +1474,58 @@ mod tests {
             }
         }
 
-        phase slot_create_takes_an_opt_in_identity;
+        phase account_create_takes_an_opt_in_identity;
         {
             let identity = |args: &[&str]| {
                 let cli = Cli::try_parse_from(args).unwrap();
-                let Some(Command::Slot(SlotCommand::Create { identity, .. })) = cli.command else {
-                    panic!("slot create did not parse");
+                let Some(Command::Account(AccountCommand::Create { identity, .. })) = cli.command else {
+                    panic!("account create did not parse");
                 };
                 identity
             };
             assert_eq!(
-                identity(&["tilo-vm", "slot", "create", "--headful", "--identity"]),
-                Some(SlotIdentity::Throwaway)
+                identity(&["tilo-vm", "account", "create", "--headful", "--identity"]),
+                Some(AccountIdentity::Throwaway)
             );
             assert_eq!(
                 identity(&[
                     "tilo-vm",
-                    "slot",
+                    "account",
                     "create",
                     "acceptance",
                     "--headful",
                     "--identity",
                     "device"
                 ]),
-                Some(SlotIdentity::Device)
+                Some(AccountIdentity::Device)
             );
-            assert_eq!(identity(&["tilo-vm", "slot", "create", "--headful"]), None);
+            assert_eq!(identity(&["tilo-vm", "account", "create", "--headful"]), None);
         }
 
-        phase outputs_need_a_headful_slot_and_parse_left_to_right;
+        phase outputs_need_a_headful_account_and_parse_left_to_right;
         {
             let cli = Cli::try_parse_from([
                 "tilo-vm",
-                "slot",
+                "account",
                 "create",
                 "--headful",
                 "--outputs",
                 "2560x1600@2,1920x1080",
             ])
             .unwrap();
-            let Some(Command::Slot(SlotCommand::Create { outputs, .. })) = cli.command else {
-                panic!("slot create did not parse");
+            let Some(Command::Account(AccountCommand::Create { outputs, .. })) = cli.command else {
+                panic!("account create did not parse");
             };
             assert_eq!(
                 tilo_vm_protocol::display::format_outputs(&outputs),
                 "2560x1600@2,1920x1080@1"
             );
             assert!(
-                Cli::try_parse_from(["tilo-vm", "slot", "create", "--outputs", "800x600"]).is_err()
+                Cli::try_parse_from(["tilo-vm", "account", "create", "--outputs", "800x600"]).is_err()
             );
             let error = Cli::try_parse_from([
                 "tilo-vm",
-                "slot",
+                "account",
                 "create",
                 "--headful",
                 "--outputs",
@@ -1524,7 +1541,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// Every slot command takes the slot flag, every argument says what it is, ages read like durations,
+        /// Every account command takes the account flag, every argument says what it is, ages read like durations,
         /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
         #[allow(
             clippy::too_many_lines,
@@ -1532,53 +1549,53 @@ mod tests {
         )]
         fn every_command_documents_its_arguments_purpose_and_receipts;
 
-        phase every_slot_command_takes_the_slot_flag;
+        phase every_account_command_takes_the_account_flag;
         {
             for args in [
-                &["tilo-vm", "rollback", "--slot", "a"][..],
-                &["tilo-vm", "logs", "--slot", "a"],
-                &["tilo-vm", "shot", "--slot", "a"],
-                &["tilo-vm", "seat", "claim", "--slot", "a"],
-                &["tilo-vm", "seat", "release", "--slot", "a"],
-                &["tilo-vm", "slot", "create", "--slot", "a"],
-                &["tilo-vm", "slot", "restart", "--slot", "a"],
-                &["tilo-vm", "slot", "rm", "--slot", "a"],
-                &["tilo-vm", "slot", "show", "--slot", "a"],
-                &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
+                &["tilo-vm", "rollback", "--account", "a"][..],
+                &["tilo-vm", "logs", "--account", "a"],
+                &["tilo-vm", "shot", "--account", "a"],
+                &["tilo-vm", "seat", "claim", "--account", "a"],
+                &["tilo-vm", "seat", "release", "--account", "a"],
+                &["tilo-vm", "account", "create", "--account", "a"],
+                &["tilo-vm", "account", "restart", "--account", "a"],
+                &["tilo-vm", "account", "rm", "--account", "a"],
+                &["tilo-vm", "account", "show", "--account", "a"],
+                &["tilo-vm", "account", "exec", "--account", "a", "--", "true"],
                 &[
-                    "tilo-vm", "slot", "apps", "install", "--set", "v", "--slot", "a",
+                    "tilo-vm", "account", "apps", "install", "--set", "v", "--account", "a",
                 ],
-                &["tilo-vm", "slot", "show", "a"],
+                &["tilo-vm", "account", "show", "a"],
             ] {
                 let cli = Cli::try_parse_from(args).unwrap().normalized();
-                let slot = match cli.command {
+                let account = match cli.command {
                     Some(
-                        Command::Rollback { slot, .. }
-                        | Command::Logs { slot, .. }
-                        | Command::Shot { slot, .. }
+                        Command::Rollback { account, .. }
+                        | Command::Logs { account, .. }
+                        | Command::Shot { account, .. }
                         | Command::Seat(
-                            SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                            SeatCommand::Claim { account, .. } | SeatCommand::Release { account, .. },
                         )
-                        | Command::Slot(
-                            SlotCommand::Create { name: slot, .. }
-                            | SlotCommand::Restart { name: slot, .. }
-                            | SlotCommand::Rm { name: slot, .. }
-                            | SlotCommand::Show { name: slot, .. }
-                            | SlotCommand::Exec { name: slot, .. }
-                            | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
+                        | Command::Account(
+                            AccountCommand::Create { name: account, .. }
+                            | AccountCommand::Restart { name: account, .. }
+                            | AccountCommand::Rm { name: account, .. }
+                            | AccountCommand::Show { name: account, .. }
+                            | AccountCommand::Exec { name: account, .. }
+                            | AccountCommand::Apps(AccountAppsCommand::Install { name: account, .. }),
                         ),
-                    ) => slot,
+                    ) => account,
                     other => panic!("{other:?}"),
                 };
-                assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
+                assert_eq!(account.as_deref(), Some("a"), "{args:?}");
             }
-            assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
-            assert!(Cli::try_parse_from(["tilo-vm", "slot", "rm", "a", "--slot", "b"]).is_err());
+            assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--account", "b"]).is_err());
+            assert!(Cli::try_parse_from(["tilo-vm", "account", "rm", "a", "--account", "b"]).is_err());
             for args in [
-                &["tilo-vm", "swap", "--slot", "a", "tilo-session"][..],
-                &["tilo-vm", "input", "--slot", "a", "key", "super"],
-                &["tilo-vm", "control", "--slot", "a", "actions", "list"],
-                &["tilo-vm", "status", "--slot", "a"],
+                &["tilo-vm", "swap", "--account", "a", "tilo-session"][..],
+                &["tilo-vm", "input", "--account", "a", "key", "super"],
+                &["tilo-vm", "control", "--account", "a", "actions", "list"],
+                &["tilo-vm", "status", "--account", "a"],
             ] {
                 Cli::try_parse_from(args).unwrap();
             }
@@ -1664,9 +1681,9 @@ mod tests {
                 &["guide", "quickstart"],
                 &["vm", "list"],
                 &["vm", "status"],
-                &["slot", "list"],
-                &["slot", "show"],
-                &["slot", "exec", "--", "true"],
+                &["account", "list"],
+                &["account", "show"],
+                &["account", "exec", "--", "true"],
                 &["logs"],
                 &["vm", "ssh"],
                 &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
@@ -1682,7 +1699,7 @@ mod tests {
                 &["swap", "tilo-session"][..],
                 &["vm", "create", "dev"],
                 &["vm", "start"],
-                &["slot", "create"],
+                &["account", "create"],
                 &["rollback"],
                 &["gc"],
                 &["seat", "claim"],
@@ -1696,7 +1713,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// Swap usage shows the slot as an option and swap takes an optional slot; the install scenario takes
+        /// Swap usage shows the account as an option and swap takes an optional account; the install scenario takes
         /// a medium, a layout and an unlock; upgrade takes one source and base options only with local; vm ssh
         /// takes the VM like every other VM command.
         #[allow(
@@ -1705,15 +1722,15 @@ mod tests {
         )]
         fn command_shapes_take_exactly_their_documented_options;
 
-        phase swap_usage_shows_the_slot_as_an_option;
+        phase swap_usage_shows_the_account_as_an_option;
         {
             let mut command = Cli::command();
             let swap = command.find_subcommand_mut("swap").unwrap();
             let usage = swap.render_usage().to_string();
             assert!(usage.contains("[OPTIONS] <COMPONENT>"), "{usage}");
-            assert!(!usage.contains("<SLOT>"), "{usage}");
+            assert!(!usage.contains("<ACCOUNT>"), "{usage}");
             let help = swap.render_long_help().to_string();
-            assert!(help.contains("--slot <SLOT>"), "{help}");
+            assert!(help.contains("--account <ACCOUNT>"), "{help}");
             assert!(
                 help.contains("--profile dev compiles much faster"),
                 "{help}"
@@ -1748,19 +1765,19 @@ mod tests {
             );
         }
 
-        phase swap_takes_an_optional_slot;
+        phase swap_takes_an_optional_account;
         {
             let cli = Cli::try_parse_from(["tilo-vm", "swap", "tilo-session"]).unwrap();
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "tilo-session")
+                matches!(cli.command, Some(Command::Swap { ref component, account: None, .. }) if component == "tilo-session")
             );
             let cli = Cli::try_parse_from([
-                "tilo-vm", "--json", "swap", "--slot", "vm", "fs", "--from", "layer:ab",
+                "tilo-vm", "--json", "swap", "--account", "vm", "fs", "--from", "layer:ab",
             ])
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, account: Some(ref account), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && account == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli = Cli::try_parse_from(["tilo-vm", "swap", "tilo-session", "--profile", "dev"])
@@ -1789,7 +1806,7 @@ mod tests {
                 })
             ));
             let cli = Cli::try_parse_from([
-                "tilo-vm", "input", "--slot", "b", "click", "right", "--at", "4", "5",
+                "tilo-vm", "input", "--account", "b", "click", "right", "--at", "4", "5",
             ])
             .unwrap();
             assert!(matches!(

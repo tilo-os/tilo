@@ -11,7 +11,7 @@ It moves the VM's clock and restarts the session, so it runs after the checks th
 the run opened, and puts the clock and chronyd back however it ends.
 
 fs.service serves the device's own identity (/var/lib/tilo/device/cert.bin) and does not
-start without it (its ConditionPathExists). A tilo-vm slot's session keeps a test identity
+start without it (its ConditionPathExists). A tilo-vm account's session keeps a test identity
 of its own under TILO_IDENTITY_ROOT instead, so on such a VM there is no fs to wait: the
 check says so in its numbers and judges the desktop's half alone.
 """
@@ -82,7 +82,7 @@ def clock_behind_the_certificate(ctx, res):
             # The desktop's half still applies and is judged; the fs half is not seen, and
             # the detail says so on a pass as on a failure.
             why = (f"fs part skipped: no device certificate at {DEVICE_CERT}, so fs.service's "
-                   "condition never starts it; this slot's identity is its own")
+                   "condition never starts it; this account's identity is its own")
             res.metrics["fs"] = why
             res.detail = why
         first = _fs(ctx)

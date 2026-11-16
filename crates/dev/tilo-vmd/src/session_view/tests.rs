@@ -124,7 +124,7 @@ fn subject(root: &Path) {
     assert!(fs::write(view.join("usr/forbidden"), b"write").is_err());
     refresh_shared_base(root, &boot, &views, &layers, &global);
     // A new generation replaces the fixed mount points without accumulating
-    // overlays; removing the slot releases its active mounted views.
+    // overlays; removing the account releases its active mounted views.
     prepare_from(&views, "proof", std::slice::from_ref(&vm), &boot).unwrap();
     assert!(!view.join("usr/app-only").exists());
     assert_eq!(
@@ -230,19 +230,19 @@ fn actual_apply(root: &Path, boot: &Path, vm: &Path) {
         .session_layer_dropin("actual", 7, &[PathBuf::from("/vm")])
         .unwrap();
     assert!(dropin.contains("ExtensionDirectories=\nBindReadOnlyPaths="));
-    assert!(dropin.contains("/slot-actual/usr:/usr"));
-    assert!(dropin.contains("/slot-actual/opt:/opt"));
+    assert!(dropin.contains("/account-actual/usr:/usr"));
+    assert!(dropin.contains("/account-actual/opt:/opt"));
     assert_eq!(
-        fs::read_to_string("/proof/views/slot-actual/usr/winner").unwrap(),
+        fs::read_to_string("/proof/views/account-actual/usr/winner").unwrap(),
         "vm-only"
     );
-    protected(Path::new("/proof/views/slot-actual/usr"));
-    protected(Path::new("/proof/views/slot-actual/opt"));
+    protected(Path::new("/proof/views/account-actual/usr"));
+    protected(Path::new("/proof/views/account-actual/opt"));
     apply.remove_session_view("actual").unwrap();
 }
 
 #[test]
-fn session_views_flatten_vm_and_slot_layers_in_real_mount_namespace() {
+fn session_views_flatten_vm_and_account_layers_in_real_mount_namespace() {
     const SUBJECT: &str = "TILO_VMD_SESSION_VIEW_SUBJECT";
     if let Ok(path) = std::env::var(SUBJECT) {
         subject(Path::new(&path));
@@ -275,7 +275,7 @@ fn session_views_flatten_vm_and_slot_layers_in_real_mount_namespace() {
         .arg(root.path())
         .arg(std::env::current_exe().unwrap())
         .args([
-            "session_view::tests::session_views_flatten_vm_and_slot_layers_in_real_mount_namespace",
+            "session_view::tests::session_views_flatten_vm_and_account_layers_in_real_mount_namespace",
             "--exact",
             "--nocapture",
         ])

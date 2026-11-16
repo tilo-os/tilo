@@ -16,7 +16,7 @@ tilo-vm scenario install --layout prepared-alongside --graphics software
 tilo-vm scenario install --dry-run --json    # the plan, nothing booted
 ```
 
-No slot and no dev VM are involved. The scenario runs its own QEMU VM through
+No account and no dev VM are involved. The scenario runs its own QEMU VM through
 `os/dev/vm.sh` (the headless path the release gate uses; set `TILO_DISTROBOX=""`
 when QEMU is on the host itself) in a named cycle, so its disks, TPM and
 firmware state exist for this run only.

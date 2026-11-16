@@ -142,7 +142,7 @@ def wait_line(path: str, first: int, seconds: float, patterns: list[str]) -> int
         left = deadline - time.monotonic()
         if left <= 0:
             return 1
-        # The session writes its log through the slot's own mount of the home, and
+        # The session writes its log through the account's own mount of the home, and
         # inotify sees no write made through another mount of an overlay: a wakeup on an
         # event where there is one, else after a tenth of a second, to read again.
         select.select([fd], [], [], min(left, 0.1))

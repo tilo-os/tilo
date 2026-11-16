@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Host CLI for Tilo dev VMs: per-agent slots, layer swaps and driving"
+description = "Host CLI for Tilo dev VMs: per-agent accounts, layer swaps and driving"
 
 [lib]
 name = "tilo_vm"

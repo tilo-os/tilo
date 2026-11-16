@@ -1,7 +1,10 @@
-//! `tilo-vmd`: the dev image's owner of layers, slots, generations and
-//! slot sessions. Reached only through `tilo-vmd rpc` on stdio, which
+//! `tilo-vmd`: the dev image's owner of layers, accounts, generations and
+//! account sessions. Reached only through `tilo-vmd rpc` on stdio, which
 //! `tilo-vm` runs over SSH.
 
+#[cfg(test)]
+mod account_community_tests;
+pub mod accounts;
 pub mod apply;
 pub mod awake;
 pub mod boot;
@@ -24,9 +27,6 @@ pub mod locks;
 pub mod packages;
 pub mod server;
 mod session_view;
-#[cfg(test)]
-mod slot_community_tests;
-pub mod slots;
 pub mod systemd;
 pub mod targets;
 

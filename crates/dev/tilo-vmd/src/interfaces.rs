@@ -1,8 +1,8 @@
-//! Whether a slot's next generation can read the system-interface declaration it
+//! Whether an account's next generation can read the system-interface declaration it
 //! ends up with. `/usr/share/tilo/system-interfaces.toml` is read by every
 //! component of the matched session set — the session, the launcher,
 //! `tilo-install`, the app host and the runtime services judge apps by it — and the
-//! file a slot sees is the one its layers ship (only `tilo-session` does), else the
+//! file an account sees is the one its layers ship (only `tilo-session` does), else the
 //! image's. A generation in which one of those components was built for another
 //! declaration than the one it reads is refused before anything is activated. A
 //! component speaks the declaration of the tree it was built from
@@ -24,15 +24,15 @@ pub struct Member {
     pub ships: Option<Declaration>,
 }
 
-/// The runtime services apps reach that run VM-wide, outside any slot's session set: their
-/// components are `vm`-scope and shared by every slot. Each speaks the runtime interface alone, so
-/// it is judged by the [`RUNTIME`] version of the declaration a slot reads.
+/// The runtime services apps reach that run VM-wide, outside any account's session set: their
+/// components are `vm`-scope and shared by every account. Each speaks the runtime interface alone, so
+/// it is judged by the [`RUNTIME`] version of the declaration an account reads.
 pub use tilo_vm_protocol::VM_RUNTIME_SERVICES;
 
 /// The interface every runtime service speaks to apps.
 pub use tilo_vm_protocol::RUNTIME;
 
-/// The declaration a slot of `members` reads and whose it is: the one layer that ships it, else the
+/// The declaration an account of `members` reads and whose it is: the one layer that ships it, else the
 /// image's. `Err` when two layers ship it.
 fn effective<'a>(
     image: Option<&'a Declaration>,
@@ -65,7 +65,7 @@ fn speaks(member: &Member) -> Option<&BTreeMap<String, u32>> {
         .filter(|interfaces| !interfaces.is_empty())
 }
 
-/// Why the VM-wide runtime service `member` cannot serve a slot reading `served`, if it cannot.
+/// Why the VM-wide runtime service `member` cannot serve an account reading `served`, if it cannot.
 fn service_problem(member: &Member, served: Option<&BTreeMap<String, u32>>) -> Option<String> {
     let Some(speaks) = speaks(member) else {
         return Some(format!(
@@ -91,7 +91,7 @@ fn service_problem(member: &Member, served: Option<&BTreeMap<String, u32>>) -> O
 }
 
 /// `None` when every component of `members`, every VM-wide runtime service in `vm_services` and
-/// every one the image still provides reads or serves the declaration the slot ends up with;
+/// every one the image still provides reads or serves the declaration the account ends up with;
 /// otherwise what is wrong and what to swap together. `image` is the image's own declaration,
 /// `None` when no boot has recorded it.
 #[must_use]
@@ -175,18 +175,18 @@ pub fn conflict(
         return None;
     }
     Some(format!(
-        "the slot would read {from} {SYSTEM_INTERFACES}, which serves {}, but {}. {ADVICE}",
+        "the account would read {from} {SYSTEM_INTERFACES}, which serves {}, but {}. {ADVICE}",
         reads(effective),
         problems.join("; ")
     ))
 }
 
-/// `None` when the VM-wide runtime services `vm_services` serve every slot of `slots` the runtime
-/// version the declaration it reads serves; otherwise which slots they would leave behind.
+/// `None` when the VM-wide runtime services `vm_services` serve every account of `accounts` the runtime
+/// version the declaration it reads serves; otherwise which accounts they would leave behind.
 #[must_use]
 pub fn vm_conflict(
     image: Option<&Declaration>,
-    slots: &[(String, Vec<Member>)],
+    accounts: &[(String, Vec<Member>)],
     vm_services: &[Member],
 ) -> Option<String> {
     let services: Vec<&Member> = vm_services
@@ -197,11 +197,11 @@ pub fn vm_conflict(
         return None;
     }
     let mut problems = Vec::new();
-    for (slot, members) in slots {
+    for (account, members) in accounts {
         let (effective, from) = match effective(image, members) {
             Ok((effective, from, _)) => (effective, from),
             Err(two) => {
-                problems.push(format!("slot '{slot}': {two}"));
+                problems.push(format!("account '{account}': {two}"));
                 continue;
             }
         };
@@ -212,7 +212,7 @@ pub fn vm_conflict(
         for member in &services {
             if let Some(problem) = service_problem(member, served) {
                 problems.push(format!(
-                    "slot '{slot}' reads {from} declaration, which serves {}, and {problem}",
+                    "account '{account}' reads {from} declaration, which serves {}, and {problem}",
                     reads(effective)
                 ));
             }
@@ -394,10 +394,10 @@ mod tests {
             );
         }
 
-        phase the_filesystem_service_serves_the_runtime_version_every_slot_reads;
+        phase the_filesystem_service_serves_the_runtime_version_every_account_reads;
         // tilo-fs is a runtime service apps talk to, though it runs VM-wide.
-        // A slot whose declaration serves another runtime version than the fs
-        // layer is refused, and so is an fs swap that would leave a slot behind.
+        // An account whose declaration serves another runtime version than the fs
+        // layer is refused, and so is an fs swap that would leave an account behind.
         {
             let image = declared(&current());
             let next_runtime = versions(&[("runtime", 3), ("shell-ui", 11), ("system", 1)]);
@@ -408,12 +408,12 @@ mod tests {
                 None
             );
             let refused = conflict(Some(&image), &[], &[member("fs", &next_runtime, false)])
-                .expect("an fs serving runtime 3 to a slot reading runtime 2 is refused");
+                .expect("an fs serving runtime 3 to an account reading runtime 2 is refused");
             assert!(refused.contains("the fs layer"), "{refused}");
             assert!(refused.contains("runtime 3"), "{refused}");
             assert!(refused.contains("tilo-vm swap fs"), "{refused}");
 
-            // A slot's whole session set moved to runtime 3 while fs stays the
+            // An account's whole session set moved to runtime 3 while fs stays the
             // image's: fs is named among what to swap together.
             let stack: Vec<Member> = USERSPACE_COMPONENTS
                 .iter()
@@ -424,21 +424,21 @@ mod tests {
             assert_eq!(
                 conflict(Some(&image), &stack, &[member("fs", &next_runtime, false)]),
                 None,
-                "with fs from the same tree the slot is whole"
+                "with fs from the same tree the account is whole"
             );
 
-            let slots = vec![
+            let accounts = vec![
                 ("device".to_owned(), Vec::new()),
                 ("review-a".to_owned(), stack),
             ];
-            let refused = vm_conflict(Some(&image), &slots, &[member("fs", &next_runtime, false)])
-                .expect("the device slot still reads runtime 2");
-            assert!(refused.contains("slot 'device'"), "{refused}");
-            assert!(!refused.contains("slot 'review-a'"), "{refused}");
+            let refused = vm_conflict(Some(&image), &accounts, &[member("fs", &next_runtime, false)])
+                .expect("the device account still reads runtime 2");
+            assert!(refused.contains("account 'device'"), "{refused}");
+            assert!(!refused.contains("account 'review-a'"), "{refused}");
             assert_eq!(
                 vm_conflict(
                     Some(&image),
-                    &slots[..1],
+                    &accounts[..1],
                     &[member("fs", &current(), false)]
                 ),
                 None

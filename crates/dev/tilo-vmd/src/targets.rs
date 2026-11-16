@@ -72,7 +72,7 @@ impl TargetStore {
         let record = TargetRecord {
             worktree: worktree.to_owned(),
             owner,
-            last_used: crate::slots::now(),
+            last_used: crate::accounts::now(),
             last_used_unix: tilo_clock::unix_now(),
             bytes: previous.map_or(0, |p| p.bytes),
         };

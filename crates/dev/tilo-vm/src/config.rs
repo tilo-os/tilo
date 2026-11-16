@@ -8,7 +8,7 @@
 //! default = "dev"
 //! min_free_gb = 5          # builds, swaps and vm start refuse below this
 //! warn_disk_gb = 80        # status warns when a VM disk grows past this
-//! keep_generations = 5     # gc keeps this many per slot
+//! keep_generations = 5     # gc keeps this many per account
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
 //! [remote_builders]        # swap --builder remote, by architecture: a cargo
@@ -24,8 +24,8 @@
 //!
 //! The VM is taken from `TILO_VM`, then `.tilo-vm` in the worktree
 //! (`vm = "dev"`, or just the name), then `default` above. `.tilo-vm` may
-//! also name the worktree's default slot (`slot = "review-a"`), which
-//! `TILO_VM_SLOT` overrides; without either it is named after the branch.
+//! also name the worktree's default account (`account = "review-a"`), which
+//! `TILO_VM_ACCOUNT` overrides; without either it is named after the branch.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -295,10 +295,10 @@ pub fn parse_worktree_file(text: &str) -> Option<String> {
     (!bare.is_empty() && !bare.contains(['=', '\n', ' '])).then(|| bare.to_owned())
 }
 
-pub fn parse_worktree_slot(text: &str) -> Option<String> {
+pub fn parse_worktree_account(text: &str) -> Option<String> {
     let table = text.parse::<toml::Table>().ok()?;
-    let slot = table.get("slot")?.as_str()?.trim();
-    (!slot.is_empty()).then(|| slot.to_owned())
+    let account = table.get("account")?.as_str()?.trim();
+    (!account.is_empty()).then(|| account.to_owned())
 }
 
 pub fn with_worktree_vm(old: &str, vm: &str) -> String {
@@ -387,13 +387,13 @@ mod tests {
         }
 
         {
-            let text = "vm = \"dev\"\nslot = \"ux1\"\n";
-            assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
-            assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
-            assert_eq!(parse_worktree_slot("dev").as_deref(), None);
+            let text = "vm = \"dev\"\naccount = \"ux1\"\n";
+            assert_eq!(parse_worktree_account(text).as_deref(), Some("ux1"));
+            assert_eq!(parse_worktree_account("vm = \"dev\"").as_deref(), None);
+            assert_eq!(parse_worktree_account("dev").as_deref(), None);
             let rewritten = with_worktree_vm(text, "shared");
             assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
-            assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
+            assert_eq!(parse_worktree_account(&rewritten).as_deref(), Some("ux1"));
             let bare = with_worktree_vm("dev\n", "shared");
             assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
         }

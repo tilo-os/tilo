@@ -90,7 +90,7 @@ def _parse_sample(text: str) -> dict:
 
 
 def compositor_pid(procs: dict) -> int | None:
-    """The compositor among the slot user's processes: the `tilo-session` with no other
+    """The compositor among the account user's processes: the `tilo-session` with no other
     above it.
 
     A process started by the compositor from its own binary (the shell's public
@@ -109,7 +109,7 @@ def compositor_pid(procs: dict) -> int | None:
 
     roots = sorted(pid for pid, p in procs.items() if p["comm"] == "tilo-session" and not has_shell_ancestor(pid))
     if len(roots) > 1:
-        raise core.Unobservable(f"{len(roots)} compositor processes of the slot user (pids {roots})")
+        raise core.Unobservable(f"{len(roots)} compositor processes of the account user (pids {roots})")
     return roots[0] if roots else None
 
 
@@ -274,7 +274,7 @@ def loop_wakes(rows: list[dict]) -> dict[str, int]:
 
 
 def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[dict]:
-    """Every thread called one of `names` in any of the slot user's processes over the
+    """Every thread called one of `names` in any of the account user's processes over the
     window, summed per process and name: its CPU and context switches. A thread started
     inside the window counts from zero."""
     (a, b), hz = sample["threads"], sample["hz"]
@@ -296,8 +296,8 @@ def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[
 def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...] = ()) -> dict:
     """The idle window. With `name`, its frame trace is kept as `<name>-frames.csv`, so a
     window that painted says which tick painted, why, and for which app. With `threads`,
-    `named_threads` of those names in every process of the slot user."""
-    script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
+    `named_threads` of those names in every process of the account user."""
+    script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.account_uid()))
     mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
     rows = core.trace_after(ctx, mark)
@@ -319,10 +319,10 @@ def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...]
 def memory(ctx, apps: list[str]) -> dict:
     """Per app: the memory its own cgroup is charged (memory.current, split into anon and
     file by memory.stat), the number Tilo budgets an app by. Per process: anonymous RSS
-    of the slot user's processes, as evidence of which process holds it. Session services
+    of the account user's processes, as evidence of which process holds it. Session services
     (portals, PipeWire, indexers) are in no app's cgroup and count for no app."""
     table = core.processes(ctx)
-    uid = ctx.vm.slot_uid()
+    uid = ctx.vm.account_uid()
     procs = sorted((p for p in table["procs"].values() if p["uid"] == uid),
                    key=lambda p: -(p["anon_rss_mb"] or 0))
     pid = compositor_pid({p["pid"]: p for p in procs})
@@ -359,7 +359,7 @@ GUEST_KERNEL = ("SUnreclaim", "KernelStack", "PageTables", "VmallocUsed", "Percp
 GUEST_FIELDS = ("MemTotal", "MemAvailable", "AnonPages", "Shmem") + GUEST_KERNEL
 
 # The buckets that exist only because this is a dev VM driven by a harness: seat0's
-# greeter, which an installed machine ends at login but which runs beside the slot here,
+# greeter, which an installed machine ends at login but which runs beside the account here,
 # and the dev image's services and the harness's own ssh sessions.
 VM_ONLY = ("greeter", "harness")
 BUCKETS = ("compositor", "apps", "session_services", "system") + VM_ONLY
@@ -371,7 +371,7 @@ HARNESS = re.compile(r"^/system\.slice/(sshd\.service|tilo-device-admin\.service
 
 def bucket_of(path: str, procs: list[dict], who: dict) -> str:
     """The bucket of the cgroup `path`, whose processes are `procs`. `who` names the
-    compositor's cgroup, greetd's uid and the slot's uid; first match wins."""
+    compositor's cgroup, greetd's uid and the account's uid; first match wins."""
     if path == who.get("compositor_cgroup"):
         return "compositor"
     if "/app-tilo-so." in path or any(p["app"] for p in procs):
@@ -381,7 +381,7 @@ def bucket_of(path: str, procs: list[dict], who: dict) -> str:
         return "greeter"
     if HARNESS.search(path):
         return "harness"
-    if who.get("slot_uid") is not None and f"/user-{who['slot_uid']}.slice/" in within:
+    if who.get("account_uid") is not None and f"/user-{who['account_uid']}.slice/" in within:
         return "session_services"
     return "system"
 
@@ -433,7 +433,7 @@ def guest_breakdown(table: dict) -> dict:
             "meminfo_mib": mib}
 
 
-def footprint_of(table: dict, slot_uid: int) -> dict:
+def footprint_of(table: dict, account_uid: int) -> dict:
     """A `core.parse_processes` table -> where the guest's memory is.
 
     Every cgroup a process runs in is charged where its memory controller is (itself, or
@@ -442,8 +442,8 @@ def footprint_of(table: dict, slot_uid: int) -> dict:
     cache. Every process is listed, all users, by its anonymous RSS, largest first: with
     no PSS on Tilo's kernel, that is the memory a process holds alone."""
     procs, cgroups = table["procs"], table["cgroups"]
-    slot = {p["pid"]: p for p in procs.values() if p["uid"] == slot_uid}
-    shell = slot.get(compositor_pid(slot))
+    account = {p["pid"]: p for p in procs.values() if p["uid"] == account_uid}
+    shell = account.get(compositor_pid(account))
     by_point: dict[str, list[dict]] = {}
     uncharged = []
     for p in procs.values():
@@ -453,7 +453,7 @@ def footprint_of(table: dict, slot_uid: int) -> dict:
         else:
             by_point.setdefault(point, []).append(p)
     who = {"compositor_cgroup": (cgroups.get(shell["cgroup"]) or {}).get("charged_at") if shell else None,
-           "greeter_uid": table.get("greeter_uid"), "slot_uid": slot_uid}
+           "greeter_uid": table.get("greeter_uid"), "account_uid": account_uid}
     buckets = {b: {"resident_mib": 0.0, "cgroups": []} for b in BUCKETS}
     point_bucket = {}
     for point, members in sorted(by_point.items()):
@@ -498,7 +498,7 @@ def footprint_of(table: dict, slot_uid: int) -> dict:
 
 def footprint(ctx) -> dict:
     """Every process's and cgroup's memory in the guest, read as root in one script."""
-    return footprint_of(core.processes(ctx), ctx.vm.slot_uid())
+    return footprint_of(core.processes(ctx), ctx.vm.account_uid())
 
 
 def top_by_comm(rows: list[dict], n: int = 10) -> list[tuple[str, float]]:
@@ -648,11 +648,11 @@ def shell_idle_anon_problems(anon_mib: float, budgets: dict) -> list[str]:
     return []
 
 
-def shell_anon_mib(table: dict, slot_uid: int) -> float | None:
+def shell_anon_mib(table: dict, account_uid: int) -> float | None:
     """The compositor's anonymous RSS in a `core.parse_processes` table."""
-    slot = {p["pid"]: p for p in table["procs"].values() if p["uid"] == slot_uid}
-    pid = compositor_pid(slot)
-    return slot[pid]["anon_rss_mb"] if pid is not None else None
+    account = {p["pid"]: p for p in table["procs"].values() if p["uid"] == account_uid}
+    pid = compositor_pid(account)
+    return account[pid]["anon_rss_mb"] if pid is not None else None
 
 
 def slope(values: list[float]) -> float | None:
@@ -669,7 +669,7 @@ def slope(values: list[float]) -> float | None:
 def guest_ram_used_mib(ctx) -> int:
     """The guest's memory in use, MemTotal less MemAvailable: what the running system
     holds and could not hand back without swapping. The dev VM's whole system: its
-    seat0 greeter, tilo-vmd and the slot's session."""
+    seat0 greeter, tilo-vmd and the account's session."""
     out = ctx.vm.exec("awk '/^MemTotal:|^MemAvailable:/ {print $1, $2}' /proc/meminfo", check=False)
     kib = {line.split()[0].rstrip(":"): int(line.split()[1])
            for line in out.splitlines() if len(line.split()) == 2 and line.split()[1].isdigit()}
@@ -773,7 +773,7 @@ def _budget_problems(m, budgets, prefix, software=False):
     frames stay gated, and a rasteriser that runs with no frame painted fails."""
     problems = []
     if m["shell_cpu_pct"] is None:
-        raise core.Unobservable("no `tilo-session` process of the slot user found")
+        raise core.Unobservable("no `tilo-session` process of the account user found")
     raster = (m["shell_gpu_driver_cpu_pct"] or 0.0) if software else 0.0
     own = round(m["shell_cpu_pct"] - raster, 2)
     if own > budgets[f"{prefix}_shell_cpu_pct"]:
@@ -812,7 +812,7 @@ def ush_problems(ush: dict | None, shell_s: float | None, budgets: dict) -> tupl
         return [f"Terminal's shell did not run within {core.TERMINAL_SHELL_S} s, so tilo-ush "
                 "was not measured idle (its first-session import may still have been running)"], []
     if ush is None:
-        return ["no tilo-ush process of the slot user ran while Terminal was open"], []
+        return ["no tilo-ush process of the account user ran while Terminal was open"], []
     problems = []
     busiest = describe_threads(ush["thread_groups"])
     if ush["cpu_pct"] > budgets["idle_apps_ush_cpu_pct"]:
@@ -1065,7 +1065,7 @@ def mem(ctx, res):
 # (crates/session/session/src/heap_trim.rs).
 AFTER_CLOSE_TRIM_S = 20
 
-# The slot user's per-user runtime builds and app store, in bytes: what downloaded
+# The account user's per-user runtime builds and app store, in bytes: what downloaded
 # runtimes and apps hold on disk once collection after each change ran (#4114,
 # #4151). A build is a directory under tilo-runtime whose name has no leading dot.
 DISK = r"""
@@ -1097,7 +1097,7 @@ def parse_disk(text: str) -> dict:
 
 def record_disk(ctx) -> dict:
     """`disk.runtime_mib.per_user`, `disk.app_store_mib.per_user` and
-    `disk.runtime_builds.per_user`: the slot user's downloaded runtimes and apps."""
+    `disk.runtime_builds.per_user`: the account user's downloaded runtimes and apps."""
     disk = parse_disk(ctx.vm.exec(DISK))
     ctx.record("disk.runtime_mib.per_user", "MiB", [round(disk["runtime_bytes"] / 2**20, 1)],
                what="du of $XDG_DATA_HOME/tilo-runtime", builds=disk["runtime_builds"])

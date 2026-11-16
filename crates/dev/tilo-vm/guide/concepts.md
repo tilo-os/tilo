@@ -46,11 +46,11 @@ stops them again (`--no-admit` skips it; the quickstart's "Set up once,
 branch many" says more). A branch tilo-vm has not seen taken in is marked
 `awaits_host = "<source>"` in `vms.toml`.
 
-**Slot.** Your private piece of a VM: Linux user `tds-<slot>`, session unit
-`tilo-vm-session@<slot>`, and an ordered list of layers. Your default slot
-is named after your branch; `TILO_VM_SLOT` or `slot = "<name>"` in the
-worktree's `.tilo-vm` picks another. A slot's layers
-overlay `/usr` for its session and its user services only; other slots and
+**Account.** Your private piece of a VM: Linux user `tds-<account>`, session unit
+`tilo-vm-session@<account>`, and an ordered list of layers. Your default account
+is named after your branch; `TILO_VM_ACCOUNT` or `account = "<name>"` in the
+worktree's `.tilo-vm` picks another. An account's layers
+overlay `/usr` for its session and its user services only; other accounts and
 the VM itself do not see them.
 
 - `headless`: the compositor renders offscreen. Drive it with `control`,
@@ -67,28 +67,28 @@ the VM itself do not see them.
 component's build, with `provenance.json` saying how it was built. The same
 bytes are one layer, whoever built them.
 
-**Generation.** A numbered snapshot of a slot: which layer each component
+**Generation.** A numbered snapshot of an account: which layer each component
 uses, bottom first (later layers win). `swap` writes a new generation;
 `rollback` switches back, `rollback --forward` or `--to <n>` forward again.
 Generation 0 is the bare VM image.
 
-**The `vm` slot.** Components with VM-wide scope (`fs`, greeter, system
-services) are swapped into the reserved slot `vm`. Its layers merge into the
-VM's own `/usr`, so they affect every slot.
+**The `vm` account.** Components with VM-wide scope (`fs`, greeter, system
+services) are swapped into the reserved account `vm`. Its layers merge into the
+VM's own `/usr`, so they affect every account.
 
-**Device and the `device` slot.** A real machine that already runs a Tilo
+**Device and the `device` account.** A real machine that already runs a Tilo
 dev image, such as a board, registered with `tilo-vm vm add` and reached over
 SSH instead of a hypervisor, as root or as its owner's account through
 `sudo -n`. An always-on board image runs its account's own session without a
-greeter; the reserved slot `device` is that session, so its layers reach the
-board's real session and a swap restarts it. On a laptop the `device` slot is
+greeter; the reserved account `device` is that session, so its layers reach the
+board's real session and a swap restarts it. On a laptop the `device` account is
 the owner's Tilo login through greetd on the built-in display: its layers
-merge into the machine's `/usr` (with the `vm` slot's) and a swap restarts
+merge into the machine's `/usr` (with the `vm` account's) and a swap restarts
 the owner's desktop in place, without logging them out (`tilo-vm guide
 devices`).
 
 **Seat.** `seat0` is the VM's real display, the one the hypervisor window
-shows. It runs greetd until a slot claims it (`tilo-vm seat claim`); the
+shows. It runs greetd until an account claims it (`tilo-vm seat claim`); the
 claim is a lease that records who holds it.
 
 **Authority.** Layers you build (in the VM or on the host) are

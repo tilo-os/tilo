@@ -1,11 +1,11 @@
 # Swapping components
 
 ```sh
-tilo-vm swap tilo-session                        # your slot, built from this worktree
+tilo-vm swap tilo-session                        # your account, built from this worktree
 tilo-vm --target review swap tilo-session --profile dev          # faster compile, slower binary
-tilo-vm swap --slot my-slot launcher      # an explicit slot
-tilo-vm swap --slot vm fs                 # a VM-wide component into the vm slot
-tilo-vm swap app:notes                    # one app, installed into your slot's app store
+tilo-vm swap --account my-account launcher      # an explicit account
+tilo-vm swap --account vm fs                 # a VM-wide component into the vm account
+tilo-vm swap app:notes                    # one app, installed into your account's app store
 tilo-vm swap tilo-session --from ci:main-1a2b3c4 # the CI build of a published image
 tilo-vm swap tilo-session --from sha:1a2b3c4     # the CI build of a main commit
 tilo-vm swap tilo-session --from layer:<hash>    # a layer already in the VM
@@ -13,14 +13,14 @@ tilo-vm swap kernel                       # the kernel: build, install VM-wide, 
 tilo-vm rollback                          # the generation before the current one
 tilo-vm rollback --forward                # the next newer one again
 tilo-vm rollback --to <generation>        # any generation, older or newer
-tilo-vm rollback --slot vm                # the vm slot, the kernel included
+tilo-vm rollback --account vm                # the vm account, the kernel included
 ```
 
 Rolling back never deletes a generation, so `rollback --forward` (or
-`--to <n>`) goes forward again until `gc` prunes it; `tilo-vm slot show`
+`--to <n>`) goes forward again until `gc` prunes it; `tilo-vm account show`
 lists them, generation 0 (the bare image) included.
 
-`tilo-vm --json slot show` includes `provenance`, keyed by selected component,
+`tilo-vm --json account show` includes `provenance`, keyed by selected component,
 read from each imported layer's metadata. Compare `source_commit`,
 `dirty_tree_hash`, `target`, `toolchain` and `cargo_lock_hash` with the selected
 `apps+runtime` cohort before qualifying a replacement. Profiles can differ.
@@ -28,12 +28,12 @@ Older daemons/imports may omit provenance; that is unknown, not proof of a match
 The import record is diagnostic metadata; package authenticity still comes from
 the existing signed installer and the OS publisher pins.
 
-For a captured fresh-slot replacement journey, the executable evidence contract
+For a captured fresh-account replacement journey, the executable evidence contract
 is `scripts/vm-acceptance/component-replacement.py` (instructions in that suite's
 README). It checks successful activation, failed-candidate recovery, isolated
 fixture state and teardown, and never performs deployment itself.
 
-The one positional argument is the component; the slot is `--slot` and
+The one positional argument is the component; the account is `--account` and
 defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
@@ -177,7 +177,7 @@ an older one may lack arm64.
 ## Apps (`app:<dir>`)
 
 `swap app:notes` builds `apps/notes` with `tilo-app package` (self-signed
-`.tapp`) and installs it as your slot user with
+`.tapp`) and installs it as your account user with
 `tilo-install install --allow-self-signed --force`. The user store shadows
 the image's copy, so it is live the next time the app launches; nothing
 restarts. App installs are not generations: `rollback` does not undo them.
@@ -198,21 +198,21 @@ and, being a generation, can be rolled back.
 
 | Component scope | Goes into | What happens |
 |---|---|---|
-| `session` (tilo-session, launcher, user services, runtime) | your slot | a normal session restart: log out, restart your user manager, log in. The `device` slot instead merges VM-wide (`systemd-sysext`) and restarts its own session, because its compositor runs in the host's mount namespace: a laptop's owner stays logged in and only the desktop restarts; a board restarts its session (`tilo-vm guide devices`) |
-| app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
-| `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every slot's session restarts** |
-| `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` slot, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
+| `session` (tilo-session, launcher, user services, runtime) | your account | a normal session restart: log out, restart your user manager, log in. The `device` account instead merges VM-wide (`systemd-sysext`) and restarts its own session, because its compositor runs in the host's mount namespace: a laptop's owner stays logged in and only the desktop restarts; a board restarts its session (`tilo-vm guide devices`) |
+| app (`app:<dir>`) | your account's app store | nothing restarts; live at next app launch |
+| `vm` (fs, greeter, system services) | the `vm` account | `systemd-sysext refresh`, its active units and the live owner's active user services restart, and **every account's session restarts** |
+| `boot`, swappable (the kernel: `dev_swap = "reboot"`) | the `vm` account, plus a boot entry | modules merge with `systemd-sysext refresh`, the kernel becomes the next boot entry, **the VM reboots**; confirmed, it becomes the default (`tilo-vm guide kernel`) |
 | `boot`, scenario-only (UKI, bootloader, initramfs, installer, rollback) | nothing | refused; use the scenario driver the error names (the installer: `tilo-vm scenario install`, `tilo-vm guide scenarios`) |
 | not a component (Containerfile, units, `/etc`, packages) | the VM's image | `tilo-vm vm upgrade --from local`: new image, reboot (`tilo-vm guide images`) |
 
 Component services use `try-restart`: an installed inactive optional service
 stays inactive. Missing, masked or unloadable declared units and manager/restart
-errors still fail the swap. Explicit slot/session restart continues to start its
+errors still fail the swap. Explicit account/session restart continues to start its
 required session and user manager; it is a separate lifecycle operation.
 
 
 A VM-wide swap interrupts other agents' sessions, and a kernel swap reboots
-the VM under them, so prefer session components in your own slot.
+the VM under them, so prefer session components in your own account.
 
 A kernel builds on this host, never in the VM: `--builder`, `--profile` and
 `--from ci:` do not apply to it, while `--jobs` and `--direct` apply only to
@@ -220,24 +220,24 @@ it. `tilo-vm guide kernel` has the whole loop.
 
 ## Verify your swap
 
-The session sees your slot's layers stacked over the VM's `/usr`; nothing
-else does, so check from inside the slot, never with `vm ssh` (the `device`
-slot merges system-wide, so the machine's own shell sees its layers too):
+The session sees your account's layers stacked over the VM's `/usr`; nothing
+else does, so check from inside the account, never with `vm ssh` (the `device`
+account merges system-wide, so the machine's own shell sees its layers too):
 
 ```sh
-tilo-vm slot show                              # generations, and each component's files with sha256 and layer
-tilo-vm slot show --json | jq '.files[] | select(.path == "/usr/bin/tilo-session")'
-tilo-vm slot exec -- sha256sum /usr/bin/tilo-session  # the file the session runs
-tilo-vm slot exec -- ls -l /usr/bin/tilo-session
-tilo-vm slot exec --slot review-a -- sh -c 'ls -l /usr/lib/tilo | head'
+tilo-vm account show                              # generations, and each component's files with sha256 and layer
+tilo-vm account show --json | jq '.files[] | select(.path == "/usr/bin/tilo-session")'
+tilo-vm account exec -- sha256sum /usr/bin/tilo-session  # the file the session runs
+tilo-vm account exec -- ls -l /usr/bin/tilo-session
+tilo-vm account exec --account review-a -- sh -c 'ls -l /usr/lib/tilo | head'
 ```
 
-`slot exec` runs the command in the mount namespace of the slot's running
-session, as its user `tds-<slot>`, so it sees exactly the files the session
+`account exec` runs the command in the mount namespace of the account's running
+session, as its user `tds-<account>`, so it sees exactly the files the session
 does. Output streams back; the command stops after `--timeout` seconds
 (default 60, exit 124) or 1 MiB of output (exit 125), and its own exit
-status is passed on. The slot's session must be running
-(`tilo-vm slot restart` if not). Compare the sha256 with your build
+status is passed on. The account's session must be running
+(`tilo-vm account restart` if not). Compare the sha256 with your build
 (`sha256sum target/release/tilo-session` for a host build); `tilo-vm logs` shows
 what the restarted session printed.
 
@@ -256,7 +256,7 @@ what the restarted session printed.
   mismatches remain refusals; never regenerate `Cargo.lock` to match.
 - Local builds (`vm`, `host`) are for testing and never promoted; only CI
   builds are.
-- Swapping the same layer twice does nothing. A failed apply leaves the slot
+- Swapping the same layer twice does nothing. A failed apply leaves the account
   on its old generation; rerun the swap.
 
 ## Explicit targets and failed starts
@@ -265,7 +265,7 @@ Use `--target <registered-name>` on any command to select a development VM or
 already-enrolled development machine for just that invocation. It overrides
 `TILO_VM`, `.tilo-vm` and the registry default without changing any of them.
 An unknown target or a conflicting positional VM name fails before connecting.
-For example: `tilo-vm --target review rollback --slot my-slot`.
+For example: `tilo-vm --target review rollback --account my-account`.
 
 A runtime swap becomes current only after its restarted sessions pass the
 existing readiness checks. A failed activation restores the previous generation
@@ -278,14 +278,14 @@ boot-confirmation lifecycle.
 ### Matched userspace replacement
 
 ```sh
-tilo-vm swap --slot my-slot userspace --builder remote
+tilo-vm swap --account my-account userspace --builder remote
 ```
 
 `userspace` builds the matched session components and `apps+runtime` from one
 verified worktree inventory, using each component's canonical profile and the
 registered remote builder for the target architecture. It stages every member
 before asking the daemon to activate them together. Host/VM builders, custom
-profiles, image sources and the VM-wide slot are not supported for this command.
+profiles, image sources and the VM-wide account are not supported for this command.
 
 The daemon checks the admitted session identity and expected generation before
 selection, verifies the signed cohort in its candidate view, and preserves held
@@ -314,7 +314,7 @@ available for narrower changes; they are not an atomic userspace replacement.
 
 ### Worktree apps and their matching runtime
 
-`tilo-vm swap --slot device apps+runtime` is the loop for unpushed app or
+`tilo-vm swap --account device apps+runtime` is the loop for unpushed app or
 toolkit changes on a real board laptop, whose sealed image only CI produces.
 With no remote builder configured it builds on this host when the host is a
 Linux machine of the device's architecture (`--builder host` asks for that
@@ -330,7 +330,7 @@ is added to `/etc/tilo/runtime-bundle-trusted-publishers.txt`, and
 unless the user packages it installed require the newer SDK (it says so).
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
-its toolkit in one Cargo graph on the configured builder for the slot's actual
+its toolkit in one Cargo graph on the configured builder for the account's actual
 architecture. It verifies the complete source inventory before and after the
 build, signs and verifies the payload-derived runtime ABI, checks loader closure,
 and packs apps through the normal installer. Ephemeral signing keys stay in
@@ -342,7 +342,7 @@ the selected session; a failure stops the remaining steps and is recorded in the
 normal receipt. Installed component pins must be root-owned and immutable;
 operator `/etc` trust remains effective. No OS image or kernel reboot is needed.
 Older dev images need the matching daemon once, through the normal VM component
-update (`tilo-vm swap vmd --slot vm --builder remote`); a refused cohort leaves the
+update (`tilo-vm swap vmd --account vm --builder remote`); a refused cohort leaves the
 existing apps/runtime active. Its receipt records any already applied session
 prerequisites.
 
@@ -365,7 +365,7 @@ A source session swap installs both `/usr/bin/tilo-session` and the matching
 mandatory input: an incomplete build fails before a layer can be imported.
 Published image swaps extract both paths from the same selected image.
 
-For a development slot, the normal swap restart opens a fresh PAM session and
+For a development account, the normal swap restart opens a fresh PAM session and
 runs the matching wrapper, preserving its account and application data. The
 wrapper initializes that new login's recovery channel; an in-place compositor
 restart keeps the existing login's lock state. Never repair a locked session by
@@ -376,18 +376,18 @@ To repair a session-only swap on an older development image, rebuild the paired
 component from the matching source in the existing worktree:
 
 ```sh
-TILO_VM_CARGO="$CARGO" tilo-vm swap tilo-session --slot my-slot --builder host --profile dev
+TILO_VM_CARGO="$CARGO" tilo-vm swap tilo-session --account my-account --builder host --profile dev
 ```
 
 Select the registered VM with `TILO_VM` (or `--target` on a current client).
 Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
 packages and uploads its received binary
-and this worktree's mandatory startup companion. The slot restarts through its
+and this worktree's mandatory startup companion. The account restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
 
 ### Updating the guest daemon
 
-`tilo-vm swap vmd --slot vm --builder host --profile dev` imports the
+`tilo-vm swap vmd --account vm --builder host --profile dev` imports the
 replacement through the existing authenticated route, then opens its RPC
 from that immutable imported layer before applying the normal generation
 transition. An already-running RPC process would keep executing its old
@@ -463,8 +463,8 @@ packaging and upload; changed content uses the full uncompressed archive.
 
 ## Opt-in phase CPU records
 
-`tilo-vm swap tilo-session --frame-cpu-trace --slot <slot>` enables the session's
-phase CPU companion on an owned headful or headless stand-in slot. The flag is
+`tilo-vm swap tilo-session --frame-cpu-trace --account <account>` enables the session's
+phase CPU companion on an owned headful or headless stand-in account. The flag is
 not supported for device logins, VM-wide components or applications. It is a
 typed generation setting, rather than an arbitrary environment override:
 swapping the same layer with a different setting creates a new generation;
@@ -476,13 +476,13 @@ lifecycle before using the option; this does not require rebooting the VM.
 Each compositor start, including a wrapper-requested desktop restart, allocates
 a new owner-private `frame-cpu.*` directory beside the normal session logs.
 `frame-cpu-path` (mode 0600) names the current CSV; the CSV is created exclusively
-by shell at mode 0600. Read the pointer through `tilo-vm slot exec`, then collect
+by shell at mode 0600. Read the pointer through `tilo-vm account exec`, then collect
 that file with the stock `frame-trace.csv`. Records are retained for evidence;
-remove unwanted records from the slot's own state directory after collection.
+remove unwanted records from the account's own state directory after collection.
 The stock trace schema does not change, and disabled sessions allocate no CPU
 record. This records CPU phases, not GPU-exclusive time or hardware performance.
 
-`tilo-vm --json slot show` includes `installed_builds`, keyed by component, with
+`tilo-vm --json account show` includes `installed_builds`, keyed by component, with
 the selected immutable layer's source commit, compiler/toolchain, target, build
 profile, Cargo.lock digest and builder provenance when recorded. Unavailable selected layers are explicit `null`; unrecorded provenance fields
 remain unavailable. `identity_scope` is

@@ -8,7 +8,7 @@ answers it as `binary:/usr/bin/tilo-session`. `crates/system/secret-service/test
 proves that protocol with the production client code; these checks prove it with the
 real compositor on the installed image.
 
-C01 judges the run's slot: the compositor is non-dumpable, the store is open and lists
+C01 judges the run's account: the compositor is non-dumpable, the store is open and lists
 the compositor with the MLS key it keeps there, its sealed MLS state sits in an
 owner-only directory, an app's portal secret (org.freedesktop.portal.Secret, asked
 through the app's own filtered bus proxy, the only bus its sandbox reaches) is answered
@@ -19,7 +19,7 @@ C02 judges a person's own login: the dev account signs in at seat0's greeter (as
 does), goes through first use on its control socket's setup actions, and its new
 identity must name the Secret Service (`secret_ref.backend = secret-service-v1`, which
 Settings > Users shows as "Secret Service + app-scoped signing broker") with no key file
-beside it. A slot's throwaway identity keeps its private share in owner-only files by
+beside it. An account's throwaway identity keeps its private share in owner-only files by
 design (tilo-vm guide driving), so only a person's login can show this. Then it signs out
 and in again: the new compositor still finds what the store keeps for it, with no
 custody warning, and the sealed MLS state is still there.
@@ -91,7 +91,7 @@ log=$(getent passwd "$(id -nu __UID__)" | cut -d: -f6)/__LOG__
 __GREPS__
 """
 
-# As the slot's user, in its session's view: ask the portal for the app's secret on the
+# As the account's user, in its session's view: ask the portal for the app's secret on the
 # bus the app itself has, its launcher's `xdg-dbus-proxy` socket
 # (`$XDG_RUNTIME_DIR/tilo/dbus-proxy/<launcher pid>.sock`, bound into its sandbox as the
 # session bus). The portal sees the proxy as the requester, and the compositor names the
@@ -245,7 +245,7 @@ def judge_compositor_row(apps: dict, what: str, min_items: int = 1) -> dict:
 @check("C01", AREA, "The compositor keeps its MLS key and apps' portal secrets in tilo-secret-service, "
                     "proves itself while non-dumpable, and outlives a store restart")
 def compositor_secrets_in_the_store(ctx, res):
-    uid = ctx.vm.slot_uid()
+    uid = ctx.vm.account_uid()
     comp = compositor(ctx, uid, "C01")
     res.metrics["compositor_exe_hidden"] = comp["exe_hidden"]
     expect(comp["exe_hidden"], f"the compositor's /proc/<pid>/exe is readable by its own user, so it is "

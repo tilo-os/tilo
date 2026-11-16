@@ -1,4 +1,4 @@
-//! App sets for `tilo-vm slot apps`: named lists of third-party packages
+//! App sets for `tilo-vm account apps`: named lists of third-party packages
 //! for verifying desktop features, read from `data/app-sets.toml`.
 
 use serde::Deserialize;

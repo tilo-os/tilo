@@ -11,10 +11,11 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use tilo_vm_protocol::manifest::{Component, Manifest};
 use tilo_vm_protocol::{
-    Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
-    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerList, LayerSource, Logs, Owner,
-    Policy, Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind,
-    SlotList, SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Stick, Swap, VM_SLOT, VmTools,
+    AccountCreate, AccountInfo, AccountKind, AccountList, AccountRestart, AccountRm, AccountShow,
+    AccountShowResult, Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget,
+    Button, CiJob, Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerList, LayerSource,
+    Logs, Owner, Policy, Rollback, Scope, SeatClaim, SeatRelease, Shot, Status, Stick, Swap,
+    VM_ACCOUNT, VmTools,
 };
 
 use crate::appsets;
@@ -22,9 +23,9 @@ use crate::build;
 use crate::ci;
 use crate::cicache;
 use crate::cli::{
-    AddArgs, Builder, Command, CreateArgs, DeviceCommand, FlightCommand, GamepadCommand,
-    ImageCommand, InputCommand, PenCommand, QemuCommand, ScenarioCommand, SeatCommand,
-    SlotAppsCommand, SlotCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
+    AccountAppsCommand, AccountCommand, AddArgs, Builder, Command, CreateArgs, DeviceCommand,
+    FlightCommand, GamepadCommand, ImageCommand, InputCommand, PenCommand, QemuCommand,
+    ScenarioCommand, SeatCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -114,13 +115,13 @@ fn windows_args() -> &'static [String] {
 
 fn control_json(
     remote: &mut Remote,
-    slot: &str,
+    account: &str,
     args: &[String],
     worst: &mut Duration,
 ) -> Result<Value, CliError> {
     let started = Instant::now();
     let result = remote.call(Control {
-        slot: slot.to_owned(),
+        account: account.to_owned(),
         args: args.to_vec(),
         private_args: None,
     })?;
@@ -443,13 +444,13 @@ fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
 pub fn describe_apply(result: &ApplyResult) -> String {
     if !result.changed {
         return format!(
-            "slot {} is already at generation {}; nothing to do",
-            result.slot, result.generation
+            "account {} is already at generation {}; nothing to do",
+            result.account, result.generation
         );
     }
     let mut text = format!(
-        "generation {} applied to slot {}",
-        result.generation, result.slot
+        "generation {} applied to account {}",
+        result.generation, result.account
     );
     let restarted_sessions: Vec<&str> = result
         .actions
@@ -470,7 +471,7 @@ pub fn describe_apply(result: &ApplyResult) -> String {
         })
         .collect();
     let login = !desktops.is_empty()
-        || (result.slot == tilo_vm_protocol::DEVICE_SLOT
+        || (result.account == tilo_vm_protocol::DEVICE_ACCOUNT
             && result.actions.contains(&Action::SysextRefresh));
     match result.policy {
         Policy::SessionRestart if login => describe_login(result, &desktops, &mut text),
@@ -498,7 +499,7 @@ pub fn describe_apply(result: &ApplyResult) -> String {
             if !restarted_sessions.is_empty() {
                 let _ = write!(
                     text,
-                    "; restarted the sessions of every slot so they see it: {}",
+                    "; restarted the sessions of every account so they see it: {}",
                     restarted_sessions.join(", ")
                 );
             }
@@ -769,8 +770,8 @@ impl App {
         };
         for issue in &remote.hello.issues {
             self.warnings.push(format!(
-                "slot {}: {}; {}",
-                issue.slot, issue.problem, issue.hint
+                "account {}: {}; {}",
+                issue.account, issue.problem, issue.hint
             ));
         }
         self.receipt.set("vm", &vm.name);
@@ -825,8 +826,8 @@ impl App {
         connect_failure(&vm.name, running, &debug, error)
     }
 
-    pub fn default_slot(&self) -> Option<String> {
-        if let Ok(name) = std::env::var("TILO_VM_SLOT")
+    pub fn default_account(&self) -> Option<String> {
+        if let Ok(name) = std::env::var("TILO_VM_ACCOUNT")
             && !name.trim().is_empty()
         {
             return Some(name.trim().to_owned());
@@ -834,21 +835,23 @@ impl App {
         let worktree = self.worktree.as_ref()?;
         std::fs::read_to_string(worktree.root.join(WORKTREE_FILE))
             .ok()
-            .and_then(|text| config::parse_worktree_slot(&text))
-            .or_else(|| worktree.default_slot())
+            .and_then(|text| config::parse_worktree_account(&text))
+            .or_else(|| worktree.default_account())
     }
 
-    pub fn slot_name(&self, explicit: Option<String>) -> Result<String, CliError> {
-        if let Some(name) = explicit.or_else(|| self.default_slot()) {
+    pub fn account_name(&self, explicit: Option<String>) -> Result<String, CliError> {
+        if let Some(name) = explicit.or_else(|| self.default_account()) {
             return Ok(name);
         }
         let worktree = self.worktree.as_ref().ok_or(CliError::NotInWorktree)?;
-        worktree.default_slot().ok_or_else(|| CliError::SlotName {
-            branch: worktree
-                .branch
-                .clone()
-                .unwrap_or_else(|| worktree.root.display().to_string()),
-        })
+        worktree
+            .default_account()
+            .ok_or_else(|| CliError::AccountName {
+                branch: worktree
+                    .branch
+                    .clone()
+                    .unwrap_or_else(|| worktree.root.display().to_string()),
+            })
     }
 
     fn manifest(&self) -> Result<Option<Manifest>, CliError> {
@@ -863,12 +866,16 @@ impl App {
     }
 
     pub fn run(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
-        let named = command.as_ref().and_then(named_slot);
+        let named = command.as_ref().and_then(named_account);
         let mut outcome = self.dispatch(command)?;
-        if let Some(slot) = named
-            && self.default_slot().as_deref() != Some(slot.as_str())
+        if let Some(account) = named
+            && self.default_account().as_deref() != Some(account.as_str())
         {
-            outcome.next = outcome.next.iter().map(|n| with_slot(n, &slot)).collect();
+            outcome.next = outcome
+                .next
+                .iter()
+                .map(|n| with_account(n, &account))
+                .collect();
         }
         Ok(outcome)
     }
@@ -876,17 +883,19 @@ impl App {
     fn dispatch(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
         match command {
             None => self.status(None),
-            Some(Command::Status { slot }) => self.status(slot),
+            Some(Command::Status { account }) => self.status(account),
             Some(Command::Doctor) => Ok(self.doctor()),
             Some(Command::Guide { topic }) => Self::guide(topic.as_deref()),
             Some(Command::Vm(command)) => self.vm(command),
-            Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
-            Some(Command::Slot(command)) => self.slot(command),
+            Some(Command::Account(AccountCommand::Apps(AccountAppsCommand::List))) => {
+                Ok(apps_list())
+            }
+            Some(Command::Account(command)) => self.account(command),
             Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::ImportLayer(request)) => self.import_local_layer(&request),
             Some(Command::Swap {
                 component,
-                slot,
+                account,
                 from,
                 builder,
                 profile,
@@ -895,7 +904,7 @@ impl App {
                 cmdline,
                 frame_cpu_trace,
             }) => self.swap(
-                slot,
+                account,
                 component,
                 &from,
                 builder,
@@ -907,32 +916,35 @@ impl App {
                     cmdline,
                 },
             ),
-            Some(Command::Input { slot, action }) => self.input(slot, action),
+            Some(Command::Input { account, action }) => self.input(account, action),
             Some(Command::Rollback {
-                slot, to, forward, ..
+                account,
+                to,
+                forward,
+                ..
             }) => {
-                let slot = self.slot_name(slot)?;
+                let account = self.account_name(account)?;
                 let vm = self.resolve_vm(None)?;
                 let to = if forward {
                     let info = self
                         .connect(&vm)?
                         .call(Status {
-                            slot: Some(slot.clone()),
+                            account: Some(account.clone()),
                         })?
-                        .slots
+                        .accounts
                         .into_iter()
                         .next();
-                    Some(forward_target(&slot, info.as_ref())?)
+                    Some(forward_target(&account, info.as_ref())?)
                 } else {
                     to
                 };
-                if slot == VM_SLOT {
+                if account == VM_ACCOUNT {
                     return self.rollback_vm(to);
                 }
                 let mut remote = self.connect(&vm)?;
                 let result = self.receipt.phase("apply", || {
                     remote.call(Rollback {
-                        slot: slot.clone(),
+                        account: account.clone(),
                         to,
                     })
                 })?;
@@ -942,15 +954,17 @@ impl App {
                     "tilo-vm status",
                 ]))
             }
-            Some(Command::Logs { slot, lines, .. }) => {
-                let slot = self.slot_name(slot)?;
+            Some(Command::Logs { account, lines, .. }) => {
+                let account = self.account_name(account)?;
                 let vm = self.resolve_vm(None)?;
-                let result = self.connect(&vm)?.call(Logs { slot, lines })?;
+                let result = self.connect(&vm)?.call(Logs { account, lines })?;
                 Ok(Outcome::new(result.text.clone(), json!(result)))
             }
             Some(Command::Seat(command)) => self.seat(command),
-            Some(Command::Shot { slot, output, .. }) => self.shot(slot, &output),
-            Some(Command::Control { slot, args }) => self.control(slot, &args),
+            Some(Command::Shot {
+                account, output, ..
+            }) => self.shot(account, &output),
+            Some(Command::Control { account, args }) => self.control(account, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
             Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
@@ -1027,7 +1041,7 @@ impl App {
         clippy::too_many_lines,
         reason = "one linear report, section by section"
     )]
-    fn status(&mut self, slot: Option<String>) -> Result<Outcome, CliError> {
+    fn status(&mut self, account: Option<String>) -> Result<Outcome, CliError> {
         let goals =
             "goals: warm component build < 60s, swap + session restart < 10s, cached boot < 30s";
         let vm = match self.resolve_vm(None) {
@@ -1047,7 +1061,7 @@ impl App {
             }
             other => other?,
         };
-        let slot = self.slot_name(slot).ok();
+        let account = self.account_name(account).ok();
         let mut lines = vec![format!(
             "VM: {} ({}, {})",
             vm.name,
@@ -1074,7 +1088,7 @@ impl App {
             }
         };
         let hello = remote.hello.clone();
-        let status = remote.call(Status { slot: None })?;
+        let status = remote.call(Status { account: None })?;
         lines.push(format!(
             "  tilo-vmd {} (protocol {}), {}",
             hello.daemon_version, hello.protocol, hello.arch
@@ -1106,17 +1120,17 @@ impl App {
         ));
         if let Some(lease) = &status.seat0 {
             lines.push(format!(
-                "  seat0: held by slot {} since {}",
-                lease.slot, lease.since
+                "  seat0: held by account {} since {}",
+                lease.account, lease.since
             ));
         }
-        let mine = slot
+        let mine = account
             .as_ref()
-            .and_then(|name| status.slots.iter().find(|s| &s.name == name));
+            .and_then(|name| status.accounts.iter().find(|s| &s.name == name));
         let mut next: Vec<String> = Vec::new();
-        match (&slot, mine) {
+        match (&account, mine) {
             (Some(_), Some(info)) => {
-                lines.push(slot_line(info));
+                lines.push(account_line(info));
                 for (component, layer) in &info.components {
                     lines.push(format!("    {component}: {}", short(layer)));
                 }
@@ -1131,20 +1145,20 @@ impl App {
                 );
             }
             (Some(name), None) => {
-                let (text, hints) = missing_slot(name, &status.slots);
+                let (text, hints) = missing_account(name, &status.accounts);
                 lines.extend(text);
                 next.extend(hints);
             }
             (None, _) => {
-                lines.push("slot: none (not in a worktree; pass a slot name)".into());
-                next.push("tilo-vm slot list".into());
+                lines.push("account: none (not in a worktree; pass an account name)".into());
+                next.push("tilo-vm account list".into());
                 next.push("tilo-vm guide quickstart".into());
             }
         }
         for issue in &status.issues {
             lines.push(format!(
-                "  ! slot {}: {} -> {}",
-                issue.slot, issue.problem, issue.hint
+                "  ! account {}: {} -> {}",
+                issue.account, issue.problem, issue.hint
             ));
         }
         self.warnings.clear();
@@ -1154,8 +1168,8 @@ impl App {
         let data = json!({
             "vm": vm_data,
             "daemon": hello,
-            "slot": mine,
-            "slot_name": slot,
+            "account": mine,
+            "account_name": account,
             "status": status,
         });
         let mut outcome = Outcome::new(lines.join("\n"), data);
@@ -1284,7 +1298,7 @@ impl App {
                 "host builds will not run there; build in the VM: --builder vm",
             ));
         }
-        let Ok(status) = remote.call(Status { slot: None }) else {
+        let Ok(status) = remote.call(Status { account: None }) else {
             return;
         };
         let floor = self.registry().map_or(0, |r| r.min_free_bytes());
@@ -1296,18 +1310,18 @@ impl App {
                 Check::ok("vm free space", detail)
             });
         }
-        for slot in status.slots.iter().filter(|s| s.user.is_some()) {
-            match (&slot.parity, slot.session.as_str()) {
+        for account in status.accounts.iter().filter(|s| s.user.is_some()) {
+            match (&account.parity, account.session.as_str()) {
                 (Some(problem), _) => checks.push(Check::fail(
                     "session parity",
-                    format!("slot {}: {problem}", slot.name),
-                    "slot session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting",
+                    format!("account {}: {problem}", account.name),
+                    "account session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting",
                 )),
                 (None, "active") => checks.push(Check::ok(
                     "session parity",
                     format!(
-                        "slot {} matches a greetd session (no capabilities, user domain)",
-                        slot.name
+                        "account {} matches a greetd session (no capabilities, user domain)",
+                        account.name
                     ),
                 )),
                 _ => {}
@@ -1320,7 +1334,7 @@ impl App {
         {
             checks.push(Check::warn(
                 "vm state",
-                format!("slot {}: {}", issue.slot, issue.problem),
+                format!("account {}: {}", issue.account, issue.problem),
                 issue.hint,
             ));
         }
@@ -1400,7 +1414,10 @@ impl App {
                     .ok_or_else(|| unsupported(adapter.as_ref(), "reset"))?;
                 run_all(&mut self.runner, std::slice::from_ref(&command))?;
                 Ok(Outcome::new(
-                    format!("VM {} reset; every slot session restarts with it", vm.name),
+                    format!(
+                        "VM {} reset; every account session restarts with it",
+                        vm.name
+                    ),
                     json!({ "vm": vm.name }),
                 )
                 .next(&["tilo-vm vm status"]))
@@ -2191,12 +2208,12 @@ impl App {
             let _ = write!(text, "\n  {}", host::VIRT_MANAGER_TIP);
         }
         let start = format!("tilo-vm vm start {}", args.name);
-        let slot = "tilo-vm slot create --headless".to_owned();
+        let account = "tilo-vm account create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
             json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands }),
         );
-        outcome.next = vec![start, slot];
+        outcome.next = vec![start, account];
         Ok(outcome)
     }
 
@@ -2443,7 +2460,7 @@ impl App {
         };
         next.push(format!("tilo-vm vm status {name}"));
         next.push(format!("tilo-vm vm use {name}"));
-        next.push("tilo-vm swap --slot device tilo-session --from sha:<commit>".into());
+        next.push("tilo-vm swap --account device tilo-session --from sha:<commit>".into());
         self.warnings.clear();
         Ok(Outcome {
             next,
@@ -2614,33 +2631,33 @@ impl App {
                 next: vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)],
                 ..Outcome::new(
                     format!(
-                        "VM {} is up; SSH answered after {seconds:.0}s, but it runs no tilo-vmd (not a Tilo dev image), so slots and swaps cannot use it",
+                        "VM {} is up; SSH answered after {seconds:.0}s, but it runs no tilo-vmd (not a Tilo dev image), so accounts and swaps cannot use it",
                         vm.name
                     ),
                     json!({ "vm": vm.name, "boot_seconds": seconds, "daemon": false }),
                 )
             });
         }
-        // Slots survive restarts, so only suggest creating one when none came back.
-        let slots = remote
-            .and_then(|mut remote| remote.call(Status { slot: None }).ok())
-            .map(|status| status.slots)
+        // Accounts survive restarts, so only suggest creating one when none came back.
+        let accounts = remote
+            .and_then(|mut remote| remote.call(Status { account: None }).ok())
+            .map(|status| status.accounts)
             .unwrap_or_default();
-        let next = match slots.first() {
-            Some(slot) => vec![
+        let next = match accounts.first() {
+            Some(account) => vec![
                 "tilo-vm status".to_owned(),
-                format!("tilo-vm slot show --slot {}", slot.name),
+                format!("tilo-vm account show --account {}", account.name),
             ],
             None => vec![
                 "tilo-vm status".to_owned(),
-                "tilo-vm slot create --headless".to_owned(),
+                "tilo-vm account create --headless".to_owned(),
             ],
         };
         Ok(Outcome {
             next,
             ..Outcome::new(
                 format!("VM {} is up; SSH answered after {seconds:.0}s", vm.name),
-                json!({ "vm": vm.name, "boot_seconds": seconds, "slots": slots.len() }),
+                json!({ "vm": vm.name, "boot_seconds": seconds, "accounts": accounts.len() }),
             )
         })
     }
@@ -3447,7 +3464,7 @@ impl App {
             }
             return Ok(Outcome::new(
                 format!(
-                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  slots keep their layers across it; tilo-vm status then names those built on this image\n  {}",
+                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  accounts keep their layers across it; tilo-vm status then names those built on this image\n  {}",
                     next.describe(),
                     vm.name,
                     self.receipt.summary()
@@ -3459,16 +3476,16 @@ impl App {
         let booted = self.reboot_into(vm, endpoint, &facts.boot_id, &next.digest)?;
         self.warnings.extend(self.receipt.slow());
         let change = self.image_change_of_this_boot(vm, endpoint);
-        let slots = match &change {
+        let accounts = match &change {
             Some(change) if !change.kept.is_empty() || !change.held.is_empty() => {
                 change.describe().join("\n  ")
             }
-            Some(_) => "no slot runs layers: every slot runs the new image as installed".into(),
-            None => "slots: tilo-vmd did not report which slots keep layers built on the previous image (tilo-vm status)".into(),
+            Some(_) => "no account runs layers: every account runs the new image as installed".into(),
+            None => "accounts: tilo-vmd did not report which accounts keep layers built on the previous image (tilo-vm status)".into(),
         };
         Ok(Outcome::new(
             format!(
-                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  {slots}\n  {}",
+                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  {accounts}\n  {}",
                 vm.name,
                 booted.describe(),
                 self.receipt.summary()
@@ -3493,8 +3510,8 @@ impl App {
     ) -> Option<tilo_vm_protocol::ImageChange> {
         let cmdline = self.vm_sh(vm, endpoint, "cat /proc/cmdline").ok()?;
         let booted = tilo_vm_protocol::booted_image(&cmdline.stdout)?;
-        let status = self.connect(vm).ok()?.call(Status { slot: None }).ok()?;
-        if status.slots_image.as_deref() != Some(booted.as_str()) {
+        let status = self.connect(vm).ok()?.call(Status { account: None }).ok()?;
+        if status.accounts_image.as_deref() != Some(booted.as_str()) {
             return None;
         }
         match status.image_change {
@@ -3842,7 +3859,7 @@ impl App {
             .record("ready", started.elapsed().as_secs_f64());
         if missing {
             self.warnings.push(format!(
-                "the new image has no tilo-vmd, so VM {} cannot host slots; tilo-vm vm rollback-image",
+                "the new image has no tilo-vmd, so VM {} cannot host accounts; tilo-vm vm rollback-image",
                 vm.name
             ));
         } else if daemon.is_none() {
@@ -3925,13 +3942,13 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
-    fn slot(&mut self, command: SlotCommand) -> Result<Outcome, CliError> {
-        if let SlotCommand::Apps(SlotAppsCommand::Install { set, .. }) = &command {
+    fn account(&mut self, command: AccountCommand) -> Result<Outcome, CliError> {
+        if let AccountCommand::Apps(AccountAppsCommand::Install { set, .. }) = &command {
             app_set(set)?;
         }
         let vm = self.resolve_vm(None)?;
         match command {
-            SlotCommand::Create {
+            AccountCommand::Create {
                 name,
                 headless: _,
                 headful,
@@ -3939,11 +3956,11 @@ impl App {
                 identity,
                 ..
             } => {
-                let name = self.slot_name(name)?;
+                let name = self.account_name(name)?;
                 let kind = if headful {
-                    SlotKind::Headful
+                    AccountKind::Headful
                 } else {
-                    SlotKind::Headless
+                    AccountKind::Headless
                 };
                 let owner = self
                     .worktree
@@ -3951,77 +3968,82 @@ impl App {
                     .map(Worktree::owner)
                     .unwrap_or_default();
                 let mut remote = self.connect(&vm)?;
-                let result = remote.call(SlotCreate {
+                let result = remote.call(AccountCreate {
                     name: name.clone(),
                     kind,
                     owner,
                     outputs,
-                    identity: identity == Some(crate::cli::SlotIdentity::Throwaway),
-                    device_identity: identity == Some(crate::cli::SlotIdentity::Device),
+                    identity: identity == Some(crate::cli::AccountIdentity::Throwaway),
+                    device_identity: identity == Some(crate::cli::AccountIdentity::Device),
                 })?;
                 if identity.is_some() && result.identity.is_none() {
                     return Err(CliError::Unsupported {
-                        what: "slot create --identity by this VM's tilo-vmd".into(),
+                        what: "account create --identity by this VM's tilo-vmd".into(),
                         alternative:
-                            "tilo-vm vm upgrade --from local, or tilo-vm swap vmd --slot vm".into(),
+                            "tilo-vm vm upgrade --from local, or tilo-vm swap vmd --account vm"
+                                .into(),
                     });
                 }
-                let text = slot_created_text(&name, kind, &result);
-                self.receipt.set("slot", &name);
+                let text = account_created_text(&name, kind, &result);
+                self.receipt.set("account", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
                     "tilo-vm swap <component>",
                     "tilo-vm shot",
                     "tilo-vm control actions list",
                 ]))
             }
-            SlotCommand::List => {
-                let slots = self.connect(&vm)?.call(SlotList {})?;
-                let text = if slots.is_empty() {
-                    "no slots yet".to_owned()
+            AccountCommand::List => {
+                let accounts = self.connect(&vm)?.call(AccountList {})?;
+                let text = if accounts.is_empty() {
+                    "no accounts yet".to_owned()
                 } else {
-                    slots.iter().map(slot_line).collect::<Vec<_>>().join("\n")
+                    accounts
+                        .iter()
+                        .map(account_line)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 };
-                let mut outcome = Outcome::new(text, json!(slots));
-                if slots.is_empty() {
-                    outcome = outcome.next(&["tilo-vm slot create --headless"]);
+                let mut outcome = Outcome::new(text, json!(accounts));
+                if accounts.is_empty() {
+                    outcome = outcome.next(&["tilo-vm account create --headless"]);
                 }
                 Ok(outcome)
             }
-            SlotCommand::Show { name, .. } => {
-                let name = self.slot_name(name)?;
+            AccountCommand::Show { name, .. } => {
+                let name = self.account_name(name)?;
                 let mut remote = self.connect(&vm)?;
-                let shown = remote.call(SlotShow { name })?;
+                let shown = remote.call(AccountShow { name })?;
                 let layers = remote.call(LayerList {})?;
-                Ok(installed_slot_outcome(&shown, &layers))
+                Ok(installed_account_outcome(&shown, &layers))
             }
-            SlotCommand::Exec {
+            AccountCommand::Exec {
                 name,
                 timeout,
                 command,
                 ..
-            } => self.slot_exec(&vm, name, timeout, &command),
-            SlotCommand::Apps(SlotAppsCommand::Install {
+            } => self.account_exec(&vm, name, timeout, &command),
+            AccountCommand::Apps(AccountAppsCommand::Install {
                 name, set, timeout, ..
             }) => self.apps_install(&vm, name, &set, timeout),
-            SlotCommand::Apps(SlotAppsCommand::List) => Ok(apps_list()),
-            SlotCommand::Restart { name, .. } => {
-                let name = self.slot_name(name)?;
+            AccountCommand::Apps(AccountAppsCommand::List) => Ok(apps_list()),
+            AccountCommand::Restart { name, .. } => {
+                let name = self.account_name(name)?;
                 let mut remote = self.connect(&vm)?;
                 let result = self
                     .receipt
-                    .phase("apply", || remote.call(SlotRestart { name }))?;
+                    .phase("apply", || remote.call(AccountRestart { name }))?;
                 Ok(Outcome::new(describe_apply(&result), json!(result))
                     .next(&["tilo-vm logs", "tilo-vm shot"]))
             }
-            SlotCommand::Rm { name, .. } => {
-                let name = self.slot_name(name)?;
-                let result = self.connect(&vm)?.call(SlotRm { name: name.clone() })?;
+            AccountCommand::Rm { name, .. } => {
+                let name = self.account_name(name)?;
+                let result = self.connect(&vm)?.call(AccountRm { name: name.clone() })?;
                 let text = if result.removed {
                     format!(
-                        "slot {name} removed: session stopped, user and generations deleted; its layers go at the next gc"
+                        "account {name} removed: session stopped, user and generations deleted; its layers go at the next gc"
                     )
                 } else {
-                    format!("slot {name} does not exist; nothing to do")
+                    format!("account {name} does not exist; nothing to do")
                 };
                 Ok(Outcome::new(text, json!(result)).next(&["tilo-vm gc --dry-run"]))
             }
@@ -4036,8 +4058,10 @@ impl App {
         timeout: u64,
     ) -> Result<Outcome, CliError> {
         let apps = app_set(set)?;
-        let slot = self.slot_name(name)?;
-        self.connect(vm)?.call(SlotShow { name: slot.clone() })?;
+        let account = self.account_name(name)?;
+        self.connect(vm)?.call(AccountShow {
+            name: account.clone(),
+        })?;
         let packages: Vec<String> = apps.apps.iter().map(|a| a.package.clone()).collect();
         let endpoint = self.endpoint(vm)?;
         let mut words = vmbuild::daemon_command(vm.entry.daemon.as_deref(), "install-packages");
@@ -4054,12 +4078,14 @@ impl App {
             });
         }
         let mut remote = self.connect(vm)?;
-        let restarted = self
-            .receipt
-            .phase("apply", || remote.call(SlotRestart { name: slot.clone() }))?;
-        self.receipt.set("slot", &slot);
+        let restarted = self.receipt.phase("apply", || {
+            remote.call(AccountRestart {
+                name: account.clone(),
+            })
+        })?;
+        self.receipt.set("account", &account);
         let mut text = vec![format!(
-            "installed the {set} apps into VM {} (a transient /usr overlay: gone at the next VM reboot) and restarted slot {slot}'s session",
+            "installed the {set} apps into VM {} (a transient /usr overlay: gone at the next VM reboot) and restarted account {account}'s session",
             vm.name
         )];
         text.extend(
@@ -4073,7 +4099,7 @@ impl App {
         );
         Ok(Outcome::new(
             text.join("\n"),
-            json!({ "vm": vm.name, "slot": slot, "set": set, "packages": packages, "restart": restarted }),
+            json!({ "vm": vm.name, "account": account, "set": set, "packages": packages, "restart": restarted }),
         )
         .next(&[
             "tilo-vm input key super",
@@ -4083,25 +4109,25 @@ impl App {
         ]))
     }
 
-    fn slot_exec(
+    fn account_exec(
         &mut self,
         vm: &Resolved,
         name: Option<String>,
         timeout: u64,
         command: &[String],
     ) -> Result<Outcome, CliError> {
-        let slot = self.slot_name(name)?;
+        let account = self.account_name(name)?;
         let endpoint = self.endpoint(vm)?;
         let line = remote::ssh_command(
             &endpoint,
             vm.entry.key.as_deref(),
-            &exec_words(vm.entry.daemon.as_deref(), &slot, timeout, command),
+            &exec_words(vm.entry.daemon.as_deref(), &account, timeout, command),
             false,
         );
         let ok = self.runner.interactive(&line)?;
         let mut outcome = Outcome::new(
             "",
-            json!({ "vm": vm.name, "slot": slot, "command": command, "ok": ok }),
+            json!({ "vm": vm.name, "account": account, "command": command, "ok": ok }),
         );
         outcome.failed = !ok;
         Ok(outcome)
@@ -4175,7 +4201,7 @@ impl App {
     )]
     fn swap(
         &mut self,
-        slot: Option<String>,
+        account: Option<String>,
         component: String,
         from: &str,
         builder: Option<Builder>,
@@ -4184,7 +4210,7 @@ impl App {
         kernel: KernelFlags,
     ) -> Result<Outcome, CliError> {
         validate_frame_cpu_component(&component, frame_cpu_trace)?;
-        // Boot components first: the kernel swaps VM-wide (its slot is `vm`
+        // Boot components first: the kernel swaps VM-wide (its account is `vm`
         // unless named), the others go to their scenario.
         if !component.starts_with("app:")
             && let Some(entry) = self
@@ -4195,27 +4221,27 @@ impl App {
                 .cloned()
         {
             let other_flags = builder.is_some() || profile.is_some();
-            return self.swap_boot(slot.as_deref(), &entry, from, other_flags, kernel);
+            return self.swap_boot(account.as_deref(), &entry, from, other_flags, kernel);
         }
         reject_kernel_flags(&component, &kernel)?;
-        let slot = self.slot_name(slot)?;
-        self.receipt.set("slot", &slot);
+        let account = self.account_name(account)?;
+        self.receipt.set("account", &account);
         self.receipt.set("component", &component);
         if component == "userspace" {
-            return self.swap_userspace(&slot, from, builder, profile);
+            return self.swap_userspace(&account, from, builder, profile);
         }
         self.record_swap_profile(profile, &component, from)?;
         if let Some(app) = component.strip_prefix("app:") {
-            return self.swap_app(&slot, app, from, builder);
+            return self.swap_app(&account, app, from, builder);
         }
         let manifest = self.manifest()?;
         let entry = manifest.as_ref().and_then(|m| m.get(&component)).cloned();
         if let Some(c) = &entry
-            && (slot == VM_SLOT) != (c.info.scope == Scope::Vm)
+            && (account == VM_ACCOUNT) != (c.info.scope == Scope::Vm)
         {
             return Err(CliError::ScopeMismatch {
                 component,
-                slot,
+                account,
                 scope: c.info.scope.as_str().into(),
             });
         }
@@ -4275,7 +4301,7 @@ impl App {
             }
         };
         if let Some(inputs) = &cohort_inputs {
-            self.cohort_prerequisites(&slot, &component, inputs, apps_build)?;
+            self.cohort_prerequisites(&account, &component, inputs, apps_build)?;
         }
         self.receipt.set("layer", &layer);
         remote = self.connect_with_wake(&vm, true)?;
@@ -4285,7 +4311,7 @@ impl App {
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
-                slot: slot.clone(),
+                account: account.clone(),
                 component: component.clone(),
                 layer: layer.clone(),
                 info,
@@ -4294,7 +4320,7 @@ impl App {
         })?;
         if result.changed && result.policy == Policy::SessionRestart {
             self.receipt
-                .phase("session-ready", || wait_for_session(&mut remote, &slot));
+                .phase("session-ready", || wait_for_session(&mut remote, &account));
         }
         self.warnings.extend(result.warnings.iter().cloned());
         self.warnings.extend(self.receipt.slow());
@@ -4367,7 +4393,7 @@ impl App {
 
     fn cohort_prerequisites(
         &mut self,
-        slot: &str,
+        account: &str,
         component: &str,
         inputs: &crate::source_inputs::Snapshot,
         apps_build: Option<AppsRuntimeBuild>,
@@ -4399,7 +4425,7 @@ impl App {
         for component in ["launcher", "install"] {
             inputs.unchanged(&root)?;
             let outcome = self.swap(
-                Some(slot.into()),
+                Some(account.into()),
                 component.into(),
                 "worktree",
                 Some(prerequisite_builder),
@@ -4417,7 +4443,7 @@ impl App {
 
     fn swap_boot(
         &mut self,
-        slot: Option<&str>,
+        account: Option<&str>,
         entry: &Component,
         from: &str,
         other_flags: bool,
@@ -4438,7 +4464,7 @@ impl App {
                 ),
             });
         }
-        self.swap_kernel(slot, entry, from, kernel)
+        self.swap_kernel(account, entry, from, kernel)
     }
 
     fn build_worktree_layer(
@@ -4481,7 +4507,7 @@ impl App {
     }
 
     fn check_vm_space(&self, remote: &mut Remote, vm: &Resolved) -> Result<(), CliError> {
-        let status = remote.call(Status { slot: None })?;
+        let status = remote.call(Status { account: None })?;
         let floor = self.registry()?.min_free_bytes();
         match status.storage.free_bytes {
             Some(free) if free < floor => Err(CliError::LowDisk {
@@ -4701,7 +4727,7 @@ impl App {
 
     fn swap_app(
         &mut self,
-        slot: &str,
+        account: &str,
         dir: &str,
         from: &str,
         builder: Option<Builder>,
@@ -4758,7 +4784,7 @@ impl App {
                     worktree: id,
                     target: BuildTarget::App {
                         dir: dir.to_owned(),
-                        slot: slot.to_owned(),
+                        account: account.to_owned(),
                     },
                     provenance: build::source_provenance(&worktree, &format!("app:{dir}"), "vm"),
                     owner: worktree.owner(),
@@ -4775,12 +4801,14 @@ impl App {
                     }
                 }
             }
-            Builder::Host => self.install_app_from_host(&mut remote, &vm, &worktree, slot, dir)?,
+            Builder::Host => {
+                self.install_app_from_host(&mut remote, &vm, &worktree, account, dir)?
+            }
             Builder::Remote => {
                 let command = configured
                     .filter(|line| !line.is_empty())
                     .ok_or_else(|| self.no_remote_builder(&arch))?;
-                self.install_app_from_remote(&mut remote, &vm, slot, dir, &command)?
+                self.install_app_from_remote(&mut remote, &vm, account, dir, &command)?
             }
         };
         let what = match (&result.id, &result.version) {
@@ -4789,7 +4817,7 @@ impl App {
             _ => format!("apps/{dir}"),
         };
         let text = format!(
-            "installed {what} (self-signed) into slot {slot}'s app store; nothing restarted: it is live the next time the app launches\n  app installs are not generations: tilo-vm rollback does not undo them"
+            "installed {what} (self-signed) into account {account}'s app store; nothing restarted: it is live the next time the app launches\n  app installs are not generations: tilo-vm rollback does not undo them"
         );
         Ok(Outcome::new(text, json!(result)).next(&[
             "tilo-vm control actions list",
@@ -4803,7 +4831,7 @@ impl App {
         remote: &mut Remote,
         vm: &Resolved,
         worktree: &Worktree,
-        slot: &str,
+        account: &str,
         dir: &str,
     ) -> Result<AppInstallResult, CliError> {
         self.runner.cwd = Some(worktree.root.clone());
@@ -4813,7 +4841,7 @@ impl App {
         let package = build::app_package(&target, dir, &tapp);
         self.install_host_app_package(
             remote,
-            slot,
+            account,
             |runner| {
                 if !runner.interactive(&package)? {
                     return Err(CliError::CommandFailed {
@@ -4831,7 +4859,7 @@ impl App {
     fn install_host_app_package(
         &mut self,
         remote: &mut Remote,
-        slot: &str,
+        account: &str,
         build: impl FnOnce(&mut SystemRunner) -> Result<PathBuf, CliError>,
         reconnect: impl FnOnce(&mut Self) -> Result<Remote, CliError>,
     ) -> Result<AppInstallResult, CliError> {
@@ -4849,7 +4877,7 @@ impl App {
             })?;
         self.receipt.phase("install", || {
             remote.call(AppInstall {
-                slot: slot.to_owned(),
+                account: account.to_owned(),
                 source: LayerSource::Upload(upload),
             })
         })
@@ -4978,50 +5006,52 @@ impl App {
     fn seat(&mut self, command: SeatCommand) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
         match command {
-            SeatCommand::Claim { slot, steal, .. } => {
-                let slot = self.slot_name(slot)?;
+            SeatCommand::Claim { account, steal, .. } => {
+                let account = self.account_name(account)?;
                 let owner = self
                     .worktree
                     .as_ref()
                     .map(Worktree::owner)
                     .unwrap_or_default();
                 let result = self.connect(&vm)?.call(SeatClaim {
-                    slot: slot.clone(),
+                    account: account.clone(),
                     owner,
                     steal,
                 })?;
                 let text = if result.changed {
                     format!(
-                        "slot {slot} now runs on seat0 (the hypervisor window); greetd is stopped; session restarted"
+                        "account {account} now runs on seat0 (the hypervisor window); greetd is stopped; session restarted"
                     )
                 } else {
-                    format!("slot {slot} already holds seat0; nothing to do")
+                    format!("account {account} already holds seat0; nothing to do")
                 };
                 Ok(Outcome::new(text, json!(result))
                     .next(&["tilo-vm vm shot", "tilo-vm seat release"]))
             }
-            SeatCommand::Release { slot, .. } => {
-                let slot = self.slot_name(slot)?;
-                let result = self
-                    .connect(&vm)?
-                    .call(SeatRelease { slot: slot.clone() })?;
+            SeatCommand::Release { account, .. } => {
+                let account = self.account_name(account)?;
+                let result = self.connect(&vm)?.call(SeatRelease {
+                    account: account.clone(),
+                })?;
                 let text = if result.changed {
                     format!(
-                        "seat0 returned to greetd; slot {slot} restarted on {}",
+                        "seat0 returned to greetd; account {account} restarted on {}",
                         result.seat
                     )
                 } else {
-                    format!("slot {slot} does not hold seat0; nothing to do")
+                    format!("account {account} does not hold seat0; nothing to do")
                 };
                 Ok(Outcome::new(text, json!(result)))
             }
         }
     }
 
-    fn shot(&mut self, slot: Option<String>, output: &Path) -> Result<Outcome, CliError> {
-        let slot = self.slot_name(slot)?;
+    fn shot(&mut self, account: Option<String>, output: &Path) -> Result<Outcome, CliError> {
+        let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
-        let result = self.connect(&vm)?.call(Shot { slot: slot.clone() })?;
+        let result = self.connect(&vm)?.call(Shot {
+            account: account.clone(),
+        })?;
         let png = STANDARD
             .decode(result.png)
             .map_err(|e| CliError::CommandFailed {
@@ -5035,16 +5065,16 @@ impl App {
             .map_err(CliError::io(format!("write {}", output.display())))?;
         Ok(Outcome::new(
             format!(
-                "saved {} ({} bytes) from slot {slot}",
+                "saved {} ({} bytes) from account {account}",
                 output.display(),
                 png.len()
             ),
-            json!({ "slot": slot, "path": output, "bytes": png.len() }),
+            json!({ "account": account, "path": output, "bytes": png.len() }),
         ))
     }
 
-    fn control(&mut self, slot: Option<String>, args: &[String]) -> Result<Outcome, CliError> {
-        let slot = self.slot_name(slot)?;
+    fn control(&mut self, account: Option<String>, args: &[String]) -> Result<Outcome, CliError> {
+        let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
         let private_args = if args.iter().any(|arg| arg == "--args-stdin") {
             if !matches!(args, [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
@@ -5063,7 +5093,7 @@ impl App {
             None
         };
         let result = self.connect(&vm)?.call(Control {
-            slot,
+            account,
             args: args.to_vec(),
             private_args,
         })?;
@@ -5085,14 +5115,14 @@ impl App {
             FlightCommand::App {
                 desktop_id,
                 app_id,
-                slot,
+                account,
                 type_text,
                 maximum_launch_ms,
                 maximum_control_ms,
                 timeout_seconds,
                 ..
             } => self.app_flight(
-                slot,
+                account,
                 &desktop_id,
                 &app_id,
                 &type_text,
@@ -5111,7 +5141,7 @@ impl App {
     )]
     fn app_flight(
         &mut self,
-        slot: Option<String>,
+        account: Option<String>,
         desktop_id: &str,
         app_id: &str,
         type_text: &str,
@@ -5122,20 +5152,20 @@ impl App {
             maximum_control,
             timeout,
         } = budget;
-        let slot = self.slot_name(slot)?;
+        let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| flight_failure("flight timeout is too large"))?;
         let mut worst_control = Duration::ZERO;
-        let baseline = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+        let baseline = control_json(&mut remote, &account, windows_args(), &mut worst_control)?;
         let baseline_ids = window_ids(&baseline);
 
         let launched_at = Instant::now();
         control_json(
             &mut remote,
-            &slot,
+            &account,
             &[
                 "actions".into(),
                 "invoke".into(),
@@ -5147,7 +5177,7 @@ impl App {
 
         let (surface_id, initial_frame_seq) = loop {
             ensure_before(deadline, "app did not present before the flight deadline")?;
-            let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+            let value = control_json(&mut remote, &account, windows_args(), &mut worst_control)?;
             if let Some(frame) = matching_presented_window(&value, app_id, &baseline_ids) {
                 break (frame.surface_id, frame.frame_seq);
             }
@@ -5162,13 +5192,13 @@ impl App {
             )));
         }
 
-        let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+        let value = control_json(&mut remote, &account, windows_args(), &mut worst_control)?;
         let rect = matching_window(&value, surface_id)
             .and_then(|frame| frame.rect)
             .ok_or_else(|| flight_failure(format!("surface {surface_id} has no focusable rect")))?;
         control_json(
             &mut remote,
-            &slot,
+            &account,
             &[
                 "click-at".into(),
                 rect.center_x().to_string(),
@@ -5178,7 +5208,7 @@ impl App {
         )?;
         control_json(
             &mut remote,
-            &slot,
+            &account,
             &["type".into(), type_text.into()],
             &mut worst_control,
         )?;
@@ -5188,7 +5218,7 @@ impl App {
                 deadline,
                 "focused app did not present a frame after injected input",
             )?;
-            let value = control_json(&mut remote, &slot, windows_args(), &mut worst_control)?;
+            let value = control_json(&mut remote, &account, windows_args(), &mut worst_control)?;
             if let Some(frame) = matching_window(&value, surface_id)
                 && frame.frame_seq > initial_frame_seq
             {
@@ -5205,7 +5235,7 @@ impl App {
         }
 
         let data = json!({
-            "slot": slot,
+            "account": account,
             "desktop_id": desktop_id,
             "app_id": app_id,
             "surface_id": surface_id,
@@ -5226,12 +5256,16 @@ impl App {
         .next(&["tilo-vm shot", "tilo-vm logs"]))
     }
 
-    fn input(&mut self, slot: Option<String>, command: InputCommand) -> Result<Outcome, CliError> {
+    fn input(
+        &mut self,
+        account: Option<String>,
+        command: InputCommand,
+    ) -> Result<Outcome, CliError> {
         let actions = input_actions(command)?;
-        let slot = self.slot_name(slot)?;
+        let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
         let result = self.connect(&vm)?.call(Input {
-            slot: slot.clone(),
+            account: account.clone(),
             actions: actions.clone(),
         })?;
         let what = actions
@@ -5241,7 +5275,7 @@ impl App {
             .join(", ");
         Ok(Outcome::new(
             format!(
-                "{what} on slot {slot} (seat {}, {} input events through its uinput devices)",
+                "{what} on account {account} (seat {}, {} input events through its uinput devices)",
                 result.seat, result.events
             ),
             json!(result),
@@ -5269,7 +5303,7 @@ impl App {
         })?;
         let verb = if dry_run { "would remove" } else { "removed" };
         let mut text = format!(
-            "{verb} {} layers ({}) and {} generations; keeping the current and newest {keep} per slot",
+            "{verb} {} layers ({}) and {} generations; keeping the current and newest {keep} per account",
             result.removed_layers.len(),
             human_bytes(result.freed_bytes),
             result.removed_generations.len()
@@ -6182,15 +6216,15 @@ fn apps_list() -> Outcome {
         })
         .collect();
     let first = sets.first().map_or("verification", |s| s.name.as_str());
-    Outcome::new(text, json!(json)).next(&[&format!("tilo-vm slot apps install --set {first}")])
+    Outcome::new(text, json!(json)).next(&[&format!("tilo-vm account apps install --set {first}")])
 }
 
-fn slot_created_text(
+fn account_created_text(
     name: &str,
-    kind: SlotKind,
-    result: &tilo_vm_protocol::SlotCreateResult,
+    kind: AccountKind,
+    result: &tilo_vm_protocol::AccountCreateResult,
 ) -> String {
-    let user = result.slot.user.clone().unwrap_or_default();
+    let user = result.account.user.clone().unwrap_or_default();
     let set_outputs = result.actions.iter().find_map(|action| match action {
         tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
         _ => None,
@@ -6208,15 +6242,15 @@ fn slot_created_text(
         .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
     let text = if result.created {
         format!(
-            "slot {name} created ({}); session started as {user} on the base image",
+            "account {name} created ({}); session started as {user} on the base image",
             kind.as_str()
         )
     } else if started {
-        format!("slot {name} already existed; its session was not running and has been started")
+        format!("account {name} already existed; its session was not running and has been started")
     } else if set_outputs.is_some() {
-        format!("slot {name} already exists and its session is running")
+        format!("account {name} already exists and its session is running")
     } else {
-        format!("slot {name} already exists and its session is running; nothing to do")
+        format!("account {name} already exists and its session is running; nothing to do")
     };
     let text = match &result.identity {
         Some(identity) if !identity.throwaway => format!(
@@ -6245,7 +6279,7 @@ fn slot_created_text(
     }
 }
 
-fn slot_line(info: &SlotInfo) -> String {
+fn account_line(info: &AccountInfo) -> String {
     let seat = info
         .seat
         .as_deref()
@@ -6263,7 +6297,7 @@ fn slot_line(info: &SlotInfo) -> String {
         )
     };
     format!(
-        "slot: {} ({}) generation {}, session {}{seat}{outputs}{owner}",
+        "account: {} ({}) generation {}, session {}{seat}{outputs}{owner}",
         info.name,
         info.kind.as_str(),
         info.generation,
@@ -6271,40 +6305,43 @@ fn slot_line(info: &SlotInfo) -> String {
     )
 }
 
-fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
-    if name == tilo_vm_protocol::DEVICE_SLOT {
+fn missing_account(name: &str, accounts: &[AccountInfo]) -> (Vec<String>, Vec<String>) {
+    if name == tilo_vm_protocol::DEVICE_ACCOUNT {
         return (
             vec![format!(
-                "slot: {name} (none here: no board session, and nobody is logged in to Tilo on the display)"
+                "account: {name} (none here: no board session, and nobody is logged in to Tilo on the display)"
             )],
             vec![
-                "log in at the machine, then: tilo-vm status --slot device".into(),
+                "log in at the machine, then: tilo-vm status --account device".into(),
                 "tilo-vm guide devices".into(),
             ],
         );
     }
-    let others: Vec<&SlotInfo> = slots.iter().filter(|s| s.kind != SlotKind::Vm).collect();
+    let others: Vec<&AccountInfo> = accounts
+        .iter()
+        .filter(|s| s.kind != AccountKind::Vm)
+        .collect();
     if others.is_empty() {
         return (
             vec![format!(
-                "slot: {name} (not created yet; new here? tilo-vm guide quickstart)"
+                "account: {name} (not created yet; new here? tilo-vm guide quickstart)"
             )],
             vec![
-                "tilo-vm slot create --headless".into(),
+                "tilo-vm account create --headless".into(),
                 "tilo-vm guide quickstart".into(),
             ],
         );
     }
     let mut lines = vec![format!(
-        "slot: {name} does not exist; the VM has these (use one with --slot <name>, or set TILO_VM_SLOT):"
+        "account: {name} does not exist; the VM has these (use one with --account <name>, or set TILO_VM_ACCOUNT):"
     )];
-    lines.extend(others.iter().map(|s| format!("  {}", slot_line(s))));
+    lines.extend(others.iter().map(|s| format!("  {}", account_line(s))));
     let mut next: Vec<String> = others
         .iter()
         .take(3)
-        .map(|s| format!("tilo-vm status --slot {}", s.name))
+        .map(|s| format!("tilo-vm status --account {}", s.name))
         .collect();
-    next.push("tilo-vm slot list".into());
+    next.push("tilo-vm account list".into());
     (lines, next)
 }
 
@@ -6335,55 +6372,57 @@ pub fn scenario_driver(entry: &Component) -> String {
     }
 }
 
-fn named_slot(command: &Command) -> Option<String> {
+fn named_account(command: &Command) -> Option<String> {
     match command {
-        Command::SwapArtifact(request) => request.slot.clone(),
-        Command::Swap { slot, .. }
-        | Command::Input { slot, .. }
-        | Command::Control { slot, .. }
-        | Command::Flight(FlightCommand::App { slot, .. })
-        | Command::Rollback { slot, .. }
-        | Command::Logs { slot, .. }
-        | Command::Shot { slot, .. }
-        | Command::Status { slot }
-        | Command::Seat(SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. })
-        | Command::Slot(
-            SlotCommand::Create { name: slot, .. }
-            | SlotCommand::Restart { name: slot, .. }
-            | SlotCommand::Rm { name: slot, .. }
-            | SlotCommand::Show { name: slot, .. }
-            | SlotCommand::Exec { name: slot, .. }
-            | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
-        ) => slot.clone(),
+        Command::SwapArtifact(request) => request.account.clone(),
+        Command::Swap { account, .. }
+        | Command::Input { account, .. }
+        | Command::Control { account, .. }
+        | Command::Flight(FlightCommand::App { account, .. })
+        | Command::Rollback { account, .. }
+        | Command::Logs { account, .. }
+        | Command::Shot { account, .. }
+        | Command::Status { account }
+        | Command::Seat(
+            SeatCommand::Claim { account, .. } | SeatCommand::Release { account, .. },
+        )
+        | Command::Account(
+            AccountCommand::Create { name: account, .. }
+            | AccountCommand::Restart { name: account, .. }
+            | AccountCommand::Rm { name: account, .. }
+            | AccountCommand::Show { name: account, .. }
+            | AccountCommand::Exec { name: account, .. }
+            | AccountCommand::Apps(AccountAppsCommand::Install { name: account, .. }),
+        ) => account.clone(),
         _ => None,
     }
 }
 
-pub fn with_slot(command: &str, slot: &str) -> String {
+pub fn with_account(command: &str, account: &str) -> String {
     let words: Vec<&str> = command.split(' ').collect();
-    if words.first() != Some(&"tilo-vm") || command.contains("--slot") {
+    if words.first() != Some(&"tilo-vm") || command.contains("--account") {
         return command.to_owned();
     }
     let at = match (words.get(1).copied(), words.get(2).copied()) {
         (Some("swap" | "shot" | "control" | "logs" | "rollback" | "input" | "status"), _) => 2,
-        (Some("slot"), Some("create" | "restart" | "rm" | "show" | "exec"))
+        (Some("account"), Some("create" | "restart" | "rm" | "show" | "exec"))
         | (Some("seat"), Some("claim" | "release")) => 3,
         _ => return command.to_owned(),
     };
     let Some((head, tail)) = words.split_at_checked(at) else {
         return command.to_owned();
     };
-    let flag = format!("--slot {slot}");
+    let flag = format!("--account {account}");
     let mut out: Vec<&str> = head.to_vec();
     out.push(&flag);
     out.extend_from_slice(tail);
     out.join(" ")
 }
 
-pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliError> {
+pub fn forward_target(account: &str, info: Option<&AccountInfo>) -> Result<u64, CliError> {
     let info = info.ok_or_else(|| CliError::Unsupported {
-        what: format!("rolling slot {slot} forward: the VM has no such slot"),
-        alternative: "tilo-vm slot list".into(),
+        what: format!("rolling account {account} forward: the VM has no such account"),
+        alternative: "tilo-vm account list".into(),
     })?;
     info.generations
         .iter()
@@ -6391,11 +6430,11 @@ pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliErr
         .find(|n| *n > info.generation)
         .ok_or_else(|| CliError::Unsupported {
             what: format!(
-                "rolling slot {slot} forward: generation {} is its newest",
+                "rolling account {account} forward: generation {} is its newest",
                 info.generation
             ),
             alternative: format!(
-                "pick one by number: tilo-vm rollback --slot {slot} --to <n>   (tilo-vm slot show --slot {slot} lists them)"
+                "pick one by number: tilo-vm rollback --account {account} --to <n>   (tilo-vm account show --account {account} lists them)"
             ),
         })
 }
@@ -6407,11 +6446,16 @@ struct FlightBudget {
     timeout: Duration,
 }
 
-fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]) -> Vec<String> {
+fn exec_words(
+    daemon: Option<&str>,
+    account: &str,
+    timeout: u64,
+    command: &[String],
+) -> Vec<String> {
     let mut words = vmbuild::daemon_command(daemon, "exec");
     words.extend([
-        "--slot".to_owned(),
-        vmbuild::sh_quote(slot),
+        "--account".to_owned(),
+        vmbuild::sh_quote(account),
         "--timeout".to_owned(),
         timeout.to_string(),
         "--".to_owned(),
@@ -6444,15 +6488,15 @@ fn frame_cpu_info(
 }
 
 #[derive(serde::Serialize)]
-struct InstalledSlotReceipt<'a> {
+struct InstalledAccountReceipt<'a> {
     #[serde(flatten)]
-    shown: &'a SlotShowResult,
+    shown: &'a AccountShowResult,
     installed_builds: BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>>,
     identity_scope: &'static str,
 }
 
-fn installed_slot_outcome(
-    shown: &SlotShowResult,
+fn installed_account_outcome(
+    shown: &AccountShowResult,
     layers: &[tilo_vm_protocol::LayerInfo],
 ) -> Outcome {
     let installed_builds = installed_builds(shown, layers);
@@ -6474,21 +6518,21 @@ fn installed_slot_outcome(
         );
         let _ = write!(text, "\n    {component}: {receipt}");
     }
-    let data = json!(InstalledSlotReceipt {
+    let data = json!(InstalledAccountReceipt {
         shown,
         installed_builds,
         identity_scope: "installed_layer_not_running_process",
     });
-    Outcome::new(text, data).next(&["tilo-vm --json slot show"])
+    Outcome::new(text, data).next(&["tilo-vm --json account show"])
 }
 
 /// Build receipts describe immutable installed layers, never process memory.
 fn installed_builds<'a>(
-    shown: &SlotShowResult,
+    shown: &AccountShowResult,
     layers: &'a [tilo_vm_protocol::LayerInfo],
 ) -> BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>> {
     shown
-        .slot
+        .account
         .components
         .iter()
         .map(|(component, hash)| {
@@ -6500,10 +6544,10 @@ fn installed_builds<'a>(
         .collect()
 }
 
-fn describe_show(shown: &SlotShowResult) -> String {
-    let info = &shown.slot;
+fn describe_show(shown: &AccountShowResult) -> String {
+    let info = &shown.account;
     let mut lines = vec![
-        slot_line(info),
+        account_line(info),
         format!(
             "  generations: {} (current {}; tilo-vm rollback --to <n> switches to any of them)",
             info.generations
@@ -6515,7 +6559,7 @@ fn describe_show(shown: &SlotShowResult) -> String {
         ),
     ];
     if shown.files.is_empty() {
-        lines.push("  no layers: the slot sees the VM's image as it is".into());
+        lines.push("  no layers: the account sees the VM's image as it is".into());
     }
     let mut current = None;
     for file in &shown.files {
@@ -6782,7 +6826,7 @@ fn unsupported(adapter: &dyn Hypervisor, what: &str) -> CliError {
     if adapter.name() == hypervisor::DEVICE {
         return CliError::Unsupported {
             what: format!("{what} on a device"),
-            alternative: "a device has no hypervisor, only SSH: tilo-vm shot is a slot compositor's own frame (on a laptop, tilo-vm seat claim first puts your slot on its display), tilo-vm logs its journal, tilo-vm vm ssh a shell, tilo-vm vm restart a reboot (tilo-vm guide devices)".into(),
+            alternative: "a device has no hypervisor, only SSH: tilo-vm shot is an account compositor's own frame (on a laptop, tilo-vm seat claim first puts your account on its display), tilo-vm logs its journal, tilo-vm vm ssh a shell, tilo-vm vm restart a reboot (tilo-vm guide devices)".into(),
         };
     }
     let caps = adapter.capabilities();
@@ -7020,15 +7064,15 @@ fn ensure_parent(path: &Path) -> Result<(), CliError> {
     }
 }
 
-fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
+fn wait_for_session(remote: &mut Remote, account: &str) -> bool {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(30) {
         let active = remote
             .call(Status {
-                slot: Some(slot.to_owned()),
+                account: Some(account.to_owned()),
             })
             .ok()
-            .and_then(|s| s.slots.into_iter().next())
+            .and_then(|s| s.accounts.into_iter().next())
             .is_some_and(|s| s.session == "active");
         if active {
             return true;
@@ -7206,7 +7250,7 @@ mod tests {
                     added
                         .next
                         .iter()
-                        .any(|n| n.starts_with("tilo-vm swap --slot device tilo-session")),
+                        .any(|n| n.starts_with("tilo-vm swap --account device tilo-session")),
                     "{:?}",
                     added.next
                 );
@@ -7576,7 +7620,7 @@ mod tests {
 
     fn result(policy: Policy, actions: Vec<Action>, changed: bool) -> ApplyResult {
         ApplyResult {
-            slot: "a".into(),
+            account: "a".into(),
             generation: 4,
             changed,
             policy,
@@ -7660,7 +7704,7 @@ mod tests {
             {
                 assert_eq!(
                     describe_apply(&result(Policy::SessionRestart, vec![], true)),
-                    "generation 4 applied to slot a; session restarted (logout, user manager restart, login)"
+                    "generation 4 applied to account a; session restarted (logout, user manager restart, login)"
                 );
                 assert!(
                     describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
@@ -7673,10 +7717,10 @@ mod tests {
                     ],
                     true,
                 );
-                login.slot = "device".into();
+                login.account = "device".into();
                 assert_eq!(
                     describe_apply(&login),
-                    "generation 4 applied to slot device; merged into the machine's /usr with \
+                    "generation 4 applied to account device; merged into the machine's /usr with \
                  systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
                 );
                 let vm = describe_apply(&result(
@@ -7696,7 +7740,7 @@ mod tests {
                     true,
                 ));
                 assert!(vm.contains("restarted fs.service;"), "{vm}");
-                assert!(vm.contains("every slot so they see it: b"), "{vm}");
+                assert!(vm.contains("every account so they see it: b"), "{vm}");
             }
 
             {
@@ -8210,7 +8254,7 @@ mod tests {
             .unwrap();
             let mut app = app_with_empty_registry(dir.path());
             let reports = [
-                app.run(Some(Command::Status { slot: None })).unwrap(),
+                app.run(Some(Command::Status { account: None })).unwrap(),
                 app.run(Some(Command::Vm(VmCommand::Status { name: None })))
                     .unwrap(),
             ];
@@ -8275,8 +8319,8 @@ mod tests {
 
             let error = app
                 .run(Some(Command::Logs {
-                    slot: Some("a".into()),
-                    slot_flag: None,
+                    account: Some("a".into()),
+                    account_flag: None,
                     lines: 1,
                 }))
                 .err()
@@ -8304,7 +8348,7 @@ mod tests {
             clippy::too_many_lines,
             reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
         )]
-        fn targets_slots_and_generations_are_resolved_and_shown;
+        fn targets_accounts_and_generations_are_resolved_and_shown;
 
         phase explicit_target_refuses_unknown_and_conflicting_targets;
         {
@@ -8326,37 +8370,37 @@ mod tests {
             ));
         }
 
-        phase slots_are_named_hinted_and_shown_with_their_owners;
+        phase accounts_are_named_hinted_and_shown_with_their_owners;
         {
             {
-                assert_eq!(with_slot("tilo-vm shot", "ux1"), "tilo-vm shot --slot ux1");
+                assert_eq!(with_account("tilo-vm shot", "ux1"), "tilo-vm shot --account ux1");
                 assert_eq!(
-                    with_slot("tilo-vm control state-dump --pretty", "ux1"),
-                    "tilo-vm control --slot ux1 state-dump --pretty"
+                    with_account("tilo-vm control state-dump --pretty", "ux1"),
+                    "tilo-vm control --account ux1 state-dump --pretty"
                 );
                 assert_eq!(
-                    with_slot("tilo-vm swap <component>", "ux1"),
-                    "tilo-vm swap --slot ux1 <component>"
+                    with_account("tilo-vm swap <component>", "ux1"),
+                    "tilo-vm swap --account ux1 <component>"
                 );
                 assert_eq!(
-                    with_slot("tilo-vm seat release", "ux1"),
-                    "tilo-vm seat release --slot ux1"
+                    with_account("tilo-vm seat release", "ux1"),
+                    "tilo-vm seat release --account ux1"
                 );
                 assert_eq!(
-                    with_slot("tilo-vm slot exec -- sha256sum <path>", "ux1"),
-                    "tilo-vm slot exec --slot ux1 -- sha256sum <path>"
+                    with_account("tilo-vm account exec -- sha256sum <path>", "ux1"),
+                    "tilo-vm account exec --account ux1 -- sha256sum <path>"
                 );
                 for untouched in [
                     "tilo-vm vm shot",
                     "tilo-vm gc",
-                    "tilo-vm status --slot other",
-                    "tilo-vm slot list",
+                    "tilo-vm status --account other",
+                    "tilo-vm account list",
                 ] {
-                    assert_eq!(with_slot(untouched, "ux1"), untouched);
+                    assert_eq!(with_account(untouched, "ux1"), untouched);
                 }
                 let swap = Command::Swap {
                     component: "shell".into(),
-                    slot: Some("ux1".into()),
+                    account: Some("ux1".into()),
                     from: "worktree".into(),
                     builder: None,
                     profile: None,
@@ -8365,29 +8409,29 @@ mod tests {
                     cmdline: None,
                     frame_cpu_trace: false,
                 };
-                assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
-                assert_eq!(named_slot(&Command::Doctor), None);
+                assert_eq!(named_account(&swap).as_deref(), Some("ux1"));
+                assert_eq!(named_account(&Command::Doctor), None);
             }
 
             {
-                let (lines, next) = missing_slot("mine", &[slot_info("vm", SlotKind::Vm, 0, &[0])]);
+                let (lines, next) = missing_account("mine", &[account_info("vm", AccountKind::Vm, 0, &[0])]);
                 assert!(lines[0].contains("not created yet"));
-                assert_eq!(next[0], "tilo-vm slot create --headless");
-                let (lines, next) = missing_slot(
+                assert_eq!(next[0], "tilo-vm account create --headless");
+                let (lines, next) = missing_account(
                     "mine",
                     &[
-                        slot_info("vm", SlotKind::Vm, 0, &[0]),
-                        slot_info("ux1", SlotKind::Headless, 2, &[0, 1, 2]),
+                        account_info("vm", AccountKind::Vm, 0, &[0]),
+                        account_info("ux1", AccountKind::Headless, 2, &[0, 1, 2]),
                     ],
                 );
                 assert!(lines[0].contains("does not exist"), "{lines:?}");
                 assert!(lines[1].contains("ux1") && lines[1].contains("owner laptop:ux-pass"));
-                assert!(!next.iter().any(|n| n.contains("slot create")), "{next:?}");
-                assert_eq!(next[0], "tilo-vm status --slot ux1");
+                assert!(!next.iter().any(|n| n.contains("account create")), "{next:?}");
+                assert_eq!(next[0], "tilo-vm status --account ux1");
             }
 
             {
-                let line = slot_line(&slot_info("ux1", SlotKind::Headful, 1, &[0, 1]));
+                let line = account_line(&account_info("ux1", AccountKind::Headful, 1, &[0, 1]));
                 assert!(line.ends_with("owner laptop:ux-pass"), "{line}");
                 assert_eq!(describe_owner(&Owner::default()), None);
             }
@@ -8401,7 +8445,7 @@ mod tests {
                 );
                 assert_eq!(
                     words.join(" "),
-                    "tilo-vmd exec --slot a --timeout 60 -- sh -c 'ls /usr | head'"
+                    "tilo-vmd exec --account a --timeout 60 -- sh -c 'ls /usr | head'"
                 );
                 let sudo = exec_words(Some("sudo -n tilo-vmd rpc"), "a", 5, &["true".into()]);
                 assert_eq!(sudo[..3], ["sudo", "-n", "tilo-vmd"]);
@@ -8409,11 +8453,11 @@ mod tests {
             }
 
             {
-                let shown = SlotShowResult {
+                let shown = AccountShowResult {
                     provenance: std::collections::BTreeMap::new(),
-                    slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
+                    account: account_info("a", AccountKind::Headless, 2, &[0, 1, 2]),
                     files: vec![
-                        tilo_vm_protocol::SlotFile {
+                        tilo_vm_protocol::AccountFile {
                             component: "shell".into(),
                             layer: "ab".repeat(32),
                             path: "/usr/bin/shell".into(),
@@ -8421,7 +8465,7 @@ mod tests {
                             link: None,
                             executable: true,
                         },
-                        tilo_vm_protocol::SlotFile {
+                        tilo_vm_protocol::AccountFile {
                             component: "shell".into(),
                             layer: "ab".repeat(32),
                             path: "/usr/bin/sh-alias".into(),
@@ -8444,11 +8488,11 @@ mod tests {
 
         phase installed_build_receipts_exclude_unselected_layers_and_keep_missing_explicit;
         {
-            let mut slot = slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]);
-            slot.components.insert("shell".into(), "current".into());
-            slot.components.insert("missing".into(), "unknown".into());
-            let shown = SlotShowResult {
-                slot,
+            let mut account = account_info("a", AccountKind::Headless, 2, &[0, 1, 2]);
+            account.components.insert("shell".into(), "current".into());
+            account.components.insert("missing".into(), "unknown".into());
+            let shown = AccountShowResult {
+                account,
                 files: vec![],
                 provenance: BTreeMap::new(),
             };
@@ -8466,7 +8510,7 @@ mod tests {
             assert_eq!(builds.len(), 2);
             assert_eq!(builds["shell"].unwrap().hash, "current");
             assert!(builds["missing"].is_none());
-            let outcome = installed_slot_outcome(&shown, &layers);
+            let outcome = installed_account_outcome(&shown, &layers);
             let receipt = outcome.data;
             assert!(receipt["installed_builds"]["missing"].is_null());
             assert_eq!(
@@ -8477,12 +8521,12 @@ mod tests {
                 receipt["identity_scope"],
                 "installed_layer_not_running_process"
             );
-            assert_eq!(receipt["slot"]["generation"], 2);
+            assert_eq!(receipt["account"]["generation"], 2);
         }
 
-        phase the_worktree_file_can_name_the_default_slot;
+        phase the_worktree_file_can_name_the_default_account;
         {
-            if std::env::var_os("TILO_VM_SLOT").is_some() {
+            if std::env::var_os("TILO_VM_ACCOUNT").is_some() {
                 return;
             }
             let dir = tempfile::tempdir().unwrap();
@@ -8491,24 +8535,24 @@ mod tests {
                 root: dir.path().to_owned(),
                 branch: Some("feature/x".into()),
             });
-            assert_eq!(app.slot_name(None).unwrap(), app.default_slot().unwrap());
-            let branch_slot = app.default_slot().unwrap();
+            assert_eq!(app.account_name(None).unwrap(), app.default_account().unwrap());
+            let branch_account = app.default_account().unwrap();
             std::fs::write(
                 dir.path().join(WORKTREE_FILE),
-                "vm = \"dev\"\nslot = \"ux1\"\n",
+                "vm = \"dev\"\naccount = \"ux1\"\n",
             )
             .unwrap();
-            assert_eq!(app.slot_name(None).unwrap(), "ux1");
-            assert_ne!(branch_slot, "ux1");
-            assert_eq!(app.slot_name(Some("other".into())).unwrap(), "other");
+            assert_eq!(app.account_name(None).unwrap(), "ux1");
+            assert_ne!(branch_account, "ux1");
+            assert_eq!(app.account_name(Some("other".into())).unwrap(), "other");
         }
 
         phase generations_roll_forward_and_gc_explains_itself;
         {
             {
-                let info = slot_info("a", SlotKind::Headless, 1, &[0, 1, 2, 4]);
+                let info = account_info("a", AccountKind::Headless, 1, &[0, 1, 2, 4]);
                 assert_eq!(forward_target("a", Some(&info)).unwrap(), 2);
-                let newest = slot_info("a", SlotKind::Headless, 4, &[0, 1, 2, 4]);
+                let newest = account_info("a", AccountKind::Headless, 4, &[0, 1, 2, 4]);
                 let error = forward_target("a", Some(&newest)).unwrap_err();
                 assert!(error.to_string().contains("newest"), "{error}");
                 assert!(error.hint().contains("--to <n>"), "{}", error.hint());
@@ -8834,8 +8878,13 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
-    fn slot_info(name: &str, kind: SlotKind, generation: u64, generations: &[u64]) -> SlotInfo {
-        SlotInfo {
+    fn account_info(
+        name: &str,
+        kind: AccountKind,
+        generation: u64,
+        generations: &[u64],
+    ) -> AccountInfo {
+        AccountInfo {
             name: name.into(),
             kind,
             owner: Owner {

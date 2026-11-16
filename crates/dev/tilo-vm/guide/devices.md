@@ -3,7 +3,7 @@
 A **device** is a real machine that already runs a Tilo dev image, such as an
 Orange Pi installed from its board dev disk or a Lenovo Yoga Slim 7x installed
 from its board dev image. tilo-vm reaches it over SSH instead of a
-hypervisor. Everything else is the VM loop: the same slots, layers,
+hypervisor. Everything else is the VM loop: the same accounts, layers,
 generations, `swap`, `rollback`, `shot`, `control` and provenance checks.
 Never hot-fix a device by hand (`git archive | ssh`, `bootc usr-overlay`,
 `install` into `/usr/bin`): nothing can roll that back, and the next boot
@@ -50,7 +50,7 @@ prints each with its fix:
 |---|---|---|
 | `ssh` | everything | the key (`--key`), the address, the device's sshd |
 | `root` | everything: tilo-vmd, the VM lock, bootc run as root | `--grant-sudo`, or `--ssh root@` |
-| `tilo-vmd` | slots, swaps, `shot`, `control` | a dev image; an older protocol registers anyway, so `vm upgrade` can move it on |
+| `tilo-vmd` | accounts, swaps, `shot`, `control` | a dev image; an older protocol registers anyway, so `vm upgrade` can move it on |
 | `toolchain` | `swap` from your worktree on the device (cargo, rsync, python3) | a current board dev image, or CI builds (`--from sha:`) |
 | `bootc` | `vm upgrade`, `vm rollback-image` | a bootc dev image |
 
@@ -65,22 +65,22 @@ is. An agent without a terminal asks a human to run it. When the machine
 stops being a dev target, revoke it (a write into `/etc`, hence `--raw`):
 `tilo-vm vm ssh yoga --raw -- rm /etc/sudoers.d/tilo-vm-<user>`.
 
-## A laptop: the owner's own desktop is the `device` slot
+## A laptop: the owner's own desktop is the `device` account
 
 A laptop's image logs its owner in through greetd. While the owner is logged
-in to Tilo on the built-in display, that login is the **`device` slot**, and
+in to Tilo on the built-in display, that login is the **`device` account**, and
 a swap updates the desktop the person at the machine is using, without
 logging them out:
 
 ```sh
-tilo-vm status --slot device                          # whose login it is, generation, components
-tilo-vm swap --slot device tilo-session --from sha:1a2b3c4   # CI's build of a main commit (or build it, below)
-tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session   # the binary the desktop runs now
-tilo-vm slot show device                              # every file and its sha256 and layer
+tilo-vm status --account device                          # whose login it is, generation, components
+tilo-vm swap --account device tilo-session --from sha:1a2b3c4   # CI's build of a main commit (or build it, below)
+tilo-vm account exec --account device -- sha256sum /usr/bin/tilo-session   # the binary the desktop runs now
+tilo-vm account show device                              # every file and its sha256 and layer
 tilo-vm logs device
-tilo-vm control --slot device state-dump --pretty     # dev images: the owner's compositor
-tilo-vm rollback --slot device                        # the generation before
-tilo-vm rollback --slot device --to 0                 # the image's own session again
+tilo-vm control --account device state-dump --pretty     # dev images: the owner's compositor
+tilo-vm rollback --account device                        # the generation before
+tilo-vm rollback --account device --to 0                 # the image's own session again
 ```
 
 What the person at the machine sees on a swap or a rollback: the screen goes
@@ -92,38 +92,38 @@ with user services (`ush`, the model services) restarts those services too.
 Unsaved work in an app that does not keep its state is lost, so on a machine
 someone is using, say before you swap.
 
-greetd runs the login in the machine's own mount namespace, so the slot's
+greetd runs the login in the machine's own mount namespace, so the account's
 layers merge into the machine's `/usr` with `systemd-sysext`, together with
-the `vm` slot's: every process that starts afterwards sees them, the greeter
+the `vm` account's: every process that starts afterwards sees them, the greeter
 and other accounts included, and they stay merged across reboots until a
 rollback removes them. `vm ssh -- sha256sum /usr/bin/tilo-session` shows the same
-file as `slot exec`.
+file as `account exec`.
 
 If the new desktop does not come back, the swap fails with the journal and
-the owner is back at the login screen; the slot outlives the login, so
-`tilo-vm rollback --slot device` works from there and the next login runs
+the owner is back at the login screen; the account outlives the login, so
+`tilo-vm rollback --account device` works from there and the next login runs
 the previous build. While nobody is logged in, swaps and rollbacks still
-apply and reach the next login; `status` says `logged out`, and `slot exec`,
+apply and reach the next login; `status` says `logged out`, and `account exec`,
 `control` and `shot` wait for a login. With no Tilo login on the display
-(and nothing swapped into the slot before), there is no `device` slot.
+(and nothing swapped into the account before), there is no `device` account.
 
 Never update the owner's desktop any other way (`bootc usr-overlay`, copying
-into `/usr/bin`): nothing rolls that back. Your own slot still works beside
+into `/usr/bin`): nothing rolls that back. Your own account still works beside
 the owner's session, for a throwaway desktop the owner never sees:
 
 ```sh
-tilo-vm slot create --headless --identity   # your session beside the owner's, with a throwaway identity
-tilo-vm swap tilo-session                          # your layers reach only your slot
+tilo-vm account create --headless --identity   # your session beside the owner's, with a throwaway identity
+tilo-vm swap tilo-session                          # your layers reach only your account
 tilo-vm shot -o target/yoga.png             # your compositor's own frame
 tilo-vm seat claim                          # your session takes the built-in display (ends the owner's login)
 tilo-vm seat release                        # greetd's login screen comes back
-tilo-vm slot rm                             # done: your slot's session and user go
+tilo-vm account rm                             # done: your account's session and user go
 ```
 
 What reaches the person at the machine, so ask before each on a machine
 someone is using:
 
-- A `device` slot swap or rollback restarts their desktop (above).
+- A `device` account swap or rollback restarts their desktop (above).
 - `seat claim` stops greetd, which ends whoever is logged in on the display.
   The claim is kept across reboots (`tilo-vm-restore.service` starts your
   session again, still on seat0), so `seat release` when you are done.
@@ -131,36 +131,36 @@ someone is using:
   (an upgrade reboots by itself; no `vm restart` after it), which ends every
   session on it. A disk that asks for a passphrase at boot waits at the
   machine's keyboard each time.
-- VM-wide swaps (`--slot vm`, `tilo-vm guide swapping`) change `/usr` for
+- VM-wide swaps (`--account vm`, `tilo-vm guide swapping`) change `/usr` for
   everyone and restart the owner's desktop too; the greeter's restarts
   greetd, which ends the owner's login.
 
 When `vms.toml` names a remote builder for the laptop's architecture, swaps
 build there by default (Builds, below). Building on the device
 (`--builder vm`) works too: release layers link without LTO
-(`tilo-vm guide swapping`), and a laptop has the memory. Slots live in `/var`
+(`tilo-vm guide swapping`), and a laptop has the memory. Accounts live in `/var`
 and survive image upgrades, layers included (`tilo-vm guide images`).
 
 ## A board: the device's own session
 
 A board image runs its account's session without a greeter
 (`tilo-board-headless-session@<account>`): headless, or on the display
-once one is connected. That session is the **`device` slot**:
+once one is connected. That session is the **`device` account**:
 
 ```sh
-tilo-vm swap --slot device tilo-session --from sha:1a2b3c4   # CI's aarch64 build of a main commit; only the layer travels
-tilo-vm swap --slot device tilo-session                      # your worktree (see Builds below)
-tilo-vm status --slot device                          # generation, session, components
-tilo-vm slot show device                              # every file and its sha256 and layer
-tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session
+tilo-vm swap --account device tilo-session --from sha:1a2b3c4   # CI's aarch64 build of a main commit; only the layer travels
+tilo-vm swap --account device tilo-session                      # your worktree (see Builds below)
+tilo-vm status --account device                          # generation, session, components
+tilo-vm account show device                              # every file and its sha256 and layer
+tilo-vm account exec --account device -- sha256sum /usr/bin/tilo-session
 tilo-vm logs device
-tilo-vm control --slot device state-dump --pretty
-tilo-vm rollback --slot device                        # the generation before
-tilo-vm rollback --slot device --to 0                 # the image's own session again
+tilo-vm control --account device state-dump --pretty
+tilo-vm rollback --account device                        # the generation before
+tilo-vm rollback --account device --to 0                 # the image's own session again
 ```
 
 A swap merges the layers into the machine's `/usr` with `systemd-sysext`,
-together with the `vm` slot's, and restarts the session the normal way: stop
+together with the `vm` account's, and restarts the session the normal way: stop
 it, restart the account's user manager, start it. The merge is system-wide
 because the seat's supervisor starts the compositor as a system transient
 unit in the host's own mount namespace; that unit takes no drop-in and no
@@ -168,12 +168,12 @@ view reaches it, so a per-session view could never start the new session.
 The `systemd-sysext` links stay in `/var/lib/extensions`, so a fresh boot
 merges them again, and `tilo-vm-restore.service` restarts the session if it
 started first; an image without tilo-vmd boots its own session. Its account
-and identity stay as they are; the device slot never creates or removes a
+and identity stay as they are; the device account never creates or removes a
 user. It cannot be created, removed or moved to another seat: it is the
 machine's session.
 
-Set `slot = "device"` in the worktree's `.tilo-vm` (or `TILO_VM_SLOT=device`)
-to make it the default. Your own slots (`tilo-vm slot create --headless`)
+Set `account = "device"` in the worktree's `.tilo-vm` (or `TILO_VM_ACCOUNT=device`)
+to make it the default. Your own accounts (`tilo-vm account create --headless`)
 work on a device too, beside the device's session.
 
 ## Builds
@@ -204,9 +204,9 @@ work on a device too, beside the device's session.
   ```
 
   ```sh
-  tilo-vm swap --slot device tilo-session                    # builds on the aarch64 builder, streams to the device
-  tilo-vm swap --slot device apps+runtime             # the whole app collection and runtime, the same way
-  tilo-vm swap --slot device tilo-session --builder remote   # the same, said explicitly
+  tilo-vm swap --account device tilo-session                    # builds on the aarch64 builder, streams to the device
+  tilo-vm swap --account device apps+runtime             # the whole app collection and runtime, the same way
+  tilo-vm swap --account device tilo-session --builder remote   # the same, said explicitly
   ```
 
   Do not build for a device with `--builder host` and a `TILO_VM_CARGO`
@@ -215,7 +215,7 @@ work on a device too, beside the device's session.
   before. The layer's target and rustc are read from the binary on the
   builder, and the device refuses any other architecture.
 - **Your worktree on the device** (`--builder vm`, the default when the
-  device's image can build): the slot's `release` profile with the
+  device's image can build): the account's `release` profile with the
   manifest's features, so the build is the real one. `control` and `shot`
   drive the control socket the deleted shell bound, so a session swapped onto
   the device cannot be driven that way yet. A board with little memory (the
@@ -223,7 +223,7 @@ work on a device too, beside the device's session.
   session on a remote builder (above), or take CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`
-for everything built from a worktree), which `slot show --json` and the
+for everything built from a worktree), which `account show --json` and the
 device's `/var/lib/tilo-vm/layers/<hash>/provenance.json` show.
 
 ## The device's image
@@ -343,8 +343,8 @@ recorded route and says which one it took, relay or direct. The device logs
 each session and each request (`journalctl -u tilo-device-admin` on it).
 
 **What works over it.** Everything that is a tilo-vmd request: `status`,
-`vm status`, slots, swaps of CI layers (tilo-vm uploads them), rollbacks,
-`logs`, `shot`, `control`, `input` and `vm awake`. What needs SSH (`slot
+`vm status`, accounts, swaps of CI layers (tilo-vm uploads them), rollbacks,
+`logs`, `shot`, `control`, `input` and `vm awake`. What needs SSH (`account
 exec`, builds on the device, `vm ssh`, `vm upgrade`) waits until it is on
 this network again.
 
@@ -374,15 +374,15 @@ where it is recorded with the route, so tilo-vm uses it too.
 - `cannot run commands as root without a password`: the `--ssh` account has
   no passwordless sudo; rerun `vm add` with the same `--ssh` and `--key` and
   `--grant-sudo` (each `vm add` records what it is given).
-- `no device slot`: the image runs no session of its own and nobody is
+- `no device account`: the image runs no session of its own and nobody is
   logged in to Tilo on its display (a laptop at its login screen, a VM); the
-  owner logs in at the machine, or use your own slot.
-- `nobody is logged in`: the laptop's `device` slot waits for its owner to
-  log in for `slot exec`, `control` and `shot`; swaps and rollbacks work.
+  owner logs in at the machine, or use your own account.
+- `nobody is logged in`: the laptop's `device` account waits for its owner to
+  log in for `account exec`, `control` and `shot`; swaps and rollbacks work.
 - The swap says the desktop did not come back: the owner is at the login
-  screen; `tilo-vm rollback --slot device` brings the previous build back.
+  screen; `tilo-vm rollback --account device` brings the previous build back.
 - The swap says the session did not start: `tilo-vm logs device` names the
-  cause; `tilo-vm rollback --slot device` brings the previous build back.
+  cause; `tilo-vm rollback --account device` brings the previous build back.
 - A layer is refused with `target`: it was built for another architecture.
 
 Enable a supported active connection's magic-packet wake without reconnecting:

@@ -1,10 +1,10 @@
-//! Where tilo-vm is running: the git worktree, its branch, and the slot
+//! Where tilo-vm is running: the git worktree, its branch, and the account
 //! name and owner derived from them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{DEVICE_SLOT, Owner, VM_SLOT, valid_slot_name};
+use tilo_vm_protocol::{DEVICE_ACCOUNT, Owner, VM_ACCOUNT, valid_account_name};
 
 #[derive(Debug, Clone, Default)]
 pub struct Worktree {
@@ -41,13 +41,13 @@ impl Worktree {
         Some(Self { root, branch })
     }
 
-    pub fn default_slot(&self) -> Option<String> {
+    pub fn default_account(&self) -> Option<String> {
         let base = self.branch.clone().or_else(|| {
             self.root
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
         })?;
-        slot_name_from(&base)
+        account_name_from(&base)
     }
 
     pub fn owner(&self) -> Owner {
@@ -96,10 +96,10 @@ pub fn hostname() -> Option<String> {
         .filter(|h| !h.is_empty())
 }
 
-/// Branch or directory name to slot name: lowercase, runs of anything else
+/// Branch or directory name to account name: lowercase, runs of anything else
 /// become one dash, a leading `worktree-`/`agent-` style prefix is kept,
 /// trimmed to 28 bytes. `None` when nothing usable remains.
-pub fn slot_name_from(text: &str) -> Option<String> {
+pub fn account_name_from(text: &str) -> Option<String> {
     let text = text.rsplit('/').next().unwrap_or(text);
     let mut name = String::new();
     for c in text.chars() {
@@ -115,10 +115,10 @@ pub fn slot_name_from(text: &str) -> Option<String> {
     while name.ends_with('-') {
         name.pop();
     }
-    if name == VM_SLOT || name == DEVICE_SLOT {
-        name.push_str("-slot");
+    if name == VM_ACCOUNT || name == DEVICE_ACCOUNT {
+        name.push_str("-account");
     }
-    valid_slot_name(&name).then_some(name)
+    valid_account_name(&name).then_some(name)
 }
 
 #[cfg(test)]
@@ -126,26 +126,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slot_names_from_branches() {
+    fn account_names_from_branches() {
         assert_eq!(
-            slot_name_from("worktree-vm-dev-loop").as_deref(),
+            account_name_from("worktree-vm-dev-loop").as_deref(),
             Some("worktree-vm-dev-loop")
         );
         assert_eq!(
-            slot_name_from("codex/Type_Action--Authority").as_deref(),
+            account_name_from("codex/Type_Action--Authority").as_deref(),
             Some("type-action-authority")
         );
-        assert_eq!(slot_name_from("feature/42-fix").as_deref(), Some("fix"));
-        assert_eq!(slot_name_from("vm").as_deref(), Some("vm-slot"));
-        assert_eq!(slot_name_from("device").as_deref(), Some("device-slot"));
+        assert_eq!(account_name_from("feature/42-fix").as_deref(), Some("fix"));
+        assert_eq!(account_name_from("vm").as_deref(), Some("vm-account"));
         assert_eq!(
-            slot_name_from("a-very-long-branch-name-that-keeps-going").map(|n| n.len()),
+            account_name_from("device").as_deref(),
+            Some("device-account")
+        );
+        assert_eq!(
+            account_name_from("a-very-long-branch-name-that-keeps-going").map(|n| n.len()),
             Some(28)
         );
         assert!(
-            slot_name_from("a-very-long-branch-name-that-keeps-going")
+            account_name_from("a-very-long-branch-name-that-keeps-going")
                 .is_some_and(|n| !n.ends_with('-'))
         );
-        assert_eq!(slot_name_from("___"), None);
+        assert_eq!(account_name_from("___"), None);
     }
 }

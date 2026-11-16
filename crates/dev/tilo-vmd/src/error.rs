@@ -10,25 +10,25 @@ pub enum DaemonError {
     HelloRequired,
     #[error("{0}")]
     InvalidParams(String),
-    #[error("no slot named '{0}'")]
-    SlotNotFound(String),
-    #[error("slot '{name}' already exists as {kind}")]
-    SlotKindConflict { name: String, kind: String },
-    #[error("slot '{name}' already exists with {outputs}")]
-    SlotOutputsConflict { name: String, outputs: String },
-    #[error("slot '{0}' is not headful; only headful slots have outputs")]
+    #[error("no account named '{0}'")]
+    AccountNotFound(String),
+    #[error("account '{name}' already exists as {kind}")]
+    AccountKindConflict { name: String, kind: String },
+    #[error("account '{name}' already exists with {outputs}")]
+    AccountOutputsConflict { name: String, outputs: String },
+    #[error("account '{0}' is not headful; only headful accounts have outputs")]
     OutputsNeedHeadful(String),
     #[error("--outputs: {0}")]
     BadOutputs(String),
-    #[error("slot '{slot}' outputs could not be set: {detail}")]
-    DisplayLayout { slot: String, detail: String },
-    #[error("slot '{slot}' could not get a throwaway test identity: {detail}")]
-    TestIdentity { slot: String, detail: String },
-    #[error("slot '{slot}' could not become this VM's person: {detail}")]
-    DeviceIdentity { slot: String, detail: String },
+    #[error("account '{account}' outputs could not be set: {detail}")]
+    DisplayLayout { account: String, detail: String },
+    #[error("account '{account}' could not get a throwaway test identity: {detail}")]
+    TestIdentity { account: String, detail: String },
+    #[error("account '{account}' could not become this VM's person: {detail}")]
+    DeviceIdentity { account: String, detail: String },
     #[error("'{0}' is reserved for VM-wide components")]
     ReservedName(String),
-    #[error("'{0}' is not a valid slot name")]
+    #[error("'{0}' is not a valid account name")]
     InvalidName(String),
     #[error("no layer {0}")]
     LayerNotFound(String),
@@ -36,19 +36,19 @@ pub enum DaemonError {
     UploadNotFound(String),
     #[error("layer rejected: {0}")]
     InvalidLayer(String),
-    #[error("slot '{slot}' has no generation {generation}")]
-    GenerationNotFound { slot: String, generation: u64 },
-    #[error("slot '{0}' is already at its base generation")]
+    #[error("account '{account}' has no generation {generation}")]
+    GenerationNotFound { account: String, generation: u64 },
+    #[error("account '{0}' is already at its base generation")]
     NoEarlierGeneration(String),
-    #[error("component '{component}' has {scope} scope and cannot go into slot '{slot}'")]
+    #[error("component '{component}' has {scope} scope and cannot go into account '{account}'")]
     ScopeMismatch {
         component: String,
-        slot: String,
+        account: String,
         scope: String,
     },
-    #[error("seat0 is held by slot '{slot}' ({owner}) since {since}")]
+    #[error("seat0 is held by account '{account}' ({owner}) since {since}")]
     SeatBusy {
-        slot: String,
+        account: String,
         owner: String,
         since: String,
     },
@@ -64,29 +64,31 @@ pub enum DaemonError {
     ControlMissing(String),
     #[error("'{0}' has no session")]
     NoSession(String),
-    #[error("this machine runs no session of its own, so it has no device slot")]
+    #[error("this machine runs no session of its own, so it has no device account")]
     NoDeviceSession,
-    #[error("the {0} slot is the owner's login, and nobody is logged in")]
+    #[error("the {0} account is the owner's login, and nobody is logged in")]
     LoggedOut(String),
-    #[error("the device slot is the machine's own session; it cannot be {0}")]
-    DeviceSlot(String),
-    #[error("slot '{0}' has no running session to run the command in")]
+    #[error("the device account is the machine's own session; it cannot be {0}")]
+    DeviceAccount(String),
+    #[error("account '{0}' has no running session to run the command in")]
     SessionStopped(String),
     #[error("{step} failed: {detail}")]
     Apply { step: String, detail: String },
-    #[error("slot '{slot}' session differs from a greetd session: {detail}")]
-    SessionParity { slot: String, detail: String },
-    #[error("slot '{slot}' session did not start (unit is {state}); its journal ends with:\n{log}")]
+    #[error("account '{account}' session differs from a greetd session: {detail}")]
+    SessionParity { account: String, detail: String },
+    #[error(
+        "account '{account}' session did not start (unit is {state}); its journal ends with:\n{log}"
+    )]
     SessionFailed {
-        slot: String,
+        account: String,
         state: String,
         log: String,
     },
     #[error(
-        "the desktop of the {slot} slot's login did not come back ({detail}); its journal ends with:\n{log}"
+        "the desktop of the {account} account's login did not come back ({detail}); its journal ends with:\n{log}"
     )]
     DesktopFailed {
-        slot: String,
+        account: String,
         detail: String,
         log: String,
     },
@@ -106,7 +108,7 @@ pub enum DaemonError {
     ImageNotFound { image: String },
     #[error("{image} has no {path}")]
     MissingInImage { image: String, path: String },
-    #[error("slot '{0}' is headless: it has no seat, so no input devices")]
+    #[error("account '{0}' is headless: it has no seat, so no input devices")]
     HeadlessInput(String),
     #[error("not a kernel layer: {0}")]
     KernelLayer(String),
@@ -131,7 +133,7 @@ impl DaemonError {
         match self {
             Self::VersionMismatch { .. } | Self::HelloRequired => code::VERSION_MISMATCH,
             Self::InvalidParams(_) => code::INVALID_PARAMS,
-            Self::SlotNotFound(_)
+            Self::AccountNotFound(_)
             | Self::LayerNotFound(_)
             | Self::UploadNotFound(_)
             | Self::GenerationNotFound { .. }
@@ -142,8 +144,8 @@ impl DaemonError {
             | Self::ImageNotFound { .. }
             | Self::MissingInImage { .. }
             | Self::NoDeviceSession => code::NOT_FOUND,
-            Self::SlotKindConflict { .. }
-            | Self::SlotOutputsConflict { .. }
+            Self::AccountKindConflict { .. }
+            | Self::AccountOutputsConflict { .. }
             | Self::SeatBusy { .. }
             | Self::Busy(_) => code::CONFLICT,
             Self::AbiMismatch { .. } => code::ABI,
@@ -152,7 +154,7 @@ impl DaemonError {
             | Self::InvalidLayer(_)
             | Self::NoEarlierGeneration(_)
             | Self::NoSession(_)
-            | Self::DeviceSlot(_)
+            | Self::DeviceAccount(_)
             | Self::SessionStopped(_)
             | Self::LoggedOut(_)
             | Self::HeadlessInput(_)
@@ -190,33 +192,33 @@ impl DaemonError {
             Self::InvalidParams(_) => {
                 "the daemon refused this request; its message names what to change, and tilo-vm doctor says whether the client and daemon builds agree".into()
             }
-            Self::SlotNotFound(name) => {
-                format!("tilo-vm slot create {name} --headless   (list existing: tilo-vm slot list)")
+            Self::AccountNotFound(name) => {
+                format!("tilo-vm account create {name} --headless   (list existing: tilo-vm account list)")
             }
-            Self::SlotKindConflict { name, .. } => {
-                format!("remove it first (tilo-vm slot rm {name}) or create it with its existing kind")
+            Self::AccountKindConflict { name, .. } => {
+                format!("remove it first (tilo-vm account rm {name}) or create it with its existing kind")
             }
-            Self::SlotOutputsConflict { name, .. } => format!(
-                "outputs are fixed when a slot is created: tilo-vm slot rm {name}, then tilo-vm slot create {name} --headful --outputs <list>   (or create another slot)"
+            Self::AccountOutputsConflict { name, .. } => format!(
+                "outputs are fixed when an account is created: tilo-vm account rm {name}, then tilo-vm account create {name} --headful --outputs <list>   (or create another account)"
             ),
             Self::OutputsNeedHeadful(name) => {
-                format!("tilo-vm slot create {name} --headful --outputs 2560x1600@2,1920x1080")
+                format!("tilo-vm account create {name} --headful --outputs 2560x1600@2,1920x1080")
             }
             Self::BadOutputs(_) => format!(
                 "give 1 to {} outputs as WIDTHxHEIGHT[@SCALE], comma-separated: --outputs 2560x1600@2,1920x1080",
                 tilo_vm_protocol::display::MAX_OUTPUTS
             ),
-            Self::DisplayLayout { slot, .. } => format!(
-                "rerun tilo-vm slot create {slot} --headful --outputs <same list> to apply it again; tilo-vm logs {slot} shows what the compositor did"
+            Self::DisplayLayout { account, .. } => format!(
+                "rerun tilo-vm account create {account} --headful --outputs <same list> to apply it again; tilo-vm logs {account} shows what the compositor did"
             ),
-            Self::TestIdentity { slot, .. } => format!(
-                "the slot's shell must be a dev build (a dev image, or a dev-profile swap) and its user must not hold a real identity; tilo-vm logs {slot} shows what the compositor did"
+            Self::TestIdentity { account, .. } => format!(
+                "the account's shell must be a dev build (a dev image, or a dev-profile swap) and its user must not hold a real identity; tilo-vm logs {account} shows what the compositor did"
             ),
-            Self::DeviceIdentity { slot, .. } => format!(
-                "one slot per VM can be its person, and only before the machine holds an identity: on a fresh VM, tilo-vm slot create {slot} --headful --identity device; tilo-vm logs {slot} shows what onboarding did"
+            Self::DeviceIdentity { account, .. } => format!(
+                "one account per VM can be its person, and only before the machine holds an identity: on a fresh VM, tilo-vm account create {account} --headful --identity device; tilo-vm logs {account} shows what onboarding did"
             ),
             Self::ReservedName(_) => {
-                "pick another slot name; VM-wide components go in with: tilo-vm swap --slot vm <component>"
+                "pick another account name; VM-wide components go in with: tilo-vm swap --account vm <component>"
                     .into()
             }
             Self::InvalidName(_) => {
@@ -227,20 +229,20 @@ impl DaemonError {
             Self::InvalidLayer(_) => {
                 "a layer holds only usr/ (and opt/) with regular files, directories and symlinks".into()
             }
-            Self::GenerationNotFound { slot, .. } => {
-                format!("tilo-vm slot list   (shows the generations of '{slot}')")
+            Self::GenerationNotFound { account, .. } => {
+                format!("tilo-vm account list   (shows the generations of '{account}')")
             }
-            Self::NoEarlierGeneration(slot) => {
-                format!("nothing to roll back; tilo-vm swap --slot {slot} <component> installs a build")
+            Self::NoEarlierGeneration(account) => {
+                format!("nothing to roll back; tilo-vm swap --account {account} <component> installs a build")
             }
             Self::ScopeMismatch { component, scope, .. } if scope == "vm" => {
-                format!("VM-wide components go into the vm pseudo-slot: tilo-vm swap --slot vm {component}")
+                format!("VM-wide components go into the vm pseudo-account: tilo-vm swap --account vm {component}")
             }
             Self::ScopeMismatch { component, .. } => {
-                format!("session components go into your own slot: tilo-vm swap {component}")
+                format!("session components go into your own account: tilo-vm swap {component}")
             }
-            Self::SeatBusy { slot, .. } => format!(
-                "ask its owner to run: tilo-vm seat release {slot}   (or take it anyway: tilo-vm seat claim --steal)"
+            Self::SeatBusy { account, .. } => format!(
+                "ask its owner to run: tilo-vm seat release {account}   (or take it anyway: tilo-vm seat claim --steal)"
             ),
             Self::Busy(_) => "wait for the other command to finish, then retry; tilo-vm status shows what is running".into(),
             Self::AbiMismatch { field, .. } if field == "target" => {
@@ -254,14 +256,14 @@ impl DaemonError {
             Self::AbiMismatch { .. } => {
                 "rebuild against this VM's base (tilo-vm vm upgrade first if the VM is older than your worktree)".into()
             }
-            Self::NoDeviceSession => "a board dev image's own session, or on a laptop its owner's Tilo login through greetd on the built-in display, is the device slot; with neither, use your own slot: tilo-vm swap <component>   (a laptop: the owner logs in at the machine first)".into(),
-            Self::LoggedOut(slot) => format!(
-                "the owner logs in at the machine's login screen first; swaps and rollbacks (tilo-vm rollback --slot {slot}) work meanwhile and reach the next login"
+            Self::NoDeviceSession => "a board dev image's own session, or on a laptop its owner's Tilo login through greetd on the built-in display, is the device account; with neither, use your own account: tilo-vm swap <component>   (a laptop: the owner logs in at the machine first)".into(),
+            Self::LoggedOut(account) => format!(
+                "the owner logs in at the machine's login screen first; swaps and rollbacks (tilo-vm rollback --account {account}) work meanwhile and reach the next login"
             ),
-            Self::DeviceSlot(_) => "swap into it (tilo-vm swap --slot device <component>) and undo every swap with tilo-vm rollback --slot device --to 0; its session comes and goes with the machine".into(),
-            Self::NoSession(_) => "use a headful or headless slot: tilo-vm slot list   (the vm slot's layers are the VM's own /usr: tilo-vm vm ssh -- <command>)".into(),
-            Self::SessionStopped(slot) => format!(
-                "start it again: tilo-vm slot restart --slot {slot}   (tilo-vm logs --slot {slot} says why it stopped)"
+            Self::DeviceAccount(_) => "swap into it (tilo-vm swap --account device <component>) and undo every swap with tilo-vm rollback --account device --to 0; its session comes and goes with the machine".into(),
+            Self::NoSession(_) => "use a headful or headless account: tilo-vm account list   (the vm account's layers are the VM's own /usr: tilo-vm vm ssh -- <command>)".into(),
+            Self::SessionStopped(account) => format!(
+                "start it again: tilo-vm account restart --account {account}   (tilo-vm logs --account {account} says why it stopped)"
             ),
             Self::ControlMissing(_) => {
                 "run a dev image, which adds tilo-control: tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>"
@@ -269,14 +271,14 @@ impl DaemonError {
             }
             Self::Apply { .. } => "tilo-vm logs   (the unit journal usually names the cause)".into(),
             Self::SessionParity { .. } => {
-                "slot session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting"
+                "account session capabilities or SELinux domain differ from a greetd session; see tilo-vm guide troubleshooting"
                     .into()
             }
-            Self::SessionFailed { slot, .. } => format!(
-                "the journal above names the cause; after fixing it: tilo-vm slot restart {slot}   (full log: tilo-vm logs {slot})"
+            Self::SessionFailed { account, .. } => format!(
+                "the journal above names the cause; after fixing it: tilo-vm account restart {account}   (full log: tilo-vm logs {account})"
             ),
-            Self::DesktopFailed { slot, .. } => format!(
-                "bring the previous build back: tilo-vm rollback --slot {slot}   (it works from the login screen too; full log: tilo-vm logs {slot})"
+            Self::DesktopFailed { account, .. } => format!(
+                "bring the previous build back: tilo-vm rollback --account {account}   (it works from the login screen too; full log: tilo-vm logs {account})"
             ),
             Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
             Self::UnknownApp { known, .. } if known.is_empty() => {
@@ -306,8 +308,8 @@ impl DaemonError {
             Self::MissingInImage { .. } => {
                 "that image does not ship this component (an optional one, or an older image); pick another tag or build it: --from worktree".into()
             }
-            Self::HeadlessInput(slot) => format!(
-                "drive headless slots through the compositor: tilo-vm control --slot {slot} key|type|click ...   (or create a headful slot: tilo-vm slot create <name> --headful)"
+            Self::HeadlessInput(account) => format!(
+                "drive headless accounts through the compositor: tilo-vm control --account {account} key|type|click ...   (or create a headful account: tilo-vm account create <name> --headful)"
             ),
             Self::KernelLayer(_) => {
                 "build and swap it with tilo-vm swap kernel: os/kernel/dev-build.sh stages usr/lib/modules/<release>/ with vmlinuz and the signed modules".into()
@@ -316,7 +318,7 @@ impl DaemonError {
                 "kernel swaps need systemd-boot (the Tilo dev image) or GRUB with BLS entries in /boot/loader/entries; check with tilo-vm vm ssh -- bootctl status, then rerun the swap".into()
             }
             Self::Initramfs { kver, .. } => format!(
-                "reproduce it in the VM: tilo-vm vm ssh -- dracut --force --kver {kver} /var/tmp/initramfs.img   (the vm slot already carries the modules; tilo-vm rollback --slot vm drops them)"
+                "reproduce it in the VM: tilo-vm vm ssh -- dracut --force --kver {kver} /var/tmp/initramfs.img   (the vm account already carries the modules; tilo-vm rollback --account vm drops them)"
             ),
             Self::Io { .. } => "tilo-vm doctor   (checks the VM's disk and daemon state)".into(),
         }
@@ -324,9 +326,9 @@ impl DaemonError {
 
     pub fn see(&self) -> Option<&'static str> {
         match self {
-            Self::SlotNotFound(_)
-            | Self::SlotKindConflict { .. }
-            | Self::SlotOutputsConflict { .. }
+            Self::AccountNotFound(_)
+            | Self::AccountKindConflict { .. }
+            | Self::AccountOutputsConflict { .. }
             | Self::OutputsNeedHeadful(_)
             | Self::BadOutputs(_)
             | Self::ReservedName(_)
@@ -356,7 +358,7 @@ impl DaemonError {
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
-            Self::NoDeviceSession | Self::DeviceSlot(_) | Self::LoggedOut(_) => {
+            Self::NoDeviceSession | Self::DeviceAccount(_) | Self::LoggedOut(_) => {
                 Some("tilo-vm guide devices")
             }
             Self::VersionMismatch { .. }
@@ -401,19 +403,19 @@ mod tests {
             },
             DaemonError::HelloRequired,
             DaemonError::InvalidParams("x".into()),
-            DaemonError::SlotNotFound("a".into()),
-            DaemonError::SlotKindConflict {
+            DaemonError::AccountNotFound("a".into()),
+            DaemonError::AccountKindConflict {
                 name: "a".into(),
                 kind: "headless".into(),
             },
-            DaemonError::SlotOutputsConflict {
+            DaemonError::AccountOutputsConflict {
                 name: "a".into(),
                 outputs: "one default output".into(),
             },
             DaemonError::OutputsNeedHeadful("a".into()),
             DaemonError::BadOutputs("9 outputs asked for".into()),
             DaemonError::DisplayLayout {
-                slot: "a".into(),
+                account: "a".into(),
                 detail: "Virtual-1 offers no 1366x768 mode".into(),
             },
             DaemonError::ReservedName("vm".into()),
@@ -422,22 +424,22 @@ mod tests {
             DaemonError::UploadNotFound("u".into()),
             DaemonError::InvalidLayer("x".into()),
             DaemonError::GenerationNotFound {
-                slot: "a".into(),
+                account: "a".into(),
                 generation: 9,
             },
             DaemonError::NoEarlierGeneration("a".into()),
             DaemonError::ScopeMismatch {
                 component: "fs".into(),
-                slot: "a".into(),
+                account: "a".into(),
                 scope: "vm".into(),
             },
             DaemonError::ScopeMismatch {
                 component: "shell".into(),
-                slot: "vm".into(),
+                account: "vm".into(),
                 scope: "session".into(),
             },
             DaemonError::SeatBusy {
-                slot: "b".into(),
+                account: "b".into(),
                 owner: "host/wt".into(),
                 since: "now".into(),
             },
@@ -460,7 +462,7 @@ mod tests {
             DaemonError::NoSession("vm".into()),
             DaemonError::NoDeviceSession,
             DaemonError::LoggedOut("device".into()),
-            DaemonError::DeviceSlot("removed".into()),
+            DaemonError::DeviceAccount("removed".into()),
             DaemonError::SessionStopped("a".into()),
             DaemonError::ControlMissing("/usr/libexec/tilo/tilo-control".into()),
             DaemonError::Apply {
@@ -468,24 +470,24 @@ mod tests {
                 detail: "d".into(),
             },
             DaemonError::SessionParity {
-                slot: "a".into(),
+                account: "a".into(),
                 detail: "CapAmb 800000000".into(),
             },
             DaemonError::TestIdentity {
-                slot: "a".into(),
+                account: "a".into(),
                 detail: "error [identity_exists]: already has an identity".into(),
             },
             DaemonError::DeviceIdentity {
-                slot: "a".into(),
+                account: "a".into(),
                 detail: "this VM already holds an identity".into(),
             },
             DaemonError::SessionFailed {
-                slot: "a".into(),
+                account: "a".into(),
                 state: "activating".into(),
                 log: "PAM failed: Authentication failure".into(),
             },
             DaemonError::DesktopFailed {
-                slot: "device".into(),
+                account: "device".into(),
                 detail: "logged out".into(),
                 log: "shell: panicked".into(),
             },
@@ -543,9 +545,9 @@ mod tests {
                 DaemonError::VersionMismatch { .. }
                 | DaemonError::HelloRequired
                 | DaemonError::InvalidParams(_)
-                | DaemonError::SlotNotFound(_)
-                | DaemonError::SlotKindConflict { .. }
-                | DaemonError::SlotOutputsConflict { .. }
+                | DaemonError::AccountNotFound(_)
+                | DaemonError::AccountKindConflict { .. }
+                | DaemonError::AccountOutputsConflict { .. }
                 | DaemonError::OutputsNeedHeadful(_)
                 | DaemonError::BadOutputs(_)
                 | DaemonError::DisplayLayout { .. }
@@ -565,7 +567,7 @@ mod tests {
                 | DaemonError::NoSession(_)
                 | DaemonError::NoDeviceSession
                 | DaemonError::LoggedOut(_)
-                | DaemonError::DeviceSlot(_)
+                | DaemonError::DeviceAccount(_)
                 | DaemonError::SessionStopped(_)
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }

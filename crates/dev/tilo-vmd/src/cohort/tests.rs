@@ -390,7 +390,7 @@ pub(crate) fn save(registry: &Registry, path: &Path) {
 /// The session acknowledges exactly the selection the verified cohort asked for.
 fn check_selection(cohort: &VerifiedCohort) {
     let session = crate::apply::Session {
-        slot: "device".into(),
+        account: "device".into(),
         unit: "session-3.scope".into(),
         user: "owner".into(),
         units: Vec::new(),

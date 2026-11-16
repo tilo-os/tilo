@@ -33,12 +33,12 @@ pub const SRC_DIR: &str = "/var/lib/tilo-vm/src";
 /// Decoded bytes per upload chunk.
 pub const UPLOAD_CHUNK_BYTES: usize = 1 << 20;
 
-/// The name of the pseudo-slot whose layers merge into the VM's own `/usr`.
-pub const VM_SLOT: &str = "vm";
+/// The name of the pseudo-account whose layers merge into the VM's own `/usr`.
+pub const VM_ACCOUNT: &str = "vm";
 
-/// The pseudo-slot that is the machine's own session: the one an image runs for its account
+/// The pseudo-account that is the machine's own session: the one an image runs for its account
 /// without a greeter (a board's always-on session). Only images that run one have it.
-pub const DEVICE_SLOT: &str = "device";
+pub const DEVICE_ACCOUNT: &str = "device";
 
 /// How long the keep-awake lease lasts after the last request; every [`Hello`] renews it.
 pub const AWAKE_IDLE_SECONDS: u64 = 30 * 60;
@@ -100,16 +100,16 @@ pub enum Request {
     Hello(Hello),
     #[serde(rename = "status")]
     Status(Status),
-    #[serde(rename = "slot.create")]
-    SlotCreate(SlotCreate),
-    #[serde(rename = "slot.list")]
-    SlotList(SlotList),
-    #[serde(rename = "slot.restart")]
-    SlotRestart(SlotRestart),
-    #[serde(rename = "slot.rm")]
-    SlotRm(SlotRm),
-    #[serde(rename = "slot.show")]
-    SlotShow(SlotShow),
+    #[serde(rename = "account.create")]
+    AccountCreate(AccountCreate),
+    #[serde(rename = "account.list")]
+    AccountList(AccountList),
+    #[serde(rename = "account.restart")]
+    AccountRestart(AccountRestart),
+    #[serde(rename = "account.rm")]
+    AccountRm(AccountRm),
+    #[serde(rename = "account.show")]
+    AccountShow(AccountShow),
     #[serde(rename = "layer.upload.begin")]
     LayerUploadBegin(LayerUploadBegin),
     #[serde(rename = "layer.upload.binary")]
@@ -163,11 +163,11 @@ impl Request {
             Self::DeviceActions(_) => "device.actions",
             Self::Hello(_) => "hello",
             Self::Status(_) => "status",
-            Self::SlotCreate(_) => "slot.create",
-            Self::SlotList(_) => "slot.list",
-            Self::SlotRestart(_) => "slot.restart",
-            Self::SlotRm(_) => "slot.rm",
-            Self::SlotShow(_) => "slot.show",
+            Self::AccountCreate(_) => "account.create",
+            Self::AccountList(_) => "account.list",
+            Self::AccountRestart(_) => "account.restart",
+            Self::AccountRm(_) => "account.rm",
+            Self::AccountShow(_) => "account.show",
             Self::LayerUploadBegin(_) => "layer.upload.begin",
             Self::LayerUploadBinary(_) => "layer.upload.binary",
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
@@ -213,11 +213,11 @@ macro_rules! call {
 call! {
     Hello => HelloResult,
     Status => StatusResult,
-    SlotCreate => SlotCreateResult,
-    SlotList => Vec<SlotInfo>,
-    SlotRestart => ApplyResult,
-    SlotRm => SlotRmResult,
-    SlotShow => SlotShowResult,
+    AccountCreate => AccountCreateResult,
+    AccountList => Vec<AccountInfo>,
+    AccountRestart => ApplyResult,
+    AccountRm => AccountRmResult,
+    AccountShow => AccountShowResult,
     LayerUploadBegin => LayerUploadBeginResult,
     LayerUploadBinary => LayerUploadBeginResult,
     LayerUploadChunk => LayerUploadChunkResult,
@@ -248,49 +248,49 @@ pub struct Hello {
     pub client_version: String,
 }
 
-/// Status of one slot, or of every slot when `slot` is `None`.
+/// Status of one account, or of every account when `account` is `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     #[serde(default)]
-    pub slot: Option<String>,
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotCreate {
+pub struct AccountCreate {
     pub name: String,
-    pub kind: SlotKind,
+    pub kind: AccountKind,
     #[serde(default)]
     pub owner: Owner,
     /// Headful only: one vkms connector per output, left to right, with this mode and scale
     /// applied through the display settings. Empty means one connector at the default mode.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
-    /// Give the slot's user a throwaway test identity through the session's dev-only control
+    /// Give the account's user a throwaway test identity through the session's dev-only control
     /// op, and start the session with fresh desktop state.
     #[serde(default)]
     pub identity: bool,
-    /// Make the slot's user this VM's person instead, as a device's first login does: the
+    /// Make the account's user this VM's person instead, as a device's first login does: the
     /// session's onboarding creates their identity and certifies the machine's device key, which
-    /// starts `fs`. One slot per VM; refused once the machine holds an identity.
+    /// starts `fs`. One account per VM; refused once the machine holds an identity.
     #[serde(default)]
     pub device_identity: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotList {}
+pub struct AccountList {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotRestart {
+pub struct AccountRestart {
     pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotRm {
+pub struct AccountRm {
     pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotShow {
+pub struct AccountShow {
     pub name: String,
 }
 
@@ -334,28 +334,28 @@ pub struct LayerVerify {
     pub hash: String,
 }
 
-/// Replace (or add) one component's layer in a slot.
+/// Replace (or add) one component's layer in an account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Swap {
-    pub slot: String,
+    pub account: String,
     pub component: String,
     pub layer: String,
     /// Scope from the client's manifest, which matches the build. When absent
     /// the daemon falls back to its own manifest, then to session scope.
     #[serde(default)]
     pub info: Option<ComponentInfo>,
-    /// The next generation of a slot this swap moves together with, when the
+    /// The next generation of an account this swap moves together with, when the
     /// two are one matched set (a session cohort and the VM-wide runtime
     /// services it reads). The interface check judges this swap against that
-    /// generation instead of the slot's current one.
+    /// generation instead of the account's current one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partner: Option<Partner>,
 }
 
-/// A slot's next generation, for a swap that moves with it.
+/// An account's next generation, for a swap that moves with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Partner {
-    pub slot: String,
+    pub account: String,
     /// Component name to layer hash.
     pub components: std::collections::BTreeMap<String, String>,
 }
@@ -363,8 +363,8 @@ pub struct Partner {
 /// The interface every runtime service speaks to apps.
 pub const RUNTIME: &str = "runtime";
 
-/// The runtime services apps reach that run VM-wide, outside any slot's session set: swapped
-/// into the `vm` slot and shared by every slot. Each speaks the runtime interface alone.
+/// The runtime services apps reach that run VM-wide, outside any account's session set: swapped
+/// into the `vm` account and shared by every account. Each speaks the runtime interface alone.
 pub const VM_RUNTIME_SERVICES: &[&str] = &["fs"];
 
 /// The matched session components, in layer precedence order. VM-wide managers and boot
@@ -405,7 +405,7 @@ pub struct UserspaceSession {
 /// All members are imported before this applies them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserspaceApply {
-    pub slot: String,
+    pub account: String,
     pub expected_generation: u64,
     pub expected_session: UserspaceSession,
     pub source: Box<Provenance>,
@@ -433,7 +433,7 @@ pub struct UserspaceResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rollback {
-    pub slot: String,
+    pub account: String,
     /// Target generation; the one before the current generation when absent.
     #[serde(default)]
     pub to: Option<u64>,
@@ -441,34 +441,34 @@ pub struct Rollback {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Logs {
-    pub slot: String,
+    pub account: String,
     pub lines: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatClaim {
-    pub slot: String,
+    pub account: String,
     #[serde(default)]
     pub owner: Owner,
-    /// Take seat0 even when another slot holds the lease.
+    /// Take seat0 even when another account holds the lease.
     #[serde(default)]
     pub steal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatRelease {
-    pub slot: String,
+    pub account: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shot {
-    pub slot: String,
+    pub account: String,
 }
 
-/// Arguments passed verbatim to the in-VM `tilo-control` for this slot.
+/// Arguments passed verbatim to the in-VM `tilo-control` for this account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Control {
-    pub slot: String,
+    pub account: String,
     pub args: Vec<String>,
     /// Private action arguments carried only to the control client's stdin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -478,7 +478,7 @@ pub struct Control {
 /// Remove what no kept generation references, and evict build dirs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gc {
-    /// Generations to keep per slot, besides the current one.
+    /// Generations to keep per account, besides the current one.
     pub keep: u32,
     pub dry_run: bool,
     /// In-VM build dirs (one per host worktree) to keep, most recently used first.
@@ -494,18 +494,18 @@ pub struct Gc {
     pub min_age_seconds: Option<u64>,
 }
 
-/// Drive a headful slot's seat through its own uinput keyboard and pointer.
+/// Drive a headful account's seat through its own uinput keyboard and pointer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Input {
-    pub slot: String,
+    pub account: String,
     pub actions: Vec<InputAction>,
 }
 
-/// Install a `.tapp` into the slot user's app store (`tilo-install
+/// Install a `.tapp` into the account user's app store (`tilo-install
 /// install --allow-self-signed --force`, run as that user).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppInstall {
-    pub slot: String,
+    pub account: String,
     /// An upload of the `.tapp` file, or a path to one inside the VM.
     pub source: LayerSource,
 }
@@ -555,16 +555,16 @@ pub struct Awake {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SlotKind {
+pub enum AccountKind {
     Headful,
     Headless,
-    /// Only the reserved [`VM_SLOT`] has this kind.
+    /// Only the reserved [`VM_ACCOUNT`] has this kind.
     Vm,
-    /// Only the reserved [`DEVICE_SLOT`] has this kind.
+    /// Only the reserved [`DEVICE_ACCOUNT`] has this kind.
     Device,
 }
 
-impl SlotKind {
+impl AccountKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Headful => "headful",
@@ -575,7 +575,7 @@ impl SlotKind {
     }
 }
 
-/// Who created a slot, to tell agents' slots apart.
+/// Who created an account, to tell agents' accounts apart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Owner {
     #[serde(default)]
@@ -773,7 +773,7 @@ pub struct BaseInfo {
 /// Who holds seat0.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
-    pub slot: String,
+    pub account: String,
     pub owner: Owner,
     pub since: String,
 }
@@ -795,7 +795,7 @@ pub struct Storage {
 pub enum Policy {
     /// Nothing changed, or only apps changed: live at next launch.
     NoRestart,
-    /// The slot's session logs out and a fresh login starts.
+    /// The account's session logs out and a fresh login starts.
     SessionRestart,
     /// `systemd-sysext refresh`, then the affected system units restart.
     VmRefresh,
@@ -850,7 +850,7 @@ pub enum Action {
     CompleteOnboarding {
         created: bool,
     },
-    /// The slot user's desktop layout removed, so the next session starts with none.
+    /// The account user's desktop layout removed, so the next session starts with none.
     ResetDesktopState,
     /// The desktop of a login restarted in place (`tilo-session` on SIGUSR1); the login, its
     /// user manager and its services stayed.
@@ -960,15 +960,15 @@ impl VmTools {
 /// Something wrong with the VM's state, and how to repair it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
-    pub slot: String,
+    pub account: String,
     pub problem: String,
     pub hint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotInfo {
+pub struct AccountInfo {
     pub name: String,
-    pub kind: SlotKind,
+    pub kind: AccountKind,
     pub owner: Owner,
     pub user: Option<String>,
     /// Current generation; 0 is the base generation with no layers.
@@ -980,7 +980,7 @@ pub struct SlotInfo {
     /// `systemctl is-active` of the session unit (`vm` reports `n/a`).
     pub session: String,
     pub seat: Option<String>,
-    /// The outputs the slot was created with (`--outputs`), left to right.
+    /// The outputs the account was created with (`--outputs`), left to right.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
     /// How the running session differs from a greetd session (capabilities, `SELinux` domain);
@@ -995,7 +995,7 @@ pub struct SlotInfo {
 pub struct GcResult {
     pub dry_run: bool,
     pub removed_layers: Vec<String>,
-    /// `<slot>/<generation>` of each pruned generation.
+    /// `<account>/<generation>` of each pruned generation.
     pub removed_generations: Vec<String>,
     pub freed_bytes: u64,
     /// Worktree ids whose in-VM build dir was evicted.
@@ -1022,24 +1022,24 @@ pub struct KeptLayer {
     pub eligible_in_seconds: u64,
 }
 
-/// A slot and the files its current generation's layers add.
+/// An account and the files its current generation's layers add.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotShowResult {
-    pub slot: SlotInfo,
+pub struct AccountShowResult {
+    pub account: AccountInfo,
     /// Every file and symlink, grouped by component, sorted by path.
-    pub files: Vec<SlotFile>,
+    pub files: Vec<AccountFile>,
     /// Import provenance of the selected layers, keyed by component. Missing metadata stays
     /// missing; callers must not infer a source from the request.
     #[serde(default)]
     pub provenance: std::collections::BTreeMap<String, Provenance>,
 }
 
-/// One file a layer puts into the slot's view of the system.
+/// One file a layer puts into the account's view of the system.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotFile {
+pub struct AccountFile {
     pub component: String,
     pub layer: String,
-    /// Where the slot sees it, e.g. `/usr/bin/tilo-session`.
+    /// Where the account sees it, e.g. `/usr/bin/tilo-session`.
     pub path: String,
     /// SHA-256 (hex) of a regular file's contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1060,24 +1060,24 @@ pub const EXEC_MAX_BYTES: u64 = 1 << 20;
 pub struct StatusResult {
     pub protocol: u32,
     pub daemon_version: String,
-    pub slots: Vec<SlotInfo>,
+    pub accounts: Vec<AccountInfo>,
     pub seat0: Option<Lease>,
     pub storage: Storage,
     pub issues: Vec<Issue>,
-    /// The last time the machine booted another OS image than its slots were made on, and which
-    /// slots kept layers built on the previous one. Absent from a daemon that does not record
+    /// The last time the machine booted another OS image than its accounts were made on, and which
+    /// accounts kept layers built on the previous one. Absent from a daemon that does not record
     /// images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_change: Option<ImageChange>,
     /// The OS image this boot runs, as [`booted_image`] names it. Absent from a daemon that does
     /// not record images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slots_image: Option<String>,
+    pub accounts_image: Option<String>,
 }
 
 /// The machine booted another OS image than the one recorded at the boot before. Layers are
 /// built against one image (its libraries, its protocols, its other components), so on another
-/// one they may run old programs against new ones. Every slot stays on its generation and
+/// one they may run old programs against new ones. Every account stays on its generation and
 /// nothing is deleted: a layer merges when it was built against the booted base or when its
 /// interface versions match the booted image's, and any other is held and reported. An unknown
 /// previous image is never a change.
@@ -1091,21 +1091,21 @@ pub struct ImageChange {
     pub to: String,
     /// RFC 3339, when the boot found the change.
     pub at: String,
-    /// Slots whose current generation was made on `from`: each stays on
+    /// Accounts whose current generation was made on `from`: each stays on
     /// it, its layers kept.
     #[serde(default)]
-    pub kept: Vec<SlotLayers>,
-    /// Layers of any slot's generations held on `to`: kept, but not merged,
+    pub kept: Vec<AccountLayers>,
+    /// Layers of any account's generations held on `to`: kept, but not merged,
     /// because neither their base image nor their interface versions match
     /// it.
     #[serde(default)]
     pub held: Vec<HeldLayer>,
-    /// Slots an older tilo-vmd put back on the image at this change, deleting their generations.
+    /// Accounts an older tilo-vmd put back on the image at this change, deleting their generations.
     /// tilo-vmd no longer drops anything; the field stays readable so such a record is reported
     /// as what it was.
     #[serde(default)]
-    pub dropped: Vec<SlotLayers>,
-    /// What that older tilo-vmd deleted of the dropped slots' layers.
+    pub dropped: Vec<AccountLayers>,
+    /// What that older tilo-vmd deleted of the dropped accounts' layers.
     #[serde(default)]
     pub freed_bytes: u64,
 }
@@ -1122,14 +1122,14 @@ pub struct HeldLayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotLayers {
-    pub slot: String,
+pub struct AccountLayers {
+    pub account: String,
     pub generation: u64,
     /// The components that generation had swapped in, by name.
     pub components: Vec<String>,
 }
 
-impl SlotLayers {
+impl AccountLayers {
     fn components_text(&self) -> String {
         if self.components.is_empty() {
             "no components".to_owned()
@@ -1155,22 +1155,22 @@ pub fn booted_image(cmdline: &str) -> Option<String> {
 }
 
 impl ImageChange {
-    /// One line per slot: which slots run layers built on the previous image, and how to reach
+    /// One line per account: which accounts run layers built on the previous image, and how to reach
     /// either image.
     #[must_use]
     pub fn describe(&self) -> Vec<String> {
         let mut lines = Vec::new();
         if !self.kept.is_empty() {
             lines.push(format!(
-                "the OS image changed ({}): these slots keep the layers built on the previous image; tilo-vm rollback --slot <slot> --to 0 runs the image as installed, a new swap builds against it",
+                "the OS image changed ({}): these accounts keep the layers built on the previous image; tilo-vm rollback --account <account> --to 0 runs the image as installed, a new swap builds against it",
                 self.at
             ));
-            for slot in &self.kept {
+            for account in &self.kept {
                 lines.push(format!(
-                    "  slot {} stays on generation {} ({})",
-                    slot.slot,
-                    slot.generation,
-                    slot.components_text()
+                    "  account {} stays on generation {} ({})",
+                    account.account,
+                    account.generation,
+                    account.components_text()
                 ));
             }
         }
@@ -1197,12 +1197,12 @@ impl ImageChange {
                     String::new()
                 }
             ));
-            for slot in &self.dropped {
+            for account in &self.dropped {
                 lines.push(format!(
-                    "  slot {} left generation {} ({})",
-                    slot.slot,
-                    slot.generation,
-                    slot.components_text()
+                    "  account {} left generation {} ({})",
+                    account.account,
+                    account.generation,
+                    account.components_text()
                 ));
             }
         }
@@ -1211,17 +1211,17 @@ impl ImageChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotCreateResult {
-    pub slot: SlotInfo,
+pub struct AccountCreateResult {
+    pub account: AccountInfo,
     pub created: bool,
     pub actions: Vec<Action>,
-    /// Set exactly when [`SlotCreate::identity`] was asked for; a daemon
+    /// Set exactly when [`AccountCreate::identity`] was asked for; a daemon
     /// that leaves it out does not know the flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<TestIdentity>,
 }
 
-/// The throwaway test identity a slot's user holds.
+/// The throwaway test identity an account's user holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestIdentity {
     /// Minted by this create, rather than kept from an earlier one.
@@ -1231,7 +1231,7 @@ pub struct TestIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotRmResult {
+pub struct AccountRmResult {
     pub removed: bool,
     pub actions: Vec<Action>,
 }
@@ -1271,7 +1271,7 @@ pub struct CohortSelection {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyResult {
-    pub slot: String,
+    pub account: String,
     pub generation: u64,
     /// False when the request matched the current state and nothing was done.
     pub changed: bool,
@@ -1332,7 +1332,7 @@ pub struct LogsResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatResult {
-    pub slot: String,
+    pub account: String,
     pub seat: String,
     pub changed: bool,
     pub actions: Vec<Action>,
@@ -1353,8 +1353,8 @@ pub struct ControlResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputResult {
-    pub slot: String,
-    /// The logind seat the devices belong to (`seat-<slot>`, or `seat0` while the slot holds it).
+    pub account: String,
+    /// The logind seat the devices belong to (`seat-<account>`, or `seat0` while the account holds it).
     pub seat: String,
     /// Kernel input events written, `SYN` reports included.
     pub events: u64,
@@ -1362,7 +1362,7 @@ pub struct InputResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppInstallResult {
-    pub slot: String,
+    pub account: String,
     /// `[package].id` of the installed app, when tilo-install reported it.
     pub id: Option<String>,
     pub version: Option<String>,
@@ -1382,8 +1382,8 @@ pub enum BuildTarget {
         profile: Option<String>,
     },
     /// An app under `apps/<dir>`, packaged as a self-signed `.tapp` and
-    /// installed into `slot`'s app store.
-    App { dir: String, slot: String },
+    /// installed into `account`'s app store.
+    App { dir: String, account: String },
 }
 
 /// Stdin of `tilo-vmd build`.
@@ -1464,9 +1464,9 @@ impl JobLine {
     }
 }
 
-/// Slot names become Linux user names (`tds-<name>`, at most 32 bytes) and systemd instance
+/// Account names become Linux user names (`tds-<name>`, at most 32 bytes) and systemd instance
 /// names, so they are short, lowercase and dash-safe.
-pub fn valid_slot_name(name: &str) -> bool {
+pub fn valid_account_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     (1..=28).contains(&bytes.len())
         && bytes.first().is_some_and(u8::is_ascii_lowercase)
@@ -1520,10 +1520,10 @@ mod tests {
     }
 
     #[test]
-    fn slot_create_carries_outputs_as_spec_strings() {
-        let request = Request::SlotCreate(SlotCreate {
+    fn account_create_carries_outputs_as_spec_strings() {
+        let request = Request::AccountCreate(AccountCreate {
             name: "a".into(),
-            kind: SlotKind::Headful,
+            kind: AccountKind::Headful,
             owner: Owner::default(),
             outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
             identity: false,
@@ -1535,7 +1535,7 @@ mod tests {
             serde_json::json!(["2560x1600@2", "1920x1080@1"])
         );
         assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
-        let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
+        let bare: AccountCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
         assert!(bare.outputs.is_empty());
         assert!(!bare.identity);
     }
@@ -1547,12 +1547,12 @@ mod tests {
             let envelope = RequestEnvelope {
                 jsonrpc: "2.0".into(),
                 id: 7,
-                request: Request::SlotRestart(SlotRestart { name: "a".into() }),
+                request: Request::AccountRestart(AccountRestart { name: "a".into() }),
             };
             let line = serde_json::to_string(&envelope).unwrap();
             assert_eq!(
                 line,
-                r#"{"jsonrpc":"2.0","id":7,"method":"slot.restart","params":{"name":"a"}}"#
+                r#"{"jsonrpc":"2.0","id":7,"method":"account.restart","params":{"name":"a"}}"#
             );
             let back: RequestEnvelope = serde_json::from_str(&line).unwrap();
             assert_eq!(back, envelope);
@@ -1567,11 +1567,11 @@ mod tests {
                 }
                 .into(),
                 Status::default().into(),
-                SlotList {}.into(),
-                SlotShow { name: "a".into() }.into(),
+                AccountList {}.into(),
+                AccountShow { name: "a".into() }.into(),
                 LayerList {}.into(),
                 Swap {
-                    slot: "a".into(),
+                    account: "a".into(),
                     component: "c".into(),
                     layer: "h".into(),
                     info: None,
@@ -1579,7 +1579,7 @@ mod tests {
                 }
                 .into(),
                 Control {
-                    slot: "a".into(),
+                    account: "a".into(),
                     args: vec![],
                     private_args: None,
                 }
@@ -1609,14 +1609,14 @@ mod tests {
                 worktree: "wt-1234".into(),
                 target: BuildTarget::App {
                     dir: "notes".into(),
-                    slot: "a".into(),
+                    account: "a".into(),
                 },
                 provenance: Provenance::local("app:notes"),
                 owner: Owner::default(),
                 color: false,
             };
             let text = serde_json::to_string(&job).unwrap();
-            assert!(text.contains(r#""target":{"kind":"app","dir":"notes","slot":"a"}"#));
+            assert!(text.contains(r#""target":{"kind":"app","dir":"notes","account":"a"}"#));
             assert_eq!(serde_json::from_str::<BuildJob>(&text).unwrap(), job);
         }
     }
@@ -1639,15 +1639,15 @@ mod tests {
     }
 
     #[test]
-    fn slot_names_and_base_info_match_what_the_image_writes() {
-        // Phase: slot_names_fit_user_names.
+    fn account_names_and_base_info_match_what_the_image_writes() {
+        // Phase: account_names_fit_user_names.
         {
-            assert!(valid_slot_name("vm-dev-loop"));
-            assert!(!valid_slot_name("Upper"));
-            assert!(!valid_slot_name("-lead"));
-            assert!(!valid_slot_name("trail-"));
-            assert!(!valid_slot_name(&"a".repeat(29)));
-            assert!(!valid_slot_name("a/b"));
+            assert!(valid_account_name("vm-dev-loop"));
+            assert!(!valid_account_name("Upper"));
+            assert!(!valid_account_name("-lead"));
+            assert!(!valid_account_name("trail-"));
+            assert!(!valid_account_name(&"a".repeat(29)));
+            assert!(!valid_account_name("a/b"));
         }
 
         // Phase: base_info_reads_what_the_dev_image_writes.
@@ -1691,7 +1691,7 @@ mod userspace_compatibility_tests {
     fn new_userspace_method_is_rejected_by_old_v8_before_any_single_swap() {
         let value = serde_json::json!({"method":"userspace.apply","params":{}});
         assert!(serde_json::from_value::<LegacyRequest>(value).is_err());
-        let old = serde_json::json!({"method":"swap","params":{"slot":"owned","component":"shell","layer":"abcd"}});
+        let old = serde_json::json!({"method":"swap","params":{"account":"owned","component":"shell","layer":"abcd"}});
         let LegacyRequest::Swap(swap) = serde_json::from_value(old.clone()).unwrap();
         assert_eq!(swap.component, "shell");
         assert!(matches!(

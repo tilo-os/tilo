@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
         );
         let error = result.expect_err("daemon refusal must not become installation success");
         assert!(
-            error.to_string().contains("fixture slot refused"),
+            error.to_string().contains("fixture account refused"),
             "{error}"
         );
         assert_eq!(
@@ -309,9 +309,9 @@ for line in sys.stdin:
   received.extend(base64.b64decode(request['params']['data'])); result={'received':len(received)}
  elif method=='app.install':
   assert bytes(received)==b'owned package transport fixture'
-  assert request['params']['slot']=='fixture-refused'
+  assert request['params']['account']=='fixture-refused'
   with open(root+'/uploaded','wb') as file: file.write(received)
-  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':2,'message':'fixture slot refused','hint':'no install occurred'}}),flush=True)
+  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':2,'message':'fixture account refused','hint':'no install occurred'}}),flush=True)
   continue
  else: raise RuntimeError(method)
  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)

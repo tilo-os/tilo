@@ -1,4 +1,4 @@
-//! The virtual monitors of a headful slot: each output becomes one vkms connector on the slot's
+//! The virtual monitors of a headful account: each output becomes one vkms connector on the account's
 //! card. Like a monitor without an EDID, each connector offers the standard VESA (DMT) modes at
 //! 60 Hz, 1024x768 preferred; the requested mode and scale reach the compositor through the
 //! display settings every user goes through.
@@ -118,7 +118,7 @@ pub fn validate_outputs(outputs: &[OutputSpec]) -> Result<(), String> {
     }
     if outputs.len() > MAX_OUTPUTS {
         return Err(format!(
-            "{} outputs asked for; a slot has at most {MAX_OUTPUTS}",
+            "{} outputs asked for; an account has at most {MAX_OUTPUTS}",
             outputs.len()
         ));
     }

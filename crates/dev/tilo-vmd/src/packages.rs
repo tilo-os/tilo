@@ -2,7 +2,7 @@
 //! with the one package manager line the VM's image supports. On a bootc image `dnf
 //! install --transient` puts them in a transient overlay on `/usr` that the next
 //! reboot discards, so nothing outlives the test; sessions freeze their `/usr` when
-//! they start, so a slot sees them after its session restarts.
+//! they start, so an account sees them after its session restarts.
 
 use std::path::Path;
 

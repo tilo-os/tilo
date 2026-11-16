@@ -352,7 +352,7 @@ impl App {
         &mut self,
         remote: &mut Remote,
         vm: &Resolved,
-        slot: &str,
+        account: &str,
         dir: &str,
         builder: &[String],
     ) -> Result<AppInstallResult, CliError> {
@@ -403,7 +403,7 @@ impl App {
         }
         self.receipt.phase("install", || {
             remote.call(AppInstall {
-                slot: slot.into(),
+                account: account.into(),
                 source: LayerSource::Upload(upload),
             })
         })

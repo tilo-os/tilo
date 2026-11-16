@@ -6,14 +6,14 @@ tilo-vm swap kernel                  # build incrementally, install VM-wide, reb
 tilo-vm swap kernel --jobs 4         # fewer compile jobs (default: half the CPUs)
 tilo-vm swap kernel --direct         # boot the host build directly (libvirt); installs nothing
 tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up
-tilo-vm rollback --slot vm           # back to the previous kernel, or off the direct boot
+tilo-vm rollback --account vm           # back to the previous kernel, or off the direct boot
 tilo-vm vm ssh -- uname -a           # what is running
 ```
 
 `swap kernel` ends with the running kernel's release and build (`uname -r`,
 `uname -v`) and the time each step took. The kernel is VM-wide: it goes into
-the `vm` slot whether or not you pass `--slot vm`, and the reboot restarts
-every slot's session.
+the `vm` account whether or not you pass `--account vm`, and the reboot restarts
+every account's session.
 
 ## Same kernel as the image
 
@@ -63,7 +63,7 @@ CPUs, because the host usually runs other builds; `--jobs` or
 ## Into the VM
 
 1. The staged `usr/lib/modules/<release>/` is synced to the VM (rsync, only
-   what changed) and imported as a layer in the `vm` slot: a new generation,
+   what changed) and imported as a layer in the `vm` account: a new generation,
    like any VM-wide swap. systemd-sysext merges it, so the modules are in
    `/usr/lib/modules/<release>/`.
 2. tilo-vmd builds the initramfs in the VM with the image's own dracut,
@@ -90,7 +90,7 @@ initramfs.
 
 ## Rolling back
 
-`tilo-vm rollback --slot vm` moves the `vm` slot to its previous generation.
+`tilo-vm rollback --account vm` moves the `vm` account to its previous generation.
 When that changes the kernel, tilo-vmd points the next boot at the previous
 kernel's entry (reusing its initramfs) or, back at the base generation,
 makes the image's entry the default again and removes every `tilo-vm-*`
@@ -98,13 +98,13 @@ entry; tilo-vm reboots and confirms as above. After a direct boot, the same
 command boots the VM's disk again instead.
 
 A swapped kernel's entry carries the command line of the deployment it was
-installed from. Put the image's kernel back (`tilo-vm rollback --slot vm`
+installed from. Put the image's kernel back (`tilo-vm rollback --account vm`
 down to the base generation) before `tilo-vm vm upgrade`, or the VM keeps
 booting the old deployment through that entry.
 
 A failed boot falls back to the previous default entry. If that is an
 earlier dev build of the same release, its modules may not match the
-current layer's: `tilo-vm rollback --slot vm` puts them back in step. GRUB
+current layer's: `tilo-vm rollback --account vm` puts them back in step. GRUB
 can only clear a one-shot entry where it can write its environment (not a
 plain `grubenv` file on btrfs; an `env_block` works); where it cannot, the
 swap warns, and a kernel that never comes up keeps being booted until the
@@ -121,7 +121,7 @@ Nothing is installed: modules outside that initramfs are absent in the VM,
 and the image's initramfs features (encryption, tilo-rollback) are not
 there. Use it to see whether a kernel boots at all; use `swap kernel` for
 everything else. The VM keeps booting that kernel until
-`tilo-vm rollback --slot vm`.
+`tilo-vm rollback --account vm`.
 
 ## What it needs
 

@@ -31,7 +31,7 @@ use toml::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
-    /// Compositor, user services, CLIs a user runs: restart the slot's session.
+    /// Compositor, user services, CLIs a user runs: restart the account's session.
     Session,
     /// System services, greeter: merge into the VM's `/usr`.
     Vm,
@@ -64,7 +64,7 @@ pub struct ComponentInfo {
     pub scope: Scope,
     #[serde(default)]
     pub units: Vec<String>,
-    /// User units whose `ExecStart` runs these files. A slot's session restarts its whole user
+    /// User units whose `ExecStart` runs these files. An account's session restarts its whole user
     /// manager; the owner's login on a laptop keeps it and restarts only these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_units: Vec<String>,
@@ -76,7 +76,7 @@ pub struct ComponentInfo {
     /// refreshes the VM's `/usr` and restarts `units`, but leaves running sessions as they are.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outside_sessions: bool,
-    /// Opt-in phase CPU recording for a stand-in slot's shell generation.
+    /// Opt-in phase CPU recording for a stand-in account's shell generation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frame_cpu_trace: bool,
 }

@@ -1,4 +1,4 @@
-//! Boot entries for kernels in the `vm` slot. A kernel layer carries
+//! Boot entries for kernels in the `vm` account. A kernel layer carries
 //! `usr/lib/modules/<release>/` with `vmlinuz` and the signed modules. The modules
 //! merge into `/usr` with the VM-wide layers, but the boot loader starts the kernel
 //! before any extension merges, so `vmlinuz` and an initramfs also go to `/boot`
@@ -52,7 +52,7 @@ pub const IMAGE_INITRAMFS_MARKER: &str = "/usr/lib/tilo/initramfs-modules.txt";
 /// requested earlier in boot would stay unloaded.
 pub const SYSEXT_DROPIN: &str =
     "/etc/systemd/system/systemd-sysext.service.d/50-tilo-vm-kernel.conf";
-const SYSEXT_DROPIN_TEXT: &str = "# Written by tilo-vmd: the vm slot carries a kernel whose modules merge with\n\
+const SYSEXT_DROPIN_TEXT: &str = "# Written by tilo-vmd: the vm account carries a kernel whose modules merge with\n\
 # systemd-sysext. Load what was requested before they were there. Do not edit.\n\
 [Service]\n\
 ExecStartPost=-/usr/bin/udevadm trigger --action=add\n\
@@ -152,7 +152,7 @@ pub fn boot_options(cmdline: &str) -> String {
 
 pub fn entry_text(kver: &str, linux: &str, initrd: &str, options: &str) -> String {
     format!(
-        "# Written by tilo-vmd for a kernel in the vm slot (tilo-vm swap kernel). Do not edit.\n\
+        "# Written by tilo-vmd for a kernel in the vm account (tilo-vm swap kernel). Do not edit.\n\
          title Tilo dev kernel {kver}\n\
          version {kver}\n\
          linux {linux}\n\

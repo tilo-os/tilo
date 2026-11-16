@@ -364,11 +364,11 @@ fn audited_method(method: &str) -> &'static str {
         "device.unlock.enrol" => "device.unlock.enrol",
         "hello" => "hello",
         "status" => "status",
-        "slot.create" => "slot.create",
-        "slot.list" => "slot.list",
-        "slot.restart" => "slot.restart",
-        "slot.rm" => "slot.rm",
-        "slot.show" => "slot.show",
+        "account.create" => "account.create",
+        "account.list" => "account.list",
+        "account.restart" => "account.restart",
+        "account.rm" => "account.rm",
+        "account.show" => "account.show",
         "layer.upload.begin" => "layer.upload.begin",
         "layer.upload.chunk" => "layer.upload.chunk",
         "layer.import" => "layer.import",
@@ -460,8 +460,8 @@ mod tests {
     #[test]
     fn the_method_is_read_from_the_head_of_a_request() {
         assert_eq!(
-            method(br#"{"jsonrpc":"2.0","id":3,"method":"slot.create","params":{}}"#),
-            Some("slot.create")
+            method(br#"{"jsonrpc":"2.0","id":3,"method":"account.create","params":{}}"#),
+            Some("account.create")
         );
         assert_eq!(method(br#"{"jsonrpc":"2.0","id":3}"#), None);
         let mut long = br#"{"jsonrpc":"2.0","id":1,"#.to_vec();

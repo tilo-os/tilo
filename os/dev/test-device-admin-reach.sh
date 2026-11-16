@@ -17,7 +17,7 @@
 #   2. B enrols as an administrator (`tilo-vm vm enrol-admin`, the owner's
 #      `tilo-enroll certify --capability admin`), finds board neither at its
 #      recorded address nor by name, and reaches it by name over the relay:
-#      `tilo-vm vm status board` says so, and a slot is created and listed.
+#      `tilo-vm vm status board` says so, and an account is created and listed.
 #   3. A refuses another identity's administrator, a certificate that does
 #      not verify, and one of the owner's devices without the grant, each
 #      with its reason, and its journal logs every session and refusal.
@@ -162,7 +162,7 @@ if [ -n "$bootstrap_cli" ]; then
     --ssh "$TILO_USER@127.0.0.1:${TILO_REACH_SSH_B:-2242}" --key "$bootstrap_state/key" \
     > "$out/bootstrap-add.txt" 2>&1
   TILO_VM_CONFIG="$bootstrap_state/vms.toml" TILO_VM=reach-bootstrap \
-    "$bootstrap_cli" swap --slot vm vm-cli --builder host --profile dev \
+    "$bootstrap_cli" swap --account vm vm-cli --builder host --profile dev \
     > "$out/bootstrap-swap.txt" 2>&1
   as_root vm_b 'rm -f /etc/sudoers.d/tilo-reach-bootstrap'
   vm_b ssh "sed -i '\|$fixture_key|d' ~/.ssh/authorized_keys"
@@ -292,13 +292,13 @@ printf '%s\n' "$status_json" > "$out/b-status.json"
   || die "another device answered for board: $status_json"
 jq -e --arg relay "$relay_url" '.route.peer.via | startswith($relay)' <<<"$status_json" >/dev/null \
   || die "the route went through another relay than the harness's: $status_json"
-created="$(tilo_vm admin slot create reach --headless --json)"
-printf '%s\n' "$created" > "$out/b-slot-create.json"
-[ "$(jq -r .slot.name <<<"$created")" = reach ] || die "slot create over the relay failed: $created"
-listed="$(tilo_vm admin slot list --json)"
-printf '%s\n' "$listed" > "$out/b-slot-list.json"
-jq -e 'map(.name) | index("reach")' <<<"$listed" >/dev/null || die "the new slot is not listed: $listed"
-note "B reached board through the relay and created a slot on it"
+created="$(tilo_vm admin account create reach --headless --json)"
+printf '%s\n' "$created" > "$out/b-account-create.json"
+[ "$(jq -r .account.name <<<"$created")" = reach ] || die "account create over the relay failed: $created"
+listed="$(tilo_vm admin account list --json)"
+printf '%s\n' "$listed" > "$out/b-account-list.json"
+jq -e 'map(.name) | index("reach")' <<<"$listed" >/dev/null || die "the new account is not listed: $listed"
+note "B reached board through the relay and created an account on it"
 
 # --- A refuses everyone else ------------------------------------------------------
 # Another identity's administrator.
@@ -347,7 +347,7 @@ for reason in OtherIdentity NotCertified NotAdministrator; do
 done
 grep -q "admin session [0-9]* opened by \"laptop (tilo-vm)\" .* over relay $relay_url" <<<"$journal_a" \
   || die "A's journal does not log the administrator's session and its route"
-grep -q 'admin session [0-9]*: slot.create' <<<"$journal_a" || die "A's journal does not log the requests"
+grep -q 'admin session [0-9]*: account.create' <<<"$journal_a" || die "A's journal does not log the requests"
 note "A refused another identity, a forged certificate and a device without the grant"
 
 # --- the link is cut and restored -------------------------------------------------

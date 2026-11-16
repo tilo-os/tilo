@@ -363,7 +363,7 @@ pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> 
     if facts.sealed {
         return Err(refused(
             reference,
-            "is sealed: it carries a UKI under /boot/EFI/Linux, whose composefs digest no dev layer can match, so the VM could not merge slots into /usr",
+            "is sealed: it carries a UKI under /boot/EFI/Linux, whose composefs digest no dev layer can match, so the VM could not merge accounts into /usr",
             build,
         ));
     }

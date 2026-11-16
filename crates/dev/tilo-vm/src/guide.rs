@@ -11,7 +11,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "concepts",
-        "VM, branch, slot, layer, generation, seat, headful vs headless",
+        "VM, branch, account, layer, generation, seat, headful vs headless",
         include_str!("../guide/concepts.md"),
     ),
     (
@@ -51,7 +51,7 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
     ),
     (
         "devices",
-        "boards and other real machines: vm add, the device slot, aarch64 builds",
+        "boards and other real machines: vm add, the device account, aarch64 builds",
         include_str!("../guide/devices.md"),
     ),
     (
@@ -123,7 +123,7 @@ mod tests {
         {
             let text = topic("quickstart").unwrap();
             for needle in [
-                "tilo-vm slot create --headful",
+                "tilo-vm account create --headful",
                 "tilo-vm swap tilo-session",
                 "tilo-vm shot",
                 "tilo-vm seat claim",
@@ -155,7 +155,7 @@ mod tests {
             fn walk(command: &clap::Command, path: &str, out: &mut Vec<String>) {
                 for sub in command.get_subcommands() {
                     let name = format!("{path} {}", sub.get_name()).trim().to_owned();
-                    if sub.get_arguments().any(|a| a.get_long() == Some("slot")) {
+                    if sub.get_arguments().any(|a| a.get_long() == Some("account")) {
                         out.push(name.clone());
                     }
                     walk(sub, &name, out);
@@ -166,15 +166,15 @@ mod tests {
             assert!(commands.len() >= 14, "{commands:?}");
             let quickstart = topic("quickstart").unwrap();
             let rule = quickstart
-                .split("accepts `--slot <name>`")
+                .split("accepts `--account <name>`")
                 .nth(1)
                 .and_then(|rest| rest.split("\n- ").next())
-                .expect("the quickstart states the --slot rule");
+                .expect("the quickstart states the --account rule");
             for command in commands {
                 let leaf = command.rsplit(' ').next().unwrap();
                 assert!(
                     rule.contains(leaf),
-                    "the --slot rule omits {command}: {rule}"
+                    "the --account rule omits {command}: {rule}"
                 );
             }
             let troubleshooting = topic("troubleshooting").unwrap();
@@ -182,7 +182,7 @@ mod tests {
             assert!(troubleshooting.contains("target/debug/tilo-vm"));
             let swapping = topic("swapping").unwrap();
             assert!(swapping.contains("## Verify your swap"));
-            assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));
+            assert!(swapping.contains("tilo-vm account exec -- sha256sum"));
         }
 
         {
@@ -223,10 +223,10 @@ mod tests {
             for (name, _, text) in TOPICS {
                 for stale in [
                     "swap vm ",
-                    "swap my-slot",
+                    "swap my-account",
                     "swap review-a",
                     "Every command takes `--json` and writes a receipt",
-                    "`--slot` for `swap`",
+                    "`--account` for `swap`",
                     "cargo install --locked --path crates/dev/tilo-vm",
                     "refusing to deploy",
                     "podman login code.tilo.so",
@@ -235,15 +235,15 @@ mod tests {
                 }
             }
             let swapping = topic("swapping").unwrap();
-            assert!(swapping.contains("--slot vm fs"));
+            assert!(swapping.contains("--account vm fs"));
             assert!(swapping.contains("--profile dev"));
             assert!(swapping.contains("dev-overrides"));
             let devices = topic("devices").unwrap();
             for needle in [
                 "tilo-vm vm add opi --ssh root@",
-                "tilo-vm swap --slot device tilo-session --from sha:",
-                "tilo-vm rollback --slot device --to 0",
-                "tilo-vm slot exec --slot device -- sha256sum /usr/bin/tilo-session",
+                "tilo-vm swap --account device tilo-session --from sha:",
+                "tilo-vm rollback --account device --to 0",
+                "tilo-vm account exec --account device -- sha256sum /usr/bin/tilo-session",
                 "TILO_VM_CARGO",
                 "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
                 "vm upgrade opi",

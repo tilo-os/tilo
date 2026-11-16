@@ -1,10 +1,10 @@
-//! Per-seat uinput devices for headful slots. A uinput device lives as long as the
+//! Per-seat uinput devices for headful accounts. A uinput device lives as long as the
 //! file descriptor that created it, and every `tilo-vmd rpc` is short-lived, so the
 //! devices are owned by `tilo-vmd input-serve`, a transient system unit. It creates
 //! a keyboard and an absolute pointer at once, and a touchscreen, a pen and a
-//! gamepad the first time an action needs one. Every device's `phys` is the slot's
+//! gamepad the first time an action needs one. Every device's `phys` is the account's
 //! logind seat, so `73-uinput-seat.rules` tags them for that seat only and the
-//! slot's compositor gets them like plugged-in hardware.
+//! account's compositor gets them like plugged-in hardware.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -692,7 +692,7 @@ pub fn parse_mode(modes: &str) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-/// The coordinate spaces of a slot made with `--outputs`: the absolute pointer spans the logical
+/// The coordinate spaces of an account made with `--outputs`: the absolute pointer spans the logical
 /// desktop, touch and pen the first output, where the compositor puts a touchscreen that names
 /// none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -701,13 +701,13 @@ pub struct Geometry {
     pub touch: (u32, u32),
 }
 
-/// Where `input-serve` for a slot listens.
-pub fn socket_path(slot: &str) -> PathBuf {
-    Path::new("/run/tilo-vm-input").join(format!("{slot}.sock"))
+/// Where `input-serve` for an account listens.
+pub fn socket_path(account: &str) -> PathBuf {
+    Path::new("/run/tilo-vm-input").join(format!("{account}.sock"))
 }
 
-pub fn unit_name(slot: &str) -> String {
-    format!("tilo-vm-input-{slot}.service")
+pub fn unit_name(account: &str) -> String {
+    format!("tilo-vm-input-{account}.service")
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1046,8 +1046,8 @@ mod uinput {
             name: [0; 80],
             ff_effects_max: 0,
         };
-        for (slot, byte) in setup.name.iter_mut().zip(name.bytes().take(79)) {
-            *slot = byte;
+        for (cell, byte) in setup.name.iter_mut().zip(name.bytes().take(79)) {
+            *cell = byte;
         }
         ioctl_ptr(file, UI_DEV_SETUP, (&raw const setup).cast())?;
         ioctl(file, UI_DEV_CREATE, 0)
@@ -1223,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn input_events_press_type_click_and_route_per_slot() {
+    fn input_events_press_type_click_and_route_per_account() {
         {
             let steps = events(&[InputAction::Key {
                 combos: vec!["ctrl+t".into()],
