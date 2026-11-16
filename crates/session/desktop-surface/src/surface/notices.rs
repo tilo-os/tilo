@@ -1111,6 +1111,45 @@ impl Widget for NotificationLayer {
     fn name(&self) -> &'static str {
         "DesktopNotifications"
     }
+
+    /// Each banner as a card of its own words, with the controls it paints as real buttons where
+    /// they stand; the centre, while it is up, as the panel it paints with its controls as buttons
+    /// a reader and the keyboard reach.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("aside");
+        let theme = cx.theme().clone();
+        let feed = self.stack.feed();
+        for (id, rect) in self.stack.banner_rects() {
+            let Some(banner) = feed.banner(id) else {
+                continue;
+            };
+            let words = &banner.notification;
+            let body = if words.show_preview && !words.body.is_empty() {
+                format!("{}\n{}", words.title, words.body)
+            } else {
+                words.title.clone()
+            };
+            let look = ui::composition::TextLook::new(
+                body,
+                &theme.text(ui::TextRole::Body),
+                Some(theme.tokens.colors.text_primary),
+            )
+            .with_max_lines(Some(3));
+            let card = cx.part(&format!("banner:{id}"), "NotificationBanner", rect);
+            card.tag = Some("article");
+            card.own = Some(ui::composition::Own::Text(look));
+        }
+        if let Some(access) = self.stack.accessibility() {
+            compose_targets(cx, &access, "banner-control");
+        }
+        if let (Some(center), Some(layout)) = (self.centre(), self.layout()) {
+            let panel = cx.part("centre", "NotificationCentre", layout.panel());
+            panel.painted(self.notifications.revision());
+            let access = center.accessibility(self.notifications.host(), &layout, ui::time::now());
+            compose_targets(cx, &access, "centre-control");
+        }
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty || self.drawn_revision.get() != Some(self.notifications.revision())
     }
@@ -1297,6 +1336,35 @@ impl Widget for NotificationLayer {
         self.dirty |= focused;
         focused
     }
+}
+
+/// Every control the painted overlay tells a reader of as a button where it stands, in `cx`: its
+/// paint keeps the look, and the element is what a reader finds and the pointer presses.
+fn compose_targets(cx: &mut ui::composition::HtmlCx<'_>, root: &AccessNode, key: &str) {
+    fn walk(
+        cx: &mut ui::composition::HtmlCx<'_>,
+        node: &AccessNode,
+        key: &str,
+        index: &mut usize,
+    ) {
+        for child in &node.children {
+            if let Some(bounds) = child.bounds
+                && (child.state.focusable || child.action_target.is_some())
+            {
+                let rect = bounds.to_rect();
+                if !rect.is_zero_area() {
+                    *index = index.saturating_add(1);
+                    let part = cx.part(&format!("{key}:{index}"), "NotificationControl", rect);
+                    part.tag = Some("button");
+                    part.focusable = true;
+                    part.semantics = Some(child.clone());
+                }
+            }
+            walk(cx, child, key, index);
+        }
+    }
+    let mut index = 0;
+    walk(cx, root, key, &mut index);
 }
 
 /// A leaf over the whole surface, out of the strip's flow.

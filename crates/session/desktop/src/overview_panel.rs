@@ -602,6 +602,19 @@ impl OverviewPanel {
 }
 
 impl Widget for OverviewPanel {
+    /// The overview is drawn — the ground, the workspace cards and their pictures — so it shows
+    /// as a picture of it, with every workspace, window and action on it a button where it stands.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        if !self.open {
+            return;
+        }
+        cx.picture();
+        if let Some(access) = self.accessibility() {
+            crate::desktop_host::compose_targets(cx, &access, "overview");
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

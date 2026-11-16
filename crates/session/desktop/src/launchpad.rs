@@ -668,6 +668,119 @@ impl CollaborationLaunchpad {
 }
 
 impl Widget for CollaborationLaunchpad {
+    /// The heading, each card as a real button holding its name and what it does, the way into
+    /// every app, and the keyboard hint, each where the grid stands it.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("section");
+        let theme = cx.theme().clone();
+        let ink = theme.tokens.colors.text_primary;
+        let dim = theme.tokens.colors.text_dim;
+        let Some(first) = self.card_rects.first().copied() else {
+            return;
+        };
+        let last = self.last_card();
+        let left = first.x0;
+        let width = (last.x1 - left).max(0.0);
+        if width <= 0.0 {
+            return;
+        }
+        let heading_style = theme.text(TextRole::Display);
+        let caption_style = theme.text(TextRole::Caption);
+        let heading_h = f64::from(heading_style.line_height_px());
+        let caption_h = f64::from(caption_style.line_height_px());
+        let heading_y = first.y0 - HEADING_BAND;
+        let title = cx.part(
+            "title",
+            "LaunchpadTitle",
+            Rect::new(left, heading_y, left + width, heading_y + heading_h),
+        );
+        title.tag = Some("h1");
+        title.own = Some(ui::composition::Own::Text(
+            ui::composition::TextLook::new(self.title(), &heading_style, Some(ink))
+                .with_max_lines(Some(1)),
+        ));
+        let subtitle_y = heading_y + heading_h + 3.0;
+        let subtitle = cx.part(
+            "subtitle",
+            "LaunchpadSubtitle",
+            Rect::new(left, subtitle_y, left + width, subtitle_y + caption_h),
+        );
+        subtitle.tag = Some("p");
+        subtitle.own = Some(ui::composition::Own::Text(
+            ui::composition::TextLook::new(self.subtitle(), &caption_style, Some(ink))
+                .with_max_lines(Some(1)),
+        ));
+        let base_style = theme.text(TextRole::Body);
+        let base_h = f64::from(base_style.line_height_px());
+        for (action, rect) in self.cards.iter().copied().zip(self.card_rects.iter().copied()) {
+            let key = format!("card:{}", action.slug());
+            let card = cx.part(&key, "LaunchpadCard", rect);
+            card.tag = Some("button");
+            card.focusable = true;
+            card.semantics = Some(
+                ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                    .with_name(action.label())
+                    .with_description(action.detail(self.scope))
+                    .with_state(ui::a11y::AccessState::new().focusable(true)),
+            );
+            let label = cx.part(
+                &format!("{key}:label"),
+                "LaunchpadCardLabel",
+                Rect::new(rect.x0 + 56.0, rect.y0 + 16.0, rect.x1 - 16.0, rect.y0 + 16.0 + base_h),
+            );
+            label.own = Some(ui::composition::Own::Text(
+                ui::composition::TextLook::new(action.label(), &base_style, Some(ink))
+                    .with_max_lines(Some(1)),
+            ));
+            let detail = cx.part(
+                &format!("{key}:detail"),
+                "LaunchpadCardDetail",
+                Rect::new(rect.x0 + 56.0, rect.y0 + 47.0, rect.x1 - 16.0, rect.y1 - 6.0),
+            );
+            detail.own = Some(ui::composition::Own::Text(
+                ui::composition::TextLook::new(action.detail(self.scope), &caption_style, Some(dim))
+                    .with_max_lines(Some(2)),
+            ));
+        }
+        let button = self.app_button_rect();
+        let (fill, edge, face_ink) = ui::widget::face_colors(
+            &theme,
+            ui::widget::ButtonRole::Secondary,
+            ui::widget::Interaction::default(),
+        );
+        let part = cx.part("open-app", "LaunchpadOpenApp", button);
+        part.tag = Some("button");
+        part.focusable = true;
+        part.own = Some(ui::composition::Own::Face(ui::composition::Face {
+            icon: None,
+            label: Some(
+                ui::composition::TextLook::new(t("launchpad-open-app"), &base_style, Some(face_ink))
+                    .with_max_lines(Some(1)),
+            ),
+            detail: None,
+            trailing: None,
+            fill: Some(ui::composition::rgba8(fill)),
+            edge: edge.map(ui::composition::rgba8),
+            radius: ui::chrome::ChromeRole::Control.radius(&theme, button.height()),
+            pad: 20.0,
+            gap: 0.0,
+            spread: false,
+        }));
+        let hint_width = (button.x0 - left - 12.0).max(0.0);
+        if hint_width > 0.0 {
+            let hint_y = last.y1 + HINT_TOP;
+            let hint = cx.part(
+                "hint",
+                "LaunchpadHint",
+                Rect::new(left, hint_y, left + hint_width, hint_y + caption_h),
+            );
+            hint.own = Some(ui::composition::Own::Text(
+                ui::composition::TextLook::new(self.keyboard_hint(), &caption_style, Some(ink))
+                    .with_max_lines(Some(1)),
+            ));
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

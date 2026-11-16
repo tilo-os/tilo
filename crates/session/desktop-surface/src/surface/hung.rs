@@ -313,6 +313,71 @@ impl Widget for HungApps {
         "HungApps"
     }
 
+    /// Each card as its own section over the window it is about: what happened and whose window it
+    /// is as words, and its two ways out as real buttons.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("aside");
+        let theme = cx.theme().clone();
+        let heading = t("hung-app-title");
+        let style = Self::heading_style(&theme);
+        let ink = theme.tokens.colors.text_primary;
+        for painted in &self.painted {
+            let card = cx.part(
+                &format!("hung:{}", painted.tab),
+                "HungAppCard",
+                painted.card,
+            );
+            card.tag = Some("section");
+            card.own = Some(ui::composition::Own::Text(
+                ui::composition::TextLook::new(
+                    format!("{heading}\n{}", painted.title),
+                    &style,
+                    Some(ink),
+                )
+                .with_max_lines(None),
+            ));
+            for (rect, choice) in &painted.buttons {
+                let (label, role, key) = match choice {
+                    LivenessChoice::Wait => (t("hung-app-wait"), ButtonRole::Secondary, "wait"),
+                    LivenessChoice::ForceQuit => {
+                        (t("hung-app-force-quit"), ButtonRole::Destructive, "quit")
+                    }
+                };
+                let (fill, edge, ink) = ui::widget::face_colors(
+                    &theme,
+                    role,
+                    ui::widget::Interaction::default(),
+                );
+                let part = cx.part(
+                    &format!("hung:{}:{key}", painted.tab),
+                    "HungAppChoice",
+                    *rect,
+                );
+                part.tag = Some("button");
+                part.focusable = true;
+                part.own = Some(ui::composition::Own::Face(ui::composition::Face {
+                    icon: None,
+                    label: Some(
+                        ui::composition::TextLook::new(
+                            label,
+                            &theme.text(TextRole::Body),
+                            Some(ink),
+                        )
+                        .with_max_lines(Some(1)),
+                    ),
+                    detail: None,
+                    trailing: None,
+                    fill: Some(ui::composition::rgba8(fill)),
+                    edge: edge.map(ui::composition::rgba8),
+                    radius: f64::from(theme.tokens.radii.control),
+                    pad: 0.0,
+                    gap: 0.0,
+                    spread: false,
+                }));
+            }
+        }
+    }
+
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
