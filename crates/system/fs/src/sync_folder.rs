@@ -422,12 +422,6 @@ impl SyncFolder {
             .write_path(rel(path), &self.staging, stamp.mtime_ms())
         {
             Ok(()) => Ok(Some(stamp)),
-            Err(libc::EINVAL) => {
-                // The workspace keeps its version and the folder the bytes
-                // its format refused, until either changes again.
-                tracing::warn!(path, "the document's format refused the folder's version");
-                Ok(Some(stamp))
-            }
             Err(code) => Err(errno(code)),
         }
     }

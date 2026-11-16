@@ -2354,23 +2354,28 @@ async fn seed_from_dir(
                 stack.push((ino, path));
             } else if ft.is_file() {
                 let data = std::fs::read(&path)?;
-                let codec = fs::fs::document_codec_for(&name);
-                if let Some(c) = codec {
-                    // Recognized rich-text format → seed as a CRDT document.
-                    let mut ns = namespace.lock_recover();
-                    if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
-                        ns.import_document(ino, &data, unix_now_ms(), &document_content);
-                    }
-                } else {
-                    let size = data.len() as u64;
-                    let hash = store.write_content(&data).await?;
-                    namespace.lock_recover().create_file(
-                        parent_ino,
-                        &name,
+                let size = data.len() as u64;
+                let hash = store.write_content(&data).await?;
+                let mut ns = namespace.lock_recover();
+                // A recognized rich-text format is seeded as a CRDT document that reads
+                // back as the file; one its codec cannot be stays a plain file.
+                let document = fs::fs::document_codec_for(&name).and_then(|codec| {
+                    let ino = ns.create_document(parent_ino, &name, &codec, unix_now_ms())?;
+                    let kept = ns.write_document(
+                        ino,
+                        &data,
                         hash.as_ref(),
-                        size,
                         unix_now_ms(),
+                        &document_content,
                     );
+                    if !kept {
+                        ns.make_plain_file(ino);
+                        ns.set_content(ino, hash.as_ref(), size, unix_now_ms());
+                    }
+                    Some(ino)
+                });
+                if document.is_none() {
+                    ns.create_file(parent_ino, &name, hash.as_ref(), size, unix_now_ms());
                 }
             }
         }

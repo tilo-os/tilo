@@ -620,9 +620,14 @@ use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
 
+/// The codec a new file named `name` is kept as a document with: a format the codecs both read
+/// and write, so the file can read back as written. A format they only read (HTML, RTF) is a
+/// plain file.
 pub fn document_codec_for(name: &str) -> Option<String> {
     let ext = name.rsplit('.').next().filter(|e| *e != name)?;
-    tilo_doc_codecs::provider_for_ext(ext).map(|_| ext.to_lowercase())
+    tilo_doc_codecs::provider_for_ext(ext)
+        .filter(|provider| provider.exports())
+        .map(|_| ext.to_lowercase())
 }
 
 pub struct QuickFS {
@@ -1486,6 +1491,38 @@ impl QuickFS {
         Ok(())
     }
 
+    /// Create the file `name` in `parent` with `mode` as a FUSE `create` does, open for
+    /// writing with an empty stage: a document when its name is a format kept as one. Returns
+    /// its inode and whether it is a document.
+    fn create_for_write(&self, parent: u64, name: &[u8], mode: u32) -> Result<(u64, bool), i32> {
+        let codec = std::str::from_utf8(name).ok().and_then(document_codec_for);
+        let ino = if let Some(codec) = codec.as_deref() {
+            let mut ns = self.ns();
+            let created = ns
+                .create_document(parent, name, codec, now_ms())
+                .ok_or(ENOENT)?;
+            ns.note_change();
+            created
+        } else {
+            self.create_empty_file(parent, name)?
+        };
+        self.set_mode(ino, mode)?;
+        let document = codec.is_some();
+        let stage = self.empty_stage(document).shared();
+        self.buffers().insert(ino, stage);
+        // A new document is committed at its close even when nothing was written: an
+        // empty document's format may write something (an `.odt` is a zip), and the file
+        // must read back empty.
+        self.buffer_states().insert(
+            ino,
+            BufferState {
+                committed: (!document).then_some(0),
+                ..BufferState::default()
+            },
+        );
+        Ok((ino, document))
+    }
+
     /// A range of document `ino`'s shared export, clamped to its length. `offset` and
     /// `size` cross the FUSE boundary as untrusted values.
     fn read_document_export(&self, ino: u64, offset: u64, size: u32) -> BufferedRead {
@@ -1986,6 +2023,9 @@ impl QuickFS {
         }
     }
 
+    /// Commit `data` as the file document `ino` is. A file its codec cannot be (it refuses
+    /// the bytes, or the format is one it only reads) becomes a plain file holding them: a
+    /// file reads back what was written to it, whatever its name says.
     fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
         if self
             .document_export(ino)
@@ -1995,38 +2035,32 @@ impl QuickFS {
             return Ok(());
         }
         // The version records the written bytes by the content id the store serves them
-        // under, like any other file's, so history can read and restore it.
+        // under, like any other file's, so history can read and restore it; the document
+        // reads back as them, though its codec would normalize it, until it is edited
+        // ([`Self::document_export`]).
         let stored = self
             .write_content_blocking(data)
             .map_err(|error| commit_errno(&error))?;
+        let kept = {
+            let mut ns = self.ns();
+            let kept =
+                ns.write_document(ino, data, stored.as_ref(), now_ms(), &self.document_content);
+            if !kept {
+                ns.make_plain_file(ino);
+            }
+            ns.note_change();
+            kept
+        };
+        self.doc_export_cache().remove(&ino);
+        if !kept {
+            return self.commit_bytes(ino, data);
+        }
         let content = stored.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         self.remember_rich_metadata_as(
             ino,
             data,
             content.unwrap_or_else(|| fs_protocol::ContentHash(*blake3::hash(data).as_bytes())),
         );
-        // import_document validates before replacing; an invalid input
-        // leaves the previous content intact and returns false.
-        let imported = {
-            let mut ns = self.ns();
-            let imported = ns.import_document(ino, data, now_ms(), &self.document_content);
-            if imported {
-                // Reads back as written, though its codec would normalize it, until the
-                // document is edited ([`Self::document_export`]).
-                if let Some(written) = &stored
-                    && let Some(projected) = ns.export_document(ino, &self.document_content)
-                {
-                    ns.set_document_written(ino, written, data, &projected);
-                }
-                ns.note_change();
-            }
-            imported
-        };
-        self.doc_export_cache().remove(&ino);
-        if !imported {
-            eprintln!("document import rejected (invalid format); previous content kept");
-            return Err(EINVAL);
-        }
         self.publish();
         self.record_version(ino, fs_protocol::FileProvenance::Edit, content);
         Ok(())
@@ -5642,47 +5676,18 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(e));
             return;
         }
-        let codec = name.to_str().and_then(document_codec_for);
-        let created = if let (Some(name), Some(codec)) = (name.to_str(), codec.as_deref()) {
-            let mut ns = self.ns();
-            let created = ns
-                .create_document(parent.0, name, codec, now_ms())
-                .ok_or(ENOENT);
-            if created.is_ok() {
-                ns.note_change();
-            }
-            created
-        } else {
-            self.create_empty_file(parent.0, name_bytes)
-        };
-        let ino = match created {
+        let (ino, document) = match self.create_for_write(parent.0, name_bytes, mode & !umask) {
             Ok(created) => created,
             Err(error) => {
                 reply.error(to_errno(error));
                 return;
             }
         };
-        if let Err(error) = self.set_mode(ino, mode & !umask) {
-            reply.error(to_errno(error));
-            return;
-        }
         let attr = self.ns().getattr(ino);
         let Some(attr) = attr else {
             reply.error(to_errno(EIO));
             return;
         };
-        {
-            let stage = self.empty_stage(self.is_document(attr.ino.0)).shared();
-            let mut buffers = self.buffers();
-            buffers.insert(attr.ino.0, stage);
-            self.buffer_states().insert(
-                attr.ino.0,
-                BufferState {
-                    committed: Some(0),
-                    ..BufferState::default()
-                },
-            );
-        }
         self.publish();
         drop(writer);
         writer = self.note_writer(req.pid(), Some(attr.ino.0));
@@ -5702,7 +5707,7 @@ impl Filesystem for QuickFS {
             );
         }
         reply.created(
-            &self.attr_ttl(Self::ttl_for(codec.is_some())),
+            &self.attr_ttl(Self::ttl_for(document)),
             &self.presented_to(req, attr),
             Generation(0),
             FileHandle(handle),

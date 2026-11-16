@@ -567,11 +567,9 @@ impl QuickFS {
 
     /// Writes the file at `snapshot` (immutable while this runs) as the whole file at `rel`, as a create
     /// or an open, write and close of the mount would: a document is imported through its format's
-    /// codec (an invalid document is refused and the current one kept), a new file named for a
-    /// registered format becomes a document where the namespace keeps documents, and anything else is
-    /// content ([`Self::apply_local_snapshot`]).
-    ///
-    /// `EINVAL` for a document its codec refuses.
+    /// codec (bytes it cannot read back as written make it a plain file holding them), a new file
+    /// named for a registered format becomes a document where the namespace keeps documents, and
+    /// anything else is content ([`Self::apply_local_snapshot`]).
     pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
@@ -632,7 +630,7 @@ impl QuickFS {
         }
         let committed = self.commit_bytes(ino, data);
         if committed.is_err() {
-            // A document its codec refuses must not stay behind empty.
+            // A document whose bytes could not be committed must not stay behind empty.
             let _ = self.delete_named(parent, name.as_bytes(), false);
         }
         committed

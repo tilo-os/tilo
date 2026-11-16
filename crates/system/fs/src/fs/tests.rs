@@ -2228,6 +2228,82 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
+    /// What a reader of the mount gets for the whole of `ino`.
+    fn served(fs: &QuickFS, ino: u64) -> Vec<u8> {
+        match fs.plan_read(ino, 0, 0, 1 << 20) {
+            ReadPlan::Local(data) => data,
+            ReadPlan::Buffered(BufferedRead::Shared(bytes, range)) => bytes[range].to_vec(),
+            ReadPlan::Error(errno) => panic!("the read failed with errno {errno}"),
+            ReadPlan::Buffered(_) => panic!("a closed file was read from a stage"),
+            ReadPlan::Remote(_) => panic!("locally written content was asked of a peer"),
+        }
+    }
+
+    /// A file written into the folder reads back byte for byte, whatever format its name
+    /// names: a document codec that cannot read the bytes, or cannot write its format back,
+    /// leaves them a plain file. `git reset --hard` once left every `.html` file empty.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_reads_back_the_bytes_written_whatever_its_format() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("formats").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        tokio::task::spawn_blocking(move || {
+            let contents: [(&str, &[u8]); 6] = [
+                (
+                    "html",
+                    b"<!doctype html>\n<script>if (a < b && c > d) document.write('</p>');</script>\n<style>p > b { color: red }</style><p>unclosed <b>bold &nbsp; <!-- note -->\n",
+                ),
+                ("malformed", b"PK\x03\x04 not a zip <html><body></div>{\\rtf1 }"),
+                ("non-utf8", b"caf\xe9 \xff\xfe\n# Title\n"),
+                ("markdown", b"# Title\n\nsome *text*  \nwrapped\nline\n\n- a\n* b\n"),
+                ("empty", b""),
+                ("crlf", b"line one\r\nline two\r\n\r\n"),
+            ];
+            let extensions = [
+                "md", "markdown", "MD", "odt", "docx", "rtf", "html", "htm", "HTML", "txt",
+            ];
+            for ext in extensions {
+                for (what, bytes) in contents {
+                    let name = format!("{what}.{ext}");
+                    let (ino, _) = fs
+                        .create_for_write(ROOT_INO, name.as_bytes(), 0o644)
+                        .unwrap();
+                    if !bytes.is_empty() {
+                        assert_eq!(
+                            fs.write_buffer(ino, 0, bytes),
+                            Ok(u32::try_from(bytes.len()).unwrap()),
+                            "{name}"
+                        );
+                    }
+                    assert_eq!(fs.flush_inode(ino), Ok(()), "{name}");
+                    fs.settle_last_close(ino, true);
+                    assert_eq!(served(&fs, ino), bytes, "{name} reads back as written");
+                    assert_eq!(
+                        fs.presented_attr(ino).unwrap().0.size,
+                        bytes.len() as u64,
+                        "{name} is sized as written"
+                    );
+                }
+            }
+            let kept = |name: &str| {
+                let ino = fs.ns().lookup(ROOT_INO, name.as_bytes()).unwrap().ino.0;
+                fs.is_document(ino)
+            };
+            assert!(kept("markdown.md"), "Markdown it reads is kept as a document");
+            assert!(!kept("non-utf8.md"), "bytes Markdown cannot read stay a plain file");
+            assert!(!kept("html.html"), "HTML, which no codec writes, is a plain file");
+            assert!(!kept("malformed.odt"), "a file its codec refuses stays a plain file");
+        })
+        .await
+        .unwrap();
+        endpoint.close().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();

@@ -37,4 +37,9 @@ pub trait FormatProvider: Send + Sync {
     /// Returns [`CodecError`] if the document cannot be serialised into this
     /// format, or if writing its container fails.
     fn export(&self, doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError>;
+    /// Whether [`Self::export`] writes this format. A format only read here (its writer lives
+    /// elsewhere) cannot be the file a document is kept as.
+    fn exports(&self) -> bool {
+        true
+    }
 }

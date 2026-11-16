@@ -31,6 +31,10 @@ impl FormatProvider for HtmlCodec {
                 .to_string(),
         ))
     }
+
+    fn exports(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
