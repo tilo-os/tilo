@@ -292,9 +292,7 @@ impl TypstApp {
             self.stage_scenario(scenario.0.as_deref());
         }
         for ask in asks {
-            match ask {
-                other => self.perform_resource_operation(other),
-            }
+            self.perform_resource_operation(ask);
             self.dirty = true;
         }
     }

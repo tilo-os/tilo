@@ -1289,14 +1289,14 @@ impl Core {
         );
     }
 
-    /// Ask where `request` saves, then write what `make` makes there: in place, readable by
+    /// Ask where `request` saves, then write what `contents` makes there: in place, readable by
     /// this person only and named with `extension`, where the file has a path; through the
     /// host where it keeps the file. `said` words what a finished save says.
     fn save_chosen(
         &self,
         request: ui::portal::PickRequest,
         extension: &'static str,
-        make: impl FnOnce(&Self) -> Result<(Zeroizing<Vec<u8>>, usize), String> + 'static,
+        contents: impl FnOnce(&Self) -> Result<(Zeroizing<Vec<u8>>, usize), String> + 'static,
         said: fn(usize) -> Option<String>,
     ) {
         let Some(jobs) = &self.jobs else {
@@ -1309,7 +1309,7 @@ impl Core {
                     return Ok(Effected::done());
                 };
                 let vault = window.vault();
-                let made = make(&vault.borrow());
+                let made = contents(&vault.borrow());
                 let finish = move |vault: &mut Self, written: Result<usize, String>| {
                     match written {
                         Ok(count) => {

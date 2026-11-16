@@ -187,7 +187,7 @@ impl FileChooser {
         }
     }
 
-    fn choose_save(&mut self, art: &Artwork, follow: bool) {
+    fn choose_save(&self, art: &Artwork, follow: bool) {
         let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let title = if follow {
             art.title.clone()
@@ -292,7 +292,7 @@ impl FileChooser {
         }
     }
 
-    fn choose_export(&mut self, stem: &str, settings: Settings, bytes: Vec<u8>) {
+    fn choose_export(&self, stem: &str, settings: Settings, bytes: Vec<u8>) {
         let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let extension = settings.format.extension();
         let name = document::file_name(stem, extension);
@@ -365,7 +365,7 @@ impl FileChooser {
     /// Save the artwork where the person chose: in place where that has a
     /// path on this device, else through the host, which keeps it.
     fn save_to_destination(
-        &mut self,
+        &self,
         destination: SaveDestination,
         follow: bool,
         cx: &mut FilesCx,
@@ -757,6 +757,37 @@ impl ui::widget::Decorator for FileChooser {
     }
 }
 
+/// Write the artwork, or a copy (not `follow`), where the host keeps it;
+/// `announce` names the place when saying so is news.
+fn write_packed(
+    cx: &mut FilesCx,
+    destination: &SaveDestination,
+    bytes: Vec<u8>,
+    follow: bool,
+    announce: Option<String>,
+) -> Effected {
+    cx.write_destination(
+        destination,
+        bytes,
+        move |chooser, written, _| -> EffectAnswer {
+            match written {
+                Ok(()) => {
+                    // The host keeps it where no path reaches; the artwork lives
+                    // there now, and the first save says where.
+                    if follow {
+                        chooser.tools.file.set(None);
+                    }
+                    if let Some(name) = announce {
+                        chooser.say("canvas-duplicated", &[("name", name.into())]);
+                    }
+                }
+                Err(why) => chooser.say("canvas-save-failed", &[("why", why.into())]),
+            }
+            Ok(Effected::done())
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -797,35 +828,4 @@ mod tests {
         };
         assert_eq!(export_stem(&retitled), "Bruno");
     }
-}
-
-/// Write the artwork, or a copy (not `follow`), where the host keeps it;
-/// `announce` names the place when saying so is news.
-fn write_packed(
-    cx: &mut FilesCx,
-    destination: &SaveDestination,
-    bytes: Vec<u8>,
-    follow: bool,
-    announce: Option<String>,
-) -> Effected {
-    cx.write_destination(
-        destination,
-        bytes,
-        move |chooser, written, _| -> EffectAnswer {
-            match written {
-                Ok(()) => {
-                    // The host keeps it where no path reaches; the artwork lives
-                    // there now, and the first save says where.
-                    if follow {
-                        chooser.tools.file.set(None);
-                    }
-                    if let Some(name) = announce {
-                        chooser.say("canvas-duplicated", &[("name", name.into())]);
-                    }
-                }
-                Err(why) => chooser.say("canvas-save-failed", &[("why", why.into())]),
-            }
-            Ok(Effected::done())
-        },
-    )
 }

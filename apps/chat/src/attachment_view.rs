@@ -89,7 +89,7 @@ impl ChatApp {
     }
 
     /// Ask the host where to put a copy of `att`, then write it there.
-    pub(crate) fn begin_attachment_save(&mut self, msg: &str, attachment: usize) {
+    pub(crate) fn begin_attachment_save(&self, msg: &str, attachment: usize) {
         let Some(att) = self.attachment_of(msg, attachment) else {
             return;
         };

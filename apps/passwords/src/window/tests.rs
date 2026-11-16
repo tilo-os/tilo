@@ -775,8 +775,7 @@ fn save_button(harness: &ui::headless::FrameHarness) -> vello::kurbo::Rect {
 }
 
 #[test]
-#[expect(clippy::too_many_lines, reason = "merged cases, one per phase")]
-fn import_export_and_backup_flows_round_trip_through_portals() {
+fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an import previews conflicts before writing");
     {
         use std::io::Write;
