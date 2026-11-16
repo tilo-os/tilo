@@ -179,11 +179,15 @@ impl Published {
     /// record (an action of its own app's on another app's reading, `morning_cleanup` over Tasks),
     /// the resource that publishes the action answers instead: the action API that runs it holds
     /// that one.
-    fn naming(&self, resource: &str, action: &str, declared: &str) -> String {
-        if let Some(spec) = self.holding(resource)
-            && let Some(named) = named_by(spec, action, declared)
-        {
-            return named_address(spec, named, declared).encode();
+    fn naming(&self, resource: &str, action: &str) -> String {
+        let offers = |spec: &tilo_actions::ResourceSpec| {
+            spec.actions
+                .iter()
+                .find(|offered| offered.id == action)
+                .map(|offered| tilo_actions::ActionAddress::naming(spec, offered))
+        };
+        if let Some(named) = self.holding(resource).and_then(offers) {
+            return named.encode();
         }
         if let Some(named) = self
             .offering
@@ -195,15 +199,14 @@ impl Published {
         }
         // A reading of another app's record: the id the control names is the resource that app
         // publishes it under, and its own action API resolves it there.
-        tilo_actions::ActionAddress::new(resource, declared).encode()
+        tilo_actions::ActionAddress::new(resource, action).encode()
     }
 
-    /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
-    /// acts on, the one record of that kind it acts on, and the operation, named as the app
-    /// publishes it at its action API. A control that runs an app action does that action; one
-    /// that edits a record's field edits that field. Where the composition moves the control, and
-    /// what the person's language renames it by, change none of them: the second task's Complete is
-    /// not the first's.
+    /// What the control `node` does, as the address anyone runs it by: the one record it acts on
+    /// and the action, as the app publishes them at its API. A control that runs an app action
+    /// does that action; one that edits a record's field runs the action that edits that field.
+    /// Where the composition moves the control, and what the person's language renames it by,
+    /// change neither: the second task's Complete is not the first's.
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
         // One event per control runs what the person presses it for. A node whose events run
         // several actions is none of them in particular, so the first the ordered map holds answers
