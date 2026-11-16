@@ -5789,9 +5789,17 @@ impl Widget for TextInput {
                 ..Default::default()
             });
         if let Some(target) = self.semantic_target() {
+            // The key is the field and item an action's text anchor names; the
+            // control is what its bindings name, the widget's own id when it
+            // has one.
+            let action_target = if self.id.is_empty() {
+                target.clone()
+            } else {
+                self.id.clone()
+            };
             node = node
-                .with_semantic_key(target.clone())
-                .with_action_target(target);
+                .with_semantic_key(target)
+                .with_action_target(action_target);
         } else if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
@@ -5847,7 +5855,9 @@ impl Widget for TextInput {
         state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        if self.semantic_target().as_deref() == Some(target) {
+        if self.semantic_target().as_deref() == Some(target)
+            || (!self.id.is_empty() && self.id == target)
+        {
             return self.perform_action(action, &[], state, root);
         }
         if target != ACCESSORY_TARGET
