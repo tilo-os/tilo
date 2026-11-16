@@ -1521,20 +1521,55 @@ impl QuickFS {
         if !visible {
             return Err(ENOENT);
         }
-        let mut attr = view.attr;
-        let doc_len = if buf_len.is_none() && view.document {
+        Ok((
+            self.live_attr(view.attr, buf_len, view.document),
+            view.document,
+        ))
+    }
+
+    /// `attr` as every answer about a file must give it: sized as a read serves it (a
+    /// write stage's length, a document's export) and a directory's visible link count.
+    /// `lookup`, `getattr` and `readdirplus` all answer through here, because the kernel
+    /// sets the file size from each of them: a `lookup` that answered the stored size of a
+    /// document while `getattr` answered its export's let the path walk of an `open` shrink
+    /// the size under a mapping sized by the `stat` before it, and git's index refresh died
+    /// with SIGBUS reading the mapping.
+    fn live_attr(&self, mut attr: FileAttr, staged_len: Option<u64>, document: bool) -> FileAttr {
+        let ino = attr.ino.0;
+        let doc_len = if staged_len.is_none() && document {
             self.document_export(ino).map(|b| b.len() as u64)
         } else {
             None
         };
-        if let Some(len) = buf_len.or(doc_len) {
+        if let Some(len) = staged_len.or(doc_len) {
             attr.size = len;
             attr.blocks = len.div_ceil(512);
         }
         if attr.kind == FileType::Directory {
             attr.nlink = self.visible_dir_nlink(ino);
         }
-        Ok((attr, view.document))
+        attr
+    }
+
+    /// What a FUSE `lookup` answers for `name` in `parent`: the entry's attributes and
+    /// TTL, or `None` when there is no such entry in the caller's view.
+    fn lookup_entry(&self, parent: u64, name: &[u8]) -> Option<(FileAttr, Duration)> {
+        let (found, child, is_doc) = {
+            let mut ns = self.ns();
+            let found = ns.lookup(parent, name);
+            let child = ns.path_for(parent).map(|p| child_path(&p, name));
+            let is_doc = found
+                .as_ref()
+                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
+            drop(ns);
+            (found, child, is_doc)
+        };
+        let attr = found.filter(|_| child.is_some_and(|c| self.in_view(&c)))?;
+        let staged_len = self.staged_len(attr.ino.0);
+        Some((
+            self.live_attr(attr, staged_len, is_doc),
+            Self::ttl_for(is_doc),
+        ))
     }
 
     /// Everything a FUSE `read` decides before it replies: authorization, then the write
@@ -1790,20 +1825,8 @@ impl QuickFS {
     fn presented_attr(&self, ino: u64) -> Option<(fuser::FileAttr, Duration)> {
         let buf_len = self.staged_len(ino);
         let is_doc = self.is_document(ino);
-        let doc_len = if buf_len.is_none() && is_doc {
-            self.document_export(ino).map(|b| b.len() as u64)
-        } else {
-            None
-        };
-        let mut attr = self.ns().getattr(ino)?;
-        if let Some(len) = buf_len.or(doc_len) {
-            attr.size = len;
-            attr.blocks = len.div_ceil(512);
-        }
-        if attr.kind == FileType::Directory {
-            attr.nlink = self.visible_dir_nlink(ino);
-        }
-        Some((attr, Self::ttl_for(is_doc)))
+        let attr = self.ns().getattr(ino)?;
+        Some((self.live_attr(attr, buf_len, is_doc), Self::ttl_for(is_doc)))
     }
 
     fn payload_not_resident(&self, ino: u64) -> bool {
@@ -5415,29 +5438,12 @@ impl Filesystem for QuickFS {
     /// the same order, so a nonexistent name and a name hidden by the view cost the same work and
     /// return the same `ENOENT`.
     fn lookup(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
-        let name = name.as_bytes();
-        let (found, child, is_doc) = {
-            let mut ns = self.ns();
-            let found = ns.lookup(parent.0, name);
-            let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
-            let is_doc = found
-                .as_ref()
-                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
-            drop(ns);
-            (found, child, is_doc)
-        };
-        let in_view = child.is_some_and(|c| self.in_view(&c));
-        match found {
-            Some(attr) if in_view => {
-                let mut attr = attr;
-                if attr.kind == FileType::Directory {
-                    attr.nlink = self.visible_dir_nlink(attr.ino.0);
-                }
+        match self.lookup_entry(parent.0, name.as_bytes()) {
+            Some((attr, ttl)) => {
                 let attr = self.presented_to(req, attr);
-                let ttl = Self::ttl_for(is_doc);
                 reply.entry_with_ttls(&self.attr_ttl(ttl), &ttl, &attr, Generation(0));
             }
-            _ => reply.error(to_errno(ENOENT)),
+            None => reply.error(to_errno(ENOENT)),
         }
     }
 
@@ -5852,19 +5858,8 @@ impl Filesystem for QuickFS {
             return;
         }
 
-        let buf_len = self.staged_len(ino.0);
-        let found = self.ns().getattr(ino.0);
-        match found {
-            Some(mut attr) => {
-                if let Some(len) = buf_len {
-                    attr.size = len;
-                    attr.blocks = len.div_ceil(512);
-                }
-                if attr.kind == FileType::Directory {
-                    attr.nlink = self.visible_dir_nlink(ino.0);
-                }
-                reply.attr(&self.attr_ttl(TTL), &self.presented_to(req, attr));
-            }
+        match self.presented_attr(ino.0) {
+            Some((attr, ttl)) => reply.attr(&self.attr_ttl(ttl), &self.presented_to(req, attr)),
             None => reply.error(to_errno(ENOENT)),
         }
     }

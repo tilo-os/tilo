@@ -2254,6 +2254,78 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
+    /// git sizes its mapping of a file by `lstat` (`getattr`), then opens it; with a zero
+    /// entry TTL the open's path walk asks `lookup` again, and the kernel takes the size
+    /// from that answer too. Every answer must size the file as a read serves it, or the
+    /// mapping reaches past the size the kernel holds and the reader dies with SIGBUS.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lookup_sizes_a_file_as_getattr_and_read_do() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("sizes").unwrap()));
+        let doc = namespace
+            .lock()
+            .unwrap()
+            .create_document(ROOT_INO, "defects.md", "md", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        let fs = tokio::task::spawn_blocking(move || {
+            let text = b"# Defects\n\nA checkout wrote this file.\n";
+            assert_eq!(
+                fs.write_buffer(doc, 0, text),
+                Ok(u32::try_from(text.len()).unwrap())
+            );
+            assert_eq!(fs.flush_inode(doc), Ok(()));
+            fs.settle_last_close(doc, true);
+            fs
+        })
+        .await
+        .unwrap();
+        {
+            let mut ns = namespace.lock().unwrap();
+            let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
+            ns.document_splice(doc, &block, 0, 0, "edited in a rich view");
+        }
+        tokio::task::spawn_blocking(move || {
+            let served = fs.document_export(doc).unwrap().len() as u64;
+            let (stat, _) = fs.attr_for_request(doc, None).unwrap();
+            let (walked, _) = fs.lookup_entry(ROOT_INO, b"defects.md").unwrap();
+            assert_eq!(
+                stat.size, served,
+                "getattr sizes the document as read serves it"
+            );
+            assert_eq!(
+                walked.size, served,
+                "lookup sizes the document as read serves it"
+            );
+            assert_eq!(
+                fs.presented_attr(doc).unwrap().0.size,
+                served,
+                "setattr and readdirplus size the document as read serves it"
+            );
+
+            let log = fs.create_empty_file(ROOT_INO, "build.log").unwrap();
+            let line = b"a line still being written\n";
+            assert_eq!(
+                fs.write_buffer(log, 0, line),
+                Ok(u32::try_from(line.len()).unwrap())
+            );
+            let (walked, _) = fs.lookup_entry(ROOT_INO, b"build.log").unwrap();
+            assert_eq!(
+                walked.size,
+                line.len() as u64,
+                "lookup sizes an open file by its unflushed writes"
+            );
+        })
+        .await
+        .unwrap();
+        endpoint.close().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_read_does_not_clone_per_chunk() {
         const CHUNK: u32 = 128 * 1024;
