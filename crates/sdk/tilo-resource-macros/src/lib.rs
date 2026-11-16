@@ -1868,7 +1868,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
-/// document itself), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
+/// document itself), `read = false` (the record answers no read on purpose:
+/// what it holds must not reach anyone holding its path, and its doc comment
+/// says why), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
 /// String>`, the compact summary `Resource::facts` states) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {

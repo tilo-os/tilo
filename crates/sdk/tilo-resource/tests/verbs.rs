@@ -165,6 +165,22 @@ impl Shelf {
     }
 }
 
+/// A record that publishes that it changed and answers no read: what it
+/// holds is not anyone's to read by path.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Scratch {
+    pub kept: String,
+}
+
+#[resource(kind = "test.scratch", read = false, catalogue = "tests/locales")]
+impl Scratch {
+    /// Remember something, without publishing what it was.
+    #[action]
+    pub fn keep(&mut self, #[param("Words kept")] kept: String) {
+        self.kept = kept;
+    }
+}
+
 fn published(replica: &Replica<Shelf>) -> tilo_actions::ResourceSpec {
     tilo_resource::publish::<Shelf>("shelf", "Shelf", &replica.state().unwrap())
 }
@@ -385,6 +401,15 @@ tilo_test_env::scenario! {
         const { assert!(Shelf::READABLE) };
         let content = Shelf::read_content(&shelf.state().unwrap(), shelf.doc(), None).unwrap();
         assert_eq!(content["cards"], 2);
+    }
+
+    phase a_record_that_answers_no_read_declares_it;
+    {
+        const { assert!(!Scratch::READABLE) };
+        let scratch = Replica::<Scratch>::new();
+        let refusal = Scratch::read_content(&scratch.state().unwrap(), scratch.doc(), None)
+            .expect_err("a record that answers no read has no content to answer");
+        assert!(refusal.contains("does not answer reads"), "{refusal}");
     }
 
     phase an_input_that_does_not_bind_refuses_where_it_is_submitted;

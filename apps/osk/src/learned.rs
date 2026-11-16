@@ -54,7 +54,7 @@ impl Lesson {
 /// answers no read: its changes are published so they can be taken back,
 /// and a palette, an agent or a script sees that there is something to
 /// undo and never the words themselves.
-#[resource(kind = "osk.learned")]
+#[resource(kind = "osk.learned", read = false)]
 impl Learned {
     /// Remember what typing taught. Learning comes from use, so no undo
     /// takes it back.

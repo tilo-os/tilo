@@ -31,6 +31,9 @@ pub(crate) struct ResourceOptions {
     initialize: Option<syn::Path>,
     seed: Option<syn::Path>,
     available: Option<syn::Path>,
+    /// `read = false`: the record answers no read on purpose, because what it
+    /// holds must not reach anyone holding its path.
+    read: Option<syn::LitBool>,
     read_content: Option<syn::Path>,
     document_child: Option<syn::Path>,
     /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
@@ -53,7 +56,7 @@ pub(crate) struct ResourceOptions {
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `app = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `child = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read = false`, `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
@@ -84,6 +87,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         initialize: None,
         seed: None,
         available: None,
+        read: None,
         read_content: None,
         document_child: None,
         read_content_in_doc: None,
@@ -99,76 +103,109 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         answer: None,
         item_views: None,
     };
-    let mut kind = None;
-    let mut label = None;
     for meta in metas {
-        let Meta::NameValue(pair) = meta else {
-            return Err(syn::Error::new(meta.span(), RESOURCE_KEYS));
-        };
-        let key = pair
-            .path
-            .get_ident()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        if let Some(text) = str_value(&pair.value) {
-            match key.as_str() {
-                "kind" => kind = Some(text),
-                "label" => label = Some(text),
-                "app" => options.app = Some(text),
-                "catalogue" => options.catalogue = Some(text),
-                _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
-            }
-            continue;
+        set_option(&mut options, &meta)?;
+    }
+    if options.kind.is_empty() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "missing `kind = \"...\"`",
+        ));
+    }
+    if let Some(read) = &options.read {
+        if read.value {
+            return Err(syn::Error::new(
+                read.span(),
+                "a record answers a read by naming it (`read_content = path`); \
+                 `read = false` declares the record answers none",
+            ));
         }
-        match (key.as_str(), &pair.value) {
-            ("params", Expr::Path(path)) if path.path.get_ident().is_some() => {
-                options.params = path.path.get_ident().cloned();
-            }
-            ("search", Expr::Path(path)) => options.search = Some(path.path.clone()),
-            ("scopes", Expr::Path(path)) => options.scopes = Some(path.path.clone()),
-            ("children", Expr::Path(path)) => options.children = Some(path.path.clone()),
-            ("child", Expr::Path(path)) => options.child = Some(path.path.clone()),
-            ("initialize", Expr::Path(path)) => options.initialize = Some(path.path.clone()),
-            ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
-            ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
-            ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
-            ("document_child", Expr::Path(path)) => {
-                options.document_child = Some(path.path.clone());
-            }
-            ("read_content_in_doc", Expr::Path(path)) => {
-                options.read_content_in_doc = Some(path.path.clone());
-            }
-            ("facts", Expr::Path(path)) => options.facts = Some(path.path.clone()),
-            ("views", Expr::Path(path)) => options.views = Some(path.path.clone()),
-            (
-                "version",
-                Expr::Lit(ExprLit {
-                    lit: Lit::Int(version),
-                    ..
-                }),
-            ) => options.version = Some(version.clone()),
-            ("migrate", Expr::Path(path)) => options.migrate = Some(path.path.clone()),
-            ("load", Expr::Path(path)) => options.load = Some(path.path.clone()),
-            ("locate", Expr::Path(path)) => options.locate = Some(path.path.clone()),
-            ("lands", Expr::Path(path)) => options.lands = Some(path.path.clone()),
-            ("queue", Expr::Path(path)) => options.queue = Some(path.path.clone()),
-            ("effects", Expr::Path(path)) => options.effects = Some(path.path.clone()),
-            ("answer", Expr::Path(path)) => options.answer = Some(path.path.clone()),
-            ("item_views", Expr::Path(path)) => options.item_views = Some(path.path.clone()),
-            _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
+        if options.read_content.is_some() || options.read_content_in_doc.is_some() {
+            return Err(syn::Error::new(
+                read.span(),
+                "`read = false` and `read_content` say opposite things: name the read \
+                 the record answers, or declare it answers none",
+            ));
         }
     }
-    options.kind =
-        kind.ok_or_else(|| syn::Error::new(Span::call_site(), "missing `kind = \"...\"`"))?;
     if options.version.is_some() != options.migrate.is_some() {
         return Err(syn::Error::new(
             Span::call_site(),
             "`version = N` and `migrate = path` go together: a new version needs a migration",
         ));
     }
-    options.named.clone_from(&label);
-    options.label = label.unwrap_or_else(|| options.kind.clone());
+    options.label = options
+        .named
+        .clone()
+        .unwrap_or_else(|| options.kind.clone());
     Ok(options)
+}
+
+/// Read one `name = value` of a `#[resource(...)]` declaration into `options`.
+fn set_option(options: &mut ResourceOptions, meta: &Meta) -> syn::Result<()> {
+    let Meta::NameValue(pair) = meta else {
+        return Err(syn::Error::new(meta.span(), RESOURCE_KEYS));
+    };
+    let key = pair
+        .path
+        .get_ident()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    if let Some(text) = str_value(&pair.value) {
+        match key.as_str() {
+            "kind" => options.kind = text,
+            "label" => options.named = Some(text),
+            "app" => options.app = Some(text),
+            "catalogue" => options.catalogue = Some(text),
+            _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
+        }
+        return Ok(());
+    }
+    match (key.as_str(), &pair.value) {
+        ("params", Expr::Path(path)) if path.path.get_ident().is_some() => {
+            options.params = path.path.get_ident().cloned();
+        }
+        ("search", Expr::Path(path)) => options.search = Some(path.path.clone()),
+        ("scopes", Expr::Path(path)) => options.scopes = Some(path.path.clone()),
+        ("children", Expr::Path(path)) => options.children = Some(path.path.clone()),
+        ("child", Expr::Path(path)) => options.child = Some(path.path.clone()),
+        ("initialize", Expr::Path(path)) => options.initialize = Some(path.path.clone()),
+        ("seed", Expr::Path(path)) => options.seed = Some(path.path.clone()),
+        ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
+        (
+            "read",
+            Expr::Lit(ExprLit {
+                lit: Lit::Bool(read),
+                ..
+            }),
+        ) => options.read = Some(read.clone()),
+        ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
+        ("document_child", Expr::Path(path)) => {
+            options.document_child = Some(path.path.clone());
+        }
+        ("read_content_in_doc", Expr::Path(path)) => {
+            options.read_content_in_doc = Some(path.path.clone());
+        }
+        ("facts", Expr::Path(path)) => options.facts = Some(path.path.clone()),
+        ("views", Expr::Path(path)) => options.views = Some(path.path.clone()),
+        (
+            "version",
+            Expr::Lit(ExprLit {
+                lit: Lit::Int(version),
+                ..
+            }),
+        ) => options.version = Some(version.clone()),
+        ("migrate", Expr::Path(path)) => options.migrate = Some(path.path.clone()),
+        ("load", Expr::Path(path)) => options.load = Some(path.path.clone()),
+        ("locate", Expr::Path(path)) => options.locate = Some(path.path.clone()),
+        ("lands", Expr::Path(path)) => options.lands = Some(path.path.clone()),
+        ("queue", Expr::Path(path)) => options.queue = Some(path.path.clone()),
+        ("effects", Expr::Path(path)) => options.effects = Some(path.path.clone()),
+        ("answer", Expr::Path(path)) => options.answer = Some(path.path.clone()),
+        ("item_views", Expr::Path(path)) => options.item_views = Some(path.path.clone()),
+        _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
+    }
+    Ok(())
 }
 
 #[allow(
@@ -1828,6 +1865,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
+    // `read = false` declares the record answers no read: the trait's
+    // constant says so where the record is compiled, so the absence of a
+    // `read_content` is a decision a reader of the type can see.
+    let read_content = if options.read.is_some() {
+        quote! {
+            const READABLE: bool = false;
+        }
+    } else {
+        read_content
+    };
     let facts = options.facts.as_ref().map(|path| {
         quote! {
             const HAS_FACTS: bool = true;

@@ -195,6 +195,8 @@ test-pages-add-page = Add a page
 test-private-import = Private import
 test-private-import-import = Receive a private snapshot
 test-private-import-optional-import = Receive an optional private snapshot
+test-scratch = Scratch
+test-scratch-keep = Remember something, without publishing what it was
 
 ## Actions bound to what the person is looking at
 test-board-retitle-sprint = Call it Sprint

@@ -239,8 +239,9 @@ The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,
 nobody's undo step), `available` (state-dependent availability of verbs),
 `children` (derived child resources, §2.5), `search` and `scopes`,
-`read_content`, `facts` (a compact summary to check the record against a
-request, published as the `facts` view), `views`.
+`read_content`, `read = false` (the record answers no read on purpose),
+`facts` (a compact summary to check the record against a request, published as
+the `facts` view), `views`.
 
 Every record declares its read. The framework publishes the `read` view on a
 resource whose declaration names `read_content` (or `read_content_in_doc`, for
@@ -252,8 +253,10 @@ which is its own model's JSON; a record that reads more than its fields (a
 notebook's pages, a sheet's cells, a form's values) says so in a read of its
 own. Without one a caller is told the record offers no read at all, so
 `tools/policy/check_app_record_reads.py` fails on a record that names none. A
-record whose content must not reach anyone holding its path names no read and
-is listed in that check's exceptions with the reason.
+record whose content must not reach anyone holding its path declares
+`read = false` in its `#[resource(...)]` declaration, with the reason in its
+doc comment; the check fails on a record that answers no read without
+declaring it.
 
 ### 2.3 How the kind is derived
 

@@ -10,7 +10,8 @@ document too). Without one, a caller with no window open is told the record
 offers no read at all: it can neither see what the record holds nor learn which
 actions to take on it.
 
-So every record this tree publishes names its read: the apps under `apps/`, and
+So every record this tree publishes answers a read, or declares that it does
+not: the apps under `apps/`, and
 the shared crates that declare an app's record for it (`model-providers`, the
 Contact identities and workspace agents and emoji an app keeps beside its own,
 the person's accounts, a shell's environment). A record that truly has no
@@ -22,8 +23,10 @@ a tool copies, not code this tree builds. The session's own surfaces
 (`crates/session/`) are drawn by the session process itself; no record path
 names one, so no caller can hold one to read.
 
-An exception is an entry in `EXCEPTIONS` below, with the reason it is one, and
-each entry is checked to still have a declaration and still lack a read.
+A record that must not answer a read says so in its `#[resource(...)]`
+declaration with `read = false`, beside the reason in its doc comment: what it
+holds must not reach anyone holding its path (what a person typed). This check
+refuses a record that answers no read without declaring it.
 """
 
 from __future__ import annotations
@@ -38,16 +41,6 @@ import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# `apps/<app>/src/<file>.rs::<kind>` -> why this record answers no read.
-# A record belongs here only where what it holds must not be read by
-# anyone holding its path; every other record answers a read.
-EXCEPTIONS: dict[str, str] = {
-    "apps/osk/src/learned.rs::osk.learned": (
-        "what it holds is what the person typed; the record publishes that it "
-        "changed, so they can take a change back, and never a read of the words"
-    ),
-}
-
 # Where the records this tree publishes are declared.
 SCOPES = ("apps", "crates")
 # Sample text a tool copies rather than code this tree builds.
@@ -61,12 +54,13 @@ KIND = re.compile(r'\bkind\s*=\s*"([^"]*)"')
 # `read_content`, and `read_content_in_doc` for a read that looks at the
 # document too.
 READS = re.compile(r"\bread_content(?:_in_doc)?\b")
+# `read = false`: the record answers no read on purpose, where its declaration
+# says so.
+UNREADABLE = re.compile(r"\bread\s*=\s*false\b")
 ADVICE = ("name the read the record answers, `read_content = "
           "<Type>::read_document` (tilo_resource::read::fields is the body for "
-          "a record whose fields are all it holds)")
-
-# A record that answers no read is a record no caller can read by path, so
-# every exception is one that has to be argued for in the review that adds it.
+          "a record whose fields are all it holds), or declare `read = false` "
+          "where what it holds must not be read by anyone holding its path")
 
 
 def declarations(text: str) -> list[tuple[int, str, str]]:
@@ -95,10 +89,10 @@ def published(relative: Path) -> bool:
     )
 
 
-def scan(root: Path) -> dict[str, list[tuple[str, int, bool]]]:
+def scan(root: Path) -> dict[str, list[tuple[str, int, bool, bool]]]:
     """Every record declaration this tree publishes, keyed by `path::kind`, as
-    `(path, line, answers a read?)`."""
-    found: dict[str, list[tuple[str, int, bool]]] = {}
+    `(path, line, answers a read?, declares it answers none)`."""
+    found: dict[str, list[tuple[str, int, bool, bool]]] = {}
     paths = [path for scope in SCOPES if (root / scope).is_dir()
              for path in sorted((root / scope).rglob("*.rs"))]
     for path in paths:
@@ -114,32 +108,23 @@ def scan(root: Path) -> dict[str, list[tuple[str, int, bool]]]:
                 continue
             line = rust_source.line_number(source, offset)
             key = f"{relative.as_posix()}::{kind}"
-            found.setdefault(key, []).append(
-                (relative.as_posix(), line, bool(READS.search(arguments)))
-            )
+            found.setdefault(key, []).append((
+                relative.as_posix(),
+                line,
+                bool(READS.search(arguments)),
+                bool(UNREADABLE.search(arguments)),
+            ))
     return found
 
 
 def check(root: Path) -> list[str]:
     errors = []
-    found = scan(root)
-    for key, entries in sorted(found.items()):
-        for path, line, readable in entries:
-            if readable or key in EXCEPTIONS:
+    for key, entries in sorted(scan(root).items()):
+        for path, line, readable, declared in entries:
+            if readable or declared:
                 continue
             errors.append(f"{path}:{line}: a record publishes no read ({key.split('::')[1]}); "
                           f"{ADVICE}")
-    for key, reason in sorted(EXCEPTIONS.items()):
-        entries = found.get(key)
-        if not entries:
-            errors.append(f"{key}: the exception names a record that is not declared; "
-                          "remove it")
-            continue
-        if all(readable for _, _, readable in entries):
-            errors.append(f"{key}: the exception is not needed, the record reads "
-                          f"({reason}); remove it")
-        elif not reason.strip():
-            errors.append(f"{key}: the exception gives no reason")
     return errors
 
 

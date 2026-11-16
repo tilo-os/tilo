@@ -33,16 +33,13 @@ SILENT = '''
 impl Calculator {}
 '''
 
+DECLARED_UNREADABLE = '''
+#[resource(kind = "osk.learned", read = false)]
+impl Learned {}
+'''
+
 
 class RecordReadsTests(unittest.TestCase):
-    def setUp(self):
-        # The fixture roots are not this tree: an exception this tree carries
-        # names a record they do not declare.
-        self.exceptions = dict(record_reads.EXCEPTIONS)
-        record_reads.EXCEPTIONS.clear()
-        self.addCleanup(record_reads.EXCEPTIONS.update, self.exceptions)
-        self.addCleanup(record_reads.EXCEPTIONS.clear)
-
     def fixture(self, files: dict[str, str]) -> Path:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -67,33 +64,16 @@ class RecordReadsTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("apps/calculator/src/resource.rs:2", errors[0])
         self.assertIn("calculator.document", errors[0])
+        self.assertIn("read = false", errors[0])
+
+    def test_a_record_that_declares_it_answers_no_read_is_fine(self):
+        root = self.fixture({"apps/osk/src/learned.rs": DECLARED_UNREADABLE})
+        self.assertEqual(record_reads.check(root), [])
 
     def test_a_doc_comment_naming_the_macro_is_not_a_declaration(self):
         code = "/// The facts (`#[resource(facts = path)]`).\npub fn facts() {}\n"
         root = self.fixture({"apps/slides/src/outline.rs": code})
         self.assertEqual(record_reads.check(root), [])
-
-    def test_an_exception_needs_a_reason_and_a_record_that_still_needs_it(self):
-        original = dict(record_reads.EXCEPTIONS)
-        self.addCleanup(record_reads.EXCEPTIONS.update, original)
-        self.addCleanup(record_reads.EXCEPTIONS.clear)
-        root = self.fixture({
-            "apps/calculator/src/resource.rs": SILENT,
-            "apps/notes/src/notebook.rs": READS,
-        })
-        record_reads.EXCEPTIONS.clear()
-        record_reads.EXCEPTIONS["apps/calculator/src/resource.rs::calculator.document"] = ""
-        self.assertTrue(any("gives no reason" in e for e in record_reads.check(root)))
-        record_reads.EXCEPTIONS["apps/calculator/src/resource.rs::calculator.document"] = "a reason"
-        self.assertEqual(record_reads.check(root), [])
-        record_reads.EXCEPTIONS["apps/notes/src/notebook.rs::notes.notebook"] = "a reason"
-        self.assertTrue(any("not needed" in e for e in record_reads.check(root)))
-
-    def test_an_exception_for_a_record_that_is_gone_fails(self):
-        self.addCleanup(record_reads.EXCEPTIONS.clear)
-        record_reads.EXCEPTIONS["apps/gone/src/resource.rs::gone.record"] = "a reason"
-        root = self.fixture({"apps/notes/src/notebook.rs": READS})
-        self.assertTrue(any("not declared" in e for e in record_reads.check(root)))
 
 
 if __name__ == "__main__":
