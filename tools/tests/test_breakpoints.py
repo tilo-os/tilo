@@ -14,13 +14,17 @@ SPEC.loader.exec_module(breakpoints)
 
 
 class BreakpointLiterals(unittest.TestCase):
-    def audit(self, source: str, tree: str = "apps") -> int:
+    def audit(self, source: str, tree: str = "apps", allowances: str = "") -> int:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / tree / "app" / "src" / "lib.rs"
             path.parent.mkdir(parents=True)
             path.write_text(source, encoding="utf-8")
-            found, _ = breakpoints.audit(root)
+            if allowances:
+                table = root / "crates/sdk/ui-core/tests/support/allowances.rs"
+                table.parent.mkdir(parents=True)
+                table.write_text(allowances, encoding="utf-8")
+            found, _, self.stale = breakpoints.audit(root)
             return sum(found.values())
 
     def test_a_dimension_compared_to_a_size_is_one(self):
@@ -47,13 +51,25 @@ class BreakpointLiterals(unittest.TestCase):
             self.audit("const COMPACT_WIDTH: f64 = 720.0;", tree="session"), 0
         )
 
-    def test_a_marked_line_is_not_a_breakpoint(self):
+    def test_an_allowed_item_is_not_a_breakpoint(self):
         self.assertEqual(
             self.audit(
-                "fn f(w: f64) { if w < 640.0 { hairline() } } // allow-breakpoint: drawing bound"
+                "fn f(w: f64) { if w < 640.0 { hairline() } }",
+                allowances='allowance("apps/app/src/lib.rs", "f", Rule::Breakpoint, "a drawing bound"),',
             ),
             0,
         )
+        self.assertEqual(self.stale, [])
+
+    def test_an_allowance_that_covers_nothing_is_stale(self):
+        self.assertEqual(
+            self.audit(
+                "fn f(w: f64) { if w < 640.0 { hairline() } }",
+                allowances='allowance("apps/app/src/lib.rs", "gone", Rule::Breakpoint, "a drawing bound"),',
+            ),
+            1,
+        )
+        self.assertEqual(self.stale, ["apps/app/src/lib.rs gone"])
 
     def test_the_baseline_only_shrinks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,10 +77,49 @@ class BreakpointLiterals(unittest.TestCase):
             source = root / "apps" / "app" / "src" / "lib.rs"
             source.parent.mkdir(parents=True)
             source.write_text("const NARROW_WIDTH: f64 = 640.0;", encoding="utf-8")
-            found, _ = breakpoints.audit(root)
+            found, _, _ = breakpoints.audit(root)
             self.assertEqual(sum(found.values()), 1)
             # No baseline entry: the comparison is new and must fail.
             self.assertGreater(sum(found.values()), breakpoints.baseline(root)["apps/app/src/lib.rs"])
+
+
+class ItemSpans(unittest.TestCase):
+    def item_at(self, source: str, needle: str) -> str:
+        source = breakpoints.rust_source.code_only(source)
+        line = source.splitlines().index(
+            next(line for line in source.splitlines() if needle in line)
+        )
+        return breakpoints.rust_source.enclosing_item(
+            breakpoints.rust_source.item_spans(source), line
+        )
+
+    def test_the_innermost_named_item_holds_the_hit(self):
+        source = (
+            "const TOP: f64 = 3.0;\n"
+            "fn outer() {\n"
+            "    let f = |x: f64| { x < 640.0 };\n"
+            "    x < 650.0\n"
+            "}\n"
+            "impl Widget for Probe {\n"
+            "    fn draw(&self) { x < 700.0 }\n"
+            "}\n"
+        )
+        self.assertEqual(self.item_at(source, "TOP"), "TOP")
+        self.assertEqual(self.item_at(source, "640.0"), "outer")
+        self.assertEqual(self.item_at(source, "650.0"), "outer")
+        self.assertEqual(self.item_at(source, "700.0"), "draw")
+
+    def test_a_literal_or_lifetime_does_not_move_an_item_end(self):
+        source = (
+            "fn draw() {\n"
+            "    let s = \"}\";\n"
+            "    let life: &'static str = \"x\";\n"
+            "    x < 640.0\n"
+            "}\n"
+            "const AFTER: f64 = 4.0;\n"
+        )
+        self.assertEqual(self.item_at(source, "640.0"), "draw")
+        self.assertEqual(self.item_at(source, "AFTER"), "AFTER")
 
 
 if __name__ == "__main__":

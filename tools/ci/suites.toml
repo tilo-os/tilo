@@ -746,7 +746,7 @@ readers = [
 scope = { inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/session/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
-], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/) | test(/^support::allowances::/)" }
 
 
 [[cargo]]

@@ -285,25 +285,190 @@ fn an_uncommitted_document_keeps_every_frame_loud() {
     assert_eq!(polled(&mut frame, &seen), Quiet::No);
 }
 
+/// One entry point whose own work cannot leave a frame stale, and why: the
+/// harness's code has the exemption, not a doc comment above it, so editing
+/// that comment never takes the answer away.
+struct QuietEntry {
+    /// Path under `src`.
+    file: &'static str,
+    entry: &'static str,
+    why: &'static str,
+}
+
+/// The entry points that may run no frame of their own and change nothing a
+/// frame reads. One that is missing here fails
+/// [`every_mutable_entry_point_invalidates_local_state`].
+const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
+    QuietEntry {
+        file: "headless.rs",
+        entry: "click_at",
+        why: "that move, press and release through `send`, which judges each.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "drawn_placed_pointers",
+        why: "reads the last frame's pointers; measures name tags through the text renderer's shaping cache.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "idle",
+        why: "invalidates when its control tick or save offer moved the document.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "poll_frame",
+        why: "runs the frame itself, invalidating first when its deadline came due.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "scroll",
+        why: "a wheel through `send`, which judges it.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "send",
+        why: "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "send_host_event",
+        why: "a wheel coalesced into the next frame counts once dispatched.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "service_pending_owner_models",
+        why: "the report it takes work through judges its effect.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "service_pending_owner_models_report",
+        why: "invalidates when it took work up.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "set_pan_replay",
+        why: "chooses how later frames draw; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "settle_replayed_draws",
+        why: "draws again a frame that only moved laid-out content, through `try_relayout`, which invalidates when it lays one out.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "take_browser_font_demands",
+        why: "drains the text renderer's fetch list; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "take_collaboration_requests",
+        why: "drains what the widgets asked of the transport; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "take_skip_report",
+        why: "hands over a log line; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless.rs",
+        entry: "track_scene_parts",
+        why: "chooses whether later draws record their damage parts; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/capture.rs",
+        entry: "render_window_png",
+        why: "rasterises the last frame drawn; lays out only the bar's own row.",
+    },
+    QuietEntry {
+        file: "headless/capture.rs",
+        entry: "write_shot",
+        why: "settles the capture first, which invalidates, and writes it; it runs no frame of the app's own.",
+    },
+    QuietEntry {
+        file: "headless/composition.rs",
+        entry: "paint_composed",
+        why: "draws the widget's paint; nothing a frame reads changes.",
+    },
+    QuietEntry {
+        file: "headless/controls.rs",
+        entry: "follow_view",
+        why: "moves the view through `relayout`, and opens one through `invoke_action`, each of which invalidates; a frame where it finds nothing new changes nothing.",
+    },
+    QuietEntry {
+        file: "headless/focus.rs",
+        entry: "set_keyboard_held",
+        why: "invalidates when the answer changed; a host sets it every frame, and an unchanged one leaves nothing to bring back.",
+    },
+    QuietEntry {
+        file: "headless/profiling.rs",
+        entry: "clear_profile_samples",
+        why: "drains the profiler's samples; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/profiling.rs",
+        entry: "take_profile_samples",
+        why: "drains the profiler's samples; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/retained_layout.rs",
+        entry: "take_text_shape_stats",
+        why: "drains the text renderer's shaping counters; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/root_wake.rs",
+        entry: "settle_owed",
+        why: "runs frames through `relayout`, which invalidates first.",
+    },
+    QuietEntry {
+        file: "headless/sidebar_button.rs",
+        entry: "window_sidebar_shown",
+        why: "reads the bar, the window's shell and its frame; paints a scratch bar and changes nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/window_bar.rs",
+        entry: "present_in_window_bar",
+        why: "presents through `present_window_bar`, which invalidates first.",
+    },
+    QuietEntry {
+        file: "headless/window_bar.rs",
+        entry: "present_window_bar_at_rest",
+        why: "presents through `present_window_bar`, which invalidates first.",
+    },
+    QuietEntry {
+        file: "headless/window_bar.rs",
+        entry: "window_bar_layout",
+        why: "lays out a scratch bar and reads it; nothing a frame reads.",
+    },
+    QuietEntry {
+        file: "headless/window_bar.rs",
+        entry: "window_bar_notice",
+        why: "reads the notice off a scratch bar; nothing a frame reads.",
+    },
+];
+
 /// Every public `&mut self` entry point of [`FrameHarness`], and every
-/// `pub(crate)` one, starts by invalidating local state, or says in its own
-/// doc comment why it cannot leave a frame stale:
-///
-/// ```text
-/// /// Quiet: drains the profiler's counters; nothing a frame reads.
-/// ```
+/// `pub(crate)` one, starts by invalidating local state, or is listed in
+/// [`QUIET_ENTRY_POINTS`] with why it cannot leave a frame stale:
 ///
 /// A new entry point that forgot would let a caller change a widget behind a
-/// quiet frame's back, so this fails until it invalidates or documents why it
-/// need not. The scan reads the crate's sources from disk, so an entry point in
+/// quiet frame's back, so this fails until it invalidates or is listed with a
+/// reason. The scan reads the crate's sources from disk, so an entry point in
 /// any file of the headless host is covered without being named here.
 #[test]
 fn every_mutable_entry_point_invalidates_local_state() {
-    const QUIET: &str = "Quiet: ";
+    for entry in QUIET_ENTRY_POINTS {
+        assert!(
+            entry.why.trim().len() >= 12,
+            "{} {} has no reason a reviewer can check",
+            entry.file,
+            entry.entry
+        );
+    }
     let sources = crate_sources();
     let mut checked = 0;
     let mut impls = 0;
     let mut missing = Vec::new();
+    let mut used = std::collections::BTreeSet::new();
     for (file, source) in &sources {
         let lines: Vec<&str> = source.lines().collect();
         let mut index = 0;
@@ -351,13 +516,19 @@ fn every_mutable_entry_point_invalidates_local_state() {
                     .iter()
                     .map(|line| line.trim())
                     .find(|line| !line.is_empty() && !line.starts_with("//"));
-                if first != Some("self.invalidate_local();")
-                    && quiet_reason(&lines, index).is_none()
-                {
-                    missing.push(format!(
-                        "{file}:{} {name} starts with {first:?} and has no `{QUIET}` reason",
-                        index + 1
-                    ));
+                if first != Some("self.invalidate_local();") {
+                    match QUIET_ENTRY_POINTS
+                        .iter()
+                        .position(|entry| entry.file == *file && entry.entry == name)
+                    {
+                        Some(at) => {
+                            used.insert(at);
+                        }
+                        None => missing.push(format!(
+                            "{file}:{} {name} starts with {first:?} and is not a quiet entry point",
+                            index + 1
+                        )),
+                    }
                 }
             }
             depth += brace_depth(&lines[index..=end].join(" "));
@@ -375,6 +546,16 @@ fn every_mutable_entry_point_invalidates_local_state() {
     assert!(
         missing.is_empty(),
         "entry points that can change what a frame reads without invalidating: {missing:?}"
+    );
+    let stale: Vec<String> = QUIET_ENTRY_POINTS
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !used.contains(at))
+        .map(|(_, entry)| format!("{} {}", entry.file, entry.entry))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "quiet entry points that no longer need the exemption: {stale:?}"
     );
 }
 
@@ -403,27 +584,6 @@ fn crate_sources() -> Vec<(String, String)> {
     let mut sources = Vec::new();
     walk(&root, &root, &mut sources);
     sources
-}
-
-/// The `Quiet: <why>` reason the doc comment above `line` gives, when it gives one.
-fn quiet_reason(lines: &[&str], line: usize) -> Option<String> {
-    let mut line = line;
-    // Attributes (`#[must_use]`, `#[cfg(...)]`) may stand between the doc and the item.
-    while line > 0 && lines[line - 1].trim_start().starts_with("#[") {
-        line -= 1;
-    }
-    let mut reason = None;
-    while line > 0 {
-        let Some(doc) = lines[line - 1].trim_start().strip_prefix("///") else {
-            break;
-        };
-        let text = doc.trim();
-        if let Some(rest) = text.strip_prefix("Quiet: ") {
-            reason = Some(rest.trim().to_owned());
-        }
-        line -= 1;
-    }
-    reason
 }
 
 /// Whether `line` closes what stands open in a method's signature: the body's opening brace, or the `;`

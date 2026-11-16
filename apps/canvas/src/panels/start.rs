@@ -282,7 +282,6 @@ fn rows(tiles: Vec<Element>, per_row: usize) -> Element {
 }
 
 fn sides(width: f64, height: f64) -> String {
-    // ratchet-allow(glyph_icon): the multiplication sign of a size is text, not an icon
     format!("{width:.0} × {height:.0}")
 }
 

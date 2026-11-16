@@ -14,10 +14,12 @@ The shared breakpoint (`ui::widget::NavMode`, derived per layout pass with
 hysteresis) exists to make the decision once, correctly, for everyone. This
 check keeps new comparisons from growing around it.
 
-Counts in the baseline only shrink. A line that is genuinely not a breakpoint —
+Counts in the baseline only shrink. A hit that is genuinely not a breakpoint —
 a hairline, a minimum hit target, a drawing bound inside a fixed-size graphic —
-says so with `allow-breakpoint: <why>` on the same line, and that reason is
-reviewed like any other decision.
+is listed in the code-owned allowance table instead
+(`crates/sdk/ui-core/tests/support/allowances.rs`), naming the file and the
+enclosing item with the reason it is not a layout decision. A comment can never
+move the exemption, and an entry that stops covering a hit fails this check.
 """
 from __future__ import annotations
 
@@ -55,7 +57,7 @@ APP_BREAKPOINT_CONSTANT = re.compile(
     r"\bconst\s+[A-Z0-9_]*(?:WIDTH|HEIGHT|BREAKPOINT|NARROW|COMPACT|WIDE)[A-Z0-9_]*"
     r"\s*:\s*(?:f32|f64|u32|i32|usize)\s*=\s*\d{3,}"
 )
-ALLOW = re.compile(r"allow-breakpoint:\s*\S")
+RULE = "Breakpoint"
 
 
 def baseline(root: Path) -> Counter[str]:
@@ -72,8 +74,12 @@ def baseline(root: Path) -> Counter[str]:
     return counts
 
 
-def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
+def audit(root: Path = ROOT) -> tuple[Counter[str], int, list[str]]:
+    """The comparisons the tree has, the sources scanned, and the allowance
+    entries that excused no hit."""
     found: Counter[str] = Counter()
+    allowed = {(entry.file, entry.item) for entry in rust_source.allowances(root, RULE)}
+    used: set[tuple[str, str]] = set()
     scanned = 0
     for tree in SCANNED:
         for source in sorted((root / tree).rglob("*.rs")):
@@ -84,6 +90,8 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
                 continue
             scanned += 1
             text = source.read_text(encoding="utf-8")
+            relative = str(source.relative_to(root))
+            spans = rust_source.item_spans(rust_source.code_only(text))
             # Only code decides a layout: a comparison inside a string literal is
             # data being passed somewhere else (`yt-dlp`'s `[height<=720]` format
             # selector), a commented-out one is not code at all, and one inside a
@@ -101,15 +109,15 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
                 patterns.append(APP_BREAKPOINT_CONSTANT)
             for pattern in patterns:
                 for match in pattern.finditer(scanned_text):
-                    start = scanned_text.rfind("\n", 0, match.start()) + 1
-                    end = scanned_text.find("\n", match.end())
-                    # The marker lives in a comment, which the lexer blanks, so
-                    # the same span is read from the original text.
-                    line = text[start : end if end != -1 else len(text)]
-                    if ALLOW.search(line):
+                    item = rust_source.enclosing_item(
+                        spans, rust_source.line_number(scanned_text, match.start()) - 1
+                    )
+                    if (relative, item) in allowed:
+                        used.add((relative, item))
                         continue
-                    found[str(source.relative_to(root))] += 1
-    return found, scanned
+                    found[relative] += 1
+    stale = sorted(f"{file} {item}" for file, item in allowed - used)
+    return found, scanned, stale
 
 
 def main() -> int:
@@ -121,14 +129,15 @@ def main() -> int:
     )
     arguments = parser.parse_args()
 
-    found, scanned = audit()
+    found, scanned, stale = audit()
     if arguments.write_baseline:
         body = "\n".join(f"{count} {path}" for path, count in sorted(found.items()))
         BASELINE.write_text(
             "# Surfaces that still decide their shape from a number\n"
             "# (tools/policy/check_breakpoints.py). Counts only shrink: derive the\n"
-            "# breakpoint from the rect this surface is laid out in, or mark a line\n"
-            "# `allow-breakpoint: <why>` when it is not a breakpoint at all.\n"
+            "# breakpoint from the rect this surface is laid out in, or list a hit\n"
+            "# that is not a breakpoint in the allowance table\n"
+            "# (crates/sdk/ui-core/tests/support/allowances.rs).\n"
             + (body + "\n" if body else ""),
             encoding="utf-8",
         )
@@ -140,14 +149,18 @@ def main() -> int:
     for path, count in sorted(found.items()):
         if count > allowed.get(path, 0):
             violations.append(f"{path}: {count} dimension(s) compared to a literal, {allowed.get(path, 0)} allowed")
+    for entry in stale:
+        violations.append(
+            f"{entry}: the allowance covers no comparison; the item moved or was fixed"
+        )
     if violations:
         print("breakpoint literals FAILED", file=sys.stderr)
         for violation in violations:
             print(f"  {violation}", file=sys.stderr)
         print(
             "  A surface takes its breakpoint from the rect it is laid out in, every\n"
-            "  layout pass (`ui::widget::NavMode`). A line that is not a breakpoint says\n"
-            "  `allow-breakpoint: <why>`.",
+            "  layout pass (`ui::widget::NavMode`). A hit that is not a breakpoint is\n"
+            "  listed in the allowance table (crates/sdk/ui-core/tests/support/allowances.rs).",
             file=sys.stderr,
         )
         return 1

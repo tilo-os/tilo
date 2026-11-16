@@ -104,13 +104,6 @@ python3 "$root/tools/policy/check_wire_attributes.py" || fail=1
 # image and asked for by every app's manifest; one moved without the others
 # leaves the next image refusing its own apps at install (docs/policies.md).
 python3 "$root/tools/policy/check_interfaces.py" check || fail=1
-# An allowance marker is data the checks read, not prose: `// ratchet-allow(...)`
-# above a hit, `allow-breakpoint:` and `allow-socket-path:` trailing the line,
-# `/// Quiet:` above a harness entry point, a generated file's `@generated`, and
-# `tilo-app`'s `// tilo-app:graph-props=` and `// tilo-app:locale=`. One may go
-# only with the code it covers, or what it excused fails in a later run
-# (docs/policies.md).
-python3 "$root/tools/policy/check_allowance_markers.py" staged || fail=1
 # Every test-shaped file and every Rust file that reads outside its package is
 # accounted for in tools/ci/suites.toml, so changing what it reads runs it.
 # `--staged` reads only the commit's Rust files and the ones the manifest names

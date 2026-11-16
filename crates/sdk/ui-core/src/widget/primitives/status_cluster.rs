@@ -133,8 +133,6 @@ pub struct StatusClusterLayout {
 }
 
 /// How far past its glyph's top right corner the bell's count is centred.
-// ratchet-allow(pixel_const): an offset from a glyph's corner, a fraction of the glyph square
-// rather than spacing
 const BADGE_PAST_CORNER: f64 = 3.0;
 
 /// The most slots a cluster takes: the bell, the volume, the link, the battery, and one glyph of

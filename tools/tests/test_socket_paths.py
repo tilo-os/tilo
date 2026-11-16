@@ -14,13 +14,19 @@ SPEC.loader.exec_module(socket_paths)
 
 
 class SocketPaths(unittest.TestCase):
-    def audit(self, source: str, relative: str = "crates/x/src/lib.rs") -> int:
+    def audit(
+        self, source: str, relative: str = "crates/x/src/lib.rs", allowances: str = ""
+    ) -> int:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / relative
             path.parent.mkdir(parents=True)
             path.write_text(source, encoding="utf-8")
-            found, _ = socket_paths.audit(root)
+            if allowances:
+                table = root / "crates/sdk/ui-core/tests/support/allowances.rs"
+                table.parent.mkdir(parents=True)
+                table.write_text(allowances, encoding="utf-8")
+            found, _, self.stale = socket_paths.audit(root)
             return sum(found.values())
 
     def test_a_bind_or_connect_by_path_is_one(self):
@@ -39,25 +45,38 @@ class SocketPaths(unittest.TestCase):
             0,
         )
 
-    def test_a_marked_or_quoted_call_is_not_counted(self):
+    def test_an_allowed_call_is_not_counted(self):
         self.assertEqual(
             self.audit(
-                'fn f() { UnixStream::connect("/run/x.sock"); // allow-socket-path: fixed\n}'
+                'fn f() { UnixStream::connect("/run/x.sock"); }',
+                allowances='allowance("crates/x/src/lib.rs", "f", Rule::SocketPath, "a fixed short path"),',
             ),
             0,
         )
+        self.assertEqual(self.stale, [])
         self.assertEqual(self.audit('fn f() { let s = "UnixStream::connect(p)"; }'), 0)
 
-    def test_a_marked_call_is_found_below_the_comments_above_it(self):
+    def test_an_allowance_is_found_for_a_call_below_comments(self):
         self.assertEqual(
             self.audit(
                 "// A comment above the call, as most files have.\n"
                 "fn f(p: &Path) {\n"
-                "    UnixStream::connect(p); // allow-socket-path: fixed and short\n"
-                "}"
+                "    UnixStream::connect(p);\n"
+                "}",
+                allowances='allowance("crates/x/src/lib.rs", "f", Rule::SocketPath, "a fixed short path"),',
             ),
             0,
         )
+
+    def test_an_allowance_that_covers_nothing_is_stale(self):
+        self.assertEqual(
+            self.audit(
+                "fn f(p: &Path) { UnixStream::connect(p); }",
+                allowances='allowance("crates/x/src/lib.rs", "gone", Rule::SocketPath, "a fixed short path"),',
+            ),
+            1,
+        )
+        self.assertEqual(self.stale, ["crates/x/src/lib.rs gone"])
 
 
 if __name__ == "__main__":

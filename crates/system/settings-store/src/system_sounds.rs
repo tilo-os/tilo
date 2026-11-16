@@ -172,20 +172,40 @@ impl SystemSoundEvent {
 #[serde(remote = "Self", default)]
 pub struct SystemSoundEvents {
     /// A sound when a notification arrives.
+    #[cfg_attr(
+        feature = "model",
+        model(title = "A sound when a notification arrives")
+    )]
     pub notification: bool,
     /// A sound when a message arrives.
+    #[cfg_attr(feature = "model", model(title = "A sound when a message arrives"))]
     pub message: bool,
     /// A tick as the volume changes.
+    #[cfg_attr(feature = "model", model(title = "A tick as the volume changes"))]
     pub volume_change: bool,
     /// A shutter sound when a screenshot is taken.
+    #[cfg_attr(
+        feature = "model",
+        model(title = "A shutter sound when a screenshot is taken")
+    )]
     pub screenshot: bool,
     /// A sound when a device is plugged in.
+    #[cfg_attr(
+        feature = "model",
+        model(title = "A sound when a device is plugged in")
+    )]
     pub device_connected: bool,
     /// A sound when a device is unplugged.
+    #[cfg_attr(feature = "model", model(title = "A sound when a device is unplugged"))]
     pub device_disconnected: bool,
     /// A warning sound when the battery runs low.
+    #[cfg_attr(
+        feature = "model",
+        model(title = "A warning sound when the battery runs low")
+    )]
     pub low_battery: bool,
     /// A sound when something fails.
+    #[cfg_attr(feature = "model", model(title = "A sound when something fails"))]
     pub error: bool,
 }
 
@@ -245,13 +265,19 @@ impl SystemSoundEvents {
 #[serde(remote = "Self", default)]
 pub struct SystemSoundPrefs {
     /// Master switch.
+    #[cfg_attr(feature = "model", model(title = "Master switch"))]
     pub enabled: bool,
     /// How loud system sounds play, `0..=1` of the output volume.
-    #[cfg_attr(feature = "model", model(range = 0.0..=1.0))]
+    #[cfg_attr(feature = "model", model(range = 0.0..=1.0, title = "How loud system sounds play, `0..=1` of the output volume"))]
     pub volume: f64,
     /// freedesktop sound theme name; `None` follows [`DEFAULT_THEME`].
+    #[cfg_attr(
+        feature = "model",
+        model(title = "freedesktop sound theme name; `None` follows [`DEFAULT_THEME`]")
+    )]
     pub theme: Option<String>,
     /// Which events make a sound.
+    #[cfg_attr(feature = "model", model(title = "Which events make a sound"))]
     pub events: SystemSoundEvents,
 }
 

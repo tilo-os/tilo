@@ -223,6 +223,9 @@ mod words;
 )]
 struct FieldOptions {
     rename: Option<String>,
+    /// `title = "…"`: what a person reads as the field's name, in code rather
+    /// than inferred from the doc comment above it.
+    title: Option<String>,
     skip: bool,
     label: bool,
     readonly: bool,
@@ -358,6 +361,9 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else if meta.path.is_ident("rename") {
                 let value: syn::LitStr = meta.value()?.parse()?;
                 options.rename = Some(value.value());
+            } else if meta.path.is_ident("title") {
+                let value: syn::LitStr = meta.value()?.parse()?;
+                options.title = Some(value.value());
             } else if meta.path.is_ident("label") {
                 options.label = true;
             } else if meta.path.is_ident("readonly") {
@@ -396,7 +402,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.quiet_remove = true;
             } else {
                 return Err(meta.error(
-                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
+                    "expected `skip`, `rename = \"...\"`, `title = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
                      `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
                      `weakest = N`, `range = low..=high`, `choices = ..` or \
                      `remove = \"quiet\"`",
@@ -955,13 +961,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         }
         let index = proc_macro2::Literal::usize_unsuffixed(descs.len());
         let field_name = ident.to_string();
-        let title = doc_lines(&field.attrs)
-            .into_iter()
-            .find(|line| !line.is_empty())
-            .map_or_else(
-                || humanize(&field_name),
-                |line| line.trim_end_matches('.').to_owned(),
-            );
+        let title = options.title.clone().unwrap_or_else(|| {
+            doc_lines(&field.attrs)
+                .into_iter()
+                .find(|line| !line.is_empty())
+                .map_or_else(
+                    || humanize(&field_name),
+                    |line| line.trim_end_matches('.').to_owned(),
+                )
+        });
         // An outbox is its own storage unit: what a change queues in it is
         // what reaches outside the record, and a receiver tells that from
         // the units the change wrote without the app's code.

@@ -84,8 +84,8 @@ impl Traps {
     fn trap(&mut self, name: &str, path: &Path) -> Result<(), String> {
         // The traps are this check's own: `socket_dir` keeps their paths short
         // enough for the kernel, and a bind that still fails is reported here.
-        let listener = UnixListener::bind(path) // allow-socket-path: the check's own directory, short by construction
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let listener =
+            UnixListener::bind(path).map_err(|error| format!("{}: {error}", path.display()))?;
         let hits = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&hits);
         std::thread::spawn(move || {

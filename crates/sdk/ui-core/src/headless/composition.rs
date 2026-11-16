@@ -279,7 +279,6 @@ impl FrameHarness {
     /// logical pixel, its box's top left at the origin: the picture a host
     /// shows for a widget that declares nothing of its own
     /// ([`crate::composition::Own::Painted`]). `None` when no laid-out widget has that path.
-    /// Quiet: draws the widget's paint; nothing a frame reads changes.
     pub fn paint_composed(&mut self, path: &str, scale: f64) -> Option<(Scene, [f64; 4])> {
         if path == super::slot_row::WINDOW_SLOTS {
             return self.paint_slot_row(scale);

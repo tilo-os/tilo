@@ -11,7 +11,10 @@ through its directory and refuse loudly where they cannot.
 
 Counts in the baseline only shrink. A call whose path is fixed and short (a
 system socket such as `/run/greetd.sock`, an abstract or fd-passed address)
-says so with `allow-socket-path: <why>` on the same line.
+is listed in the code-owned allowance table
+(`crates/sdk/ui-core/tests/support/allowances.rs`), naming the file and the
+enclosing item; a comment can never move the exemption, and an entry that
+stops covering a call fails this check.
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ SCANNED = ("apps", "crates")
 # The one place that binds and connects by path.
 HELPER = "crates/platform/tilo-files/src/native/socket.rs"
 CALL = re.compile(r"\bUnix(?:Listener::bind|Stream::connect)\s*\(")
-ALLOW = re.compile(r"allow-socket-path:\s*\S")
+RULE = "SocketPath"
 
 
 def baseline(path: Path = BASELINE) -> Counter[str]:
@@ -46,8 +49,12 @@ def baseline(path: Path = BASELINE) -> Counter[str]:
     return counts
 
 
-def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
+def audit(root: Path = ROOT) -> tuple[Counter[str], int, list[str]]:
+    """The calls the tree has, the sources scanned, and the allowance entries
+    that excused none."""
     found: Counter[str] = Counter()
+    allowed = {(entry.file, entry.item) for entry in rust_source.allowances(root, RULE)}
+    used: set[tuple[str, str]] = set()
     scanned = 0
     for tree in SCANNED:
         for source in sorted((root / tree).rglob("*.rs")):
@@ -59,16 +66,17 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
             scanned += 1
             text = source.read_text(encoding="utf-8")
             code = rust_source.code_only(rust_source.production_source(text))
-            # The comment that allows a call sits on its own line, read from the
-            # source as written: `code` has comments removed, so its offsets do
-            # not address `text`.
-            lines = text.splitlines()
+            spans = rust_source.item_spans(code)
             for match in CALL.finditer(code):
-                line = rust_source.line_number(code, match.start()) - 1
-                if line < len(lines) and ALLOW.search(lines[line]):
+                item = rust_source.enclosing_item(
+                    spans, rust_source.line_number(code, match.start()) - 1
+                )
+                if (str(relative), item) in allowed:
+                    used.add((str(relative), item))
                     continue
                 found[str(relative)] += 1
-    return found, scanned
+    stale = sorted(f"{file} {item}" for file, item in allowed - used)
+    return found, scanned, stale
 
 
 def main() -> int:
@@ -80,14 +88,15 @@ def main() -> int:
     )
     arguments = parser.parse_args()
 
-    found, scanned = audit()
+    found, scanned, stale = audit()
     if arguments.write_baseline:
         body = "\n".join(f"{count} {path}" for path, count in sorted(found.items()))
         BASELINE.write_text(
             "# Sockets still bound or reached by a path the kernel may refuse for its\n"
             "# length (tools/policy/check_socket_paths.py). Counts only shrink: use\n"
-            "# tilo_files::native::socket::{bind, connect}, or mark a fixed short path\n"
-            "# `allow-socket-path: <why>`.\n" + (body + "\n" if body else ""),
+            "# tilo_files::native::socket::{bind, connect}, or list a fixed short path\n"
+            "# in the allowance table (crates/sdk/ui-core/tests/support/allowances.rs).\n"
+            + (body + "\n" if body else ""),
             encoding="utf-8",
         )
         print(
@@ -102,13 +111,17 @@ def main() -> int:
         for path, count in sorted(found.items())
         if count > allowed.get(path, 0)
     ]
+    violations.extend(
+        f"{entry}: the allowance covers no socket call; the item moved or was fixed"
+        for entry in stale
+    )
     for violation in violations:
         print(violation)
     if violations:
         print(
             "socket paths FAILED: bind and connect with tilo_files::native::socket,\n"
-            "which reach a path of any length; a fixed short path says\n"
-            "`allow-socket-path: <why>`.",
+            "which reach a path of any length; a fixed short path is listed in the\n"
+            "allowance table (crates/sdk/ui-core/tests/support/allowances.rs).",
             file=sys.stderr,
         )
         return 1

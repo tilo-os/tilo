@@ -1,7 +1,8 @@
 # Surfaces that still decide their shape from a number
 # (tools/policy/check_breakpoints.py). Counts only shrink: derive the
-# breakpoint from the rect this surface is laid out in, or mark a line
-# `allow-breakpoint: <why>` when it is not a breakpoint at all.
+# breakpoint from the rect this surface is laid out in, or list a hit that is
+# not a breakpoint in the allowance table
+# (crates/sdk/ui-core/tests/support/allowances.rs).
 4 apps/chat/src/local_voice.rs
 1 apps/music/src/app/spotify.rs
 2 apps/notes/examples/notes-latency.rs

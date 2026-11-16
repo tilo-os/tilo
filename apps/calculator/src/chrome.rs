@@ -41,8 +41,7 @@ impl Header {
 
 /// The narrowest a formula row fits in; below docked width plus the plot's,
 /// the panel floats instead.
-// ratchet-allow(pixel_const): the width a formula row fits in, measured from its content, not spacing
-const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
+const PANEL_MIN_WIDTH: f64 = 340.0;
 
 /// A collapsible side panel over the shared drawer's geometry and state.
 pub struct SidePanel {

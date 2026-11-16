@@ -711,7 +711,6 @@ impl TimeZoneGlobe {
             let at = projection.project(p);
             if emphasis {
                 // The chosen city, ringed in the ground so it stands off the land and the night.
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
                     transform,

@@ -110,7 +110,6 @@ impl FrameHarness {
     /// (hidden where the bar shows the way back in its place), what the
     /// window's shell holds and what its frame lays out.
     ///
-    /// Quiet: reads the bar, the window's shell and its frame; paints a scratch bar and changes
     /// nothing a frame reads.
     ///
     /// # Errors

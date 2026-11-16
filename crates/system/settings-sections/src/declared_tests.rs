@@ -78,7 +78,9 @@ fn undeclared(kind: &str, prefix: &str, field: &FieldShape, top: bool, out: &mut
     let at = format!("{kind} `{path}`");
     let schema = (field.schema)();
     if field.title.to_lowercase() == field.name.replace('_', " ").to_lowercase() {
-        out.push(format!("{at}: no description (a doc comment)"));
+        out.push(format!(
+            "{at}: no description (a `title = \"…\"` option or a doc comment)"
+        ));
     }
     if top && schema.get("default").is_none() {
         out.push(format!("{at}: no published default (`#[model(defaults)]`)"));

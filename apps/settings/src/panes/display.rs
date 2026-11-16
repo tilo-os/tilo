@@ -392,7 +392,6 @@ fn resolution_label(mode: OutputMode) -> String {
 }
 
 fn resolution_text(width: u32, height: u32) -> String {
-    // ratchet-allow(glyph_icon): the multiplication sign of a resolution is text, not an icon
     format!("{width} × {height}")
 }
 

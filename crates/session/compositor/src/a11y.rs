@@ -513,7 +513,7 @@ mod tests {
             );
             // A small output gets a share of it, not a lens larger than it is.
             let small = lens_rect(centre, Size::from((320, 240)));
-            assert!(small.size.w < 320 && small.size.h < 240); // allow-breakpoint: the fixture output's size, not a layout width
+            assert!(small.size.w < 320 && small.size.h < 240);
         }
     }
 

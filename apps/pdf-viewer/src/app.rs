@@ -3070,7 +3070,7 @@ impl PdfApp {
     }
 
     fn create_free_text(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
-        const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing; allow-breakpoint: a PDF page width, not a layout breakpoint
+        const WIDTH: f64 = 180.0;
         let size = model::FREE_TEXT_SIZE;
         let height = size * 1.2 * 2.0 + 4.0;
         let a = Annotation {

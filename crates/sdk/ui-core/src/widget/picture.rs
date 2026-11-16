@@ -27,8 +27,6 @@ impl ColourFilter {
     /// Apply the filter to what `scene` drew under `rect` so far: the blend
     /// the compositor uses for the whole screen, here for one area.
     pub fn paint(self, scene: &mut Scene, transform: Affine, rect: Rect) {
-        // ratchet-allow(white_or_black): the colour and difference blends take pure white as
-        // their operand; no theme colour is one.
         let white = Color::WHITE;
         let mut overlay = |mix: Mix| {
             scene.push_layer(

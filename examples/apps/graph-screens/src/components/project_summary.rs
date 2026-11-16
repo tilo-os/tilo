@@ -1,7 +1,12 @@
-// tilo-app:graph-props=display-v1
 use ui::tokens::TextRole;
 use ui::widget::{Element, Text};
-use ui::{UiBuildContext, UiComponentRequest};
+use ui::{GraphPropKind, UiBuildContext, UiComponentRequest};
+
+/// The props a serialized UI graph node names, and what each must hold. `tilo-app doctor` reads it.
+pub const GRAPH_PROPS: &[(&str, GraphPropKind)] = &[
+    ("title", GraphPropKind::Text),
+    ("detail", GraphPropKind::Text),
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectSummaryProps {

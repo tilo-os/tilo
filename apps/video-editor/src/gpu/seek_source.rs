@@ -29,7 +29,6 @@ const RUNNING_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 /// The furthest one request may lead the last and still count as the playhead
 /// running: a shuttle at 16× moves more than a quarter second a frame.
 const RUNNING_STEP_S: f64 = 0.25;
-// ratchet-allow(pixel_const): a playback speed multiple, not spacing
 const RUNNING_MAX_RATE: f64 = 17.0;
 
 const IDLE: std::time::Duration = std::time::Duration::from_secs(30);

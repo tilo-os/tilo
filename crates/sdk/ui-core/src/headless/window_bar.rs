@@ -24,7 +24,6 @@ impl FrameHarness {
     /// A header row that cannot stand as slots (it holds a catch-up, a popover) is the window's
     /// bar instead, as a window's frame hosts it: the row fills the window and the window's
     /// controls stand at its trailing end ([`Self::row_holds_bar`]).
-    /// Quiet: presents through `present_window_bar`, which invalidates first.
     pub fn present_in_window_bar(&mut self) {
         self.present_window_bar(true);
     }
@@ -34,7 +33,6 @@ impl FrameHarness {
     /// window. The bar still hosts the app's slots — a capture of this window draws no bar above
     /// the frame — so what the app offers in it is what the person finds on reaching for the top
     /// edge.
-    /// Quiet: presents through `present_window_bar`, which invalidates first.
     pub fn present_window_bar_at_rest(&mut self) {
         self.present_window_bar(false);
     }
@@ -613,7 +611,6 @@ impl FrameHarness {
     /// it: the app's slots, the bar's own overflow, the History control and the window's own
     /// controls, and the width it leaves empty. A capture, an inspector and a layout check read
     /// the bar through it.
-    /// Quiet: lays out a scratch bar and reads it; nothing a frame reads.
     pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
         if !self.window_bar || !self.bar_revealed {
             return crate::window_toolbar::BarLayout {
@@ -681,7 +678,6 @@ impl FrameHarness {
 
     /// How the window's bar, as the shell draws it across a window
     /// `width` wide, shows the notice up (none: no notice is up).
-    /// Quiet: reads the notice off a scratch bar; nothing a frame reads.
     #[must_use]
     pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
         Self::shown_notice(&self.painted_window_bar(width))

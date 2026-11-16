@@ -224,7 +224,6 @@ impl Painter<'_> {
     }
 
     fn rule(&mut self, from: (f64, f64), to: (f64, f64), color: vello::peniko::Color) {
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
         self.scene.stroke(
             &Stroke::new(1.0),
             self.transform,
@@ -294,7 +293,6 @@ impl HistoryChart {
         let (plugged, ink, content) = (
             colors.semantic.success,
             colors.text_primary,
-            // ratchet-allow(literal_alpha): the charge chart draws measured battery data, content rather than chrome
             colors.text_primary.multiply_alpha(0.10),
         );
         let plot = painter.plot;
@@ -340,7 +338,6 @@ impl HistoryChart {
             area.close_path();
             painter.fill(&area, content);
         }
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
         painter.scene.stroke(
             &Stroke::new(1.75)
                 .with_join(vello::kurbo::Join::Round)

@@ -405,6 +405,105 @@ def starts(code: str, pattern: re.Pattern[str], forbidden: str = "."):
             yield match
 
 
+# ---------------------------------------------------------------------------
+# Exemptions the checks honour are code, in one table: a migration never
+# moves one, and a stale entry names an item no hit sits in. The table is
+# `crates/sdk/ui-core/tests/support/allowances.rs`, which the compiler checks.
+# ---------------------------------------------------------------------------
+
+ALLOWANCES = Path("crates/sdk/ui-core/tests/support/allowances.rs")
+ALLOWANCE_ENTRY = re.compile(
+    r'allowance\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*Rule::(\w+)\s*,'
+    r'\s*"((?:[^"\\]|\\.)*)"\s*,?\s*\)',
+    re.DOTALL,
+)
+ITEM_START = re.compile(
+    r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:default|async|unsafe)\s+)*"
+    r"(const\s+fn|fn|const|static|struct|enum|union|trait|mod|type|impl)\b(.*)$"
+)
+
+
+@dataclass(frozen=True)
+class Allowance:
+    file: str
+    item: str
+    rule: str
+    why: str
+
+
+def allowances(root: Path, rule: str) -> list[Allowance]:
+    """The entries of the code-owned allowance table that name ``rule``."""
+    path = root / ALLOWANCES
+    if not path.is_file():
+        return []
+    return [
+        Allowance(*match.groups())
+        for match in ALLOWANCE_ENTRY.finditer(path.read_text(encoding="utf-8"))
+        if match.group(3) == rule
+    ]
+
+
+def item_name(kind: str, rest: str) -> str:
+    kind = kind.removeprefix("const ").strip() or kind
+    if kind == "impl":
+        header = re.split(r"[;{]", rest, maxsplit=1)[0].strip()
+        after = header.split(" for ", 1)[1] if " for " in header else header
+        path = re.match(r"[A-Za-z0-9_:]*", after.lstrip("<"))
+        return path.group(0).split("::")[-1] if path else ""
+    match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", rest)
+    return match.group(1) if match else ""
+
+
+def item_spans(code: str) -> list[tuple[int, int, str]]:
+    """The half-open line range of each named item in lexed ``code``, with its
+    name. A bodyless item ends at its ``;``; a lifetime is not a char literal
+    because ``code`` is already ``lex``ed."""
+    lines = code.splitlines()
+    opened: list[list] = []
+    spans: list[tuple[int, int, str]] = []
+    depth = 0
+    for index, line in enumerate(lines):
+        before = depth
+        if not any(open_depth is None for _, _, open_depth in opened):
+            found = ITEM_START.match(line)
+            if found:
+                opened.append([index, item_name(found.group(1), found.group(2)), None])
+        pending = [at for at, (_, _, open_depth) in enumerate(opened) if open_depth is None]
+        decisive = next(((at, char) for at, char in enumerate(line) if char in "{;"), None)
+        if pending and decisive:
+            if decisive[1] == "{":
+                for at in pending:
+                    opened[at][2] = before
+            else:
+                start, name, _ = opened.pop(pending[-1])
+                spans.append((start, index + 1, name))
+        depth += line.count("{") - line.count("}")
+        while True:
+            closing = next(
+                (
+                    at
+                    for at in range(len(opened) - 1, -1, -1)
+                    if opened[at][2] is not None and depth <= opened[at][2]
+                ),
+                None,
+            )
+            if closing is None:
+                break
+            start, name, _ = opened.pop(closing)
+            spans.append((start, index + 1, name))
+    spans.extend((start, len(lines), name) for start, name, _ in opened)
+    return spans
+
+
+def enclosing_item(spans: list[tuple[int, int, str]], line: int) -> str:
+    """The innermost item a 0-based ``line`` sits in, or ``""``."""
+    best: tuple[int, str] | None = None
+    for start, end, name in spans:
+        if start <= line < end and (best is None or start > best[0]):
+            best = (start, name)
+    return best[1] if best else ""
+
+
 @dataclass(frozen=True)
 class Source:
     path: Path

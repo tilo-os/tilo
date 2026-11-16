@@ -12,6 +12,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+pub mod allowances;
 pub mod evidence;
 pub mod ratchet;
 pub mod render;

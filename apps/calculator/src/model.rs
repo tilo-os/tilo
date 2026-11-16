@@ -403,8 +403,8 @@ pub enum KeypadLayout {
 
 impl KeypadLayout {
     pub fn for_width(width: f64) -> Self {
-        let compact = width < 460.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
-        let standard = width < 680.0; // allow-breakpoint: re-chosen from the laid-out rect on every pass
+        let compact = width < 460.0;
+        let standard = width < 680.0;
         if compact {
             KeypadLayout::Compact
         } else if standard {

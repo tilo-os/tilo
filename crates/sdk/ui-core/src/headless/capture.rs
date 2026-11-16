@@ -76,7 +76,6 @@ impl FrameHarness {
     /// so an entrance that is still running, a scroll bar that is still fading
     /// and a page whose sharp bitmap has not arrived are all waited out. A
     /// capture taken before that is evidence about the capture, not the app.
-    /// Quiet: settles the capture first, which invalidates, and writes it; it runs no frame of
     /// the app's own.
     #[cfg(feature = "native")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
@@ -95,7 +94,6 @@ impl FrameHarness {
     /// Rasterise the most recently laid-out frame under the shell's window
     /// bar ([`Self::present_in_window_bar`]) to a PNG as tall as the window:
     /// the bar, then the app's frame under it.
-    /// Quiet: rasterises the last frame drawn; lays out only the bar's own row.
     pub fn render_window_png(&mut self, out: &std::path::Path) {
         self.drain_component_wakes();
         let scale = crate::offscreen::capture_device_scale();

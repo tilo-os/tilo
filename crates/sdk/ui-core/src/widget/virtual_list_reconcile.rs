@@ -287,7 +287,6 @@ impl<M: ListModel> VirtualList<M> {
                 if self.row_starts(index) {
                     self.groups.fold(index);
                     let band = self.groups.height;
-                    // ratchet-allow(legacy_size_api): the row's height, not a text's, is measured.
                     self.viewport.measure(index, key, band);
                 } else {
                     self.viewport.collapse(index, key);

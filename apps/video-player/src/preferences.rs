@@ -17,7 +17,6 @@ pub type RecentHistory = ui::tilo_resource::Recents<RecentMedia, RECENT_HISTORY_
 /// What this device plays at when nothing else is chosen.
 pub const DEFAULT_VOLUME: f32 = 0.8;
 /// Normal speed.
-// ratchet-allow(pixel_const): a playback rate, not pixels
 pub const DEFAULT_RATE: f32 = 1.0;
 
 /// The speeds the settings menu offers; a stored speed is always one of them.

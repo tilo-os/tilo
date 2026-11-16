@@ -3022,7 +3022,7 @@ fn zoomed_pages_draw_from_reusable_worker_tiles_matching_full_renders() {
             "visible tiles cover the viewport exactly: {covered} of {target}"
         );
         assert!(tiles.tiles.iter().all(|(r, image)| {
-            image.width == r.width && image.height == r.height && r.width <= 512 // allow-breakpoint: a tile raster cap, not a layout breakpoint
+            image.width == r.width && image.height == r.height && r.width <= 512
         }));
         assert_eq!(tile_levels(&app), vec![tiles.placement.level]);
     }

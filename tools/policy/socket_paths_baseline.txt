@@ -1,7 +1,7 @@
 # Sockets still bound or reached by a path the kernel may refuse for its
 # length (tools/policy/check_socket_paths.py). Counts only shrink: use
-# tilo_files::native::socket::{bind, connect}, or mark a fixed short path
-# `allow-socket-path: <why>`.
+# tilo_files::native::socket::{bind, connect}, or list a fixed short path in
+# the allowance table (crates/sdk/ui-core/tests/support/allowances.rs).
 1 crates/agent/local-model-service/src/main.rs
 1 crates/agent/model-gateway/examples/local-tool-acceptance.rs
 3 crates/collab/tilo-action-broker/src/collab_broker_capnp.rs

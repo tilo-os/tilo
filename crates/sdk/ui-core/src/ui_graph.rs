@@ -28,8 +28,8 @@ pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
 pub const LIVE_GRAPH_OPERATION: &str = "tilo.ui.graph";
 
 pub use tilo_ui_graph::{
-    UI_GRAPH_VERSION, UiButtonRole, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
-    UiTextRole, UiTextSource, parse_ui_graph_edits,
+    GraphPropKind, UI_GRAPH_VERSION, UiButtonRole, UiDocument, UiGraphEdit, UiGraphError,
+    UiNavigation, UiNode, UiTextRole, UiTextSource, parse_ui_graph_edits,
 };
 
 /// Inputs passed to one app-owned serialized-graph component factory.

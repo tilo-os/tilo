@@ -4417,7 +4417,7 @@ mod tests {
             // its text whole.
             assert_eq!(
                 shown.strip.is_some(),
-                width < 1280.0, // allow-breakpoint: the test asks the shared bar to choose its compact form
+                width < 1280.0,
                 "{width} px: {shown:?}"
             );
             assert!(shown.whole && button.labelled, "{width} px: {shown:?}");

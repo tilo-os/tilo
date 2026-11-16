@@ -19,7 +19,6 @@ const TAG: &str = "tilo-slides";
 
 /// How far a pasted element is moved from the one it was copied from, in
 /// slide units: enough to see both, small enough to stay where it was.
-// ratchet-allow(pixel_const): an offset on the slide, in slide units, not pixels
 pub(crate) const PASTE_OFFSET: f64 = 24.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

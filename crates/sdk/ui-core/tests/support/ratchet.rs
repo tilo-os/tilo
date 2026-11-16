@@ -15,10 +15,10 @@
 //!
 //! A hit that is genuinely irreducible (content drawing, say: a globe, a
 //! chart, the picture of a window) is allowed in place, never by growing a
-//! baseline: the comment line right above it reads
-//! `// ratchet-allow(<pattern>[, <pattern>…]): <why>`, naming the patterns
-//! it allows on that line and saying why ([`allow_marker`]). The reason is
-//! the review.
+//! baseline: one entry in `support::allowances::ALLOWANCES` names its file,
+//! the enclosing item and the rule, with why the hit is content. The decision
+//! is code, so editing a comment never moves it, and an entry that stops
+//! covering a hit fails that module's own test.
 //!
 //! Regenerate with `UPDATE_RATCHET_BASELINES=1`. `RATCHET_SCOPE=apps/mail`
 //! rewrites only that unit's shard. An update refuses to raise any count
@@ -33,6 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use super::allowances::{ALLOWANCES, Allowance, Items};
 
 /// `(path relative to the repository root, pattern key) → count`.
 pub type Counts = BTreeMap<(String, String), usize>;
@@ -305,39 +307,64 @@ impl Ratchet {
         (files, unreached)
     }
 
-    /// Every pattern per file, skipping comments and `#[cfg(test)]` items.
+    /// Every pattern per file, skipping comments, `#[cfg(test)]` items and the
+    /// items an allowance excuses. The second half is the indices of
+    /// `ALLOWANCES` that excused at least one hit.
     pub fn count(&self, repository: &Path, files: &[PathBuf]) -> Counts {
+        self.count_with(repository, files, ALLOWANCES).0
+    }
+
+    /// [`Ratchet::count`] with the allowances stated, and which of them excused
+    /// a hit.
+    pub fn count_with(
+        &self,
+        repository: &Path,
+        files: &[PathBuf],
+        allowances: &[Allowance],
+    ) -> (Counts, BTreeSet<usize>) {
         let mut out = Counts::new();
+        let mut used = BTreeSet::new();
         for f in files {
             let content = fs::read_to_string(f)
                 .unwrap_or_else(|e| panic!("could not read {}: {e}", f.display()));
             let skip = test_module_spans(&content);
             let rel = relative(f, repository);
-            let mut allowed: Vec<String> = Vec::new();
+            let items = Items::of(&content);
+            let allowed: Vec<(usize, &Allowance)> = allowances
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.file == rel)
+                .collect();
             for (i, line) in content.lines().enumerate() {
-                if let Some(keys) = allow_marker(line) {
-                    allowed = keys;
-                    continue;
-                }
                 if is_skipped(line, i, &skip) {
                     continue;
                 }
-                let allowed_here = std::mem::take(&mut allowed);
+                let item = items.at(i);
+                let here: Vec<(usize, &Allowance)> = allowed
+                    .iter()
+                    .filter(|(_, entry)| entry.item == item)
+                    .copied()
+                    .collect();
                 for pattern in &self.patterns {
-                    if allowed_here.iter().any(|key| key == pattern.key) {
+                    let hits = pattern.hits(line);
+                    if hits == 0 {
                         continue;
                     }
-                    let hits = pattern.hits(line);
-                    if hits > 0 {
-                        let entry = out
-                            .entry((rel.clone(), pattern.key.to_string()))
-                            .or_insert(0);
-                        *entry = entry.saturating_add(hits);
+                    if let Some((at, _)) = here
+                        .iter()
+                        .find(|(_, entry)| entry.rule.key() == pattern.key)
+                    {
+                        used.insert(*at);
+                        continue;
                     }
+                    let entry = out
+                        .entry((rel.clone(), pattern.key.to_string()))
+                        .or_insert(0);
+                    *entry = entry.saturating_add(hits);
                 }
             }
         }
-        out
+        (out, used)
     }
 
     /// Checks this ratchet's shards against the repository, or rewrites them
@@ -653,22 +680,6 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
 
 /// Whether line `index` (0-based) is a comment line or inside a test span:
 /// the two things every ratchet skips.
-/// The patterns a `// ratchet-allow(<pattern>[, <pattern>…]): <why>`
-/// comment line allows on the line below it. A marker without a reason of a
-/// few words allows nothing.
-#[must_use]
-pub fn allow_marker(line: &str) -> Option<Vec<String>> {
-    let rest = line.trim_start().strip_prefix("// ratchet-allow(")?;
-    let (keys, reason) = rest.split_once("):")?;
-    let keys: Vec<String> = keys
-        .split(',')
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(str::to_owned)
-        .collect();
-    (!keys.is_empty() && reason.trim().len() >= 12).then_some(keys)
-}
-
 pub fn is_skipped(line: &str, index: usize, spans: &[(usize, usize)]) -> bool {
     line.trim_start().starts_with("//") || spans.iter().any(|(a, b)| index >= *a && index < *b)
 }
@@ -799,10 +810,10 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_ratchet_engine_reads_markers_shards_and_reports_growth;
+    fn the_ratchet_engine_reads_allowances_shards_and_reports_growth;
 
-    // An allow marker names one pattern and a reason, and covers only the line
-    // right below it.
+    // An allowance names one rule and a reason, and covers the item it is
+    // filed under and nothing else.
     phase test_modules_split_into_files_or_directories_are_test_files;
     {
         for test in [
@@ -818,37 +829,14 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase an_allow_marker_covers_one_pattern_on_the_next_line_with_a_reason;
+    phase an_allowance_covers_its_item_and_nothing_else;
     {
-        assert_eq!(
-            allow_marker("    // ratchet-allow(raw_paint): the globe is content drawing"),
-            Some(vec!["raw_paint".to_owned()])
-        );
-        assert_eq!(
-            allow_marker(
-                "// ratchet-allow(literal_alpha, desktop_ground): the night side of the globe"
-            ),
-            Some(vec![
-                "literal_alpha".to_owned(),
-                "desktop_ground".to_owned()
-            ])
-        );
-        assert_eq!(
-            allow_marker("// ratchet-allow(raw_paint): ok"),
-            None,
-            "no reason"
-        );
-        assert_eq!(
-            allow_marker("// ratchet-allow(): a reason long enough"),
-            None
-        );
-        assert_eq!(allow_marker("// a plain comment"), None);
-        let folder = std::env::temp_dir().join(format!("ratchet-allow-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("ratchet-allowance-{}", std::process::id()));
         fs::create_dir_all(&folder).unwrap();
         let file = folder.join("draw.rs");
         fs::write(
             &file,
-            "fn draw() {\n    // ratchet-allow(raw_paint): the picture of a window is content\n    scene.fill(a);\n    scene.fill(b);\n}\n",
+            "fn draw() {\n    scene.fill(a);\n    scene.fill(b);\n}\nfn other() {\n    scene.fill(c);\n}\n",
         )
         .unwrap();
         let ratchet = Ratchet {
@@ -858,12 +846,27 @@ tilo_test_env::scenario! {
             exempt: no_exemptions,
             advice: "",
         };
-        let counts = ratchet.count(&folder, &[file]);
+        let allowance = |item: &'static str| Allowance {
+            file: "draw.rs",
+            item,
+            rule: crate::support::allowances::Rule::RawPaint,
+            why: "the picture of a window is content",
+        };
+        let (counts, used) =
+            ratchet.count_with(&folder, std::slice::from_ref(&file), &[allowance("draw")]);
         assert_eq!(
             counts.values().copied().sum::<usize>(),
             1,
-            "the marked line is allowed, the next one is counted: {counts:?}"
+            "the allowed item's hits are skipped, the other item's counted: {counts:?}"
         );
+        assert_eq!(used.len(), 1, "the allowance excused a hit");
+        let (counts, used) = ratchet.count_with(&folder, &[file], &[allowance("gone")]);
+        assert_eq!(
+            counts.values().copied().sum::<usize>(),
+            3,
+            "an allowance naming no item counts everything"
+        );
+        assert!(used.is_empty(), "and excuses nothing");
         let _ = fs::remove_dir_all(&folder);
     }
 

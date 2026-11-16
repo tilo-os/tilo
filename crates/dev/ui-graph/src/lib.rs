@@ -11,6 +11,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub const UI_GRAPH_VERSION: u32 = 1;
+
+/// What a serialized UI graph node's prop must hold, as the component that
+/// reads it declares in its own `GRAPH_PROPS`. `tilo-app doctor` reads that
+/// declaration from the component's code, so the contract cannot be lost with
+/// a comment beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphPropKind {
+    /// Any string.
+    Text,
+    /// A non-empty string naming something the app resolves (a model path).
+    Path,
+}
 const MAX_GRAPH_DEPTH: usize = 64;
 const MAX_GRAPH_NODES: usize = 4096;
 const MAX_ID_LEN: usize = 128;

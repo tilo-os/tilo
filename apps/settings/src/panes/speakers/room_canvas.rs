@@ -20,7 +20,6 @@ use crate::speaker_setup::ROOM_EXTENT_MM;
 /// standing close together still reads as a room, not as a magnified dot.
 const MIN_HALF_VIEW_MM: f64 = 1_500.0;
 /// Room left around the speakers (and the listener) the view fits.
-// ratchet-allow(pixel_const): a distance in the room, in millimetres, not pixels
 const VIEW_MARGIN_MM: f64 = 400.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -644,7 +643,6 @@ impl RoomCanvas {
         let colors = &theme.tokens.colors;
         let origin = self.to_screen((0.0, 0.0));
         for ring in [1_000, 2_000, 3_000, 4_000, 5_000] {
-            // ratchet-allow(raw_paint): the room canvas draws the room and its speakers, content rather than chrome
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -653,7 +651,6 @@ impl RoomCanvas {
                 &Circle::new(origin, f64::from(ring) / self.scale()),
             );
         }
-        // ratchet-allow(raw_paint): the room canvas draws the room and its speakers, content rather than chrome
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -720,7 +717,6 @@ impl RoomCanvas {
         drawn.sort_by_key(|(_, _, held)| *held);
         for (index, at, held) in drawn {
             let center = self.to_screen(at);
-            // ratchet-allow(raw_paint): the room canvas draws the room and its speakers, content rather than chrome
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -842,7 +838,6 @@ impl Widget for RoomCanvas {
         ui::surface::push_card_clip(scene, transform, self.rect, radius);
         self.draw_room(scene, transform, theme);
         let origin = self.to_screen((0.0, 0.0));
-        // ratchet-allow(raw_paint): the room canvas draws the room and its speakers, content rather than chrome
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

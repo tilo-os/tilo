@@ -472,10 +472,10 @@ pub use theme::{
 /// the web.
 pub use tilo_image_codec as image_codec;
 pub use ui_graph::{
-    LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
-    UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
-    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource, UiValues,
-    parse_ui_graph_edits,
+    GraphPropKind, LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION,
+    UiBuildContext, UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit,
+    UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    UiValues, parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{

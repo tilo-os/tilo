@@ -700,7 +700,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
                     && props.get("enabled_path") == Some(&serde_json::json!("profile-form-enabled"))
         ));
         let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
-        assert!(source.contains("// tilo-app:graph-props=form-v2"));
+        assert!(source.contains(r#"("value_path", GraphPropKind::Path)"#));
         assert!(source.contains("TextInput::from_state(&values.text(value_path))"));
         assert!(source.contains("pub fn register_ui_graph("));
         let report = doctor_app(&app).unwrap();
@@ -1859,11 +1859,15 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             "an unchanged registry is not rewritten"
         );
         assert_eq!(
+            parse_locale_registry(&std::fs::read_to_string(&registry_path).unwrap()).unwrap(),
+            ["de-DE", "en-US"]
+        );
+        assert_eq!(
             std::fs::read_to_string(&registry_path)
                 .unwrap()
-                .matches(LOCALE_ENTRY_PREFIX)
+                .matches("embedded_catalog!")
                 .count(),
-            2
+            1
         );
         let source_before = std::fs::read_to_string(app.join("locales/en-US.ftl")).unwrap();
         for locale in ["en-US", "de-de"] {
@@ -6366,3 +6370,31 @@ fn code_only_reads_past_quote_characters_and_raw_strings() {
 }
 
 mod portability_gate;
+
+#[test]
+fn every_graph_template_declares_the_contract_its_template_kind_expects() {
+    for template in [ComponentTemplate::Display, ComponentTemplate::Form] {
+        let (source, _) = component_source("demo", "demo", "Demo", template);
+        let declared = graph_props_contract("demo", &source)
+            .expect("a graph template declares GRAPH_PROPS in its own code");
+        assert_eq!(
+            declared.props,
+            GraphPropsContract::for_template(template)
+                .expect("a graph template has a contract")
+                .props
+        );
+    }
+    for template in [
+        ComponentTemplate::Tree,
+        ComponentTemplate::List,
+        ComponentTemplate::Table,
+        ComponentTemplate::Text,
+    ] {
+        assert!(GraphPropsContract::for_template(template).is_none());
+        let (source, _) = component_source("demo", "demo", "Demo", template);
+        assert!(
+            graph_props_contract("demo", &source).is_err(),
+            "a non-graph template declares no props contract"
+        );
+    }
+}
