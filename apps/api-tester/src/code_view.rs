@@ -157,11 +157,13 @@ impl Widget for CodeView {
         let theme = cx.theme().clone();
         let style = theme.text(ui::tokens::TextRole::Code);
         cx.element("pre");
-        cx.text(ui::composition::TextLook::new(
+        let mut look = ui::composition::TextLook::new(
             self.text.clone(),
             &style,
             Some(theme.tokens.colors.text_primary),
-        ));
+        );
+        look.mono = true;
+        cx.text(look);
     }
 
     fn build_layout(

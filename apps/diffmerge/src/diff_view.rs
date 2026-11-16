@@ -459,11 +459,10 @@ impl Widget for DiffView {
             ));
         }
         cx.element("pre");
-        cx.text(ui::composition::TextLook::new(
-            shown,
-            &style,
-            Some(theme.tokens.colors.text_primary),
-        ));
+        let mut look =
+            ui::composition::TextLook::new(shown, &style, Some(theme.tokens.colors.text_primary));
+        look.mono = true;
+        cx.text(look);
     }
 
     fn build_layout(
