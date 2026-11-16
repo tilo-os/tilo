@@ -1,12 +1,15 @@
-//! The agent's keyless web search and page reader, as their own library in the
-//! runtime bundle (`libtilo_agent_web_engine.so`).
+//! The agent's keyless web tools (`search_web` and `read_page`), as their own
+//! library in the runtime bundle (`libtilo_agent_web_engine.so`).
 //!
 //! Like `runtime-dylib` it re-exports what it provides, which records it
-//! as provided by this library for the apps' `-C prefer-dynamic` link.
-//! Outside the thin build it is empty.
+//! as provided by this library for the apps' `-C prefer-dynamic` link: the
+//! agent names the tools through it and carries none of their code.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+
+#[cfg(feature = "thin")]
+pub use tilo_agent_web_tools;
 
 #[cfg(feature = "thin")]
 pub use tilo_web_search;

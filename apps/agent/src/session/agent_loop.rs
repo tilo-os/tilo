@@ -2013,7 +2013,14 @@ impl Session {
             // right without a describe turn.
             Err(refused) => return Ok(Handled::Result(refused)),
         };
-        let report = self.web().run(&web_call);
+        let report = match self.web().run(&web_call) {
+            Ok(value) => InvokeReport {
+                succeeded: true,
+                value: Some(value),
+                ..InvokeReport::default()
+            },
+            Err(error) => refused_report(error),
+        };
         self.record_web(run, &web_call, &report)?;
         if !report.succeeded {
             tracing::info!(

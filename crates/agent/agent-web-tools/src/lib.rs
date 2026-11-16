@@ -26,8 +26,6 @@ use tilo_web_search::{
     SearchResult, SearchState,
 };
 
-use super::InvokeReport;
-
 /// Search the public web.
 pub const SEARCH_WEB: &str = "search_web";
 /// Read one web page.
@@ -231,8 +229,8 @@ pub struct Web {
     /// The workspace's content store a body that is not text is kept in.
     content: ui::content::ContentStore,
     /// Where a search asks and a read reaches instead of the web: a server on
-    /// this machine, standing in for the engines and the pages. Tests only.
-    #[cfg(test)]
+    /// this machine, standing in for the engines and the pages.
+    #[cfg(any(test, feature = "fixture-servers"))]
     look_elsewhere: Option<Vec<(Engine, String)>>,
 }
 
@@ -245,7 +243,7 @@ impl Web {
             client: None,
             state: Arc::default(),
             content,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fixture-servers"))]
             look_elsewhere: None,
         }
     }
@@ -253,29 +251,17 @@ impl Web {
     /// Ask a server on this machine instead of the web, and read from it:
     /// `routes` names, per engine, the address it answers, and a read reaches
     /// any address at all.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fixture-servers"))]
     pub fn look_elsewhere(&mut self, routes: Vec<(Engine, String)>) {
         self.look_elsewhere = Some(routes);
     }
 
-    /// Run one web call, as one observation of the run.
-    #[must_use]
-    pub fn run(&mut self, call: &Call) -> InvokeReport {
-        match self.answer(call) {
-            Ok(value) => InvokeReport {
-                succeeded: true,
-                value: Some(value),
-                ..InvokeReport::default()
-            },
-            Err(error) => InvokeReport {
-                succeeded: false,
-                error: Some(error),
-                ..InvokeReport::default()
-            },
-        }
-    }
-
-    fn answer(&mut self, call: &Call) -> Result<Value, String> {
+    /// Answer one web call: the tool's result, or the sentence that refuses it.
+    ///
+    /// # Errors
+    ///
+    /// What went wrong reaching the web, or keeping a body that is not text.
+    pub fn run(&mut self, call: &Call) -> Result<Value, String> {
         match call {
             Call::Search {
                 query,
@@ -289,7 +275,7 @@ impl Web {
                 let limits = SearchLimits::default();
                 let (query, engines) = (query.clone(), engines.clone());
                 let safe = *safe;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "fixture-servers"))]
                 if let Some(routes) = self.look_elsewhere.clone() {
                     let searched = self
                         .wait(async move {
@@ -317,7 +303,7 @@ impl Web {
                 let client = self.client()?;
                 let limits = FetchLimits::default();
                 let (url, offset, max_chars) = (url.clone(), *offset, *max_chars);
-                #[cfg(test)]
+                #[cfg(any(test, feature = "fixture-servers"))]
                 if self.look_elsewhere.is_some() {
                     let page = self
                         .wait(async move {
@@ -500,10 +486,8 @@ mod tests {
 
     /// The engine answers the library records, served to the tools from a
     /// server on this machine.
-    const BRAVE: &str =
-        include_str!("../../../../crates/platform/tilo-web-search/tests/fixtures/brave.html");
-    const BING: &str =
-        include_str!("../../../../crates/platform/tilo-web-search/tests/fixtures/bing.html");
+    const BRAVE: &str = include_str!("../../../platform/tilo-web-search/tests/fixtures/brave.html");
+    const BING: &str = include_str!("../../../platform/tilo-web-search/tests/fixtures/bing.html");
     /// A page a read answers with.
     const PAGE: &str = "<!doctype html><html><head><title>Ada Lovelace</title></head><body>\
                         <main><h1>Ada</h1><p>Ada Lovelace wrote the first published \
@@ -561,9 +545,7 @@ mod tests {
                 &json!({"query": "rust borrow checker", "safe_search": "strict", "count": 2}),
             )
             .unwrap();
-            let report = web.run(&call);
-            assert!(report.succeeded, "{report:?}");
-            let value = report.value.expect("a search answers its results");
+            let value = web.run(&call).expect("a search answers its results");
             assert_eq!(value["safe_search"], "strict");
             assert!(
                 value["total_results"].as_u64().unwrap_or_default() >= 3,
@@ -616,9 +598,9 @@ mod tests {
             let content = ui::content::ContentStore::memory();
             let mut web = tools(content.clone(), &server);
 
-            let page = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/ada")})).unwrap());
-            assert!(page.succeeded, "{page:?}");
-            let value = page.value.expect("a read answers the page");
+            let value = web
+                .run(&Call::read(READ_PAGE, &json!({"url": server.at("/ada")})).unwrap())
+                .expect("a read answers the page");
             assert_eq!(value["title"], json!("Ada Lovelace"));
             assert!(
                 value["text"]
@@ -627,8 +609,9 @@ mod tests {
                 "{value}"
             );
 
-            let repos = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/repos")})).unwrap());
-            let value = repos.value.expect("a read answers the listing");
+            let value = web
+                .run(&Call::read(READ_PAGE, &json!({"url": server.at("/repos")})).unwrap())
+                .expect("a read answers the listing");
             assert_eq!(value["content_type"], json!("application/json"));
             assert!(
                 value["text"]
@@ -637,8 +620,9 @@ mod tests {
                 "JSON is indented so its structure reads: {value}"
             );
 
-            let pdf = web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/cv.pdf")})).unwrap());
-            let value = pdf.value.expect("a read answers the file");
+            let value = web
+                .run(&Call::read(READ_PAGE, &json!({"url": server.at("/cv.pdf")})).unwrap())
+                .expect("a read answers the file");
             assert_eq!(value["content_type"], json!("application/pdf"));
             assert_eq!(value["bytes"], json!(PDF.len()));
             let address = value["content"].as_str().expect("the file is kept");
@@ -648,16 +632,10 @@ mod tests {
             assert_eq!(content.read(hash).as_deref(), Some(PDF), "kept whole");
 
             // An address the server has nothing at is the call's own failure.
-            let missing =
-                web.run(&Call::read(READ_PAGE, &json!({"url": server.at("/nothing")})).unwrap());
-            assert!(!missing.succeeded, "{missing:?}");
-            assert!(
-                missing
-                    .error
-                    .as_deref()
-                    .is_some_and(|error| error.contains("404")),
-                "{missing:?}"
-            );
+            let missing = web
+                .run(&Call::read(READ_PAGE, &json!({"url": server.at("/nothing")})).unwrap())
+                .expect_err("an address the server has nothing at is refused");
+            assert!(missing.contains("404"), "{missing:?}");
         }
 
         phase a_search_binds_with_defaults_and_bounds;

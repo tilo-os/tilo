@@ -349,6 +349,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-web-engine",
+ "tilo-agent-web-tools",
  "tilo-app",
  "tilo-automation",
  "tilo-copy-lint",
@@ -17488,10 +17489,24 @@ name = "tilo-agent-web-engine"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "tilo-agent-web-tools",
  "tilo-rt",
  "tilo-web-search",
  "url",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-agent-web-tools"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "serde_json",
+ "tilo-app",
+ "tilo-net",
+ "tilo-rt",
+ "tilo-test-env",
+ "tilo-web-search",
 ]
 
 [[package]]

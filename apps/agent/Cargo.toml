@@ -51,6 +51,9 @@ tilo-automation = { path = "../../crates/collab/automation" }
 # merged, and one page reduced to readable text, with every download bounded
 # and every destination checked.
 tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
+# The two tools themselves, which a release loads from its engine library
+# (crates/runtime/engines/agent-web).
+tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools" }
 # The engine library a release loads the search and the page reader through
 # (crates/runtime/engines/agent-web).
 tilo-agent-web-engine = { path = "../../crates/runtime/engines/agent-web", optional = true }
@@ -90,6 +93,7 @@ tempfile.workspace = true
 # The web tools' tests ask a server on this machine instead of the engines,
 # and read from it, where the shipped paths refuse its addresses.
 tilo-web-search = { path = "../../crates/platform/tilo-web-search", features = ["fixture-servers"] }
+tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools", features = ["fixture-servers"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true

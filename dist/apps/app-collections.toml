@@ -41,8 +41,8 @@ contacts = ["runtime-engine"]
 messages = ["runtime-engine"]
 # The spreadsheet formula engine from its engine library beside the runtime.
 sheets = ["runtime-engine"]
-# The web tools' search, page reader, HTTP client and runtime from their
-# engine library beside the runtime.
+# The agent's two web tools, their search, page reader, HTTP client and
+# runtime from their engine library beside the runtime.
 agent = ["runtime-engine"]
 # The PDF engine from its engine library beside the runtime.
 pdf-viewer = ["runtime-engine"]

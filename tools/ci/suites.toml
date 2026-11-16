@@ -945,9 +945,14 @@ package = "agent"
 # a changed fixture reruns them.
 inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
 readers = [
-  "apps/agent/src/tools/web.rs",
   "apps/agent/src/session/agent_loop/tests/web.rs",
 ]
+
+[[cargo]]
+package = "tilo-agent-web-tools"
+# The tools' own tests serve the same fixture pages.
+inputs = ["crates/platform/tilo-web-search/tests/fixtures/"]
+readers = ["crates/agent/agent-web-tools/src/lib.rs"]
 
 [[cargo]]
 package = "mail"

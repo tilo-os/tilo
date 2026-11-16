@@ -74,7 +74,9 @@ mod prompt;
 mod schema;
 mod summary;
 mod wait;
-pub mod web;
+/// The agent's own web tools, from the library its engine ships
+/// (crates/agent/agent-web-tools).
+pub use tilo_agent_web_tools as web;
 
 pub(crate) use prompt::LOOP_SYSTEM;
 

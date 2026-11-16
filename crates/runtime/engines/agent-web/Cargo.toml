@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The agent's web tools' libraries (the search and page reader, Tilo's HTTP client and the runtime they run on) as an engine library beside the shared runtime: libtilo_agent_web_engine.so, shipped in the runtime bundle and loaded only by the agent."
+description = "The agent's web tools (the search and page reader, their two tool definitions, Tilo's HTTP client and the runtime they run on) as an engine library beside the shared runtime: libtilo_agent_web_engine.so, shipped in the runtime bundle and loaded only by the agent."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
@@ -32,6 +32,7 @@ required-features = ["thin"]
 [features]
 thin = [
     "dep:runtime-dylib",
+    "dep:tilo-agent-web-tools",
     "dep:tilo-web-search",
     "dep:tilo-rt",
     "dep:url",
@@ -40,6 +41,9 @@ thin = [
 
 [dependencies]
 runtime-dylib = { path = "../../runtime-dylib", optional = true }
+# The two tools themselves (crates/agent/agent-web-tools): the definitions the
+# model reads, the arguments they bind and the answer one call returns.
+tilo-agent-web-tools = { path = "../../../agent/agent-web-tools", optional = true }
 # The features the agent builds it with: one of each in the thin graph, or the
 # app's symbols would name a crate hash this library does not export.
 tilo-web-search = { path = "../../../platform/tilo-web-search", optional = true }

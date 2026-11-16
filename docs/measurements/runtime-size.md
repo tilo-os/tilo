@@ -91,7 +91,8 @@ catalogue, the accessibility settings, the PC keyboard outlines and the
 time-zone globe: `libtilo_settings_engine.so` for Settings, whose binary is
 one call into it; the spreadsheet formula engine, IronCalc:
 `libtilo_spreadsheet_engine.so` for Sheets; the keyless web search and page
-reader, tilo-web-search: `libtilo_agent_web_engine.so` for Agent). It is
+reader, tilo-web-search, and the agent's two tools over it,
+tilo-agent-web-tools: `libtilo_agent_web_engine.so` for Agent). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library

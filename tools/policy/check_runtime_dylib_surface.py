@@ -175,6 +175,8 @@ ENGINES = {
     "ironcalc_base": "the spreadsheet formula engine, which Sheets loads from "
                      "libtilo_spreadsheet_engine.so",
     "tilo-agent-web-engine": "the agent's web tools' library (libtilo_agent_web_engine.so)",
+    "tilo-agent-web-tools": "the agent's two web tools, which Agent loads from "
+                            "libtilo_agent_web_engine.so",
     "tilo-web-search": "the keyless web search and page reader, which the agent loads from "
                        "libtilo_agent_web_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
