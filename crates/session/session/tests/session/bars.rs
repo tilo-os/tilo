@@ -420,8 +420,8 @@ fn a_window_covering_its_display_takes_the_bars_room() {
 
 /// Over a window covering its display, the bar stays away until it is reached for: the top edge, a
 /// key, and leaving full screen again, with a press in the band staying the window's while the bar
-/// is away. Reached for, the bar stands in for the window's own bar: a secondary press there opens
-/// the window's menu.
+/// is away. Reached for, the bar brings the window's own bar under it, with its way out, and a
+/// secondary press on the bar opens the window's menu.
 #[test]
 fn the_bar_comes_back_over_a_window_covering_its_display() {
     let _settled = ui::motion::testing::settled();
@@ -538,12 +538,44 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
     key(&mut session, KEY_ESCAPE, true);
     key(&mut session, KEY_ESCAPE, false);
 
-    // Leaving full screen docks the bar again and forgets the reveal.
-    set_fullscreen(&mut client, false);
+    // The window's own bar came with the bar, under it and over the window: down onto its way out
+    // both stay, and one press there leaves full screen, which docks the bar again.
+    let exit = |session: &Session| {
+        let exit = session
+            .controls()
+            .into_iter()
+            .find(|c| c.name == "Exit full screen");
+        exit.map(|control| control.rect)
+    };
+    let (x, y, w, h) = until(&mut session, &mut client, |session| exit(session))
+        .expect("the window's own bar shows");
+    assert!(y >= height, "under the bar: {y} under {height}");
+    let (on_bar, line) = (
+        pixel_at(&mut session, h.mul_add(0.5, y) as i32),
+        pixel_at(&mut session, WINDOW_LINE),
+    );
+    assert!(!same_colour(on_bar, line), "it paints over the window");
+    let at = (w.mul_add(0.5, x), h.mul_add(0.5, y));
+    for step in [0.25, 0.5, 0.75, 1.0] {
+        motion(
+            &mut session,
+            (at.0 - f64::from(WIDTH) / 2.0).mul_add(step, f64::from(WIDTH) / 2.0),
+            at.1.mul_add(step, 12.0 * (1.0 - step)),
+        );
+        settle(&mut session, 2);
+    }
+    assert_eq!(session.bars()[0].presence, TopBarPresence::Shown);
+    assert!(exit(&session).is_some(), "the window's bar stays too");
+    press(&mut session, true);
+    press(&mut session, false);
     until(&mut session, &mut client, |session| {
         (session.bars().first()?.presence == TopBarPresence::Docked).then_some(())
     })
-    .expect("leaving full screen docks the bar");
+    .expect("its way out leaves full screen and docks the bar");
+    assert!(
+        client.seen.buttons.is_empty(),
+        "the window never saw the press"
+    );
     assert!(
         f64::from(rect_of(&mut session, app).1) >= height,
         "the window stands below the bar again"

@@ -394,20 +394,33 @@ fn a_named_windows_name_stands_in_the_bar_once() {
 }
 
 #[test]
-fn a_fullscreen_window_shows_no_bar_of_its_own() {
+fn a_fullscreen_window_shows_its_bar_over_its_content_only_while_reached_for() {
     let theme = Theme::dark();
     let mut g = pages(1);
-    lay_out(&mut g, &theme);
-    assert!(
-        g.navigation_bar_visible(),
-        "in its strip, the window shows its bar"
-    );
     g.set_fullscreen_presentation(true);
     lay_out(&mut g, &theme);
+    let content = g.active_host().map(Widget::get_rect);
     assert!(
         !g.navigation_bar_visible(),
         "covering its display, it shows none"
     );
+    // Reached for, it stands under the shell's bar, over the content, which keeps its size.
+    g.set_fullscreen_bar(Some(32.0));
+    lay_out(&mut g, &theme);
+    let bar = g.bar_over_content_rect().expect("over the content");
+    assert!((bar.y0 - g.get_rect().y0 - 32.0).abs() < 0.5, "{bar:?}");
+    assert_eq!(
+        g.active_host().map(Widget::get_rect),
+        content,
+        "nothing moved"
+    );
+    // Its control gives the display back, and fills nothing.
+    g.press_resize();
+    assert!(g.take_pending_exit_fullscreen());
+    assert_eq!(g.take_pending_maximize_change(), None);
+    g.set_fullscreen_bar(None);
+    lay_out(&mut g, &theme);
+    assert!(g.bar_over_content_rect().is_none() && !g.navigation_bar_visible());
 }
 
 #[test]

@@ -21,7 +21,6 @@ pub mod emoji;
 pub mod feedback;
 pub mod feedback_picker;
 pub mod follow_banner;
-pub mod fullscreen_hint;
 pub mod here;
 pub mod launchpad;
 pub mod osd;

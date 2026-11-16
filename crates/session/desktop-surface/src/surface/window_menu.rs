@@ -76,6 +76,21 @@ impl DesktopHandle {
     }
 }
 
+/// Give back the display a window of `row` covers when its own bar's control asked to leave full
+/// screen. Whether that changed the tree.
+pub(super) fn give_back_display(
+    tree: &mut Layout,
+    strip: StripId,
+    row: &mut ui::widget::GroupRow,
+) -> bool {
+    let mut changed = false;
+    for group in &mut row.groups {
+        changed |=
+            group.take_pending_exit_fullscreen() && tree.set_fullscreen(strip, group.id, false);
+    }
+    changed
+}
+
 /// The tabs whose bar asked for its menu and where it was pressed, in the row's window order.
 pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<(TabId, ui::kurbo::Point)> {
     row.groups

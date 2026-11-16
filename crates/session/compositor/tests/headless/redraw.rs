@@ -42,6 +42,7 @@ impl WindowPolicy for Movable {
                     location: at,
                     size: None,
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect(),
         )

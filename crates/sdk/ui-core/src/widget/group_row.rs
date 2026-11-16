@@ -1172,11 +1172,14 @@ impl GroupRow {
     ///
     /// The window covering its display is the exception: it keeps the whole display, the bar's
     /// band included, and the bar paints over it while it shows. Moved down, it would hang off the
-    /// display's bottom edge and jump each time the bar came and went.
+    /// display's bottom edge and jump each time the bar came and went. Its own bar, which it
+    /// shows nowhere else, stands over its content under the bar while the bar shows.
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
         let covering = self.fullscreen_idx();
         for (index, group) in self.groups.iter_mut().enumerate() {
-            group.set_top_overlay_inset(if covering == Some(index) { 0.0 } else { inset });
+            let covers = covering == Some(index);
+            group.set_top_overlay_inset(if covers { 0.0 } else { inset });
+            group.set_fullscreen_bar((covers && inset > 0.0).then_some(inset));
         }
     }
 
@@ -10200,6 +10203,8 @@ mod tests {
                 [32.0, 0.0, 32.0],
                 "only the windows that do not cover the display move down"
             );
+            let bars: Vec<Option<f64>> = row.groups.iter().map(|g| g.fullscreen_bar).collect();
+            assert_eq!(bars, [None, Some(32.0), None], "its own bar stands under the shell's");
             row.set_fullscreen(None, false);
             row.set_top_overlay_inset(32.0);
             assert!(

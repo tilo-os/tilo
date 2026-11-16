@@ -37,6 +37,7 @@ impl WindowPolicy for Cut {
                     location: Point::from((100, 100)),
                     size: None,
                     clip: Some(Rectangle::new((0, 0).into(), (200, 480).into())),
+                    fullscreen: None,
                 })
                 .collect(),
         )

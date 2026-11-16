@@ -1681,6 +1681,7 @@ impl DesktopSurface {
             shared.search_request = Some(request);
         }
         shared.menus.extend(window_menu::take_asked_menus(row));
+        changed |= window_menu::give_back_display(&mut shared.tree, strip_id, row);
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
             shared.changed();

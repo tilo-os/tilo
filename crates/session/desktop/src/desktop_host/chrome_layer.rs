@@ -28,7 +28,6 @@ use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::display_identify::DisplayIdentify;
 use crate::emoji::EmojiLink;
-use crate::fullscreen_hint::FullscreenHint;
 use crate::host_contract::{DesktopAsk, DesktopRules, JOIN_WORKSPACE, WORKSPACE_SETTINGS};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::workspace_cards;
@@ -127,8 +126,6 @@ pub struct DesktopChrome {
     /// When each display's bar shows over the window covering it: shared with the shell's band, so
     /// the bar's room and the bars it is in agree.
     reveals: Rc<RefCell<Reveals>>,
-    /// The way out of the window that filled a display, said once over it.
-    fullscreen_hint: FullscreenHint,
     /// Which screen is which, said on each display for a moment after Settings asks.
     identify: DisplayIdentify,
     /// Where the displays are the identify cards stand on, each by its monitor, as last read from
@@ -170,8 +167,6 @@ enum PaintedOverlay {
     StripLabels,
     /// The emoji card.
     Emoji,
-    /// The way out of the window that filled a display.
-    Hint,
     /// Which screen is which, after Settings asked.
     Identify,
     /// The search palette.
@@ -184,10 +179,9 @@ enum PaintedOverlay {
 
 impl PaintedOverlay {
     /// Every painted overlay, bottom to top.
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 6] = [
         Self::StripLabels,
         Self::Emoji,
-        Self::Hint,
         Self::Identify,
         Self::Search,
         Self::Switcher,
@@ -200,7 +194,6 @@ impl PaintedOverlay {
         ui::a11y::hash_key(&match self {
             Self::StripLabels => "chrome-strip-labels",
             Self::Emoji => "chrome-emoji-card",
-            Self::Hint => "chrome-fullscreen-way-out",
             Self::Identify => "chrome-display-identify",
             Self::Search => "chrome-search-palette",
             Self::Switcher => "chrome-window-switcher",
@@ -213,7 +206,6 @@ impl PaintedOverlay {
         match self {
             Self::StripLabels => chrome.navigator.is_open(),
             Self::Emoji => chrome.emoji.is_open(),
-            Self::Hint => chrome.fullscreen_hint.is_up(ui::time::now()),
             Self::Identify => chrome.identify.is_up(ui::time::now()),
             Self::Search => chrome.search.is_open(),
             Self::Switcher => chrome.switcher.is_up(),
@@ -274,7 +266,6 @@ impl DesktopChrome {
             overlays: Overlays::new(),
             focused: false,
             reveals: Rc::default(),
-            fullscreen_hint: FullscreenHint::default(),
             identify: DisplayIdentify::default(),
             identify_displays: Vec::new(),
             answered: None,
@@ -624,7 +615,6 @@ impl DesktopChrome {
         match overlay {
             PaintedOverlay::StripLabels => self.navigator.accessibility(),
             PaintedOverlay::Emoji => self.emoji.accessibility(),
-            PaintedOverlay::Hint => self.fullscreen_hint.accessibility(ui::time::now()),
             PaintedOverlay::Identify => self.identify.accessibility(ui::time::now()),
             PaintedOverlay::Search => self.search.accessibility(),
             PaintedOverlay::Switcher => self.switcher.accessibility(),
@@ -1795,7 +1785,6 @@ impl DesktopChrome {
         !self.intents.borrow().is_empty()
             || (self.emoji.needs_redraw() || self.emoji.needs_animation_frame())
             || self.navigator.needs_animation_frame(ui::time::now())
-            || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
             || self.switcher.needs_redraw()
             || self.peek.needs_redraw(ui::time::now())
@@ -1900,6 +1889,7 @@ impl DesktopChrome {
         reveals.set_height(height);
         reveals.set_hide(hide);
         reveals.follow(&places, now);
+        reveals.set_below(self.handle.covering_bar().map(|(_, bar)| bar));
         changed |= reveals.settle(now, |_| held);
         let full_presence = reveals.presence(None, held);
         let compact: Vec<(Option<u32>, TopBarPresence)> = self
@@ -1928,9 +1918,6 @@ impl DesktopChrome {
                 changed = true;
             }
         }
-        // A window that just filled a display says how to leave it, once;
-        // leaving full screen takes the words away with it.
-        self.fullscreen_hint.follow(self.reveals.borrow().entered());
         // Settings asked which screen is which: each display says its number and name for a moment.
         changed |= self.follow_identify(now);
         changed
@@ -2442,9 +2429,6 @@ impl Widget for DesktopChrome {
             theme,
             ui::time::now(),
         );
-        // Above everything: the window that filled the display hides the chrome that would leave
-        // it, so the words saying how are the only way out the person can see.
-        self.fullscreen_hint.draw(scene, transform, text, theme);
         // Settings' Identify, said on each display so the canvas tile and the physical screen carry
         // the same number.
         self.identify
@@ -2724,7 +2708,6 @@ impl Widget for DesktopChrome {
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())
             || self.emoji.needs_animation_frame()
-            || self.fullscreen_hint.is_moving(ui::time::now())
             || self.peek.is_moving(ui::time::now())
             || self.identify.is_moving(ui::time::now())
             || self.navigator.needs_animation_frame(ui::time::now())
@@ -2752,7 +2735,6 @@ impl Widget for DesktopChrome {
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
         .chain(self.reveals.borrow().deadline())
-        .chain(self.fullscreen_hint.next_wake_deadline(ui::time::now()))
         .chain(self.peek.next_wake_deadline(ui::time::now()))
         .chain(self.identify.next_wake_deadline(ui::time::now()))
         .chain(self.hints.next_wake_deadline(ui::time::now()))

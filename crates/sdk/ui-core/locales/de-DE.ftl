@@ -50,6 +50,7 @@ host-window-minimize = Minimieren
 host-window-maximize = Maximieren
 host-window-restore = Wiederherstellen
 host-window-snap = Zurück in den Streifen
+host-window-exit-fullscreen = Vollbild beenden
 host-window-collapse = Einklappen
 host-window-expand = Ausklappen
 host-window-close = Schließen

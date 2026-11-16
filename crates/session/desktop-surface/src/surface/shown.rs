@@ -43,6 +43,14 @@ impl DesktopHandle {
         self.shared.borrow().shown_tabs.content_top()
     }
 
+    /// The window covering its display whose own bar stands over its content, as the person
+    /// reached for the bar over the display, and where that bar stands, in the surface's
+    /// coordinates, as of the last layout. The window is drawn around it, and a press there is the
+    /// bar's.
+    pub fn covering_bar(&self) -> Option<(TabId, Rect)> {
+        self.shared.borrow().shown_tabs.bar_over_content()
+    }
+
     /// Each window floating over the shell, and the rect the shell draws over the windows under it
     /// for that window — its bar, its body and the shadow that lifts it, whole and opaque — in the
     /// surface's coordinates, as of the last draw. A window that has not finished fading in is
@@ -75,6 +83,9 @@ struct ShownTab {
     window: Rect,
     /// The bounds of the tab's content, once its window laid it out.
     content: Option<Rect>,
+    /// The window's bar where it stands over that content: a window covering its display shows it
+    /// there while the person reaches for the bar over the display.
+    bar_over_content: Option<Rect>,
 }
 
 /// What one strip holds, window by window, as the last layout left it.
@@ -104,6 +115,7 @@ impl ShownTabs {
                         tab,
                         window: group.get_rect(),
                         content: group.content_rect_for_tab(tab),
+                        bar_over_content: group.bar_over_content_rect(),
                     }
                 })
                 .collect(),
@@ -139,6 +151,14 @@ impl ShownTabs {
             .iter()
             .map(|shown| (shown.tab, shown.content.unwrap_or(shown.window)))
             .collect()
+    }
+
+    /// The window whose bar stands over its own content, and where: the shell draws there over
+    /// what the window shows.
+    pub(super) fn bar_over_content(&self) -> Option<(TabId, Rect)> {
+        self.0
+            .iter()
+            .find_map(|shown| Some((shown.tab, shown.bar_over_content?)))
     }
 
     /// Where the whole window of `tab` stands, its bar and content together.

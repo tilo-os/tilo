@@ -49,6 +49,7 @@ host-window-minimize = Minimize
 host-window-maximize = Maximize
 host-window-restore = Restore
 host-window-snap = Snap back into the strip
+host-window-exit-fullscreen = Exit full screen
 host-window-collapse = Collapse
 host-window-expand = Expand
 host-window-close = Close

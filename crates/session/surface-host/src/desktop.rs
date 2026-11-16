@@ -841,6 +841,17 @@ impl SurfaceHost for DesktopHost {
             .collect()
     }
 
+    fn drawn_over_window(&self) -> Option<(u64, (i32, i32, i32, i32))> {
+        // A window covering its display shows its own bar over itself while the person reaches for
+        // the bar over the display; the desktop draws that bar, under the windows.
+        let desktop = self.desktop.borrow();
+        let origin = desktop.host.placement().origin;
+        desktop
+            .policy
+            .covering_bar()
+            .map(|(window, bar)| (window, placed(bar, origin)))
+    }
+
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         self.desktop.borrow().host.accepts_pointer(x, y)
     }
@@ -1190,6 +1201,9 @@ impl WindowPolicy for StripPolicy {
                 .find(|(id, _)| *id == window)
                 .map(|(_, rect)| layout_rect(*rect, origin))
         };
+        // The desktop decides which window covers its display: one that asked for it and was
+        // given it back (the window's own control, its menu, a key) is told so.
+        let covering = desktop.policy.covering_window();
         Some(
             windows
                 .iter()
@@ -1200,6 +1214,7 @@ impl WindowPolicy for StripPolicy {
                             location: rect.loc,
                             size: Some((rect.size.w, rect.size.h)),
                             clip: of(&placement.clips, window.id),
+                            fullscreen: Some(covering == Some(window.id)),
                         };
                     }
                     let size = (current.size.w, current.size.h);
@@ -1210,6 +1225,7 @@ impl WindowPolicy for StripPolicy {
                             .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0))),
                         size: None,
                         clip: None,
+                        fullscreen: None,
                     }
                 })
                 .collect(),

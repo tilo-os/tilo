@@ -64,6 +64,9 @@ pub struct Arrangement {
     /// The part of the logical layout it may draw on and take the pointer in, or `None` for all of
     /// it: a window of a strip spread over several displays shows on its own display only.
     pub clip: Option<LayoutRect>,
+    /// Whether the policy has it cover its display, or `None` to leave that to the window's own
+    /// asking. A window that asked for its display and is no longer given it is told so.
+    pub fullscreen: Option<bool>,
 }
 
 /// Which edges of a window a resize drags.

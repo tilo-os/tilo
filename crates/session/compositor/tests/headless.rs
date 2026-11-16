@@ -558,6 +558,7 @@ impl WindowPolicy for Columns {
                     location: Point::from((column * 300, 0)),
                     size: None,
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect(),
         )

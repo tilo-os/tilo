@@ -144,6 +144,9 @@ impl WindowGroup {
 
     #[must_use]
     pub fn resize(&self) -> crate::widget::window_controls::Resize {
+        if self.fullscreen_presentation {
+            return crate::widget::window_controls::Resize::ExitFullscreen;
+        }
         crate::widget::window_controls::Resize::of_window(
             self.maximized,
             self.floating,
@@ -186,7 +189,9 @@ impl WindowGroup {
     }
 
     pub(super) fn press_resize(&mut self) {
-        if self.floating {
+        if self.fullscreen_presentation {
+            self.pending_exit_fullscreen = true;
+        } else if self.floating {
             self.pending_snap = true;
         } else {
             self.toggle_maximized();

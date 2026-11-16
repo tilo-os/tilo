@@ -2146,6 +2146,16 @@ impl Compositor {
             self.data.state.covers = covers;
             self.data.state.mark_redraw_all();
         }
+        let over_window = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .find_map(|host| host.drawn_over_window());
+        if self.data.state.over_window != over_window {
+            self.data.state.over_window = over_window;
+            self.data.state.mark_redraw_all();
+        }
         // A frame can move windows (a strip panning, a group resizing): the policy places them
         // where the surfaces just laid them out.
         self.data.state.rearrange();

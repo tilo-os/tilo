@@ -83,6 +83,7 @@ mod nested {
                     location: output.loc,
                     size: Some((output.size.w, output.size.h)),
                     clip: None,
+                    fullscreen: None,
                 })
                 .collect();
             (!changes.is_empty()).then_some(changes)

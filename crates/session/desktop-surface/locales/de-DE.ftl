@@ -1027,9 +1027,6 @@ people-follows-you = Folgt dir
 people-follows-where = { $place }, folgt { $person }
 people-follows-you-where = { $place }, folgt dir
 
-# The way out of a window that filled the display, said over it once.
-fullscreen-way-out = { $key } beendet das Vollbild.
-
 ## The desktop's published actions
 desktop-actions-chrome = Desktop
 desktop-actions-shell = Fenster

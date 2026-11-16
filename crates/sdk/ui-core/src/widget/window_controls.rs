@@ -55,6 +55,8 @@ pub enum Resize {
     Restore,
     Snap,
     Expand,
+    /// The window covers its display: the control gives the display back.
+    ExitFullscreen,
 }
 
 impl Resize {
@@ -102,6 +104,7 @@ impl WindowControl {
             (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
             (WindowControl::Maximize, Resize::Restore) => "host-window-restore",
             (WindowControl::Maximize, Resize::Snap | Resize::Expand) => "host-window-snap",
+            (WindowControl::Maximize, Resize::ExitFullscreen) => "host-window-exit-fullscreen",
             (WindowControl::Close, _) => "host-window-close",
         }
     }
@@ -113,7 +116,9 @@ impl WindowControl {
             (WindowControl::Minimize, Resize::Expand) => icons::Icon::ChevronUp,
             (WindowControl::Minimize, _) => icons::Icon::Minus,
             (WindowControl::Maximize, Resize::Maximize) => icons::Icon::Maximize2,
-            (WindowControl::Maximize, Resize::Restore) => icons::Icon::Minimize2,
+            (WindowControl::Maximize, Resize::Restore | Resize::ExitFullscreen) => {
+                icons::Icon::Minimize2
+            }
             (WindowControl::Maximize, Resize::Snap | Resize::Expand) => icons::Icon::Columns2,
             (WindowControl::Close, _) => icons::Icon::X,
         }

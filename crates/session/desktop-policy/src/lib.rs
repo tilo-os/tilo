@@ -1552,7 +1552,7 @@ impl DesktopPolicy {
             }
         }
         Placement {
-            fullscreen: self.handle.read(covering_window),
+            fullscreen: self.covering_window(),
             shown,
             hidden,
             floating,
@@ -1572,6 +1572,20 @@ impl DesktopPolicy {
                 .filter_map(|(tab, cover)| Some((window_of(tree, tab)?, cover)))
                 .collect()
         })
+    }
+
+    /// The window covering the display the person works on, if one is.
+    #[must_use]
+    pub fn covering_window(&self) -> Option<u64> {
+        self.handle.read(covering_window)
+    }
+
+    /// The window covering its display whose own bar the shell draws over it, and where, in
+    /// surface coordinates: the window is drawn around it, and a press there is the shell's.
+    #[must_use]
+    pub fn covering_bar(&self) -> Option<(u64, Rect)> {
+        let (tab, bar) = self.handle.covering_bar()?;
+        Some((self.handle.read(|tree| window_of(tree, tab))?, bar))
     }
 
     /// The windows whose tabs the person closed since the last call: the

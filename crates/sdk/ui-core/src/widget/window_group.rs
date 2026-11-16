@@ -149,6 +149,11 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
+    /// While the person reaches for the shell's bar over a fullscreen window: how far below the
+    /// window's top edge its own bar stands, under the shell's bar ([`Self::set_fullscreen_bar`]).
+    pub(crate) fullscreen_bar: Option<f64>,
+    /// The window's own exit-full-screen control was pressed, for the shell to carry out.
+    pending_exit_fullscreen: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -219,7 +224,7 @@ pub struct WindowGroup {
     bar_offer_dirty: bool,
     built_active: Option<u64>,
     node: Option<NodeId>,
-    laid_shape: Option<(bool, u64)>,
+    laid_shape: Option<(bool, bool, u64)>,
     child_styles: Vec<(NodeId, Style)>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
@@ -356,6 +361,8 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: None,
+            pending_exit_fullscreen: false,
             edge_drag: None,
             edge_highlight: None,
             edge_lit_drawn: false,
@@ -413,7 +420,8 @@ impl WindowGroup {
     /// The window shows its bar: its own band above the content, or the row its app draws at its
     /// top ([`crate::widget::window_header::content_bar`]). One bar per window, never two.
     fn shows_its_bar(&self) -> bool {
-        !self.external_navigation && !self.fullscreen_presentation
+        !self.external_navigation
+            && (!self.fullscreen_presentation || self.fullscreen_bar.is_some())
     }
 
     fn navigation_bar_visible(&self) -> bool {
@@ -424,6 +432,7 @@ impl WindowGroup {
         if self.fullscreen_presentation != fullscreen {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
+            self.bar.set_resize(self.resize());
         }
     }
 
@@ -1273,8 +1282,12 @@ impl WindowGroup {
         self.node
     }
 
-    fn layout_shape(&self) -> (bool, u64) {
-        (self.navigation_bar_visible(), self.bar.active_id())
+    fn layout_shape(&self) -> (bool, bool, u64) {
+        (
+            self.navigation_bar_visible(),
+            self.bar_over_content(),
+            self.bar.active_id(),
+        )
     }
 
     /// The window's own node style. `flex_grow: 0` keeps a group at its
@@ -2904,6 +2917,7 @@ impl Widget for WindowGroup {
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
+        self.lay_bar_over_content(taffy, bar_node);
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
             if *id != active_id {
@@ -3035,7 +3049,8 @@ impl Widget for WindowGroup {
                 );
             }
         }
-        if self.navigation_bar_visible() {
+        let bar_over = self.bar_over_content();
+        if self.navigation_bar_visible() && !bar_over {
             self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
@@ -3095,6 +3110,9 @@ impl Widget for WindowGroup {
         }
         self.draw_held_furniture(scene, transform, tr, theme, presence);
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        if bar_over {
+            self.draw_bar_over_content(scene, transform, tr, theme, presence);
+        }
         if self.navigation_bar_visible() {
             self.draw_bar_tips(scene, transform, tr, theme, presence);
         }
@@ -5379,6 +5397,8 @@ mod tests {
     }
 }
 
+#[path = "window_group_fullscreen_bar.rs"]
+mod fullscreen_bar;
 #[path = "window_group_search.rs"]
 mod search;
 

@@ -241,6 +241,9 @@ pub struct State {
     /// The part of the layout each window is cut to, by id, as the policy arranged it: a window
     /// draws and takes the pointer there only ([`crate::policy::Arrangement::clip`]).
     pub(crate) clips: std::collections::HashMap<u64, smithay::utils::Rectangle<i32, Logical>>,
+    /// What the shell draws over one window itself, under the windows: the bar of a window covering
+    /// its display, over its content. That window and the ones behind it are drawn around it.
+    pub(crate) over_window: Option<(u64, (i32, i32, i32, i32))>,
     /// How many layers each hosted surface drew in the last frame, by its index in `hosts`: what a
     /// host drew and no longer draws is what the screen keeps until it is drawn again.
     pub(crate) layer_counts: Vec<(usize, usize)>,
@@ -424,6 +427,7 @@ impl State {
             window_frames: std::collections::HashMap::new(),
             covers: Vec::new(),
             clips: std::collections::HashMap::new(),
+            over_window: None,
             layer_counts: Vec::new(),
             frame_images: crate::window_frame::FrameImages::default(),
             closing: Vec::new(),
@@ -752,6 +756,15 @@ impl State {
         self.covers.iter().find(|cover| cover.window == id)
     }
 
+    /// What the shell draws over `window` itself, if anything: the bar of a window covering its
+    /// display, over its content.
+    pub(crate) fn over_of(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
+        let (id, (x, y, width, height)) = self.over_window?;
+        describe(self, window)
+            .is_some_and(|info| info.id == id)
+            .then(|| Rectangle::new((x, y).into(), (width, height).into()))
+    }
+
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
         describe(self, window)
@@ -835,6 +848,10 @@ impl State {
             let Some(location) = self.space.element_location(window) else {
                 continue;
             };
+            // What the shell draws over this window itself is over it and the windows behind it.
+            if let Some(over) = self.over_of(window) {
+                covers.push(over.to_f64());
+            }
             let element = smithay::utils::Rectangle::from_size(window.geometry().size).to_f64();
             if element.contains(point - location.to_f64())
                 && self
@@ -1648,6 +1665,8 @@ impl State {
                 None => self.clips.remove(&id).is_some(),
             };
             moved |= cut;
+            let gave_back = arrangement.fullscreen == Some(false)
+                && crate::requests::give_back_display(&window);
             if let Some(x11) = window.x11_surface() {
                 let size = arrangement
                     .size
@@ -1662,6 +1681,8 @@ impl State {
             };
             if let Some((w, h)) = arrangement.size {
                 toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
+            }
+            if arrangement.size.is_some() || gave_back {
                 toplevel.send_pending_configure();
             }
             let activated = window.toplevel().is_some_and(|toplevel| {

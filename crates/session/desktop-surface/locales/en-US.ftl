@@ -988,9 +988,6 @@ people-follows-you = Following you
 people-follows-where = { $place }, following { $person }
 people-follows-you-where = { $place }, following you
 
-# The way out of a window that filled the display, said over it once.
-fullscreen-way-out = Press { $key } to leave full screen.
-
 ## The desktop's published actions
 desktop-actions-chrome = Desktop
 desktop-actions-shell = Windows
