@@ -207,16 +207,17 @@ env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "
 heavy = true
 on = ["dispatch"]
 
-# Every package's examples build and run (`cargo test --examples`), with the test environment's
-# asset and NTFS caches in the build directory. Dozens of programs nothing else compiles. It
-# declares `unify` too, so the libraries these examples share with the other families are built
-# as those families build them, once.
+# Every package's examples build and run (`cargo test --examples`) in the test environment, which
+# prepares the pinned font catalog the tests that set text read, with its asset and NTFS caches in
+# the build directory. Dozens of programs nothing else compiles. It declares `unify` too, so the
+# libraries these examples share with the other families are built as those families build them,
+# once.
 [[cargo]]
 name = "examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "test"
 requires = ["arch=x86_64"]
-wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/with-test-environment.sh \"$@\"", "examples"]
+wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/test-env.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 packages = [
@@ -231,7 +232,7 @@ packages = [
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-host", "tilolang-tilo",
     "tube", "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
-env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", TILO_TEST_NTFS_FIXTURES = "0" }
 heavy = true
 on = ["dispatch"]
 
