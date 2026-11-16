@@ -3450,7 +3450,6 @@ impl FrameHarness {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
-                let _ = history.deliver_opened_entry(self.root.as_mut());
             }
             self.discard_layout_tree();
             self.focused = None;
@@ -4147,9 +4146,10 @@ impl FrameHarness {
             if history.has_settled_control_return() {
                 history.finish_control_return();
             }
+            let _ = history.deliver_opened_entry(self.root.as_mut());
         }
         if !history_resting {
-            crate::history_mode::embedded::finish_returns(self.root.as_mut());
+            let _ = crate::history_mode::embedded::finish_returns(self.root.as_mut());
         }
 
         // Draw and History-return callbacks remain original. A late mutation

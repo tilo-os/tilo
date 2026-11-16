@@ -172,6 +172,7 @@ mod tests {
                     .with_group("issue:42", "Launch", "issue")
                     .with_facet(ActionFacet::new("file-type", "Markdown")),
             ),
+            target: None,
         }
     }
 

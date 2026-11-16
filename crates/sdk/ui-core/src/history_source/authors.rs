@@ -439,6 +439,16 @@ impl AuthorDirectory {
         let actor = invoker.key();
         let software = !invoker.acting.is_person();
         let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
+        // An agent session that acted for a person (a coding agent on the person's computer,
+        // writing through their folder or their Tilo actions) reads as the person, wearing
+        // their avatar, with the agent named beside them: as its writes to files read.
+        if let (Some(agent), Some(session), Some(person)) = (
+            invoker.acting.agent_id(),
+            invoker.acting.agent_session.as_ref(),
+            on_behalf_of.as_deref(),
+        ) {
+            return self.agent_session_author(invoker, (agent, session.as_str()), person, entry);
+        }
         // A delegated agent writing as itself, under its own principal.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
             && invoker.acting.member_id() == Some(&agent.agent)
@@ -511,6 +521,49 @@ impl AuthorDirectory {
         author.attribution = attribution;
         author.for_reader = for_reader;
         author.task = task;
+        author
+    }
+
+    /// The author of a change agent session `session` of `agent` made for `person`: the
+    /// person, with the agent as the writer beside them ([`Self::resolve_entry`]).
+    fn agent_session_author(
+        &self,
+        invoker: &tilo_actions::ActionInvoker,
+        (agent, session): (&str, &str),
+        person: &str,
+        entry: Option<&tilo_actions::ActionContext>,
+    ) -> HistoryAuthor {
+        let principal = hex::encode(person.as_bytes());
+        let name = self.resolve(&principal).name;
+        let writer = fs_protocol::AttributedWriter::Agent {
+            agent: agent.to_owned(),
+            session: Some(session.to_owned()),
+        };
+        let label = invoker
+            .name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| agent.to_owned());
+        let reader = self.reader();
+        let reads = reader.as_deref() == Some(person);
+        let mut author = self
+            .resolve(&principal)
+            .with_relation(if reads {
+                AuthorRelation::Reader
+            } else {
+                AuthorRelation::Person
+            })
+            .with_attribution(
+                HistoryAttribution::new(invoker.acting.clone())
+                    .acting_for(person.to_owned(), name)
+                    .written_by(writer, label),
+            );
+        author.for_reader = reads;
+        author.task = entry
+            .and_then(|entry| entry.group.as_ref())
+            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
+            .map(|task| task.label.clone())
+            .filter(|label| !label.trim().is_empty());
         author
     }
 
@@ -1035,6 +1088,46 @@ mod tests {
                 .set("XDG_CONFIG_HOME", config_home);
             Self { _env: env }
         }
+    }
+
+    /// A coding agent's session that acted for its person reads as the person with the agent
+    /// beside them, also when the agent is on the roster under its own key: as its writes to
+    /// the person's files read.
+    #[test]
+    fn an_agent_session_for_a_person_reads_as_the_person_with_the_agent_beside_them() {
+        let device = hex::encode([7_u8; 32]);
+        let person = "ada";
+        let mut authors = AuthorDirectory::new();
+        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        authors.register_agent(
+            &device,
+            HistoryAgent {
+                agent: tilo_actions::MemberId::agent("claude"),
+                label: "Workspace folder".into(),
+                rgb: (10, 20, 30),
+                person: person.into(),
+            },
+        );
+        let invoker = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent("claude")
+                .in_session("s1")
+                .acting_for(tilo_actions::Acting::person(person)),
+        )
+        .named(Some("Workspace folder".into()));
+        let entry = tilo_actions::ActionContext::default()
+            .with_group(
+                "t1",
+                "Workspace folder",
+                crate::history_source::steps::TASK_RUN,
+            )
+            .with_invoker(invoker);
+        let author = authors.resolve_entry(&device, Some(&entry));
+        assert_eq!(author.name, "Ada");
+        assert_eq!(
+            crate::history_source::sentence::writer_badge(&author).as_deref(),
+            Some("Claude Code")
+        );
+        assert_eq!(author.task.as_deref(), Some("Workspace folder"));
     }
 
     #[test]

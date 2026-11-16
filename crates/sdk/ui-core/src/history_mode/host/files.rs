@@ -441,6 +441,7 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                 diff_payload: None,
                 redaction: None,
                 context: None,
+                target: None,
             }
         })
         .collect()
@@ -545,6 +546,7 @@ mod tests {
                         diff_payload: None,
                         redaction: None,
                         context: None,
+                        target: None,
                     })
                     .collect(),
             );
@@ -1088,7 +1090,7 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(
             crate::history_source::sentence::attribution_hover(&rows[0].author).as_deref(),
-            Some("External agent · Claude Code · ‘Prepare the report’ · Ada's laptop · /Reports")
+            Some("External agent\nClaude Code\n‘Prepare the report’\nAda's laptop\n/Reports")
         );
         assert_eq!(
             crate::history_source::sentence::writer_badge(&rows[0].author).as_deref(),
@@ -1106,7 +1108,7 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(
             crate::history_source::sentence::attribution_hover(&rows[0].author).as_deref(),
-            Some("Program · Text Editor · Ada's laptop · /Reports")
+            Some("Program\nText Editor\nAda's laptop\n/Reports")
         );
     }
 

@@ -23,6 +23,7 @@ mod resume_card_tests {
                 ActionContext::for_resource("finance:q2", "sheet", "Q2 finance report")
                     .with_app("so.tilo.sheets", "Sheets"),
             ),
+            target: None,
         }
     }
 

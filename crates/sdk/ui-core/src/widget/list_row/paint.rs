@@ -563,16 +563,23 @@ impl ListRowFace<'_> {
             .image(author.image)
             .paint(ctx, face);
         let x = face.x1 + m.column_gap;
-        let chip = author.writer.map(|writer| {
+        // The cell keeps to its slot: the name gives way first, then the writer's chip is its
+        // mark alone, then the chip goes, rather than drawing over the face or the title.
+        let room = (slot.x1 - x).max(0.0);
+        let chip = author.writer.and_then(|writer| {
             let lead = crate::widget::ChipLead::Agent(theme.tokens.colors.presence.hue(writer.hue));
-            let width = crate::widget::ChipFace::intrinsic_width(
+            let named = crate::widget::ChipFace::intrinsic_width(
                 writer.label,
                 lead,
                 false,
                 ctx.text,
                 theme,
             );
-            (writer, lead, width)
+            if named <= room {
+                return Some((writer.label, lead, named));
+            }
+            let mark = crate::widget::ChipFace::intrinsic_width("", lead, false, ctx.text, theme);
+            (mark <= room).then_some(("", lead, mark))
         });
         let chip_w = chip.as_ref().map_or(0.0, |(.., width)| *width);
         let name_right = slot.x1 - chip_w - if chip.is_some() { m.tag_gap } else { 0.0 };
@@ -588,7 +595,7 @@ impl ListRowFace<'_> {
             Point::new(x, line_cy - f64::from(height) / 2.0),
             None,
         );
-        if let Some((writer, lead, width)) = chip {
+        if let (Some((label, lead, width)), Some(writer)) = (chip, author.writer) {
             let height = crate::widget::ChipFace::height(theme);
             let pill = Rect::new(
                 slot.x1 - width,
@@ -596,7 +603,7 @@ impl ListRowFace<'_> {
                 slot.x1,
                 line_cy + height / 2.0,
             );
-            crate::widget::ChipFace::new(pill, writer.label)
+            crate::widget::ChipFace::new(pill, label)
                 .lead(lead)
                 .style(crate::widget::ChipStyle::Identity(
                     theme.tokens.colors.presence.hue(writer.hue),

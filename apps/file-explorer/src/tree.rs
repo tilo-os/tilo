@@ -507,6 +507,47 @@ impl TreeBrowser {
         names.join(" / ")
     }
 
+    /// Open the file at node `id`, as choosing its row does: a folder is shown, a file is
+    /// opened in the app its bytes say opens it once they are here. Whether there is
+    /// such a node to open.
+    fn open_node(&self, id: &str) -> bool {
+        let Some(tree) = self.tree.clone() else {
+            return false;
+        };
+        let held = tree.get();
+        let Some(node) = held.node(id).filter(|_| !held.trashed(id)).cloned() else {
+            return false;
+        };
+        drop(held);
+        let name = Self::name_of(&node);
+        if node.kind == FileNodeKind::Directory {
+            self.dispatch
+                .submit(FilesWindow::paths().folder.set(Atom(id.to_owned())));
+            return true;
+        }
+        let hash = if let Some(hash) = node.hash {
+            if let Some(read) = &self.read {
+                // Reading content the page lacks asks the workspace for it.
+                let _ = read(&hash);
+            }
+            hash
+        } else {
+            let file = tree
+                .read(|doc| fs_protocol::tree::document_file(doc, id, &ui::content::NoContent))
+                .flatten();
+            let Some(hash) = file
+                .as_deref()
+                .and_then(|file| self.keep.as_ref().and_then(|keep| keep(file)))
+            else {
+                return false;
+            };
+            hash
+        };
+        self.asked.borrow_mut().push(Asked { hash, name });
+        self.open_what_arrived();
+        true
+    }
+
     /// Open every file the person asked for whose bytes are here, in the app
     /// its bytes say opens it.
     fn open_what_arrived(&self) {
@@ -569,7 +610,24 @@ impl TreeBrowser {
     }
 }
 
+/// A folder's History names each change's file as a link: choosing it opens the file here,
+/// as choosing its row does.
+impl ui::history_mode::capability::PresentsHistoryEntries for TreeBrowser {
+    fn history_entry_presenter(&self) -> Option<Rc<dyn ui::widget::HistoryEntryPresenter>> {
+        None
+    }
+
+    fn open_history_entry(&mut self, entry: &ui::widget::history::HistoryEntry) -> bool {
+        let Some(target) = entry.target.as_ref() else {
+            return false;
+        };
+        self.open_node(&target.id)
+    }
+}
+
 impl Decorator for TreeBrowser {
+    ui::provides!(dyn ui::history_mode::capability::PresentsHistoryEntries);
+
     type Inner = Column;
 
     fn inner(&self) -> &Column {
@@ -821,6 +879,29 @@ mod window_tests {
         .unwrap();
         let record_id = held.node(&placed.id).unwrap().record_id.unwrap();
         write_version(&mut doc, record_id, 1);
+        let folder = fs_protocol::tree::place(
+            &mut doc,
+            &mut held,
+            ROOT_ID,
+            "legal",
+            Placing::Folder,
+            (2_000, &hex::encode([9_u8; 32])),
+        )
+        .unwrap();
+        fs_protocol::tree::place(
+            &mut doc,
+            &mut held,
+            &folder.id,
+            "nda.txt",
+            Placing::File {
+                hash: &"b".repeat(64),
+                size: 3,
+            },
+            (2_500, &hex::encode([9_u8; 32])),
+        )
+        .unwrap();
+        let folder_record = held.node(&folder.id).unwrap().record_id.unwrap();
+        write_version(&mut doc, folder_record, 2);
         tree.record()
             .merge_peer_document(doc.save())
             .expect("the tree arrives");
@@ -846,8 +927,31 @@ mod window_tests {
         assert!(
             labels
                 .iter()
-                .any(|label| label.ends_with("Edited · terms.txt")),
+                .any(|label| label.ends_with("Edited terms.txt")),
             "History lists the file's change by its path: {labels:?}"
+        );
+        // Choosing the folder's change opens the folder in the window.
+        let row = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.ends_with("Edited legal"))
+            })
+            .map_or_else(
+                || panic!("History lists the folder's change: {labels:?}"),
+                |(id, _)| id,
+            );
+        app.harness()
+            .perform_a11y_action(row, &ui::a11y::Action::Activate)
+            .expect("the row opens");
+        app.flush().unwrap();
+        app.harness().relayout();
+        let texts = app.texts();
+        assert!(
+            texts.iter().any(|text| text == "nda.txt"),
+            "the window shows the folder's files: {texts:?}"
         );
     }
 }

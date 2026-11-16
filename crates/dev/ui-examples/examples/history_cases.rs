@@ -493,6 +493,7 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: None,
+        target: None,
     }
 }
 

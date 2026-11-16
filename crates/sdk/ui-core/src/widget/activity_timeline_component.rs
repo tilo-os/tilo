@@ -158,6 +158,7 @@ fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: None,
+        target: None,
     }
 }
 

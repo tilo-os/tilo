@@ -151,6 +151,13 @@ impl ChipKind {
     }
 }
 
+/// Below this width a row's writer chip is the writer's mark without its name, so what the
+/// change did and the thing it did it to keep the room.
+const COMPACT_WRITER_WIDTH: f64 = 480.0;
+
+/// The space between what a change did and the thing it did it to.
+const TARGET_GAP: f64 = 5.0;
+
 /// Below this width the trailing time + revert slots shrink so the summary
 /// keeps a usable share of the row.
 const NARROW_WIDTH: f64 = 340.0;
@@ -217,12 +224,17 @@ impl RowGroup {
             .collect()
     }
 
-    /// The second line as a screen reader says it: each fact, in order.
+    /// The second line as a screen reader says it: each fact in order, then who.
     fn spoken_facts(&self) -> String {
         self.work
             .map(|(_, kind)| crate::i18n::I18nManager::lookup_plain(kind))
             .into_iter()
             .chain(self.meta_facts().into_iter().map(|fact| fact.text))
+            .chain(self.lead.as_ref().map(|lead| {
+                crate::history_source::sentence::author_spoken(
+                    &crate::history_source::sentence::author_parts(lead),
+                )
+            }))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -246,6 +258,9 @@ struct RowGroup {
     last_entry: HistoryEntryId,
     last_time: SystemTime,
     authors: Vec<HistoryAuthor>,
+    /// The one author of the band, drawn on its second line as rows draw theirs: their
+    /// face and name, and the agent that wrote for them as a chip. `None` for several.
+    lead: Option<HistoryAuthor>,
     expanded: bool,
     restorable: bool,
     is_section: bool,
@@ -345,6 +360,9 @@ pub struct ActivityTimeline {
     on_revert: Option<RevertCallback>,
     on_activate_entry: Option<EntryActivateCallback>,
     on_open_entry: Option<EntryActivateCallback>,
+    /// Where each row's target link was last drawn ([`HistoryEntry::target`]): what a press
+    /// on it opens. Kept by painting, which is where the link's width is measured.
+    target_links: std::cell::RefCell<HashMap<HistoryEntryId, Rect>>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
@@ -424,6 +442,7 @@ impl ActivityTimeline {
             on_revert: None,
             on_activate_entry: None,
             on_open_entry: None,
+            target_links: std::cell::RefCell::default(),
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
@@ -710,8 +729,9 @@ impl ActivityTimeline {
     /// Show only `author`'s changes, or everyone's (`None`).
     pub fn filter_by_author(&mut self, author: Option<&str>) {
         let authors: Vec<String> = author.map(str::to_owned).into_iter().collect();
-        if self.filter.authors != authors {
+        if self.filter.authors != authors || !self.filter.writers.is_empty() {
             self.filter.authors = authors;
+            self.filter.writers.clear();
             self.rebuild();
             self.dirty = true;
         }
@@ -772,6 +792,7 @@ impl ActivityTimeline {
         self.active_chip != ChipKind::All
             || !self.author_query.trim().is_empty()
             || !self.filter.authors.is_empty()
+            || !self.filter.writers.is_empty()
             || !self.filter.entry_kinds.is_empty()
             || self.filter.time_range.is_some()
     }
@@ -797,7 +818,7 @@ impl ActivityTimeline {
         if !typed.is_empty() {
             parts.push(typed.to_owned());
         }
-        for a in &self.filter.authors {
+        for a in self.filter.authors.iter().chain(&self.filter.writers) {
             parts.push(a.clone());
         }
         if self.filter.time_range.is_some() {
@@ -1026,7 +1047,7 @@ impl ActivityTimeline {
         let _ = self.focus_row(row);
         match visual {
             VisualRow::Group(_) => self.toggle_group_at_row(row),
-            VisualRow::Entry(..) if self.open_row(row) => true,
+            VisualRow::Entry(..) if self.open_row(row) || self.open_target(row) => true,
             VisualRow::Entry(entry, _) => {
                 self.selection = Some((entry, entry));
                 self.selection_anchor = Some(entry);
@@ -1154,41 +1175,6 @@ impl ActivityTimeline {
             // person's or an agent's name.
             crate::history_source::sentence::author_parts(&entry.author).person
         }
-    }
-
-    /// The chip naming what wrote an attributed change: an agent tool, an app
-    /// or a program, beside the person whose avatar the row wears. An agent's
-    /// chip wears the agent mark in its own hue, the mark it shows wherever it
-    /// writes; an app's and a program's wear their name alone.
-    fn writer_chip(
-        entry: &HistoryEntry,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<(String, f64, ChipLead)> {
-        // An agent's own device writes under the agent's name; an attributed
-        // session names its tool. Either way the chip is the software's own.
-        let label = crate::history_source::sentence::writer_badge(&entry.author).or_else(|| {
-            (entry.author.relation == crate::widget::history::AuthorRelation::Software)
-                .then(|| entry.author.name.clone())
-        })?;
-        let lead = writer_lead(entry, &label, theme);
-        let width =
-            crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
-        (width > 0.0).then_some((label, width, lead))
-    }
-
-    fn bot_chip(
-        entry: &HistoryEntry,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<(String, f64, ChipLead)> {
-        is_bot_author(&entry.author).then(|| {
-            let label = crate::i18n::widget_format("author-bot-chip", &[]);
-            let lead = ChipLead::None;
-            let width =
-                crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
-            (label, width, lead)
-        })
     }
 
     fn avatar_rect(&self, i: usize) -> Option<Rect> {
@@ -1887,6 +1873,16 @@ impl ActivityTimeline {
                 .and_then(|members| presenter.group_summary(members))
         });
         let mut facts = g.subtitle_facts_summarised(&self.entries, summary);
+        // One author is drawn as a row draws theirs, face, name and the agent's chip, never
+        // as a line of text naming them.
+        let lead = match g.authors.as_slice() {
+            [only] => {
+                let who = g.authors_label();
+                facts.retain(|fact| *fact != who);
+                Some(only.clone())
+            }
+            _ => None,
+        };
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
             // reader cannot catch.
@@ -1918,6 +1914,7 @@ impl ActivityTimeline {
             last_entry: g.last_entry,
             last_time: g.last_time,
             authors: g.authors.clone(),
+            lead,
             expanded,
             restorable,
             is_section: false,
@@ -2110,6 +2107,8 @@ struct StripChip {
 enum StripTarget {
     Class(ChipKind),
     Person(Option<String>),
+    /// The software that wrote for someone, by the name its badge shows.
+    Writer(String),
 }
 
 fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
@@ -2173,12 +2172,18 @@ impl DaySection {
 /// everywhere, for an agent that wrote for the person — through a session, or with
 /// its own device. An app or a program writes under its own name, without a mark.
 fn writer_lead(entry: &HistoryEntry, label: &str, theme: &Theme) -> ChipLead {
-    let agent = match entry.author.attribution.as_ref() {
+    author_writer_lead(&entry.author, label, theme)
+}
+
+/// The lead of the chip naming what wrote for `author`: the agent mark in its own hue for
+/// an agent, nothing for an app or a program.
+fn author_writer_lead(author: &HistoryAuthor, label: &str, theme: &Theme) -> ChipLead {
+    let agent = match author.attribution.as_ref() {
         Some(attribution) => matches!(
             attribution.writer.as_ref(),
             Some(fs_protocol::AttributedWriter::Agent { .. })
         ),
-        None => entry.author.relation == crate::widget::history::AuthorRelation::Software,
+        None => author.relation == crate::widget::history::AuthorRelation::Software,
     };
     if !agent {
         return ChipLead::None;
@@ -2241,6 +2246,7 @@ impl ActivityTimeline {
             last_entry: HistoryEntryId([0; 16]),
             last_time: SystemTime::UNIX_EPOCH,
             authors: Vec::new(),
+            lead: None,
             expanded: true,
             restorable: false,
             is_section: true,
@@ -2279,7 +2285,7 @@ impl ActivityTimeline {
             0.0
         } else {
             Self::bot_chip(entry, ctx.text, ctx.theme)
-                .or_else(|| Self::writer_chip(entry, ctx.text, ctx.theme))
+                .or_else(|| self.row_writer_chip(entry, ctx.text, ctx.theme))
                 .map_or(0.0, |(_, width, _)| width + 6.0)
         };
         let layout = EntryRowLayout {
@@ -2426,7 +2432,7 @@ impl ActivityTimeline {
             ..
         } = layout;
         let Some((label, width, lead)) = Self::bot_chip(entry, text_renderer, theme)
-            .or_else(|| Self::writer_chip(entry, text_renderer, theme))
+            .or_else(|| self.row_writer_chip(entry, text_renderer, theme))
         else {
             return;
         };
@@ -2544,6 +2550,73 @@ impl ActivityTimeline {
                 );
                 (summary, false)
             };
+        // A change that acted on one thing reads as what it did, then the thing, as a link
+        // that opens it: two elements, never one string joined by a glyph.
+        if !is_redacted_row
+            && self.filters_people
+            && let Some(target) = entry.target.as_ref()
+        {
+            let action = fit_text(
+                text_renderer,
+                &target.action,
+                text_style,
+                (summary_x_end - summary_x).max(0.0),
+            );
+            text_renderer.draw_style(
+                scene,
+                &action,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((summary_x, line_top).into()),
+                None,
+                text_style,
+            );
+            let (action_w, line_h) = text_renderer.measure_style(&action, None, text_style);
+            let link_x = summary_x + f64::from(action_w) + TARGET_GAP;
+            let label = fit_text(
+                text_renderer,
+                &target.label,
+                text_style,
+                (summary_x_end - link_x).max(0.0),
+            );
+            if !label.is_empty() {
+                let ink = theme.tokens.colors.ink_on(
+                    theme.tokens.colors.surfaces.raised,
+                    theme.tokens.colors.intent.accent_ink,
+                    crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+                );
+                text_renderer.draw_style(
+                    scene,
+                    &label,
+                    ink,
+                    transform.pre_translate((link_x, line_top).into()),
+                    None,
+                    text_style,
+                );
+                let (label_w, _) = text_renderer.measure_style(&label, None, text_style);
+                let link = Rect::new(
+                    link_x,
+                    line_top,
+                    link_x + f64::from(label_w),
+                    line_top + f64::from(line_h),
+                );
+                let underline = link.y1 - 1.0;
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    ink.multiply_alpha(0.5),
+                    None,
+                    &Line::new(
+                        Point::new(link.x0, underline),
+                        Point::new(link.x1, underline),
+                    ),
+                );
+                // The press target is the row's height, as tall as the row it opens from.
+                self.target_links
+                    .borrow_mut()
+                    .insert(entry.id, Rect::new(link.x0, row.y0, link.x1, row.y1));
+            }
+            return;
+        }
         let summary = summary_owned.as_str();
         let drawn_summary = fit_text(
             text_renderer,
@@ -2958,7 +3031,11 @@ impl ActivityTimeline {
         let meta_style = theme.text(TextRole::Caption);
         let rel = format_relative_time(rg.last_time, now);
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
-        let faces = rg.authors.len().min(3);
+        let faces = if rg.lead.is_some() {
+            0
+        } else {
+            rg.authors.len().min(3)
+        };
         let face_d = AVATAR_DIAM;
         let overlap = f64::from(theme.tokens.spacing.s1);
         let dots_w = if faces > 0 {
@@ -2966,13 +3043,23 @@ impl ActivityTimeline {
         } else {
             0.0
         };
-        let sub_budget =
-            (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
+        let meta_end = row.x1 - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0;
+        let face_cy = meta_y + f64::from(rel_h) / 2.0;
+        let facts_x = match &rg.lead {
+            Some(lead) => Self::draw_band_lead(
+                &mut PaintCtx::new(scene, transform, tr, theme),
+                lead,
+                Point::new(title_x, face_cy),
+                meta_end,
+            ),
+            None => title_x,
+        };
+        let sub_budget = (meta_end - facts_x).max(0.0);
         let facts = rg.meta_facts();
         let facts_rect = Rect::new(
-            title_x,
+            facts_x,
             meta_y,
-            title_x + sub_budget,
+            facts_x + sub_budget,
             meta_y + f64::from(rel_h),
         );
         crate::widget::primitives::FactsFace::new(&facts)
@@ -2990,11 +3077,10 @@ impl ActivityTimeline {
 
         // Their faces, overlapping, on the meta line's measured centre: each
         // in their own colour, as presence shows them.
-        let face_cy = meta_y + f64::from(rel_h) / 2.0;
         let mut x1 = row.x1 - TRAILING_INSET - 6.0 - f64::from(rel_w);
         let ground = theme.tokens.colors.surfaces.inspector;
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        for a in rg.authors.iter().take(3) {
+        for a in rg.authors.iter().take(faces) {
             let (r, g, b) = a.rgb();
             let face = Rect::new(
                 x1 - face_d,
@@ -3155,9 +3241,12 @@ impl ActivityTimeline {
         let mut x = strip.x0;
 
         if self.filters_people {
-            let chosen = self.filter.authors.first().cloned();
-            let mut offered: Vec<(Option<String>, String, crate::widget::ChipLead)> = vec![(
-                None,
+            let chosen = match (self.filter.authors.first(), self.filter.writers.first()) {
+                (_, Some(writer)) => StripTarget::Writer(writer.clone()),
+                (author, None) => StripTarget::Person(author.cloned()),
+            };
+            let mut offered: Vec<(StripTarget, String, crate::widget::ChipLead)> = vec![(
+                StripTarget::Person(None),
                 widget_text("history-chip-all"),
                 crate::widget::ChipLead::None,
             )];
@@ -3169,9 +3258,18 @@ impl ActivityTimeline {
                     crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
                 };
                 let label = author.name.clone();
-                offered.push((Some(author.name.clone()), label, lead));
+                offered.push((StripTarget::Person(Some(author.name.clone())), label, lead));
             }
-            for (author, label, lead) in offered {
+            // An agent that wrote for a person is offered beside the people, with the badge
+            // that marks its rows: choosing it shows only what it wrote.
+            for writer in self.writers() {
+                offered.push((
+                    StripTarget::Writer(writer.clone()),
+                    writer,
+                    crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot),
+                ));
+            }
+            for (target, label, lead) in offered {
                 let chip_w =
                     crate::widget::ChipFace::intrinsic_width(&label, lead, false, tr, theme);
                 if x + chip_w > strip.x1 && !chips.is_empty() {
@@ -3179,8 +3277,8 @@ impl ActivityTimeline {
                 }
                 let painted = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
                 chips.push(StripChip {
-                    selected: author == chosen,
-                    target: StripTarget::Person(author),
+                    selected: target == chosen,
+                    target,
                     label,
                     lead,
                     painted,
@@ -4193,6 +4291,7 @@ impl ActivityTimeline {
         if let Some(target) = target {
             match target {
                 StripTarget::Person(author) => self.filter_by_author(author.as_deref()),
+                StripTarget::Writer(writer) => self.filter_by_writer(&writer),
                 StripTarget::Class(kind) => {
                     if self.active_chip != kind {
                         self.active_chip = kind;
@@ -4286,6 +4385,14 @@ impl ActivityTimeline {
             *handled = true;
             return;
         }
+        if self
+            .target_link_rect(i)
+            .is_some_and(|link| link.contains(self.last_cursor))
+            && self.open_target(i)
+        {
+            *handled = true;
+            return;
+        }
         if let Some(chip) = self.revert_chip_rect(i)
             && chip.contains(self.last_cursor)
         {
@@ -4320,6 +4427,8 @@ fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
         .as_ref()
         .is_some_and(|attribution| attribution.acting.is_bot())
 }
+
+mod writers;
 
 #[cfg(test)]
 mod tests;

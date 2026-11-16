@@ -729,14 +729,14 @@ mod folder_rows_tests {
 
             let rows = folder_rows(&doc, &authors(), 100);
             assert_eq!(rows.len(), 1, "one row for the one session's run");
-            assert_eq!(rows[0].summary, "Edited · terms.txt");
+            assert_eq!(rows[0].summary, "Edited terms.txt");
             let parts = ui::author_parts(&rows[0].author);
             assert_eq!(parts.person, "Ada");
             assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
             assert_eq!(parts.device.as_deref(), Some("Ada's laptop"));
             assert_eq!(
                 ui::attribution_hover(&rows[0].author).as_deref(),
-                Some("External agent · Claude Code · Ada's laptop · /")
+                Some("External agent\nClaude Code\nAda's laptop\n/")
             );
         }
 
@@ -769,8 +769,8 @@ mod folder_rows_tests {
             let rows = folder_rows(&doc, &authors(), 100);
             assert_eq!(rows.len(), 2);
             assert!(rows.iter().all(|row| ui::author_line(&row.author) == "Ada"));
-            assert!(rows.iter().any(|row| row.summary == "Edited · terms.txt"));
-            assert!(rows.iter().any(|row| row.summary == "Edited · logo.png"));
+            assert!(rows.iter().any(|row| row.summary == "Edited terms.txt"));
+            assert!(rows.iter().any(|row| row.summary == "Edited logo.png"));
         }
     }
 }

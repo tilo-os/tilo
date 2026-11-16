@@ -291,6 +291,7 @@ mod tests {
                     .with_app("org.tilo.Notes", "Notes")
                     .with_group("issue:42", "Prepare launch brief", "issue"),
             ),
+            target: None,
         }
     }
 

@@ -347,7 +347,6 @@ pub(crate) fn refresh(
         if returning_live {
             history.finish_return_to_live();
             history.flush_pending_toolbar();
-            let _ = history.deliver_opened_entry(live);
         }
     });
 }
@@ -482,14 +481,18 @@ pub(crate) unsafe fn restore_focus(
 
 /// The runner calls this after its remaining exit layout/draw/focus callbacks. Restoring one surface's
 /// focus must not end its custody halfway through the same return frame, or release any other surface's
-/// independent lease.
-pub(crate) fn finish_returns(root: &mut dyn Widget) {
+/// independent lease. A surface whose return has settled then opens the change a person chose in it;
+/// whether any did, so the runner syncs what that asked for.
+pub(crate) fn finish_returns(root: &mut dyn Widget) -> bool {
+    let mut opened = false;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.has_settled_control_return() {
             history.discard_pending_output(live);
             history.finish_control_return();
         }
+        opened |= history.deliver_opened_entry(live);
     });
+    opened
 }
 
 pub(crate) fn keyboard_captured(

@@ -426,9 +426,17 @@ pub fn provenance_label(provenance: FileProvenance) -> String {
 #[must_use]
 pub fn change_summary(change: &FileChange, file: &str) -> String {
     change.sentence(file).unwrap_or_else(|| {
-        format!(
-            "{} · {file}",
-            provenance_label(change.last().provenance.clone())
+        crate::i18n::I18nManager::format(
+            "history-files-change",
+            &[
+                (
+                    "action",
+                    provenance_label(change.last().provenance.clone())
+                        .as_str()
+                        .into(),
+                ),
+                ("file", file.into()),
+            ],
         )
     })
 }

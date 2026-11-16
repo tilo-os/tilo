@@ -50,6 +50,22 @@ pub struct HistoryEntry {
     pub diff_payload: Option<Vec<u8>>,
     pub redaction: Option<RedactionDisplay>,
     pub context: Option<ActionContext>,
+    /// What the change acted on, apart from what it did, when it acted on one thing a
+    /// reader can open: the row shows the two as separate elements, the thing as a link.
+    /// `summary` still reads as the whole sentence, for a reader that takes text.
+    pub target: Option<EntryTarget>,
+}
+
+/// The one thing a change acted on, as its row shows it beside what the change did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryTarget {
+    /// What the change did to it, in a word or two ("Edited").
+    pub action: String,
+    /// The thing, as the reader knows it ("legal/terms.txt").
+    pub label: String,
+    /// The thing as the window listing the change opens it (a folder's node id):
+    /// what choosing the link hands the window ([`crate::history_mode::capability::PresentsHistoryEntries`]).
+    pub id: String,
 }
 
 impl HistoryEntry {
@@ -98,6 +114,9 @@ pub(crate) fn genesis_facet() -> ActionFacet {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HistoryFilter {
     pub authors: Vec<String>,
+    /// The software that wrote for a person (an agent, an app, a program), by the name its
+    /// badge shows ([`crate::history_source::sentence::writer_badge`]): only what it wrote.
+    pub writers: Vec<String>,
     pub entry_kinds: Vec<EntryKind>,
     /// `None` disables the range. Half-open, matching the convention
     /// used elsewhere in Tilo so two adjacent filters never double-count
@@ -151,6 +170,15 @@ impl HistoryFilter {
             let needle = entry.author.name.to_lowercase();
             let any = self.authors.iter().any(|a| needle == a.to_lowercase());
             if !any {
+                return false;
+            }
+        }
+        if !self.writers.is_empty() {
+            let Some(writer) = crate::history_source::sentence::writer_badge(&entry.author) else {
+                return false;
+            };
+            let writer = writer.to_lowercase();
+            if !self.writers.iter().any(|w| w.to_lowercase() == writer) {
                 return false;
             }
         }
@@ -375,6 +403,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: None,
+            target: None,
         }
     }
 

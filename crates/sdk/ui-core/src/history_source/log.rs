@@ -436,6 +436,7 @@ impl HistoryLog {
                 // artifact and not reachable from a bare document.
                 redaction: None,
                 context,
+                target: None,
             });
         }
         out

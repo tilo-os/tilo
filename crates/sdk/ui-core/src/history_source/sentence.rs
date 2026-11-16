@@ -162,10 +162,11 @@ pub fn author_spoken(parts: &AuthorParts) -> String {
     spoken
 }
 
-/// The hover that names what wrote an attributed change, field by field:
-/// "External agent · Claude Code · ‘Prepare the report’ · Kaiserslautern · /Reports".
+/// The hover that names what wrote an attributed change, a field to a line: "External
+/// agent", "Claude Code", "‘Prepare the report’", "Kaiserslautern", "/Reports".
 /// `None` for a change with no recorded writer, whose row names a person.
 pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
+    // Each fact on a line of its own: the tooltip lays them out apart, never joined by a glyph.
     let attribution = author.attribution.as_ref()?;
     let Some(writer) = attribution.writer.as_ref() else {
         // An agent's own device signed the change: the agent, the computer and
@@ -183,7 +184,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
             parts.push(device.to_owned());
         }
         parts.extend(attribution.folder.clone());
-        return Some(parts.join(" · "));
+        return Some(parts.join("\n"));
     };
     let label = attribution.writer_label.as_deref().unwrap_or_default();
     let mut parts = Vec::with_capacity(5);
@@ -221,7 +222,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
         parts.push(device.to_owned());
     }
     parts.extend(attribution.folder.clone());
-    Some(parts.join(" · "))
+    Some(parts.join("\n"))
 }
 
 /// The name of the coding agent `agent` (`claude` is Claude Code). `None`

@@ -106,6 +106,7 @@ mod tests {
                     .with_group("issue:42", "Launch brief", "issue")
                     .with_facet(ActionFacet::new("file-type", "Markdown")),
             ),
+            target: None,
         };
         let mut legacy = contextual.clone();
         legacy.id = HistoryEntryId([2; 16]);

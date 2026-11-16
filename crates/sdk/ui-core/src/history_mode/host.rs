@@ -1152,8 +1152,15 @@ impl HistoryHost {
     }
 
     /// Hand the change a person chose to open to the live app `live`, once History has returned to it.
+    ///
+    /// Not before the return has settled: until then every pass discards what the live app queues
+    /// ([`Self::discard_pending_output`]), and with it what opening the change asked for.
     pub(crate) fn deliver_opened_entry(&mut self, live: &mut dyn Widget) -> bool {
-        if self.captures_input() {
+        if self.opened.is_none()
+            || self.captures_input()
+            || self.returning_live
+            || self.control_lease.is_some()
+        {
             return false;
         }
         self.opened
@@ -2906,6 +2913,10 @@ pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
         .with_icon(crate::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "opened_entry_tests.rs"]
+mod opened_entry_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "refresh_heads_tests.rs"]

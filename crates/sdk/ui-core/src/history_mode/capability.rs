@@ -134,7 +134,8 @@ pub trait PresentsHistoryEntries {
         &self,
     ) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>>;
 
-    /// A person chose `entry` in History and its face opens it ([`crate::widget::EntryFace::opens`]):
+    /// A person chose `entry` in History and its face opens it ([`crate::widget::EntryFace::opens`]),
+    /// or chose the thing it acted on ([`crate::widget::HistoryEntry::target`]):
     /// History has closed, the app is live again, and takes the change up (a calculation goes back into
     /// the calculator). Returns whether it did.
     fn open_history_entry(&mut self, entry: &crate::widget::HistoryEntry) -> bool {

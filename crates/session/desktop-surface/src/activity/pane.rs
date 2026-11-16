@@ -1692,6 +1692,7 @@ impl WorkspaceActivityPane {
                     diff_payload: None,
                     redaction: None,
                     context: Some(receipt.context.clone()),
+                    target: None,
                 });
                 tags.push(Some(workspace.id()));
             }

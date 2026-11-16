@@ -1509,6 +1509,7 @@ mod tests {
                 diff_payload: None,
                 redaction: None,
                 context,
+                target: None,
             };
             assert!(is_doing(&entry(None)));
             assert!(is_doing(&entry(Some(ActionContext::default()))));

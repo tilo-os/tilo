@@ -13,7 +13,7 @@ use tilo_sort::CompactSort as _;
 
 use crate::widget::EntryKind;
 
-use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+use crate::widget::history::{EntryTarget, HistoryAuthor, HistoryEntry, HistoryEntryId};
 
 /// Five minutes: long enough to survive reading a paragraph before typing
 /// the next one, short enough that a coffee break shows up as a break.
@@ -154,12 +154,63 @@ impl HistoryGroup {
                 .map(|e| e.summary.clone())
                 .unwrap_or_default();
         }
+        if let Some(title) = self.targets_title(entries) {
+            return title;
+        }
         let count = if let [only] = self.families.as_slice() {
             only.count(self.len())
         } else {
             widget_format("history-group-changes", &[("count", self.len().into())])
         };
         self.over_span(count)
+    }
+
+    /// The band's members, when each names the one thing it acted on
+    /// ([`HistoryEntry::target`]): a folder's changes to its files.
+    fn targets<'a>(&self, entries: &'a [HistoryEntry]) -> Option<Vec<&'a EntryTarget>> {
+        let members = entries.get(self.start..self.end)?;
+        let targets: Option<Vec<_>> = members.iter().map(|e| e.target.as_ref()).collect();
+        targets.filter(|targets| !targets.is_empty())
+    }
+
+    /// What a band of changes to named things did, in plain words: "Edited terms.txt and
+    /// privacy.txt", "Changed 4 items". `None` when a member names no thing.
+    fn targets_title(&self, entries: &[HistoryEntry]) -> Option<String> {
+        let targets = self.targets(entries)?;
+        let mut actions: Vec<&str> = Vec::new();
+        let mut things: Vec<&str> = Vec::new();
+        for target in &targets {
+            if !actions.contains(&target.action.as_str()) {
+                actions.push(&target.action);
+            }
+            if !things.contains(&target.label.as_str()) {
+                things.push(&target.label);
+            }
+        }
+        let things = match things.as_slice() {
+            [one] => (*one).to_owned(),
+            [first, second] => widget_format(
+                "history-group-targets-two",
+                &[("first", (*first).into()), ("second", (*second).into())],
+            ),
+            many => widget_format(
+                "history-group-targets-many",
+                &[("count", many.len().into())],
+            ),
+        };
+        Some(match actions.as_slice() {
+            [action] => widget_format(
+                "history-group-targets",
+                &[
+                    ("action", (*action).into()),
+                    ("things", things.as_str().into()),
+                ],
+            ),
+            _ => widget_format(
+                "history-group-targets-mixed",
+                &[("things", things.as_str().into())],
+            ),
+        })
     }
 
     fn over_span(&self, count: String) -> String {
@@ -217,6 +268,7 @@ impl HistoryGroup {
         } else if !summarised
             && self.name.is_none()
             && self.len() > 1
+            && self.targets(entries).is_none()
             && let Some(first) = entries.get(self.start)
         {
             parts.push(widget_format(
@@ -665,6 +717,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: None,
+            target: None,
         }
     }
 

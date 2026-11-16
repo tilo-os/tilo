@@ -26,6 +26,7 @@ fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
         diff_payload: None,
         redaction: None,
         context: None,
+        target: None,
     }
 }
 

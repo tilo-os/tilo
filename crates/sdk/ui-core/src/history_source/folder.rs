@@ -14,7 +14,7 @@ use automerge::AutoCommit;
 use crate::history_source::AuthorDirectory;
 use crate::history_source::WriterPlace;
 use crate::history_source::file_changes::{
-    NoTurnBoundary, QUIET, change_summary, coalesce, unknown_file_author,
+    NoTurnBoundary, QUIET, change_summary, coalesce, provenance_label, unknown_file_author,
 };
 use crate::time::{Duration, UNIX_EPOCH};
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
@@ -101,6 +101,13 @@ pub fn records(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<HistoryEntry>
                 diff_payload: None,
                 redaction: None,
                 context: None,
+                // What the change did and the file it did it to, as the row's own
+                // elements: the file a link that opens it.
+                target: Some(crate::widget::history::EntryTarget {
+                    action: provenance_label(version.provenance.clone()),
+                    label: path.clone(),
+                    id: id.clone(),
+                }),
             });
         }
     }

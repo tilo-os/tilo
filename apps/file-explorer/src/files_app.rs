@@ -3908,6 +3908,7 @@ impl FilesState {
                         diff_payload: None,
                         redaction: None,
                         context: Some(context),
+                        target: None,
                     }
                 });
                 self.host_intent = Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {

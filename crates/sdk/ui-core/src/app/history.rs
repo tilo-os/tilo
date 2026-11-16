@@ -291,9 +291,6 @@ impl App {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
-                if history.deliver_opened_entry(self.root_widget.as_mut()) {
-                    self.needs_sync = true;
-                }
             }
             if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.resume_after_history();
@@ -569,12 +566,16 @@ impl App {
     #[cfg(feature = "native")]
     pub(super) fn finish_history_return_frame(&mut self) {
         // Keep an outer covering lease through nested discard callbacks too.
-        crate::history_mode::embedded::finish_returns(self.root_widget.as_mut());
+        let mut opened = crate::history_mode::embedded::finish_returns(self.root_widget.as_mut());
         if let Some(history) = &mut self.history {
             if history.has_settled_control_return() {
                 history.discard_pending_output(self.root_widget.as_mut());
                 history.finish_control_return();
             }
+            opened |= history.deliver_opened_entry(self.root_widget.as_mut());
+        }
+        if opened {
+            self.needs_sync = true;
         }
     }
 }
