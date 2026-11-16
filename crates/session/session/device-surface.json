@@ -1534,7 +1534,7 @@
         },
         {
           "id": "set-mode",
-          "label": "Arrange the displays",
+          "label": "Use this mode",
           "description": "Use the displays together this way",
           "kind": "outside",
           "params": [
