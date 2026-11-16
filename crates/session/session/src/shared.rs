@@ -66,10 +66,10 @@ impl Shared {
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
-        if self
-            .desktops
-            .settled(engine.owner().revision(), &self.handle.read(Clone::clone))
-        {
+        if self.desktops.settled(
+            crate::layout::Standing::of(engine),
+            &self.handle.read(Clone::clone),
+        ) {
             return;
         }
         // What the records hold, folded into a copy of the shell: what this device opened or moved

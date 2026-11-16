@@ -673,6 +673,10 @@ impl Session {
         });
         let channels = engine.as_ref().and_then(|engine| {
             let settled = record_index.clone();
+            // Keys that arrived open records the loop read sealed: it reads the layouts again.
+            let keys = engine.keys();
+            let mut keyed = keys.generation();
+            let wake = options.wake.handle();
             crate::workspace_keys::KeyService::open(
                 engine,
                 std::sync::Arc::clone(&key_link),
@@ -680,6 +684,11 @@ impl Session {
                 move || {
                     if let Some(index) = &settled {
                         index.settled();
+                    }
+                    let generation = keys.generation();
+                    if generation != keyed {
+                        keyed = generation;
+                        wake();
                     }
                 },
             )

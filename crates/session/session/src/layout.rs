@@ -136,10 +136,28 @@ struct Held {
     pending_acted: Option<Acted>,
     /// Whether the record was read here.
     read: bool,
-    /// The engine revision this record was last read at, or found not to have moved at: a look
+    /// Where the engine stood when this record was last read, or found not to have moved: a look
     /// that skips the record (its write under way) or a write of it that finished leaves it behind
     /// the engine, so the record is read again however the rest of the workspace moved meanwhile.
-    read_at: Option<u64>,
+    read_at: Option<Standing>,
+}
+
+/// Where the engine's copy of the workspaces stood at a look: its revision, and the generation of
+/// the channel keys that open their sealed records. A record read at one reads the same until
+/// either moves: keys that arrive open writes the copy already held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Standing {
+    pub(crate) revision: u64,
+    pub(crate) keys: u64,
+}
+
+impl Standing {
+    pub(crate) fn of(engine: &Engine) -> Self {
+        Self {
+            revision: engine.owner().revision(),
+            keys: engine.keys().generation(),
+        }
+    }
 }
 
 /// A record a step may be taken in: the record as this device writes it, its history, the
@@ -510,10 +528,10 @@ impl Layouts {
             .unwrap_or_default()
     }
 
-    /// Whether every record of every workspace `tree` holds was read here at the engine's revision
-    /// `revision`, and this session has not moved since: nothing of them can have changed, so no
+    /// Whether every record of every workspace `tree` holds was read here with the engine at
+    /// `standing`, and this session has not moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
-    pub(crate) fn settled(&self, revision: u64, tree: &Layout) -> bool {
+    pub(crate) fn settled(&self, standing: Standing, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
         if !self.settle_publishing() {
             return true;
@@ -528,7 +546,7 @@ impl Layouts {
                 .filter(|workspace| !workspace.id().is_nil())
                 .all(|workspace| {
                     let workspace_id = workspace.id();
-                    let current = |held: &mut Held| held.read && held.read_at == Some(revision);
+                    let current = |held: &mut Held| held.read && held.read_at == Some(standing);
                     self.held(&(workspace_id, Route::layout()), current)
                         && person.as_deref().is_none_or(|person| {
                             self.held(&(workspace_id, Route::view(person)), current)
@@ -693,7 +711,7 @@ impl Layouts {
     /// Fold the layout of every workspace in the engine's copy into `tree`.
     fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
-        let at = engine.owner().revision();
+        let at = Standing::of(engine);
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let workspace_id = workspace.id();
@@ -817,7 +835,7 @@ impl Layouts {
             return false;
         };
         let route = Route::view(&person);
-        let at = engine.owner().revision();
+        let at = Standing::of(engine);
         let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
         for workspace_id in held {
@@ -2514,21 +2532,22 @@ mod tests {
             ..Layouts::default()
         };
         let key = (workspace, Route::layout());
+        let at = |revision| Standing { revision, keys: 0 };
         let read_at = |revision| {
             desktops.held(&key, |held| {
                 held.read = true;
-                held.read_at = Some(revision);
+                held.read_at = Some(at(revision));
             });
         };
         assert!(
-            !desktops.settled(7, &tree),
+            !desktops.settled(at(7), &tree),
             "the first look reads the records"
         );
         read_at(7);
-        assert!(desktops.settled(7, &tree), "nothing moved since");
+        assert!(desktops.settled(at(7), &tree), "nothing moved since");
         // Another device's write moves the record, and this look starts a write of its own, which
         // it skips reading the record for.
-        assert!(!desktops.settled(8, &tree), "the record moved");
+        assert!(!desktops.settled(at(8), &tree), "the record moved");
         let (answer, answered) = tokio::sync::oneshot::channel::<()>();
         let wake = desktops.wake.handle();
         desktops.held(&key, |held| {
@@ -2548,13 +2567,24 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
         assert!(
-            !desktops.settled(8, &tree),
+            !desktops.settled(at(8), &tree),
             "the look after the write reads the record again"
         );
         read_at(8);
         assert!(
-            desktops.settled(8, &tree),
+            desktops.settled(at(8), &tree),
             "and the one after that has nothing to read"
+        );
+        // Keys that arrive open what the record held sealed, though the engine's copy did not move.
+        assert!(
+            !desktops.settled(
+                Standing {
+                    revision: 8,
+                    keys: 1
+                },
+                &tree
+            ),
+            "a record read before its keys came is read again"
         );
     }
 
@@ -2789,8 +2819,8 @@ mod tests {
         strip
             .take(1)
             .for_each(|strip| strip.name = "Moved".to_owned());
-        let revision = engine.owner().revision();
-        let _ = desktops.settled(revision, &tree);
+        let standing = Standing::of(&engine);
+        let _ = desktops.settled(standing, &tree);
         gate.hold();
         desktops.capture(&engine, &tree);
         desktops.follow(&engine, "", &mut tree.clone());
@@ -2799,7 +2829,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
         assert!(
-            !desktops.settled(revision, &tree),
+            !desktops.settled(standing, &tree),
             "the look after a write reads the record its follow skipped"
         );
     }
