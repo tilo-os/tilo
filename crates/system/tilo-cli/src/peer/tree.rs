@@ -35,6 +35,10 @@ pub(crate) use fs_protocol::tree::FILES_APP;
 /// How often the replica looks again when nothing woke it: the session's
 /// events wake it at once, this only bounds a missed wake.
 const LOOK_AGAIN: Duration = Duration::from_secs(1);
+/// How many bytes of changes one write of the tree carries at most: well under the most a
+/// document write may carry, so changes made while the tree could not go out (a repository
+/// checked out into the folder) go out over several writes instead of one no host takes.
+const WRITE_BUDGET: usize = collab_types::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 2;
 /// How often the namespace is kept on disk while it changes, at most.
 const KEEP_EVERY: Duration = Duration::from_secs(2);
 /// How often the files and bytes the tree names are counted again while it changes, at most.
@@ -161,6 +165,8 @@ impl TreeReplica {
             kept_heads: Vec::new(),
             keeping: Paced::new(KEEP_EVERY),
             pulling: Paced::new(LOOK_AGAIN),
+            pushing: Paced::new(LOOK_AGAIN),
+            unsent: None,
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
             unread: None,
@@ -211,6 +217,11 @@ struct Sync {
     keeping: Paced,
     counting: Paced,
     pulling: Paced,
+    /// When a write the session turned down may be tried again: building one walks every change
+    /// since the last write that went out, so a write that keeps failing is not rebuilt each pass.
+    pushing: Paced,
+    /// Why the last write of the tree failed, said once until one goes out or fails otherwise.
+    unsent: Option<String>,
     /// The heads the files and bytes in `standing` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
     /// Why the last read of the record failed, said once until it reads or fails otherwise.
@@ -412,6 +423,10 @@ impl Sync {
             // found a second one beside it.
             return;
         }
+        let started = Instant::now();
+        if !self.pushing.due(started) {
+            return;
+        }
         let outgoing = outgoing(&mut self.namespace.lock_recover(), &self.sent, self.founded);
         let (mutation, covered) = match outgoing {
             Outgoing::Nothing => return,
@@ -421,14 +436,21 @@ impl Sync {
             }
             Outgoing::Write(mutation, heads) => (mutation, heads),
         };
-        if self.link.write(self.route.clone(), &mutation).is_ok() {
-            self.founded = true;
-            // What the write carries, not what the namespace holds now: the
-            // mount keeps changing it while the write goes out, and a change
-            // made meanwhile counted as sent would never reach the host, which
-            // then leaves out every later write of this device.
-            self.sent = covered;
+        if let Err(error) = self.link.write(self.route.clone(), &mutation) {
+            if self.unsent.as_ref() != Some(&error) {
+                tracing::warn!(%error, workspace = %self.workspace, "the workspace's tree did not go out; it is tried again");
+                self.unsent = Some(error);
+            }
+            self.pushing.ran(started, Instant::now());
+            return;
         }
+        self.unsent = None;
+        self.founded = true;
+        // What the write carries, not what the namespace holds now: the
+        // mount keeps changing it while the write goes out, and a change
+        // made meanwhile counted as sent would never reach the host, which
+        // then leaves out every later write of this device.
+        self.sent = covered;
     }
 
     fn say_where_it_stands(&mut self) {
@@ -522,11 +544,11 @@ fn outgoing(namespace: &mut Namespace, sent: &[automerge::ChangeHash], founded: 
         return Outgoing::Nothing;
     }
     if founded {
-        let bytes = namespace.changes_since(sent);
+        let (bytes, reached) = namespace.changes_since_within(sent, WRITE_BUDGET);
         if bytes.is_empty() {
             return Outgoing::Covered(heads);
         }
-        return Outgoing::Write(DocumentMutation::Incremental(bytes), heads);
+        return Outgoing::Write(DocumentMutation::Incremental(bytes), reached);
     }
     if !namespace.holds_tree() {
         return Outgoing::Nothing;
@@ -627,6 +649,66 @@ mod tests {
             "{tree:?}"
         );
     }
+    #[test]
+    fn changes_larger_than_one_write_go_out_over_several() {
+        let mut founding = automerge::AutoCommit::new();
+        let _ = founding.commit();
+        let founded = founding.save();
+        let heads: Vec<[u8; 32]> = founding.get_heads().iter().map(|head| head.0).collect();
+        let mut namespace = Namespace::new("laptop").unwrap();
+        namespace
+            .adopt_or_merge_remote_and_resolve(&founded)
+            .unwrap();
+        let mut sent = record_heads(&heads);
+        // A checkout while the tree could not go out: many files, many changes.
+        for n in 0..200_u32 {
+            let hash = iroh_blobs::Hash::new(n.to_le_bytes());
+            namespace
+                .create_file(
+                    tilo_fs::namespace::ROOT_INO,
+                    format!("file-{n}.rs"),
+                    Some(&hash),
+                    4,
+                    1,
+                )
+                .unwrap();
+            let _ = namespace.heads();
+        }
+        let whole = namespace.changes_since(&sent).len();
+        let budget = whole / 5;
+        let mut record = founded;
+        let mut writes = 0;
+        while namespace.heads() != sent {
+            let (bytes, reached) = namespace.changes_since_within(&sent, budget);
+            assert!(
+                !bytes.is_empty(),
+                "a write carries something until the heads are reached"
+            );
+            assert!(
+                bytes.len() <= budget,
+                "{} bytes over a budget of {budget}",
+                bytes.len()
+            );
+            record.extend_from_slice(&bytes);
+            sent = reached;
+            writes += 1;
+            assert!(writes < 50, "the writes reach the namespace's heads");
+        }
+        assert!(writes > 1, "the backlog went out in one write");
+        let mut record = automerge::AutoCommit::load(&record).unwrap();
+        assert!(
+            record.get_missing_deps(&[]).is_empty(),
+            "each write builds on the last"
+        );
+        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        let files = tree
+            .nodes
+            .values()
+            .filter(|node| node.name.starts_with(b"file-"))
+            .count();
+        assert_eq!(files, 200, "every file reached the record");
+    }
+
     #[test]
     fn a_change_made_while_a_write_goes_out_goes_out_next() {
         let mut namespace = Namespace::new("laptop").unwrap();

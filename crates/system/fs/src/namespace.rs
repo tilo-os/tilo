@@ -2734,6 +2734,38 @@ impl Namespace {
         self.doc.save_after(&known)
     }
 
+    /// [`Self::changes_since`], at most about `budget` bytes of it: the changes after `heads` in
+    /// causal order, as many as fit (one at least), and the heads the document stands at with
+    /// them. A sender that can hand on only so much at once goes out in several writes, each
+    /// building on the last, rather than in one no host takes.
+    pub fn changes_since_within(
+        &mut self,
+        heads: &[automerge::ChangeHash],
+        budget: usize,
+    ) -> (Vec<u8>, Vec<automerge::ChangeHash>) {
+        let known: Vec<automerge::ChangeHash> = heads
+            .iter()
+            .copied()
+            .filter(|hash| self.doc.has_change(hash))
+            .collect();
+        let changes = self.doc.get_changes(&known);
+        let mut bytes = Vec::new();
+        let mut reached: std::collections::BTreeSet<automerge::ChangeHash> =
+            known.iter().copied().collect();
+        for change in &changes {
+            let raw = change.raw_bytes();
+            if !bytes.is_empty() && bytes.len().saturating_add(raw.len()) > budget {
+                break;
+            }
+            bytes.extend_from_slice(raw);
+            for dep in change.deps() {
+                reached.remove(dep);
+            }
+            reached.insert(change.hash());
+        }
+        (bytes, reached.into_iter().collect())
+    }
+
     fn with_doc_mut<R>(
         &mut self,
         ino: u64,
