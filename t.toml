@@ -5433,6 +5433,14 @@ run = "python3 tools/ci/workspace_unify.py --check"
 requires = ["arch=arm64"]
 fix = "python3 tools/ci/workspace_unify.py --write"
 
+# The launcher `cargo headless` and `cargo desktop` are: built where cargo has its registry, since
+# a cargo in the run checks' VM job has none of its own, and run from there in the nested sandbox.
+[[check]]
+name = "tilo-local-binaries"
+run = "cargo build --locked -p tilo-local"
+outputs = ["/target/debug/tilo-local"]
+default = false
+
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
 # it something (its actions; its window, opened on a throwaway headless Tilo standing in for the
@@ -5442,8 +5450,8 @@ fix = "python3 tools/ci/workspace_unify.py --write"
 [[check]]
 name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- headless --check --no-build --apps notes"
-needs = ["nested-session"]
+run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps notes"
+needs = ["nested-session", "tilo-local-binaries"]
 # The session's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
@@ -5454,8 +5462,8 @@ on = ["idle"]
 [[check]]
 name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh cargo run --locked -q -p tilo-local -- desktop --check --no-build --apps notes"
-needs = ["nested-session"]
+run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps notes"
+needs = ["nested-session", "tilo-local-binaries"]
 # The window's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]

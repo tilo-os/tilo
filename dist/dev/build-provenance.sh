@@ -60,7 +60,7 @@ record_of() { printf '%s/%s\n' "$1" "$record_name"; }
 not_an_input() {
     case $1 in
         ./docs/* | ./.claude/* | ./dist/dev/* | ./scripts/headless-examples/* | *.md | ./target/* \
-            | ./os/output/*) return 0 ;;
+            | ./os/output/* | ./t.toml) return 0 ;;
         *) return 1 ;;
     esac
 }
