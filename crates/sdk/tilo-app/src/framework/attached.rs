@@ -342,7 +342,11 @@ impl AttachedView {
             .resources()
             .into_iter()
             .filter_map(|resource| {
-                permissions.permitted_resource(self.definition.app_id(), resource)
+                permissions.permitted_resource_on(
+                    self.definition.app_id(),
+                    self.checkout.id.as_str(),
+                    resource,
+                )
             })
             .collect()
     }
@@ -357,7 +361,11 @@ impl AttachedView {
             .resources_past_page()
             .into_iter()
             .filter_map(|resource| {
-                permissions.permitted_resource(self.definition.app_id(), resource)
+                permissions.permitted_resource_on(
+                    self.definition.app_id(),
+                    self.checkout.id.as_str(),
+                    resource,
+                )
             })
             .collect()
     }
@@ -382,7 +390,11 @@ impl AttachedView {
             .filter(|(_, label)| label.eq_ignore_ascii_case(name))
             .filter_map(|(id, _)| self.frame.resource(&id))
             .filter_map(|resource| {
-                permissions.permitted_resource(self.definition.app_id(), resource)
+                permissions.permitted_resource_on(
+                    self.definition.app_id(),
+                    self.checkout.id.as_str(),
+                    resource,
+                )
             })
             .collect()
     }
@@ -398,7 +410,11 @@ impl AttachedView {
             .past_page_range(offset, take)
             .into_iter()
             .filter_map(|resource| {
-                permissions.permitted_resource(self.definition.app_id(), resource)
+                permissions.permitted_resource_on(
+                    self.definition.app_id(),
+                    self.checkout.id.as_str(),
+                    resource,
+                )
             })
             .collect()
     }
@@ -409,7 +425,11 @@ impl AttachedView {
     #[must_use]
     pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
         let permissions = self.permissions.borrow();
-        permissions.permitted_resource(self.definition.app_id(), self.frame.resource(id)?)
+        permissions.permitted_resource_on(
+            self.definition.app_id(),
+            self.checkout.id.as_str(),
+            self.frame.resource(id)?,
+        )
     }
 
     /// The contract of the action `address` names, as the view publishes it

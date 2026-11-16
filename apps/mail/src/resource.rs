@@ -2678,4 +2678,22 @@ mod own_record_tests {
             "{id}"
         );
     }
+
+    /// A Viewer reads the workspace only, yet their own mailbox is theirs:
+    /// its window is not view-only and their edits of it apply.
+    #[test]
+    fn a_viewer_writes_their_own_mailbox() {
+        let person = "ad".repeat(32);
+        let mut app = ui::framework::testing::TestApp::<super::MailShell>::for_person_with_role(
+            &person,
+            ui::permissions::Role::Viewer,
+        )
+        .unwrap();
+        app.call("start-draft-body", serde_json::json!({"text": "Only mine"}))
+            .expect("a viewer writes their own mailbox");
+        app.settle();
+        assert!(app.state().draft.rich_body.is_some());
+        let tree = app.harness().inspection_json().unwrap();
+        assert!(!tree.contains("view only"), "{tree}");
+    }
 }

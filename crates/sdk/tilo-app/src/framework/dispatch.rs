@@ -605,6 +605,12 @@ impl DispatchCore {
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
+        // A member's own record is theirs whatever their role: its changes
+        // are decided on that record, which the policy leaves to its person.
+        if policy::member_record(&self.record).is_some() {
+            let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+            return app.kind(kind).resource(&*self.record);
+        }
         if self.applied_as.is_none() {
             return app;
         }

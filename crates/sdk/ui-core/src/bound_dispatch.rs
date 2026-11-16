@@ -356,7 +356,7 @@ fn count_addresses(
 ) {
     let head = node.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
+    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
     for action in &head.actions {
         if !(action.contract.availability.is_available()
             && decider.permits(&head.kind, head.id.as_str(), action))
@@ -3045,7 +3045,7 @@ pub(crate) fn invoke_resource_action(
                         scope.check_dispatch_spec(spec)?;
                     }
                     let (answer, spent) = binding.permissions.borrow().invocation_verdict(
-                        &binding.app_id,
+                        (&binding.app_id, binding.checkout.id.as_str()),
                         resource,
                         spec,
                         arguments.as_ref(),
@@ -3228,7 +3228,7 @@ fn resolve_document_action(
     }
     fn kept(binding: &CallbackBinding, node: &SharedResource) -> bool {
         let permissions = binding.permissions.borrow();
-        let decider = permissions.action_decider(&binding.app_id);
+        let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
         let head = node.head();
         head.actions
             .iter()
@@ -3259,7 +3259,7 @@ fn resolve_document_action(
         .find_map(|node| first_kept(binding, node, &address.resource))?;
     let mut resource = node.head().clone();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
+    let decider = permissions.action_decider_on(&binding.app_id, binding.checkout.id.as_str());
     resource
         .actions
         .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));

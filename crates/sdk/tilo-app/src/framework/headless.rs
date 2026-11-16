@@ -335,6 +335,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::fresh(TEST_WORKSPACE, Role::Owner, person)
     }
 
+    /// [`Self::for_person`], with `role` in the workspace: a member who may
+    /// only read the workspace still opens their own record of an app each
+    /// member keeps their own of.
+    pub fn for_person_with_role(person: &str, role: Role) -> Result<Self, LaunchError> {
+        Self::fresh(TEST_WORKSPACE, role, person)
+    }
+
     /// [`Self::for_person`], with the app open in the workspace `workspace`
     /// (a workspace id), whose records sync on their routes.
     pub fn for_person_in(person: &str, workspace: &str) -> Result<Self, LaunchError> {

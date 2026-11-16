@@ -803,23 +803,30 @@ impl PermissionContext {
         .unwrap_or(Answer::Deny)
     }
 
-    /// The answer for admitting one invocation of `action` on `resource`
+    /// The answer for admitting one invocation of `action` on `resource`,
+    /// published by the app `app_id` in a window on the record `record`,
     /// with these arguments, and the `Once` grants admitting it spends: the
     /// door that runs it hands them to [`Self::spend_once`] first.
     pub fn invocation_verdict(
         &self,
-        app_id: &str,
+        (app_id, record): (&str, &str),
         resource: &tilo_actions::ResourceSpec,
         action: &tilo_actions::ActionSpec,
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> (Answer, Vec<policy::GrantId>) {
         let need = action.need_for(json, argument);
+        // A window on a member's own record decides on that record
+        // ([`Self::action_decider_on`]).
+        let resource_id = match policy::member_record(record) {
+            Some(_) => record,
+            None => resource.id.as_str(),
+        };
         let node = tilo_actions::action_node(
             &TreePath::root(),
             app_id,
             &resource.kind,
-            resource.id.as_str(),
+            resource_id,
             need.field.as_deref(),
             &action.id,
         );
@@ -858,6 +865,24 @@ impl PermissionContext {
         action: &tilo_actions::ActionSpec,
     ) -> bool {
         self.action_answer(app_id, resource_kind, resource_id, action) != Answer::Deny
+    }
+
+    /// [`Self::permitted_resource`] for a resource a window on the record
+    /// `record` publishes: on a member's own record every action of it is
+    /// decided on that record ([`Self::action_decider_on`]).
+    pub fn permitted_resource_on(
+        &self,
+        app_id: &str,
+        record: &str,
+        resource: tilo_actions::ResourceSpec,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        if policy::member_record(record).is_none() {
+            return self.permitted_resource(app_id, resource);
+        }
+        let decider = self.action_decider_on(app_id, record);
+        keep_permitted(resource, &|kind, id, action| {
+            decider.permits(kind, id, action)
+        })
     }
 
     /// `resource`, published by the app `app_id`, as the actor may reach
@@ -902,8 +927,20 @@ impl PermissionContext {
             permissions: self,
             app_id,
             answers,
+            own_record: None,
             resource: std::cell::RefCell::new(None),
         }
+    }
+
+    /// [`Self::action_decider`] for the actions a window on the record
+    /// `record` publishes. A member's own record
+    /// ([`policy::member_record`]) is that person's alone whatever their role,
+    /// so every action such a window publishes is decided on that record,
+    /// where the policy lets its person do anything and no one else anything.
+    pub fn action_decider_on<'a>(&'a self, app_id: &'a str, record: &'a str) -> ActionDecider<'a> {
+        let mut decider = self.action_decider(app_id);
+        decider.own_record = policy::member_record(record).map(|_| record);
+        decider
     }
 
     /// `decide` with one authority for the standing as it is, for answers
@@ -931,6 +968,9 @@ pub struct ActionDecider<'a> {
     permissions: &'a PermissionContext,
     app_id: &'a str,
     answers: Option<PublishedAnswers<'a>>,
+    /// The member's own record the window shows, which every action it
+    /// publishes is decided on ([`PermissionContext::action_decider_on`]).
+    own_record: Option<&'a str>,
     resource: std::cell::RefCell<Option<(String, String, TreePath)>>,
 }
 
@@ -943,6 +983,7 @@ impl ActionDecider<'_> {
         resource_id: &str,
         action: &tilo_actions::ActionSpec,
     ) -> bool {
+        let resource_id = self.own_record.unwrap_or(resource_id);
         let Some(answers) = &self.answers else {
             return self.permissions.permits_action(
                 self.app_id,
@@ -1302,6 +1343,60 @@ pub fn admit_in_window(
 
 #[cfg(test)]
 mod policy_time_tests;
+
+#[cfg(test)]
+mod own_record_tests {
+    use super::*;
+    use tilo_actions::{ActionSpec, OperationKind};
+
+    /// A window on a member's own record decides what it publishes on that
+    /// record: its person changes it whatever their role, and no one else,
+    /// however much the workspace lets them do.
+    #[test]
+    fn a_window_on_a_members_own_record_is_its_persons_alone() {
+        let ada = "ad".repeat(32);
+        let own = policy::member_record_id(&ada, "mail.mailbox");
+        let effect =
+            ActionSpec::operation("add", "Add", OperationKind::Effect, "t.add", &()).unwrap();
+        let mut edit =
+            ActionSpec::operation("edit", "Edit", OperationKind::Effect, "t.edit", &()).unwrap();
+        edit.type_mut().contract.kind = ActionKind::Undoable;
+        let viewer = PermissionContext::member(ada.clone(), Role::Viewer);
+        for action in [&edit, &effect] {
+            assert!(
+                !viewer.permits_action("so.tilo.mail", "mail.mailbox", "mail.mailbox", action),
+                "a viewer changes nothing of the workspace's: {}",
+                action.id
+            );
+            assert!(
+                viewer.action_decider_on("so.tilo.mail", &own).permits(
+                    "mail.mailbox",
+                    "mail.mailbox",
+                    action
+                ),
+                "a viewer changes their own record: {}",
+                action.id
+            );
+        }
+        let owner = PermissionContext::member("bb".repeat(32), Role::Owner);
+        assert!(
+            !owner.action_decider_on("so.tilo.mail", &own).permits(
+                "mail.mailbox",
+                "mail.mailbox",
+                &edit
+            ),
+            "the workspace's owner changes nothing of another member's own record"
+        );
+        let mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail")
+            .with_action(edit.clone());
+        assert!(
+            viewer
+                .permitted_resource_on("so.tilo.mail", &own, mailbox.clone())
+                .is_some()
+        );
+        assert!(viewer.permitted_resource("so.tilo.mail", mailbox).is_none());
+    }
+}
 
 #[cfg(test)]
 mod tests {
