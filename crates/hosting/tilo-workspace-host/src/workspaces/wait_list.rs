@@ -143,13 +143,17 @@ pub struct Mailbox {
 }
 
 /// The secrets a request is left with, as their SHA-256 digests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Secrets {
     /// SHA-256 of the secret that takes the entry off.
     pub removal: [u8; 32],
     /// SHA-256 of the secret that confirms it; `None` where the door sends
     /// no mail, which lists the address at once.
     pub confirm: Option<[u8; 32]>,
+    /// SHA-256 of secrets the entry kept before, which the entry keeps on
+    /// taking it off as well: an address carried over from an earlier
+    /// release's list keeps the removal links its mails already carried.
+    pub earlier: Vec<[u8; 32]>,
 }
 
 /// One workspace's wait list.
@@ -286,7 +290,9 @@ impl WaitList {
                 else {
                     return WaitListed::Already { mail: false };
                 };
-                push_capped(&mut entry.removals, secrets.removal, MAX_REMOVALS);
+                for removal in std::iter::once(secrets.removal).chain(secrets.earlier) {
+                    push_capped(&mut entry.removals, removal, MAX_REMOVALS);
+                }
                 let mail = mails(entry);
                 match secrets.confirm {
                     Some(confirm) => push_capped(&mut entry.confirms, confirm, MAX_CONFIRMS),
@@ -319,6 +325,10 @@ impl WaitList {
             .max_by_key(|mailed| mailed.at_ns)
             .cloned();
         let mail = secrets.confirm.is_some() && lately.is_none();
+        let mut removals = vec![secrets.removal];
+        for removal in secrets.earlier {
+            push_capped(&mut removals, removal, MAX_REMOVALS);
+        }
         let mut confirms = Vec::new();
         if secrets.confirm.is_some() {
             for confirm in lately.iter().flat_map(|mailed| &mailed.confirms) {
@@ -333,7 +343,7 @@ impl WaitList {
                 request_id: rand::random(),
                 contact: contact.to_owned(),
                 at_ns: now_ns,
-                removals: vec![secrets.removal],
+                removals,
                 confirms,
                 confirmed_at_ns: secrets.confirm.is_none().then_some(now_ns),
                 language: language.to_owned(),
@@ -708,6 +718,7 @@ mod tests {
         Secrets {
             removal: [removal; 32],
             confirm: None,
+            earlier: Vec::new(),
         }
     }
 
@@ -715,6 +726,7 @@ mod tests {
         Secrets {
             removal: [removal; 32],
             confirm: Some([confirm; 32]),
+            earlier: Vec::new(),
         }
     }
 
@@ -766,6 +778,38 @@ mod tests {
     }
 
     #[test]
+    fn an_address_carried_over_keeps_every_removal_link_its_mails_carried() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace.workspace");
+        let mut list = WaitList::open(&workspace).unwrap();
+        list.keep(
+            "ada@example.org",
+            Secrets {
+                removal: [0x0c; 32],
+                confirm: None,
+                earlier: vec![[0x0a; 32], [0x0b; 32]],
+            },
+            "en",
+            1,
+            10,
+        )
+        .unwrap();
+        // A link a later mail carries takes it off as well.
+        list.keep("ada@example.org", listed(0x0d), "en", 2, 10)
+            .unwrap();
+
+        let kept = std::fs::read(workspace.with_extension("wait-list")).unwrap();
+        for removal in [[0x0a; 32], [0x0b; 32], [0x0c; 32], [0x0d; 32]] {
+            std::fs::write(workspace.with_extension("wait-list"), &kept).unwrap();
+            let mut fresh = WaitList::open(&workspace).unwrap();
+            assert!(
+                fresh.leave(removal, 3).unwrap().is_some(),
+                "the removal link {removal:?} takes the address off"
+            );
+        }
+    }
+
+    #[test]
     fn whoever_left_an_address_takes_it_off_with_a_secret_only_its_hash_of_which_is_kept() {
         use sha2::Digest as _;
         let dir = tempfile::tempdir().unwrap();
@@ -776,6 +820,7 @@ mod tests {
         let with = |removal: [u8; 32]| Secrets {
             removal,
             confirm: None,
+            earlier: Vec::new(),
         };
         let mut list = WaitList::open(&workspace).unwrap();
         list.keep("ada@example.org", with(digest(&secret)), "en", 1, 10)

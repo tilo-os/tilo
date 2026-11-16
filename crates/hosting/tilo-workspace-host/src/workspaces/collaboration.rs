@@ -121,7 +121,7 @@ impl Workspaces {
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        self.issue_as(workspace, administrator, request, false)
+        self.issue_at(workspace, administrator, request, false, None)
             .await
     }
 
@@ -135,8 +135,24 @@ impl Workspaces {
         &self,
         workspace: &str,
         administrator: &DeviceCert,
+        request: IssueInvitationRequest,
+        makes_administrator: bool,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        self.issue_at(workspace, administrator, request, makes_administrator, None)
+            .await
+    }
+
+    /// [`Self::issue_as`] of an invitation issued for the wait-list entry
+    /// `wait_list_entry`, where one is named: the entry records the
+    /// invitation, so what the door mails to it carries this link, and it
+    /// leaves the list by itself once someone joins with it.
+    pub async fn issue_at(
+        &self,
+        workspace: &str,
+        administrator: &DeviceCert,
         mut request: IssueInvitationRequest,
         makes_administrator: bool,
+        wait_list_entry: Option<[u8; 32]>,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -159,13 +175,27 @@ impl Workspaces {
             if request.inviter_name.is_none() {
                 request.inviter_name = self.member_name(&governed, administrator);
             }
-            self.stage_issue(
+            if let Some(entry) = wait_list_entry
+                && !governed.wait_list.has(entry, now)
+            {
+                return Err(CollaborationError::new(
+                    "that address is no longer on the wait list",
+                ));
+            }
+            let issued = self.stage_issue(
                 &mut governed,
                 administrator,
                 request,
                 makes_administrator,
                 now,
-            )?
+            )?;
+            if let Some(entry) = wait_list_entry {
+                governed
+                    .wait_list
+                    .invited(entry, issued.invite_id, now)
+                    .map_err(CollaborationError::new)?;
+            }
+            issued
         };
         self.written(workspace, false).await?;
         Ok(issued)

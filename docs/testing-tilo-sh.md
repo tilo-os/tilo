@@ -189,3 +189,55 @@ already, so the stack compiles and lays out nothing. With `--images`,
 `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an
 OCI archive or a registry reference; a release candidate's `sha-<commit>`
 images reproduce what is deployed.
+
+## Releasing the Lounge's people
+
+A release starts the Lounge on fresh state: it does not read the previous
+release's people, roles, wait list or invitations back. The people come over by
+hand, in this order. `t test release-tilo-sh` proves each step on the previous
+release's own state (`relay-upgrade`).
+
+1. **Export**, from the live volume, read-only, out of the pod that holds it
+   (namespace `tilo-sh-vm-host`, deployment `tilo-sh-relay`, container
+   `room-service`). The old relay's state is `/run/tilo-rooms/lounge`; copy it
+   out, then read the copy with this checkout's command: the export runs no
+   relay, and writes nothing.
+
+   ```sh
+   mkdir -p /tmp/lounge-people
+   kubectl -n tilo-sh-vm-host exec deploy/tilo-sh-relay -c room-service -- \
+     tar -C /run/tilo-rooms -cf - lounge | tar -C /tmp/lounge-people -xf -
+   $CARGO --fetch debug/tilo-relay build -p tilo-relay --features agents
+   target/debug/tilo-relay release-people export \
+     --state /tmp/lounge-people/lounge --out /tmp/lounge-people/people.json
+   ```
+
+   The JSON holds the addresses the old release kept on its wait list, with
+   the secrets their removal and confirmation links carry, and the people with
+   the role each had: an administrator is an administrator, and the workspace's
+   own root is nobody.
+
+2. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
+   --publish`, and keep the three image digests it prints (the signing steps are
+   skipped here; they run on a trusted release run).
+3. **Push infra**: the branch that starts the host on
+   `TILO_WORKSPACES_STATE=/run/tilo-rooms/v0.2.0`, with the new digests. The
+   old release's files stay where they are, under `/run/tilo-rooms/lounge`.
+4. **Import**, in the new pod, over the workspace's operator socket at
+   `/run/tilo-rooms/v0.2.0/lounge/operator.sock`: each address comes back as it
+   stood, an owner is declared by their key, and every other person gets the
+   host's own invitation, mailed to the address the export names and printed as
+   a link otherwise.
+
+   ```sh
+   kubectl -n tilo-sh-vm-host exec -i deploy/tilo-sh-relay -c room-service -- \
+     tilo-relay release-people import \
+     --socket /run/tilo-rooms/v0.2.0/lounge/operator.sock --file - \
+     < /tmp/lounge-people/people.json
+   ```
+
+5. **Check**: the import named every person and the link each one got, the
+   addresses it mailed were the ones the previous release kept, the wait list
+   lists the same addresses (an unconfirmed one still waits for its link to be
+   opened), the administrators stand as administrators, and the previous
+   release's files are still where it left them, under `/run/tilo-rooms/lounge`.

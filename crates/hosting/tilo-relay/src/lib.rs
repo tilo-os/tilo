@@ -99,6 +99,8 @@ pub mod placed_browsers;
 pub mod placed_shells;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
+#[cfg(all(not(target_arch = "wasm32"), feature = "web"))]
+pub mod release_people;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;
 #[cfg(feature = "web")]

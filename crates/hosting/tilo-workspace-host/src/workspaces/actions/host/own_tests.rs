@@ -1379,6 +1379,7 @@ async fn gated_host() -> (
                 WaitListSecrets {
                     removal: [1; 32],
                     confirm: Some([2; 32]),
+                    earlier: Vec::new(),
                 },
                 "en",
                 1,

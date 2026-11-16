@@ -37,6 +37,11 @@ pub struct HostInvitation {
     /// Who it is for, as the inviter names them (an address, a name).
     pub invitee_name: Option<String>,
     pub expires_at_ns: u64,
+    /// The wait-list entry the invitation is issued for, where the person is
+    /// an address the door kept: the entry records the invitation, so the
+    /// door mails this link to it, and it leaves the list once someone joins
+    /// with it.
+    pub wait_list_entry: Option<[u8; 32]>,
 }
 
 /// The owner invitations handed out and not accepted yet: the workspace
@@ -132,7 +137,7 @@ impl Workspaces {
     ) -> Result<IssuedInvitation, CollaborationError> {
         let administrator = invitation.administrator || invitation.owner;
         let issued = self
-            .issue_as(
+            .issue_at(
                 workspace,
                 &self.inner.host.cert.clone(),
                 IssueInvitationRequest {
@@ -148,6 +153,7 @@ impl Workspaces {
                     inviter_name: None,
                 },
                 administrator,
+                invitation.wait_list_entry,
             )
             .await?;
         if invitation.owner {
@@ -291,6 +297,7 @@ mod tests {
             owner,
             invitee_name: None,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(DAY_NS),
+            wait_list_entry: None,
         }
     }
 

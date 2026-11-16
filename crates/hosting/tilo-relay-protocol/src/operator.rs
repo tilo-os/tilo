@@ -15,14 +15,15 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 13 has the operator ask the host for an invitation of its own
-/// ([`OperatorCommand::Invite`]); 12 has the operator have another host hold
-/// a workspace governed here ([`OperatorCommand::Hold`]); 11 dropped the command that took in the
-/// people an earlier release kept; 10
-/// is the operator's declaration of a workspace's owner carrying the name that
-/// person goes by ([`OperatorCommand::DeclareOwner`]), so a reader of that one
-/// decodes no line of this.
-pub const VERSION: u16 = 13;
+/// 14 takes in the people an earlier release kept
+/// ([`OperatorCommand::ImportPeople`]); 13 has the operator ask the host for an
+/// invitation of its own ([`OperatorCommand::Invite`]); 12 has the operator
+/// have another host hold a workspace governed here
+/// ([`OperatorCommand::Hold`]); 10 is the operator's declaration of a
+/// workspace's owner carrying the name that person goes by
+/// ([`OperatorCommand::DeclareOwner`]). A reader of another version decodes no
+/// line of this.
+pub const VERSION: u16 = 14;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -157,6 +158,16 @@ pub enum OperatorCommand {
         #[serde(default, skip_serializing_if = "is_false")]
         unless_owned: bool,
     },
+    /// Take the people an earlier release kept into `workspace`
+    /// ([`crate::release_people::People`], as `tilo-relay release-people
+    /// export` read them from that release's state): their addresses go on the
+    /// wait list as they stood, and each person is declared an owner or
+    /// invited through the host's own invitation, mailed where the export
+    /// names an address. The child answers [`OperatorEvent::PeopleImported`].
+    ImportPeople {
+        /// What the earlier release kept.
+        people: crate::release_people::People,
+    },
     /// Have the host at `host`, a site's or a relay's origin
     /// (`https://eu1.tilo.sh`), hold `workspace`, governed here, as well: it
     /// is handed the workspace and named among its hosts, so both hold it
@@ -250,6 +261,12 @@ pub enum OperatorEvent {
         user_public_key: String,
         /// Why it declared nobody.
         reason: String,
+    },
+    /// An [`OperatorCommand::ImportPeople`] was done: the addresses now on
+    /// the wait list, the people declared owners, and one invitation per
+    /// other person.
+    PeopleImported {
+        imported: crate::release_people::Imported,
     },
     /// The invitation an [`OperatorCommand::Invite`] asked for.
     Invited {
@@ -691,9 +708,9 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_thirteen_round_trips_and_pins_its_wire_form;
+        phase protocol_fourteen_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 13);
+            assert_eq!(VERSION, 14);
             let invite = OperatorCommand::Invite {
                 request: "owner".into(),
                 workspace: None,
@@ -739,6 +756,52 @@ mod tests {
                 )
             );
             assert_eq!(OperatorCommand::from_line(&wait.to_line()).unwrap(), wait);
+            let people = crate::release_people::People {
+                release: "v0.1.5".into(),
+                workspace: "Lounge".into(),
+                wait_list: vec![crate::release_people::Waiting {
+                    contact: "Ada@example.org".into(),
+                    language: "de".into(),
+                    added_at_ns: 7,
+                    confirmed: false,
+                    removal_sha256: vec!["ab".repeat(32)],
+                    confirm_sha256: vec!["cd".repeat(32)],
+                }],
+                members: vec![crate::release_people::Member {
+                    root: "ef".repeat(32),
+                    name: "Ada".into(),
+                    email: None,
+                    role: "administrator".into(),
+                }],
+            };
+            let import = OperatorCommand::ImportPeople {
+                people: people.clone(),
+            };
+            assert_eq!(
+                OperatorCommand::from_line(&import.to_line()).unwrap(),
+                import
+            );
+            let imported = OperatorEvent::PeopleImported {
+                imported: crate::release_people::Imported {
+                    waiting: people.wait_list,
+                    invitations: vec![crate::release_people::Invitation {
+                        name: "Grace".into(),
+                        email: Some("grace@example.org".into()),
+                        role: "editor".into(),
+                        link: "https://tilo.example/i/abc#def".into(),
+                        mailed: true,
+                    }],
+                    owners: vec![crate::release_people::Owner {
+                        name: "Ada".into(),
+                        root: "ef".repeat(32),
+                    }],
+                    refused: vec![],
+                },
+            };
+            assert_eq!(
+                OperatorEvent::from_line(&imported.to_line()).unwrap(),
+                imported
+            );
             let unlist = OperatorCommand::Unlist {
                 request: "12".repeat(32),
                 removal_sha256: "ab".repeat(32),

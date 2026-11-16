@@ -465,6 +465,7 @@ impl WaitListDoor {
         let secrets = WaitListSecrets {
             removal: sha256(&removal),
             confirm: self.mail.as_ref().map(|_| sha256(&confirm)),
+            earlier: Vec::new(),
         };
         let answered = workspaces
             .wait(&self.workspace, &email, secrets, language, self.max)

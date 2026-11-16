@@ -35,6 +35,9 @@ pub(super) struct Asked {
     pub role: InviteRole,
     pub invitee_name: Option<String>,
     pub unless_owned: bool,
+    /// The wait-list entry the invitation is issued for, where the person is
+    /// an address the door kept.
+    pub wait_list_entry: Option<[u8; 32]>,
 }
 
 /// Answer `asked`: the invitation's link, that the workspace is owned
@@ -60,6 +63,7 @@ async fn made(
         role,
         invitee_name,
         unless_owned,
+        wait_list_entry,
     } = asked;
     let owner = role == InviteRole::Owner;
     if request.is_empty() || request.len() > 128 {
@@ -106,6 +110,7 @@ async fn made(
                     owner,
                     invitee_name,
                     expires_at_ns,
+                    wait_list_entry,
                 },
             )
             .await

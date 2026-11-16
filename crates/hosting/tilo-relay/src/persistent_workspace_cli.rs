@@ -37,6 +37,7 @@ mod bots;
 mod discord_sign_in;
 mod host_invite;
 mod http;
+mod import_people;
 use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
@@ -184,10 +185,9 @@ pub struct PersistentArgs {
     )]
     pub wait_list_mail: Option<String>,
     /// A UNIX socket the operator asks the running workspace through, one
-    /// [`OperatorCommand::DeclareOwner`] or [`OperatorCommand::Hold`] line per
-    /// connection: a deployment's
-    /// workspace runs in a container, which has no stdin to write to. The
-    /// answer is one [`OperatorEvent`] line on the same connection.
+    /// [`OperatorCommand`] line per connection: a deployment's workspace runs
+    /// in a container, which has no stdin to write to. The answer is one
+    /// [`OperatorEvent`] line on the same connection.
     #[arg(long = "operator-socket", value_name = "PATH")]
     pub operator_socket: Option<PathBuf>,
     /// The workspaces of other people this host holds when the host governing
@@ -662,7 +662,11 @@ async fn answer_wait_list(context: &PersistentWorkspace, ask: WaitListAsk) -> Op
             );
         }
     };
-    let secrets = tilo_relay::workspaces::WaitListSecrets { removal, confirm };
+    let secrets = tilo_relay::workspaces::WaitListSecrets {
+        removal,
+        confirm,
+        earlier: Vec::new(),
+    };
     match context
         .workspaces
         .wait(
@@ -750,7 +754,8 @@ async fn answer_confirm(
 
 /// Where the entry whose removal secret hashes to `removal_sha256` stands.
 async fn answer_standing(
-    context: &PersistentWorkspace,
+    workspaces: &Workspaces,
+    workspace: &str,
     request: String,
     removal_sha256: &str,
 ) -> OperatorEvent {
@@ -760,11 +765,7 @@ async fn answer_standing(
             reason: "the removal digest must be 64 hex characters".into(),
         };
     };
-    match context
-        .workspaces
-        .wait_list_standing(&context.workspace, removal)
-        .await
-    {
+    match workspaces.wait_list_standing(workspace, removal).await {
         Ok(standing) => OperatorEvent::Standing { request, standing },
         Err(error) => OperatorEvent::WaitListFailed {
             request,
@@ -806,7 +807,15 @@ async fn answer_wait_list_command(
         OperatorCommand::Standing {
             request,
             removal_sha256,
-        } => answer_standing(context, request, &removal_sha256).await,
+        } => {
+            answer_standing(
+                &context.workspaces,
+                &context.workspace,
+                request,
+                &removal_sha256,
+            )
+            .await
+        }
         _ => OperatorEvent::WaitListFailed {
             request: String::new(),
             reason: "not a wait-list command".into(),
@@ -1828,10 +1837,29 @@ impl OperatorContext {
                 workspace: workspace.unwrap_or_else(|| self.workspace.clone()),
                 role,
                 invitee_name,
+                // The operator hands out a link; an address it is for is the
+                // workspace's open invitation, not a mailed one.
+                wait_list_entry: None,
                 unless_owned,
             },
         )
         .await
+    }
+
+    /// Answer an [`OperatorCommand::ImportPeople`].
+    async fn import_people(&self, command: OperatorCommand) -> String {
+        let OperatorCommand::ImportPeople { people } = command else {
+            return String::new();
+        };
+        let imported = import_people::import(
+            &self.workspaces,
+            &self.workspace,
+            &self.host_cert,
+            &self.links,
+            people,
+        )
+        .await;
+        OperatorEvent::PeopleImported { imported }.to_line()
     }
 }
 
@@ -1859,6 +1887,22 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
                 .await
             }
             Ok(command @ OperatorCommand::Invite { .. }) => context.invite(command).await,
+            Ok(command @ OperatorCommand::ImportPeople { .. }) => context.import_people(command).await,
+            // A question about an address, and nothing about the address in
+            // its answer: the operator may ask it of a running workspace.
+            Ok(OperatorCommand::Standing {
+                request,
+                removal_sha256,
+            }) => {
+                answer_standing(
+                    &context.workspaces,
+                    &context.workspace,
+                    request,
+                    &removal_sha256,
+                )
+                .await
+                .to_line()
+            }
             Ok(OperatorCommand::Hold { workspace, host }) => {
                 hold(&context.workspaces, &context.host_cert, &workspace, &host).await
             }
@@ -1868,7 +1912,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             Ok(other) => OperatorEvent::OwnerRefused {
                 user_public_key: String::new(),
                 reason: format!(
-                    "the owner socket takes declare_owner, invite and hold, not {}",
+                    "the operator socket takes declare_owner, invite, import_people, standing and hold, not {}",
                     other.to_line().trim()
                 ),
             }
@@ -1969,6 +2013,15 @@ async fn serve_operator(
                 }
                 Some(Ok(command @ OperatorCommand::Invite { .. })) => {
                     println!("{}", OperatorContext::of(context).invite(command).await);
+                }
+                Some(Ok(command @ OperatorCommand::ImportPeople { .. })) => {
+                    // The import asks the door to mail its invitations, which
+                    // this loop does: it runs on a task of its own so it does
+                    // not wait on the loop that answers it.
+                    let context = OperatorContext::of(context);
+                    tokio::spawn(async move {
+                        println!("{}", context.import_people(command).await);
+                    });
                 }
                 Some(Ok(OperatorCommand::Hold { workspace, host })) => {
                     println!(
