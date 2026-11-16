@@ -50,6 +50,7 @@ mod content_link;
 mod content_put;
 pub mod crash_records;
 pub mod downloaded_apps;
+pub mod environment_machines;
 pub mod environment_runs;
 pub mod feedback;
 pub mod host_account;
