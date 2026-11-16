@@ -40,7 +40,7 @@ use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, pending,
 };
-use tilo_actions::{ActionOutput, EffectReceiptStatus, InvocationUpdate};
+use tilo_actions::{ActionOutput, EffectReceiptStatus, InvocationId, InvocationUpdate};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 use ui::history_source::words::HistoryWords;
@@ -72,6 +72,8 @@ struct Share {
     /// Who changed the record after its last change still in effect, while
     /// that change of theirs is in effect too.
     over: Option<String>,
+    /// Its changes, by their short hashes as History lists them.
+    made: Vec<String>,
 }
 
 /// What one record's history says of each run that changed it, by step, as
@@ -252,6 +254,9 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
             continue;
         };
         share.changes = share.changes.saturating_add(1);
+        if let Some(change) = text(entry, "change") {
+            share.made.push(change.to_owned());
+        }
         share.first_ms = share.first_ms.min(time);
         share.last_ms = share.last_ms.max(time);
         if let Some(title) = step_title(entry) {
@@ -296,6 +301,8 @@ struct Call {
     /// The record it addressed, by its app and its id there; `None` for a
     /// call on no record (the workspace's own actions).
     addressed: Option<RecordKey>,
+    /// The changes it handed to the session: app, record, short hash.
+    written: Vec<(String, String, String)>,
 }
 
 /// The step the changes of `entry`'s call record, and the call as a run
@@ -353,6 +360,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         title: super::said_run_title(&entry.request),
         action,
         addressed,
+        written: entry.written.clone(),
     };
     (step, call)
 }
@@ -538,6 +546,41 @@ fn page(runs: Vec<Run>, query: &RunsQuery, pending: bool) -> Runs {
     }
 }
 
+/// Join each call to the step its own changes record, where the record it
+/// addressed holds a change it handed to the session: what the change
+/// records is the truth of which run it is part of. A call whose caller said
+/// no step (a person acting as themselves, whose changes the app stamps with
+/// a step of its own) has no other way to its changes, and would be listed
+/// beside them as a run of its own. A call that wrote nothing there keeps
+/// the step it computed.
+fn join_written(recorded: &BTreeMap<String, Vec<Share>>, calls: &mut [(Option<String>, Call)]) {
+    let mut by_change: HashMap<(&str, &str, &str), &str> = HashMap::new();
+    for (step, shares) in recorded {
+        for share in shares {
+            for change in &share.made {
+                by_change.insert((&share.app_id, &share.record, change), step);
+            }
+        }
+    }
+    for (step, call) in calls {
+        let Some((app, record)) = &call.addressed else {
+            continue;
+        };
+        let found = call
+            .written
+            .iter()
+            .filter(|(written_app, written_record, _)| {
+                written_app == app && written_record == record
+            })
+            .find_map(|(_, _, change)| {
+                by_change.get(&(app.as_str(), record.as_str(), change.as_str()))
+            });
+        if let Some(found) = found {
+            *step = Some((*found).to_owned());
+        }
+    }
+}
+
 impl WorkspaceActions {
     /// Answer `request`, a listing of `workspace_id`'s runs, on the service's
     /// thread, which checks that the workspace admits `caller`.
@@ -594,6 +637,28 @@ impl WorkspaceActions {
 }
 
 impl Worker {
+    /// Note in the ledger the changes `invocation` handed to the session, as
+    /// it ran, before they are saved and let go of ([`join_written`]).
+    pub(super) fn note_written(&self, invocation: InvocationId) {
+        let written: Vec<(String, String, String)> =
+            self.handed
+                .values()
+                .flatten()
+                .flat_map(|write| {
+                    let route = write.route();
+                    write.changes().iter().map(move |change| {
+                        (route.app_id.clone(), route.record.clone(), change.clone())
+                    })
+                })
+                .collect();
+        if written.is_empty() {
+            return;
+        }
+        if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
+            entry.written = written;
+        }
+    }
+
     /// The page of `workspace_id`'s runs `query` asks for, for `caller`, whom
     /// the workspace must admit.
     pub(super) fn runs(
@@ -642,6 +707,7 @@ impl Worker {
                 })
                 .collect::<Vec<_>>()
         };
+        join_written(&recorded, &mut calls);
         // Of it all, what the caller may read now, each record asked once.
         let owner = self.serves_as_owner(caller);
         let who = if owner { None } else { self.bounded(caller) };
@@ -718,6 +784,7 @@ mod tests {
             title: None,
             action: "terminal#run".into(),
             addressed: None,
+            written: Vec::new(),
         }
     }
 
@@ -781,7 +848,32 @@ mod tests {
             assert_eq!(bare[0].1.summary, None, "an entry that says not what it did says nothing");
         }
 
-        phase a_run_taken_back_is_undone_and_stands_under_nothing;
+        phase a_call_with_no_step_of_its_own_joins_the_step_its_change_records;
+        {
+            let recorded: BTreeMap<String, Vec<Share>> =
+                shares("so.tilo.notes", "", &[change("c1", Some("s1"), "Ada", 10)])
+                    .into_iter()
+                    .map(|(step, share)| (step, vec![share]))
+                    .collect();
+            let mut person = call("theirs", 9, succeeded(), false);
+            person.addressed = Some(("so.tilo.notes".into(), String::new()));
+            person.written = vec![("so.tilo.notes".into(), String::new(), "c1".into())];
+            let mut elsewhere = call("other", 12, succeeded(), false);
+            elsewhere.addressed = Some(("so.tilo.notes".into(), String::new()));
+            elsewhere.written = vec![("so.tilo.tasks".into(), String::new(), "c1".into())];
+            let mut calls = vec![(None, person), (None, elsewhere)];
+            join_written(&recorded, &mut calls);
+            let runs = listing(recorded, calls);
+            assert_eq!(runs.len(), 2, "one act is one run: {runs:?}");
+            let joined = runs.iter().find(|run| run.id.as_deref() == Some("theirs")).unwrap();
+            assert_eq!(joined.step.as_deref(), Some("s1"));
+            assert_eq!(joined.changes, 1);
+            assert!(joined.recorded && joined.remembered);
+            let apart = runs.iter().find(|run| run.id.as_deref() == Some("other")).unwrap();
+            assert_eq!(apart.step, None, "a change in another record joins nothing: {apart:?}");
+        }
+
+                phase a_run_taken_back_is_undone_and_stands_under_nothing;
         {
             let entries = [
                 undone(change("a1", Some("s1"), "Jane Doe's agent", 10)),

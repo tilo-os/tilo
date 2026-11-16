@@ -84,6 +84,11 @@ impl Written {
         }
     }
 
+    /// The changes it carries, short hashes as History lists them.
+    pub(super) fn changes(&self) -> &[String] {
+        &self.changes
+    }
+
     /// The route the write went to.
     pub(super) fn route(&self) -> DocumentRoute {
         DocumentRoute {

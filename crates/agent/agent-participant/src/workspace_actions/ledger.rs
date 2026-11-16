@@ -40,6 +40,10 @@ pub(super) struct Entry {
     pub(super) started_ms: i64,
     /// When the host first saw it ended ([`Ledger::stamp_ended`]).
     pub(super) ended_ms: Option<i64>,
+    /// The changes it handed to the session, each by its record's app, the
+    /// record's id and the change's short hash as History lists it: what its
+    /// changes are found by where its step is not known ([`super::runs`]).
+    pub(super) written: Vec<(String, String, String)>,
 }
 
 #[derive(Default)]
@@ -89,6 +93,7 @@ impl Ledger {
                 workspace: None,
                 started_ms: now_ms(),
                 ended_ms: None,
+                written: Vec::new(),
             },
         );
         true

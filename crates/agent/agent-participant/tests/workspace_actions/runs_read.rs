@@ -402,3 +402,123 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         "the host's own person still lists them"
     );
 }
+
+/// The runs of `listed` in `app`'s records, once `caller`'s listing holds a
+/// record of it: what the host lists once it read the record's history.
+async fn listed_with_record(
+    actions: &tilo_agent_participant::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    app: &str,
+) -> serde_json::Value {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let listed = runs(actions, workspace, caller);
+        if listed
+            .to_string()
+            .contains(&format!("\"app_id\":\"{app}\""))
+        {
+            return listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the record's run is listed: {listed}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_own_change_is_one_run_also_after_a_restart() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let notes = browser.create(NOTES);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let notes_provider = record_provider(&notes);
+    let reading = Arc::new(Reading {
+        member: HostDevice {
+            endpoint: tilo_agent_participant::HostEndpoint::iroh(
+                hosted.relay.node_addr(),
+                host.cert.clone(),
+            ),
+            key: host.key.clone(),
+            runtime: tokio::runtime::Handle::current(),
+        },
+        workspaces: hosted.relay.workspaces().unwrap().clone(),
+        person: guest_device.cert.user_public_key,
+        device: guest_device.cert.device_public_key,
+        unreadable: Mutex::default(),
+        bound: Mutex::default(),
+        asked: Mutex::default(),
+    });
+    let serving = || {
+        let actions =
+            tilo_agent_participant::WorkspaceActions::new(Arc::new(crate::common::catalogue));
+        actions.attach(reading.clone()).unwrap();
+        actions
+    };
+    let actions = serving();
+    let workspace = browser.workspace;
+    // A person acting as themselves: no key, no agent, no step of their own.
+    let person = Caller::authenticated(
+        guest_device.cert.user_public_key,
+        guest_device.cert.device_public_key,
+    )
+    .in_workspace(WORKSPACE);
+    let owner = Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        browser_device.cert.device_public_key,
+    );
+
+    let noted = receipt(
+        &actions,
+        workspace,
+        &person,
+        &request(
+            &notes_provider,
+            ActionAddress::new("notes.notebook", "new-note"),
+            json(serde_json::json!({"title": "Grace's own note"})),
+        ),
+    );
+    assert!(
+        matches!(
+            noted,
+            ReceiptStatus::Completed { .. } | ReceiptStatus::Accepted
+        ),
+        "{noted:?}"
+    );
+
+    // Every reader of the notes lists the one act as one run, its call and
+    // its change together.
+    for reader in [&person, &owner] {
+        let listed = listed_with_record(&actions, workspace, reader, NOTES).await;
+        assert_eq!(listed["total"], 1, "one act is one run: {listed}");
+        let run = &listed["runs"][0];
+        assert_eq!(run["by"]["kind"], "person", "{run}");
+        assert_eq!(
+            (&run["recorded"], &run["remembered"]),
+            (&serde_json::json!(true), &serde_json::json!(true)),
+            "{run}"
+        );
+        assert!(run["id"].is_string() && run["step"].is_string(), "{run}");
+    }
+
+    // After a restart the host remembers no call: the record alone lists it,
+    // still once.
+    actions.shutdown();
+    drop(actions);
+    let restarted = serving();
+    for reader in [&person, &owner] {
+        let listed = listed_with_record(&restarted, workspace, reader, NOTES).await;
+        assert_eq!(listed["total"], 1, "{listed}");
+        let run = &listed["runs"][0];
+        assert_eq!(run["remembered"], false, "{run}");
+        assert!(run.get("id").is_none(), "{run}");
+    }
+}

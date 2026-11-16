@@ -2213,6 +2213,7 @@ impl Worker {
             return receipt;
         }
         let performed = self.perform(workspace_id, &caller, &request);
+        self.note_written(invocation);
         let (outcome, unsaved) = self.saved(workspace_id, performed);
         let about = self
             .ledger()
