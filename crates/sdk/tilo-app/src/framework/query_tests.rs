@@ -25,7 +25,7 @@ fn target() -> RemoteActionTarget {
     }
 }
 
-/// What the view's api sends next.
+/// What the view's API sends next.
 fn sent(opener: &Opener) -> Vec<RemoteActionMessage> {
     opener
         .api()

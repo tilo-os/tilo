@@ -9363,19 +9363,19 @@ mod tests {
                 let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
                 b.set_window_controls(true);
                 lay_out_at_width_with(&mut b, width, &theme);
-                let door = b
+                let api = b
                     .bar_layout()
                     .controls
                     .into_iter()
                     .find(|control| control.slot == "new-tab")
-                    .expect("a bar with area shows its door");
+                    .expect("a bar with area shows its api");
                 assert_eq!(
-                    (door.rect[2], door.rect[3]),
+                    (api.rect[2], api.rect[3]),
                     (NEW_TAB_CHIP_PX, NEW_TAB_CHIP_PX)
                 );
-                assert_eq!((door.name.as_str(), door.words), ("New tab", 0.0));
-                assert!(door.furniture && !door.labelled, "{width} px: {door:?}");
-                let at = crate::kurbo::Point::new(door.rect[0] + 16.0, door.rect[1] + 16.0);
+                assert_eq!((api.name.as_str(), api.words), ("New tab", 0.0));
+                assert!(api.furniture && !api.labelled, "{width} px: {api:?}");
+                let at = crate::kurbo::Point::new(api.rect[0] + 16.0, api.rect[1] + 16.0);
                 assert!(
                     b.tip_at(at).map(|(_, tip)| tip).as_deref() == Some("New tab"),
                     "{width} px: the glyph names itself under the pointer"

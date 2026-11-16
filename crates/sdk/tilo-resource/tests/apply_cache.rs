@@ -163,7 +163,7 @@ impl Checklist {
     }
 }
 
-/// The door publishes from the view state the replica keeps current; it
+/// The API publishes from the view state the replica keeps current; it
 /// follows the document here, as an open window does between actions, so
 /// what [`counted`] then sees is the action's own reading and writing.
 fn follow(replica: &mut Replica<Checklist>) {

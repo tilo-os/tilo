@@ -18,7 +18,7 @@ use ui_core::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};
 use ui_core::widget::{Edits, TaffyTreeExt as _, Widget};
 
-/// Who invoked an effect: the invocation, and the invoker the api admitted for it. `None` is the
+/// Who invoked an effect: the invocation, and the invoker the API admitted for it. `None` is the
 /// person at this window acting for themselves; an agent's task is its delegate with the person
 /// it acts for.
 #[derive(Clone, Debug)]

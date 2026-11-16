@@ -60,7 +60,7 @@ struct Shared<P: Resource> {
     live: Live<P>,
     /// The same state, for controls bound to it.
     state: LocalState<Rc<P::State>>,
-    /// The record as views and the api edit it.
+    /// The record as views and the API edit it.
     held: RefCell<Option<Rc<Held<P>>>>,
 }
 
@@ -184,7 +184,7 @@ impl<P: Resource> PersonRecord<P> {
     ///
     /// This, with [`Self::invoke_as`], is how the app applies what its
     /// resource keeps for itself (`#[action(by_app)]`): such an action is
-    /// declared to no caller, and the record's api refuses it.
+    /// declared to no caller, and the record's API refuses it.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
@@ -294,7 +294,7 @@ pub(crate) struct PersonState {
 struct Published {
     id: String,
     label: String,
-    /// Its field edits and verbs, as the api reaches them.
+    /// Its field edits and verbs, as the API reaches them.
     api: Rc<dyn RecordApi>,
     /// Take back (`true`) or redo (`false`) one of the person's steps, for
     /// the invoker named. Whether there was one.
@@ -304,7 +304,7 @@ struct Published {
 /// Take back (`true`) or redo (`false`) one step for the invoker named.
 type Step = Box<dyn Fn(bool, &str) -> bool>;
 
-/// A person record just opened as its type: its shared state, its api and
+/// A person record just opened as its type: its shared state, its API and
 /// its undo and redo.
 struct Opened {
     shared: Rc<dyn Any>,
@@ -741,7 +741,7 @@ impl PersonState {
         self.unavailable.borrow().values().cloned().collect()
     }
 
-    /// Keep the record opened under `key`, publishing its api and its undo
+    /// Keep the record opened under `key`, publishing its API and its undo
     /// and redo.
     fn publish(&self, key: OpenKey, open: Rc<dyn Any>, published: Published) {
         self.published.borrow_mut().push(published);
@@ -773,7 +773,7 @@ impl PersonState {
             .collect()
     }
 
-    /// The open records of the person's own, as the api changes them.
+    /// The open records of the person's own, as the API changes them.
     pub(crate) fn apis(&self) -> Vec<Rc<dyn RecordApi>> {
         self.published
             .borrow()
@@ -858,7 +858,7 @@ fn open_record(
         .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
 }
 
-/// The record `shared` as views and the api edit it: read into a state of
+/// The record `shared` as views and the API edit it: read into a state of
 /// its own that follows the record, changed as the person.
 fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);

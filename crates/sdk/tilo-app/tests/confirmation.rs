@@ -3,7 +3,7 @@
 //! A destructive verb of a document is undoable: from whatever path it
 //! comes it applies at once, nobody is asked, and Undo takes it back. Only
 //! what Undo cannot take back is confirmed, from a gesture and through the
-//! door alike (and in the palette's tests).
+//! API alike (and in the palette's tests).
 
 use tilo_app::prelude::*;
 
@@ -16,7 +16,7 @@ pub struct Note {
 pub struct Notes {
     pub notes: Collection<Note>,
     /// How long the notes stay open unattended: any change can weaken the
-    /// person's security, so the door asks, though Undo takes it back.
+    /// person's security, so the API asks, though Undo takes it back.
     #[model(trust = "weakening")]
     pub open_minutes: u32,
 }
@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
     }
 
     phase an_irreversible_destructive_verb_through_the_door_asks_first;
-    // What Undo cannot take back is asked first through the door: the
+    // What Undo cannot take back is asked first through the API: the
     // person's press of a control for an irreversible destructive verb.
     {
         let mut app = TestApp::<NotesApp>::new().unwrap();
@@ -329,7 +329,7 @@ fn a_typed_undoable_removal_applied_now_applies_at_once() {
     applies_now_without_asking(Now::Typed);
 }
 
-/// The queued door applies a removal by field edit at once too: Undo takes
+/// The queued API applies a removal by field edit at once too: Undo takes
 /// it back.
 #[test]
 fn a_queued_undoable_removal_applies_at_once() {
@@ -356,7 +356,7 @@ tilo_test_env::scenario! {
 
     phase an_irreversible_destructive_verb_of_a_gesture_asks_first;
     // What Undo cannot take back is asked first from the person's own gesture
-    // too, as through the door: the gesture confirms only what has a way back.
+    // too, as through the API: the gesture confirms only what has a way back.
     {
         asks_before_forgetting(Now::IrreversibleGesture);
     }

@@ -316,7 +316,7 @@ fn mounted_administration_is_scoped_to_each_host_not_an_ambient_default() {
         config(&mut second).profiles[0].protocol
     );
     let id = config(&mut first).profiles[0].id.clone();
-    // Explicit key arguments use the same secret-marked action door as masked input.
+    // Explicit key arguments use the same secret-marked action API as masked input.
     invoke(
         &mut first,
         ProviderEffect::SaveProviderKey {

@@ -126,7 +126,7 @@ impl People {
 
     /// Who the id an action recorded names, however the record spells it: a
     /// person as an assignee holds them (`person:<id>`), an agent as the
-    /// action api names it (`agent:<id>`), someone outside the workspace by
+    /// action API names it (`agent:<id>`), someone outside the workspace by
     /// their name (`outside:<name>`), or the bare id. The name is the
     /// workspace's, else the id without its prefix: a view never shows a
     /// record's spelling of a participant.

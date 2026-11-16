@@ -1,4 +1,4 @@
-//! Retained results must come from the real framework semantic api.
+//! Retained results must come from the real framework semantic API.
 use crate::framework::{ResourceApp, ViewCx, testing::TestApp};
 use crate::prelude::*;
 use serde_json::{Map, Value, json};

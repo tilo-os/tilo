@@ -311,14 +311,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// the shared resource. Use this with [`Self::switch`] for an owner-only
     /// pane, or with a bound widget for a permission-specific label. Changes
     /// follow the host even when the document and write access stay unchanged.
-    /// This controls presentation; the action api remains the authority.
+    /// This controls presentation; the action API remains the authority.
     pub fn permission_state(&self, need: tilo_actions::ActionNeed) -> LocalState<bool> {
         self.dispatch.permission_state(need)
     }
 
     /// This participant's standing in the workspace as the host keeps it when
     /// called (who they are, the workspace's policy, what bounds them), for a
-    /// runtime that decides its own invocations by the policy the api
+    /// runtime that decides its own invocations by the policy the API
     /// decides by. `None` outside a host.
     pub fn standing(&self) -> impl Fn() -> Option<ui_core::permissions::Standing> + 'static {
         self.dispatch.standing_source()
@@ -894,7 +894,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.effects.window_jobs::<W>(self.alive.clone())
     }
 
-    /// A button that invokes one effect, through the same api (and the
+    /// A button that invokes one effect, through the same API (and the
     /// same confirmation, for a destructive one) as the palette.
     pub fn effect_button<E: Effect>(&self, label: impl Into<LabelKey>, effect: &E) -> Button {
         let id = self.control_id(effect.id());

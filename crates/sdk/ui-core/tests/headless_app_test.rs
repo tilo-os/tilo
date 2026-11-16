@@ -2,10 +2,10 @@
 //! resources it publishes and the actions on them, and then reads the state
 //! behind them — not the widget that drew them.
 //!
-//! `HeadlessApp` mounts a component in one frame and opens that door on it.
+//! `HeadlessApp` mounts a component in one frame and opens that API on it.
 //! What the cases below assert is what a collaborator, a script and an agent
 //! get: the resource ids they address, the action's own answer, and the
-//! door's refusal — the wrong address, a parameter the contract did not
+//! API's refusal — the wrong address, a parameter the contract did not
 //! declare, a question the caller skipped.
 
 use automerge::ReadDoc as _;

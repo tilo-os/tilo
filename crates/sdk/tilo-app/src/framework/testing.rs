@@ -33,7 +33,7 @@ pub use ui_core::testing::{hang_bound, hang_deadline, wait_for, wait_until};
 #[cfg(feature = "test-support")]
 pub mod perf;
 
-/// Whether every published action is reachable through the api.
+/// Whether every published action is reachable through the API.
 #[cfg(feature = "test-support")]
 mod reach;
 #[cfg(feature = "test-support")]

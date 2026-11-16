@@ -10,7 +10,7 @@ use super::{SearchRow, scope_contains};
 
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
-/// goes through the same door, permissions and history as the palette.
+/// goes through the same API, permissions and history as the palette.
 ///
 /// How a hit reads is the entry's too: the result group it is listed under
 /// (the resource's label unless `group` names another, such as "Timeline

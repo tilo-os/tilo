@@ -1,6 +1,6 @@
 //! An effect that edits its record answers its caller once the edits it
-//! submitted landed: they go through the door like any other submission,
-//! checked again, and the effect replies from what the door answered.
+//! submitted landed: they go through the API like any other submission,
+//! checked again, and the effect replies from what the API answered.
 
 use tilo_app::framework::{EffectCx, Effected};
 use tilo_app::prelude::*;

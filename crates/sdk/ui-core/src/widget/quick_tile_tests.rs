@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
 
         // Narrow, and sharing its row: the state line breaks, and the tile is
         // as tall as the two lines it now draws.
-        let corridor = "The network at the far end of the corridor, by the kitchen door";
+        let corridor = "The network at the far end of the corridor, by the kitchen api";
         let mut whole = wifi().detail(corridor);
         lay_out(&mut whole, &theme, 600.0);
         assert_eq!(whole.get_rect().height(), metrics.height_one);

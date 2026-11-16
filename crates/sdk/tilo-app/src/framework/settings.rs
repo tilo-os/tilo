@@ -125,7 +125,7 @@ pub(crate) struct ViewStorage {
     sections: RefCell<HashMap<&'static str, Rc<SectionApi>>>,
     /// Those a view part edits through its type, by type.
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
-    /// Those sections, as the api reaches them.
+    /// Those sections, as the API reaches them.
     section_apis: RefCell<Vec<Rc<dyn RecordApi>>>,
     /// The records another provider keeps, by id, with that provider
     /// ([`Records::kept_by`](super::Records::kept_by)): views show them and

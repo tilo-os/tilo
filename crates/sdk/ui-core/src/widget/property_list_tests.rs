@@ -98,7 +98,7 @@ tilo_test_env::scenario! {
                             .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
                             && resource.label == label
                     })
-                    .expect("the actual property action is published through the resource door");
+                    .expect("the actual property action is published through the resource api");
                 driver
                     .invoke_action(
                         &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),

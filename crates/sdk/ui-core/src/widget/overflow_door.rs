@@ -52,8 +52,8 @@ pub(crate) fn give_way(
 }
 
 /// How many of a row's items, `widths` wide in the row's order with `gap` between them, stand
-/// in `width` beside an API `API` wide ([`give_way`]); the rest are behind the API, in the
-/// same order.
+/// in `width` beside an overflow button `button` wide ([`give_way`]); the rest are behind the
+/// button, in the same order.
 #[must_use]
 pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f64) -> usize {
     let widths: Vec<f64> = widths.into_iter().collect();

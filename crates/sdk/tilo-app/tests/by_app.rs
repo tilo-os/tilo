@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 //! What an app keeps for itself in a record beside its own
 //! (`#[action(by_app)]`): its own code applies it, as whoever it names, and
-//! the record's door offers it to nobody and takes it from nobody.
+//! the record's API offers it to nobody and takes it from nobody.
 
 use tilo_app::prelude::*;
 
@@ -81,7 +81,7 @@ fn her_agent() -> tilo_actions::ActionInvoker {
     tilo_actions::ActionInvoker::agent("eve").acting_for(ada())
 }
 
-/// The actions the door offers on the record.
+/// The actions the API offers on the record.
 fn offered(app: &mut TestApp<PlayerApp>) -> Vec<String> {
     app.agent_surface()
         .as_array()
@@ -111,7 +111,7 @@ fn the_door_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
     );
 
     // By its name, as a value of `apply` and as a member of a group, from
-    // the person at the door and from an agent admitted for them.
+    // the person at the API and from an agent admitted for them.
     let forged = Played::NOTE.with("forged").build(0).unwrap();
     let value = tilo_app::tilo_resource::Invoke::<Played>::apply(&forged).unwrap();
     let value = serde_json::Value::Object(value.arguments);
@@ -135,7 +135,7 @@ fn the_door_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
     }
     assert!(played.with(|state| state.noted.is_empty() && state.starred.is_empty()));
 
-    // The same door takes what the record declares, from both.
+    // The same API takes what the record declares, from both.
     app.call_on(RECORD, "star", serde_json::json!({"video": "by ada"}))
         .unwrap();
     app.call_by(

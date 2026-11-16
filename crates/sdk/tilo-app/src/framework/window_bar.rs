@@ -9,7 +9,7 @@
 //!
 //! A slot is a *binding*, never an id the app builds and later takes apart,
 //! and never a callback: what pressing it does is a change the framework
-//! makes itself, through the same api an assistive technology, a script or
+//! makes itself, through the same API an assistive technology, a script or
 //! an agent uses.
 //!
 //! - an **action** ([`WindowBar::action`]) submits a verb of the record, with
@@ -88,7 +88,7 @@ const MAX_ENTRIES: usize = 128;
 /// What a slot of the bar does when pressed: a verb of the record with its
 /// arguments, a field edit, an effect the app answers. A binding is submitted
 /// through the window's dispatcher, never run by the app's own code, so the
-/// window's bar and an assistive technology take the same api.
+/// window's bar and an assistive technology take the same API.
 pub trait Binding<R: Resource> {
     /// What a press submits; `None` where the app names something the record
     /// does not publish (a control the framework reports unbound).

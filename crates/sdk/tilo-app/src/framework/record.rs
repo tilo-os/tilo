@@ -8,7 +8,7 @@
 //! and live rows with the record's actions
 //! ([`SurfaceCx::record_actions`](super::SurfaceCx::record_actions)).
 //! It is published beside the app's resource with its field edits and verbs,
-//! so the palette, agents and scripts change it through the same api. Only
+//! so the palette, agents and scripts change it through the same API. Only
 //! the person whose record it is changes it (or software acting for them),
 //! whatever their role in the workspace the app shows, and every change is
 //! recorded in the record's own history: a person record's document history,
@@ -269,7 +269,7 @@ pub(crate) trait RecordApi {
         self.apply_answering(action, invoker)
     }
 
-    /// What a read of this api's record answers, asked as `payload`: a
+    /// What a read of this API's record answers, asked as `payload`: a
     /// record reads what it holds ([`tilo_resource::read::TYPE`]), a chain
     /// of parts what its parts hold ([`super::chain::CHAIN_READ_TYPE`]). A
     /// record that answers no reads says so.
@@ -395,11 +395,11 @@ pub(crate) mod sealed {
     pub trait Hold<P: Resource> {
         /// The record as a view part over it edits it through its type.
         fn held(&self, storage: Storage<'_>) -> Option<Rc<super::Held<P>>>;
-        /// The record as the api publishes and changes it.
+        /// The record as the API publishes and changes it.
         fn api(&self, storage: Storage<'_>) -> Option<Api>;
     }
 
-    /// A held record as the api publishes and changes it.
+    /// A held record as the API publishes and changes it.
     pub struct Api(pub(crate) Rc<dyn super::RecordApi>);
 
     /// The window's storage, as a record is held in it.
@@ -420,7 +420,7 @@ pub struct Records<'a> {
     /// The app's own record, as `Live` of its resource: what the actions of
     /// a chain kept beside it read where they are invoked.
     base: Option<Rc<dyn std::any::Any>>,
-    /// The api of the app's own record, as the `Dispatcher` of its
+    /// The API of the app's own record, as the `Dispatcher` of its
     /// resource: what a container of children it lists writes it through.
     dispatch: Option<Rc<dyn std::any::Any>>,
     /// The resource types of the chains declared, while declaring.
@@ -776,7 +776,7 @@ impl<R: Resource> SurfaceCx<R> {
     }
 }
 
-/// `parent`'s api, submitting to the held record `held`: what applies now
+/// `parent`'s API, submitting to the held record `held`: what applies now
 /// applies to it as the person.
 fn record_dispatch<R: Resource, P: Resource>(
     parent: &Dispatcher<R>,

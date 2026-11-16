@@ -65,7 +65,7 @@ icon button with `Icon::History`, named and tooltipped "History" with its
 shortcut (`HostShortcut::History`), in the window's top-trailing corner after
 the column's actions and the inspector toggle. While History shows it reads
 as on (the selection lift) and closes History; the History pane or bar shows
-the mode itself. It is the same door as the shortcut, the palette and agents.
+the mode itself. It is the same API as the shortcut, the palette and agents.
 An app never adds a History button, text or glyph, of its own. A host whose
 root has no header slot keeps the shortcut, palette and resource action;
 it never inserts a second toolbar above the app. Where the
@@ -382,7 +382,7 @@ answer:
   in place, hands over what is typed as it changes (`""` when the search
   closes), and shows the count the view kept, which is the count a
   `Filterable` list reports. The query lives in the app's resource, written
-  through the same door as every other edit: the search writes no state of
+  through the same API as every other edit: the search writes no state of
   its own, and the view draws no field.
 - **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
   to the first row whose name begins with what was typed; a `VirtualList`
@@ -1898,7 +1898,7 @@ of exactly three faces:
 - **A preview is a person's choice, not a hidden mode.** If a flow offers a
   preview, it is an apply/discard diff the person selected. It is never a mode
   in which "Apply" silently does nothing.
-- **Draw through `Door::face`.** `Door::control()` is the shorthand for the
+- **Draw through `Api::face`.** `Api::control()` is the shorthand for the
   granted face only; the grantable and unavailable faces need their own grant
   step or sentence.
 

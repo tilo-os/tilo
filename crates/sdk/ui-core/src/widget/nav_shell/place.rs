@@ -218,15 +218,15 @@ fn place_header(
         }
     };
     let more = index_of(Part::More(column));
-    let door = more.filter(|_| !inputs.actions_listed);
-    let door_w = match door {
+    let more_control = more.filter(|_| !inputs.actions_listed);
+    let more_w = match more_control {
         Some(index) => measure(ctx, index, None)?.0,
         None => 0.0,
     };
     let trailing = |widths: &[f64], shown: usize| -> f64 {
         let mut width = run(widths.get(..shown).unwrap_or(&[]));
         if shown < items.len() {
-            width += if shown > 0 { gap + door_w } else { door_w };
+            width += if shown > 0 { gap + more_w } else { more_w };
         }
         width
     };
@@ -302,7 +302,7 @@ fn place_header(
         // The toolkit's one overflow rule: how many of the row's controls fit
         // beside the API's own button. What does not fit is named in the
         // menu, never dropped from the row.
-        let fits = crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + door_w);
+        let fits = crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
         (true, fits.min(kept).max(must))
     };
     fit.compact = use_compact;
@@ -311,7 +311,7 @@ fn place_header(
     let primary = fit.primary;
     let widths = if use_compact { &compact } else { &full };
     let overflow = shown < items.len();
-    let more_size = match (overflow, door) {
+    let more_size = match (overflow, more_control) {
         (true, Some(index)) => Some((index, measure(ctx, index, None)?)),
         _ => None,
     };

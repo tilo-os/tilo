@@ -2471,7 +2471,7 @@ impl Widget for Button {
     }
 
     /// The solver measured the face it asked for, whether or not this frame
-    /// draws the control: a shut overflow door's button finds no `mark_drawn`.
+    /// draws the control: a shut overflow API's button finds no `mark_drawn`.
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
     }

@@ -2129,7 +2129,7 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
             .is_empty()
     );
 
-    // What the door would refuse is not offered: Write actions leave a viewer's listing.
+    // What the API would refuse is not offered: Write actions leave a viewer's listing.
     let viewer = driver(22, Role::Viewer);
     let exact = viewer.bound_resources(Some("probe:shared")).unwrap();
     let offered = actions(&exact);

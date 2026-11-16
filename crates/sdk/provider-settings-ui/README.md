@@ -10,7 +10,7 @@ administration grant. No model-selection capability is required.
 
 `ProviderPanel<H>` owns the asynchronous controller, authoritative snapshot,
 credential statuses, private input buffers, controls and published provider/model
-rows. `PanelBindings` adapts those controls to the host's real action door.
+rows. `PanelBindings` adapts those controls to the host's real action API.
 Personal Settings retypes bindings and effects without changing its existing
 action ids or parameters; it retains local model lifecycle, hardware controls and
 the explicitly labelled offline metadata persistence adapter. The standalone app

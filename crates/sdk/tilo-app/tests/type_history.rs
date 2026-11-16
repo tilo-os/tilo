@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! What History answers for one version, per resource type, through the read
-//! door every app publishes: the type's own adapter, exactly as it answers the
+//! API every app publishes: the type's own adapter, exactly as it answers the
 //! live record, and the three distinct refusals — unsupported, unavailable,
 //! incompatible — never a silent empty.
 //!
@@ -70,7 +70,7 @@ impl ResourceApp for BlobApp {
     }
 }
 
-/// The read door's answer for a version, through the app's own verbs.
+/// The read API's answer for a version, through the app's own verbs.
 fn read_at<A: ResourceApp>(app: &mut TestApp<A>, version: &str) -> Result<Value, String> {
     app.call("read", json!({ "version": version }))
         .map(|output| output.unwrap())
@@ -220,7 +220,7 @@ tilo_test_env::scenario! {
 
     phase the_same_type_surface_answers_for_every_app;
     {
-        // Both apps go through one door: the read payload names a version, and
+        // Both apps go through one API: the read payload names a version, and
         // what comes back is the type's own answer, not the app's.
         let mut board = TestApp::<BoardApp>::new().unwrap();
         board.call("rename", json!({"title": "text"})).unwrap();

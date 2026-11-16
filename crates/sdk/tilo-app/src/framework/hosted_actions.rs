@@ -1,4 +1,4 @@
-//! Actions a host publishes on the api and runs on its own thread.
+//! Actions a host publishes on the API and runs on its own thread.
 //!
 //! A [`ResourceApp`](super::ResourceApp) declares its actions on its resource
 //! and runs them in its views. A host whose actions act on state it keeps
@@ -9,7 +9,7 @@
 //! the invocations from there on its own loop, where its state is not
 //! borrowed, runs them, and answers each through the link; the app reports
 //! the answer to whoever invoked it. So the host's actions reach people,
-//! scripts, agents and other devices through the same api, broker and
+//! scripts, agents and other devices through the same API, broker and
 //! policy as any app's.
 
 use std::cell::{Cell, RefCell};
@@ -27,13 +27,13 @@ use ui_core::widget::{
     AppKind, AppModel, AppWidget, Edits, IconDescriptor, ModelPath, TaffyTreeExt as _, Widget,
 };
 
-/// One invocation the api admitted, for the host to run.
+/// One invocation the API admitted, for the host to run.
 #[derive(Debug)]
 pub struct HostedInvocation {
     pub invocation: InvocationId,
     /// What the action's spec encoded from the caller's arguments.
     pub payload: Vec<u8>,
-    /// Who invoked it, as the api admitted them; `None` is the person at
+    /// Who invoked it, as the API admitted them; `None` is the person at
     /// this device acting for themselves.
     pub invoker: Option<ActionInvoker>,
 }

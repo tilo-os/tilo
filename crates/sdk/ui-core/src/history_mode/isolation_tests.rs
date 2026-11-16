@@ -371,7 +371,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     assert_eq!(
         starts.get(),
         1,
-        "real local host door admitted the first effect"
+        "real local host api admitted the first effect"
     );
     emitter.borrow_mut().emit(()).unwrap();
     driver.click_named("history-open").unwrap();

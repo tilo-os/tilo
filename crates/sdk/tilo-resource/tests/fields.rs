@@ -664,7 +664,7 @@ tilo_test_env::scenario! {
     }
 
     phase any_door_reads_a_field_edit_s_confirmation_from_the_published_contract;
-    // A door without the app's code — the broker, a relay — decides from the
+    // An action API without the app's code — the broker, a relay — decides from the
     // published field edit alone, and as the app does: the record's edits are
     // undoable, so none asks, whatever it removes.
     {
@@ -674,7 +674,7 @@ tilo_test_env::scenario! {
         let spec = field_edit(&published);
         let paths = Board::paths();
         let note = Id::from_raw("n");
-        let door = |edit: &dyn erased_edit::Encode| {
+        let api = |edit: &dyn erased_edit::Encode| {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -682,10 +682,10 @@ tilo_test_env::scenario! {
             );
             spec.contract.confirmation_for_argument(Some(&argument))
         };
-        assert_eq!(door(&paths.notes.remove(&note)), ConfirmationPolicy::None);
-        assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
+        assert_eq!(api(&paths.notes.remove(&note)), ConfirmationPolicy::None);
+        assert_eq!(api(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
         assert_eq!(
-            door(&paths.title.set("Plan".to_owned())),
+            api(&paths.title.set("Plan".to_owned())),
             ConfirmationPolicy::None
         );
         assert_eq!(
@@ -696,7 +696,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged;
-    // A field's trust decides its every edit, in the app and at any door that
+    // A field's trust decides its every edit, in the app and at any API that
     // reads only the published contract: a weakening one asks and is
     // privileged, a sensitive one asks, an ordinary one neither.
     {
@@ -724,7 +724,7 @@ tilo_test_env::scenario! {
 
         let published = lock.published().unwrap();
         let spec = field_edit(&published);
-        let door = |edit: &dyn erased_edit::Encode| {
+        let api = |edit: &dyn erased_edit::Encode| {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -732,13 +732,13 @@ tilo_test_env::scenario! {
             );
             spec.contract.confirmation_for_argument(Some(&argument))
         };
-        assert_eq!(door(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
+        assert_eq!(api(&paths.minutes.set(5)), ConfirmationPolicy::Confirm);
         assert_eq!(
-            door(&paths.shown_name.set(String::new())),
+            api(&paths.shown_name.set(String::new())),
             ConfirmationPolicy::Confirm
         );
         assert_eq!(
-            door(&paths.label.set(String::new())),
+            api(&paths.label.set(String::new())),
             ConfirmationPolicy::None
         );
         let need = |edit: &dyn erased_edit::Encode| {
@@ -811,9 +811,9 @@ tilo_test_env::scenario! {
     }
 
     phase a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root;
-    // A door decides an edit's confirmation from the path as sent: a guarded
+    // An action API decides an edit's confirmation from the path as sent: a guarded
     // field under the record's name is not edited, but sent again from the
-    // root, where the door sees which field it is.
+    // root, where the API sees which field it is.
     {
         let mut lock = Replica::<Lock>::new();
         for field in ["minutes", "shown_name"] {
@@ -835,7 +835,7 @@ tilo_test_env::scenario! {
     phase only_a_change_making_a_field_weaker_asks_and_is_privileged;
     // A field that weakens one way asks, and needs the person's own grant,
     // only for a change that way from what it holds now: in the app and at any
-    // door that reads only the published contract.
+    // API that reads only the published contract.
     {
         use tilo_actions::{ConfirmationPolicy, RiskLevel};
         let paths = Screen::paths();
@@ -880,7 +880,7 @@ tilo_test_env::scenario! {
 
         let published = screen.published().unwrap();
         let spec = field_edit(&published);
-        let door = |edit: &dyn erased_edit::Encode| {
+        let api = |edit: &dyn erased_edit::Encode| {
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -888,25 +888,25 @@ tilo_test_env::scenario! {
             );
             spec.contract.confirmation_for_argument(Some(&argument))
         };
-        assert_eq!(door(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
+        assert_eq!(api(&paths.lock_minutes.set(1)), ConfirmationPolicy::None);
         assert_eq!(
-            door(&paths.lock_minutes.set(30)),
+            api(&paths.lock_minutes.set(30)),
             ConfirmationPolicy::Confirm
         );
         assert_eq!(
-            door(&paths.lock_minutes.set(0)),
+            api(&paths.lock_minutes.set(0)),
             ConfirmationPolicy::Confirm
         );
         assert_eq!(
-            door(&paths.notifications_when_locked.set(true)),
+            api(&paths.notifications_when_locked.set(true)),
             ConfirmationPolicy::Confirm
         );
         assert_eq!(
-            door(&paths.guard.set("strict".to_owned())),
+            api(&paths.guard.set("strict".to_owned())),
             ConfirmationPolicy::None
         );
         assert_eq!(
-            door(&paths.guard.set("normal".to_owned())),
+            api(&paths.guard.set("normal".to_owned())),
             ConfirmationPolicy::Confirm
         );
 

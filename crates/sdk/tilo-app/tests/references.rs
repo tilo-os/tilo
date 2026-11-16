@@ -2,7 +2,7 @@
 
 //! A reference shows as a chip that opens it where it lives: one action,
 //! the resource's `open` in the app that keeps it, sent through the session's
-//! action door and admitted there like any other.
+//! action API and admitted there like any other.
 
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +30,7 @@ fn issue() -> ResourceRef {
     ResourceRef::whole(
         "tasks.tracker.issues",
         "tasks.tracker/issues/a",
-        "#12 Fix the door",
+        "#12 Fix the API",
     )
 }
 
@@ -46,15 +46,15 @@ impl ResourceApp for NotesApp {
     }
 }
 
-/// The session's door: records what it is asked and refuses with
+/// The session's API: records what it is asked and refuses with
 /// `refusal`, else opens.
 #[derive(Default)]
-struct Door {
+struct Api {
     refusal: Option<ActionHostError>,
     asked: Mutex<Vec<InvokeRequest>>,
 }
 
-impl ActionHost for Door {
+impl ActionHost for Api {
     fn query(
         &self,
         _: &Caller,
@@ -94,17 +94,17 @@ impl ActionHost for Door {
     }
 }
 
-fn open_chip(door: &Arc<Door>) -> TestApp<NotesApp> {
+fn open_chip(api: &Arc<Api>) -> TestApp<NotesApp> {
     let mut app = TestApp::<NotesApp>::new().unwrap();
     let chip = app
         .harness()
-        .a11y_node_named("Open #12 Fix the door")
+        .a11y_node_named("Open #12 Fix the API")
         .expect("the reference reads as what it opens");
     app.harness()
         .perform_a11y_action(chip, &A11yAction::Activate)
         .unwrap();
     app.settle();
-    assert_eq!(door.asked.lock().unwrap().len(), 1, "one open per press");
+    assert_eq!(api.asked.lock().unwrap().len(), 1, "one open per press");
     app
 }
 
@@ -113,10 +113,10 @@ fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_WORKSPACE_ID", WORKSPACE);
 
-    let door = Arc::new(Door::default());
-    let _served = RemoteActions::enter(door.clone(), Caller::local_person("ada"));
-    let mut app = open_chip(&door);
-    let asked = door.asked.lock().unwrap().pop().unwrap();
+    let api = Arc::new(Api::default());
+    let _served = RemoteActions::enter(api.clone(), Caller::local_person("ada"));
+    let mut app = open_chip(&api);
+    let asked = api.asked.lock().unwrap().pop().unwrap();
     assert_eq!(asked.target, issue().open_target(WORKSPACE, TASKS, None));
     assert_eq!(
         tilo_actions::remote::application_provider(&asked.target.provider),
@@ -126,12 +126,12 @@ fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
     assert_eq!(asked.target.address.action, "open");
     assert_eq!(app.refused(), None);
 
-    let door = Arc::new(Door {
+    let api = Arc::new(Api {
         refusal: Some(ActionHostError::NotPermitted),
-        ..Door::default()
+        ..Api::default()
     });
-    let _served = RemoteActions::enter(door.clone(), Caller::local_person("ada"));
-    let mut app = open_chip(&door);
+    let _served = RemoteActions::enter(api.clone(), Caller::local_person("ada"));
+    let mut app = open_chip(&api);
     let refused = app.refused().expect("the refusal is told");
     assert_eq!(refused.action, "open");
     assert_eq!(refused.reason, ActionHostError::NotPermitted.to_string());

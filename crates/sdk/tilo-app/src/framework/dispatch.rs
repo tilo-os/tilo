@@ -59,7 +59,7 @@ pub trait Submit<R: Resource>: Sized {
     /// The public id of the action this submits.
     fn action_id(&self) -> &'static str;
 
-    /// The invocation of the host api this submits.
+    /// The invocation of the host API this submits.
     fn into_invoke(self) -> Result<Invoke<R>, String>;
 
     /// The binding of a button that submits this when pressed, or `None`
@@ -101,7 +101,7 @@ impl<R: Resource> Submit<R> for Edit<R> {
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
-/// Two apis, one path. [`submit`](Self::submit) and [`apply`](Self::apply)
+/// Two APIs, one path. [`submit`](Self::submit) and [`apply`](Self::apply)
 /// queue an invocation the host resolves after the event, exactly as a
 /// control bound to an action would. [`apply_now`](Self::apply_now) applies
 /// one typed action immediately, inside the event or the settle pass
@@ -218,7 +218,7 @@ impl std::ops::DerefMut for DispatchCore {
 }
 
 /// What a dispatcher keeps that does not name the resource's action type:
-/// who edits, the api's queue, permissions, refusals and the undo-step
+/// who edits, the API's queue, permissions, refusals and the undo-step
 /// bookkeeping.
 pub(crate) struct DispatchState {
     app_id: &'static str,
@@ -252,7 +252,7 @@ pub(crate) struct DispatchState {
     /// it on its own ([`Dispatcher::submit_on_its_own`]).
     asking: Rc<Cell<Origin>>,
     /// The references the views opened ([`Dispatcher::open_reference`]),
-    /// on their way through the session's action api.
+    /// on their way through the session's action API.
     pub(crate) opener: super::reference::Opener,
     read_only: LocalState<bool>,
     /// The participant's permissions as the host keeps them, for an action
@@ -264,9 +264,9 @@ pub(crate) struct DispatchState {
     pub(crate) refused: LocalState<Option<Refused>>,
     /// An edit applied now was refused: the views that may have previewed
     /// it are presented the stored state again, as after a refusal at the
-    /// api.
+    /// API.
     represent: Rc<Cell<bool>>,
-    /// The last submission of this view the api applied.
+    /// The last submission of this view the API applied.
     landed: LocalState<Option<Landed>>,
     /// What the views said they did ([`Dispatcher::say_when_kept`]), not yet
     /// handed to the record to hold for the workspace.
@@ -656,7 +656,7 @@ impl DispatchCore {
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
     /// field of the resource, as the person this window is for: the field
-    /// edit `op` through the api, as [`Dispatcher::submit`] submits one,
+    /// edit `op` through the API, as [`Dispatcher::submit`] submits one,
     /// for code that does not know the resource's type (the window's bar).
     pub(crate) fn submit_reaction(
         &self,
@@ -1052,9 +1052,9 @@ impl<R: Resource> Dispatcher<R> {
         Self::new(app_id, R::KIND, false, Some(me))
     }
 
-    /// What a [`detached`](Self::detached) dispatcher handed to the api
+    /// What a [`detached`](Self::detached) dispatcher handed to the API
     /// and nothing took yet — a destructive verb or a removal waiting for
-    /// the person's confirmation — as the actions the api would apply once
+    /// the person's confirmation — as the actions the API would apply once
     /// they agreed. Taking them empties the queue.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_asked(&self) -> Result<Vec<R::Action>, String> {
@@ -1126,7 +1126,7 @@ impl<R: Resource> Dispatcher<R> {
     /// The participant's standing in the workspace as the host keeps it when
     /// called: who they are, the workspace's policy and what bounds them. For a
     /// runtime that decides its own invocations (a tilolang program's) by
-    /// the policy the api decides by. `None` outside a host.
+    /// the policy the API decides by. `None` outside a host.
     pub fn standing_source(&self) -> impl Fn() -> Option<policy::Standing> + 'static {
         let permissions = Rc::clone(&self.core.permissions);
         move || {
@@ -1193,7 +1193,7 @@ impl<R: Resource> Dispatcher<R> {
         self.core.refused.clone()
     }
 
-    /// The last submission of this view the api applied, with what it
+    /// The last submission of this view the API applied, with what it
     /// answered: the ids a "new" verb minted ([`Landed::minted`]), for a
     /// surface that opens what it just created.
     pub fn landed(&self) -> LocalState<Option<Landed>> {
@@ -1221,7 +1221,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)
-    /// through the same api as a button bound to it: permission, the
+    /// through the same API as a button bound to it: permission, the
     /// effect's availability and a destructive effect's confirmation are
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `kind = "read"`.
@@ -1239,7 +1239,7 @@ impl<R: Resource> Dispatcher<R> {
     /// own confirmation, so a surface told `true` performs the effect
     /// itself. The confirmation a destructive declaration asks for stays
     /// with the callers who supply its arguments — the palette, a script,
-    /// an agent — because automation is the same api: under any
+    /// an agent — because automation is the same API: under any
     /// invocation (an invoked action, an effect's handler or completion, a
     /// dispatcher lent to one) this is `false`, and the surface submits
     /// the effect ([`Self::effect`]) for the host to check and confirm as
@@ -1283,7 +1283,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Submit a field edit (`dispatcher.submit(p.favorite.set(true))`) or a
     /// verb (`dispatcher.submit(Snippets::DELETE.with(id))`) through the
-    /// api, after the event, as a control bound to it would.
+    /// API, after the event, as a control bound to it would.
     ///
     /// An effect's invocation ([`Invoke::effect`]) reaches its handler as
     /// [`Self::effect`] does.
@@ -1300,7 +1300,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// [`submit`](Self::submit) what the app does on its own, for nobody's
     /// gesture: a read receipt, keeping a record in step with what is shown.
-    /// It goes through the same api and permissions; a refusal is told in
+    /// It goes through the same API and permissions; a refusal is told in
     /// [`Self::refused`] and logged, but never said over the window as if
     /// the person had pressed something and been refused.
     pub fn submit_on_its_own(&self, submit: impl Submit<R>) {
@@ -1346,7 +1346,7 @@ impl<R: Resource> Dispatcher<R> {
     /// participant who may not make the write is not sent it.
     pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
         // A reaction is decided where the workspace places it, below the
-        // reactions field, as the api decides it: someone who may only
+        // reactions field, as the API decides it: someone who may only
         // comment may react too.
         if invoke.id == tilo_resource::FIELD_EDIT && reacts(&invoke.arguments) {
             return self.core.may_react();
@@ -1356,7 +1356,7 @@ impl<R: Resource> Dispatcher<R> {
                 Ok(action) => self.may_apply(&action),
                 Err(error) => {
                     // What the invocation applies cannot be read here, so the
-                    // api decides what its published action needs.
+                    // API decides what its published action needs.
                     tracing::warn!(%error, action = %invoke.id, "an invocation's typed value could not be built; the api decides");
                     !self.read_only()
                 }
@@ -1395,7 +1395,7 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
-    /// The client of the session's action api the views' opens and
+    /// The client of the session's action API the views' opens and
     /// reads go through.
     pub(crate) fn opener(&self) -> &super::reference::Opener {
         &self.core.opener
@@ -1460,7 +1460,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Read `read`, a record of the window's workspace, through the host's
-    /// record api, continuing `parent` as [`Self::call_published`] does.
+    /// record API, continuing `parent` as [`Self::call_published`] does.
     pub(crate) fn read_record(
         &self,
         parent: Option<tilo_actions::InvocationId>,
@@ -1505,7 +1505,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Submit one typed action value — an edit with no named declaration,
-    /// such as a drag's final geometry. The api applies it after the
+    /// such as a drag's final geometry. The API applies it after the
     /// event; if it refuses it, [`Self::refused`] says why.
     pub fn apply(&self, action: &R::Action) {
         match Invoke::<R>::apply(action) {
@@ -1564,7 +1564,7 @@ impl<R: Resource> Dispatcher<R> {
     /// an editor that must see its own edit before the next keystroke.
     ///
     /// One that needs confirming (a destructive verb, a removal) is not
-    /// applied now: it goes to the host's api, which asks first, and
+    /// applied now: it goes to the host's API, which asks first, and
     /// applies once the person agreed, as [`Self::submit`] does.
     ///
     /// # Errors
@@ -1617,7 +1617,7 @@ impl<R: Resource> Dispatcher<R> {
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
         // The gesture confirms only what has a way back: a verb that loses
-        // something Undo cannot bring back is asked first, as at every api.
+        // something Undo cannot bring back is asked first, as at every API.
         if tilo_actions::Action::irreversible(&action) && asks(&action) {
             return self.ask_first(invoke, &action);
         }
@@ -1660,7 +1660,7 @@ impl<R: Resource> Dispatcher<R> {
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
         if asks(&action) {
-            // The contract asks already: the api's question, which Shift
+            // The contract asks already: the API's question, which Shift
             // skips there for what Undo takes back.
             return self.ask_first(invoke, &action);
         }
@@ -1715,7 +1715,7 @@ impl<R: Resource> Dispatcher<R> {
         if let Some(refused) = group.actions.iter().find(|action| !self.may_apply(action)) {
             return Err(self.not_allowed(refused));
         }
-        // A group holding a removal asks first, as the queued api does.
+        // A group holding a removal asks first, as the queued API does.
         if group.actions.iter().any(asks) {
             self.submit_invoke(invoke.clone());
             return Ok(());
@@ -1737,7 +1737,7 @@ impl<R: Resource> Dispatcher<R> {
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
     /// joins its step. An action that needs confirming (a destructive verb,
-    /// a removal) is not applied now: it is submitted to the host's api,
+    /// a removal) is not applied now: it is submitted to the host's API,
     /// which asks the person first ([`Self::apply`]).
     ///
     /// # Errors
@@ -1792,7 +1792,7 @@ impl<R: Resource> Dispatcher<R> {
             return Err(self.not_allowed(action));
         }
         // Applying now never skips the person's consent: an action that
-        // needs confirming goes to the api, which asks first.
+        // needs confirming goes to the API, which asks first.
         if asks(action) && !confirmed {
             self.apply(action);
             return Ok(());
@@ -1848,7 +1848,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// The dispatcher of another record than this resource's — the
     /// person's own record, a settings section — published at `id`: its
-    /// queued invocations go through the same api as this resource's, and
+    /// queued invocations go through the same API as this resource's, and
     /// what it applies now `apply` applies to that record. The workspace's roles
     /// do not reach it; only its person changes it.
     pub(crate) fn for_record<C: Resource>(
@@ -2041,7 +2041,7 @@ fn may_declared(
     }
 }
 
-/// An edit or effect the api refused ([`Dispatcher::refused`]), or one the
+/// An edit or effect the API refused ([`Dispatcher::refused`]), or one the
 /// workspace refused after this device applied it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused {
@@ -2057,7 +2057,7 @@ pub struct Refused {
     pub by_workspace: bool,
 }
 
-/// A submission the api applied ([`Dispatcher::landed`]).
+/// A submission the API applied ([`Dispatcher::landed`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Landed {
     /// The id of the applied action.
@@ -2090,7 +2090,7 @@ impl Landed {
 }
 
 /// Whether `action` needs the person's confirmation before it applies, by
-/// the one rule every api asks (`tilo_actions::asks_first`): its risk asks
+/// the one rule every API asks (`tilo_actions::asks_first`): its risk asks
 /// for it and Undo cannot take it back. A removal that only changes the
 /// document runs at once; Undo is how the person takes it back. One that
 /// loses something outside the document (`irreversible`) still asks.
@@ -2124,7 +2124,7 @@ struct Waits(std::collections::HashMap<tilo_actions::InvocationId, Wait>);
 
 #[derive(Default)]
 struct Wait {
-    /// Queued, not yet answered by the api.
+    /// Queued, not yet answered by the API.
     outstanding: usize,
     /// The last that landed, or the first refusal.
     result: Option<Result<Landed, String>>,

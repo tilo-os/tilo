@@ -58,7 +58,7 @@ fn krate() -> Tokens {
 /// from the strongest to the weakest for a choice), `#[model(range =
 /// low..=high)]` on a number and `#[model(choices = expr)]` on a text (what
 /// the field may hold: published in its value's schema and held by the
-/// record's own check, through every door).
+/// record's own check, through every API).
 ///
 /// Type attributes: `#[model(check = path)]` (its invariant, with
 /// `check_reads`/`check_items` saying what it reads), `#[model(label =
@@ -1852,7 +1852,7 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Action options: `label = "key"` (another key of the catalogue), `destructive` (it deletes or overwrites:
 /// when Undo takes it back, as it does any change of the document alone, it
 /// runs at once and offers Undo; otherwise people confirm it, through any
-/// door), `irreversible` (it also loses what Undo cannot bring back, such
+/// API), `irreversible` (it also loses what Undo cannot bring back, such
 /// as a secret every device forgets: a destructive one is confirmed even
 /// though Undo reverts its document change), `housekeeping` (a change
 /// about the record rather than to it,
@@ -1862,7 +1862,7 @@ fn is_action_cx(ty: &Type) -> bool {
 /// app's own bookkeeping of the record, such as what its engine listed: only
 /// the app's code applies it, on a record it holds; it is declared to no
 /// caller, so it is not published, nothing builds it by its id, and `apply`,
-/// `group` and every door refuse it), `field = "..."` (an action that writes only that field is placed
+/// `group` and every API refuse it), `field = "..."` (an action that writes only that field is placed
 /// below it, so a grant on the field reaches it: someone who may only
 /// comment may add to the `comments`).
 ///

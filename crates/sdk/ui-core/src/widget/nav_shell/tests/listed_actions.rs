@@ -55,7 +55,7 @@ fn actions_listed_elsewhere_stand_only_where_the_host_lists_them() {
         assert_eq!(
             shows(&inspection.root, "nav-shell-more-content"),
             !listed,
-            "the row's door shows only where nothing lists the window's actions (listed: {listed})"
+            "the row's api shows only where nothing lists the window's actions (listed: {listed})"
         );
     }
 }

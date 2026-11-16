@@ -10,7 +10,7 @@
 //!   ([`RecordId::child`]), opened as it is listed, read as it changes
 //!   ([`Children::children`]), synced on its own route like every record of
 //!   the app.
-//! - **One api.** The container is published beside the app's resource
+//! - **One API.** The container is published beside the app's resource
 //!   ([`ui_core::record::children_resource_id`]): every listed child with
 //!   its own actions, carried out on its record, checked against the
 //!   participant's roles in the workspace as the app's own actions are,
@@ -48,7 +48,7 @@ use super::live::Live;
 use super::record::RecordApi;
 
 /// The operation type a child's own actions are carried out under on the
-/// container's api: the action and the child it changes.
+/// container's API: the action and the child it changes.
 pub(crate) const CHILD_ACTION_TYPE: &str = "tilo.app.child-action";
 /// The operation type the container's lifecycle is carried out under.
 pub(crate) const LIFECYCLE_TYPE: &str = "tilo.app.child-lifecycle";
@@ -190,7 +190,7 @@ impl Lifecycle {
     }
 }
 
-/// One of a child's own actions, as the container's api carries it.
+/// One of a child's own actions, as the container's API carries it.
 #[derive(Serialize, Deserialize)]
 struct ChildAction {
     child: Id,
@@ -247,7 +247,7 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     empty: Rc<C::State>,
     revision: Cell<u64>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
-    /// The api of the parent the window shows, which the lifecycle writes
+    /// The API of the parent the window shows, which the lifecycle writes
     /// through in the pass that lends it; `None` where the parent is held
     /// in the store (a tool's, a test's).
     parent_api: RefCell<Option<super::Dispatcher<C::Parent>>>,
@@ -528,7 +528,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     /// Write `edits` into the parent, as `invoker`, recorded in its
     /// history: the container's lifecycle. The parent the window shows is
-    /// written through its own api in the pass that lends it (`live`);
+    /// written through its own API in the pass that lends it (`live`);
     /// one held in the store, as a tool holds it, there.
     fn edit_parent(
         &self,
@@ -871,7 +871,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     /// The container as it is published: `create`, and every child with
     /// its own actions, `delete` and `move` (a trashed one with `restore`),
-    /// carried out on the container's api.
+    /// carried out on the container's API.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
@@ -909,7 +909,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         resource
     }
 
-    /// `spec` carried out on this container's api.
+    /// `spec` carried out on this container's API.
     fn route(&self, spec: ActionSpec) -> ActionSpec {
         super::record::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)
     }
@@ -956,7 +956,7 @@ fn first_fields<C: ChildRecord>(fields: &serde_json::Value) -> Result<Vec<Edit<C
 }
 
 /// `resource`'s document actions, and those of its children, carried out on
-/// child `child`'s record through the container's api `api`.
+/// child `child`'s record through the container's API `api`.
 fn route_child(
     mut resource: tilo_actions::ResourceSpec,
     api: &str,
@@ -974,8 +974,8 @@ fn route_child(
     resource
 }
 
-/// `spec` carried out on child `child` through the container's api: one
-/// routing, whose operation names the api and whose action the child.
+/// `spec` carried out on child `child` through the container's API: one
+/// routing, whose operation names the API and whose action the child.
 fn wrap_child(spec: ActionSpec, api: &str, child: &Id) -> ActionSpec {
     let child = child.clone();
     let api = api.to_owned();
@@ -1192,7 +1192,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 pub struct Children<C: ChildRecord> {
     state: Rc<ChildrenState<C>>,
     me: String,
-    /// The api of the parent the view shows, which the lifecycle a view
+    /// The API of the parent the view shows, which the lifecycle a view
     /// asks for goes through.
     dispatch: Option<super::Dispatcher<C::Parent>>,
 }
@@ -1216,8 +1216,8 @@ impl<C: ChildRecord> Children<C> {
         }
     }
 
-    /// These, submitting through `parent`'s api for the view that holds
-    /// them: the api of the parent it shows.
+    /// These, submitting through `parent`'s API for the view that holds
+    /// them: the API of the parent it shows.
     pub(crate) fn dispatching(mut self, parent: &super::Dispatcher<C::Parent>) -> Self {
         self.state.write_parent_through(parent.clone());
         self.dispatch = Some(parent.clone());
@@ -1254,7 +1254,7 @@ impl<C: ChildRecord> Children<C> {
     /// `group`, before `before`, as the window's person. Its id.
     ///
     /// # Errors
-    /// As the api refuses `create`.
+    /// As the API refuses `create`.
     pub fn create(
         &self,
         fields: serde_json::Value,
@@ -1272,7 +1272,7 @@ impl<C: ChildRecord> Children<C> {
     /// Put child `id` in the workspace's trash, as the window's person.
     ///
     /// # Errors
-    /// As the api refuses `delete`.
+    /// As the API refuses `delete`.
     pub fn delete(&self, id: &Id) -> Result<(), ActionError> {
         self.step(&Lifecycle::Delete { child: id.clone() })
             .map(drop)
@@ -1281,7 +1281,7 @@ impl<C: ChildRecord> Children<C> {
     /// Take child `id` out of the trash, as the window's person.
     ///
     /// # Errors
-    /// As the api refuses `restore`.
+    /// As the API refuses `restore`.
     pub fn restore(&self, id: &Id) -> Result<(), ActionError> {
         self.step(&Lifecycle::Restore { child: id.clone() })
             .map(drop)
@@ -1291,7 +1291,7 @@ impl<C: ChildRecord> Children<C> {
     /// person.
     ///
     /// # Errors
-    /// As the api refuses `move`.
+    /// As the API refuses `move`.
     pub fn move_to(
         &self,
         id: &Id,
@@ -1309,7 +1309,7 @@ impl<C: ChildRecord> Children<C> {
     /// Apply one of child `id`'s own actions, as the window's person.
     ///
     /// # Errors
-    /// As the api refuses it.
+    /// As the API refuses it.
     pub fn apply(&self, id: &Id, action: &C::Action) -> Result<(), ActionError> {
         self.state
             .apply_to(id, action, &super::record::acting(&self.me))
@@ -1317,7 +1317,7 @@ impl<C: ChildRecord> Children<C> {
     }
 
     /// Carry out `step` as the window's person: in a view, through the
-    /// api, which writes the parent the window shows in the pass that
+    /// API, which writes the parent the window shows in the pass that
     /// lends it (a refusal is the view's dispatcher's to tell); held
     /// outside a window, now.
     fn step(&self, step: &Lifecycle) -> Result<Id, ActionError> {
@@ -1337,17 +1337,17 @@ impl<C: ChildRecord> Children<C> {
         Ok(child)
     }
 
-    /// The container published as the api publishes it, for a test.
+    /// The container published as the API publishes it, for a test.
     #[must_use]
     pub fn published(&self) -> tilo_actions::ResourceSpec {
         self.state.publish()
     }
 
-    /// Carry out a published action of the container, as the api does:
+    /// Carry out a published action of the container, as the API does:
     /// what an agent invoking it reaches.
     ///
     /// # Errors
-    /// As the api refuses it.
+    /// As the API refuses it.
     pub fn invoke_published(
         &self,
         action: &EncodedAction,

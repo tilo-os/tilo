@@ -487,7 +487,7 @@ tilo_test_env::scenario! {
         assert!(reads.touched_by(books.item(&id).path().segments()));
         assert!(reads.touched_by(books.segments()));
         assert!(reads.touched_by(&[]));
-        apply(&mut shelf, &Shelf::paths().note.set("by the door".into())).unwrap();
+        apply(&mut shelf, &Shelf::paths().note.set("by the API".into())).unwrap();
         apply(
             &mut shelf,
             &books.item(&id).title.set("Dune Messiah".into()),
@@ -500,7 +500,7 @@ tilo_test_env::scenario! {
         #[cfg(not(debug_assertions))]
         assert!(SHELF_CHECKS.with(std::cell::Cell::get) > before);
         let state = shelf.state().unwrap();
-        assert_eq!(state.note, "by the door");
+        assert_eq!(state.note, "by the API");
         assert_eq!(state.books[&id].title, "Dune Messiah");
         assert_eq!(state.name, "");
     }

@@ -251,7 +251,7 @@ pub trait Resource: Sized + 'static {
     /// Resources nested inside this one (a track's clips, a list's items,
     /// a page's rich-text body), each exporting actions with their arguments
     /// already bound. Published beneath the root resource for the palette,
-    /// agents and scripts — the same door as the root, not a second tree.
+    /// agents and scripts — the same API as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
@@ -305,7 +305,7 @@ pub trait Resource: Sized + 'static {
     /// out. A resource with more children than a published tree should carry
     /// (a book of contacts, a long history) publishes a bounded page from
     /// `children` and resolves the rest here, so an action addressed to any
-    /// of them still reaches it through the same door. The default resolves
+    /// of them still reaches it through the same API. The default resolves
     /// nothing beyond `children`.
     fn child(_state: &Self::State, _id: &str) -> Option<tilo_actions::ResourceSpec> {
         None
@@ -341,7 +341,7 @@ pub trait Resource: Sized + 'static {
     /// Whether [`read_content`](Self::read_content) answers. A resource that
     /// does is published with the framework's `read` operation, so a script,
     /// an agent or an assistive tool reads what it holds as typed data through
-    /// the same door, permissions and audit as every other action — never
+    /// the same API, permissions and audit as every other action — never
     /// from a screenshot.
     const READABLE: bool = false;
 
@@ -457,7 +457,7 @@ pub trait Resource: Sized + 'static {
         None
     }
 
-    /// Stamp the origin's clock on an action as the door admits it. A caller
+    /// Stamp the origin's clock on an action as the API admits it. A caller
     /// never supplies the time an action carries.
     fn stamp(action: &mut Self::Action, now_ms: i64) {
         let _ = (action, now_ms);
@@ -495,7 +495,7 @@ pub trait Resource: Sized + 'static {
     /// (`#[action(by_app)]`): the app's bookkeeping of the record, such as
     /// what its engine listed. It has no declaration, so it is not
     /// published, nothing builds it by its id, and the generic [`APPLY`] and
-    /// every door that decodes an action refuse it ([`by_app_refusal`]).
+    /// every API that decodes an action refuse it ([`by_app_refusal`]).
     /// The app applies it to a record it holds.
     fn by_app(action: &Self::Action) -> bool {
         let _ = action;
@@ -1235,7 +1235,7 @@ fn item_edit_type(
 /// The edits of a resource whose document holds nothing. An app whose data
 /// lives entirely outside any document — credentials in this device's
 /// encrypted vault, a device's hardware — publishes that data as live rows
-/// and effects, and its resource is only the door they are published on.
+/// and effects, and its resource is only the API they are published on.
 /// No value exists, so nothing is ever applied, undone or synced.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum NoAction {}
@@ -2072,7 +2072,7 @@ fn cached_schema(
 }
 
 /// Why an action only the app's own code applies ([`Resource::by_app`]) is
-/// refused where a caller sent it: one sentence for every door.
+/// refused where a caller sent it: one sentence for every API.
 #[must_use]
 pub fn by_app_refusal(label: &str) -> String {
     format!("{label} keeps this itself: it is not an action to invoke")
@@ -2095,7 +2095,7 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
         return Err(format!("{id}: {error}"));
     }
     // Group members refer to this schema instead of copying it into the
-    // group's parameter. Validate here as well as at the direct apply door,
+    // group's parameter. Validate here as well as at the direct apply API,
     // including constraints stricter than the action's serde representation.
     if let Some(schema) = apply_param(vocabulary).schema {
         tilo_actions::validate_json_schema(&value, &schema)?;
@@ -2383,7 +2383,7 @@ pub use crate::search_default::default_search;
 ///
 /// This is the only bridge from a [`Resource`] type to the
 /// [`tilo_actions::ResourceSpec`] tree the palette, agents, scripts and the shell
-/// door see. Apps do not construct a second tree for the same state.
+/// API see. Apps do not construct a second tree for the same state.
 ///
 /// An action offered on the items of a collection (see [`crate::items`])
 /// stays published on the record, with its id parameter, for scripts and

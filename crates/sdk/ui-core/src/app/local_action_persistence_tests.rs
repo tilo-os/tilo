@@ -52,7 +52,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
             }
             _ => None,
         })
-        .expect("the public local action door must report its execution");
+        .expect("the public local action api must report its execution");
     fixture.app.autosave_tick().unwrap();
     for binding in &fixture.bindings {
         fixture

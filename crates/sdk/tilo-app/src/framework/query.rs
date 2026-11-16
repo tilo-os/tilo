@@ -1,14 +1,14 @@
 //! Reading another provider's action result, kept current.
 //!
 //! [`RecordEnv::query`](super::RecordEnv::query) invokes a view action of
-//! any provider through the session's action api, as the person using the
+//! any provider through the session's action API, as the person using the
 //! app, and shows its answer as data that arrives
 //! ([`Arriving`](ui_core::arriving::Arriving)): the view says what shows
 //! once it is there ([`ViewCx::arriving`](super::ViewCx::arriving)), and the
 //! framework shows the placeholder until then. A live action
 //! ([`tilo_actions::ExecutionMode::Live`]) sends a new result whenever its
 //! provider's answer changes, and the answer follows; an action that
-//! answers once is read once. The api decides the read as it decides any
+//! answers once is read once. The API decides the read as it decides any
 //! invocation: a caller without the permission gets
 //! [`ReadFailure::Denied`], never the data.
 
@@ -97,7 +97,7 @@ impl<T> Clone for Query<T> {
 }
 
 struct Inner {
-    /// The api it reads through; none for a read that reaches no
+    /// The API it reads through; none for a read that reaches no
     /// provider ([`Query::fixed`]).
     opener: Option<super::reference::Opener>,
     target: RemoteActionTarget,
@@ -276,7 +276,7 @@ fn follow(inner: &Inner, again: bool) {
             }
         },
     );
-    // Where the answer comes from is where the api says the call goes.
+    // Where the answer comes from is where the API says the call goes.
     let from = followed
         .call()
         .with(|call| call.source().cloned())

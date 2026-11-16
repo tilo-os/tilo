@@ -213,7 +213,7 @@ tilo_test_env::scenario! {
 
     phase a_group_holding_a_change_undo_cannot_take_back_asks_first;
     // A group is undoable only when every member is: one that sends something
-    // away makes a deleting group ask, through any door, as that member alone
+    // away makes a deleting group ask, through any API, as that member alone
     // does.
     {
         let mut contact = Replica::<Contact>::new();
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
             contact.apply(unknown.invoke()),
             Err(tilo_actions::ApiError::Unknown(_))
         ));
-        // The change carries the history entry the door writes.
+        // The change carries the history entry the API writes.
         contact
             .apply(Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())))
             .unwrap();

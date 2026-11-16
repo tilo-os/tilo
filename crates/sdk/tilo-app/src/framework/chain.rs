@@ -17,7 +17,7 @@
 //! item the head or the part after it), and what an action reads of the
 //! app's own record where it is invoked. Everything else is the framework's:
 //!
-//! - **One api.** The chain is published beside the app's resource as one
+//! - **One API.** The chain is published beside the app's resource as one
 //!   resource ([`Chain::id`]): the head's actions, and every held part's
 //!   items with theirs, each carried out on the part [`Chained::part_for`]
 //!   names when it is invoked. The palette, agents, scripts and the app's
@@ -39,7 +39,7 @@
 //! undone with the app's own: they are recorded in the part's history, and
 //! the chain publishes the history verbs (`undo`, `redo`, `restore`,
 //! `checkpoint`) naming the part they change, so a person, an agent or the
-//! workspace's moderation takes back steps in a part through the same api.
+//! workspace's moderation takes back steps in a part through the same API.
 //!
 //! A part opened in the app's store by anyone — a peer's merged into an
 //! attached view, one this device asked the workspace for — is held from the
@@ -485,7 +485,7 @@ impl<P: Chained> ChainState<P> {
     /// logged. Otherwise it is left for the caller to answer now.
     ///
     /// # Errors
-    /// As the api refuses it now: the person may not, the app's record or
+    /// As the API refuses it now: the person may not, the app's record or
     /// the part refused it, or the record of waiting actions cannot be
     /// written.
     pub(crate) fn apply_as(
@@ -1037,7 +1037,7 @@ impl<P: Chained> ChainState<P> {
         drop(base);
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
         if let Some(permissions) = &self.workspace.permissions {
-            // Decided where the chain publishes the action, as the api
+            // Decided where the chain publishes the action, as the API
             // decides it: a grant on the app, the parts' kind or the verb
             // covers it.
             let need = tilo_resource::need_of::<P>(&action);
@@ -1698,7 +1698,7 @@ impl<P: Chained> Chain<P> {
     /// meanwhile, and is written once it is here, in the order asked.
     ///
     /// # Errors
-    /// As the api refuses it: the person may not, the app's record or the
+    /// As the API refuses it: the person may not, the app's record or the
     /// part refused it.
     pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
@@ -1760,10 +1760,10 @@ impl<P: Chained> Chain<P> {
     /// gesture (Undo beside a message they deleted).
     ///
     /// A refusal is reported through the dispatcher's
-    /// [`refused`](Dispatcher::refused), as the api's are.
+    /// [`refused`](Dispatcher::refused), as the API's are.
     ///
     /// # Errors
-    /// As the api refuses it: the person may not change the part's history,
+    /// As the API refuses it: the person may not change the part's history,
     /// the part is not here, or they have no step in it to take back.
     pub fn undo_in(&self, index: u64) -> Result<(), ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
@@ -1872,7 +1872,7 @@ impl<P: Chained> Chain<P> {
         self.state.workspace.store.takes_writes()
     }
 
-    /// The chain's dispatcher: what it submits goes through the host's api
+    /// The chain's dispatcher: what it submits goes through the host's API
     /// as a click on a control does (a destructive verb asks first), and
     /// [`apply_now`](Dispatcher::apply_now) applies at once.
     #[must_use]
@@ -1936,8 +1936,8 @@ impl<P: Chained> Chain<P> {
             .read(&self.state.chain.part(index), |doc| doc.clone().save())
     }
 
-    /// What this chain's dispatcher handed to the api and nothing took yet
-    /// (a destructive verb waiting for confirmation), applied as the api
+    /// What this chain's dispatcher handed to the API and nothing took yet
+    /// (a destructive verb waiting for confirmation), applied as the API
     /// does once the person agreed. Taking them empties the queue.
     ///
     /// # Errors
@@ -2141,7 +2141,7 @@ impl Chains {
     }
 
     /// The children of `C` the parent lists, held in `workspace` on first use:
-    /// published and answered beside the chains, through the same api.
+    /// published and answered beside the chains, through the same API.
     pub(crate) fn open_children<C: super::children::ChildRecord>(
         &self,
         workspace: Option<&WorkspaceRecords>,

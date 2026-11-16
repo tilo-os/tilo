@@ -161,7 +161,7 @@ impl FirstDayOfWeek {
 
 /// The formats a person chose in Region & Formats. `number` is `None` until they choose a number
 /// style; the language's own convention applies then. The serde names are the settings file's,
-/// and the app host's door carries the same shape.
+/// and the app host's API carries the same shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct RegionFormats {

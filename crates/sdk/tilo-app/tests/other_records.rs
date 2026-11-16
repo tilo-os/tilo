@@ -211,7 +211,7 @@ tilo_test_env::scenario! {
             "{actions:?}"
         );
 
-        // An agent edits it by path, through the door; the model's invariant
+        // An agent edits it by path, through the API; the model's invariant
         // holds on every way in.
         app.call_on(
             "settings:test.display",

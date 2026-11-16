@@ -5,7 +5,7 @@
 //! Nothing is drawn if no one is looking, but no action is performed out of
 //! sight. An [`AttachedView`] mounts the app's real component over the
 //! record exactly as a window does, lays it out and never paints it; every
-//! operation goes through the view's bound dispatcher, the api a person's
+//! operation goes through the view's bound dispatcher, the API a person's
 //! click takes, admitted for the participant as invoker and checked against
 //! its permissions. Where the action landed is where the participant's
 //! presence shows ([`AttachedView::landed`]), and the person's devices draw
@@ -637,7 +637,7 @@ impl AttachedView {
         self.invoke_appearing(address, arguments, confirmed, None)
     }
 
-    /// [`Self::invoke`] showing `appearance`, which the api already admitted
+    /// [`Self::invoke`] showing `appearance`, which the API already admitted
     /// for this one invocation. `None` clears any appearance the view's
     /// context carried: only an API sets one.
     ///

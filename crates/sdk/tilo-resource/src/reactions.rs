@@ -17,7 +17,7 @@
 //! [`EditOp::Unreact`] (`Page::paths().reactions.react("👍")`). They store who
 //! invoked them ([`ActionCx::author`]), never an argument, so a reaction is
 //! always its author's own: a read-only item (a chat message) still takes
-//! them, and every door publishes, permissions, records in history, syncs
+//! them, and every API publishes, permissions, records in history, syncs
 //! and undoes them like any other field edit. A bot reacting for someone
 //! elsewhere (a Discord member, through the bridge) records the account it
 //! acts for and the name it shows ([`ActionCx::appearance`]), so each of

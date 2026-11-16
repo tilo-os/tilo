@@ -3,7 +3,7 @@ use crate::text_selection::{TextAffinity, TextPosition};
 
 /// Paragraphs in many scripts: bidi runs, Thai (dictionary breaks become virtual insertions), CJK,
 /// emoji, combining marks, blank lines.
-const SEED: &str = "The rehearsal ran long, so the doors opened late.\n\
+const SEED: &str = "The rehearsal ran long, so the entry opened late.\n\
 \n\
 שלום עולם, mixed with English and 123 numbers.\n\
 مرحبا بالعالم (Arabic) — and back.\n\

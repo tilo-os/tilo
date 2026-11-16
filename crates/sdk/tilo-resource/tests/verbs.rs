@@ -560,7 +560,7 @@ tilo_test_env::scenario! {
 
     phase an_absent_positional_option_is_not_sent;
     // An absent option given positionally is left out, as a parameter not
-    // given, rather than sent as `null` the door refuses.
+    // given, rather than sent as `null` the API refuses.
     {
         let add: tilo_resource::ActionRef<Shelf, (String, Option<Colour>)> =
             tilo_resource::ActionRef::new(

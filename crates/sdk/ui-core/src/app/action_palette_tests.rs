@@ -942,7 +942,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
     let edit = published
         .iter()
         .find(|r| r.id.0 == "tilo.host:edit")
-        .expect("native Edit is published through the existing resource door");
+        .expect("native Edit is published through the existing resource api");
     assert!(edit.actions.iter().any(|a| a.id == "undo"
         && matches!(
             a.contract.availability,
@@ -974,7 +974,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
     assert_eq!(
         calls.borrow().len(),
         2,
-        "stale action must not cross the local door"
+        "stale action must not cross the local api"
     );
     *history.borrow_mut() = Some(LocalUndoStatus::Ready(UndoStatus {
         can_undo: true,

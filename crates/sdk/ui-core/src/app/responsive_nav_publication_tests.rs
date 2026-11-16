@@ -136,7 +136,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             coverage
                 .iter()
                 .all(|entry| entry.status != ControlBindingStatus::StaleAddress),
-            "current navigation controls need current resource doors at width {width}: {coverage:?}"
+            "current navigation controls need current resource action APIs at width {width}: {coverage:?}"
         );
         if narrow {
             assert!(
@@ -174,7 +174,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
                         descriptor.address == back
                             && descriptor.contract.availability.is_available()
                     }),
-                "the exact native Back door must be offered, not merely another action"
+                "the exact native Back api must be offered, not merely another action"
             );
         }
     }
@@ -192,7 +192,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
         coverage
             .iter()
             .all(|entry| entry.status != ControlBindingStatus::StaleAddress),
-        "a replaced navigation tree needs current resource doors: {coverage:?}"
+        "a replaced navigation tree needs current resource action APIs: {coverage:?}"
     );
     app.publish_action_surface();
     assert!(
@@ -211,7 +211,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             .last_published_actions
             .as_ref()
             .is_some_and(Vec::is_empty),
-        "revocation must withdraw the previously offered native control doors"
+        "revocation must withdraw the previously offered native control action APIs"
     );
     app.close_components();
 }

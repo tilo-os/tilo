@@ -3151,7 +3151,7 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
 #[test]
 fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolution() {
     use tilo_actions::remote::{InvokeArgument, RemoteActionFrame, RemoteActionMessage};
-    let address = tilo_actions::ActionAddress::new("bound:text-door", "replace-text");
+    let address = tilo_actions::ActionAddress::new("bound:text-api", "replace-text");
     let resource = tilo_actions::ResourceSpec::new(&address.resource, "document", "Document")
         .with_action(tilo_actions::ActionSpec::typed(
             &address.action,

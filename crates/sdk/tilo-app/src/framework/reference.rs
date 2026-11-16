@@ -3,7 +3,7 @@
 //! A [`ResourceRef`] names something another app keeps: a chat message's
 //! page, an issue's link, what an agent was asked about. Opening it
 //! is one action, the resource's `open` in its own app
-//! ([`ResourceRef::open_target`]), sent through the session's action api
+//! ([`ResourceRef::open_target`]), sent through the session's action API
 //! as the person who asked: the host launches the app on the record when no
 //! window shows it and admits the open under that person's grants. A chip
 //! ([`ViewCx::reference`](super::ViewCx::reference), or [`LEAD`] on a
@@ -154,7 +154,7 @@ pub fn workspace() -> Result<String, String> {
 
 /// A view's opens, and the actions of its own record it sends through the
 /// host ([`Dispatcher::through_host`](super::Dispatcher::through_host)), on
-/// their own client of the session's action api, which the window's root
+/// their own client of the session's action API, which the window's root
 /// carries to the host.
 #[derive(Clone, Default)]
 pub(crate) struct Opener(Rc<RefCell<Opening>>);
@@ -236,7 +236,7 @@ impl Opener {
     }
 
     /// Read a record of the window's workspace through the host's record
-    /// api, continuing `parent` as [`Self::call`] does.
+    /// API, continuing `parent` as [`Self::call`] does.
     pub(crate) fn read_record(
         &self,
         parent: Option<tilo_actions::InvocationId>,
@@ -249,7 +249,7 @@ impl Opener {
             .read_record(parent, read)
     }
 
-    /// Follow the result of the action at `target` on this view's api,
+    /// Follow the result of the action at `target` on this view's API,
     /// telling `then` each update ([`RemoteActions::follow_with`]).
     pub(crate) fn follow(
         &self,
@@ -298,7 +298,7 @@ impl Opener {
     /// The client, once anything was opened: the root carries its requests
     /// and answers.
     pub(crate) fn api(&self) -> Option<RemoteActions> {
-        // A read whose scope is gone stops here, before the api carries
+        // A read whose scope is gone stops here, before the API carries
         // its cancellation.
         let gone: Vec<_> = {
             let mut opening = self.0.borrow_mut();

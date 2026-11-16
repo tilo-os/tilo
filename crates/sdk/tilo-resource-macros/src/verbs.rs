@@ -2038,7 +2038,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
-    // What only the app's own code applies says so of itself, so a door
+    // What only the app's own code applies says so of itself, so an action API
     // that decodes one refuses it, and is built where the app invokes it.
     let (by_app_fn, by_app_resource_fns) = if by_app_arms.is_empty() {
         (quote!(), quote!())
@@ -2078,7 +2078,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             },
         )
     };
-    // An action declared below one field is placed there whichever door it
+    // An action declared below one field is placed there whichever API it
     // comes through, the generic `apply` included.
     let field_fn = if fields_of.is_empty() {
         quote!()

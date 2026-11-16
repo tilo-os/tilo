@@ -1,5 +1,5 @@
 //! An effect's calls on other resources: another resource's published
-//! action, and a record of the workspace read through the record api.
+//! action, and a record of the workspace read through the record API.
 
 use std::sync::mpsc::TryRecvError;
 
@@ -73,7 +73,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     /// Read a record of the workspace, any app's, through the host's record
-    /// api, then `then` with its readings (`{"revision", "records": [...]}`,
+    /// API, then `then` with its readings (`{"revision", "records": [...]}`,
     /// each record `{"record", "value" | "absent" | "arriving"}`) or why it
     /// was not read, on the UI thread. The host decides it as this effect's
     /// caller, as it decides [`Self::call`]: continuing the invocation it

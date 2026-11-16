@@ -1266,7 +1266,7 @@ impl<R> Edit<R> {
                 editable.join(", ")
             ));
         };
-        // A door decides whether an edit asks first from the path as sent,
+        // An action API decides whether an edit asks first from the path as sent,
         // which names no field that exposes the person or weakens their
         // security; an edit of such a field is sent again from the root.
         if root.trust_at(rest) != crate::Trust::Ordinary {

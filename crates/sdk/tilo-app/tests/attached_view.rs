@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A host without a screen acts through the app's own view: mounted over the
-//! record, never drawn, every operation through the door a click takes, and
+//! record, never drawn, every operation through the API a click takes, and
 //! the change it made flowing back to the person's window.
 
 use tilo_app::collaboration::DocumentMutation;

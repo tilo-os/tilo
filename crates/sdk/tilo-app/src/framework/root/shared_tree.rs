@@ -1,7 +1,7 @@
 //! The published tree as a [`SharedResource`]: each version shares with the
 //! last every item child the change did not touch, so a keystroke in a field
 //! no item depends on neither builds nor copies an item, and what reads the
-//! tree (bound controls, accessibility, the api) skips what it has seen.
+//! tree (bound controls, accessibility, the API) skips what it has seen.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;

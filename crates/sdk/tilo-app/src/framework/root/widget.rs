@@ -591,7 +591,7 @@ impl SearchSource for RootWidget {
 impl ActionControls for RootWidget {
     /// The root keeps its view's controls for itself when the session keeps
     /// its record: a press there is submitted over the app's connection, and
-    /// a host's local document api never runs it
+    /// a host's local document API never runs it
     /// (`docs/designs/app-language/one-app-model.md` §4).
     fn install_control_custody(
         &mut self,

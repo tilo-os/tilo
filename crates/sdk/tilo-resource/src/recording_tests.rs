@@ -32,7 +32,7 @@ fn edited() -> Doc {
     doc.put(ROOT, "visits", ScalarValue::counter(1)).unwrap();
     commit(&mut doc, 10, None);
     let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
-    doc.splice_text(&note, 0, 0, "the door code is 4471")
+    doc.splice_text(&note, 0, 0, "the entry code is 4471")
         .unwrap();
     commit(&mut doc, 20, None);
     doc.delete(ROOT, "note").unwrap();

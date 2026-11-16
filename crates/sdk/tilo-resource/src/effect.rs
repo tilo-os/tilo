@@ -316,7 +316,7 @@ pub trait Effect: Sized + 'static {
     /// This effect as the published resource `resource` offers it (the
     /// record, or a child or live row it is bound on, by its published id):
     /// what a search hit invokes or a caller addresses through the host's
-    /// door. Its id comes from the effect itself.
+    /// API. Its id comes from the effect itself.
     fn address_on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
         tilo_actions::ActionAddress::new(resource, self.id())
     }
@@ -384,7 +384,7 @@ type BoundArguments = serde_json::Map<String, serde_json::Value>;
 ///
 /// The arguments are read back as `E` before they are encoded, so a client
 /// that names an id or a value the effect does not take is refused at the
-/// door, [`INVALID_ARGUMENTS_TYPE`](tilo_actions::resource::INVALID_ARGUMENTS_TYPE)
+/// API, [`INVALID_ARGUMENTS_TYPE`](tilo_actions::resource::INVALID_ARGUMENTS_TYPE)
 /// with why, rather than handed to a host that cannot run it.
 fn encoder<E: Effect>(
     operation: &'static str,
@@ -1403,7 +1403,7 @@ mod tests {
 
         phase an_identity_argument_is_decimal_text_and_is_refused_otherwise;
         // An identity travels as decimal text, and one that names no id is
-        // refused when the invocation is encoded: the door answers a caller that
+        // refused when the invocation is encoded: the API answers a caller that
         // names something the effect cannot act on, rather than a host failing
         // to read it.
         {

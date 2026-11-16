@@ -457,7 +457,7 @@ impl<R: Resource> RecordEnv<R> {
     }
 
     /// Read the result of the view action at `target` with `argument`,
-    /// through the session's action api as the person using the app, and
+    /// through the session's action API as the person using the app, and
     /// keep it current ([`Query`](super::Query)): a live action's answer
     /// follows its provider's changes, one that answers once is read once.
     /// It is followed while this scope lives.
@@ -481,7 +481,7 @@ impl<R: Resource> RecordEnv<R> {
     }
 
     /// Invoke the action at `target` of another provider with `argument`,
-    /// through the session's action api as the person using the app: a
+    /// through the session's action API as the person using the app: a
     /// write a [`Self::query`] then reads back. Why it did not go ahead is
     /// told as any refused call of the window is. A past version or a
     /// capture invokes nothing.

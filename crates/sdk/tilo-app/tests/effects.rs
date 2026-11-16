@@ -476,7 +476,7 @@ tilo_test_env::scenario! {
         let audit = capture.harness().native_app_audit();
         assert!(audit.is_certified(), "{:?}", audit.issues);
 
-        // Both effect and view handlers stay inert, even through the real door.
+        // Both effect and view handlers stay inert, even through the real API.
         assert!(capture.effect(&MailEffect::Count).is_err());
         assert!(
             capture
@@ -1751,7 +1751,7 @@ tilo_test_env::scenario! {
 
     phase a_launch_invokes_a_view_effect_even_for_a_viewer;
     // A launch that shows something invokes a view effect through the same
-    // door as a control: a viewer, who may not edit, still gets the folder it
+    // API as a control: a viewer, who may not edit, still gets the folder it
     // opened, while an effect that needs write access is refused to them.
     {
         let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();

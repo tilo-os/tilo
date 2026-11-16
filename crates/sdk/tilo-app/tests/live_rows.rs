@@ -359,7 +359,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        // A live row's effect reaches the surface's handler through the door as
+        // A live row's effect reaches the surface's handler through the API as
         // the value the row was bound to, and answers its caller; it changes
         // nothing in the document. So does one a document child carries.
         let output = app.call_on("job:2", "stop", json!({})).unwrap();
@@ -476,7 +476,7 @@ tilo_test_env::scenario! {
     phase no_widget_below_the_root_changes_the_document_through_the_door;
     // Only the root speaks for the resource: a document action any other
     // widget offers, in a plain view or a hosted surface, never reaches the
-    // document through the door, even resolved by id.
+    // document through the API, even resolved by id.
     {
         RAW.set(Raw::LookedUpDocumentAction);
         let mut app = TestApp::<ViewJobsApp>::new().unwrap();

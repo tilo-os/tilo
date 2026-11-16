@@ -1171,7 +1171,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// Invoke a declared action through the host api, exactly as a control,
+    /// Invoke a declared action through the host API, exactly as a control,
     /// the palette, an agent or a script does.
     pub fn invoke(&mut self, invoke: Invoke<A::Resource>) -> Result<(), tilo_actions::ApiError> {
         self.invoke_as(invoke, false)
@@ -1179,7 +1179,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Invoke an action of the resource nested in this one at `resource` —
     /// a child resource a view edits through [`Dispatcher::child`](super::Dispatcher::child)
-    /// — through the host api, as the palette, an agent or a script
+    /// — through the host API, as the palette, an agent or a script
     /// addresses it.
     ///
     /// # Errors
@@ -1263,7 +1263,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Run a view or effect operation (`look`, `export`) through the host
-    /// api, as an agent or script does, and answer with what it produced;
+    /// API, as an agent or script does, and answer with what it produced;
     /// `None` while it is still running.
     ///
     /// # Errors
@@ -1286,7 +1286,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(started.completed())
     }
 
-    /// Invoke one of the app's effects through the host api, as a button,
+    /// Invoke one of the app's effects through the host API, as a button,
     /// the palette or an agent does, and wait for its answer: what it
     /// reported at once, or the result of the job it started. Progress the
     /// job reported is in [`FrameHarness::job_updates`].
@@ -1389,7 +1389,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.effect_as(row, effect.id(), &serde_json::Map::new(), true)
     }
 
-    /// Start `effect` through the host api without waiting for it, as a
+    /// Start `effect` through the host API without waiting for it, as a
     /// caller that may cancel it does, confirmed: the invocation its job
     /// runs under.
     ///
@@ -1576,7 +1576,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The last action refused here ([`super::Dispatcher::refused`]): by
-    /// the api, or by the workspace after this window applied it.
+    /// the API, or by the workspace after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.dispatch.refused.get())
@@ -2586,6 +2586,6 @@ fn published_here(resource: &mut tilo_actions::ResourceSpec) {
     resource.children.iter_mut().for_each(published_here);
 }
 
-// Retained results come from the real framework semantic api.
+// Retained results come from the real framework semantic API.
 #[cfg(test)]
 mod results_tests;

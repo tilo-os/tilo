@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
             );
             assert!(
                 running.contains(&address),
-                "{address:?} is not on the running app's door"
+                "{address:?} is not on the running app's api"
             );
         }
     }

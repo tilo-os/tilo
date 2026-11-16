@@ -4,7 +4,7 @@
 //! [`Replica::save`]).
 //!
 //! A replica applies actions exactly as the host does: it publishes the
-//! resource's tree, and every invocation goes through the action door —
+//! resource's tree, and every invocation goes through the action API —
 //! resolved against what is published, checked for availability and
 //! confirmation, built from the same declarations the palette and agents
 //! use, decoded through the registry a peer would replay with, and committed
@@ -195,7 +195,7 @@ impl<R: Resource> Replica<R> {
         self.now_ms = now_ms;
     }
 
-    /// The tree the resource publishes now: what the door resolves against.
+    /// The tree the resource publishes now: what the API resolves against.
     pub fn published(&self) -> Result<tilo_actions::ResourceSpec, ModelError> {
         Ok(resource::publish::<R>(
             R::KIND,
@@ -205,7 +205,7 @@ impl<R: Resource> Replica<R> {
     }
 
     /// Invoke a published action exactly as a control, the palette, an
-    /// agent or a script does: through the door, which refuses one that
+    /// agent or a script does: through the API, which refuses one that
     /// asks for confirmation ([`Self::apply_confirmed`]).
     pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, ApiError> {
         self.invoke(invoke.into(), false)
@@ -224,7 +224,7 @@ impl<R: Resource> Replica<R> {
 
     /// Apply one typed action value, the path a custom surface takes once
     /// its person confirmed what it does: the generic
-    /// [`APPLY`](crate::APPLY) action, through the door.
+    /// [`APPLY`](crate::APPLY) action, through the API.
     pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, ApiError> {
         let invoke =
             Invoke::apply(action).map_err(|error| ApiError::InvalidArguments(error.to_string()))?;

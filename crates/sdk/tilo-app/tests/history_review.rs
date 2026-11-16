@@ -1,4 +1,4 @@
-//! The production native action door, not a parallel snapshot helper.
+//! The production native action API, not a parallel snapshot helper.
 use super::*;
 use tilo_app::Role;
 use ui_core::automerge::transaction::Transactable;

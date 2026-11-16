@@ -1,5 +1,5 @@
 //! The framework's `read`: what a resource holds, as typed data, through the
-//! same api, permissions and audit as every other action. A resource that
+//! same API, permissions and audit as every other action. A resource that
 //! reads itself answers for what its own read names; any other published item
 //! of its document collections, and a field of one, is answered from the
 //! record's model tables, and disclosed by that read.

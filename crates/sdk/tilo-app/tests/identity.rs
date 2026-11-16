@@ -304,8 +304,8 @@ tilo_test_env::scenario! {
         );
         assert!(shown(&mut app).contains("1 of yours"));
 
-        // The same through the door an agent or a script uses.
-        app.invoke(Board::POST.with("through the door")).unwrap();
+        // The same through the API an agent or a script uses.
+        app.invoke(Board::POST.with("through the API")).unwrap();
         assert!(
             app.state()
                 .notes

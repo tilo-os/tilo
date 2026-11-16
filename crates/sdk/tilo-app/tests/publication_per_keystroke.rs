@@ -4,7 +4,7 @@
 //! row: bound controls refresh only the resource's own actions, and every
 //! publication the host asks for binds row edits in one walk of the view.
 //! A hosted app publishes its tree at most twice per keystroke: once when
-//! the door resolves the field's edit, once when the next frame shows it.
+//! the API resolves the field's edit, once when the next frame shows it.
 #![cfg(feature = "test-support")]
 
 use std::cell::Cell;
@@ -225,8 +225,8 @@ fn a_hosted_keystroke_publishes_at_most_twice() {
     for tasks in [3, 60] {
         let counts = hosted_keystrokes(tasks).expect("keystrokes into a live window");
         let (first, rest) = counts.split_first().expect("a keystroke was observed");
-        // One publication resolves the draft's edit in the door, one shows
-        // it in the next frame. Before #4148 the door resolved the edit a
+        // One publication resolves the draft's edit in the API, one shows
+        // it in the next frame. Before #4148 the API resolved the edit a
         // second time to choose its route, and the key's release dropped the
         // tree so the frame after it published again: four.
         assert!(

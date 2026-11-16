@@ -209,11 +209,11 @@ pub(crate) struct SectionApi {
     /// made under any of them are theirs.
     me: String,
     earlier: Vec<String>,
-    /// The settings document's version the api last read.
+    /// The settings document's version the API last read.
     seen: Cell<Option<SettingsRevision>>,
     /// Increases whenever what the section holds may have changed.
     revision: Cell<u64>,
-    /// The last publication, at the api's and the locale's revision it was
+    /// The last publication, at the API's and the locale's revision it was
     /// built at: published again only when either moved.
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
 }
@@ -239,7 +239,7 @@ impl SectionApi {
         self.revision.set(self.revision.get().wrapping_add(1));
     }
 
-    /// Note whether the settings document moved since the api last read
+    /// Note whether the settings document moved since the API last read
     /// it (another window, the Settings app, another device changed it).
     fn notice(&self) {
         let now = Some(self.kind.revision());

@@ -32,7 +32,7 @@ pub enum Shape {
 }
 
 /// Who may change a field without being asked, by what a change of it can
-/// do to the person: every door decides it from the published field edit.
+/// do to the person: every API decides it from the published field edit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Trust {
     /// Anyone with write access changes it.

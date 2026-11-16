@@ -1,5 +1,5 @@
 //! The contract a custom widget or renderer implements to take part in a
-//! resource: collaboration, history, undo, permissions and the action api.
+//! resource: collaboration, history, undo, permissions and the action API.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -224,7 +224,7 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     }
 
     /// A participant's action — an agent's verb, a collaborator's edit
-    /// taken through the api — left them at `place`, as the resource says
+    /// taken through the API — left them at `place`, as the resource says
     /// it lands ([`Resource::lands`](tilo_resource::Resource::lands)).
     /// Called after [`present`](Self::present) showed the state holding it.
     /// Presence draws them there already; a surface that acts at a

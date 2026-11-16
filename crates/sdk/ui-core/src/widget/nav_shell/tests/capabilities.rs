@@ -235,8 +235,8 @@ tilo_test_env::scenario! {
         let mut h = harness(shell, 1024, 700, theme.clone());
         settle(&mut h, 1024, 700);
         let shown = part_rect(&h, Part::Title(Column::Content));
-        let door = part_rect(&h, Part::More(Column::Content));
-        assert!(door.width() > 0.0, "the actions wait in the menu's door");
+        let api = part_rect(&h, Part::More(Column::Content));
+        assert!(api.width() > 0.0, "the actions wait in the menu's api");
         let (needs, _) =
             crate::chrome::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
         assert!(
@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
             "the title says {needs:.0} wide and takes {:.0} ({shown:?})",
             shown.width()
         );
-        assert!(shown.x1 <= door.x0, "{shown:?} does not run into {door:?}");
+        assert!(shown.x1 <= api.x0, "{shown:?} does not run into {api:?}");
     }
 
     // The row's order of giving way: an action's label gives way for its icon, then what else stands
@@ -607,7 +607,7 @@ tilo_test_env::scenario! {
             .more
             .choose(row);
         h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
-        assert!(deleted.get(), "the chosen action ran through its door");
+        assert!(deleted.get(), "the chosen action ran through its api");
     }
 }
 

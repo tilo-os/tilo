@@ -629,7 +629,7 @@ unsafe fn solve_widget_layout(
         if !changed {
             // The solve has read every size that asked for one, so the
             // requests are met here rather than by a draw that may never
-            // come: a widget placed and not drawn (a shut overflow door's
+            // come: a widget placed and not drawn (a shut overflow API's
             // controls, a row a scroll hides) would otherwise ask again on
             // every frame after, and re-measure its path to the root.
             let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);

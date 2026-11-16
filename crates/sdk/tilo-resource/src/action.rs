@@ -220,7 +220,7 @@ impl ActionCx {
         self.author.as_ref()
     }
 
-    /// The invocation admitted by the action door, pinned in the action
+    /// The invocation admitted by the action API, pinned in the action
     /// envelope so origin and replay observe the same correlation identity.
     /// This is not caller authority; use [`Self::author`] for that.
     pub const fn invocation(&self) -> Option<tilo_actions::InvocationId> {
@@ -244,7 +244,7 @@ fn note_minted(id: &str) {
 }
 
 /// The ids the record action applied last on this thread minted (items it
-/// added, a group's members' together), taken: what the door answers its
+/// added, a group's members' together), taken: what the API answers its
 /// caller with beside the action's own answer.
 #[must_use]
 pub fn take_minted() -> Vec<String> {
@@ -497,7 +497,7 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     }
 
     /// Whether only the app's own code applies this operation
-    /// (`#[action(by_app)]`): it is declared to no caller, and a door that
+    /// (`#[action(by_app)]`): it is declared to no caller, and an action API that
     /// decodes one refuses it. `#[resource]` generates it.
     fn by_app(&self) -> bool {
         false
@@ -1381,7 +1381,7 @@ impl<R, A: Serialize> ActionRef<R, A> {
     /// This action as the published resource `resource` offers it (the
     /// record, one of its items, or a resource a view or search hit derives
     /// from it, by its published id): what a search hit invokes or a test
-    /// addresses through the host's door. The action's id comes from the
+    /// addresses through the host's API. The action's id comes from the
     /// typed reference, so it cannot name one the app does not declare.
     #[must_use]
     pub fn on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
@@ -1686,7 +1686,7 @@ impl<R> std::fmt::Debug for Invoke<R> {
 
 impl<R> Invoke<R> {
     /// An invocation of one of the app's effects — show an item, refresh a
-    /// list — through the same door as its actions: what a launch asks of
+    /// list — through the same API as its actions: what a launch asks of
     /// an app beside editing its resource (`tilo-store:app/<id>` showing that
     /// app). It changes no document, so it never builds an action.
     pub fn effect<E: crate::Effect>(effect: &E) -> Self {

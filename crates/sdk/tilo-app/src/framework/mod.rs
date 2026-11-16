@@ -16,7 +16,7 @@
 //! with the app's own view and restores any of them), per-author undo,
 //! permissions enforced on every action (controls of forbidden actions disable
 //! themselves, and a role change takes effect while the app runs), the action
-//! palette and agent/script api, and search indexing.
+//! palette and agent/script API, and search indexing.
 //!
 //! ```ignore
 //! #[derive(Model, Default)]
@@ -107,7 +107,7 @@
 //!   a host hands over — asks the app which record that is
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
 //!   it, a minted one) and which of the resource's actions the launch takes
-//!   there ([`ResourceApp::launch`], through the same api as every
+//!   there ([`ResourceApp::launch`], through the same API as every
 //!   control), or which of its effects, for a launch that shows something
 //!   (a link to one item) rather than editing
 //!   ([`Invoke::effect`](tilo_resource::Invoke::effect)); the view reads the
@@ -236,7 +236,7 @@
 //!   to the item: the resource's `children` carry
 //!   `.with_action(MyEffect::Open { id }.bound())`, a live row
 //!   [`LiveRow::effect`]. The palette, an agent or a script invokes it on
-//!   the item through the same api as every other action, and the handler
+//!   the item through the same API as every other action, and the handler
 //!   of `MyEffect` receives that value. An effect only ever offered this way
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
 //!   to type. No view or surface answers a raw `ResourceOperations::start_operation`
@@ -294,7 +294,7 @@
 //!   `PublishesResources` is dropped (a debug build stops at it).
 //! * **A participant without a window** — an agent, a service, a script —
 //!   acts through the app's own view mounted over the record and never
-//!   drawn ([`AttachedView`]): the same api as a person, checked against
+//!   drawn ([`AttachedView`]): the same API as a person, checked against
 //!   its permissions, attributed to it (an agent acting for its person) and
 //!   recorded in history with the task it belongs to.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with

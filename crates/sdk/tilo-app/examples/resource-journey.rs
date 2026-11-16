@@ -97,7 +97,7 @@ impl ResourceApp for ChecklistApp {
             .with_placeholder("journey-draft");
         // Progressive disclosure: start with the shorthand, then use the
         // shared control's presentation API, then wrap it in a component.
-        // Every level still invokes ADD through the same host door.
+        // Every level still invokes ADD through the same host API.
         let add = cx.button("journey-add", Checklist::ADD.invoke());
         let actions = cx.actions();
         let icon = actions.bind_invocation(

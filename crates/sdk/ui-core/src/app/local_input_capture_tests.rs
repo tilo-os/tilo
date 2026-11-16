@@ -700,7 +700,7 @@ tilo_test_env::scenario! {
                     None
                 }
             })
-            .expect("the public local semantic door reports its actual typed execution");
+            .expect("the public local semantic api reports its actual typed execution");
         assert_eq!(route, &fixture.bindings[0].broker_route().unwrap());
         assert_eq!(report.revision, revision);
         assert_eq!(report.resource, alias);

@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
         assert!(dispatcher.read_only(), "a commenter may not write");
 
         app.invoke(Memo::REMARK.with("looks good"))
-            .expect("a commenter remarks through the door");
+            .expect("a commenter remarks through the API");
         assert!(
             app.invoke(Memo::ADD_LINE.with("sneaky")).is_err(),
             "but adds no line"
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
 
     phase a_commenters_typed_edit_needs_what_its_value_needs;
     {
-        // Through the window's door: the generic `apply` is offered to a
+        // Through the window's API: the generic `apply` is offered to a
         // commenter, and admits the values that need only commenting.
         let mut app = TestApp::<MemoApp>::new().unwrap();
         app.set_role(tilo_app::Role::Commenter);

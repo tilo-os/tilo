@@ -792,7 +792,7 @@ mod tests {
         }
     }
 
-    /// The arguments of the field edit `edit`, as the api takes them.
+    /// The arguments of the field edit `edit`, as the API takes them.
     fn edit(edit: &tilo_resource::Edit<FeedbackDraft>) -> serde_json::Value {
         json!({ tilo_resource::EDIT_PARAM: edit })
     }

@@ -21,7 +21,7 @@ pub(super) fn rooted_edit_spec(
 ) -> ActionSpec {
     let mut tags = vec![tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned()];
     if let Some(root) = root {
-        // Any door reads the edit without this record's code: it is a field
+        // Any API reads the edit without this record's code: it is a field
         // edit, these collections' removals ask nothing, these fields' every
         // edit asks, and these fields' edits making them weaker than they
         // are now.

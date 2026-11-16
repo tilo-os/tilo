@@ -208,15 +208,15 @@ pub(crate) fn refresh_bound_controls(
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
         let owner = crate::history_mode::HistoryOwner::component(binding.clone());
-        let mut doors = host_apis.clone();
-        doors.insert(crate::search::search_address());
-        doors.extend(
+        let mut addresses = host_apis.clone();
+        addresses.insert(crate::search::search_address());
+        addresses.extend(
             tile_apis
                 .iter()
                 .filter(|(enclosing, _)| enclosing.same_owner(&owner))
-                .flat_map(|(_, doors)| doors.iter().cloned()),
+                .flat_map(|(_, addresses)| addresses.iter().cloned()),
         );
-        let allowed = component_controls_allowed(binding, snapshots, doors);
+        let allowed = component_controls_allowed(binding, snapshots, addresses);
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
@@ -238,7 +238,7 @@ pub(crate) fn refresh_bound_controls(
 pub(crate) fn component_controls_allowed(
     binding: &CallbackBinding,
     snapshots: &[BoundResourceSnapshot],
-    doors: std::collections::HashSet<tilo_actions::ActionAddress>,
+    addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
 ) -> Rc<std::collections::HashSet<tilo_actions::ActionAddress>> {
     let mut owned = snapshots
         .iter()
@@ -254,19 +254,19 @@ pub(crate) fn component_controls_allowed(
         let mut memo = snapshot.controls.borrow_mut();
         if let Some(memo) = memo
             .as_mut()
-            .filter(|memo| memo.permissions == permissions && memo.doors == doors)
+            .filter(|memo| memo.permissions == permissions && memo.addresses == addresses)
         {
             if !Rc::ptr_eq(&memo.forest, forest) {
                 memo.update(binding, forest);
             }
             return Rc::clone(&memo.allowed);
         }
-        let derived = ControlAvailability::derive(binding, forest, permissions, doors);
+        let derived = ControlAvailability::derive(binding, forest, permissions, addresses);
         let allowed = Rc::clone(&derived.allowed);
         *memo = Some(derived);
         return allowed;
     }
-    let mut allowed = doors.clone();
+    let mut allowed = addresses.clone();
     for snapshot in snapshots
         .iter()
         .filter(|snapshot| snapshot.binding.same_component(binding))
@@ -281,13 +281,13 @@ impl ControlAvailability {
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
         permissions: crate::permissions::DirectoryPermissionWitness,
-        doors: std::collections::HashSet<tilo_actions::ActionAddress>,
+        addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
             forest: Rc::clone(forest),
             permissions,
-            allowed: Rc::new(doors.clone()),
-            doors,
+            allowed: Rc::new(addresses.clone()),
+            addresses,
             counts: HashMap::new(),
         };
         let allowed = Rc::make_mut(&mut derived.allowed);
@@ -299,7 +299,7 @@ impl ControlAvailability {
                     true,
                     &mut derived.counts,
                     allowed,
-                    &derived.doors,
+                    &derived.addresses,
                 );
             });
         }
@@ -309,18 +309,18 @@ impl ControlAvailability {
     fn update(&mut self, binding: &CallbackBinding, next: &Rc<[SharedResource]>) {
         let last = std::mem::replace(&mut self.forest, Rc::clone(next));
         let allowed = Rc::make_mut(&mut self.allowed);
-        let (counts, doors) = (&mut self.counts, &self.doors);
+        let (counts, addresses) = (&mut self.counts, &self.addresses);
         crate::published::diff(&last, next, &mut |change| match change {
             crate::published::Change::Removed(subtree) => visit_subtree(subtree, &mut |node| {
-                count_addresses(binding, node, false, counts, allowed, doors);
+                count_addresses(binding, node, false, counts, allowed, addresses);
             }),
             crate::published::Change::Added(subtree) => visit_subtree(subtree, &mut |node| {
-                count_addresses(binding, node, true, counts, allowed, doors);
+                count_addresses(binding, node, true, counts, allowed, addresses);
             }),
             crate::published::Change::Head { last, next } if same_offer(last, next) => {}
             crate::published::Change::Head { last, next } => {
-                count_addresses(binding, last, false, counts, allowed, doors);
-                count_addresses(binding, next, true, counts, allowed, doors);
+                count_addresses(binding, last, false, counts, allowed, addresses);
+                count_addresses(binding, next, true, counts, allowed, addresses);
             }
             crate::published::Change::Roots => {}
         });
@@ -352,7 +352,7 @@ fn count_addresses(
     add: bool,
     counts: &mut HashMap<tilo_actions::ActionAddress, usize>,
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
-    doors: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    addresses: &std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     let head = node.head();
     let permissions = binding.permissions.borrow();
@@ -374,7 +374,7 @@ fn count_addresses(
             *count = count.saturating_sub(1);
             if *count == 0 {
                 counts.remove(&address);
-                if !doors.contains(&address) {
+                if !addresses.contains(&address) {
                     allowed.remove(&address);
                 }
             }
@@ -707,7 +707,7 @@ impl BoundResourceSnapshot {
 pub(crate) struct ControlAvailability {
     forest: Rc<[SharedResource]>,
     permissions: crate::permissions::DirectoryPermissionWitness,
-    doors: std::collections::HashSet<tilo_actions::ActionAddress>,
+    addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
     /// `APIs` and every address in `counts`.

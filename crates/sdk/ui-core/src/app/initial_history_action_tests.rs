@@ -556,7 +556,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             calls.get(),
             1,
-            "the intent crosses the original door exactly once"
+            "the intent crosses the original api exactly once"
         );
         assert!(app.collaboration.manager.is_connected());
         assert!(app.action_publication_failure.is_none());
@@ -723,7 +723,7 @@ tilo_test_env::scenario! {
                 assert_eq!(
                     (fixture.terminals)(),
                     1,
-                    "confirmed cancellation crosses the original host terminal door once"
+                    "confirmed cancellation crosses the original host terminal api once"
                 );
                 assert_eq!(
                     (fixture.updates)(),

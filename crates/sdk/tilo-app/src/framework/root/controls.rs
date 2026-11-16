@@ -2,7 +2,7 @@
 //! its view's controls queued, and how each one is answered.
 //!
 //! A press goes over the app's own record: the root keeps it, and the host's
-//! local document api runs what the view's controls submit.
+//! local document API runs what the view's controls submit.
 
 use super::ResourceRoot;
 use super::widget::RootControls;

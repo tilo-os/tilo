@@ -7049,7 +7049,7 @@ impl FrameHarness {
             self.invalidate_local();
             return Ok(crate::widget::ResourceOperationStart::Completed(output));
         }
-        let Some(door) = self.session_api.as_mut() else {
+        let Some(api) = self.session_api.as_mut() else {
             tracing::warn!(provider = %hosted.provider, "no session serves this frame's provider");
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
@@ -7058,7 +7058,7 @@ impl FrameHarness {
             .into());
         };
         let started = crate::session_api::SessionApi::invoke(
-            door,
+            api,
             operation,
             false,
             tilo_actions::remote::InvokeRequest {

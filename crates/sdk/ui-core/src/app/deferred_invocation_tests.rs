@@ -205,7 +205,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
-            "no-confirmation semantic activation must reach the ordinary owner door"
+            "no-confirmation semantic activation must reach the ordinary owner api"
         );
         assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
     }

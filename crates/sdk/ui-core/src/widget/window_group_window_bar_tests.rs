@@ -777,11 +777,11 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     );
     assert!(
         new_tab.area() > 0.0 && row.contains(new_tab.center()),
-        "so does its new-tab door: {new_tab:?}"
+        "so does its new-tab api: {new_tab:?}"
     );
     assert!(
         new_tab.x1 <= search.x0 && search.x1 <= controls.pill.x0,
-        "the door, the search, then the window's controls, as the bar shows them: {new_tab:?}          {search:?} {controls:?}"
+        "the API, the search, then the window's controls, as the bar shows them: {new_tab:?}          {search:?} {controls:?}"
     );
     for (name, rect) in [("search", search), ("new tab", new_tab)] {
         assert!(
@@ -793,7 +793,7 @@ fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
     assert!(g.bar_grab_hit(grab_ground), "the row moves the window");
     assert!(
         !g.bar_grab_hit(new_tab.center()),
-        "the new-tab door is a control, not a handle"
+        "the new-tab api is a control, not a handle"
     );
     assert!(
         !g.bar_grab_hit(search.center()),
@@ -914,7 +914,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     assert_eq!(
         frame.root_mut::<WindowGroup>().take_pending_new_tab(),
         Some(10),
-        "the new-tab door asks the shell for a place"
+        "the new-tab api asks the shell for a place"
     );
 
     activate(&mut frame, &names.1);
@@ -1397,7 +1397,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     assert_eq!(
         (new_tab + 1, new_tab + 2),
         (maximize, close),
-        "the new-tab door, then restore/maximize, then close: {stops:?}"
+        "the new-tab api, then restore/maximize, then close: {stops:?}"
     );
     let own = stops
         .get(new_tab.saturating_sub(1))
@@ -1522,7 +1522,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
         !stops
             .iter()
             .any(|stop| stop.as_deref() == Some(crate::widget::tabs::new_tab_name().as_str())),
-        "the band bar's door is no stop of its own: {stops:?}"
+        "the band bar's api is no stop of its own: {stops:?}"
     );
 }
 

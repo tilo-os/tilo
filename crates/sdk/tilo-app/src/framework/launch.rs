@@ -10,7 +10,7 @@
 //! a record derived from it, a minted one. What the launch then does in that
 //! record is the resource's actions
 //! ([`ResourceApp::launch`](super::ResourceApp::launch)), submitted through
-//! the same api as every control, so they are checked, attributed to the
+//! the same API as every control, so they are checked, attributed to the
 //! participant, undoable and in history.
 //!
 //! An app's own command-line options

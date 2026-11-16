@@ -1,6 +1,6 @@
 //! Launching a framework app on something: a path on its command line opens
 //! that path's own record and takes the app's launch actions there through
-//! the door every control uses; a file a host hands over reaches the app
+//! the API every control uses; a file a host hands over reaches the app
 //! only if it opens that type.
 
 use tilo_app::prelude::*;
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
         assert!(!app.undo(), "nothing to take back");
 
         // A viewer may not edit, but an effect declared for readers reaches its
-        // handler through the same door.
+        // handler through the same API.
         let mut viewer = TestApp::<GalleryApp>::with_role(tilo_app::Role::Viewer).unwrap();
         let dispatcher = GALLERY
             .with(|gallery| gallery.borrow_mut().take())
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
         assert!(refused.contains("cannot be read"), "{refused}");
         assert_eq!(app.record(), &harbour);
 
-        // Edits go to the record shown now, through the same door.
+        // Edits go to the record shown now, through the same API.
         app.invoke(Sketch::NOTE.with("on the harbour")).unwrap();
         assert_eq!(app.state().notes.len(), 1);
 

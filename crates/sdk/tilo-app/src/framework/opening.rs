@@ -8,8 +8,8 @@
 //! the component any launch builds over it, whose view takes over what was shown ([`Opened`]),
 //! so nothing the person saw or did is built again or lost.
 //!
-//! Until then nothing of the root reaches the window's api: what was shown hands its edits to
-//! the api once the view has taken it over, in the order they were made.
+//! Until then nothing of the root reaches the window's API: what was shown hands its edits to
+//! the API once the view has taken it over, in the order they were made.
 
 use std::cell::RefCell;
 
@@ -82,7 +82,7 @@ impl ui_core::widget::Decorator for OpeningRoot {
     }
 
     // What is shown keeps its controls, undo and presence to itself until the record's view
-    // takes it over: its edits wait for the api that view hands them to.
+    // takes it over: its edits wait for the API that view hands them to.
     fn provide<'a>(&'a self, _request: &mut ui_core::widget::capability::Request<'a, '_>) {}
 
     fn provide_mut<'a>(

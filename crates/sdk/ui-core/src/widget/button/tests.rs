@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// An effect on the person's own device runs for a guest (an Editor) and
 /// even a Viewer without asking anyone; a Viewer's click on one reaching
 /// outside is refused, and the window says so. No click is dropped
-/// unseen. (A framework app's ask is shown too: api-tester's
+/// unseen. (A framework app's ask is shown too: API-tester's
 /// `a_guests_send_is_asked_in_the_window_saying_who_decides`.)
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
@@ -1942,7 +1942,7 @@ tilo_test_env::scenario! {
 
     phase a_button_the_solver_placed_answers_its_measure;
     // A control the solver has placed answers its measure there, not in a draw: a control that is
-    // laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
+    // laid out and never drawn (a shut overflow API's button among a row's controls) finds no draw
     // to answer it, so one switch of input would keep it — and its path to the root — asking to be
     // measured on every frame after.
     {

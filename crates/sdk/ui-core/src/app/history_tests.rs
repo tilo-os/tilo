@@ -5171,7 +5171,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 starts.get(),
                 0,
-                "hidden private output must never enter an ordinary action door after return"
+                "hidden private output must never enter an ordinary action api after return"
             );
             assert_eq!(app.pending_history_controls().len(), 1);
             assert_eq!(
@@ -5493,7 +5493,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             &*ledger.borrow(),
             &[serde_json::json!({})],
-            "new passive shared control uses ordinary canonical door"
+            "new passive shared control uses ordinary canonical api"
         );
     }
 
@@ -5702,13 +5702,13 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
         !has_open_button(&in_window),
         "an app without a header must not gain a duplicate top bar"
     );
-    let door = in_window
+    let api = in_window
         .host_commands(false)
         .into_iter()
         .find(|command| command.group == CommandGroup::History)
         .expect("History stays available through the platform action");
-    assert!(door.enabled);
-    assert!(in_window.invoke_host_command(&door.invocation().unwrap()));
+    assert!(api.enabled);
+    assert!(in_window.invoke_host_command(&api.invocation().unwrap()));
     layout(&mut in_window);
     assert!(in_window.history.as_ref().unwrap().is_open());
 

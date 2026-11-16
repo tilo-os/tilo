@@ -195,7 +195,7 @@ impl ResourceRoot {
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
-    /// Asked through the root's own api, or by the app's view: a view whose app runs
+    /// Asked through the root's own API, or by the app's view: a view whose app runs
     /// elsewhere (a tilolang host's instance) hears the request there.
     fn take_window_activation_intent(&self) -> bool {
         let own = self.native_presentation.take_window_activation_intent();
@@ -1673,7 +1673,7 @@ impl RootModel for ResourceRoot {
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
 
-    /// Resource and app presentation apis publish effect/view actions; their
+    /// Resource and app presentation APIs publish effect/view actions; their
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
@@ -2054,7 +2054,7 @@ impl ResourceRoot {
     }
 }
 
-// The root's own clients for the action api (minting links, opening
+// The root's own clients for the action API (minting links, opening
 // references) share the app's collaboration connection with whatever the
 // view keeps there.
 impl ui_core::widget::Collaborative for ResourceRoot {
@@ -2531,7 +2531,7 @@ impl RootApp for ResourceRoot {
             {
                 return Some(intent);
             }
-            // A view whose app runs elsewhere asks through its own api.
+            // A view whose app runs elsewhere asks through its own API.
             if let Some(intent) = ui_core::component_lifecycle::take_host_intent(widget) {
                 return Some(intent);
             }

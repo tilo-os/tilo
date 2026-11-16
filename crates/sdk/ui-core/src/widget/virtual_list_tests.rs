@@ -817,7 +817,7 @@ tilo_test_env::scenario! {
     phase a_press_opens_the_row_of_a_list_that_opens_on_press;
     {
         let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let door = Rc::clone(&opened);
+        let api = Rc::clone(&opened);
         let model = VecListModel::new((0_u64..3).collect(), |key| *key).unwrap();
         let mut list = VirtualList::new(model, 20.0, |_, _, key| {
             Box::new(ProbeRow::new(
@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
         .with_viewport_height(60.0)
         .with_semantic_key(ToString::to_string)
         .open_on_press()
-        .on_activate_view("probe-list", move |key| door.borrow_mut().push(key));
+        .on_activate_view("probe-list", move |key| api.borrow_mut().push(key));
         let (taffy, node) = lay_out(&mut list, 200.0);
 
         dispatch(&mut list, &cursor(10.0), &taffy, node);

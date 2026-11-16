@@ -285,7 +285,7 @@ fn unavailable_preview(_: PreviewInput) -> Result<Box<dyn HistoryPreview>, Strin
     Err("this scope is a declaration, not a preview".into())
 }
 
-/// One version of `R` as the read api answers it: the type's own `read`
+/// One version of `R` as the read API answers it: the type's own `read`
 /// adapter over the frozen document, exactly as it answers the live record —
 /// its semantic content, never the raw record.
 ///
@@ -306,7 +306,7 @@ pub(crate) fn historical_content<R: Resource>(
     // The version must read as the app's type at all: one written by a
     // newer app is incompatible, which is not the same as empty.
     let state = R::read(frozen).map_err(|error| HistoricalGap::unavailable(error.to_string()))?;
-    // The read api's answer states the type's content as its `content`
+    // The read API's answer states the type's content as its `content`
     // beside the version's heads, so the adapter's own JSON goes there
     // unwrapped.
     R::read_content(&state, frozen, item).map_err(HistoricalGap::unavailable)
