@@ -950,7 +950,7 @@ scenario "a subscriptions feed" {
             views: 91000,
             published: 2026-10-26T07:45Z,
             duration: 1180,
-            description: "A band warms up in a car park. Then the doors open.",
+            description: "A band warms up in a car park. Then the crowd comes in.",
             likes: 8800,
             live: false,
         ),

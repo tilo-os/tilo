@@ -1,4 +1,4 @@
-//! The Tilo side as the planners read it: Chat's records as the record door
+//! The Tilo side as the planners read it: Chat's records as the record api
 //! reads them ([`ChatRead`]), and the workspace's member list. Read from JSON
 //! rather than Chat's types so the connector does not carry Chat's code.
 
@@ -107,7 +107,7 @@ pub struct WorkspaceChat {
     pub busy: Vec<String>,
 }
 
-/// Chat's records as the bridge reads them through the record door: Chat's
+/// Chat's records as the bridge reads them through the record api: Chat's
 /// record of the workspace and the messages of the parts read of its chain
 /// (its newest, and the one a change was made in), in the chain's order,
 /// with each filed report's message after them.
@@ -121,7 +121,7 @@ pub struct ChatRead {
 }
 
 impl ChatRead {
-    /// The door's readings `{"chat", "changed", "messages"}`: Chat's record
+    /// The API's readings `{"chat", "changed", "messages"}`: Chat's record
     /// of the workspace, the part of its messages a change was made in
     /// (`null` for none), and the chain's head, its newest part, each
     /// `{revision, records: [{record, value}]}`. A part still arriving or
@@ -515,7 +515,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn chat_is_read_from_what_the_record_door_gives;
+        fn chat_is_read_from_what_the_record_api_gives;
 
         phase reads_the_parts_read_and_counts_the_channels_of_the_parts_before;
         {

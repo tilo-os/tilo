@@ -548,7 +548,7 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
     )
 }
 
-/// Lend `window` what it keeps from the host: the door for its edits, the content
+/// Lend `window` what it keeps from the host: the API for its edits, the content
 /// store, and in a live window the person's records, this device's settings and the
 /// engine's wakes.
 fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
@@ -666,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_bookmarks_its_page_and_follows_preferences_through_the_door() {
+    fn the_window_bookmarks_its_page_and_follows_preferences_through_the_api() {
         let mut app = TestApp::<BrowserShell>::capture(None).unwrap();
         app.harness().click_named("browser.bookmark").unwrap();
         app.settle();
@@ -1148,7 +1148,7 @@ mod tests {
         reached
     }
 
-    /// [`reachable_by_an_agent`] from the top of the directory, as an agent's door walks it: the
+    /// [`reachable_by_an_agent`] from the top of the directory, as an agent's api walks it: the
     /// rows the window's directory starts with, then what each listed resource holds. A row an
     /// agent is not shown hides everything below it, the window's own row included.
     fn reachable_from_the_top(app: &mut TestApp<BrowserShell>) -> (Vec<(String, String)>, String) {
@@ -1200,7 +1200,7 @@ mod tests {
 
     /// A window with a loaded page offers an agent the page's actions both ways an agent walks to
     /// them. From the window's own row: reading, capturing, finding and clicking. And from the top
-    /// of the directory, as an agent at the door lists a Browser window: the window's own row,
+    /// of the directory, as an agent at the API lists a Browser window: the window's own row,
     /// then the page on it, whose actions reach it only when every row above the page is one an
     /// agent is shown.
     #[test]

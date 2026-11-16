@@ -1,6 +1,6 @@
-//! Fill a public workspace with people, as its door takes them in: each a
+//! Fill a public workspace with people, as its entry takes them in: each a
 //! new person with their own root and device, entering through the
-//! workspace's door on a session with the relay, as a page's Join does.
+//! workspace's entry on a session with the relay, as a page's Join does.
 //! Nothing is written around the relay: the members are the host's own, by
 //! the path every visitor takes.
 //!

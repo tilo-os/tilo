@@ -3,7 +3,7 @@ use runtime_fs::blobs::{BlobClient, ReadOutcome};
 use std::collections::BTreeMap;
 use tilo_actions::remote::{Confirmation, InvokeArgument, PendingPoll, RemoteActionTarget};
 
-const TEST: &str = "standalone::media_import_tests::owner_import_through_the_canonical_door_grants_only_the_selected_workspace";
+const TEST: &str = "standalone::media_import_tests::owner_import_through_the_canonical_api_grants_only_the_selected_workspace";
 
 #[test]
 fn retained_owner_facade_refuses_revoked_device_before_import() {
@@ -13,7 +13,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         return;
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
-    // The persistent OS-search door and CLI use this same runtime facade.
+    // The persistent OS-search API and CLI use this same runtime facade.
     // It retains certified custody without installing a native seat service.
     let host = session.action_host().unwrap();
     let owner = Caller::local_person(session.actor()).in_workspace(session.workspace());
@@ -239,7 +239,7 @@ fn refuse_scoped_imports(
 }
 
 #[test]
-fn owner_import_through_the_canonical_door_grants_only_the_selected_workspace() {
+fn owner_import_through_the_canonical_api_grants_only_the_selected_workspace() {
     let Some(profile) = super::tests::isolated_root(TEST) else {
         return;
     };

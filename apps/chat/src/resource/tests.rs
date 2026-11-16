@@ -166,7 +166,7 @@ fn messages(app: &mut TestApp<ChatShell>) -> Vec<crate::model::Message> {
 }
 
 #[test]
-fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
+fn reviewed_feedback_search_opens_the_report_and_triages_through_the_api() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let (resource, channel) = general(&app);
     let mut preview = ui::feedback::Draft {
@@ -815,7 +815,7 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
 }
 
 /// Filing feedback is commenting: a commenter files a report through the
-/// app's own door, a viewer cannot.
+/// app's own api, a viewer cannot.
 #[test]
 fn a_commenter_files_feedback_and_a_viewer_cannot() {
     let submission = |app: &TestApp<ChatShell>| {
@@ -950,9 +950,9 @@ tilo_test_env::scenario! {
     /// What reaches a mounted chat through its actions and its record.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_door;
+    fn calls_files_versions_history_and_other_replicas_reach_the_window_through_its_api;
 
-    phase start_call_through_the_door_makes_a_voice_channel_and_joins_it;
+    phase start_call_through_the_api_makes_a_voice_channel_and_joins_it;
     {
         let mut app = TestApp::<ChatShell>::new().unwrap();
         app.call("start-call", serde_json::json!({})).unwrap();
@@ -1116,7 +1116,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_past_version_reads_and_shows_its_channel;
-    // A past version reads through the `read` door and draws in the chat's own
+    // A past version reads through the `read` api and draws in the chat's own
     // view with the channel as it was named then.
     {
         let mut app = TestApp::<ChatShell>::new().unwrap();

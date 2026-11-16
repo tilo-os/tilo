@@ -1258,7 +1258,7 @@ fn the_volume_and_speed_this_device_chose_are_kept_and_restored() {
     assert!((fresh.rate - crate::preferences::DEFAULT_RATE).abs() < f32::EPSILON);
 
     // The person drags the volume to a third and picks 1.5×. (The
-    // production path, past the effect door's open-video guard.)
+    // production path, past the effect API's open-video guard.)
     app.with_surface::<PlayerApp, _>(|player| {
         let mut player = player.state();
         player

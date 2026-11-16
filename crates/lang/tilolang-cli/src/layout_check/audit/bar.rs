@@ -179,7 +179,7 @@ fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarC
 
 /// What is wrong with the window's bar against what its app declared: the one main action a view
 /// declares stands in the row as the primary button, so a person sees at once what the window is
-/// for, rather than as one more action or behind the bar's door.
+/// for, rather than as one more action or behind the bar's overflow button.
 pub fn bar_primary(
     toolbar: Option<&ui::window_toolbar::WindowToolbar>,
     layout: &ui::window_toolbar::BarLayout,

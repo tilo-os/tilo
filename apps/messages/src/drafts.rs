@@ -74,7 +74,7 @@ mod tests {
 
     use super::*;
 
-    /// One action as the door takes it: stamped with when it was made.
+    /// One action as the API takes it: stamped with when it was made.
     fn stamped(action: MessageDraftsAction) -> ui::tilo_resource::Stamped<MessageDraftsAction> {
         ui::tilo_resource::Stamped {
             operation: action,

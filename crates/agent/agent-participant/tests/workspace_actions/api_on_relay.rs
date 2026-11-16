@@ -1,7 +1,7 @@
 //! The API server on a relay as tilo.sh runs them: the relay's own
 //! person is its operator, its app workers answer every workspace with no
 //! tab of anyone's open, the site's home workspace lets people in through
-//! its door, and a person approves keys for their backend at the door.
+//! its entry, and a person approves keys for their backend at the action API.
 //!
 //! The API server's tests drive it in process; [`serve`] serves it on loopback
 //! for a client outside this process (an SDK's end-to-end run), with the
@@ -21,8 +21,8 @@ pub async fn json_of(reply: tilo_api::Reply) -> (u16, Value) {
     use http_body_util::BodyExt as _;
     let status = reply.status().as_u16();
     let body = reply.into_body().collect().await.unwrap().to_bytes();
-    // A body that is not JSON (the door's plain-text refusals) is kept as
-    // its text, so an assertion on it says what the door said.
+    // A body that is not JSON (the API's plain-text refusals) is kept as
+    // its text, so an assertion on it says what the action API said.
     let value = serde_json::from_slice(&body)
         .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
     (status, value)
@@ -48,7 +48,7 @@ fn query_of(url: &str) -> HashMap<String, String> {
 }
 
 /// The relay as its operator runs it, the site whose home workspace lets
-/// anyone in through its door, and the API server before both.
+/// anyone in through its entry, and the API server before both.
 pub struct OnRelay {
     pub api: Arc<Server>,
     /// The API server's public origin, as agents reach it.
@@ -57,7 +57,7 @@ pub struct OnRelay {
     pub lobby: String,
     /// The relay's origin, where a page joins its workspaces.
     pub relay: String,
-    /// The site people's links open under, which the door and the relay
+    /// The site people's links open under, which the action API and the relay
     /// both announce.
     pub web_entry: String,
     /// The relay's own origin, which the links to its records name.
@@ -108,8 +108,8 @@ async fn start(
     member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     shelled: bool,
 ) -> OnRelay {
-    // The site the door and the relay hand people's links out under: its
-    // `entry.json` names the home workspace's door once the relay made it.
+    // The site the action API and the relay hand people's links out under: its
+    // `entry.json` names the home workspace's entry once the relay made it.
     let entry = Arc::new(std::sync::OnceLock::<String>::new());
     let answered = Arc::clone(&entry);
     // Its shelf keeps the sealed invitations links name (`/i/<handle>`).
@@ -168,7 +168,7 @@ async fn start(
             "relay.tilo.test",
         ))
         .unwrap();
-    // The site's home workspace, whose door lets anyone in: the people it
+    // The site's home workspace, whose entry lets anyone in: the people it
     // lets in make workspaces of their own here.
     let lobby = workspaces.create("Lounge").await.unwrap().workspace;
     assert!(workspaces.admit_own_through(&lobby));
@@ -183,7 +183,7 @@ async fn start(
         )
         .await
         .unwrap();
-    // The site names that door in its `entry.json`.
+    // The site names that entry in its `entry.json`.
     let _ = entry.set(
         json!({"home": {"host": {"origin": relay},
                         "admission": format!("{relay}/peer/v1/directory/{lobby}/")}})
@@ -292,9 +292,9 @@ impl OnRelay {
 }
 
 /// A key called `name`, asked for as a terminal does and approved by the
-/// person's Tilo on the web, which this plays: it signs the door's
+/// person's Tilo on the web, which this plays: it signs the entry's
 /// challenge with a device of `root`'s and certifies the grant's key as the
-/// server key the door asked for, lasting until revoked.
+/// server key the action API asked for, lasting until revoked.
 pub async fn approved_key(
     on_relay: &OnRelay,
     root: &SigningKey,
@@ -302,7 +302,7 @@ pub async fn approved_key(
     name: &str,
 ) -> String {
     // The person approves on the site, where their page came in through its
-    // door: the door answers the page with an invitation, and the page enters
+    // entry: the entry answers the page with an invitation, and the page enters
     // on its session with it. The person is a member of the site's home
     // workspace from then on, so every key of theirs reaches the relay as
     // them.
@@ -455,7 +455,7 @@ pub async fn accept_invitation(
 
 /// `page`, a device `root` holds, enters the workspace `invitation` (its
 /// signed bytes) names on its own session, under the pre-admission `token`
-/// where the door issued one: what the workspace admitted it to,
+/// where the action API issued one: what the workspace admitted it to,
 /// `{workspace, name, role}`.
 pub async fn enter_page(
     on_relay: &OnRelay,
@@ -514,7 +514,7 @@ pub async fn enter_page(
 
 /// Answer each `POST {link}` to `listener` as the person `root` would:
 /// they follow the link on a page of theirs ([`accept_invitation`]), then
-/// approve a key of their own at the door ([`approved_key`]). Each answer
+/// approve a key of their own at the action API ([`approved_key`]). Each answer
 /// is `{key, person, joined}`.
 #[cfg(not(test))]
 async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: SigningKey) {
@@ -570,12 +570,12 @@ async fn invitee(on_relay: &OnRelay, listener: tokio::net::TcpListener, root: Si
     }
 }
 
-/// Serve the door on a relay with its app workers on loopback, for a client
+/// Serve the action API on a relay with its app workers on loopback, for a client
 /// outside this process. A person approves a key reaching all their
 /// workspaces there, for their backend, and holds another device's key in a
 /// key file, for a program that reaches the relay directly (an SDK's native
 /// part); another person, their reviewer, follows the invitation links posted
-/// to the invitee endpoint. It prints one JSON line naming the door, the key,
+/// to the invitee endpoint. It prints one JSON line naming the action API, the key,
 /// the key file and that endpoint, then runs `command` with them in its
 /// environment (`TILO_API_URL`, `TILO_API_KEY`, `TILO_KEY_FILE`,
 /// `TILO_INVITEE`) and answers its exit status, or with no command serves

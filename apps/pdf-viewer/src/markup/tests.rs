@@ -858,7 +858,7 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
+fn markup_actions_apply_through_the_api_and_undo_as_their_author() {
     let mut replica = planned_replica(2);
     let drawn = Signature {
         id: "sig-action".into(),

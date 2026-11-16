@@ -1,4 +1,4 @@
-//! Selecting a photo's subject through the typed `find-area` door, with the
+//! Selecting a photo's subject through the typed `find-area` api, with the
 //! on-device model held mid-inference: the window keeps taking pointer and
 //! key input, painting lands as its own step, and the area the model finds
 //! is one attributed step once it answers — or is refused when the artwork

@@ -1,4 +1,4 @@
-//! A photo's subject and a refined edge, through the door an agent uses:
+//! A photo's subject and a refined edge, through the API an agent uses:
 //! a selection fitted to the picture, a soft edge a mask draws as it is,
 //! the old background taken out of a cut-out's edge, and what is said when
 //! no subject model is set up.
@@ -108,7 +108,7 @@ fn a_rough_selection_is_refined_onto_the_pictures_edge() {
 }
 
 #[test]
-fn refining_through_the_job_door_is_one_undo_step() {
+fn refining_through_the_job_api_is_one_undo_step() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
     call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));

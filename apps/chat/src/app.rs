@@ -438,7 +438,7 @@ pub struct ChatApp {
     /// sending rests there.
     pub(crate) send_action: Option<ui::tilo_actions::ActionAddress>,
     /// The read receipt last sent on its own and not answered yet, by
-    /// channel, and the one the door refused: a receipt the door does not
+    /// channel, and the one the API refused: a receipt the API does not
     /// offer this person (a viewer) is not sent again until they read
     /// further.
     pub(crate) read_asked: Option<(String, crate::parts::ReadMark)>,
@@ -1112,9 +1112,9 @@ impl ChatApp {
             holding.map(|id| (id, std::rc::Rc::new(crate::record::kept_messages(doc))));
     }
 
-    /// Apply a verb on the chat's messages now, through the chain's door:
+    /// Apply a verb on the chat's messages now, through the chain's api:
     /// to the part it changes, permission-checked and attributed to this
-    /// window's person. One that needs confirming goes to the door, which
+    /// window's person. One that needs confirming goes to the API, which
     /// asks first. The window reads the change on its next sync.
     pub(crate) fn apply_part(
         &self,
@@ -1149,7 +1149,7 @@ impl ChatApp {
             .map_err(|error| error.to_string())
     }
 
-    /// Submit a verb on the chat's messages to the door, applied after this
+    /// Submit a verb on the chat's messages to the API, applied after this
     /// pass: from a pass that only reads the document.
     pub(crate) fn submit_part(&self, submit: impl ui::framework::Submit<crate::parts::ChatPart>) {
         let Some(chain) = &self.chain else {

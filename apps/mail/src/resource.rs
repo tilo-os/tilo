@@ -1564,7 +1564,7 @@ impl TestMail {
         );
     }
 
-    /// Apply what `dispatcher` asked the person to confirm, as the door
+    /// Apply what `dispatcher` asked the person to confirm, as the API
     /// does once they agree.
     pub(crate) fn confirm(doc: &mut tilo_resource::Doc, dispatcher: &Dispatcher<Mail>) {
         let mut mail = tilo_resource::Replica::<Mail>::from_doc(doc.clone());
@@ -2038,8 +2038,8 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The door between the published mailbox and the window.
-        fn the_window_reads_and_acts_through_its_one_door;
+        /// The API between the published mailbox and the window.
+        fn the_window_reads_and_acts_through_its_one_api;
 
         // A loaded message reads as what it says, and reading it marks it read
         // for no one.
@@ -2094,7 +2094,7 @@ mod tests {
             );
         }
 
-        phase effects_reach_the_window_through_the_door;
+        phase effects_reach_the_window_through_the_api;
         {
             let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
             let surface = app.agent_surface().to_string();
@@ -2116,7 +2116,7 @@ mod tests {
 
         // What the window adds beside the mailbox is its live rows, which
         // never carry a document action.
-        phase the_window_keeps_no_second_door;
+        phase the_window_keeps_no_second_api;
         {
             let mut app = MailApp::new_sample();
             let mut doc = Replica::<Mail>::new().doc().clone();
@@ -2295,7 +2295,7 @@ mod tests {
                 assert!(frame.contains("Delete permanently"), "{frame}");
             }
 
-            // A keyboard triage goes through the framework's door: the starred
+            // A keyboard triage goes through the framework's api: the starred
             // message is in the document, and one undo takes it back.
             phase a_shortcut_is_one_undo_step_through_the_framework;
             {
@@ -2316,10 +2316,10 @@ mod tests {
                 assert_eq!(starred(&app), before);
             }
 
-            // A change from any door — an agent's action, an undo, a
+            // A change from any api — an agent's action, an undo, a
             // collaborator's edit — is what the server has to be told, exactly
             // as a click on the message is.
-            phase every_door_reaches_the_server_through_the_document;
+            phase every_api_reaches_the_server_through_the_document;
             {
                 use crate::actions::{IngestBaseline, ServerUpdate};
                 use crate::resource::{Mail, TestMail, mailbox};

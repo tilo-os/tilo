@@ -100,7 +100,7 @@ fn every_web_apps_record_reads_with_no_window_open() {
     let mut readable = 0;
     for definition in catalogue.iter() {
         let app = definition.app_id();
-        // Opened the way a host holds a record for the door: no window, so
+        // Opened the way a host holds a record for the action API: no window, so
         // nothing but the record's own declaration can answer.
         let replica =
             crate::common::confined(app, "reading-agent", &ReplicaActor::Agent, Seed::New)

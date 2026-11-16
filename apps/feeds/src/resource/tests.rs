@@ -1,4 +1,4 @@
-//! The library through the door the host uses: verbs, field edits, the
+//! The library through the API the host uses: verbs, field edits, the
 //! invariants, merging, the published tree, history, and the reader as the
 //! framework mounts it.
 
@@ -609,7 +609,7 @@ fn reading_preferences_are_personal_settings() {
 }
 
 #[test]
-fn the_reader_edits_through_the_framework_door() {
+fn the_reader_edits_through_the_framework_api() {
     let mut app = sample_app();
     let first = {
         let open = app.surface_mut::<FeedsApp>().selected_article().unwrap();

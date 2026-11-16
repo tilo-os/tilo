@@ -1,4 +1,4 @@
-//! The address book through the door the host uses: its verbs, a saved
+//! The address book through the API the host uses: its verbs, a saved
 //! form's field edits, merging replicas, what it publishes, and the app.
 
 use super::*;
@@ -516,7 +516,7 @@ fn captures_stage_the_sample_book_and_a_new_window_is_empty() {
 }
 
 #[test]
-fn the_window_edits_the_book_through_its_door() {
+fn the_window_edits_the_book_through_its_api() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
     for invoke in ContactsShell::scenario(None) {
         app.invoke(invoke).unwrap();

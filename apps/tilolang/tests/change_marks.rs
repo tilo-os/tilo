@@ -1,5 +1,5 @@
 //! What tests of change marks read of a window: the marks it shows, their pixels, and the
-//! door the run goes through.
+//! api the run goes through.
 
 use ui::tilo_actions::{ActionContext, ActionInvoker};
 

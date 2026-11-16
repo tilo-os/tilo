@@ -243,7 +243,7 @@ impl SignalLinking {
             .map(|_| ())
             .map_err(|_| SendError::AlreadyReserved)
     }
-    /// Begin only after the native setup door confirms the user operation.
+    /// Begin only after the native setup path confirms the user operation.
     /// Cancellation interrupts only this owned stream, without replay.
     pub async fn begin(self: &Arc<Self>) -> Result<SignalPairing, SendError> {
         self.reserve(FRESH, STARTING)?;

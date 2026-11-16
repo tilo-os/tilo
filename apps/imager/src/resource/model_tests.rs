@@ -1,5 +1,5 @@
 //! The imager's record on its own: reviewing images, the profile's field edits, merging
-//! and history, through the same door the host uses.
+//! and history, through the same api the host uses.
 
 use super::*;
 use crate::model::{Filesystem, SourceKind, sample_recent_sources, sample_source};

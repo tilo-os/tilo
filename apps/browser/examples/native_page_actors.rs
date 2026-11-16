@@ -1,6 +1,6 @@
 //! Real Chromium and the Browser's registered page actions, used by several
 //! actors in one tab: two agents answer one form at once, each under the
-//! name the action door admitted it by, and whoever reviews the form reads
+//! name the action API admitted it by, and whoever reviews the form reads
 //! who set each field and what was done, in order.
 //!
 //! Run explicitly, against an engine host that is already built, inside the

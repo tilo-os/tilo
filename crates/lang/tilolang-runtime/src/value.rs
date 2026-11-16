@@ -645,7 +645,7 @@ fn items_to_json(items: &[Value]) -> Result<Json, String> {
 }
 
 /// `v` as an action's argument, as any caller (a view, a program, an agent) hands it to an app's
-/// door: plain JSON (a list an array, a map an object, an option its value or `null`, a resource
+/// action API: plain JSON (a list an array, a map an object, an option its value or `null`, a resource
 /// its id), never the runtime's own tagged encoding ([`to_json`]).
 ///
 /// # Errors

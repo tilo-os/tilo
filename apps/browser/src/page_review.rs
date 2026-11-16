@@ -50,7 +50,7 @@ impl Device {
 /// Who set what a question holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SetBy {
-    /// An actor's action: the name the action door admitted it under, empty
+    /// An actor's action: the name the action API admitted it under, empty
     /// for the person at the window, the other device it worked from, and
     /// the action's place in the record. `device_unknown` says the answer
     /// names no device because the window no longer knows where the actor
@@ -549,7 +549,7 @@ impl HoldStep {
 pub(crate) struct Step {
     /// Its place in the record.
     pub(crate) seq: u64,
-    /// Who asked: the name the action door admitted them under, empty for
+    /// Who asked: the name the action API admitted them under, empty for
     /// the person at the window.
     pub(crate) actor: String,
     /// The other device they worked from; `None` on the device that runs the

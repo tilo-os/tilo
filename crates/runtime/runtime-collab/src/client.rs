@@ -1506,7 +1506,7 @@ impl ServicesHandle {
     /// # Errors
     ///
     /// The host refuses the call or the connection fails. A refusal by the
-    /// door is a [`Receipt::Refused`], not an error: the action exists and
+    /// API is a [`Receipt::Refused`], not an error: the action exists and
     /// this is what it said.
     pub async fn invoke(
         &self,

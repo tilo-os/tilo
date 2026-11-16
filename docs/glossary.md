@@ -55,4 +55,4 @@ the graph may make it.
 ## Not used
 
 room, desk, space, channel (except Chat's channels), principal, subject, collaborator, participant,
-host, relay (except iroh's NAT relay), run, door, seat, arrangement, record, slot.
+host, relay (except iroh's NAT relay), run, seat, arrangement, record, slot.

@@ -71,7 +71,7 @@ Resources are shared content; views belong to whoever chose them.
 
 The Tasks agent, relay agents and external MCP agents are three runtimes that ask the person
 three ways. They converge on one: the broker's decision and receipts, the person's agent answers,
-one ask model with editable drafts, one run group for undo. External agents keep the door
+one ask model with editable drafts, one run group for undo. External agents keep the action API
 (`tilo_*` tools, later the `tilo` program tool) as their interface.
 
 ## 5. Order

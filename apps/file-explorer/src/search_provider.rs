@@ -23,7 +23,7 @@ pub fn place_resource_id(path: &std::path::Path) -> String {
 }
 
 /// A path is an opaque filesystem name, not display text. Resource ids cross
-/// the action door, so use a domain-separated digest rather than a reversible
+/// the action API, so use a domain-separated digest rather than a reversible
 /// escaping scheme. Keep this shared by folders and entries so every local
 /// Files resource has the same privacy boundary.
 fn path_identity_suffix(path: &std::path::Path) -> String {

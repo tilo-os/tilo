@@ -4,7 +4,7 @@
 //! process: each half measured on its own.
 //!
 //! - **App host**: `count` instances of the package (its runtime over a workspace record of its
-//!   own, its views, what it publishes on the door), each sending its window patches. The
+//!   own, its views, what it publishes on the API), each sending its window patches. The
 //!   anonymous memory they add, per instance.
 //! - **UI host**: a window for each, built from what its instance sent, laid out at 1280x800
 //!   and drawn into a scene, with one text renderer for all (the UI host's one glyph cache).

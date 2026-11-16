@@ -38,12 +38,13 @@ const EPSILON: f64 = 1.0;
 /// precision coordinates carry, far under anything a person could see.
 const PIXEL_SLACK: f64 = 0.01;
 
-/// The tail of a page's "…" test id: the door the host
+/// The tail of a page's "…" test id: the overflow button the host
 /// gives a page's title the actions for its item
 /// behind.
-const DOOR: &str = "~more";
+const MORE: &str = "~more";
 
-/// A line's widget: its children side by side, where a door belongs at the trailing edge.
+/// A line's widget: its children side by side, where the overflow button belongs at the trailing
+/// edge.
 const LINE: &str = "Row";
 
 /// A heading's widget: the band a section goes by, over what the section holds.
@@ -939,7 +940,7 @@ impl Walk<'_> {
         self.bare_row(node, keys, own);
         self.page_in_page(node, keys);
         self.docked_column(node, keys);
-        self.lone_door(node, keys, above);
+        self.lone_overflow(node, keys, above);
         self.empty_heading(node, keys, own);
         self.empty_surface(node, keys, own);
         self.header_only(node, keys, own);
@@ -1277,18 +1278,19 @@ impl Walk<'_> {
         );
     }
 
-    /// A page's "…" in a column: the door is the item's actions at the trailing edge of the title's
+    /// A page's "…" in a column: the overflow button is the item's actions at the trailing edge of
+    /// the title's
     /// line, so one standing in a column takes a line of the document for its glyph alone, under
     /// the title and out of reach of the page's own composition.
-    fn lone_door(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
+    fn lone_overflow(&mut self, node: &InspectionNode, keys: &[String], above: &str) {
         let Some(id) = node.test_id.as_deref() else {
             return;
         };
-        if node.widget != "MenuButton" || !id.ends_with(DOOR) || above == LINE {
+        if node.widget != "MenuButton" || !id.ends_with(MORE) || above == LINE {
             return;
         }
         self.push(
-            Kind::LoneDoor,
+            Kind::LoneOverflow,
             node,
             keys,
             format!("it stands in a {above} of its own rather than at the trailing edge of the title's line"),
@@ -1872,7 +1874,7 @@ impl Walk<'_> {
 
     /// A column's header row as the shell settled it: the row holds its title against its actions by
     /// one rule at every width and in every language — the actions give way first, a label for its icon
-    /// and then a place in the row for the menu's door, and the row never drops the app's primary
+    /// and then a place in the row for the menu's overflow button, and the row never drops the app's primary
     /// action.
     fn header_rows(&mut self, node: &InspectionNode, keys: &[String]) {
         let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {

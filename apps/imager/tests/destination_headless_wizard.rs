@@ -5,7 +5,7 @@
 )]
 
 //! The installer on the live medium, hosted as the imager app hosts it: its effects
-//! through the app's door.
+//! through the app's api.
 
 use imager::ImagerShell;
 use imager::setup::destination::effects::DestinationEffect;
@@ -19,7 +19,7 @@ fn status(app: &mut TestApp<ImagerShell>) -> serde_json::Value {
 }
 
 #[test]
-fn the_installer_answers_its_effects_through_the_app_door() {
+fn the_installer_answers_its_effects_through_the_app_api() {
     let mut app = TestApp::<ImagerShell>::launched(&["--destination"]).unwrap();
     assert_eq!(status(&mut app)["step"], "keyboard");
 

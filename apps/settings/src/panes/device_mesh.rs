@@ -1430,12 +1430,12 @@ impl Page<'_> {
 
     fn agents_group(&self) -> Option<Element> {
         use crate::prefs::McpServerDevice;
-        let door = self.cx.settings::<McpServerDevice>();
-        self.cx.record(&door, |cx| {
+        let api = self.cx.settings::<McpServerDevice>();
+        self.cx.record(&api, |cx| {
             // Letting their steps go unasked is for agents let in at all: the row under the first
             // waits for it to be on.
             cx.switch(
-                &cx.value(|door: &McpServerDevice| door.accept_own_devices),
+                &cx.value(|api: &McpServerDevice| api.accept_own_devices),
                 |cx, accepting| {
                     let act = cx
                         .setting(t("mesh-agents-act"))
@@ -1448,7 +1448,7 @@ impl Page<'_> {
                         .nested()
                         .enabled(*accepting)
                         .toggle_verb(
-                            |door: &McpServerDevice| door.act_without_asking,
+                            |api: &McpServerDevice| api.act_without_asking,
                             McpServerDevice::SET_ACT_WITHOUT_ASKING,
                         );
                     section(
@@ -1458,7 +1458,7 @@ impl Page<'_> {
                                 .described(t("mesh-agents-accept-desc"))
                                 .id(AGENTS_ACCEPT_KEY)
                                 .toggle_verb(
-                                    |door: &McpServerDevice| door.accept_own_devices,
+                                    |api: &McpServerDevice| api.accept_own_devices,
                                     McpServerDevice::SET_ACCEPT_OWN_DEVICES,
                                 ),
                             act,

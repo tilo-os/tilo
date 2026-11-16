@@ -16,7 +16,7 @@ Bind the generated descriptor in the view:
 let clear = cx.button("starter-clear", Greeting::CLEAR.invoke());
 ```
 
-The label is a Fluent key. A text field uses the same door:
+The label is a Fluent key. A text field uses the same action API:
 `cx.input(|state| state.name.clone(), Greeting::SET_NAME)`.
 Read visual values with `cx.text` or another bound shared control so peer
 edits and undo update the view too. Keep render caches out of the model.
@@ -41,7 +41,7 @@ The effect's `operation` names its vocabulary, not an id prefix.
 Test the action through the generated `TestApp` harness. Enumerate the
 permission-filtered action descriptors and invoke their stable identities;
 display labels and pointer coordinates do not identify an operation. Confirmed
-effects and role restrictions use the same host door as the controls.
+effects and role restrictions use the same host action API as the controls.
 
 ```bash
 tilo-app test --json

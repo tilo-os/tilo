@@ -1,6 +1,6 @@
 //! A chat post costs what a post costs, however long the chat has run.
 //!
-//! A member's agent posts into the workspace's chat through the door a page
+//! A member's agent posts into the workspace's chat through the action API a page
 //! and the API server take: the action is addressed to the chat record's
 //! provider, the host starts the chain's part for it and runs it for the
 //! caller. What the host does for one post is its own work — the record it
@@ -54,7 +54,7 @@ fn words(index: usize) -> String {
         "music",
         "photos",
         "relay",
-        "door",
+        "entry",
         "browser",
         "terminal",
         "build",
@@ -95,7 +95,7 @@ async fn post(
     let began = Instant::now();
     // A host still settling a workspace it just started says so, and a save it
     // has not made yet is asked again: the same retry a member's agent makes
-    // through the door.
+    // through the action API.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let request = super::request(

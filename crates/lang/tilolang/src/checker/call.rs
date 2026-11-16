@@ -627,7 +627,7 @@ impl Checker<'_> {
                 Ex::error()
             }
             (CKind::Action, Ctx::Action | Ctx::Program) => {
-                // A call runs the action at its own door, as a change of its own, and goes on from
+                // A call runs the action at its own action API, as a change of its own, and goes on from
                 // its journaled result. `suggest act(args)` is the same call, recorded as a
                 // proposal instead of applied.
                 let bound = Self::applied_args(c, bound);

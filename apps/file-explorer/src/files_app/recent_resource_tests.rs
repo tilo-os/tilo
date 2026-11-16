@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         for expected in ["reveal", "forget-recent"] {
             assert!(
                 published.actions.iter().any(|action| action.id == expected),
-                "Recent's {expected} must be available through the resource door"
+                "Recent's {expected} must be available through the resource api"
             );
             assert_eq!(
                 published

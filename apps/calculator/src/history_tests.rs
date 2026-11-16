@@ -209,7 +209,7 @@ fn a_long_formula_reaches_history_whole() {
     );
 }
 
-/// A long calculation or function added through the action door reads whole
+/// A long calculation or function added through the action API reads whole
 /// in its row and goes back whole.
 #[test]
 fn a_long_formula_passed_to_an_action_reaches_history_whole() {

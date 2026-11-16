@@ -68,10 +68,10 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/api.rs"]
+mod api;
 #[path = "hosted/counter.rs"]
 mod counter;
-#[path = "hosted/door.rs"]
-mod door;
 #[path = "hosted/history.rs"]
 mod history;
 #[path = "hosted/history_undo.rs"]

@@ -4,7 +4,7 @@
 //! [`crate::site_memory`] is what the document keeps of them.
 //!
 //! A form action runs as `fill-page-form` does: the same request, under the
-//! actor the action door admitted, in its turn, answered with the same
+//! actor the action API admitted, in its turn, answered with the same
 //! result for each answer. It names its form by signature, so the engine
 //! answers it only while the page holds that form.
 //!

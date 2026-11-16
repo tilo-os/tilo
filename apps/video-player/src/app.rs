@@ -660,7 +660,7 @@ impl PlayerState {
         *playhead.borrow_mut() = self.playhead_declarations();
     }
 
-    /// Take part in the framework: its door for edits and controls, and in a live window
+    /// Take part in the framework: its api for edits and controls, and in a live window
     /// this device's settings and what the launch named; a capture keeps that for its
     /// scenario to stage.
     pub(crate) fn attach_framework(&mut self, cx: &ViewCx<PlayerResource>) {

@@ -450,7 +450,7 @@ impl ChatApp {
             return;
         }
         // Read state is a durable collaboration fact.  It is authored through
-        // the same door as the palette's "Mark as read", not a side write
+        // the same api as the palette's "Mark as read", not a side write
         // that peers/history cannot account for.  The carried position keeps
         // a message that arrives meanwhile unread.  Nobody pressed anything
         // for it, so a refusal is not said over the window.

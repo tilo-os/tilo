@@ -261,7 +261,7 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
 /// reveals before it plans.
 pub struct KeywordModel;
 
-/// Scratchpad's note field edit: the body replaced by `text`, as the door
+/// Scratchpad's note field edit: the body replaced by `text`, as the action API
 /// takes it (`field-edit` with the edit as JSON).
 pub fn scratchpad_body(
     text: &str,

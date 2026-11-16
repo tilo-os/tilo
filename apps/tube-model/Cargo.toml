@@ -9,7 +9,7 @@ description = "Tube's shared library and watch history: the record types, their 
 # Tube's records, as the app that draws them reads them and as the app's verbs change them. It
 # has no window and no surface of its own; the app draws it.
 #
-# It depends on the resource layer and the action door, never the toolkit.
+# It depends on the resource layer and the action API, never the toolkit.
 
 [lib]
 name = "tube_model"

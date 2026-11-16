@@ -1393,7 +1393,7 @@ impl FilesState {
                 ]
             })
             .collect();
-        // An entry the folder does not hold is refused at the door, so a
+        // An entry the folder does not hold is refused at the API, so a
         // misspelt name changes nothing.
         let shown = |mut decl: ui::tilo_resource::ActionDecl<FileExplorer>| {
             for param in &mut decl.params {
@@ -1766,7 +1766,7 @@ impl FilesState {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one match over the effect vocabulary keeps every caller's door in one auditable place"
+        reason = "one match over the effect vocabulary keeps every caller's api in one auditable place"
     )]
     pub(crate) fn run_effect_for(
         &mut self,

@@ -1,4 +1,4 @@
-//! The reports through the door the host uses: drafting, typing a note,
+//! The reports through the API the host uses: drafting, typing a note,
 //! recording a case, merging and what history says.
 
 use super::*;

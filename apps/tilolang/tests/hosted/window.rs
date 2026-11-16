@@ -436,7 +436,7 @@ fn an_empty_notebook_says_so_once_and_its_bar_makes_the_first_note() {
 /// What an agent session or a script makes moves nobody's view: the note the
 /// person has open stays open, and only their own press opens what it made.
 #[test]
-fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
+fn what_an_agent_or_a_script_creates_through_the_api_moves_nobodys_view() {
     let mut session = Session::notes();
     let root = session
         .read(|doc| tilolang_tilo::action::resource_ids(doc, NOTES))
@@ -935,7 +935,7 @@ fn sent(session: &mut Session, draft: &ResourceRef) -> bool {
 /// A letter an agent sends is a suggestion the person decides: the agent cannot approve it,
 /// nothing leaves before the person does, and approving it sends it once.
 #[test]
-fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_once() {
+fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once() {
     let mut session = staged(LETTERS, "a mailbox of letters");
     let draft = first_draft(&mut session);
     let source = format!("letters.send(@letters.Draft:{})", draft.id_string());

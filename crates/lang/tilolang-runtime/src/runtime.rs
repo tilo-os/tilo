@@ -255,7 +255,7 @@ impl Runtime {
     /// Load the description of an app this runtime does not run: its types, actions and views,
     /// and no code. A view takes a resource of it as a parameter, its fields read from the
     /// readings its app publishes ([`Runtime::set_reading`]); an action of it is a child
-    /// invocation at the app's own door ([`crate::delegate`], [`Runtime::set_invoker`]).
+    /// invocation at the app's own action API ([`crate::delegate`], [`Runtime::set_invoker`]).
     ///
     /// The package is identified by the hash of the description, which stands for the app's
     /// code authorship until a newer description of it replaces it.
@@ -285,7 +285,7 @@ impl Runtime {
     /// so what they create and invoke carries its module as the author, never the caller's.
     /// Its records stay its app's: a view of it reads a resource from the reading its app
     /// publishes ([`Runtime::set_reading`]), named by app and type (`mail#Inbox`), and its
-    /// actions are child invocations at that app's door ([`Runtime::set_invoker`]).
+    /// actions are child invocations at that app's action API ([`Runtime::set_invoker`]).
     ///
     /// # Errors
     ///

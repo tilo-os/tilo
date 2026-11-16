@@ -1137,7 +1137,7 @@ pub struct Clip {
     #[serde(default)]
     pub mask: Mask,
     /// Keyframe curves. A parameter with a curve here ignores its constant
-    /// field — see [`Clip::param_at`], the one door every reader goes
+    /// field — see [`Clip::param_at`], the one api every reader goes
     /// through.
     #[serde(default, skip_serializing_if = "ClipAnimation::is_empty")]
     pub anim: ClipAnimation,
@@ -1426,7 +1426,7 @@ impl Clip {
         }
     }
 
-    /// **The one door.** The value of `param` at absolute time `playhead`: the curve if there
+    /// **The one api.** The value of `param` at absolute time `playhead`: the curve if there
     /// is one, else the constant. Every reader — compositor, mixer, export, inspector — comes
     /// through here.
     pub fn param_at(&self, param: Param, playhead: f64) -> f64 {
@@ -1795,7 +1795,7 @@ impl Project {
     }
 
     /// The span a render covers: the marks when they describe a real span,
-    /// and the whole timeline otherwise. One door, so the export, the
+    /// and the whole timeline otherwise. One api, so the export, the
     /// estimate and the on-screen band cannot disagree about what will be
     /// rendered.
     pub fn export_range(&self) -> (f64, f64) {
@@ -3373,7 +3373,7 @@ mod tests {
             }
         }
 
-        phase animated_parameters_are_clip_relative_and_read_through_one_door;
+        phase animated_parameters_are_clip_relative_and_read_through_one_api;
         {
             {
                 let (mut p, cid) = speed_fixture();

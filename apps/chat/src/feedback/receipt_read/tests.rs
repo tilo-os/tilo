@@ -392,7 +392,7 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
             "read-feedback-status",
             serde_json::json!({}),
         )
-        .expect("a returning viewer must be able to read triage through the public door")
+        .expect("a returning viewer must be able to read triage through the public api")
         .completed()
         .unwrap();
     let value = output.value.unwrap();
@@ -418,7 +418,7 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     );
 }
 
-/// Triage the report of `submission` through the public door, as a
+/// Triage the report of `submission` through the public api, as a
 /// maintainer's agent does: what it answered.
 #[expect(
     clippy::redundant_closure_for_method_calls,

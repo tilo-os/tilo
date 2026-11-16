@@ -431,7 +431,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_scenario_photograph_is_its_own_content_and_stages_through_the_door() {
+    fn every_scenario_photograph_is_its_own_content_and_stages_through_the_api() {
         let gallery = gallery();
         let ids: std::collections::HashSet<_> = gallery
             .iter()

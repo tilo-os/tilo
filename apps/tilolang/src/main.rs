@@ -40,8 +40,8 @@ fn main() -> std::process::ExitCode {
 }
 
 /// Run the connector of the origin `origin` this process was started as
-/// (`TILO_TILOLANG_CONNECTOR`), on the door the launcher handed it, until the session closes
-/// the door: the origin's own connector, from the crate that implements it.
+/// (`TILO_TILOLANG_CONNECTOR`), on the API the launcher handed it, until the session closes
+/// the API: the origin's own connector, from the crate that implements it.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_connector(origin: &str) -> Result<(), String> {
     match origin {

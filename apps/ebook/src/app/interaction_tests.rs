@@ -574,7 +574,7 @@ fn app_with_math_sample() -> BooksApp {
 /// Run one full headless frame so `self.hits` reflects the current view.
 /// Press the window bar's entry named `name`, as the desktop's bar hands it
 /// to the app: the same path a person's press in the bar takes. A press on
-/// one of the library's own edits is handed to the door, which this bare
+/// one of the library's own edits is handed to the API, which this bare
 /// widget applies as the host does.
 fn press_bar(app: &mut BooksApp, doc: &mut AutoCommit, name: &str) {
     let id = app
@@ -5077,7 +5077,7 @@ fn an_agent_edits_a_notes_text_through_its_own_resource() {
         serde_json::json!({
             "passage": {
                 "book": BOOK, "chapter": 0, "block": 2, "start": 0, "end": 4,
-                "excerpt": "door",
+                "excerpt": "api",
             },
             "color": "yellow",
             "text": "Remember this",

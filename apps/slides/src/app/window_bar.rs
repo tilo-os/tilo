@@ -3,7 +3,7 @@
 //! editable location, Editor and Overview as the views, and Insert, Present
 //! and the properties' toggle as actions. Each runs the deck's published
 //! action for it, so the bar, assistive technology and automation go through
-//! one door. The editor draws no header row of its own.
+//! one api. The editor draws no header row of its own.
 
 use ui::framework::{BarActions, BarCommands, Dispatcher};
 use ui::window_toolbar::{

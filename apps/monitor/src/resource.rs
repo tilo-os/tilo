@@ -258,11 +258,11 @@ mod tests {
     fn the_table_layout_syncs_and_what_the_window_shows_stays_local() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
         let published = app.harness().resources();
-        let door = published
+        let api = published
             .iter()
             .find(|resource| resource.kind == "monitor.processes")
-            .expect("the processes door");
-        let ids: Vec<&str> = door
+            .expect("the processes api");
+        let ids: Vec<&str> = api
             .actions
             .iter()
             .map(|action| action.id.as_str())
@@ -278,10 +278,7 @@ mod tests {
             "kill",
             "end-app",
         ] {
-            assert!(
-                ids.contains(&id),
-                "`{id}` is published on the door: {ids:?}"
-            );
+            assert!(ids.contains(&id), "`{id}` is published on the API: {ids:?}");
         }
 
         // Sorting is an edit of the shared layout, one undo step each.
@@ -351,21 +348,21 @@ mod tests {
     }
 
     #[test]
-    fn process_rows_are_live_children_of_the_door_answered_by_the_surface() {
+    fn process_rows_are_live_children_of_the_api_answered_by_the_surface() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
         let resources = app.harness().resources();
-        let doors: Vec<_> = resources
+        let specs: Vec<_> = resources
             .iter()
             .filter(|resource| resource.kind == "monitor.processes")
             .collect();
-        assert_eq!(doors.len(), 1, "one processes door");
+        assert_eq!(specs.len(), 1, "one processes api");
         assert!(
             resources
                 .iter()
                 .all(|resource| resource.kind != "monitor.process"),
-            "no process row beside the door"
+            "no process row beside the API"
         );
-        let rows: Vec<_> = doors[0]
+        let rows: Vec<_> = specs[0]
             .children
             .iter()
             .filter(|child| child.kind == "monitor.process")

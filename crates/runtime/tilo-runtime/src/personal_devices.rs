@@ -1,4 +1,4 @@
-//! The person's devices as this device's own store holds them, for the doors
+//! The person's devices as this device's own store holds them, for the action APIs
 //! that admit another of their devices: the MCP server between devices and a
 //! key's sessions with this device's host.
 

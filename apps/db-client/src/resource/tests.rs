@@ -1,5 +1,5 @@
 //! The workspace on its own (verbs, field edits, merging, the published
-//! tree and search) through the door the host uses, and an agent and
+//! tree and search) through the API the host uses, and an agent and
 //! history through the hosted app.
 
 use super::*;

@@ -1,6 +1,6 @@
 //! The page's review as its window's host drives it: the real app, the
 //! deterministic test engine as the page, and the page's own actions invoked
-//! for the person at the window and for agents the action door admitted.
+//! for the person at the window and for agents the action API admitted.
 
 use std::sync::Arc;
 

@@ -27,7 +27,7 @@ The session (on a device without a screen, the same code in its host) runs one
 document host per workspace. It is the only thing that opens, decrypts, merges,
 signs, stores and syncs an app's documents:
 
-- **Applying an action.** An action arrives at the session's door with its
+- **Applying an action.** An action arrives at the session's action API with its
   actor ([§4](#4-who-did-it)). The host checks the grant
   ([security architecture](../security/architecture.md) §6), runs the verb from
   the app's module against the document, runs the model's `check`, records the
@@ -48,7 +48,7 @@ signs, stores and syncs an app's documents:
 ## 3. One connection per app process
 
 The launcher creates the app's processes and hands each of them its one end of
-a connection to the session's door. The connection is the app's only way into
+a connection to the session's action API. The connection is the app's only way into
 the system, and the session knows which app and which launch is on it because it
 made it:
 
@@ -71,7 +71,7 @@ Every change has an actor, decided by the session, never claimed by the app:
 | How the action arrived | Actor | Authority |
 |---|---|---|
 | The person's input to the app's view (a press, typing, a drag) within that gesture | the person, "in Mail" | the person's, limited to the app's grants |
-| Invoked through the door by the palette, a shortcut, the shell, another app's view, an agent | whoever invoked it | the invoker's, and a child invocation carries both |
+| Invoked through the action API by the palette, a shortcut, the shell, another app's view, an agent | whoever invoked it | the invoker's, and a child invocation carries both |
 | Submitted by the app on its own (no input, no invocation) | the app itself | the app's grants only, shown as the app's in history and presence |
 | An outbox worker recording a result | the app itself | only the result action its outbox declared |
 
@@ -92,7 +92,7 @@ under an agent certificate the device key signs (`task_agents.rs`, `agent_cert.r
 so history names the agent and on whose behalf it acted (`ActionInvoker`).
 Authorship verification (§7.2 there) is therefore unchanged for other devices;
 the only change is that no key is ever in an app process. An agent's key
-stays in the session too, and the agent reaches it through its door like any
+stays in the session too, and the agent reaches it through its action API like any
 other caller.
 
 ## 5. Calling other apps
@@ -170,7 +170,7 @@ All of that moves to the document host:
 1. A Rust app's model may later run as an instance kind of the workspace's tilolang host,
    beside the tilolang packages'; its windows and an agent's windowless launch reach it.
 2. Outbox workers become their own sandboxed launch, with their grants.
-3. Input gesture tokens and actor attribution move into the session's door.
+3. Input gesture tokens and actor attribution move into the session's action API.
 4. The identity broker connection, join proofs, channel keys and the peer
    capability are removed from app launches, from the SDK and from the
    tilolang host; §6.5 of the security architecture is replaced by this document.

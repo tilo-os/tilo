@@ -51,7 +51,7 @@ fn start(
     let _ = (doc, root);
     start_as(widget, None, id, args)
 }
-/// Start the published page action `id` for the invoker the action door
+/// Start the published page action `id` for the invoker the action API
 /// admitted, or for nobody: the person at the window.
 fn start_as(
     widget: &mut BrowserWidget,
@@ -1323,12 +1323,12 @@ fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
     }
 }
 
-/// An agent the action door admitted, by its principal.
+/// An agent the action API admitted, by its principal.
 fn agent(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(principal))
 }
 
-/// The engine is told who asks: the principal the action door admitted the
+/// The engine is told who asks: the principal the action API admitted the
 /// invocation for, and nobody for an invocation without one.
 #[test]
 fn the_admitted_invoker_is_who_asks_the_engine() {
@@ -1336,7 +1336,7 @@ fn the_admitted_invoker_is_who_asks_the_engine() {
     let ada = agent("agent:ada");
     let read = start_as(&mut widget, Some(&ada), "read-page", &serde_json::json!({})).unwrap();
     succeeded(settled(&mut widget, &doc, &root, read));
-    // The person at the window is admitted by no door: the tab's one
+    // The person at the window is admitted by no api: the tab's one
     // unnamed actor, as every caller was before a tab had several.
     let own = start_as(&mut widget, None, "read-page", &serde_json::json!({})).unwrap();
     succeeded(settled(&mut widget, &doc, &root, own));

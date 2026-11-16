@@ -198,11 +198,11 @@ tilo_test_env::scenario! {
         assert_eq!(rows[0].reactions[0].count(), 2);
     }
 
-    phase a_bot_reading_the_record_through_the_door_reads_the_report_out;
+    phase a_bot_reading_the_record_through_the_api_reads_the_report_out;
     {
         use ui::tilo_resource::Model as _;
         let (mut doc, submission) = picked(true);
-        // What the record door answers every reader: the record as plain data.
+        // What the record api answers every reader: the record as plain data.
         let read = ui::tilo_actions::remote::RecordCopy::Document(doc.save())
             .readable()
             .unwrap();

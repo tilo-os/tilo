@@ -1,5 +1,5 @@
 //! The browser's document on its own: bookmarks, preferences and site
-//! exceptions through the same door the host uses, merging, and history.
+//! exceptions through the same api the host uses, merging, and history.
 
 use super::*;
 use crate::library::Bookmarks;

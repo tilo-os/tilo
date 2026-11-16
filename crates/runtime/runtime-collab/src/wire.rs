@@ -478,7 +478,7 @@ pub enum Receipt {
     /// It was taken and runs on the device; its result lands in the
     /// resource's reading.
     Accepted,
-    /// The door refused it: the refusal's code (`unknown_action`,
+    /// The API refused it: the refusal's code (`unknown_action`,
     /// `unavailable`, `confirmation_required`, ...), and what it says.
     Refused { code: String, message: String },
 }

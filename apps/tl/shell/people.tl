@@ -5,7 +5,7 @@
 /// Every entry is an action the session publishes (`so.tilo.session`). Nothing here reads a
 /// copy of presence: it reads the session's people and agents.
 ///
-/// Who else is here, as one door: the faces alone, up to three and then a face counting the
+/// Who else is here, as one api: the faces alone, up to three and then a face counting the
 /// rest, so the group says who is here at a glance and takes no words from the bar. The one
 /// button opens the roster, and its name names the people for assistive technology. With
 /// nobody here it is the people button's own glyph.

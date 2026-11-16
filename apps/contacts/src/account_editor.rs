@@ -538,11 +538,11 @@ fn panel_contents(
         .map(|(id, label)| (id.into(), label.into()))
         .collect(),
     );
-    let door = dispatcher.clone();
+    let api = dispatcher.clone();
     let person = selected.person.clone();
     let typed_recipient = recipient.clone();
     let add = Button::new("contacts.accounts.add", "contacts-account-add").on_view(move || {
-        door.effect(&AccountEffect::ReviewAccount {
+        api.effect(&AccountEffect::ReviewAccount {
             person: person.clone(),
             service: service.get(),
             recipient: typed_recipient.get(),
@@ -585,12 +585,12 @@ fn endpoint_list(
         } else {
             "contacts-account-conflicted"
         };
-        let door = dispatcher.clone();
+        let api = dispatcher.clone();
         let effect = AccountEffect::ReviewAccountRevocation {
             person: selected.person.clone(),
             association: id.as_str().to_owned(),
         };
-        let edit_door = dispatcher.clone();
+        let edit = dispatcher.clone();
         let edit = AccountEffect::EditAccount {
             person: selected.person.clone(),
             association: id.as_str().to_owned(),
@@ -614,7 +614,7 @@ fn endpoint_list(
                                 "contacts-account-edit",
                             )
                             .on_view(move || {
-                                edit_door.effect(&edit);
+                                edit.effect(&edit);
                             }),
                         ))
                         .push(Box::new(
@@ -623,7 +623,7 @@ fn endpoint_list(
                                 "contacts-account-remove",
                             )
                             .on_view(move || {
-                                door.effect(&effect);
+                                api.effect(&effect);
                             }),
                         )),
                 )),

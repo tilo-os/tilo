@@ -56,9 +56,9 @@ most visible, so a swipe followed by typing goes where you are looking.
 
 ## Every operation, on every device
 
-Each row is one operation, published on the action door, so the palette,
+Each row is one operation, published on the action API, so the palette,
 `tilo-control actions invoke`, a screen reader, an agent and the chord are the
-same door. Actions come in two forms:
+same action API. Actions come in two forms:
 
 - **relative**, on the shell provider (`window.focus-next`,
   `group.move-to-strip-next`): they act on the focused group of the focused
@@ -369,12 +369,12 @@ allowed to travel depends on what asked for the change.
   viewport sliding an off-screen target into view, a direction cue. Repeated
   presses never queue; a press mid-slide retargets from where the slide is
   drawn.
-- **Agents and scripts** (the action door) follow the keyboard rule: nobody
+- **Agents and scripts** (the action API) follow the keyboard rule: nobody
   watches a hand move, and the caller acts on the result at once.
 
 Each transition is tagged with its source (`ui::tokens::MotionSource`:
 `Keyboard`, `Pointer`, `Gesture`, `Action`) where the host runs the
-operation: a chord and the action door run the same handler and name their
+operation: a chord and the action API run the same handler and name their
 source there (`ShellOverlayHost::run_navigation_shortcut`). The desktop
 holds that source until the layout that shows the change has run
 (`DesktopSurface::begin_transition`), and `tokens.motion` picks the duration

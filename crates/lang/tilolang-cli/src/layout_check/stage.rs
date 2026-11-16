@@ -24,7 +24,7 @@ const SETTLE_BOUND: ui::time::Duration = ui::time::Duration::from_secs(2);
 
 /// The compiled packages an instance loads: the app and what it uses, the app last; and the
 /// packages it uses as metadata: the native apps' it calls (`use so.tilo.session as session`),
-/// whose actions run at their own doors, and the platform's (the device's, Settings') whose
+/// whose actions run at their own action APIs, and the platform's (the device's, Settings') whose
 /// published resources it reads.
 pub struct Packages(
     pub Rc<Vec<Compiled>>,
@@ -813,8 +813,8 @@ fn second_before(at: &str) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// The capture has no door over the workspace, so it stands where the door stands: it takes each
-/// step the instance hands over, writes it down and answers it, as a session's door does.
+/// The capture has no action API over the workspace, so it stands where the API stands: it takes each
+/// step the instance hands over, writes it down and answers it, as a session's API does.
 fn settle(
     instance: &mut Instance,
     record: &mut ui::automerge::AutoCommit,
@@ -862,7 +862,7 @@ fn settle(
     Ok(())
 }
 
-/// Apply `action` to `record` as the door applies one for a session: encoded, as the person's step,
+/// Apply `action` to `record` as the action API applies one for a session: encoded, as the person's step,
 /// with the context a step on the record carries, so what the store tells of the change — who made
 /// it, when, and the version it is of each resource — reads as a session's.
 fn commit(
@@ -1072,7 +1072,7 @@ mod tests {
     }
 
     /// The window's header row keeps one "…" and shows each control once, and the bar over it
-    /// offers none of them again: what does not fit the row goes behind the row's one door.
+    /// offers none of them again: what does not fit the row goes behind the row's one overflow button.
     #[test]
     fn the_window_shows_each_control_once() {
         tilo_ui_host::i18n::ensure();
@@ -1104,8 +1104,8 @@ mod tests {
             .map(|control| control.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let doors = row.iter().filter(|control| control.menu).count();
-        assert_eq!(doors, 1, "the window's row keeps one \"…\": {named}");
+        let overflow = row.iter().filter(|control| control.menu).count();
+        assert_eq!(overflow, 1, "the window's row keeps one \"…\": {named}");
         let mut distinct: Vec<&str> = row.iter().map(|control| control.name.as_str()).collect();
         distinct.sort_unstable();
         distinct.dedup();
@@ -1360,11 +1360,11 @@ mod tests {
     }
 
     /// The button the counter's window binds to its action runs that
-    /// action through the door, once, as the person's own: the press is
+    /// action through the action API, once, as the person's own: the press is
     /// the action's route, not a view event the app runs in the window
     /// instead.
     #[test]
-    fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_door() {
+    fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_api() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("counter");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1694,10 +1694,10 @@ mod tests {
     }
 
     /// A row of a menu the app binds to a published action runs that action once, through the same
-    /// door an agent's invocation of it takes: the row is a part of its menu button, and the
+    /// action API an agent's invocation of it takes: the row is a part of its menu button, and the
     /// person's press is the action's own route.
     #[test]
-    fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_door() {
+    fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_api() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1804,10 +1804,10 @@ mod tests {
         );
     }
 
-    /// A section's add the app binds to a published action runs it once, through the same door: the
+    /// A section's add the app binds to a published action runs it once, through the same actior: the
     /// heading's button is a part of the list, and the person's press is the action's own route.
     #[test]
-    fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_door() {
+    fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_api() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1865,7 +1865,7 @@ mod tests {
     }
 
     /// A row's check box runs the check action the app binds to it, once,
-    /// through the same door an agent's invocation of it takes — for a task
+    /// through the same action API an agent's invocation of it takes — for a task
     /// the page around the list does not show, so the press is the row's
     /// own.
     #[test]

@@ -15,7 +15,7 @@ use ui::widget::{
 
 use ui::tilo_resource::{self, Model, Refusal};
 
-/// The doors the pane's controls use, injected by Browser: field edits for the
+/// The action APIs the pane's controls use, injected by Browser: field edits for the
 /// preferences, published operations for the one-shot effects and closing the
 /// pane, so pointer, keyboard and assistive technology take the same path as Ctrl+K
 /// and agents. A missing binding leaves its control inert.

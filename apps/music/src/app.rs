@@ -967,7 +967,7 @@ impl Music {
         self.device_cache.get(id).copied().unwrap_or_default()
     }
 
-    /// The one door for a library edit: checked against the participant's permissions,
+    /// The one api for a library edit: checked against the participant's permissions,
     /// attributed, undoable and replayed on peers. Callers reload afterwards.
     fn perform_action(
         &mut self,

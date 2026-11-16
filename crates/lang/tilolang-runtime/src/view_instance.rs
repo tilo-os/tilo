@@ -1042,7 +1042,7 @@ impl ViewInstance {
             Decision::Allow => {}
         }
         // A resource of an app this runtime does not run is changed where that app runs: the
-        // edit goes to the host's invoker, which sends it to the resource's door, and the new
+        // edit goes to the host's invoker, which sends it to the resource's action API, and the new
         // reading that comes back draws it.
         if crate::foreign::is_foreign(&target) {
             return self.edit_foreign(pkg.meta.app.clone(), &target, &field, value);

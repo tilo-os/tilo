@@ -1,6 +1,6 @@
 //! A Rust view's action on a verb its resource publishes, with no package declaring it: Chat's
 //! channel publishes `post`, the session's service answers it, and the view names it on the
-//! channel it shows. The runtime sends that invocation to the app's door — the one path another
+//! channel it shows. The runtime sends that invocation to the app's action API — the one path another
 //! app's declared action takes (one-app-model.md §2, §4).
 
 #![allow(
@@ -123,7 +123,7 @@ view canvas() {
         }
     }
 
-    /// Records what the view sends the app's door.
+    /// Records what the view sends the app's action API.
     struct Sent(Rc<RefCell<Vec<Invocation>>>);
 
     impl Invoker for Sent {
@@ -176,7 +176,7 @@ view canvas() {
     tilo_test_env::scenario! {
         fn a_published_verb_reaches_only_the_app_that_publishes_it;
 
-        phase a_rust_views_press_of_a_published_verb_reaches_the_apps_door;
+        phase a_rust_views_press_of_a_published_verb_reaches_the_apps_api;
         {
             let sent = Rc::new(RefCell::new(Vec::new()));
             let view = opened(

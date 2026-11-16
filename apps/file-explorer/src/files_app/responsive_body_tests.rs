@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
             Some(ui::UndoRequest::Undo),
-            "Undo asks the host, the same door as Ctrl+Z"
+            "Undo asks the host, the same api as Ctrl+Z"
         );
         assert!(
             h.w.state().notice_line().is_none(),
@@ -543,7 +543,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase toolbar_adapts_to_width_and_its_menus_open_through_every_door;
+    phase toolbar_adapts_to_width_and_its_menus_open_through_every_api;
     {
         toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width();
         toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport();

@@ -1065,7 +1065,7 @@ mod tasks_screen {
         let mut app = TestApp::<CalendarShell>::new().expect("live test app");
         let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
         app.invoke(Invoke::group(sample_invocations(&sample)))
-            .expect("seed through the calendar door");
+            .expect("seed through the calendar api");
         app.call("show-month", serde_json::json!({}))
             .expect("Month view");
         app

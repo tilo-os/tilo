@@ -528,7 +528,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase every_door_reaches_the_same_handler_and_refuses_stale_or_private_input;
+    phase every_api_reaches_the_same_handler_and_refuses_stale_or_private_input;
     {
         {
             let backend = FakeBackend::new();

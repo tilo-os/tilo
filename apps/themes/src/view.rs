@@ -139,7 +139,7 @@ impl Editing {
         }
     }
 
-    /// The door refused `refusal` while the draft's create was pending: the theme was not
+    /// The API refused `refusal` while the draft's create was pending: the theme was not
     /// written, so say why in `notice` and let the next edit create it again.
     fn refused(&self, refusal: &Refused, notice: &LocalState<String>) {
         if refusal.action == ui::tilo_resource::GROUP && self.pending.get() && !self.written.get() {
@@ -322,7 +322,7 @@ fn notice(ui: &Ui) -> Text {
         .with_live(ui::a11y::Politeness::Polite)
 }
 
-/// The editor's notice, which also says when the door refused the draft's create
+/// The editor's notice, which also says when the API refused the draft's create
 /// ([`Editing::refused`]).
 fn editor_notice(ui: &Ui, editing: &Editing) -> ModelView<Option<Refused>> {
     let ui = ui.clone();
@@ -936,7 +936,7 @@ mod tests {
     const BASE: &str = "dark-graphite";
 
     /// An editor of a draft of `BASE` under `id`, outside any window: what its controls
-    /// send is applied when the test says, as a door that has not caught up yet would.
+    /// send is applied when the test says, as an action API that has not caught up yet would.
     fn draft(studio: &Replica<Studio>, id: &str) -> Editing {
         let theme = studio.state().unwrap().draft(BASE).unwrap();
         Editing {

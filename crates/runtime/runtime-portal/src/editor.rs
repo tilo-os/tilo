@@ -83,7 +83,7 @@ pub enum Status {
 }
 
 /// Private observation: intentionally not Debug or Serialize. Publish only
-/// explicit lease/availability metadata through the resource action door.
+/// explicit lease/availability metadata through the resource action API.
 pub struct Reply {
     pub request: u64,
     pub status: Status,

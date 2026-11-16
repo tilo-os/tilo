@@ -3356,7 +3356,7 @@ impl Widget for CanvasSurface {
         !self.writes.is_empty() || sampled || picked || answered || waiting
     }
 
-    /// Write what the frame's update took up, through the one door every canvas
+    /// Write what the frame's update took up, through the one api every canvas
     /// edit goes through, before this frame reads the document again.
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ui::automerge::ObjId) {
         let writes = std::mem::take(&mut self.writes);

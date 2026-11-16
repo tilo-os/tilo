@@ -124,7 +124,7 @@ pub(crate) fn mounted_rows(
     app.state().message_rows(&held, channel)
 }
 
-/// Post `text` in `channel` through a mounted app's door, as its person.
+/// Post `text` in `channel` through a mounted app's api, as its person.
 pub(crate) fn mounted_post(
     app: &mut ui::framework::testing::TestApp<crate::ChatShell>,
     channel: &str,

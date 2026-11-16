@@ -1,12 +1,12 @@
 //! `app-host`: the runtime service for Tilo's native app model. The daemon is the privileged
-//! door to the device's [`PackageStore`], installing verified packages for the Store app, pinning,
+//! service over the device's [`PackageStore`], installing verified packages for the Store app, pinning,
 //! removing and launching them, running size-pressure eviction, and serving a control socket. It
 //! keeps no store of its own: packages, their registry and their payload bytes live in the one
 //! package store the launcher, the shell and `tilo-install` share.
 //!
 //! Only the client side ([`client`], [`wire`], [`install::InstallExpectation`] and archive review
 //! in [`local_package`]) builds without the default `service` feature, so the Store app never
-//! compiles the privileged door it talks to.
+//! compiles the privileged service it talks to.
 
 use std::path::PathBuf;
 

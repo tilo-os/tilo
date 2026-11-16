@@ -53,7 +53,7 @@ pub fn settle(host: &mut TilolangHost, woken: &Woken, draw: impl FnMut() -> bool
 /// never read before its first frame.
 ///
 /// Nothing is settled by letting time pass: a host that owes nothing draws nothing more until its
-/// door, a window or a wake reaches it, so the frame read then is the frame the next would be. A
+/// api, a window or a wake reaches it, so the frame read then is the frame the next would be. A
 /// window's own motion — a glide, an entrance — is given the slice it runs in; one that never
 /// ends, a caret's blink, does not hold the test.
 ///

@@ -66,7 +66,7 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
         panic!("{:?}", steps[0]);
     };
     assert_eq!(address.action, "new-note");
-    // The door accepts what the planner produced.
+    // The action API accepts what the planner produced.
     app.invoke(address, arguments, false).unwrap();
     let body = app
         .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())

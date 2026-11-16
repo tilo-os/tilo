@@ -3040,7 +3040,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
     }
     // Where the engine's own pointer came to rest, so the page's hover
-    // styles follow it; the engine sends it, the action door never does.
+    // styles follow it; the engine sends it, the action API never does.
     if(action=="pointer_rest") return (d->HasKey("x") && d->HasKey("y"));
     if(action=="hover" || action=="drag") {
       // One end of a gesture either names an element or gives its point.

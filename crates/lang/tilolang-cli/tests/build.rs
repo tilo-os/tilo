@@ -145,9 +145,9 @@ fn today_reads_notes(
     installed
 }
 
-/// The action door each package's manifest declares: Today's morning cleanup calls Tasks' and
+/// The action API each package's manifest declares: Today's morning cleanup calls Tasks' and
 /// Notes' actions, so Today declares that it invokes another app's actions, which the broker reads
-/// as the ceiling on what it may ask of their doors; a package that calls only its own actions
+/// as the ceiling on what it may ask of their action APIs; a package that calls only its own actions
 /// declares nothing beyond them.
 fn declared_actions(apps: &[package::BuiltApp], today: &Manifest) {
     let declared = |app: &package::BuiltApp| {

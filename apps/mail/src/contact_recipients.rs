@@ -1,5 +1,5 @@
 //! Shared address-book choices in the system resource/search picker. Every row
-//! is an exact person/address/sender choice, reviewed through the action door.
+//! is an exact person/address/sender choice, reviewed through the action API.
 //! Email hints are deliberately independent of confirmed messaging identities.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint, canonical_email_hint};

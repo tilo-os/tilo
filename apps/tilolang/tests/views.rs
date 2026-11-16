@@ -72,7 +72,7 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
 
 /// The view the recorded model answers with in the agent's end-to-end check is a `view`
 /// declaration that compiles over the apps that check installs, none of which Views names.
-/// (Its programs are a task's session, each after the last, which the door runs; only the view
+/// (Its programs are a task's session, each after the last, which the API runs; only the view
 /// stands alone.)
 #[test]
 fn the_recorded_answer_is_a_view_declaration_over_the_installed_apps() {

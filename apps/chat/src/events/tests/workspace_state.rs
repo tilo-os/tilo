@@ -372,7 +372,7 @@ tilo_test_env::scenario! {
                 .borrow()
                 .last()
                 .cloned()
-                .expect("the semantic control dispatches through the door"),
+                .expect("the semantic control dispatches through the API"),
         )
         .unwrap();
         assert_eq!(action["action"], ui::tilo_resource::FIELD_EDIT, "{action}");
@@ -959,7 +959,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_read_receipt_the_door_refused_is_not_sent_again_until_the_person_reads_further;
+    phase a_read_receipt_the_api_refused_is_not_sent_again_until_the_person_reads_further;
     {
         let (mut app, mut doc) = app_with_doc();
         // Only receipts are submitted here.
@@ -967,7 +967,7 @@ tilo_test_env::scenario! {
         let marks = |app: &ChatApp| app.dispatched.borrow().len();
         app.mark_active_read(&doc);
         assert_eq!(marks(&app), 1, "the channel in view is marked read");
-        // The door does not offer this person the receipt (a viewer): it says so
+        // The API does not offer this person the receipt (a viewer): it says so
         // and nothing lands.
         app.dispatch
             .as_ref()
@@ -996,6 +996,6 @@ tilo_test_env::scenario! {
         .unwrap();
         app.reload(&doc);
         app.mark_active_read(&doc);
-        assert_eq!(marks(&app), 2, "reading further asks the door again");
+        assert_eq!(marks(&app), 2, "reading further asks the API again");
     }
 }

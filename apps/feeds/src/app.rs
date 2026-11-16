@@ -684,7 +684,7 @@ impl Core {
         }
     }
 
-    /// Submit one field edit or verb through the library's door, now: the
+    /// Submit one field edit or verb through the library's api, now: the
     /// single mutation path, shared with the palette and agents. One event's
     /// submissions are one undo step.
     /// Whether it went through.

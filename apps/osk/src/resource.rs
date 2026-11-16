@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn preferences_change_through_the_door_and_follow_the_person_to_the_next_launch() {
+    fn preferences_change_through_the_api_and_follow_the_person_to_the_next_launch() {
         let mut app = keyboard();
         app.call_on("osk.keyboard.layout", "azerty", serde_json::json!({}))
             .unwrap();

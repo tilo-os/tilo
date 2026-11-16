@@ -2,7 +2,7 @@
 //! change or a Discord event, means for both sides.
 //!
 //! The bot's program only sequences steps, so everything it does comes from
-//! one effect. The program reads Chat's records through the record door, and
+//! one effect. The program reads Chat's records through the record api, and
 //! `plan-event` answers a [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply

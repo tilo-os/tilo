@@ -1,6 +1,6 @@
-//! Pairing and administering the person's devices, whichever door asks: the
+//! Pairing and administering the person's devices, whichever action API asks: the
 //! shell's `identity.device.pair.*` and `identity.*` actions, or the
-//! `tilo-identity` command on a headless device. Each door decides who may
+//! `tilo-identity` command on a headless device. Each action API decides who may
 //! take a step; what the step runs, and with which arguments, is decided
 //! here once.
 //!
@@ -761,7 +761,7 @@ mod tests {
             assert!(revocation_reason("misplaced").is_err());
         }
 
-        phase every_door_runs_the_helper_with_the_same_arguments;
+        phase every_api_runs_the_helper_with_the_same_arguments;
         {
             let paths = PersonPaths {
                 root: PathBuf::from("/var/lib/tilo"),

@@ -1,6 +1,6 @@
 //! The panels around the artwork: the layers, the inspector of what is
 //! selected (or of the brush and the artwork), and the history. What they
-//! change, they change through the artwork's own actions, the door agents
+//! change, they change through the artwork's own actions, the API agents
 //! use too.
 //!
 //! The panels scroll in areas without a semantic key, so their many

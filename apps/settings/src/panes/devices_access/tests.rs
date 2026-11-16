@@ -461,11 +461,11 @@ tilo_test_env::scenario! {
 tilo_test_env::scenario! {
     fn the_access_rows_join_grants_and_offer_what_can_be_done;
 
-    phase the_doors_grants_join_the_records_agents;
+    phase the_apis_grants_join_the_records_agents;
     {
         en();
         let mut sample = sample();
-        sample.door.grants.push(Grant {
+        sample.api.grants.push(Grant {
             id: hex::encode([5u8; 32]),
             agent: "Claude Code".into(),
             reach: Reach::Account,
@@ -485,7 +485,7 @@ tilo_test_env::scenario! {
             ["Nightly export", "Claude Code on laptop", "ChatGPT"],
             "active now first, the latest active first"
         );
-        assert!(agents[1].grant.is_some(), "the door's grant joins its key");
+        assert!(agents[1].grant.is_some(), "the API's grant joins its key");
         assert_eq!(
             agents[2].removal(),
             DevicesAccessEffect::RevokeAgent {

@@ -1,5 +1,5 @@
 //! Explicit recovery of this profile's old, unscoped content. Published on
-//! the existing workspace action door, never on the blob socket. An import
+//! the existing workspace action API, never on the blob socket. An import
 //! creates new workspace reachability; it does not certify historical ownership.
 
 use std::sync::Arc;

@@ -5,7 +5,7 @@
 //! here: Chat's channel is a record the session keeps, its `send` is a verb the session's own
 //! service answers. A Rust view (and a tilolang one) names such a verb on the resource it shows
 //! by its published id — `cx.action(node, "press", "send")` — and the runtime sends it to the app
-//! that publishes it, exactly as it sends a declared action of another app to that app's door.
+//! that publishes it, exactly as it sends a declared action of another app to that app's action API.
 //!
 //! The host hands the table in ([`crate::Runtime::set_published_actions`]) from the resources it
 //! publishes, so the runtime never guesses an address: an action id a loaded package declares is
@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 /// A verb a resource publishes, as the app publishing it runs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishedAction {
-    /// The app whose door runs it (`chat`): what an invocation is addressed to.
+    /// The app whose action API runs it (`chat`): what an invocation is addressed to.
     pub app: String,
     /// The names of the arguments it takes after the resource itself, in the order it declares
     /// them (`channel`, `text`): what an invocation made from a view's arguments is sent by.

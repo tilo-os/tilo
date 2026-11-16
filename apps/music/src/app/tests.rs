@@ -2474,7 +2474,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
         let resource = Music::publish_resource(&app, &resource_id)
-            .expect("published destination resolves at the authority door");
+            .expect("published destination resolves at the authority api");
         let open = resource
             .actions
             .iter()
@@ -4177,7 +4177,7 @@ fn artist_and_album_pages_navigate_and_play() {
 }
 
 #[test]
-fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
+fn live_album_tracks_are_discoverable_and_queue_through_the_resource_api() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     app.surface_mut::<MusicApp>()

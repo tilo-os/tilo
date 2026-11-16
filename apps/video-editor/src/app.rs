@@ -943,7 +943,7 @@ pub struct VideoEditorApp {
     /// The level the mix is running at, written by whatever is mixing and
     /// read here. **Not** feature-gated: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
-    /// blocks through this exact door rather than through a drawing that
+    /// blocks through this exact api rather than through a drawing that
     /// imitates one.
     mix_meters: std::sync::Arc<crate::audio::MixMeters>,
     /// One copy of that, taken in `sync`. `draw` reads plain fields: the
@@ -2923,7 +2923,7 @@ impl VideoEditorApp {
     }
 
     /// Re-time the selected clip and everything linked to it, and write them
-    /// all. The one door every rate affordance goes through — the slider, the
+    /// all. The one api every rate affordance goes through — the slider, the
     /// presets, the reverse toggle and the keyboard — so none of them can
     /// leave half a shot at the old speed.
     fn set_speed_selected(&mut self, rate: f64, reverse: bool) {
@@ -2939,7 +2939,7 @@ impl VideoEditorApp {
         self.dispatch_clip_linked(id);
     }
 
-    /// One door, so the inspector row, the context menu, the keyboard walk and the
+    /// One api, so the inspector row, the context menu, the keyboard walk and the
     /// accessibility tree cannot disagree about whether linking is available or
     /// which way round it is.
     fn link_affordance(&self) -> Option<LinkAffordance> {
@@ -3210,7 +3210,7 @@ impl VideoEditorApp {
     }
 
     /// `None` when the control has nothing behind it — a title knob with no title
-    /// selected. Animatable channels read through [`Clip::param_at`], the door the
+    /// selected. Animatable channels read through [`Clip::param_at`], the API the
     /// compositor uses, so a keyframed slider tracks the playhead.
     /// The span a control has **on the current clip**, for the controls whose range
     /// is not a constant.
@@ -3788,7 +3788,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// The one door for "go to this moment": a marker row, the accessibility route
+    /// The one api for "go to this moment": a marker row, the accessibility route
     /// onto it and a chosen search hit all arrive here, so none can drift into a
     /// slightly different move.
     fn seek_to(&mut self, at: f64) {
@@ -7162,7 +7162,7 @@ enum LinkAffordance {
     /// Give a picture clip that carries sound its own audio clip. This is what
     /// a project saved before linked audio existed is offered, and what a shot
     /// whose sound half was deleted is offered again — so neither is a
-    /// one-way door.
+    /// one-way api.
     SplitAudio,
 }
 

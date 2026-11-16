@@ -586,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn effects_reach_the_surface_through_the_door_and_ride_their_rows() {
+    fn effects_reach_the_surface_through_the_api_and_ride_their_rows() {
         let mut app = TestApp::<MusicShell>::new().unwrap();
         for action in crate::seed::sample_actions() {
             app.invoke(action).unwrap();

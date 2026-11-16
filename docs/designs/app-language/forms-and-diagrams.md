@@ -146,7 +146,7 @@ view done_per_week(p: Project, weeks: Collection<WeekCount>) {
   edges. A chart exposes its data as a table to screen readers and to agents (`read` and
   `describe` see series, not pixels).
 - **Agents:** a chart is a view of data. An agent's answer can embed one (agent-ux.md), and the
-  door checks it like any other view.
+  action API checks it like any other view.
 
 ### Good looking by default
 

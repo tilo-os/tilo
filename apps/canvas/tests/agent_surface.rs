@@ -105,7 +105,7 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
 fn assert_header_inventory(surface: &serde_json::Value, app: &mut TestApp<App>) {
     // The artwork's commands are the window bar's slots now, not a row of
     // buttons inside the window: the app's own surface holds no header
-    // control, so none of them mints a second door onto a document edit.
+    // control, so none of them mints a second api onto a document edit.
     let rows = surface.as_array().unwrap();
     let controls: Vec<_> = rows
         .iter()
@@ -169,7 +169,7 @@ fn assert_header_inventory(surface: &serde_json::Value, app: &mut TestApp<App>) 
         documents
             .iter()
             .all(|row| row["resource_kind"] != "tilo.ui.control"),
-        "bar slots never mint alternate document mutation doors"
+        "bar slots never mint alternate document mutation action APIs"
     );
     let audit = app.harness().native_app_audit();
     assert!(

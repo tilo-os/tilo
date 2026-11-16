@@ -1,8 +1,8 @@
 //! The tab's record as a resource, through Browser's own window: agents the
-//! action door admitted act on the page, the engine sets down what they did,
+//! action API admitted act on the page, the engine sets down what they did,
 //! and the record is read where Browser keeps it — by a reviewer through the
 //! page's own action, by History, by another device, and after the engine
-//! that set it down is gone. Only the window adds to it: nobody at the door
+//! that set it down is gone. Only the window adds to it: nobody at the API
 //! does.
 //!
 //! The engine is the deterministic one. It answers what a test queues: an
@@ -51,13 +51,13 @@ fn open(engine: &Arc<TestEngine>) -> App {
     app
 }
 
-/// An agent the action door admitted, by its principal.
+/// An agent the action API admitted, by its principal.
 fn agent(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&Acting::of_key(principal))
 }
 
-/// An agent the action door admitted to act for Ada, by its principal: what
-/// the door of a record of Ada's own takes actions from, beside Ada.
+/// An agent the action API admitted to act for Ada, by its principal: what
+/// the API of a record of Ada's own takes actions from, beside Ada.
 fn agent_for_ada(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&Acting::of_key(principal)).acting_for(ada())
 }
@@ -68,18 +68,18 @@ fn laptop() -> InvokerDevice {
     InvokerDevice::certified([0x5c; 32], "Studio laptop")
 }
 
-/// An agent the action door admitted that works from `device`, another of
+/// An agent the action API admitted that works from `device`, another of
 /// Ada's devices: what the host says of an agent whose connection its agent
-/// door verified to come from there.
+/// api verified to come from there.
 fn agent_on(principal: &str, device: &InvokerDevice) -> ActionInvoker {
     agent(principal).from_device(Some(device.clone()))
 }
 
-/// What a call through the door comes to when nothing answers it in time.
+/// What a call through the API comes to when nothing answers it in time.
 const NO_ANSWER: &str = "it did not answer";
 
 /// Invoke the action at `address` with `arguments` through the window's
-/// door for `invoker`, as the host does for an agent it admitted (nobody:
+/// api for `invoker`, as the host does for an agent it admitted (nobody:
 /// the person at the window), and wait for what it answers with.
 fn invoke(
     app: &mut App,
@@ -316,7 +316,7 @@ fn published(resources: &[ui::tilo_actions::ResourceSpec], id: &str) -> bool {
 
 /// Two named agents act in one tab: each action is a change of Browser's
 /// record as it ends, in the order they ran, under the name the engine keeps
-/// the actor by and authored by the invoker the action door admitted. What
+/// the actor by and authored by the invoker the action API admitted. What
 /// was typed straight into the page, and what the person at the window did,
 /// is the person's.
 #[test]
@@ -432,9 +432,9 @@ fn named_in(entries: &Value) -> Vec<(String, Option<String>, Option<String>)> {
 
 /// Agents on three machines work in one tab: two on Ada's laptop, one on a
 /// device of hers that names itself nothing, one on the device that runs
-/// the page. The record names, beside each actor, the device the door
+/// the page. The record names, beside each actor, the device the API
 /// verified it came from, and none for the one here, whatever the engine
-/// lists. An actor's name stays the principal the door admitted, so two
+/// lists. An actor's name stays the principal the API admitted, so two
 /// agents of one device are two actors and one agent is the same actor
 /// across its actions. The record's read, the review of the page's fields
 /// and the record's history say the same.
@@ -449,7 +449,7 @@ fn an_agent_from_another_device_is_set_down_with_the_device_it_was_admitted_from
     let third = agent_on("agent:task-d1", &unnamed);
     let here = agent("agent:task-b1");
     // The engine is told a device by nobody, and one it lists is nothing a
-    // door verified: here it says the agent on this device is on the laptop.
+    // api verified: here it says the agent on this device is on the laptop.
     let mut forged = field_filled(4, "agent:task-b1", "Arrival");
     forged["device"] = laptop.id.clone().into();
     forged["device_name"] = "Studio laptop".into();
@@ -1052,8 +1052,8 @@ fn engine_ends_hold(engine: &TestEngine, seq: u64, id: u32) -> Value {
 /// about to send waited for the person, and how that ended, each in its
 /// place among the actions. Who answered is the name the window's own answer
 /// carried to the engine: an agent's answer is that agent's change, authored
-/// by the invoker the action door admitted it for, and the person's is the
-/// person's. Nobody at the door sets such an entry down.
+/// by the invoker the action API admitted it for, and the person's is the
+/// person's. Nobody at the API sets such an entry down.
 #[test]
 fn what_the_window_held_is_set_down_with_who_answered() {
     let engine = TestEngine::new();
@@ -1132,7 +1132,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
     assert_eq!(
         answered_for,
         [Some(ada())],
-        "authored by the invoker the action door admitted the answer for"
+        "authored by the invoker the action API admitted the answer for"
     );
     // A reader of the record is told the same.
     let read = review(&mut app, Some(3));
@@ -1237,7 +1237,7 @@ fn setting_down(tab: &str, entry: Value) -> Invoke<PageRecord> {
 }
 
 /// Set `entry` down in `tab` as a window does, authored by `by`: the invoker
-/// the door admitted the action for (nobody: the person at the window).
+/// the API admitted the action for (nobody: the person at the window).
 fn set_down(
     record: &PersonRecord<PageRecord>,
     by: Option<&ActionInvoker>,
@@ -1366,7 +1366,7 @@ fn an_action_is_written_only_as_the_actor_who_did_it() {
     assert_eq!(record.with(|state| state.actions.len()), 4);
 }
 
-/// An action names the device the door set on the invoker it is written
+/// An action names the device the API set on the invoker it is written
 /// as, and no other: not one for an agent on this device, not another
 /// device or another name of it for an agent from the laptop, not none for
 /// that agent, and none for what the person did.
@@ -1494,7 +1494,7 @@ fn the_record_keeps_the_tabs_that_acted_last() {
     assert!(state.page("tab", 0).entries.is_empty());
 }
 
-/// The actions the window's door offers on the record.
+/// The actions the window's api offers on the record.
 fn offered_on_the_record(app: &mut App) -> Vec<String> {
     app.agent_surface()
         .as_array()
@@ -1505,22 +1505,22 @@ fn offered_on_the_record(app: &mut App) -> Vec<String> {
         .collect()
 }
 
-/// Why the door refused a call: it must have refused it, and at once.
+/// Why the API refused a call: it must have refused it, and at once.
 fn refusal(answer: Result<Option<Value>, String>) -> String {
-    let refusal = answer.expect_err("the door takes it from nobody");
-    assert_ne!(refusal, NO_ANSWER, "the door refuses at once");
+    let refusal = answer.expect_err("the API takes it from nobody");
+    assert_ne!(refusal, NO_ANSWER, "the API refuses at once");
     refusal
 }
 
 /// Only a window adds to the record, and only what its engine listed. An
-/// agent the door admitted for the person cannot set down, under its own
-/// name, an action it never did: not by the verb's name, which the door
+/// agent the API admitted for the person cannot set down, under its own
+/// name, an action it never did: not by the verb's name, which the API
 /// does not know, not as a value of `apply`, not in a group. Nor can the
 /// person. The record stays what the engine listed, a reviewer reads it as
 /// before, and what the window writes next still lands as the change of the
 /// agent that acted.
 #[test]
-fn nobody_at_the_door_adds_to_the_record() {
+fn nobody_at_the_api_adds_to_the_record() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     let (ada_agent, ben) = (agent_for_ada("agent:ada"), agent_for_ada("agent:ben"));
@@ -1532,7 +1532,7 @@ fn nobody_at_the_door_adds_to_the_record() {
     let listed = record.with(|state| state.page(&tab, 0).entries);
     assert_eq!(listed, [email_filled(1)]);
 
-    // The record is at the door with what every record offers, and without
+    // The record is at the API with what every record offers, and without
     // an action that sets one down.
     let offered = offered_on_the_record(&mut app);
     for open in ["apply", "group"] {
@@ -1662,7 +1662,7 @@ fn page_action(app: &mut App, action: &str) -> ActionAddress {
 /// answers the page's form through the form's action and then sends it:
 /// what the engine sets down under the agent's name, the answers and the
 /// submission the window held, is the agent's change in the record, authored
-/// by the invoker the action door admitted it as, and a reviewer reads both
+/// by the invoker the action API admitted it as, and a reviewer reads both
 /// under that agent.
 #[test]
 fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
@@ -1760,7 +1760,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     assert_eq!(
         authored_for,
         [(true, Some(ada())), (true, Some(ada()))],
-        "each is the agent's change, authored by the invoker the action door admitted"
+        "each is the agent's change, authored by the invoker the action API admitted"
     );
     // A reviewer reads both under that agent.
     let read = review(&mut app, None);

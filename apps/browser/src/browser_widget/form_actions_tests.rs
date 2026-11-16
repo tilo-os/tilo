@@ -301,9 +301,9 @@ fn run(
         .unwrap_or_else(|| panic!("{action} never answered"))
 }
 
-/// What the door refuses `arguments` for `action` with before anything
+/// What the API refuses `arguments` for `action` with before anything
 /// runs, if it does.
-fn refused_at_the_door(
+fn refused_at_the_api(
     app: &mut TestApp<BrowserShell>,
     action: &str,
     arguments: &serde_json::Value,
@@ -442,7 +442,7 @@ fn a_read_form_is_a_typed_action_of_the_page_and_running_it_answers_the_form() {
         serde_json::json!({"full_name": "Ada"}),
     ] {
         assert!(
-            refused_at_the_door(&mut app, "form-5f1c2a9b", &wrong).is_some(),
+            refused_at_the_api(&mut app, "form-5f1c2a9b", &wrong).is_some(),
             "{wrong}"
         );
     }
@@ -533,7 +533,7 @@ fn a_secret_is_no_parameter_and_nothing_a_field_held_is_remembered() {
         "passcode": "open-sesame",
     });
     assert!(
-        refused_at_the_door(&mut app, "form-5f1c2a9b", &all).is_some(),
+        refused_at_the_api(&mut app, "form-5f1c2a9b", &all).is_some(),
         "a secret given to the form's action never reaches the page"
     );
     assert_eq!(asked(&engine).len(), 1, "only the read reached the page");
@@ -932,7 +932,7 @@ fn an_answer_says_what_the_form_became_and_the_page_follows_it() {
 /// into a one-time code field after it was read is refused by the typed
 /// path, for that field alone. From then on it is no parameter of the
 /// form's action, which says the action that takes it; given all the same
-/// it is refused at the door, and nothing of it is remembered but that the
+/// it is refused at the API, and nothing of it is remembered but that the
 /// question is a secret.
 #[test]
 fn a_field_the_page_holds_as_a_secret_is_no_parameter_once_an_answer_says_so() {
@@ -983,7 +983,7 @@ fn a_field_the_page_holds_as_a_secret_is_no_parameter_once_an_answer_says_so() {
     );
     let reached = asked(&engine).len();
     assert!(
-        refused_at_the_door(&mut app, "form-5f1c2a9b", &answers).is_some(),
+        refused_at_the_api(&mut app, "form-5f1c2a9b", &answers).is_some(),
         "a secret given to the form's action never reaches the page"
     );
     assert_eq!(asked(&engine).len(), reached);

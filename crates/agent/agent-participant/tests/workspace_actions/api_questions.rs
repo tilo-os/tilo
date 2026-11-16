@@ -218,7 +218,7 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() {
+async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_api() {
     let on_relay = api_on_relay(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let mut agent = agent_with_a_book(&on_relay, &ada).await;

@@ -331,18 +331,18 @@ mod tests {
         assert_eq!(primary.semantic_identity, expected);
     }
 
-    /// The repository door carries what the window shows of the history,
+    /// The repository api carries what the window shows of the history,
     /// branches and remotes with their item effects; the record holds only
     /// the repository it opens and the projection, never the working tree.
     #[test]
-    fn the_repository_door_publishes_what_the_window_shows() {
+    fn the_repository_api_publishes_what_the_window_shows() {
         let (model, _) = crate::sample::model();
         let mut app = TestApp::<GitClientShell>::capture(Some("history")).unwrap();
         let resources = app.harness().resources();
         let published = resources
             .iter()
             .find(|resource| resource.id.as_str() == "git_client.repo")
-            .expect("the repository door");
+            .expect("the repository api");
         assert_eq!(published.kind, "git_client.repo");
         for id in [
             "git_client.branches",

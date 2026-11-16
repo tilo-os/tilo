@@ -223,9 +223,9 @@ pub(super) struct ShownControl {
 }
 
 impl super::Session {
-    /// Invoke what `identity` says a window's control does, at the door the broker delivers to:
-    /// the resource and the action as the app publishes them, which is what the window publishes
-    /// of the control ([`super::Session::controls`]).
+    /// Invoke what `identity` says a window's control does, at the action API the broker delivers
+    /// to: the kind of resource the action acts on and the id the app declares it by, which is what
+    /// the window publishes of the control ([`super::Session::controls`]).
     pub(super) fn invoke_doing(
         &mut self,
         identity: &str,
@@ -245,6 +245,7 @@ impl super::Session {
         let doing = ui::tilo_actions::ActionAddress::parse(identity)
             .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
         let arguments = format!("{}{arguments}", ui::tilo_actions::ARGUMENTS_JSON_PREFIX);
+<<<<<<< HEAD
         self.deliver(
             &ui::tilo_actions::MemberId::person(actor).into(),
             doing.resource,
@@ -253,6 +254,10 @@ impl super::Session {
             None,
         )
         .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
+=======
+        self.deliver(actor, doing.resource, doing.action, Some(arguments), None)
+            .unwrap_or_else(|| panic!("the API answered nothing of {identity}"))
+>>>>>>> 2fcc5ffd (refactor: name the action API and the entry in apps, runtime and docs)
     }
 
     /// What the window's control called `name` says it does: the identity every caller names it
@@ -275,11 +280,11 @@ impl super::Session {
     }
 }
 
-/// A control of a window is invoked by what it does, at the door a tool or another app calls: the
+/// A control of a window is invoked by what it does, at the API a tool or another app calls: the
 /// identity the window publishes is the app's own action, so what a person presses and what a
 /// caller names are one.
 #[test]
-fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
+fn a_new_note_is_invoked_at_the_api_by_what_its_control_does() {
     let _settled = ui::motion::testing::settled();
     let mut session = super::Session::live_notes();
     let new_note = session.identity_named("New note");
@@ -293,7 +298,7 @@ fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran what the control does: {answered:?}"
+        "the API ran what the control does: {answered:?}"
     );
     assert_eq!(
         session.titles(),
@@ -317,7 +322,7 @@ fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran what the control does: {answered:?}"
+        "the API ran what the control does: {answered:?}"
     );
     assert_eq!(
         super::store(&session).stats().written_once,
@@ -345,10 +350,10 @@ fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
 }
 
 /// A control that takes an argument is invoked by what it does, with that argument: the Tasks
-/// window's New task, run at the door as another app's call or an agent's reaches it, makes the
+/// window's New task, run at the API as another app's call or an agent's reaches it, makes the
 /// task it names.
 #[test]
-fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument() {
+fn a_new_task_is_invoked_at_the_api_by_what_its_control_does_and_its_argument() {
     let _settled = ui::motion::testing::settled();
     let mut session = super::Session::live_tasks();
     let new_task = session.identity_named("New task");
@@ -361,7 +366,7 @@ fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument()
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran what the control does: {answered:?}"
+        "the API ran what the control does: {answered:?}"
     );
     assert!(
         super::task_in_record(&session, "Water the plants", false),
@@ -369,7 +374,7 @@ fn a_new_task_is_invoked_at_the_door_by_what_its_control_does_and_its_argument()
     );
 }
 
-/// A row's controls name the row they belong to: the second task's Complete, invoked at the door by
+/// A row's controls name the row they belong to: the second task's Complete, invoked at the API by
 /// what it does, completes that task alone, and the first is left as it was.
 #[test]
 fn a_tasks_complete_completes_the_task_its_row_names() {
@@ -386,7 +391,7 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
                 answered,
                 ui::tilo_actions::InvocationUpdate::Succeeded { .. }
             ),
-            "the door made {title:?}: {answered:?}"
+            "the API made {title:?}: {answered:?}"
         );
     }
     // The second row's menu, opened where the row stands.
@@ -399,7 +404,7 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran what the row's Complete does: {answered:?}"
+        "the API ran what the row's Complete does: {answered:?}"
     );
     assert!(
         super::task_in_record(&session, "Call the plumber", true),
@@ -413,10 +418,10 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
 }
 
 /// Today's own command acts on another app's records, which Today's window publishes no resource
-/// of: the identity its control publishes resolves at Today's door all the same, and the cleanup
+/// of: the identity its control publishes resolves at Today's api all the same, and the cleanup
 /// runs.
 #[test]
-fn todays_cleanup_runs_at_the_door_by_what_its_control_does() {
+fn todays_cleanup_runs_at_the_api_by_what_its_control_does() {
     let _settled = ui::motion::testing::settled();
     let mut session = super::Session::today(super::Window::live);
     let cleanup = session.identity_named("Morning cleanup");
@@ -432,7 +437,7 @@ fn todays_cleanup_runs_at_the_door_by_what_its_control_does() {
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran what the control does: {answered:?}"
+        "the API ran what the control does: {answered:?}"
     );
 }
 
@@ -450,7 +455,7 @@ fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
             && node.props.get("title") == Some(&tilo_ui_host::Value::text(title))
             && let Some(tilo_ui_host::Value::Ref(record)) = node.props.get("item")
         {
-            // The catalogue's reference to it, as any caller of the app's door gives a record.
+            // The catalogue's reference to it, as any caller of the app's api gives a record.
             let (app, ty) = record
                 .ty
                 .split_once('#')
@@ -529,7 +534,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door ran the edit the box names: {answered:?}"
+        "the API ran the edit the box names: {answered:?}"
     );
     assert_eq!(
         session.field_value("done"),
@@ -545,7 +550,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
             answered,
             ui::tilo_actions::InvocationUpdate::Succeeded { .. }
         ),
-        "the door added a task: {answered:?}"
+        "the API added a task: {answered:?}"
     );
     let boxed = session
         .controls()
@@ -591,7 +596,7 @@ impl super::Session {
         read(&mut self.instance().record().doc())
     }
 
-    /// Invoke `action` of the published `resource` at the door the broker delivers to, as
+    /// Invoke `action` of the published `resource` at the API the broker delivers to, as
     /// `invoker` (the person at the window when `None`), within `ambient`: the task the invoker
     /// carries out, recorded with every change it makes. The broker names the invoker it admitted
     /// in the delivery's context. Answers what the operation answered.
@@ -627,12 +632,12 @@ impl super::Session {
             Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
             Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error.message),
             Some(other) => Err(format!("{other:?}")),
-            None => Err(format!("the door answered nothing of `{action}`")),
+            None => Err(format!("the API answered nothing of `{action}`")),
         }
     }
 
-    /// Deliver `action` of `resource` at the door the broker delivers to, run by `actor` within
-    /// `context`, and let the host answer it: what the door last said of it.
+    /// Deliver `action` of `resource` at the API the broker delivers to, run by `actor` within
+    /// `context`, and let the host answer it: what the API last said of it.
     pub(super) fn deliver(
         &mut self,
         actor: &ui::tilo_actions::Actor,
@@ -748,7 +753,7 @@ mod standing {
             "and nothing is written"
         );
 
-        // Bob makes Ada an editor; the session says so on the host's door.
+        // Bob makes Ada an editor; the session says so on the host's api.
         assert!(
             session
                 .host

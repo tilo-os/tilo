@@ -61,7 +61,7 @@ impl Editor {
         }
     }
 
-    /// Make the edit an edit effect names at the invoker's caret, through the door.
+    /// Make the edit an edit effect names at the invoker's caret, through the API.
     fn answer_edit_effect(
         &mut self,
         effect: &WordProcessorEffect,

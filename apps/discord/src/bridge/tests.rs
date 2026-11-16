@@ -423,7 +423,7 @@ fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
            "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
 }
 
-/// The chat as the record door reads it with a filed report's message: its
+/// The chat as the record api reads it with a filed report's message: its
 /// text read out of the report, its picture as an image, a reaction on it.
 fn with_report() -> crate::tilo::ChatRead {
     crate::tilo::ChatRead::new(

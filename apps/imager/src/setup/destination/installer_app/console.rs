@@ -108,7 +108,7 @@ impl InstallerApp {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "the state report mirrors the wizard in one place so no door drifts"
+        reason = "the state report mirrors the wizard in one place so no api drifts"
     )]
     pub fn console_state(&self) -> Value {
         let disks: Vec<Value> = self

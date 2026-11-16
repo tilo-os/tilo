@@ -650,7 +650,7 @@ pub(crate) struct Store {
     tilo_devices: Vec<TiloDevice>,
     next_tilo_session_id: u64,
 
-    /// The resource's door: the single path by which a saved connection is
+    /// The resource's api: the single path by which a saved connection is
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
     /// What the resource and its effects publish, for the rows' controls.
     actions: Option<ui::framework::Actions<crate::resource::Remote>>,
@@ -1187,7 +1187,7 @@ impl Store {
     }
 
     /// Forget the passwords and passphrase this device saved for a
-    /// connection that is gone, whichever door or device deleted it. A
+    /// connection that is gone, whichever api or device deleted it. A
     /// capture never forgets one.
     fn forget_credentials(&self, id: ConnectionId) {
         if self.capture {
@@ -1368,7 +1368,7 @@ impl Store {
         }
     }
 
-    /// Take the resource's door and this device's secret store from the
+    /// Take the resource's api and this device's secret store from the
     fn attach_framework(&mut self, cx: &ViewCx<Remote>) {
         self.dispatch = Some(cx.dispatcher());
         self.actions = Some(cx.actions());

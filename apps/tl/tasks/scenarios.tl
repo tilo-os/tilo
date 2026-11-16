@@ -243,7 +243,7 @@ scenario "a task made from another" -> Task {
     )
     invoke(
         tasks.items.insert(
-            Task(title: "Load the boxes by the door", project: flat, due: 2026-07-09),
+            Task(title: "Load the boxes by the API", project: flat, due: 2026-07-09),
         ),
         from: pack,
     )

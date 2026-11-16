@@ -28,7 +28,7 @@ This page is the map. The [quickstart](quickstart.md) gets you from nothing to a
 | People | Tilo in the browser at [tilo.sh](https://tilo.sh), or the Tilo desktop app | the workspace's apps, live |
 
 All three reach the same resources through the same actions, under the same permissions. An agent does
-not have a private back door, and your script does not have a second API to keep in step.
+not have a private way in, and your script does not have a second API to keep in step.
 
 ## A key is the whole story of access
 

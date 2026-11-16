@@ -440,7 +440,7 @@ impl KeypadLayout {
         self == KeypadLayout::Compact
     }
 
-    /// 4 × 6: the essentials and the door to the function page.
+    /// 4 × 6: the essentials and the API to the function page.
     fn compact_keys() -> Vec<Key> {
         use Key::{Ans, Backspace, Clear, Digit, Dot, Equals, Ins, Page, Percent, ToggleSign};
         vec![

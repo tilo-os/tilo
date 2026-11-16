@@ -1,15 +1,15 @@
-//! A chat's messages read and listed through the door, whichever part of the
+//! A chat's messages read and listed through the action API, whichever part of the
 //! chain keeps them.
 //!
 //! A chat keeps its messages in numbered parts: a part takes the messages
 //! posted while it is the chain's head, and once it is full the posts after it
 //! start the next part. A caller naming the chat's messages — an agent's
 //! `tilo_read` and `tilo_ls`, a page's catalogue — names the chain, not the
-//! part holding the newest message: the door answers with the messages of the
+//! part holding the newest message: the action API answers with the messages of the
 //! parts this host holds, the newest part first, a page at a time, and each
 //! message reads on its own from the part keeping it.
 //!
-//! The record is held the way a host holds it for the door, in a confined app
+//! The record is held the way a host holds it for the action API, in a confined app
 //! worker: the same replica a workspace's host asks for an action or a page.
 
 #![allow(
@@ -46,7 +46,7 @@ fn founded() -> Replica {
     page
 }
 
-/// The chat `page` founded, held as a host holds it for the door.
+/// The chat `page` founded, held as a host holds it for the action API.
 fn held(page: &mut Replica) -> ConfinedReplica {
     let Some(DocumentMutation::Snapshot(changes)) = page.take_mutation().unwrap() else {
         panic!("a new record is published whole");
@@ -63,7 +63,7 @@ fn held(page: &mut Replica) -> ConfinedReplica {
     .expect("the chat opens in its worker")
 }
 
-/// Post `text` in the chat, through the door the host serves.
+/// Post `text` in the chat, through the action API the host serves.
 fn post(held: &ConfinedReplica, text: &str) {
     held.invoke(
         &ActionAddress::new(messages(), "post"),
@@ -75,7 +75,7 @@ fn post(held: &ConfinedReplica, text: &str) {
     .expect("the post is applied");
 }
 
-/// Read the chat, through the door, with `arguments`.
+/// Read the chat, through the action API, with `arguments`.
 fn read(
     held: &ConfinedReplica,
     resource: &str,
@@ -102,7 +102,7 @@ fn names(page: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// The rows `query` lists of `surveyed`, as the door pages them.
+/// The rows `query` lists of `surveyed`, as the action API pages them.
 fn rows_of(surveyed: &[CatalogueRow], query: &CatalogueQuery) -> Vec<CatalogueRow> {
     let take = query.page_size();
     Replica::page_of(surveyed, query, (true, (0, take))).1
@@ -127,7 +127,7 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
     post(&held, "first of the newest part");
     post(&held, "second of the newest part");
 
-    // What is inside the chat, through the door: the messages of the part the
+    // What is inside the chat, through the action API: the messages of the part the
     // head is, and the messages of the part before it, which the newest part
     // was started after. The newest part comes first.
     let surveyed = held.survey_rows();
@@ -135,12 +135,15 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
         .iter()
         .filter(|row| row.parent_resource == messages())
         .collect();
-    assert!(!listed.is_empty(), "the door lists the chat's messages");
+    assert!(
+        !listed.is_empty(),
+        "the action API lists the chat's messages"
+    );
     let at = |name: &str| {
         listed
             .iter()
             .position(|row| row.resource.label.starts_with(name))
-            .unwrap_or_else(|| panic!("the door lists {name}"))
+            .unwrap_or_else(|| panic!("the action API lists {name}"))
     };
     // The part the head is was started once the part before it was full: its
     // messages are listed first, and then those of the part before.
@@ -216,7 +219,7 @@ fn a_chat_reads_and_lists_the_messages_of_every_part_its_host_holds() {
             .find(|row| row.resource.label.starts_with(name))
             .map(|row| row.resource.id.clone())
         else {
-            panic!("the door lists {name}");
+            panic!("the action API lists {name}");
         };
         let message = read(&held, &item, &serde_json::json!({}));
         assert!(

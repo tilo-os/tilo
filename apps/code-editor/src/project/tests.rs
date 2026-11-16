@@ -1,4 +1,4 @@
-//! The project on its own: its verbs and field edits through the door the
+//! The project on its own: its verbs and field edits through the API the
 //! host uses, its texts read on demand, and merging.
 
 use super::*;

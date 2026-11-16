@@ -47,7 +47,7 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
-    // `RUST_LOG` says what the relay, its app workers and the door log.
+    // `RUST_LOG` says what the relay, its app workers and the action API log.
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)

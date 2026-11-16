@@ -1,6 +1,6 @@
 //! Mail against a mail server, as a session runs it: the package's instance in a tilolang host,
 //! kept in step with a test IMAP server through the mail connector it reaches over a socket, and
-//! sending through a test SMTP server from the outbox. What people do goes through the door, as
+//! sending through a test SMTP server from the outbox. What people do goes through the API, as
 //! a block the person runs, the way an agent or the person's own tool runs one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -302,7 +302,7 @@ impl Session {
             .clone()
     }
 
-    /// Invoke the Mail action `name` on `on` at the door, as the person at the window presses
+    /// Invoke the Mail action `name` on `on` at the API, as the person at the window presses
     /// it: `arguments` names the action's other parameters. What it answered, or why it was
     /// refused.
     fn try_call(
@@ -327,7 +327,7 @@ impl Session {
         let answered = self.invoke(None, None, &resource, name, &arguments)?;
         self.settle();
         // What the action asks first — a send its code makes — is allowed, as the person allows
-        // what the app's sheet asks of them, through the door.
+        // what the app's sheet asks of them, through the API.
         for asked in self.asked(on) {
             if asked_before.contains(&asked) {
                 continue;

@@ -22,7 +22,7 @@ use crate::run::{Resolution, RunOutcome};
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, from_json, to_json};
 
-/// What an agent's block came to, as the door answers it.
+/// What an agent's block came to, as the action API answers it.
 #[derive(Debug)]
 pub enum AgentBlock {
     /// The source did not compile or link: one line per diagnostic.

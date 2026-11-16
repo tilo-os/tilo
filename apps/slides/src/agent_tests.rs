@@ -1,4 +1,4 @@
-//! What an agent does with a deck through the published door: slides added
+//! What an agent does with a deck through the published api: slides added
 //! over the untouched starter, slides named by their number, pictures from
 //! content the workspace holds, and decks carried in and out as `.pptx` content.
 

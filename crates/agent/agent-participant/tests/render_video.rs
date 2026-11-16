@@ -74,7 +74,7 @@ fn timeline(source: Option<&str>) -> Project {
 }
 
 /// `project` held for an agent, lent `workspace`: a new record the agent loads
-/// the project into through the door, as opening a project file does.
+/// the project into through the action API, as opening a project file does.
 fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
     let agent = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
         .unwrap()

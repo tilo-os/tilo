@@ -1,4 +1,4 @@
-//! The record through the door the host uses: the scan history, the
+//! The record through the API the host uses: the scan history, the
 //! capture handoff, merging and what history says.
 
 use super::*;

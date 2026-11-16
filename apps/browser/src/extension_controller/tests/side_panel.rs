@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
         assert_eq!(window.created_tabs().len(), before);
     }
 
-    phase the_person_opens_and_closes_a_side_panel_from_the_window_and_the_door;
+    phase the_person_opens_and_closes_a_side_panel_from_the_window_and_the_api;
     {
         let window = ui::webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();

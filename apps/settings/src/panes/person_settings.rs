@@ -1002,8 +1002,8 @@ mod tests {
     }
 
     fn remote(host: &Arc<TestHost>) -> ui::RemoteActions {
-        let door: Arc<dyn ui::tilo_actions::remote::ActionHost + Send + Sync> = host.clone();
-        ui::RemoteActions::with_host(door, Caller::local_person("owner"))
+        let api: Arc<dyn ui::tilo_actions::remote::ActionHost + Send + Sync> = host.clone();
+        ui::RemoteActions::with_host(api, Caller::local_person("owner"))
     }
 
     /// The panes bind every request to a button on Settings' own resource,

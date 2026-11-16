@@ -694,7 +694,7 @@ pub struct Invoked {
 /// out every task the record holds for `device`, settling each with what it did: one write
 /// of the record.
 ///
-/// The invocation goes through the record's action door, so the verb checks it against the
+/// The invocation goes through the record's action API, so the verb checks it against the
 /// grants, attributes it to `invoker` and records it in History with its undo.
 ///
 /// # Errors

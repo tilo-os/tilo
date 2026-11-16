@@ -527,7 +527,7 @@ fn counted(key: &str, count: usize) -> String {
 }
 
 /// The name an actor is shown under: an agent by its own name, anyone else
-/// by the name the action door admitted them under, and one that worked
+/// by the name the action API admitted them under, and one that worked
 /// from another of the person's devices with that device, by its name or,
 /// where it has none, the start of its key. One the record says it no
 /// longer knows the device of (`device_unknown`) is shown as that, never as

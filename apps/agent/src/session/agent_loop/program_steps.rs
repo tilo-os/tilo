@@ -1,5 +1,5 @@
 //! The loop's `tilo` calls and view answers: each program is one step of the task, run by the
-//! session's door as a step of the task's run and recorded on the task's issue
+//! session's api as a step of the task's run and recorded on the task's issue
 //! ([`crate::programs`]).
 
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ pub(in crate::session) struct ProgramWorld {
     /// Every host's declarations, merged: what the first message's app lines are read from.
     catalogue: Vec<Value>,
     /// The apps whose records the session serves, by alias, with their root's type, when the
-    /// session's door runs programs: what a program names without a window of the app open.
+    /// session's api runs programs: what a program names without a window of the app open.
     served: Vec<(String, String)>,
 }
 
@@ -62,13 +62,13 @@ impl ProgramWorld {
 }
 
 /// The apps whose records the session serves (`tl:<app>:<root>`, of kind `tl.<app>.<Type>`), by
-/// alias with their root's type, when the session's door runs programs: none without the door.
+/// alias with their root's type, when the session's api runs programs: none without the API.
 fn served_apps(catalogue: &crate::surface::Catalogue) -> Vec<(String, String)> {
-    let door = catalogue.offers.iter().any(|offer| {
+    let api = catalogue.offers.iter().any(|offer| {
         offer.descriptor.address.resource == task_programs::RESOURCE
             && offer.descriptor.address.action == task_programs::RUN
     });
-    if !door {
+    if !api {
         return Vec::new();
     }
     let mut served: Vec<(String, String)> = Vec::new();
@@ -186,17 +186,17 @@ impl Session {
             Ok(program) => program,
             Err(error) => return Ok(Handled::Result(error)),
         };
-        // The session's door runs the program in the task's own tilolang host, over every app
+        // The session's api runs the program in the task's own tilolang host, over every app
         // the session runs: no window of an app need be open for a program to read or change its
         // records. What the open apps' hosts declare only describes them better.
         self.program_world(run, state)?;
         let catalogue = self.task_catalogue();
-        let Some(door) = catalogue.offers.iter().find(|offer| {
+        let Some(api) = catalogue.offers.iter().find(|offer| {
             offer.descriptor.address.resource == task_programs::RESOURCE
                 && offer.descriptor.address.action == task_programs::RUN
         }) else {
             return Ok(Handled::Result(
-                "This session runs no programs: its door does not offer them. Use the other \
+                "This session runs no programs: its api does not offer them. Use the other \
                  tools instead."
                     .into(),
             ));
@@ -211,10 +211,10 @@ impl Session {
         {
             parameters.insert("this".into(), Value::String(this));
         }
-        let answered = match self.host_call(run, state, &door.id(), &parameters)? {
+        let answered = match self.host_call(run, state, &api.id(), &parameters)? {
             Ok(value) => serde_json::from_value::<task_programs::ProgramAnswer>(value)
                 .unwrap_or_else(|error| task_programs::ProgramAnswer {
-                    text: format!("error: the door's answer was unreadable: {error}"),
+                    text: format!("error: the API's answer was unreadable: {error}"),
                     failed: true,
                     ..task_programs::ProgramAnswer::default()
                 }),
@@ -224,7 +224,7 @@ impl Session {
                 ..task_programs::ProgramAnswer::default()
             },
         };
-        let step = programs::door_step(&program.source, &answered, &state.programs.mounted);
+        let step = programs::answer_step(&program.source, &answered, &state.programs.mounted);
         self.record_program(run, &step)?;
         Ok(Handled::Result(answered.text))
     }

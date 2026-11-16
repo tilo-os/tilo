@@ -157,9 +157,9 @@ pub fn manifest_text(
         extra.push_str(&ids.join(", "));
         extra.push_str("]\n");
     }
-    // What the app may do on the session's action door beyond its own
+    // What the app may do on the session's action API beyond its own
     // actions: an action or a view of it that reaches another app's
-    // published action asks it at that app's door, under its own
+    // published action asks it at that app's action API, under its own
     // identity.
     let invokes = if calls_another_app(meta) {
         "[actions]\ninvoke = true\n"

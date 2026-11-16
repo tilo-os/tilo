@@ -72,7 +72,7 @@ fn the_registry_must_be_https_or_this_machine() {
             profile
                 .apply(edit(&Publisher::paths().registry, address))
                 .is_err(),
-            "reject an invalid address at the action door: {address}"
+            "reject an invalid address at the action API: {address}"
         );
         assert_eq!(
             profile.state().expect("profile").registry,

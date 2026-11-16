@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             sent(&app),
             [as_sent(&insertion(&saved, at))],
-            "the new connection went through the resource's door"
+            "the new connection went through the resource's api"
         );
     }
 
@@ -415,7 +415,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             password().get_blocking().unwrap().is_none(),
-            "a connection deleted through any door takes this device's password with it"
+            "a connection deleted through any api takes this device's password with it"
         );
     }
 
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             sent(&app),
             [as_sent(&insertion(&saved, at))],
-            "only the profile goes through the resource's door"
+            "only the profile goes through the resource's api"
         );
         assert!(
             !format!("{:?}", sent(&app)).contains("hunter2"),

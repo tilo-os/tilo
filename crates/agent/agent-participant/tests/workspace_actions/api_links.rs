@@ -1,7 +1,7 @@
-//! An agent working through the door hands a person a link to what it did:
+//! An agent working through the action API hands a person a link to what it did:
 //! a call that changed a record answers the record's link, and `tilo_link`
 //! answers the link to any path. It is the record link a person copies in
-//! the app, under the site the door and the relay announce, and carries no
+//! the app, under the site the action API and the relay announce, and carries no
 //! secret: someone the workspace does not admit is told nothing.
 use super::api::{ISSUER, Mcp, upload};
 use super::api_on_relay::{api_on_relay, approved_key};

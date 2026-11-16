@@ -1,5 +1,5 @@
 //! The library on its own: verbs, field edits, invariants, merging, the
-//! published places and history, through the same door the host uses.
+//! published places and history, through the same api the host uses.
 
 use std::rc::Rc;
 
@@ -351,7 +351,7 @@ fn an_agents_changes_read_back_as_the_apps_sentences() {
         serde_json::json!({
             "passage": {
                 "book": BOOK, "chapter": 0, "block": 2, "start": 0, "end": 4,
-                "excerpt": "door",
+                "excerpt": "api",
             },
             "color": "yellow",
             "text": "Remember this",
@@ -393,7 +393,7 @@ fn an_agents_changes_read_back_as_the_apps_sentences() {
             "Added a note",
             "Set the page tint to dark",
             "Hid finished books",
-            "Recoloured “door”",
+            "Recoloured “api”",
             "Deleted an annotation",
         ]
     );

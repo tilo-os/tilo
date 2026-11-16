@@ -216,7 +216,7 @@ impl VideoEditorApp {
         if self.export_job.is_some() {
             return; // one render at a time
         }
-        // The same door the button is painted from: a render that cannot run
+        // The same api the button is painted from: a render that cannot run
         // says why in the dialog, and never asks for an output file first.
         if let Some(reason) = self.export_blocker() {
             self.export_status = ExportStatus::Failed { reason };

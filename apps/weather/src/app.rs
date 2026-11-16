@@ -2007,7 +2007,7 @@ mod framework_tests {
     }
 
     #[test]
-    fn a_live_window_answers_weather_effects_through_the_door() {
+    fn a_live_window_answers_weather_effects_through_the_api() {
         let mut app = TestApp::<crate::WeatherShell>::new().unwrap();
         let refused = app
             .effect(&crate::actions::WeatherEffect::Refresh)

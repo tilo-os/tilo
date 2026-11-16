@@ -257,6 +257,7 @@ fn saving_a_new_buffer_asks_where_and_then_writes_back_there() {
 }
 
 /// A file larger than a host may hand the app is refused through the same door a
+/// A file larger than a host may hand the app is refused through the same action API a
 /// person's chooser and an agent's path use, and the open buffer stays as it was.
 #[test]
 fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {

@@ -251,7 +251,7 @@ impl BrowserWindow {
             _ => {}
         }
         let invocation = cx.invocation().unwrap_or_default();
-        // Who the action door admitted this invocation for: a page action
+        // Who the action API admitted this invocation for: a page action
         // reaches the engine under that name, so a tab several actors work
         // in keeps what each read and did apart. Nobody, for the person at
         // this window.

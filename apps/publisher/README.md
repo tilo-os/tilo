@@ -9,7 +9,7 @@ addresses under this app's id.
 The key never enters the app's resource, which is synced to collaborators and
 kept in history; only the namespaces, contact and registry do. Creating the
 key and copying it for CI need the owner's role and a confirmation, through
-the buttons and through the action door alike.
+the buttons and through the action API alike.
 
 The profile resource's actions set the domain, forge account, contact and
 registry; its effects act on the key and the registry: `create-key`,

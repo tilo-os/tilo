@@ -1,4 +1,4 @@
-//! The app as it runs: the host door, undo, permissions, and the views an
+//! The app as it runs: the host api, undo, permissions, and the views an
 //! agent sees with.
 
 use canvas::actions::NewStroke;
@@ -20,7 +20,7 @@ fn stroke(colour: &str) -> NewStroke {
     }
 }
 
-/// A stroke painted through the host door is one undo step, and a viewer
+/// A stroke painted through the host api is one undo step, and a viewer
 /// may look but not paint.
 #[test]
 fn painting_is_undoable_and_viewers_cannot_paint() {
@@ -55,11 +55,11 @@ fn painting_is_undoable_and_viewers_cannot_paint() {
     );
 }
 
-/// `look` through the host door answers with a stored JPEG and the revision
+/// `look` through the host api answers with a stored JPEG and the revision
 /// it shows; the revision moves when the artwork changes, so a caller can
 /// tell a stale look from a fresh one. `inspect` names the marks by id.
 #[test]
-fn look_and_inspect_answer_through_the_host_door() {
+fn look_and_inspect_answer_through_the_host_api() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     let look = canvas::resource::ViewOp::Look {
         look: canvas::resource::Look {
@@ -171,10 +171,10 @@ fn inspect_lists_the_newest_marks_within_a_limit() {
 }
 
 /// Every framework app answers `render`, the whole window as a stored
-/// picture, so an agent can see what a person sees through the door it acts
+/// picture, so an agent can see what a person sees through the API it acts
 /// through, in the palette the window is drawn in.
 #[test]
-fn render_shows_the_whole_app_through_the_host_door() {
+fn render_shows_the_whole_app_through_the_host_api() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.harness().set_theme(ui::Theme::light());
     let render: ActionRef<Artwork, ()> =

@@ -1,7 +1,7 @@
 # Shortcuts — Tilo application manifest.
 #
 # Drafts are CRDT state; saved shortcuts live in the workspace and are
-# reached through the session's action door. The app reads the action
+# reached through the session's action API. The app reads the action
 # catalogue to offer steps. A shortcut runs through the session, as the
 # person, within its grant — never through this app.
 

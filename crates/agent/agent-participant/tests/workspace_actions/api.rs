@@ -1,7 +1,7 @@
 //! The API server against the relay, as tilo.sh runs them: the relay's
 //! own person is its operator, the site's home workspace lets people in
-//! through its door, and each person keeps one workspace of their own there.
-//! A person's key works through the door's HTTP routes alone: it makes the
+//! through its action API, and each person keeps one workspace of their own there.
+//! A person's key works through the API's HTTP routes alone: it makes the
 //! person's workspace, is answered there by the relay's app workers with no
 //! tab of anyone's open, mints a key that reaches that one workspace and
 //! nothing else, and revoking it ends both.
@@ -16,7 +16,7 @@ use tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS;
 
 pub(super) const ISSUER: &str = "https://mcp.tilo.test";
 
-/// An MCP session at the door's `path` with `token`.
+/// An MCP session at the API's `path` with `token`.
 pub(super) struct Mcp<'a> {
     pub(super) api: &'a Arc<Server>,
     pub(super) path: String,
@@ -156,9 +156,9 @@ pub(super) async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16,
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
-    reason = "one key's story through the door, from its approval to its revocation"
+    reason = "one key's story through the action API, from its approval to its revocation"
 )]
-async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
+async fn a_key_works_through_the_api_on_the_relay_and_ends_when_revoked() {
     let on_relay = api_on_relay(ISSUER).await;
     let api = Arc::clone(&on_relay.api);
     let lobby = on_relay.lobby.clone();
@@ -270,14 +270,14 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     };
     let (status, init) = minted_session.initialize().await;
     assert_eq!(status, 200, "a minted key reaches its workspace: {init}");
-    // Its door is that workspace's, so it names none.
+    // Its action API is that workspace's, so it names none.
     let (status, listed) = minted_session
         .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                      "params": {"name": "tilo_ls", "arguments": {}}}))
         .await;
     assert_eq!(status, 200, "{listed}");
     assert_eq!(listed["result"]["isError"], false, "{listed}");
-    // The person's own documents, through the door alone with the key for
+    // The person's own documents, through the action API alone with the key for
     // that workspace, run by the relay's app workers though the relay is not
     // theirs: a form goes in over HTTP, PDF Viewer fills it, Writer writes a
     // letter and exports it, and the letter comes back out.
@@ -395,7 +395,7 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     let (status, init) = minted_account.initialize().await;
     assert_eq!(
         status, 200,
-        "a minted key at the door's root is its workspace's: {init}"
+        "a minted key at the API's root is its workspace's: {init}"
     );
     let (status, read) = minted_account.post(usage(7)).await;
     assert_eq!(status, 200, "{read}");
@@ -928,8 +928,8 @@ async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
 }
 
 /// The Lounge given its history as the stack seeds it: a member's key posts
-/// into its chat through the door, one message at a time, each naming the
-/// chat's messages by path. Every post lands within the door's wait, the
+/// into its chat through the action API, one message at a time, each naming the
+/// chat's messages by path. Every post lands within the API's wait, the
 /// chat reads back the last of them, and the last posts cost about what the
 /// first did.
 ///
@@ -938,7 +938,7 @@ async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
 /// host sends for it arrives on the part's own route), waiting out the
 /// keys' wait each time until posts were left pending; the record a post
 /// changed was read whole again before the next request; and each page of
-/// the door's listing handed over everything the chat publishes.
+/// the API's listing handed over everything the chat publishes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     const MESSAGES: usize = 60;
@@ -1007,7 +1007,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
             "lounge history words ".repeat(20 + index * 37 % 120)
         );
         let began = Instant::now();
-        // Answered within the door's wait: a post left pending is one the
+        // Answered within the API's wait: a post left pending is one the
         // agent posting the next waits on in vain.
         let reply = lounge
             .tilo_do(json!({"path": "chat/Messages#post",
@@ -1062,7 +1062,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     );
     // What a post still costs more grows with the part it is written to
     // (merging it, checking what it writes, saving it), never with the
-    // door asking again or reading the chat whole.
+    // API asking again or reading the chat whole.
     assert!(
         last <= first * 4.0 + 100.0,
         "a post costs more as the chat grows: {first:.0} ms early, {last:.0} ms late"

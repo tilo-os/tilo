@@ -376,7 +376,7 @@ The host reaches nothing but the environment:
   as its run. A write of any size is one action: past 64 KiB, what the
   command writes (a redirect, `tee`, `sort -o`) is streamed into the
   environment's content store as it is written, and the action names it by
-  reference (`tilo.content:<hash>`). They go through the session's broker, the same door a guest's
+  reference (`tilo.content:<hash>`). They go through the session's broker, the same action API a guest's
   `cp` uses.
 - **Anything else** is a program, and runs in the session's Linux guest
   (tier 3), exactly that command, on the shell's own streams: the terminal
@@ -719,7 +719,7 @@ there. Content stays while a task the record keeps names it, and what none
 names is collected, never while a session is still streaming content its
 action has not named yet. A command line parses into one of them, with its paths made
 absolute against the directory it was typed in, and the supervisor invokes it
-on the record through the record's action door, as the person whose session it
+on the record through the record's action API, as the person whose session it
 is. It is one History entry of the environment's, attributed like any other,
 and undone from History like any other.
 

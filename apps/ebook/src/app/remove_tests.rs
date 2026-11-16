@@ -2,7 +2,7 @@
 //! row back but not this device's access to the book's file. Nothing is
 //! forgotten until the person agreed: a cancelled removal leaves the book on
 //! the shelf, opening from its file, and a confirmed one forgets the file,
-//! through every door.
+//! through every api.
 
 use std::path::{Path, PathBuf};
 

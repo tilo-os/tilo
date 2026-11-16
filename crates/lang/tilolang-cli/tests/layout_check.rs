@@ -62,7 +62,7 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::CodedName
             | Kind::UnsharedVerb
             | Kind::NestedCard
-            | Kind::LoneDoor
+            | Kind::LoneOverflow
             | Kind::EmptyHeading
             | Kind::ZeroCount
             | Kind::RepeatedCount

@@ -543,11 +543,11 @@ impl ResourceApp for StoreShell {
     }
 }
 
-pub fn door() -> PublishedResource {
-    let mut door =
+pub fn api() -> PublishedResource {
+    let mut api =
         tilo_resource::publish::<Reports>(Reports::KIND, Reports::LABEL, &Reports::default());
-    door.actions.extend(StoreEffect::specs());
-    door
+    api.actions.extend(StoreEffect::specs());
+    api
 }
 
 #[cfg(test)]
@@ -719,19 +719,19 @@ mod tests {
     fn the_store_publishes_one_tree() {
         let mut app = TestApp::<StoreShell>::capture(Some("moderation-case")).unwrap();
         let resources = app.harness().resources();
-        let doors: Vec<_> = resources
+        let specs: Vec<_> = resources
             .iter()
             .filter(|resource| resource.kind == Reports::KIND)
             .collect();
-        assert_eq!(doors.len(), 1, "one Store resource");
+        assert_eq!(specs.len(), 1, "one Store resource");
         assert!(
-            doors[0]
+            specs[0]
                 .actions
                 .iter()
                 .any(|action| action.id == "draft-report")
         );
         assert!(
-            doors[0]
+            specs[0]
                 .actions
                 .iter()
                 .any(|action| action.id == "field-edit"),

@@ -700,7 +700,7 @@ mod tests {
         }
 
         phase only_a_forms_shape_is_remembered;
-        // Memory takes a form's shape and nothing else, through any door.
+        // Memory takes a form's shape and nothing else, through any api.
         {
             let mut memory = BTreeMap::new();
             let ok = || form("aaaa1111", "Apply", vec![question("Name", "text")]);

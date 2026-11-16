@@ -133,7 +133,7 @@ pub struct DevicesAccessArea {
 #[derive(Clone, Debug, Default)]
 pub struct AccessSample {
     pub devices: Vec<DeviceView>,
-    pub door: Server,
+    pub api: Server,
     pub asking: Vec<Asking>,
     pub now_ms: i64,
 }
@@ -388,9 +388,9 @@ struct Asked {
 pub struct AccessModel {
     devices: Vec<DeviceView>,
     devices_asked: Asked,
-    door: Server,
-    door_followed: Option<ui::Followed>,
-    door_seen: u64,
+    api: Server,
+    api_followed: Option<ui::Followed>,
+    api_seen: u64,
     asking: Vec<Asking>,
     asking_asked: Asked,
     pending: Vec<Pending>,
@@ -400,7 +400,7 @@ pub struct AccessModel {
 impl AccessModel {
     fn asking(remote: &ui::RemoteActions) -> Self {
         let mut model = Self::empty();
-        model.door_followed =
+        model.api_followed =
             Some(remote.follow(mcp_server::target(mcp_server::SERVER), InvokeArgument::None));
         model.ask_lists(remote);
         model
@@ -410,7 +410,7 @@ impl AccessModel {
         let mut model = Self::empty();
         model.devices = sample.devices;
         model.devices_asked.answered = true;
-        model.door = sample.door;
+        model.api = sample.api;
         model.asking = sample.asking;
         model.asking_asked.answered = true;
         model.now_ms = Some(sample.now_ms);
@@ -421,9 +421,9 @@ impl AccessModel {
         Self {
             devices: Vec::new(),
             devices_asked: Asked::default(),
-            door: Server::default(),
-            door_followed: None,
-            door_seen: 0,
+            api: Server::default(),
+            api_followed: None,
+            api_seen: 0,
             asking: Vec::new(),
             asking_asked: Asked::default(),
             pending: Vec::new(),
@@ -565,7 +565,7 @@ impl AccessModel {
     }
 
     fn grant(&self, grant: &str) -> Result<&Grant, String> {
-        self.door
+        self.api
             .grants
             .iter()
             .find(|listed| listed.id == grant)
@@ -579,7 +579,7 @@ impl AccessModel {
         {
             remote.poll();
         }
-        let mut changed = self.poll_door();
+        let mut changed = self.poll_api();
         if let Some(answer) = settle(&mut self.devices_asked) {
             match answer.and_then(crate::device_fleet::devices) {
                 Ok(devices) => self.devices = devices,
@@ -626,17 +626,17 @@ impl AccessModel {
         changed
     }
 
-    fn poll_door(&mut self) -> bool {
+    fn poll_api(&mut self) -> bool {
         use ui::tilo_actions::InvocationUpdate;
-        let Some(followed) = &self.door_followed else {
+        let Some(followed) = &self.api_followed else {
             return false;
         };
         let call = followed.call();
         let revision = call.revision();
-        if revision == self.door_seen {
+        if revision == self.api_seen {
             return false;
         }
-        self.door_seen = revision;
+        self.api_seen = revision;
         let value = match call.get() {
             ui::Arrival::Ready(InvocationUpdate::Item { value, .. }) => value,
             ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
@@ -653,8 +653,8 @@ impl AccessModel {
             ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => return false,
         };
         match serde_json::from_value::<Server>(value) {
-            Ok(door) => {
-                self.door = door;
+            Ok(api) => {
+                self.api = api;
                 true
             }
             Err(error) => {
@@ -705,7 +705,7 @@ impl AccessModel {
 
     fn agents(&self) -> Vec<AgentEntry<'_>> {
         let grant_of = |key: &DeviceView| {
-            self.door
+            self.api
                 .grants
                 .iter()
                 .find(|grant| grant.id == hex::encode(key.key))
@@ -719,7 +719,7 @@ impl AccessModel {
                 grant: grant_of(key),
             })
             .collect();
-        for grant in &self.door.grants {
+        for grant in &self.api.grants {
             let listed = self
                 .devices
                 .iter()

@@ -449,7 +449,7 @@ pub(crate) fn access_fixture(
                 ..device(5, "Claude Code on laptop")
             },
         ],
-        door: Server {
+        api: Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![
                 Grant {

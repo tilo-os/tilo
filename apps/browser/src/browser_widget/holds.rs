@@ -40,8 +40,8 @@
 //! know who answered, so each answer the window sends says ([`AnsweredBy`]):
 //!
 //! - the person, when their allow ran again the invocation that reached the hold: the action
-//!   door runs it a second time only on the person's own answer;
-//! - whoever the action door admitted `send-held-request` or `keep-held-request` for, by the
+//!   api runs it a second time only on the person's own answer;
+//! - whoever the action API admitted `send-held-request` or `keep-held-request` for, by the
 //!   name the tab keeps their page actions under, and the person at the window when it
 //!   names nobody;
 //! - nobody, when the window dropped it at its own deadline.
@@ -454,7 +454,7 @@ impl BrowserWidget {
         Some(ui::framework::Effected::Pending)
     }
 
-    /// Who answers a hold when the action door admitted the answer for
+    /// Who answers a hold when the action API admitted the answer for
     /// `invoker`: that actor, by the name the tab keeps their page actions
     /// under, and the person at the window for nobody. The engine sets the
     /// answer down under that name, so the tab's record is told whose name

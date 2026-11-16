@@ -240,7 +240,7 @@ pub(crate) struct MonitorState {
     reveal: bool,
     menu: Option<(u32, Point, Rect)>,
     toasts: Vec<String>,
-    /// The door edits and effects go through once the framework hosts the window, so
+    /// The API edits and effects go through once the framework hosts the window, so
     /// the host checks permission and confirmation as it does for the palette.
     dispatcher: Option<Dispatcher<Monitor>>,
     #[cfg(test)]
@@ -730,7 +730,7 @@ impl MonitorState {
         }
     }
 
-    /// Run `effect` through the same door as the palette and agents, which checks
+    /// Run `effect` through the same api as the palette and agents, which checks
     /// permission and confirmation.
     #[cfg_attr(
         not(test),

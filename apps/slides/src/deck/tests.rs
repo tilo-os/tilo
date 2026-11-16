@@ -1,4 +1,4 @@
-//! The deck on its own: its verbs and field edits through the same door the
+//! The deck on its own: its verbs and field edits through the same api the
 //! host uses, and merging.
 
 #![allow(

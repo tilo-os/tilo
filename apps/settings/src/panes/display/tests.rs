@@ -102,7 +102,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
 }
 
 #[test]
-fn display_inspection_and_staging_share_the_production_door() {
+fn display_inspection_and_staging_share_the_production_api() {
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
         .expect("settings opens headlessly");
     app.settle();
@@ -226,7 +226,7 @@ fn readonly_display_surface_keeps_inspection_and_has_no_stale_admin_controls() {
                 .issues
                 .iter()
                 .all(|issue| issue.code != "stale-action-binding"),
-            "role {role:?}: stale control in the actual application and host doors: {:?}",
+            "role {role:?}: stale control in the actual application and host action APIs: {:?}",
             audit.issues
         );
         assert!(

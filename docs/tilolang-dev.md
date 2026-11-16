@@ -164,8 +164,8 @@ module to the tilolang host that runs the app's instances. Nothing else can.
   list). It hands it over only if the host would run it: the same author signed it
   and it names the same runtimes. A build that names another runtime runs only on a
   new start.
-- **Over the host's door.** The module goes to the host in a sealed memfd, on the
-  door the session hands it instances on. The host checks that it is still the app's
+- **Over the host's action API.** The module goes to the host in a sealed memfd, on the
+  action API the session hands it instances on. The host checks that it is still the app's
   own id, and every instance of the app takes it over.
 
 The windows, their sandboxes and grants stay as they were launched. The only thing
@@ -277,6 +277,6 @@ so a changed build there still needs two things a release launcher does not gran
    same runtimes, verified like a launch.
 3. **Open and restart from a terminal.** The tool opens and restarts apps through the
    session's test control socket, which only developer builds serve. On a desktop it
-   needs the person's action door: `applications <id>`, `tab.close` and `tab.reopen`,
+   needs the person's action API: `applications <id>`, `tab.close` and `tab.reopen`,
    invoked as the person. The admin socket refuses processes the shell launched, and a
    terminal is one.

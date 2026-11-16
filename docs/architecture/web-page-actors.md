@@ -20,11 +20,11 @@ page.
 - **Acting on it.** Every actor acts through the page's published actions on
   `browser.page` (read, click, fill, select, press, submit and the rest). An
   agent on this device, an agent on another of the person's devices and a
-  script all come through that one door, decided by the person's policy like
+  script all come through that one action API, decided by the person's policy like
   any other action.
 
 So "two machines in one tab" is not two pages kept in step. It is one page,
-seen from two places and acted on through one door. There is no state to
+seen from two places and acted on through one API. There is no state to
 merge, and nothing to diverge.
 
 ## Actors
@@ -89,7 +89,7 @@ action is one change of it, added after the tab's others as the action ends
 and authored by the actor the action system admitted. Only the tab's window
 adds to it, and only what its engine listed. Setting an action down is the
 Browser's own writing, not an action of the record: no caller is offered it,
-and the record's door refuses it by name, as a value and in a group, from an
+and the record's action API refuses it by name, as a value and in a group, from an
 agent and from the person alike. So nobody sets down an action the engine
 did not list, under their own name or another's. An entry names the device
 the action system gave for the actor it is written as, and no other: one
@@ -507,7 +507,7 @@ one typed parameter per question: text, a number, a date, a tick, or a
 choice held to the answers the form offers, and required where the form
 requires. A secret or a file is no parameter; the action says which action
 takes it. The palette, a script and an agent list it beside the page's other
-actions and run it with arguments, and the door refuses a wrong type or an
+actions and run it with arguments, and the action API refuses a wrong type or an
 answer the form does not offer before anything reaches the page. Sending a
 form is a second action of its own, so answering never sends: an agent
 fills, a person reviews, and sending is decided apart.
@@ -546,22 +546,22 @@ Browser's.
 - **Acting.** An agent on another of the person's devices connects to the
   desktop's MCP server and works there under a name of its own, as an agent
   on the desktop itself does. Its page actions take their turn in the tab,
-  are recorded under that name with the device the door verified it came
+  are recorded under that name with the device the MCP server verified it came
   from (see "Actors"), and the person is asked before one that acts on the
   page unless they let that agent go on.
 
 So two agents on two machines in one tab are two connections to one
-desktop's door, and a third machine is a third. Nothing is merged.
+desktop's MCP server, and a third machine is a third. Nothing is merged.
 
 What checks this: the session's window share tests run three sessions, one
 sharing a window and two viewing it. The remote end-to-end run
 (`scripts/e2e-remote/run.py`) has an agent on one machine work on another
-through its door under its own name, and carries three steps for the tab:
+through its MCP server under its own name, and carries three steps for the tab:
 two machines, then three, answer one form in one Browser tab while the
 tab's person reads who set each field; and the tab's record and that review
 name, beside each agent that came from another machine, the device it came
 from, by its whole key and its name, and none beside the tab's own agent.
-The device's way to the tab is checked in parts on one machine: the door's
+The device's way to the tab is checked in parts on one machine: the server's
 run keeps the device its connection's certificate names, the broker tells an
 application that device and never one the caller names, and the Browser's
 record, its field review and its review screen keep and show it. The tab
@@ -641,34 +641,34 @@ happens to the one beyond it.
   holds the login's own programs, the programs inside its environments and
   the agents on the person's other devices together, so sixteen agents, on
   however many machines, is the most one desktop serves at a time. A
-  connection holds its place from the moment the door takes it, while the
+  connection holds its place from the moment the MCP server takes it, while the
   person is still asked about it, until it closes. The next connection is
-  told that the door is serving sixteen connections, as many as it serves at
+  told that the MCP server is serving sixteen connections, as many as it serves at
   once, that it is closed and nothing it asked ran, and to connect again
   once one of them has closed. It is not queued; one that connects after
   another has closed is served. A runtime that runs without the desktop
   serves sixty-four connections on its own endpoint and tells the next the
   same.
 
-  A program at the door's own socket, or at an environment's, reads the
+  A program at the MCP server's own socket, or at an environment's, reads the
   refusal as an error that names no request, since none of its requests was
-  read. An agent on another device reads it as the door's answer, in place
-  of the answer that the door opened: the device that carries it tells its
+  read. An agent on another device reads it as the server's answer, in place
+  of the answer that the server opened: the device that carries it tells its
   client that the other device did not let it in, and why. Connections from
   other devices arrive between the passes of the session that serve them.
   Each takes its place as it arrives and waits in it, so no more of them
-  wait than the door has places free.
+  wait than the MCP server has places free.
 
-  Who may connect is decided before the door says it is full. A program of
+  Who may connect is decided before the MCP server says it is full. A program of
   another account or inside a sandbox, a program outside the environment
-  whose door it reached, and a device that is not the person's are refused
-  as that, whether the door has room or not. The refusal names the bound,
+  whose socket it reached, and a device that is not the person's are refused
+  as that, whether the server has room or not. The refusal names the bound,
   which is the same for everyone, and nothing of who holds the places.
 
   Places are also held by what is no agent of this desktop: a client this
-  desktop carries to another device's door, for as long as it is carried,
-  which holds a place at that door too, and a program inside an app that
-  drives the control protocol. Asking whether a device's door answers takes
+  desktop carries to another device's server, for as long as it is carried,
+  which holds a place at that server too, and a program inside an app that
+  drives the control protocol. Asking whether a device's server answers takes
   none.
 
   The number is what a connection costs the session. Each keeps two threads
@@ -750,14 +750,14 @@ connections and a connection's sixteen and sixty-four requests through the
 endpoint's own accept loop on a socket, and make room as a client does, by
 an answer, a cancel and a closed connection. The session's tests reach the
 MCP server's sixteen in one session through its own socket, an
-environment's door and the device's endpoint: seven programs of the login,
+environment's socket and the device's endpoint: seven programs of the login,
 three inside an environment and six agents on two other devices are served
 at once, the next is refused by each way in, in the same words and without
 the person being asked, a device of somebody else's and a program outside
 the environment are still refused as that, and a connection that closes
 makes room for one that came another way. A second test holds the
 session's loop still: sixteen connections from other devices are told the
-door opened, the next is refused, and the sixteen are served on the pass
+server opened, the next is refused, and the sixteen are served on the pass
 that follows. The Browser's tests fill a tab's eight waiting turns and
 drive a tab past sixty-four actors, while one of them waits and after one
 of them was forgotten, and read the record, its history, who set each field
@@ -817,8 +817,8 @@ more than it reads.
   engine.
 - **Devices in the record: what is left.** The device is known for an agent
   whose connection works in a run of its own, which is every connection the
-  door admits in a workspace that confines its agents to runs. A connection
-  that works in no run is recorded under the door's own name for it and has
+  server admits in a workspace that confines its agents to runs. A connection
+  that works in no run is recorded under the server's own name for it and has
   no device beside it. A private window keeps no record, so its review
   names no device. The name kept is the one the device had when it acted: a
   device renamed later is still found by its key. Direct input through a
@@ -842,9 +842,9 @@ down.
   reaches no one. Whoever is on another device acts on the page through the
   tab's actions.
 - **Another member's agent.** An agent reaches a desktop through its agent
-  door, which admits the devices of the desktop's own person. A device of
+  agent API, which admits the devices of the desktop's own person. A device of
   another member of the workspace sees a shared tab, but its agent has no
-  door to the tab's actions.
+  route to the tab's actions.
 - **Several machines in one tab: what is left.** Three machines answer one
   form in one tab on the machines the remote end-to-end run boots, and the
   record names their devices. Two things are not shown there. A window
@@ -902,7 +902,7 @@ down.
   And nothing has run more than three machines. What bounds their number is
   under "Limits". The MCP server's sixteen connections are reached with one
   session and the endpoints of two more devices on one machine, not by
-  machines, and nothing keeps a place at the door for each device.
+  machines, and nothing keeps a place at the server for each device.
   Thirty-three devices that all hear each other, a
   plane past its bound and a relay at its admission bound have run in
   tests on one machine, never on real ones, and no real session has been

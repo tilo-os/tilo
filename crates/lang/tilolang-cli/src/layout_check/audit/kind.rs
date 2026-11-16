@@ -43,8 +43,8 @@ pub enum Kind {
     /// A surface drawn inside another surface of the same kind: a card in a card.
     NestedCard,
     /// A page's "…" standing in a column rather than at the trailing edge of its title's line: the
-    /// door takes a line of its own and shows a lone glyph under the title.
-    LoneDoor,
+    /// overflow button takes a line of its own and shows a lone glyph under the title.
+    LoneOverflow,
     /// A heading with nothing in it: a band's height taken over
     /// the content, where a heading is the words its section goes
     /// by.
@@ -219,7 +219,7 @@ impl Kind {
             Self::CodedName => "coded-name",
             Self::UnsharedVerb => "unshared-verb",
             Self::NestedCard => "nested-card",
-            Self::LoneDoor => "lone-door",
+            Self::LoneOverflow => "lone-overflow",
             Self::EmptyHeading => "empty-heading",
             Self::ZeroCount => "zero-count",
             Self::RepeatedCount => "repeated-count",

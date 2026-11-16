@@ -232,7 +232,7 @@ impl Snippets {
   holds (`PersonRecord::invoke`, `invoke_as`), authored by whoever the app
   names. It is declared to no caller: it is not published and not in the
   app's surface, nothing builds it by its id, and the generic `apply`,
-  `group` and every door that decodes an action refuse it. `housekeeping`
+  `group` and every action API that decodes an action refuse it. `housekeeping`
   says what kind of change a verb makes; `by_app` says nobody invokes it.
 
 The resource attribute covers what used to need a hand-written `Resource`:
@@ -634,7 +634,7 @@ actions that queued an outside consequence undo through their inverse action.
 
 ## 7. Testing
 
-- `Replica<R>` applies actions through the same door as the host: permission,
+- `Replica<R>` applies actions through the same action API as the host: permission,
   kind, confirmation and history entries included.
 - `TestApp` drives the real component runtime: invoke, confirm, undo, roles and
   grants, actors with kinds (`as_agent`, `for_person`), and asserts on
@@ -659,8 +659,8 @@ of an example: there is no ceiling to raise. What to write instead:
 - **An action an app addresses** is named through its typed reference:
   `R::VERB.on(resource)`, `effect.address_on(resource)`, `invoke.address()`.
   One a caller holds a published resource or tree for comes from it:
-  `resource.action_address(id)`, `door::published(&tree, resource, id)`. A test
-  invokes through the door the way an agent does (`call_on`).
+  `resource.action_address(id)`, `api::published(&tree, resource, id)`. A test
+  invokes through the action API the way an agent does (`call_on`).
 - **Arguments** are a verb's typed params, an effect's fields, or a serde
   struct the bound arguments are read into; a registered read publishes a
   typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).

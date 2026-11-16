@@ -75,7 +75,7 @@ pub enum DiskUsageEffect {
 
 pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 
-/// The disk-usage analyzer: the door its effects and live rows are published on.
+/// The disk-usage analyzer: the API its effects and live rows are published on.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DiskUsage {}
 

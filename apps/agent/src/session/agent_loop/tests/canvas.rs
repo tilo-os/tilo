@@ -15,8 +15,8 @@ const HOST_PEER: u64 = 32;
 const RECORDS_PEER: u64 = 33;
 /// Notes, which publishes its open.
 const NOTES_PEER: u64 = 34;
-/// The session's door for a task's programs.
-const DOOR_PEER: u64 = 35;
+/// The session's api for a task's programs.
+const API_PEER: u64 = 35;
 /// The Tasks app's root, as the session serves it.
 const TASKS: &str = "tl:so.tilo.lang.tasks:root-t";
 /// Mail's root.
@@ -73,9 +73,9 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
         "Notes",
         vec![],
     )];
-    // The session's door for the task's programs, offered to the agent for its runs: no app's
+    // The session's api for the task's programs, offered to the agent for its runs: no app's
     // window, and so no app's own host, is open.
-    let door = vec![on(
+    let api = vec![on(
         tilo_actions::remote::task_programs::RESOURCE,
         tilo_actions::remote::task_programs::RESOURCE,
         "Task programs",
@@ -94,7 +94,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
         surface(RECORDS_PEER, "so.tilo.session", record_actions()),
         surface(NOTES_PEER, "so.tilo.lang.notes", notes),
         surface(HOST_PEER, "so.tilo.desktop", host_actions()),
-        surface(DOOR_PEER, "so.tilo.agent", door),
+        surface(API_PEER, "so.tilo.agent", api),
     ]
 }
 
@@ -365,7 +365,7 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
         "what there is to show names Tasks' root and counts its items: {first}"
     );
     assert!(first.contains(&format!("{MAIL} — Mail")), "{first}");
-    // No app's window is open, yet programs reach every app the session serves through its door.
+    // No app's window is open, yet programs reach every app the session serves through its api.
     assert!(
         first.contains("- `tasks`: its record is a `tasks.Tasks`"),
         "the apps a program can use, open or not: {first}"

@@ -1,5 +1,5 @@
 //! A later build of the package, as `tilolang dev` hands one over when the source is saved: in a
-//! development session on the host's door, without one to the window it runs. The instance takes
+//! development session on the host's api, without one to the window it runs. The instance takes
 //! it over in its window while it runs.
 
 use super::packages::{later, package_of};
@@ -28,7 +28,7 @@ fn tag_takes_int(source: &str, signature: &str) -> String {
     format!("{head}{signature}{before}: Int{after}){tail}")
 }
 
-/// The build arrives on the host's door, as a development session hands a reinstall over.
+/// The build arrives on the host's api, as a development session hands a reinstall over.
 #[test]
 fn a_later_build_takes_over_in_place_keeping_the_open_note_and_the_list() {
     let mut session = two_notes();
@@ -46,7 +46,7 @@ fn a_later_build_takes_over_in_place_keeping_the_open_note_and_the_list() {
     let later = later(package_of(NOTES), |source| {
         source.replace("\"Write something\"", "\"Write anything\"")
     });
-    session.take_build_over_the_door(&later);
+    session.take_build_over_the_api(&later);
     session.settle();
 
     let shown = session.shown();
@@ -103,8 +103,8 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 }
 
 impl Session {
-    /// Hand the host `bundle` on its door, as a development session hands a reinstall over.
-    fn take_build_over_the_door(&mut self, bundle: &tilolang_tilo::bundle::Bundle) {
+    /// Hand the host `bundle` on its api, as a development session hands a reinstall over.
+    fn take_build_over_the_api(&mut self, bundle: &tilolang_tilo::bundle::Bundle) {
         let module = runtime_portal::tilolang_host::Module {
             wasm: bundle.wasm.clone(),
             ids: bundle.ids.clone(),

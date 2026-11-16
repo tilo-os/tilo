@@ -18,7 +18,7 @@ use ui::window_toolbar::{
 use crate::view::{Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
 
-/// What the window bar is made of: the window's state, the door its effects go through, and
+/// What the window bar is made of: the window's state, the API its effects go through, and
 /// the shell's own slots as the shell last built laid them out.
 #[derive(Clone)]
 pub(crate) struct Bar {

@@ -8,11 +8,11 @@ use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::Effect;
 
 use crate::model::ActionKind;
-use crate::resource::{StoreEffect, door};
+use crate::resource::{StoreEffect, api};
 use crate::{StoreItem, flathub_client::Remote};
 
 /// The published resource every control is bound to.
-static DOOR: LazyLock<ResourceSpec> = LazyLock::new(door);
+static SPEC: LazyLock<ResourceSpec> = LazyLock::new(api);
 
 fn arguments<const N: usize>(
     pairs: [(&str, String); N],
@@ -27,13 +27,13 @@ fn bound(
     action: &str,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> Option<ActionBinding<()>> {
-    let spec = DOOR.actions.iter().find(|spec| spec.id == action)?;
-    ActionBinding::static_json(&DOOR, spec, arguments).ok()
+    let spec = SPEC.actions.iter().find(|spec| spec.id == action)?;
+    ActionBinding::static_json(&SPEC, spec, arguments).ok()
 }
 
 fn bound_text(action: &str, param: &'static str) -> Option<ActionBinding<String>> {
-    let spec = DOOR.actions.iter().find(|spec| spec.id == action)?;
-    ActionBinding::new(&DOOR, spec, move |value: String| {
+    let spec = SPEC.actions.iter().find(|spec| spec.id == action)?;
+    ActionBinding::new(&SPEC, spec, move |value: String| {
         arguments([(param, value)])
     })
     .ok()
@@ -52,7 +52,7 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
     };
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
-        ActionBinding::static_json(&DOOR, &spec, effect.arguments()).ok()
+        ActionBinding::static_json(&SPEC, &spec, effect.arguments()).ok()
     } else {
         self::effect(&effect)
     }
@@ -99,14 +99,14 @@ pub fn unblock(item: &StoreItem) -> Option<ActionBinding<()>> {
 }
 
 pub fn view() -> Option<ActionBinding<usize>> {
-    let spec = DOOR.actions.iter().find(|spec| {
+    let spec = SPEC.actions.iter().find(|spec| {
         spec.id
             == StoreEffect::ShowView {
                 view: String::new(),
             }
             .id()
     })?;
-    ActionBinding::new(&DOOR, spec, move |index: usize| {
+    ActionBinding::new(&SPEC, spec, move |index: usize| {
         arguments([(
             "view",
             crate::app::VIEWS
@@ -149,7 +149,7 @@ pub fn add_remote(
     name: &ui::LocalState<String>,
     url: &ui::LocalState<String>,
 ) -> Option<ActionBinding<()>> {
-    let spec = DOOR.actions.iter().find(|spec| {
+    let spec = SPEC.actions.iter().find(|spec| {
         spec.id
             == StoreEffect::AddRemote {
                 name: String::new(),
@@ -158,7 +158,7 @@ pub fn add_remote(
             .id()
     })?;
     let (name, url) = (name.clone(), url.clone());
-    ActionBinding::new(&DOOR, spec, move |()| {
+    ActionBinding::new(&SPEC, spec, move |()| {
         arguments([
             ("name", name.with(Clone::clone)),
             ("url", url.with(Clone::clone)),
@@ -195,7 +195,7 @@ mod tests {
             "set-category",
             "clear-filters",
         ] {
-            let spec = DOOR
+            let spec = SPEC
                 .actions
                 .iter()
                 .find(|spec| spec.id == id)

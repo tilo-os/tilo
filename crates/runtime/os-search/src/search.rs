@@ -1,5 +1,5 @@
 //! Feeding the index from the action host, and opening what a host search
-//! hands back through the same door the palette and automation use.
+//! hands back through the same action API the palette and automation use.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};

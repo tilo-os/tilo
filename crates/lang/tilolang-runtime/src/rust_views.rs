@@ -13,7 +13,7 @@
 //! What a Rust view's events do reaches the runtime as data, never a closure: each node's event
 //! names an action on its resource, a place to open, or a state to set, and the runtime turns it
 //! into the action reference a tilolang view's event would hold. A press therefore goes through
-//! the same door, the same attribution and the same undo.
+//! the same action API, the same attribution and the same undo.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;

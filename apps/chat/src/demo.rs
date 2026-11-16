@@ -773,9 +773,9 @@ impl Workspace {
 }
 
 // What a tool or a test holding a bare chat document does with it: apply
-// the record's verbs as a named person, the way the door applies them.
+// the record's verbs as a named person, the way the API applies them.
 
-/// Apply `invoke` to `doc` through the door, as `author` invokes it.
+/// Apply `invoke` to `doc` through the API, as `author` invokes it.
 pub fn apply_as(doc: &mut AutoCommit, author: &str, invoke: Invoke<Chat>) -> Result<(), ApiError> {
     apply_at(doc, author, 0, invoke)
 }

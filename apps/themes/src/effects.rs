@@ -1,4 +1,4 @@
-//! The studio's platform effects, shared by controls and the resource door.
+//! The studio's platform effects, shared by controls and the resource api.
 use crate::Studio;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::prelude::*;

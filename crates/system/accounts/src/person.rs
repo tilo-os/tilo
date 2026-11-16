@@ -330,7 +330,7 @@ impl PersonAccounts {
     #[must_use]
     pub fn saving(account: &Account) -> Invoke<Self> {
         // An account without connection settings is saved with none: the
-        // door refuses a missing value.
+        // action API refuses a missing value.
         let config = if account.config.is_null() {
             serde_json::json!({})
         } else {

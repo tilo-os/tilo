@@ -151,7 +151,7 @@ fn action_failed(
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
-    /// Who asked, as the engine is told: the invoker the action door
+    /// Who asked, as the engine is told: the invoker the action API
     /// admitted, or `None` for the tab's one unnamed actor.
     actor: Option<ui::webview::PageActor>,
     /// The action as it was asked, for an answer that says what ran.
@@ -1572,7 +1572,7 @@ impl BrowserWidget {
         }))
     }
 
-    /// `button` submits `action` through the resource's door; without one it
+    /// `button` submits `action` through the resource's api; without one it
     /// does nothing.
     fn document_button(
         &self,
@@ -5895,7 +5895,7 @@ impl BrowserWidget {
     /// Start `operation` for `invocation`: done at once, or accepted and settled
     /// through [`Self::poll_invocation`].
     ///
-    /// `invoker` is who the action door admitted the invocation for. A page
+    /// `invoker` is who the action API admitted the invocation for. A page
     /// action reaches the engine under that principal's name, so a tab
     /// several actors work in tells each what changed since its own last
     /// read and keeps what each did under its name. The name is the admitted

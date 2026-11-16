@@ -43,14 +43,14 @@ fn shared_menu_layout_matches_the_former_taffy_pass() {
     }
 }
 
-/// A stand-in for the session's door: what Files asked for, and what it answers.
+/// A stand-in for the session's api: what Files asked for, and what it answers.
 pub(super) mod session_api {
     use runtime_portal::tools::DocumentApp;
     use std::path::{Path, PathBuf};
     use std::sync::{LazyLock, Mutex, MutexGuard};
 
     #[derive(Default)]
-    struct Door {
+    struct Api {
         opens: Vec<(PathBuf, Option<String>)>,
         refusal: Option<String>,
         candidates: Vec<DocumentApp>,
@@ -58,50 +58,50 @@ pub(super) mod session_api {
         listings: usize,
     }
 
-    static DOOR: LazyLock<Mutex<Door>> = LazyLock::new(|| Mutex::new(Door::default()));
+    static SHARED_API: LazyLock<Mutex<Api>> = LazyLock::new(|| Mutex::new(Api::default()));
 
-    fn door() -> MutexGuard<'static, Door> {
-        DOOR.lock()
+    fn api() -> MutexGuard<'static, Api> {
+        SHARED_API
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(super) fn start() {
-        *door() = Door::default();
+        *api() = Api::default();
     }
 
     pub(super) fn record_open(path: &Path, app: Option<&str>) -> Result<(), String> {
-        let mut door = door();
-        door.opens
-            .push((path.to_path_buf(), app.map(str::to_owned)));
-        match door.refusal.take() {
+        let mut api = api();
+        api.opens.push((path.to_path_buf(), app.map(str::to_owned)));
+        match api.refusal.take() {
             Some(reason) => Err(reason),
             None => Ok(()),
         }
     }
 
     pub(super) fn record_candidates(_path: &Path) -> Result<Vec<DocumentApp>, String> {
-        let mut door = door();
-        door.listings += 1;
-        match door.listing_refusal.take() {
+        let mut api = api();
+        api.listings += 1;
+        match api.listing_refusal.take() {
             Some(reason) => Err(reason),
-            None => Ok(door.candidates.clone()),
+            None => Ok(api.candidates.clone()),
         }
     }
 
     pub(super) fn refuse_listing(reason: &str) {
-        door().listing_refusal = Some(reason.into());
+        api().listing_refusal = Some(reason.into());
     }
 
     pub(super) fn listing(apps: Vec<DocumentApp>) {
-        door().candidates = apps;
+        api().candidates = apps;
     }
 
     pub(super) fn refuse(reason: &str) {
-        door().refusal = Some(reason.into());
+        api().refusal = Some(reason.into());
     }
 
     pub(super) fn asks() -> Vec<String> {
-        door()
+        api()
             .opens
             .iter()
             .map(|(path, app)| format!("{} {}", path.display(), app.as_deref().unwrap_or("-")))
@@ -109,11 +109,11 @@ pub(super) mod session_api {
     }
 
     pub(super) fn opened() -> Vec<PathBuf> {
-        door().opens.iter().map(|(path, _)| path.clone()).collect()
+        api().opens.iter().map(|(path, _)| path.clone()).collect()
     }
 
     pub(super) fn listings() -> usize {
-        door().listings
+        api().listings
     }
 }
 
@@ -834,7 +834,7 @@ mod command_path_tests {
 
         phase folder_resource_exports_canonical_actions_handlers_and_ids;
         {
-            resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door();
+            resource_catalogue_exposes_view_and_favourite_commands_through_the_action_api();
             every_exported_local_file_handler_is_declared_for_the_broker();
             exported_background_operations_have_valid_job_contracts();
             resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily();
@@ -1614,7 +1614,7 @@ mod command_path_tests {
         );
     }
 
-    fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door() {
+    fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_api() {
         let state_dir = tempfile::tempdir().unwrap();
         let home_dir = tempfile::tempdir().unwrap();
         let folder = home_dir.path().join("agent-folder");
@@ -1661,7 +1661,7 @@ mod command_path_tests {
                     .unwrap(),
                     Some(ui::framework::Effected::Done(_))
                 ),
-                "{command} is routed through the canonical door"
+                "{command} is routed through the canonical api"
             );
         }
         assert_eq!(w.state().view_mode(), ViewMode::Grid);
@@ -1697,7 +1697,7 @@ mod command_path_tests {
     tilo_test_env::scenario! {
         fn cloud_nearby_sharing_and_history_commands_stay_governed;
 
-        phase one_time_cloud_import_is_an_independent_copy_through_the_action_door;
+        phase one_time_cloud_import_is_an_independent_copy_through_the_action_api;
         {
             for kind in [
                 crate::remote_accounts::RemoteAccountKind::Dropbox,
@@ -1906,7 +1906,7 @@ mod command_path_tests {
                     &mut document,
                     &automerge::ROOT,
                 )
-                .expect("read status through the production effect door") else {
+                .expect("read status through the production effect api") else {
                     panic!("status must return an immediate structured answer")
                 };
                 assert_eq!(

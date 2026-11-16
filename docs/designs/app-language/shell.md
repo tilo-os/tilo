@@ -245,7 +245,7 @@ seams:
   unchanged, because the compositor's backends do.
 - **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,
   person, notifications), the desktop model (workspaces, strips, windows), tasks and presence
-  become typed resources and actions a shell view reads and invokes through the door, the same
+  become typed resources and actions a shell view reads and invokes through the action API, the same
   ones agents use. A shell view never reaches Rust state any other way.
 - **Arrangement through the policy.** A shell's arrangement type is a record of the person's.
   A `WindowPolicy` implementation per arrangement mechanic (scrolling strips: today's
@@ -305,7 +305,7 @@ seams:
   package with its module (`Runtime::load_foreign_package`): its views run in the shell's
   runtime as that package's code, so what they invoke carries its module as the author; its
   records stay its app's, read from the readings the session publishes (`Runtime::set_reading`,
-  `tilolang_runtime::foreign`), and its actions are child invocations at its door. A view that
+  `tilolang_runtime::foreign`), and its actions are child invocations at its action API. A view that
   `use`s the app calls its views by name (`mail.inbox(m)`, a `view:` node). The canvas, which
   can't `use` every app, finds the resource by the id the arrangement keeps and names the view
   as text:
@@ -374,7 +374,7 @@ no run and no transcript; it places the channel like any resource.
   conversation (§3), and dragging it onto the canvas places it where it was let go. What opens
   unasked follows §5's "What opens" setting: by default what the turn created, and a view it
   answered with (`plan.view`), placed beside the conversation with `place_near`.
-- **The REPL.** `tilolang repl` reaches the person's door and calls the same actions by the
+- **The REPL.** `tilolang repl` reaches the person's action API and calls the same actions by the
   same names the agent's `invoke` does, so the person types what the agent would. Its
   results are references that place the same way.
 - **Looks.** Only shared components and theme roles, so every theme reaches the chat.

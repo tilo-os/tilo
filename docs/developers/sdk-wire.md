@@ -279,11 +279,11 @@ A call naming no `run` is a step of its own, as it is for an agent.
 | `isError: true` with no `structuredContent` | `ProtocolError` (the call itself was malformed) |
 | HTTP 401 with `{"error": {"code": "key_revoked", "revoked_at_ms"?}}` | `KeyRevoked` (`revoked_at_ms`), a `KeyRefused` |
 | HTTP 401 with `{"error": {"code": "key_expired", "expired_at_ms"?}}` | `KeyExpired` (`expired_at_ms`), a `KeyRefused` |
-| HTTP 401 with `{"error": {"code": "invalid_token"}}` | `KeyRefused` (a key the door never issued) |
+| HTTP 401 with `{"error": {"code": "invalid_token"}}` | `KeyRefused` (a key the API never issued) |
 
-A key the door turns away is answered 401 with `WWW-Authenticate: Bearer …,
+A key the API turns away is answered 401 with `WWW-Authenticate: Bearer …,
 error="invalid_token", error_description="<code>: <words>"` and the typed body
-above, the same `{code, message, next_steps}` every door refusal carries. A
+above, the same `{code, message, next_steps}` every refusal carries. A
 request with no key at all is answered 401 with the challenge alone.
-`KeyRefused` is a `ProtocolError` whose `code` is the door's code and whose
+`KeyRefused` is a `ProtocolError` whose `code` is the API's code and whose
 `status` is 401.

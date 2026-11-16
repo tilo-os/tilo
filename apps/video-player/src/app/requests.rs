@@ -4,7 +4,7 @@ use super::{
 };
 
 impl PlayerState {
-    /// Invoke `effect` through the framework's door, which checks its availability and
+    /// Invoke `effect` through the framework's api, which checks its availability and
     /// permission.
     pub(super) fn request(&self, effect: &VideoEffect) {
         if let Some(dispatcher) = &self.dispatcher {
@@ -176,7 +176,7 @@ impl PlayerState {
         });
     }
 
-    /// Submit a library verb or field edit through the framework's door; the library shown
+    /// Submit a library verb or field edit through the framework's api; the library shown
     /// follows once the document presents the change.
     pub(super) fn dispatch_shared(&self, submit: impl ui::framework::Submit<PlayerResource>) {
         if let Some(dispatcher) = &self.dispatcher {

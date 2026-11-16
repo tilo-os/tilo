@@ -120,7 +120,7 @@ action refresh(feed: Feed) uses web {
 ## 6. Calls
 
 An action is atomic at one origin; nothing is atomic across origins. So an action that calls
-another action — its own package's or another one's — makes each call at the callee's door, as a
+another action — its own package's or another one's — makes each call at the callee's action API, as a
 change of its own, and commits what it wrote itself after its calls:
 
 ```

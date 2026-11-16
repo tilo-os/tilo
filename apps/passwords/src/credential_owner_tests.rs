@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
         };
         assert!(
             app.effect(&revoke).is_err(),
-            "revocation requires the semantic door's confirmation"
+            "revocation requires the semantic API's confirmation"
         );
         assert!(owned.allowed(&owned.scope));
         app.effect_confirmed(&revoke).unwrap();

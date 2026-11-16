@@ -708,7 +708,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
     app.settle();
     let before = app
         .call("inspect-network-state", serde_json::json!({}))
-        .expect("the network state must have a declared read-only door")
+        .expect("the network state must have a declared read-only api")
         .expect("the inspector returns the observed model");
     assert_eq!(before["network_count"], networks().len());
     assert_eq!(before["connectivity"]["state"], "full");

@@ -29,9 +29,9 @@ pub enum Invocation {
         /// this runtime made.
         author: Option<ModuleHash>,
         /// The resource it is invoked on: the subject an action of another app names as the
-        /// resource whose door takes the child invocation.
+        /// resource whose action API takes the child invocation.
         subject: Option<ResourceRef>,
-        /// The resource the invocation is made from, when it is made from one: the door that
+        /// The resource the invocation is made from, when it is made from one: the action API that
         /// takes it records what it makes as made from it.
         from: Option<ResourceRef>,
     },
@@ -46,7 +46,7 @@ pub enum Invocation {
 }
 
 impl Invocation {
-    /// An action's arguments as its subject's door takes them, by name, as any caller gives them
+    /// An action's arguments as its subject's action API takes them, by name, as any caller gives them
     /// ([`crate::value::to_argument`]): the subject itself and every option left out are not sent.
     #[must_use]
     pub fn api_arguments(&self) -> serde_json::Map<String, serde_json::Value> {

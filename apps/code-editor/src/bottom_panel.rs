@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn a_retained_problem_row_activates_through_its_native_view_door() {
+    fn a_retained_problem_row_activates_through_its_native_view_api() {
         let mut panel = BottomPanel::new();
         panel.set_problems(vec![
             diagnostic(Severity::Error, 3),

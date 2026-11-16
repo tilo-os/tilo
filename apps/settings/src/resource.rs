@@ -1,4 +1,4 @@
-//! Settings as a [`tilo_resource::Resource`]: the door Settings' effects and
+//! Settings as a [`tilo_resource::Resource`]: the API Settings' effects and
 //! live rows are published on. Settings edits no document of its own.
 
 use ui::application::ComponentBehaviour;

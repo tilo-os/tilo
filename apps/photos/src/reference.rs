@@ -75,7 +75,7 @@ mod tests {
             });
             assert_eq!(
                 published.kind, r.kind,
-                "the kind tag is the one the door uses"
+                "the kind tag is the one the API uses"
             );
             assert!(
                 published.actions.iter().any(|a| a.id == "crop"),

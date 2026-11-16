@@ -573,15 +573,17 @@ fn command_here(here: Here) -> clap::Command {
                 "rollback" => !here.system,
                 "update" => !(here.apps || here.system),
                 "agent" => {
-                    !((here.has)(agent::DOOR) || (here.has)(agent::MODELS) || login::logged_in())
+                    !((here.has)(agent::MCP_SERVER)
+                        || (here.has)(agent::MODELS)
+                        || login::logged_in())
                 }
                 "package" => !nouns::any_present(nouns::PACKAGE, here.has),
-                // A desktop's agents use its own door; elsewhere this
+                // A desktop's agents use its own MCP server; elsewhere this
                 // computer logs in to the person's workspace instead, and its
                 // folders are what a Tilo desktop's own files are there, and
                 // its migrations land through that login (a desktop has its
                 // own, in its setup).
-                "login" | "folders" | "migrate" => here.desktop || (here.has)(agent::DOOR),
+                "login" | "folders" | "migrate" => here.desktop || (here.has)(agent::MCP_SERVER),
                 // Started by agent tools (`tilo agent connect`), not typed.
                 "mcp" => true,
                 _ => return sub,
@@ -655,7 +657,7 @@ fn device_examples(here: Here) -> String {
 fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
     agent
         .mut_subcommand("connect", |sub| {
-            sub.hide(!((here.has)(agent::DOOR) || login::logged_in()))
+            sub.hide(!((here.has)(agent::MCP_SERVER) || login::logged_in()))
         })
         .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
         // Checking says whether Tilo's server is in the agent, which only a
@@ -689,7 +691,7 @@ fn examples(here: Here) -> String {
     if here.apps || here.system {
         lines.push(("tilo update", "Update apps and this device"));
     }
-    if (here.has)(agent::DOOR) {
+    if (here.has)(agent::MCP_SERVER) {
         lines.push((
             "tilo agent connect claude",
             "Let Claude Code act on this desktop",

@@ -994,9 +994,9 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
 
 #[test]
 fn the_review_panel_gives_way_to_the_pages_and_its_edge_resizes_it() {
-    fn has_door(node: &ui::a11y::AccessNode) -> bool {
+    fn has_resize_handle(node: &ui::a11y::AccessNode) -> bool {
         node.action_target.as_deref() == Some("inspector-resize")
-            || node.children.iter().any(has_door)
+            || node.children.iter().any(has_resize_handle)
     }
     let mut rig = Rig::new();
     let m = rig.app.layout_theme.tokens.metrics;
@@ -1022,8 +1022,9 @@ fn the_review_panel_gives_way_to_the_pages_and_its_edge_resizes_it() {
     lay_out(&mut rig.app, 1280.0);
     let edge = rig.app.sidebar_rect.x0;
     let y = rig.app.sidebar_rect.center().y;
-    let door = ui::widget::Widget::accessibility(&rig.app).is_some_and(|tree| has_door(&tree));
-    assert!(door, "the divider has a semantic door");
+    let handle =
+        ui::widget::Widget::accessibility(&rig.app).is_some_and(|tree| has_resize_handle(&tree));
+    assert!(handle, "the divider is reachable by assistive technology");
     rig.move_to((edge, y));
     rig.press();
     rig.move_to((edge - 40.0, y));

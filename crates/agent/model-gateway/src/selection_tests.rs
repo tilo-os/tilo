@@ -27,7 +27,7 @@ fn files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         } else if entry.file_type().unwrap().is_file() {
             result.insert(path.clone(), fs::read(&path).unwrap());
         }
-        // A socket beside them is a running door, not configuration: a query
+        // A socket beside them is a running process, not configuration: a query
         // reads it and can leave no file of its own behind.
     }
     result

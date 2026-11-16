@@ -5,7 +5,7 @@
 //!   [`ChangeNote`] (the action, its arguments, the invoker, the authorship chain and the
 //!   module). If it traps or runs out of fuel, nothing is committed.
 //! * **An action that calls another action** is a run: a journal ([`crate::run`]). A call goes
-//!   through the door: the authority decides it, and it runs as a change of its own. The
+//!   through the action API: the authority decides it, and it runs as a change of its own. The
 //!   caller's transaction ends at the call, and it runs again from its journal, which answers
 //!   the call and everything it read before it. An invocation the authority or a person must
 //!   answer first suspends the run; the answer runs it on from the same journal, so nothing runs
@@ -632,7 +632,7 @@ impl Core {
     /// Each reference names the same action for a different item. They are decided once — one
     /// action, by one person, from one piece of code — and run in one transaction, so they are
     /// one change: one undo takes them all back, and history says how many items it changed.
-    /// Each is a call at its own app's door when the action is another app's, which keeps its
+    /// Each is a call at its own app's action API when the action is another app's, which keeps its
     /// own record's changes apart.
     fn invoke_many(
         &self,
@@ -855,13 +855,13 @@ impl Core {
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
         // An action of an app this runtime does not run is a child invocation at that app's
-        // own door: the host sends it on with this view's author, and the door decides it
+        // own action API: the host sends it on with this view's author, and the API decides it
         // there (action-system.md, "One invocation path").
         if self.foreign_action(&aref.action) {
             return self.invoke_foreign(aref);
         }
         // A verb the resource's app publishes without a package loading here (a channel's
-        // `send`) is that app's too: the same door, the same attribution.
+        // `send`) is that app's too: the same action API, the same attribution.
         if let Some(invocation) = self.published_invocation(aref) {
             return self.invoke_published(&invocation?);
         }
@@ -906,7 +906,7 @@ impl Core {
     }
 
     /// Whether `action` is an action of an app this runtime does not run: one the host invokes
-    /// at that app's door.
+    /// at that app's action API.
     fn foreign_action(&self, action: &str) -> bool {
         self.registry
             .borrow()
@@ -1005,7 +1005,7 @@ impl Core {
             Invoked::Done(result) => InvokeOutcome::Done(result),
             Invoked::Sent => InvokeOutcome::Done(Value::Unit),
             Invoked::Failed(reason) => return Err(RuntimeError::Trap(reason)),
-            // The door said no, or asks the person first: nothing ran here. A host that asked
+            // The action API said no, or asks the person first: nothing ran here. A host that asked
             // keeps what it said, and answers the person's decision itself.
             Invoked::Refused(_) | Invoked::Asks(_) => InvokeOutcome::Denied,
         })
@@ -1383,7 +1383,7 @@ impl Core {
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
         };
-        // A verb the resource's app publishes without a package loading here: the same door,
+        // A verb the resource's app publishes without a package loading here: the same action API,
         // sent as a step of the run that asked for it.
         if let Some(invocation) = self.published_invocation(&aref) {
             let entry = match self.invoke_published(&invocation?) {
@@ -1635,7 +1635,7 @@ impl Core {
     }
 
     /// `invoke(aref)` and `try act(args)`: the action runs as a change of its own at its own
-    /// door. The journal answers a call the run already made; otherwise the run stops here, and
+    /// action API. The journal answers a call the run already made; otherwise the run stops here, and
     /// the call runs and the code goes on from its result.
     fn invoke(&self, h: i32) -> HResult<Option<Wasm>> {
         let Value::Action(aref) = self.val(h)? else {
@@ -1712,7 +1712,7 @@ impl Core {
         Ok(crate::delegate::Invocation::Action {
             app: AppId::from(pkg.meta.app.as_str()),
             action: aref.action.clone(),
-            // What the app's door takes it by: a compiled package's action by its name, an
+            // What the app's action API takes it by: a compiled package's action by its name, an
             // action of a description of an app's surface (no module) by the verb it describes.
             name: if pkg.meta.module_hash.is_empty() {
                 meta.id.clone()

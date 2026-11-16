@@ -109,7 +109,7 @@ pub(super) fn reviewed_field(name: &str, set: &Value) -> Value {
 /// as many other agents as the window remembers ask for the tab too. Most
 /// are turned away at once, told what holds the tab and to ask again; all of
 /// them were admitted. The waiting agent's fill then runs, and it is set
-/// down as the agent the door admitted, from the laptop: the window does not
+/// down as the agent the API admitted, from the laptop: the window does not
 /// forget an actor whose action is still to come for the sake of the ones
 /// that came after it.
 #[test]
@@ -186,7 +186,7 @@ fn an_actor_whose_action_waits_its_turn_is_not_forgotten_for_a_crowd() {
     assert_eq!(
         devices_in_history(&record),
         [Some(laptop.clone()), None, Some(laptop.clone())],
-        "each change is authored by the invoker the door admitted"
+        "each change is authored by the invoker the API admitted"
     );
 
     engine.set_page_data(
@@ -210,7 +210,7 @@ fn an_actor_whose_action_waits_its_turn_is_not_forgotten_for_a_crowd() {
 /// before the window has read that entry from the engine's record as many
 /// other actors as it remembers read the tab's record: agents turned away
 /// from a busy tab ask again the moment an action answers. The entry is
-/// still set down as the agent the door admitted, from its laptop. The
+/// still set down as the agent the API admitted, from its laptop. The
 /// window owes the record that entry, and does not forget its actor before
 /// it is written.
 #[test]
@@ -270,7 +270,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
 /// The page posts on its own, an agent on Ada's laptop keeps the page as it
 /// is, and before the engine says how the hold ended as many other actors as
 /// the window remembers read the tab's record: the window no longer holds
-/// whom the door admitted under the agent's name. Returns the laptop and the
+/// whom the API admitted under the agent's name. Returns the laptop and the
 /// agent.
 fn an_actor_is_forgotten_before_its_answer_is_set_down(
     app: &mut App,

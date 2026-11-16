@@ -1,4 +1,4 @@
-//! A canonical report projection through the existing semantic-read door.
+//! A canonical report projection through the existing semantic-read api.
 //! The SDK stamps the actual record and committed heads. The result alone is
 //! not proof of disk durability: feedback hosts accept it only from the pinned
 //! authenticated destination owner after that owner's durable commit.

@@ -349,7 +349,7 @@ If the lost machine was the workspace's governor, see the known limits above.
   supported.
 - **Reads inside a workspace.** Admission is per workspace: a Deny on a
   record, an app or anything below a record binds only honest clients and
-  action APIs. Against a modified client the workspace is the confidentiality
+  action APIs that run here. Against a modified client the workspace is the confidentiality
   boundary.
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 

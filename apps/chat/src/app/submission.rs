@@ -1,4 +1,4 @@
-//! How what the person does reaches the workspace: the one door a verb or a field
+//! How what the person does reaches the workspace: the one api a verb or a field
 //! edit is applied through — at once, as the frame ends, or once they agreed
 //! to a removal — and the chain the chat's messages are read and written
 //! through.
@@ -11,7 +11,7 @@ use super::ChatApp;
 impl ChatApp {
     /// Apply a verb or a field edit through the resource's dispatcher now:
     /// the single document-mutation path of every on-screen affordance, the
-    /// same door the palette and agents use. The projection is reconciled
+    /// same api the palette and agents use. The projection is reconciled
     /// from the document on the next sync.
     pub(crate) fn apply_now(
         &self,
@@ -70,7 +70,7 @@ impl ChatApp {
         }
     }
 
-    /// Whether the door refused the read receipt last sent: it then is not
+    /// Whether the API refused the read receipt last sent: it then is not
     /// offered to this person, and the same receipt is not sent again.
     pub(super) fn note_refused_read(&mut self) {
         let Some(dispatch) = &self.dispatch else {
@@ -128,7 +128,7 @@ impl ChatApp {
     }
 
     /// Test-only: apply what this window asked the person to confirm (a
-    /// destructive verb), as the door does once they agree, and read the
+    /// destructive verb), as the API does once they agree, and read the
     /// record again.
     #[cfg(test)]
     pub(crate) fn confirm_asked(&mut self, doc: &mut AutoCommit) {

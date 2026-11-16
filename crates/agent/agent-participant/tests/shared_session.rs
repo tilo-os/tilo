@@ -710,7 +710,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // cancelled or the agent is stopped carries out nothing by itself: a
     // pause holds the late plan until resume, and a cancelled or stopped
     // task's late plan is dropped. Each step goes through the agent's
-    // action door while the loop pumps.
+    // action API while the loop pumps.
     let gated_edit = |text: &str| {
         let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{

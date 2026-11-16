@@ -1,7 +1,7 @@
 //! The resource the framework hosts the tilolang app over.
 //!
 //! The framework's root hosts every app over a resource. A tilolang app's records, their
-//! history, door and search are its instance's: a tilolang host runs it
+//! history, api and search are its instance's: a tilolang host runs it
 //! ([`crate::hosted::HostedWindow`]), the session's or one in this process. This resource only
 //! names the record the framework keeps for the app; its state is that record's heads.
 

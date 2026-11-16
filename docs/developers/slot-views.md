@@ -16,7 +16,7 @@ menu's resource is `desktop:window-menu`: the window it is for, where it
 stands, and the rows that window offers. Its verbs are `open`, `close` and
 `choose{row}`.
 
-Read it the way any app reads a resource it does not own — through the door,
+Read it the way any app reads a resource it does not own — through the action API,
 with the reading kept live:
 
 ```rust
@@ -56,7 +56,7 @@ what made it and who, and it follows them to their other devices:
 { "bindings": { "window-menu": { "app": "so.tilo.example.menu", "view": "menu" } } }
 ```
 
-Bind it through the session's door, as an app, an agent or a script does:
+Bind it through the session's action API, as an app, an agent or a script does:
 
 ```rust
 let views = ui::collaboration::SessionResource::open("settings:shell-views")?;
@@ -147,9 +147,9 @@ Reading the slot changes nothing; when the session publishes a new reading the
 view runs again over it, so a menu left open while its window changes offers
 what that window offers now. What the view invokes names an app and an action
 of its own, but the view itself changes nothing: the session hands the call to
-the same door every other caller goes through — the address is the slot's
+the same action API every other caller goes through — the address is the slot's
 resource and the verb, the arguments are converted to the shapes the verb's
-parameters declare — so the checks the door makes of any caller (grants,
+parameters declare — so the checks the API makes of any caller (grants,
 consent, destructive actions) are the checks it makes of the view's press.
 Every parameter the verb declares is passed at the call site, `.none` where the
 view means none. A verb that takes a place takes it as the reading gives it

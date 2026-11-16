@@ -87,7 +87,7 @@ pub struct CalculatorApp {
     asks: Rc<RefCell<Asks>>,
     node: Option<NodeId>,
 
-    /// The resource's door: every affordance submits its edit or verb here.
+    /// The resource's api: every affordance submits its edit or verb here.
     /// `None` for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
     document: Option<Live<Calculator>>,
@@ -1199,7 +1199,7 @@ impl CalculatorApp {
 }
 
 /// Each past calculation reads as itself; choosing one puts it back through the
-/// Use calculation effect, the door the palette and agents take too.
+/// Use calculation effect, the API the palette and agents take too.
 impl ui::history_mode::capability::PresentsHistoryEntries for CalculatorApp {
     fn history_entry_presenter(&self) -> Option<Rc<dyn ui::widget::HistoryEntryPresenter>> {
         Some(Rc::clone(&self.entries) as Rc<dyn ui::widget::HistoryEntryPresenter>)

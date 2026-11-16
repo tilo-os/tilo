@@ -72,7 +72,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   The run at the top of the calls names the invocation, and every change the run makes — the
   caller's and each callee's — carries that one name ([`Journal::invocation`],
   [`ChangeNote::invocation`]), so the workspace commits them as one action: a peer applies all of
-  it or none. A callee is still entered at its own door, under its own authority and with the
+  it or none. A callee is still entered at its own action API, under its own authority and with the
   caller's chain, and its change stays attributed to it inside the one commit. When a run stops
   to make a call, what it wrote until then is committed as a change of its own, so a call on a
   record the caller made in the same action reads it, and the call's change stands on it — but

@@ -4,7 +4,7 @@
 //! What a scenario shows splits in three. The books' text is the sample
 //! shelf, a [`Fixture`] value the reader reads instead of files. The shelf
 //! rows, reading settings, fonts, schemes, progress and annotations are the
-//! library's, staged by [`actions`] as field edits through the same door as
+//! library's, staged by [`actions`] as field edits through the same api as
 //! every control, under ids and times fixed so every capture is the same.
 //! Where the reader is — the view, the open book, a selection, an open panel
 //! — is the reader's own view state, staged by `BooksApp::stage`.

@@ -26,7 +26,7 @@ const INPUT_BYTES: u64 = 4 * 1024 * 1024;
 #[derive(Default)]
 struct Media {
     content: Mutex<HashMap<String, Vec<u8>>>,
-    /// The scopes the door reached the content through, as (workspace, app).
+    /// The scopes the action API reached the content through, as (workspace, app).
     scopes: Mutex<Vec<(String, String)>>,
 }
 
@@ -129,12 +129,12 @@ impl Peers {
         }
     }
 
-    /// What the door has asked since the last call.
+    /// What the action API has asked since the last call.
     fn asked(&self) -> Vec<(String, Route, Work)> {
         std::mem::take(&mut *self.asked.lock_recover())
     }
 
-    /// What the door has handed to a device since the last call.
+    /// What the action API has handed to a device since the last call.
     fn invoked(&self) -> Vec<(String, [u8; 32], InvokeRequest)> {
         std::mem::take(&mut *self.invoked.lock_recover())
     }
@@ -195,7 +195,7 @@ fn never_answered<T>() -> Pending<T> {
     answer
 }
 
-/// One step of `future`, without a reactor: every step of the door answers at
+/// One step of `future`, without a reactor: every step of the API answers at
 /// once unless the test itself holds the answer back.
 fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
@@ -260,14 +260,10 @@ fn invoked(request: &OffloadRequest) -> InvokeRequest {
     }
 }
 
-/// The door over `media` and `peers`, on a device that has already run
+/// The action API over `media` and `peers`, on a device that has already run
 /// `request` here once in [`LOCAL_RUN`]: the run the round weighs moving the
 /// inputs against.
-fn door(
-    media: &Arc<Media>,
-    peers: &Arc<Peers>,
-    request: &OffloadRequest,
-) -> Arc<dyn ActionOffload> {
+fn api(media: &Arc<Media>, peers: &Arc<Peers>, request: &OffloadRequest) -> Arc<dyn ActionOffload> {
     let route = offer_offload(
         Arc::clone(media) as Arc<dyn WorkspaceMedia>,
         Arc::clone(peers) as Arc<dyn OffloadPeers>,
@@ -297,7 +293,7 @@ tilo_test_env::scenario! {
         let input = media.hold(&input());
         let request = request(&input);
         let peers = Arc::new(Peers::new(Reply::Silent));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let _ = drive(route.offload_invocation(request.clone(), invoked(&request)));
         let asked = peers.asked();
@@ -338,7 +334,7 @@ tilo_test_env::scenario! {
             output: expected.clone(),
             content: thumbnail.clone(),
         }));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let person = invoked(&request);
         let ran =
@@ -402,7 +398,7 @@ tilo_test_env::scenario! {
         let input = media.hold(&input());
         let request = request(&input);
         let peers = Arc::new(Peers::new(Reply::Failed("no such app".to_owned())));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
             .expect("answers at once");
@@ -431,7 +427,7 @@ tilo_test_env::scenario! {
             },
             content: vec![1, 2, 3],
         }));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
             .expect("answers at once");
@@ -451,7 +447,7 @@ tilo_test_env::scenario! {
         let request = request(&input);
         let (completer, answered) = pending();
         let peers = Arc::new(Peers::new(Reply::Later(answered)));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let person = invoked(&request);
         let mut sent = route.offload_invocation(request.clone(), person.clone());
@@ -519,7 +515,7 @@ tilo_test_env::scenario! {
             output: ActionOutput::default(),
             content: Vec::new(),
         }));
-        let route = door(&media, &peers, &request);
+        let route = api(&media, &peers, &request);
 
         let ran = drive(route.offload(request.clone())).expect("answers at once");
         let Offloaded::RunHere { reason } = ran else {

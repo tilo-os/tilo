@@ -815,7 +815,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_direct_conversation_reads_from_chats_messages;
-    // The conversation with a person reads from Chat's messages as the record door answers
+    // The conversation with a person reads from Chat's messages as the record api answers
     // them: only theirs with this person, in each part's order, the person's as incoming.
     {
         let (me, peer) = ("aa", "bb");

@@ -1,5 +1,5 @@
 /// What the shell's surfaces ask of the session are the session's own actions, published on its
-/// door and read as packages: the desktop's windows, workspaces and layout as
+/// api and read as packages: the desktop's windows, workspaces and layout as
 /// `so.tilo.session` (`apps/tl/session/surface.toml`), and the device's resources as
 /// `so.tilo.device`. A view presses one directly (`session.focus(window(w))`,
 /// `device.show_surface(device.overlays, surface: "launcher")`), as the agent and the REPL call it,

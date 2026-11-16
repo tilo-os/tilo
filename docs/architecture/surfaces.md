@@ -24,7 +24,7 @@ answers a question for the whole system, not for itself.
 The model also makes the surface an app's public asking path. An app does not
 draw a picker; it exports a resource action that raises a surface owned by
 `Owner::App`, and its outcome returns through the same action. That is what
-automation, accessibility and agents see — the same door a person uses.
+automation, accessibility and agents see — the same action API a person uses.
 
 ## Kinds
 

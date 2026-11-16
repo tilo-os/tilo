@@ -96,7 +96,7 @@ pub const REPAIR_TARGET: &str = "tilo::repair";
 pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
 
 /// The `tracing` target of every step of joining a workspace, and of the certificate
-/// renewals a join depends on: the directory read, the door asked, the enrollment presented,
+/// renewals a join depends on: the directory read, the entry asked, the enrollment presented,
 /// the host's answer, the workspace slot made and taken away, and each certificate due,
 /// renewed or failed. A handful of lines per join, so a join that lands nowhere says where
 /// it stopped.

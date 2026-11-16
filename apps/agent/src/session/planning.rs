@@ -102,7 +102,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_run_says_how_it_was_planned;
 
-        phase a_run_without_a_model_says_so_once_and_names_the_door;
+        phase a_run_without_a_model_says_so_once_and_names_the_api;
         {
             let plan = Planner::Words;
             assert!(plan.announcing().contains("No model is set up"));

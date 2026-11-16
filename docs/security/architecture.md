@@ -461,7 +461,7 @@ requires particular care because it has no local-user equivalent.
 
 The two checks protect distinct boundaries.
 
-### 7.1 Admission — guards the door
+### 7.1 Admission — guards the entry
 
 Decides whether a peer may synchronise a space at all, and whether a connection's bytes may touch
 a document. Per-connection, cheap, fail-fast.

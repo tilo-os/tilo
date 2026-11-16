@@ -673,7 +673,7 @@ impl Core {
         // A `show` of a resource whose type a Rust app's views draw: that view's tree stands here,
         // rendered inline as its own boundary (one-app-model.md §2). What the app's view built is
         // kept as the runtime's nodes, wired to the runtime's actions, so the host draws it as it
-        // draws a tilolang view and a press goes through the same door.
+        // draws a tilolang view and a press goes through the same action API.
         if n.kind == SHOW
             && let Some(node) =
                 self.rust_show(cx, n, &key, &events, walk, acc, hook.as_deref_mut())?

@@ -184,7 +184,7 @@ fn round_trip(bytes: &[u8], needle: &str, required: &[&str], verify: fn(&DocSnap
     verify(&before);
     let paragraph = before.blocks.iter().find(|b| b.text == needle).unwrap();
     assert_editor_shows(&mut app, needle);
-    // This is an Invoke::edit through WordProcessorApp's typed resource door,
+    // This is an Invoke::edit through WordProcessorApp's typed resource api,
     // not a mutation of an imported codec document or a model-only helper.
     apply(
         &mut app,

@@ -515,7 +515,7 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn the_app_answers_a_cell_edit_through_its_action_door() {
+fn the_app_answers_a_cell_edit_through_its_action_api() {
     use ui::framework::testing::TestApp;
     let mut app = TestApp::<crate::SheetsShell>::new().unwrap();
     let sheet = app.state().sheets.ids().next().unwrap().clone();

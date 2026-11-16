@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::nouns;
 
 /// The MCP server an agent tool starts.
-pub const DOOR: &str = "tilo-runtime-mcp";
+pub const MCP_SERVER: &str = "tilo-runtime-mcp";
 /// The program that keeps the model list.
 pub const MODELS: &str = "tilo-model-manager";
 /// The site's MCP server over HTTP, for an agent whose own configuration
@@ -313,21 +313,22 @@ impl Tool {
         Some(remove)
     }
 
-    /// The tool's own command that registers `door` as the server `tilo`,
+    /// The tool's own command that registers `server` as the server `tilo`,
     /// or, for another device, as `tilo-<device>` carried to that device's
-    /// door.
-    fn registration(self, door: &Path, remote: Option<&Remote>) -> Vec<OsString> {
+    /// server.
+    fn registration(self, server: &Path, remote: Option<&Remote>) -> Vec<OsString> {
         let name = remote.map_or_else(|| SERVER.to_owned(), Remote::server_name);
-        let mut door_args = vec!["--connect"];
+        let mut server_args = vec!["--connect"];
         if let Some(remote) = remote {
-            door_args.extend(["--device", remote.device.as_str()]);
+            server_args.extend(["--device", remote.device.as_str()]);
             if let Some(workspace) = &remote.workspace {
-                door_args.extend(["--workspace", workspace.as_str()]);
+                server_args.extend(["--workspace", workspace.as_str()]);
             }
         }
         // `tilo agent connect` offers only the tools whose own command adds
         // servers, so one of them is what this is.
-        self.cli_add(&name, door, &door_args).unwrap_or_default()
+        self.cli_add(&name, server, &server_args)
+            .unwrap_or_default()
     }
 
     /// The files this tool keeps its MCP servers in, the one it reads first.
@@ -528,7 +529,7 @@ pub fn run(cmd: AgentCmd) -> Result<ExitCode> {
 }
 
 fn connect(tool: Tool, remote: Option<&Remote>) -> Result<ExitCode> {
-    let Some(door) = nouns::program(DOOR) else {
+    let Some(server) = nouns::program(MCP_SERVER) else {
         // No desktop here: a computer logged in to the person's workspace
         // (`tilo login`) serves the agent itself, as `tilo mcp`.
         if remote.is_none() && crate::login::logged_in() {
@@ -552,7 +553,7 @@ fn connect(tool: Tool, remote: Option<&Remote>) -> Result<ExitCode> {
         );
     }
     let output = Command::new(program)
-        .args(tool.registration(&door, remote))
+        .args(tool.registration(&server, remote))
         .output()
         .with_context(|| format!("running {program}"))?;
     let said = format!(
@@ -2827,16 +2828,16 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn connecting_registers_a_door_for_the_desktop_or_a_named_device;
+        fn connecting_registers_a_server_for_the_desktop_or_a_named_device;
 
-        phase connecting_registers_the_desktops_door;
-        // Connecting registers the door, in every directory for Claude Code,
+        phase connecting_registers_the_desktops_server;
+        // Connecting registers the server, in every directory for Claude Code,
         // under the name `tilo` with `--connect`, so it reaches the login's
         // own desktop and never starts one.
         {
-            let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
             let claude: Vec<String> = Tool::Claude
-                .registration(door, None)
+                .registration(server, None)
                 .into_iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
@@ -2854,7 +2855,7 @@ mod tests {
                 ]
             );
             let codex: Vec<String> = Tool::Codex
-                .registration(door, None)
+                .registration(server, None)
                 .into_iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
@@ -2871,17 +2872,17 @@ mod tests {
             );
         }
 
-        phase connecting_to_another_device_registers_its_door_beside_this_ones;
+        phase connecting_to_another_device_registers_its_server_beside_this_ones;
         // Connecting to another device registers its own server, named after
-        // the device, carried to that device's door.
+        // the device, carried to that device's server.
         {
-            let door = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
+            let server = std::path::Path::new("/usr/libexec/tilo/tilo-runtime-mcp");
             let remote = Remote {
                 device: "Build Box".into(),
                 workspace: Some("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into()),
             };
             let claude: Vec<String> = Tool::Claude
-                .registration(door, Some(&remote))
+                .registration(server, Some(&remote))
                 .into_iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();

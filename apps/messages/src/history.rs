@@ -396,7 +396,7 @@ impl HistoryView {
 }
 
 /// The conversation between `me` and `peer` in `readings`, Chat's messages as the record
-/// door answers them: each part's messages in it, by the order key each keeps, as the list
+/// api answers them: each part's messages in it, by the order key each keeps, as the list
 /// draws them.
 pub(crate) fn direct_page(
     route: routing::Route,

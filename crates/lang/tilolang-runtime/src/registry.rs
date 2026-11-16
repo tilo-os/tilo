@@ -84,7 +84,7 @@ pub struct Package {
     /// was loaded with, and the lines its module says its declarations are written on.
     units: std::collections::BTreeMap<String, Rc<crate::cost::Unit>>,
     /// A package of an app this runtime does not run: its records are that app's, read from the
-    /// readings it publishes, and its actions are invoked at its own door (`crate::delegate`).
+    /// readings it publishes, and its actions are invoked at its own action API (`crate::delegate`).
     pub foreign: bool,
     /// Whether its module is loaded: its views run here. Only a description of another app
     /// (`Runtime::load_foreign`) has none.
@@ -134,7 +134,7 @@ impl Package {
 
     /// The description of an app this runtime does not run: its types, actions and views, and
     /// no code. Its resources are read from the readings its app publishes and its actions
-    /// invoked at its own door (`crate::delegate`).
+    /// invoked at its own action API (`crate::delegate`).
     ///
     /// # Errors
     ///

@@ -10,7 +10,7 @@ description = "The tasks.tracker record: a workspace's issues, their projects an
 # arguments on both sides, so a call the agent builds and the action that applies it cannot
 # drift. It has no window and no surface of its own; the app draws it.
 #
-# It depends on the resource layer and the action door, never the toolkit.
+# It depends on the resource layer and the action API, never the toolkit.
 
 [lib]
 name = "tasks_model"

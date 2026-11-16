@@ -698,7 +698,7 @@ impl VideoEditorApp {
             );
         };
         let dragging = |d: Option<Drag>, want: Drag| d == Some(want);
-        // Animatable rows read through `param_at`, the same door the
+        // Animatable rows read through `param_at`, the same api the
         // compositor uses, so a keyframed slider follows the playhead rather
         // than showing a constant the picture is already ignoring.
         let animated = |p: Param| self.key_state(p) != KeyState::Off;

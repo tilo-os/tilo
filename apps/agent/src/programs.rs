@@ -6,10 +6,10 @@
 //! Tasks draw: the program as code, the resources the answer names as references that open, what
 //! it changed as rows that undo, and what it would change as a preview.
 //!
-//! The session's door runs every task's programs ([`tilo_actions::remote::task_programs`]): the
-//! loop hands each program to it as a step of its run, and the door runs it in the task's own
+//! The session's api runs every task's programs ([`tilo_actions::remote::task_programs`]): the
+//! loop hands each program to it as a step of its run, and the API runs it in the task's own
 //! tilolang host, as the agent for its person, the same way it runs an MCP client's `tilo` calls.
-//! This module only says what the model is offered and reads back what the door answered.
+//! This module only says what the model is offered and reads back what the API answered.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -512,11 +512,11 @@ fn shown_title(text: &str, shown: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The step a program was, from what the door answered: the door's text as its answer, the
+/// The step a program was, from what the API answered: the API's text as its answer, the
 /// resources it shows as references, what it changed as rows that undo, and what a preview
 /// would change once it is confirmed.
 #[must_use]
-pub fn door_step(source: &str, answered: &ProgramAnswer, mounted: &[Mounted]) -> ProgramStep {
+pub fn answer_step(source: &str, answered: &ProgramAnswer, mounted: &[Mounted]) -> ProgramStep {
     let mut step = ProgramStep {
         program: source.to_owned(),
         answer: answered.text.lines().map(str::to_owned).collect(),

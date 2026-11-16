@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app host — the privileged door to the device package store over a control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
+description = "Tilo app host — the privileged service over the device package store on a control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
 
 [[bin]]
 name = "tilo-app-host"

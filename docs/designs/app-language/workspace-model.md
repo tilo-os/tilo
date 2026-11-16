@@ -131,7 +131,7 @@ default view note_editor for Note
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.lang.mail "Mail" (records: .own)`. Each member then keeps the app's resources in
   their own record of the workspace (`member:<person>:<kind>`, `tilo_action_policy::member_record`),
-  which only their devices hold the key to and every door decides as theirs alone, the
+  which only their devices hold the key to and every action API decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from
   their own, empty record.
 - `open(r)` is an action usable from views and from actions.

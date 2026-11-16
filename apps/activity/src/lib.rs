@@ -111,7 +111,7 @@ impl Nav {
     }
 }
 
-/// The session's door to the workspace's history, for the parts of the view that ask it for
+/// The session's api to the workspace's history, for the parts of the view that ask it for
 /// a change.
 #[derive(Clone)]
 pub(crate) struct Provider(RecordEnv<Filter>);

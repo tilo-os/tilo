@@ -1,5 +1,5 @@
 //! The editor as tests drive it: launched on the sample project in a folder of
-//! its own, through the same door as `code-editor FOLDER`.
+//! its own, through the same api as `code-editor FOLDER`.
 
 use std::path::PathBuf;
 

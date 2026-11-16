@@ -8,7 +8,7 @@ fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
         .unwrap()
         .into_iter()
         .find(|action| action.address.action == "inspect-appearance")
-        .expect("appearance preferences have a published read door");
+        .expect("appearance preferences have a published read api");
     app.call_on(
         &action.address.resource,
         &action.address.action,

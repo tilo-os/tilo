@@ -2,7 +2,7 @@
 //! written into a real workspace.
 //!
 //! The issues are made through the tracker's own actions — a [`Replica`]
-//! applies each one through the same door a person's does — and then staged
+//! applies each one through the same api a person's does — and then staged
 //! as the record's start, since a capture cannot wait for a handful of
 //! changes, and the issues it shows must be the person's own for "Mine" and
 //! its count to read as they do.

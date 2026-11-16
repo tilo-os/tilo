@@ -168,7 +168,7 @@ mod tests {
             .unwrap();
         }
 
-        phase demo_refuses_external_effects_at_the_semantic_door;
+        phase demo_refuses_external_effects_at_the_semantic_api;
         {
             let mut app = TestApp::<ImagerShell>::launched(&["--demo"]).unwrap();
             for effect in [

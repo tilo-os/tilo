@@ -1,5 +1,5 @@
 //! The runtime as the framework runs it, with a package installed: the real component runtime,
-//! storage, permissions, history and door, without a window on a screen.
+//! storage, permissions, history and api, without a window on a screen.
 //!
 //! One test binary instead of one per file: a file per binary linked the whole crate once each.
 //! `#[path]` keeps the files where they are, `support` below is the one copy they share, and

@@ -3922,7 +3922,7 @@ mod tests {
                 remote: "remote:flathub".into(),
             })
             .unwrap_err();
-        // Admin effects are removed from a viewer's public door; unlike a
+        // Admin effects are removed from a viewer's public api; unlike a
         // retained read effect submitting a forbidden edit, lookup itself refuses.
         assert!(
             matches!(&refused, ui::tilo_actions::ApiError::Unknown(_)),
@@ -3981,7 +3981,7 @@ mod tests {
                     .issues
                     .iter()
                     .any(|issue| issue.code == "stale-action-binding"),
-                "full app and host-door bindings must resolve for {role:?}: {:?}",
+                "full app and host-api bindings must resolve for {role:?}: {:?}",
                 audit.issues
             );
             let snapshot = app
@@ -5491,7 +5491,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             let invoked = ui::widget::controls::take_control_invocation(notice.as_mut())
-                .expect("refresh uses the resource action door");
+                .expect("refresh uses the resource action API");
             assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 

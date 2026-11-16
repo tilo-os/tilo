@@ -1,5 +1,5 @@
 //! Installed applications for a runtime profile: what can be launched, what
-//! each declared it may do on the action door, and launching one into the
+//! each declared it may do on the action API, and launching one into the
 //! profile's workspace.
 //!
 //! A launch always goes through the platform's launcher, which confines the

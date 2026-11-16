@@ -9,7 +9,7 @@ use ui::theme::{
 };
 
 /// The person's theme choice as the appearance section holds it: the keys Settings and
-/// [`apply`] write, read (never written) through the section's typed door so the studio
+/// [`apply`] write, read (never written) through the section's typed api so the studio
 /// follows a choice made anywhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppearanceChoice {

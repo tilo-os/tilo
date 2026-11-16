@@ -1,9 +1,9 @@
 //! The Lounge's chat across its relay's restart.
 //!
-//! Posts made through the door are written by the relay's own device: its app workers run the
+//! Posts made through the action API are written by the relay's own device: its app workers run the
 //! post for the member and the relay keeps the write under its own key. The relay's copy of the
 //! workspace keeps every write it took in, and after a restart reads its records whole again
-//! from what it kept: none of them may wait for a change it lacks, and every post the door
+//! from what it kept: none of them may wait for a change it lacks, and every post the action API
 //! answered for is in the chat.
 //!
 //! The relay stops a moment after the last post, closed or dropped as a killed process is, at a
@@ -43,7 +43,7 @@ async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// One round: the chat seated, posts through the door, the relay restarted, the chat read.
+/// One round: the chat seated, posts through the action API, the relay restarted, the chat read.
 async fn round(seed: u64) {
     let mut draw = seed | 1;
     let mut next = |below: u64| {
@@ -139,14 +139,14 @@ async fn round(seed: u64) {
     for text in &posted {
         assert!(
             after.contains(text),
-            "seed {seed}: after the restart the chat lacks {text:?}, which the door answered \
+            "seed {seed}: after the restart the chat lacks {text:?}, which the action API answered \
              for; it holds {after:?}"
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_lounges_chat_keeps_every_door_post_across_a_restart() {
+async fn the_lounges_chat_keeps_every_api_post_across_a_restart() {
     let rounds: u64 = std::env::var("TILO_CHAT_RESTART_ROUNDS")
         .ok()
         .and_then(|rounds| rounds.parse().ok())

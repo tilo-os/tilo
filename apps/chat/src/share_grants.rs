@@ -33,7 +33,7 @@ use crate::record::ShareAccess;
 /// the resources others share.
 #[derive(Default)]
 pub(crate) struct ShareGrants {
-    door: Option<RemoteActions>,
+    api: Option<RemoteActions>,
     /// What each of this person's shares last asked the workspace: to grant
     /// what an access gives, or (`None`) to take it back, by message.
     asked: HashMap<String, Option<ShareAccess>>,
@@ -83,8 +83,8 @@ impl ShareGrants {
         }
     }
 
-    fn door(&mut self) -> &mut RemoteActions {
-        self.door.get_or_insert_with(RemoteActions::current)
+    fn api(&mut self) -> &mut RemoteActions {
+        self.api.get_or_insert_with(RemoteActions::current)
     }
 
     fn ask(
@@ -99,7 +99,7 @@ impl ShareGrants {
             serde_json::Value::Object(map) => InvokeArgument::Json(map),
             _ => InvokeArgument::None,
         };
-        let call = self.door().invoke(target, argument, None);
+        let call = self.api().invoke(target, argument, None);
         self.calls.push(call);
     }
 }
@@ -214,7 +214,7 @@ impl ChatApp {
                 };
                 if ask {
                     let target = node_target(&workspace, &node.to_string(), NODE_PERMITS_ACTION);
-                    let call = grants.door().invoke(target, InvokeArgument::None, None);
+                    let call = grants.api().invoke(target, InvokeArgument::None, None);
                     grants
                         .editable
                         .insert(message, (Editable::Asking(call), now));

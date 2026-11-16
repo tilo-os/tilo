@@ -33,7 +33,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   it like an action's. Only `fn`s are called this way: they are pure by construction (no action,
   E043; no field changed, E040), so they are not decided — a call is as free as reading that
   package's resources — and what it reads counts as the calling view's reads and goes into the
-  calling run's journal. An `action` still goes through `invoke`, and its own door.
+  calling run's journal. An `action` still goes through `invoke`, and its own action API.
 - **View calls** of own views are wrapped in a `fragment` node keyed by the call site and the loop
   item, because the callee's root key is the same at every call. Per-node layout arguments on a view
   call (`fill`, `min:`, `at:`, ...) go on that wrapper node.
@@ -61,7 +61,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   `assign(t, to: Principal)`), never who acts, which is always `invoker`; its form asks for one
   of the workspace's members.
 - **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
-  running invocation: for a person's press, that person; for a call through the door, the
+  running invocation: for a person's press, that person; for a call through the action API, the
   caller; for an approved suggestion, the principal who first invoked it.
 - **`run_block(part, source)`** (actions only, E047 elsewhere): queues a host step that runs
   after the action commits. `part` must be one of the module's own records with a field
@@ -540,8 +540,8 @@ convergence.md, "Actions".
 convergence.md, "Calls"; action-system.md, "One invocation path".
 
 - **A call is a change of its own.** `task(t)` in an action's body — of its own package or another
-  one's — goes through the door: the authority decides it on the caller's authorship chain, it
-  runs at its own door as a change of its own, and it may wait for a person's approval. So an
+  one's — goes through the action API: the authority decides it on the caller's authorship chain, it
+  runs at its own action API as a change of its own, and it may wait for a person's approval. So an
   action that calls actions is not atomic across its calls: nothing a call made is lost if a
   later call is refused or fails. Storage allows nothing else: the callee may be another app's,
   whose change another origin holds, so one commit cannot cover the calls.

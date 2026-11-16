@@ -7,7 +7,7 @@
 //! under their grants.
 //!
 //! "Copy link" asks the resource's own app for its `share-link` through the
-//! action door: the app that publishes the resource knows its views and asks
+//! action API: the app that publishes the resource knows its views and asks
 //! its workspace's host where it is served, so Chat never builds a link itself and
 //! a person, an automation and an agent all get the same URL. A message's
 //! link is asked for once its controls are shown, ahead of a click: a browser
@@ -542,15 +542,15 @@ mod tests {
 
     type Answer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionHostError>>;
 
-    /// The resource's app behind the door: answers `share-link` with `URL`.
-    fn door() -> TestHost {
+    /// The resource's app behind the API: answers `share-link` with `URL`.
+    fn api() -> TestHost {
         TestHost::new().completing(|_| tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"url": URL})),
             resources: Vec::new(),
         })
     }
 
-    /// The resource's app behind the door, refusing with `message`.
+    /// The resource's app behind the API, refusing with `message`.
     fn refusing(message: &str) -> TestHost {
         let message = message.to_owned();
         TestHost::new().answering(move |_, request| {
@@ -568,17 +568,17 @@ mod tests {
         })
     }
 
-    /// The resource's app behind the door, answering only once the test
+    /// The resource's app behind the API, answering only once the test
     /// hands over the answers it keeps.
     fn holding() -> (TestHost, Arc<Mutex<Vec<Answer>>>) {
         let held = Arc::new(Mutex::new(Vec::new()));
         let keep = Arc::clone(&held);
-        let door = TestHost::new().answering(move |_, _| {
+        let api = TestHost::new().answering(move |_, _| {
             let (answer, pending) = tilo_actions::remote::pending();
             keep.lock().unwrap().push(answer);
             pending
         });
-        (door, held)
+        (api, held)
     }
 
     fn shared(app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>) -> String {
@@ -637,8 +637,8 @@ mod tests {
     fn copy_link_asks_the_resources_app_for_share_link_and_copies_its_url() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
-        let door = Arc::new(door());
-        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let api = Arc::new(api());
+        let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
             ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
@@ -673,7 +673,7 @@ mod tests {
             Some("Link copied"),
             "the window's bar says so"
         );
-        let asked = door.asked();
+        let asked = api.asked();
         let request = asked.last().unwrap();
         assert_eq!(request.target.provider, "record:so.tilo.notes:plan");
         assert_eq!(request.target.address.resource, "notes.page:1");
@@ -696,8 +696,8 @@ mod tests {
     fn a_shown_message_asks_for_its_link_before_the_click() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
-        let door = Arc::new(door());
-        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let api = Arc::new(api());
+        let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
             ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
@@ -706,14 +706,14 @@ mod tests {
         assert_native_resource_controls(&mut app);
         app.chat().settle_resource_navigation();
         app.chat().settle_resource_navigation();
-        let asked = door.asked().len();
+        let asked = api.asked().len();
         assert_eq!(asked, 1, "asked once, however often the controls painted");
 
         let mut surface = app.chat();
         surface.begin_resource_navigation(&id, 0);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         surface.begin_resource_navigation(&id, 0);
-        assert_eq!(door.asked().len(), asked);
+        assert_eq!(api.asked().len(), asked);
     }
 
     /// A browser's clipboard: it takes a copy only inside the click, or one
@@ -754,9 +754,9 @@ mod tests {
     fn a_click_before_the_link_arrived_copies_it_once_it_does() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
-        let (door, held) = holding();
-        let door = Arc::new(door);
-        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let (api, held) = holding();
+        let api = Arc::new(api);
+        let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
             ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
@@ -768,7 +768,7 @@ mod tests {
 
         let answers = std::mem::take(&mut *held.lock().unwrap());
         assert!(!answers.is_empty(), "the link was asked for");
-        let asked = door.asked();
+        let asked = api.asked();
         for (answer, request) in answers.into_iter().zip(asked) {
             answer.complete(Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -792,8 +792,8 @@ mod tests {
     fn a_refused_link_is_shown_on_its_message_and_copies_nothing() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
-        let door = Arc::new(refusing("This workspace's host serves no web page"));
-        let _served = RemoteActions::enter(door, Caller::local_person("owner"));
+        let api = Arc::new(refusing("This workspace's host serves no web page"));
+        let _served = RemoteActions::enter(api, Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let services =
             ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
@@ -829,7 +829,7 @@ mod tests {
     }
     /// The chip opens the shared resource where it lives, through the one
     /// action that opens any reference: the resource's `open` in the app and
-    /// record the message names, in this window's workspace. What the door
+    /// record the message names, in this window's workspace. What the API
     /// refuses is said on the chip.
     #[test]
     fn the_reference_chip_opens_the_resource_in_its_own_app_or_says_why_not() {
@@ -838,8 +838,8 @@ mod tests {
         const WORKSPACE_ID: &str = "0b7f3a52-4c1d-4e8f-9a6b-2d5e8c1f7a30";
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_WORKSPACE_ID", WORKSPACE_ID);
-        let door = Arc::new(door());
-        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let api = Arc::new(api());
+        let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let id = shared(&mut app);
 
@@ -848,11 +848,11 @@ mod tests {
             .perform_a11y_action(chip, &ui::a11y::Action::Activate)
             .unwrap();
         app.settle();
-        let asked = door
+        let asked = api
             .asked()
             .into_iter()
             .find(|request| request.target.address.action == "open")
-            .expect("the chip asked the door to open the resource");
+            .expect("the chip asked the API to open the resource");
         let page = tilo_reference::ResourceRef::ranged(
             "notes.page",
             "notes.page:1",
@@ -868,8 +868,8 @@ mod tests {
         assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
         assert!(!surface.resource_navigation.pending());
 
-        let door = Arc::new(refusing("You may not open this"));
-        let _served = RemoteActions::enter(door, Caller::local_person("owner"));
+        let api = Arc::new(refusing("You may not open this"));
+        let _served = RemoteActions::enter(api, Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let id = shared(&mut app);
         let mut surface = app.chat();
@@ -889,8 +889,8 @@ mod tests {
         const WORKSPACE_ID: &str = "0b7f3a52-4c1d-4e8f-9a6b-2d5e8c1f7a30";
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_WORKSPACE_ID", WORKSPACE_ID);
-        let door = Arc::new(door());
-        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
+        let api = Arc::new(api());
+        let _served = RemoteActions::enter(api.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let _scope = ui::host::enter(&ui::host::HostServices::null());
         app.call_on(
@@ -917,10 +917,10 @@ mod tests {
         app.settle();
         let page = tilo_reference::ResourceRef::whole("notes.page", "notes.page:1", "Plan");
         assert_eq!(
-            door.asked()
+            api.asked()
                 .into_iter()
                 .find(|request| request.target.address.action == "open")
-                .expect("the chip asked the door to open the record")
+                .expect("the chip asked the API to open the record")
                 .target,
             page.open_target(WORKSPACE_ID, "so.tilo.notes", Some("plan"))
         );

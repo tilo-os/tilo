@@ -1917,7 +1917,7 @@ mod input_inspection_tests {
         let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
         let action = app.actions().unwrap().into_iter()
             .find(|action| action.address.action.ends_with("inspect-input-sources"))
-            .expect("the installed catalogue and active source must be readable through Settings' normal door");
+            .expect("the installed catalogue and active source must be readable through Settings' normal api");
         assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Read);
         let before = app.settings::<InputPrefs>().get();
         let value = app

@@ -1,5 +1,5 @@
 //! Attributed triage at the canonical committed basis, through the ordinary
-//! View door. This projection carries no new task or document authority.
+//! View api. This projection carries no new task or document authority.
 use std::sync::OnceLock;
 
 use tilo_actions::ActionSpec;

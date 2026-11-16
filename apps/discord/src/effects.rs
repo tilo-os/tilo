@@ -106,7 +106,7 @@ pub enum DiscordEffect {
     PlanEvent {
         event: Value,
         #[param(
-            "Chat's records as the record door reads them: chat, its record of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
+            "Chat's records as the record api reads them: chat, its record of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
         )]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]

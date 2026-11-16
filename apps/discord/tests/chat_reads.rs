@@ -6,7 +6,7 @@
 )]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
-//! back in its answer, and Chat's records as the record door reads them are
+//! back in its answer, and Chat's records as the record api reads them are
 //! what the planners read.
 
 use chat::record::Chat;
@@ -74,7 +74,7 @@ fn a_verb_answers_the_ids_it_created() {
     assert_eq!(held.get(&Id::from_raw(&message)).unwrap().text, "hello");
 }
 
-/// Chat's records as the bridge's program reads them through the record door:
+/// Chat's records as the bridge's program reads them through the record api:
 /// its record of the workspace, and the newest part of its messages' chain.
 fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
     use ui::tilo_actions::remote::{Caller, HeldCopies, RecordAddress, RecordAsk};
@@ -88,7 +88,7 @@ fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
         };
         held.0.insert(part.route().to_owned(), bytes);
     }
-    let door = |record: String| {
+    let api = |record: String| {
         let address = RecordAddress {
             app: "so.tilo.chat".into(),
             record,
@@ -101,14 +101,14 @@ fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
     };
     let newest = ui::tilo_actions::record_sync::chain_head(chat::parts::chain().route());
     tilo::ChatRead::of(&json!({
-        "chat": door(String::new()),
-        "messages": door(newest),
+        "chat": api(String::new()),
+        "messages": api(newest),
         "changed": null,
     }))
 }
 
 #[test]
-fn the_record_door_reads_what_the_planners_read() {
+fn the_record_api_reads_what_the_planners_read() {
     let (mut app, channel) = begun();
     let root = created(
         app.call_on_output(

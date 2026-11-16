@@ -125,7 +125,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
                 .filter(|binding| &binding.control_id == target)
                 .count(),
             1,
-            "{label}'s actual row {target} shares the canonical open-pane door"
+            "{label}'s actual row {target} shares the canonical open-pane api"
         );
     }
     let bluetooth = app

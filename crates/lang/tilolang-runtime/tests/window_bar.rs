@@ -313,7 +313,7 @@ mod cases {
     }
 
     /// The bar draws the action the view made the window's primary, and keeps the commands it
-    /// placed, in its order, in the bar's own door ahead of the rest of what the window's own
+    /// placed, in its order, in the bar's own overflow button ahead of the rest of what the window's own
     /// place offers: a command that is not the window's main thing stands in a menu, placed or
     /// not.
     #[test]
@@ -325,7 +325,7 @@ mod cases {
         let tree = window.tree();
         let shell = of_kind(tree, "ui.NavShell")[0];
         let bar = slot(shell, "actions");
-        let (drawn, door): (Vec<&UiNode>, Vec<&UiNode>) = bar
+        let (drawn, overflow): (Vec<&UiNode>, Vec<&UiNode>) = bar
             .iter()
             .filter(|node| node.kind == "ui.Button")
             .partition(|node| node.props.get("in_menu") != Some(&Value::Int(1)));
@@ -337,11 +337,11 @@ mod cases {
              actions:\n{}",
             dump(tree)
         );
-        let behind: Vec<String> = door.iter().map(|node| text_of(node, "label")).collect();
+        let behind: Vec<String> = overflow.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             behind,
             ["Delete finished tasks"],
-            "the bar's door holds the actions the view placed, in its order, and then the \
+            "the bar's overflow button holds the actions the view placed, in its order, and then the \
              rest of what Tasks offers that the window does not already offer: New project is \
              its Projects section's add, and stands there alone:\n{}",
             dump(tree)
@@ -549,7 +549,7 @@ view note_page(n: Note) {
         fn a_page_places_its_dots_and_a_bar_its_toggle;
 
         phase a_page_whose_item_offers_nothing_shows_no_dots;
-        // A page whose item offers nothing shows no "…": the door would open on nothing, taking a
+        // A page whose item offers nothing shows no "…": the action API would open on nothing, taking a
         // line of the page for a control with nothing behind it.
         {
             const QUIET: &str = r#"
@@ -598,7 +598,7 @@ view quiet_page(q: Quiet) {
 
         phase a_pages_dots_stand_beside_its_title;
         // A page whose item offers commands keeps its "…" at the trailing edge of the line its
-        // title is on, whatever the view left the title in: the door stands beside the title, not
+        // title is on, whatever the view left the title in: the action API stands beside the title, not
         // on a line of its own under it.
         {
             let w = install(BOARD);

@@ -86,7 +86,7 @@ fn repeated_import_is_idempotent_and_remove_uses_the_published_action() {
 }
 
 #[test]
-fn forged_storage_and_moving_revision_are_refused_on_the_production_door() {
+fn forged_storage_and_moving_revision_are_refused_on_the_production_api() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     for (field, value) in [
         ("packed_weight_bytes", serde_json::json!(1)),
@@ -94,7 +94,7 @@ fn forged_storage_and_moving_revision_are_refused_on_the_production_door() {
     ] {
         let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
         report.as_object_mut().unwrap().insert(field.into(), value);
-        // Exercise the typed apply door too: a caller cannot bypass validation by encoding
+        // Exercise the typed apply api too: a caller cannot bypass validation by encoding
         // an action instead of using the named declaration.
         let invoke = ChipProject::IMPORT_REPORT.with(report.to_string());
         assert!(app.invoke(invoke).is_err());
@@ -224,7 +224,7 @@ fn concurrent_first_imports_share_the_initialized_collection_and_both_survive_me
 }
 
 #[test]
-fn report_children_publish_inspection_removal_and_typed_reads_on_the_production_door() {
+fn report_children_publish_inspection_removal_and_typed_reads_on_the_production_api() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     app.invoke(IMPORT.with(REPORT.to_owned())).unwrap();
     let id = crate::model::report_id(REPORT);
@@ -937,7 +937,7 @@ const CPU_RECEIPTS: [&str; 4] = [
 ];
 
 #[test]
-fn cpu_operator_receipts_use_the_public_import_read_open_and_reopen_door() {
+fn cpu_operator_receipts_use_the_public_import_read_open_and_reopen_api() {
     use ui::search::SearchProvider as _;
     let expected_hashes = [
         "47d47caf9ce1a08e1146eea8531a591dcd95010ef8edab7617d6743ba9e90eb2",
@@ -1220,7 +1220,7 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     .unwrap_or_else(|error| panic!("{error}"));
 }
 
-/// A past version reads through the `read` door and draws in the project's own view with
+/// A past version reads through the `read` api and draws in the project's own view with
 /// the report it held then.
 #[test]
 fn a_past_version_reads_and_shows_its_report() {

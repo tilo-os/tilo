@@ -101,7 +101,7 @@ fn answered_by(engine: &TestEngine) -> Vec<(u32, bool, AnsweredBy)> {
         .collect()
 }
 
-/// An agent the action door admitted, by its principal.
+/// An agent the action API admitted, by its principal.
 fn agent(principal: &str) -> ui::tilo_actions::ActionInvoker {
     ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(principal))
 }
@@ -847,7 +847,7 @@ fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
     let needs = answer(&mut widget, &doc, &root, submit);
     assert!(needs_the_person(&needs), "{needs:?}");
     assert!(answered_by(&engine).is_empty(), "nobody answered yet");
-    // The person allowed it: the door hands the agent's invocation to the
+    // The person allowed it: the API hands the agent's invocation to the
     // window again.
     assert!(matches!(
         widget.admit_for(submit, Some(&intake), effect_operation(&asked)),
@@ -860,7 +860,7 @@ fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
     );
 }
 
-/// A hold the window publishes is answered by whoever the action door admits
+/// A hold the window publishes is answered by whoever the action API admits
 /// its answer for, and the answer names them: an agent by the name the tab
 /// keeps its page actions under, the person at the window by none.
 #[test]

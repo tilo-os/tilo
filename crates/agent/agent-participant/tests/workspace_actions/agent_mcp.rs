@@ -801,7 +801,7 @@ async fn leaves_who_is_here(ending: Ending) {
     match ending {
         Ending::Closes => agent.peer.close(),
         Ending::Stopped => {
-            let door = SessionActions::new(
+            let api = SessionActions::new(
                 &browser.peer,
                 browser.workspace,
                 host.cert.device_public_key,
@@ -820,10 +820,10 @@ async fn leaves_who_is_here(ending: Ending) {
                 wait_ms: None,
                 appearance: None,
             };
-            let receipt = door
+            let receipt = api
                 .invoke(&Caller::local_person("ada"), request)
                 .await
-                .expect("the door answers")
+                .expect("the action API answers")
                 .expect("the person stops their agent");
             assert!(
                 !matches!(

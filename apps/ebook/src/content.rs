@@ -606,8 +606,8 @@ const TIDEGLASS: &[(&str, &str)] = &[
         r"<body>
 <h1>First Letter</h1>
 <p>Dear M—,</p>
-<p>The glassworks took me on this morning, which is to say a man with three fingers and a voice like a closing door looked at my hands for a long moment and then handed me an apron. I am, apparently, to learn the tide-glass: the trick of pouring colour into a pane so that it shifts as the day turns, blue at the flood and amber at the ebb.</p>
-<p>He says it takes ten years to learn and a lifetime to forgive. I told him I had the lifetime to spare. He did not laugh, but the door of his voice opened, very slightly, and I think that is the local equivalent.</p>
+<p>The glassworks took me on this morning, which is to say a man with three fingers and a voice like a closing api looked at my hands for a long moment and then handed me an apron. I am, apparently, to learn the tide-glass: the trick of pouring colour into a pane so that it shifts as the day turns, blue at the flood and amber at the ebb.</p>
+<p>He says it takes ten years to learn and a lifetime to forgive. I told him I had the lifetime to spare. He did not laugh, but the API of his voice opened, very slightly, and I think that is the local equivalent.</p>
 <p>Write soon. Tell me the river is still where I left it.</p>
 <p>— O.</p>
 </body>",

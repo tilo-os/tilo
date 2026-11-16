@@ -329,7 +329,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase online_accounts_skip_uses_semantic_door_without_sharing_form_fields;
+    phase online_accounts_skip_uses_semantic_api_without_sharing_form_fields;
     {
         let mut app = InstallerApp::with_disks(sample());
         app.accounts_initialized = true;

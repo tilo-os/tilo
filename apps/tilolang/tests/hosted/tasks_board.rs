@@ -961,7 +961,7 @@ fn an_agent_completing_a_task_is_seen_at_its_check_box() {
         app.harness()
             .render_png(&dir.join("tasks-agent-completes.png"));
     }
-    // The person's press of the box runs the same action, through the same door.
+    // The person's press of the box runs the same action, through the same api.
     app.harness().click_at(check.center().x, check.center().y);
     crate::change_marks::settle(&mut app);
     assert!(

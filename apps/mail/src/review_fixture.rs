@@ -4,7 +4,7 @@
 //! device, so a Mail window opened afresh answers from what it keeps.
 //!
 //! For Mail's own tests and other crates' (the desktop's), which drive the
-//! review through the action door.
+//! review through the action API.
 
 use std::path::Path;
 

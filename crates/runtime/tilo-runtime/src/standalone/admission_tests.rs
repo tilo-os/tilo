@@ -89,7 +89,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     let certificate = joined.custody.device_cert.clone();
     let actor =
         tilo_action_broker::collab_app_broker::person_id_for_root(certificate.user_public_key);
-    let mut workspace = TestWorkspace::new(placed, "Runtime doors");
+    let mut workspace = TestWorkspace::new(placed, "Runtime APIs");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree {
@@ -170,7 +170,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     drop(surviving_server);
     assert!(
         refused.get("error").is_some() || refused["result"]["isError"] == true,
-        "retained general door outlived runtime origin: {refused}"
+        "retained general API outlived runtime origin: {refused}"
     );
     assert!(
         factory().is_err(),

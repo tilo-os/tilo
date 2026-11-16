@@ -571,7 +571,7 @@ pub fn person_assignee(id: &str) -> Atom {
 }
 
 /// The assignee value naming an agent. An agent id already carries its
-/// `agent:` prefix, as the action door names agents; a bare id gets it.
+/// `agent:` prefix, as the action API names agents; a bare id gets it.
 #[must_use]
 pub fn agent_assignee(id: &str) -> Atom {
     if id.starts_with(AGENT_PREFIX) {

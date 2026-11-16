@@ -30,7 +30,7 @@ use crate::login;
 pub const DIR_ENV: &str = "TILO_IDENTITY_DIR";
 /// How long approving waits for the site's entry to let the person in: the
 /// operator's declaration reaches the host within seconds.
-const DOOR_WAIT: Duration = Duration::from_secs(60);
+const ENTRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The person this computer holds the root of.
 pub struct Person {
@@ -305,7 +305,7 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         session.close();
         match entered {
             Ok(_) => return Ok(()),
-            Err(refused) if refused.code == "invitation-only" && began.elapsed() < DOOR_WAIT => {
+            Err(refused) if refused.code == "invitation-only" && began.elapsed() < ENTRY_WAIT => {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(refused) if refused.code == "invitation-only" => bail!(

@@ -460,11 +460,11 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
     // The environment's own MCP server, which nothing outside it reaches. A
-    // door the session took away (it ended) leaves the guest without one,
+    // API the session took away (it ended) leaves the guest without one,
     // never without a guest.
-    if let Some(door) = &plan.mcp_server {
+    if let Some(socket) = &plan.mcp_server {
         a.push("--bind-try".into());
-        a.push(door.clone().into_os_string());
+        a.push(socket.clone().into_os_string());
         a.push(tilo_paths::login::GUEST_AGENT_SOCKET.into());
     }
 }
@@ -733,15 +733,15 @@ mod tests {
         phase the_environments_mcp_server_is_bound_where_its_variable_says;
         {
             let dir = tempfile::tempdir().unwrap();
-            let door = dir.path().join("tilo-session/environments/0123.sock");
+            let socket = dir.path().join("tilo-session/environments/0123.sock");
             let plan = GuestPlan {
-                mcp_server: Some(door.clone()),
+                mcp_server: Some(socket.clone()),
                 ..plan_in(dir.path())
             };
             let argv = build_argv(&plan, None);
             let bound = vec![
                 "--bind-try".to_owned(),
-                path(&door),
+                path(&socket),
                 tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),
             ];
             assert!(windows(&argv, 3).contains(&bound), "{argv:?}");
@@ -757,7 +757,7 @@ mod tests {
                 !strings(&without)
                     .iter()
                     .any(|s| s == tilo_paths::login::GUEST_AGENT_SOCKET),
-                "no door, no binding and no variable: {without:?}"
+                "no socket, no binding and no variable: {without:?}"
             );
             let check = build_check_argv(
                 &plan,
@@ -766,8 +766,8 @@ mod tests {
                 Path::new("/private/build"),
             );
             assert!(
-                !check.iter().any(|s| s == door.as_os_str()),
-                "a check's guest reaches no door"
+                !check.iter().any(|s| s == socket.as_os_str()),
+                "a check's guest reaches no socket"
             );
             assert!(
                 !strings(&check)

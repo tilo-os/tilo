@@ -883,13 +883,13 @@ impl Session {
     pub fn run_tilo_side(&mut self, script: Option<&str>) -> anyhow::Result<i32> {
         self.store.ensure()?;
         let (key, environment) = self.resolve_record()?;
-        let door =
+        let socket =
             crate::mcp_server::open_for(&self.store, &self.environment_id(&key), &environment);
-        self.opts.mcp_server = door.as_ref().map(|door| door.path().to_path_buf());
+        self.opts.mcp_server = socket.as_ref().map(|socket| socket.path().to_path_buf());
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.tilo_side_in(key, environment, &session_dir, script);
-        drop(door);
+        drop(socket);
         crate::guest::remove_dir_all_forced(&session_dir);
         outcome
     }

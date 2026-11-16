@@ -805,7 +805,7 @@ impl LogsWindow {
         self.dispatcher.submit(edit);
     }
 
-    /// Invoke a journal effect through the same door as the palette and agents, which
+    /// Invoke a journal effect through the same api as the palette and agents, which
     /// checks its availability first.
     fn request(&self, effect: &JournalEffect) {
         self.dispatcher.effect(effect);
@@ -1072,7 +1072,7 @@ mod tests {
         app.with_widget(visit)
             .expect("the journal window is mounted")
     }
-    /// Make the filter edit a picker makes, through the window's door.
+    /// Make the filter edit a picker makes, through the window's api.
     fn edit(app: &mut TestApp<LogsShell>, edit: &ui::tilo_resource::Edit<Logs>) {
         app.invoke(ui::tilo_resource::Invoke::edit(edit).unwrap())
             .unwrap();

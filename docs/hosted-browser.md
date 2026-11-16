@@ -192,7 +192,7 @@ It reports on its standard output: `ready`, then `up <provider>` once the
 window is live (an agent names it `browser@<provider>`), then `used` whenever
 the page is used.
 
-Door agents' calls go to the workspace host's device. So the relay lists
+An agent's calls go to the workspace host's device. So the relay lists
 the hosted Browser window among what runs in the workspace, as it lists the
 records it serves itself, and forwards what is addressed to the window — a
 listing of what it offers, a page action — to the device holding it, as it
@@ -277,9 +277,9 @@ It answers for nothing else either:
 `submit-page`, filling in a file or a password, and everything else Browser
 holds for the person still asks them, a key without the scope is asked about
 every page action, and revoking the key ends it with the key's certificate.
-Where the person sees it: the door's grants page says it on the key, and the
+Where the person sees it: the entry's grants page says it on the key, and the
 lists of agents let in — the Tilo overview and the Console's Connect page —
-say it on the agent's row as it reads the key's certificate at the door, with
+say it on the agent's row as it reads the key's certificate at the entry, with
 the same Revoke.
 
 The page action is counted once the window answers that it ran, so an

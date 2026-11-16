@@ -135,7 +135,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .unwrap();
     let workspace = lounge.workspace.clone();
 
-    // A member came in through the door and wrote the workspace's records.
+    // A member came in through the entry and wrote the workspace's records.
     let (member_root, _) = UserIdentity::generate("Member", 2);
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
     let member = enter(

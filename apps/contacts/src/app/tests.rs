@@ -1142,7 +1142,7 @@ fn saves_persist_and_refusals_never_claim_success() {
 
     {
         // A peer deletes the record after this replica rendered its detail
-        // controls. Both mutations go to the door, which refuses them; the
+        // controls. Both mutations go to the API, which refuses them; the
         // stale projection is taken back and the refusal announced.
         let mut app = Live::sample(1280, 800);
         let contact = app
@@ -1428,7 +1428,7 @@ fn detail_fields_enter_edit_on_double_click_with_placeholders() {
         groups_before.y1 > h.app.shell.geometry().content_column.y1,
         "the long form extends below the fold"
     );
-    // Focus the real retained last input via the exported accessibility door.
+    // Focus the real retained last input via the exported accessibility api.
     let groups = h
         .app
         .harness_mut()
@@ -1900,7 +1900,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
         let before = h.app.store.len();
-        // Invoke the palette's delete through the door, bypassing the app's
+        // Invoke the palette's delete through the API, bypassing the app's
         // own affordances (exactly as the shell's Ctrl+K palette would).
         // Undo takes a deletion back, so it runs at once.
         h.app
@@ -3673,7 +3673,7 @@ fn form_choice_semantics() {
 }
 
 /// The contacts app as every host runs it — the framework root over the
-/// address book, its edits through the book's door — with its surface at hand
+/// address book, its edits through the book's api — with its surface at hand
 /// for assertions about view state.
 struct Live {
     app: ui::framework::testing::TestApp<crate::ContactsShell>,
@@ -4015,7 +4015,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
         .merge_peer_edit(|doc| peer_applies(doc, Contacts::delete(contact.id)));
     app.settle();
     // A control can still have the last rendered contact when the peer's
-    // tombstone reaches the door. Submit that real stale view request;
+    // tombstone reaches the API. Submit that real stale view request;
     // a helper looking up the already-reconciled store would do nothing.
     std::rc::Rc::make_mut(&mut app.store)
         .contacts

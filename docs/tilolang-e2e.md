@@ -54,7 +54,7 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   apart by id.
 - **activation**: "Show this window" answers for tilolang Notes exactly as it
   does for native Notes.
-- **read**: the door's `read` of tilolang Notes (what `tilo_read` calls) lists
+- **read**: the API's `read` of tilolang Notes (what `tilo_read` calls) lists
   the workspace's records with their ids and kinds; a read of the notebook lists the
   note "New note" made, by the id a read takes.
 - **idle**: each app left untouched for 10 s, native Notes among them, and the

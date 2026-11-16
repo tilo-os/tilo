@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
                 )],
             )
         };
-        let door = || {
+        let overflow_button = || {
             node(
                 "MenuButton",
                 "detail~more",
@@ -173,25 +173,25 @@ tilo_test_env::scenario! {
         let alone = page(stack_node(
             "content",
             [360.0, 104.0, 560.0, 85.0],
-            vec![door()],
+            vec![overflow_button()],
         ));
-        let found = lone_doors(&alone);
+        let found = lone_overflows(&alone);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(
             found[0].keys.first().map(String::as_str),
             Some("detail~more"),
-            "at the page's door"
+            "at the page's trailing edge"
         );
         let line = page(holding(
             node("Row", "title-line", [360.0, 104.0, 560.0, 49.0], None),
             vec![
                 node("TextInput", "detail", [360.0, 104.0, 520.0, 49.0], None),
-                door(),
+                overflow_button(),
             ],
         ));
         assert!(
-            lone_doors(&line).is_empty(),
-            "beside its title, the door is where it belongs"
+            lone_overflows(&line).is_empty(),
+            "beside its title, the overflow button is where it belongs"
         );
         let bar = page(node(
             "MenuButton",
@@ -200,8 +200,8 @@ tilo_test_env::scenario! {
             Some(Role::Button),
         ));
         assert!(
-            lone_doors(&bar).is_empty(),
-            "the window bar's own menu is no page's door"
+            lone_overflows(&bar).is_empty(),
+            "the window bar's own menu is no page's overflow button"
         );
     }
 
@@ -1282,10 +1282,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_apps_own_door_beside_the_bars_is_one_door_too;
-    // The app's own door beside the bar's own "…": one bar has one.
+    phase an_apps_own_menu_beside_the_bars_is_one_overflow_button_too;
+    // The app's own menu beside the bar's own "…": one bar has one.
     {
-        let doors = bar(
+        let overflow_buttons = bar(
             vec![
                 control(
                     "action",
@@ -1306,7 +1306,7 @@ tilo_test_env::scenario! {
             ],
             0.0,
         );
-        assert_eq!(kinds(&doors), vec![Kind::DuplicateBarControl]);
+        assert_eq!(kinds(&overflow_buttons), vec![Kind::DuplicateBarControl]);
         // Every control of a window's own bar stands once: its navigation, its "…", its controls.
         let window = bar(
             vec![
@@ -1420,20 +1420,20 @@ tilo_test_env::scenario! {
             400.0,
         );
         assert!(kinds(&quiet).is_empty());
-        // The window's own furniture is no action of the app's: the strip's door wears the "+" everyone
+        // The window's own furniture is no action of the app's: the strip's overflow button wears the "+" everyone
         // reads, at its square chip, and says its name under the pointer alone.
-        let door =
+        let overflow_button =
             ui::window_toolbar::BarControl::new("new-tab", "tab-new", Rect::new(0.0, 0.0, 32.0, 28.0))
                 .named("New tab")
                 .icon(Some("plus".to_owned()))
                 .furniture();
-        assert!(kinds(&bar(vec![door], 400.0)).is_empty());
+        assert!(kinds(&bar(vec![overflow_button], 400.0)).is_empty());
     }
 
     phase a_bar_keeps_its_main_action_as_the_primary_button;
     // The one main action a window declares stands in its bar as the
     // primary button: a bar that shows it as every other action, behind its
-    // door, or not at all is what a person cannot tell from the rest of the
+    // overflow button, or not at all is what a person cannot tell from the rest of the
     // row.
     {
         let main = ui::window_toolbar::WindowToolbar {
@@ -1485,7 +1485,7 @@ tilo_test_env::scenario! {
         let found = super::bar_primary(Some(&main), &plain);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].kind, Kind::UnmarkedBarPrimary);
-        // Behind the bar's door is no place for it either, and neither is out of the bar.
+        // Behind the bar's overflow button is no place for it either, and neither is out of the bar.
         let folded = bar(
             vec![
                 ui::window_toolbar::BarControl::new(
@@ -2183,10 +2183,10 @@ fn inspected(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
-fn lone_doors(root: &InspectionNode) -> Vec<Problem> {
+fn lone_overflows(root: &InspectionNode) -> Vec<Problem> {
     inspect(root, (1280, 800), None, 1.0)
         .into_iter()
-        .filter(|p| p.kind == Kind::LoneDoor)
+        .filter(|p| p.kind == Kind::LoneOverflow)
         .collect()
 }
 

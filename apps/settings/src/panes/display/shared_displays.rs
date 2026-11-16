@@ -1,5 +1,5 @@
 //! The person's other devices' screens, drawn on the arrangement canvas beside this device's own
-//! where the person's layout places them, through the Settings resource door.
+//! where the person's layout places them, through the Settings resource api.
 
 use super::{
     DisplayEffect, DisplayModel, LiveRow, SettingsEffect, SettingsSection, effect, t, t_args,
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_display_operations_use_the_mounted_exact_resource_door() {
+    fn shared_display_operations_use_the_mounted_exact_resource_api() {
         let mut app = beside_the_tower(false);
         let surface = app.agent_surface();
         let row = surface

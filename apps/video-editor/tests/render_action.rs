@@ -2,7 +2,7 @@
 #![cfg(feature = "gst")]
 
 //! `render-timeline`: the timeline rendered on the device into content, through the
-//! same door, permissions and job progress as any other action.
+//! same api, permissions and job progress as any other action.
 
 use ui::permissions::{KindSet, PermissionContext, TreePath};
 use ui::prelude::*;

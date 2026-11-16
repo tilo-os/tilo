@@ -1,6 +1,6 @@
 //! The editor driven through its accessible controls against a fake action
 //! host: build a shortcut step by step, see the checker's verdict, review
-//! the grant and save it through the door's `shortcuts#create`.
+//! the grant and save it through the API's `shortcuts#create`.
 
 #![allow(
     clippy::unwrap_used,
@@ -257,7 +257,7 @@ fn press_bar(app: &mut TestApp<App>, name: &str) {
 }
 
 #[test]
-fn the_app_starts_empty_and_reads_the_door_as_itself() {
+fn the_app_starts_empty_and_reads_the_api_as_itself() {
     let (host, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
@@ -267,7 +267,7 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
         host.callers()
             .iter()
             .all(|caller| caller.acting().app().is_some_and(|app| *app == APP_ID)),
-        "every request goes to the door as the Shortcuts app"
+        "every request goes to the API as the Shortcuts app"
     );
     assert_eq!(library_calls(&host, "list").len(), 1, "the library is read");
     let audit = app.harness().native_app_audit();
@@ -359,8 +359,8 @@ fn every_operation_is_a_published_action() {
             "`{action}` is published"
         );
     }
-    // The door's effects are published on the drafts, beside their edits. The framework's own
-    // share verbs stand on every record's root, so they are no part of what the door declares.
+    // The API's effects are published on the drafts, beside their edits. The framework's own
+    // share verbs stand on every record's root, so they are no part of what the API declares.
     let mut effects: Vec<&str> = workbench
         .actions
         .iter()
@@ -376,13 +376,13 @@ fn every_operation_is_a_published_action() {
     assert!(
         resources
             .iter()
-            .all(|resource| resource.id.as_str() != "shortcuts.door:root"),
+            .all(|resource| resource.id.as_str() != "shortcuts.api:root"),
         "no second root carries them"
     );
 }
 
 #[test]
-fn add_steps_bind_them_validate_and_save_through_the_door() {
+fn add_steps_bind_them_validate_and_save_through_the_api() {
     let (host, _guard, mut app) = open();
     app.invoke(Workbench::NEW_DRAFT.with("Tidy"))
         .expect("a new draft");

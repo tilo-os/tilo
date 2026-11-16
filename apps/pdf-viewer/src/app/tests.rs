@@ -684,7 +684,7 @@ fn semantic_targets_and_global_search_address_stable_pages() {
         ] {
             let anchor = markup_hit(needle);
             let resource = resolve(&app, &state.doc, &anchor)
-                .expect("search door resolves the anchored annotation/comment item");
+                .expect("search api resolves the anchored annotation/comment item");
             assert!(resource.actions.iter().any(|action| action.id == delete));
         }
         let reply_anchor = markup_hit("northern harrier");

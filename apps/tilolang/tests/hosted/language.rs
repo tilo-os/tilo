@@ -84,7 +84,7 @@ fn a_hosted_windows_own_words_read_in_its_language() {
 }
 
 /// A language the person chooses in Settings while hosted windows are open relabels them where
-/// they stand, all of them: the session says their language on every host's door, as it says their
+/// they stand, all of them: the session says their language on every host's api, as it says their
 /// formats, and every word each window paints reads in it on the next frame, without a window
 /// opening again. A place one app's card names reads in the language of the window drawing it.
 #[test]
@@ -106,7 +106,7 @@ fn a_language_chosen_while_hosted_windows_are_open_relabels_them() {
         "Tasks opens in English: {shown:?}"
     );
 
-    // The person picks German once: the one locale their session says on the door of every host
+    // The person picks German once: the one locale their session says on the API of every host
     // it runs, each of which speaks it to every instance it holds.
     let german = tilolang_host::Locale {
         formats: today.host.formats().get(),

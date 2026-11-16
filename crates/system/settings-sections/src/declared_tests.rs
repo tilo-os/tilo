@@ -130,7 +130,7 @@ fn every_kept_setting_is_declared() {
     assert!(out.is_empty(), "undeclared settings:\n{}", out.join("\n"));
 }
 
-/// A declared range is held through the section's field edit, as any door
+/// A declared range is held through the section's field edit, as any action API
 /// sends it.
 #[test]
 fn a_kept_setting_holds_only_what_it_declares() {

@@ -8,7 +8,7 @@
 //! declarations where a view rendered them — the resource its boundary was opened on, and each
 //! item a row, card or tree node stands for — and puts them where every window keeps them, in
 //! the same order and shape: the primary action once in the window's bar, a command that
-//! toggles a state beside it, the rest behind the bar's own door, and on an item its actions in
+//! toggles a state beside it, the rest behind the bar's own overflow button, and on an item its actions in
 //! its menu. An action's declaration says what it is; where it stands is read off that: a
 //! command that shows whether it is on (`on:`) belongs where the person sees that, and every
 //! other stands in a menu. A view that places the actions of what it shows says their order and
@@ -738,7 +738,7 @@ impl Core {
 
     /// The window's bar's controls: what the shell searches with, then the primary action, the
     /// commands that toggle a state of the window's subject, and the rest where the bar's own
-    /// door lists them. A view that placed the window's actions (`actions:`) has the ones it
+    /// overflow button lists them. A view that placed the window's actions (`actions:`) has the ones it
     /// named in its bar, in its order, and the rest behind a "More" the bar keeps itself.
     fn fill_bar(
         &self,
@@ -788,7 +788,7 @@ impl Core {
             }
         }
         // What the view left unplaced stands in the bar's own "…", beside what does not fit in
-        // its row: one bar has one door, and the app's own menu beside it is a second "…" with
+        // its row: one bar has one overflow button, and the app's own menu beside it is a second "…" with
         // nothing to tell them apart.
         for (index, action) in rest.iter().enumerate() {
             let mut node =
@@ -816,7 +816,7 @@ impl Core {
     /// The window's bar while a choice of many items holds: how many items the person chose,
     /// then what can be done with them once. Every command stands labelled, in the order the
     /// items' own actions are offered; the shell's own layout folds the ones that do not fit
-    /// into its door. Nothing of the window's own subject stands beside them: the choice is
+    /// into its overflow button. Nothing of the window's own subject stands beside them: the choice is
     /// what the person is working on.
     fn fill_selection_bar(
         &self,
@@ -892,7 +892,7 @@ impl Core {
 
     /// The "…" beside the title: the item's actions, the ones its context menu holds; the view
     /// switch `switch` before it, for a resource whose type offers more than one view. An item
-    /// that offers neither shows no "…": a door opening on nothing only takes a line of the
+    /// that offers neither shows no "…": an action API opening on nothing only takes a line of the
     /// page. One that offers either keeps it at the trailing edge of the title's line, which is
     /// made for it when the view left the title in a column of its own. A view that placed the
     /// actions (`actions:`) has the ones it named beside the title, in its order, and the rest
@@ -913,8 +913,8 @@ impl Core {
             return Ok(());
         };
         let (line, after) = self.title_line(parent, index, &key)?;
-        // Without a placement every action stands behind the door, as the types offer them; a
-        // view that placed some has those beside the title and the rest behind the door.
+        // Without a placement every action stands behind the action API, as the types offer them; a
+        // view that placed some has those beside the title and the rest behind the action API.
         let (shown, rest) = if placed.is_some() {
             Self::as_placed(acted.to_vec(), placed)
         } else {
@@ -927,7 +927,7 @@ impl Core {
             self.insert(line, beside, child)?;
             beside = beside.saturating_add(1);
         }
-        // A view that placed every action it offers leaves nothing for the door: it opens on
+        // A view that placed every action it offers leaves nothing for the action API: it opens on
         // nothing, so it does not stand there.
         if !rest.is_empty() {
             let menu = self.more_menu(&format!("{key}~more"));
@@ -1264,12 +1264,12 @@ impl Core {
 
     /// One action as a bar's control, as the standard library's header placed it: the primary
     /// labelled, a command that toggles a state a control of its own, all the rest behind the
-    /// bar's door.
+    /// bar's overflow button.
     /// `entry` is the key the list's entry declares, when the window has one: the primary it
     /// stands for is answered there, so it names the addition plainly rather than a form to
-    /// fill in. A control of a selection's bar (`door` false) stands labelled among the others,
+    /// fill in. A control of a selection's bar (`overflow` false) stands labelled among the others,
     /// whatever its place on one item's own bar was.
-    fn action_button(action: &Value, key: &str, entry: Option<&str>, door: bool) -> NodeBuild {
+    fn action_button(action: &Value, key: &str, entry: Option<&str>, overflow: bool) -> NodeBuild {
         let primary = flag(action, PRIMARY);
         let destructive = flag(action, DESTRUCTIVE);
         let toggles = opt_flag(action, ON).is_some();
@@ -1292,10 +1292,10 @@ impl Core {
         } else if primary {
             node.props.insert("role".to_owned(), Value::text("primary"));
         }
-        if door && !primary && toggles && icon.is_some() {
+        if overflow && !primary && toggles && icon.is_some() {
             node.props.insert("icon_only".to_owned(), on_off(true));
         }
-        if door && !primary && !toggles {
+        if overflow && !primary && !toggles {
             node.props.insert("in_menu".to_owned(), on_off(true));
             if let Some(group) = opt_text(action, GROUP) {
                 node.props.insert("group".to_owned(), Value::text(group));

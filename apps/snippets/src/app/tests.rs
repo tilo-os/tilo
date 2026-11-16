@@ -31,7 +31,7 @@ fn demo() -> SnippetsWindow {
     app
 }
 
-/// The app on a fresh record holding `snippets`, inserted through the door.
+/// The app on a fresh record holding `snippets`, inserted through the API.
 fn launched(snippets: &[Snippet]) -> TestApp<SnippetsShell> {
     let mut app = TestApp::<SnippetsShell>::new().unwrap();
     for (at, snippet) in snippets.iter().enumerate() {

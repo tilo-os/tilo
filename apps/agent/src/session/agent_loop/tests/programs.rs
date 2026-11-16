@@ -1,4 +1,4 @@
-//! A task that works through tilolang programs: each `tilo` call is run by the session's door as
+//! A task that works through tilolang programs: each `tilo` call is run by the session's api as
 //! a step of the task's run, is recorded on the issue as a step with its answer, and a `view`
 //! finish is checked by the Views host, kept by its `answer` action and recorded as the run's
 //! answer.
@@ -12,7 +12,7 @@ mod canvas;
 const BOARD_PEER: u64 = 21;
 const VIEWS_PEER: u64 = 22;
 const CHAT_PEER: u64 = 23;
-const DOOR_PEER: u64 = 24;
+const API_PEER: u64 = 24;
 const BOARD: &str = "so.tilo.lang.board";
 const VIEWS: &str = "so.tilo.lang.views";
 
@@ -101,7 +101,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         )
     };
-    let door = ExportedAction {
+    let api = ExportedAction {
         resource: tilo_actions::remote::task_programs::RESOURCE.into(),
         resource_kind: tilo_actions::remote::task_programs::RESOURCE.into(),
         resource_label: "Task programs".into(),
@@ -119,7 +119,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
         )
     };
     vec![
-        surface(DOOR_PEER, "so.tilo.agent", vec![door]),
+        surface(API_PEER, "so.tilo.agent", vec![api]),
         surface(BOARD_PEER, BOARD, host("Board")),
         surface(VIEWS_PEER, VIEWS, views),
         surface(CHAT_PEER, "so.tilo.chat", vec![chat]),
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
         assert_eq!(steps[2]["outcome"], "applied", "{steps:?}");
         assert_eq!(steps[2]["label"], "move_card");
         assert_eq!(steps[2]["resource"], format!("tl:{BOARD}:root/cards:c1"));
-        // Every program went to the door as a step of the turn, which the host names the session
+        // Every program went to the API as a step of the turn, which the host names the session
         // of: the program itself names no group.
         let world = f.world.borrow();
         let ran: Vec<&serde_json::Map<String, Value>> = world
@@ -372,7 +372,7 @@ tilo_test_env::scenario! {
 /// "What changed in my notes this week": the model is told how a program asks by time before it
 /// writes one. It first asks a note for a field it has not got; the error it reads back names
 /// the place in its own program and the filter that answers it, and its next program uses that
-/// filter and answers. The door's answers are the ones the task's host gives these programs
+/// filter and answers. The API's answers are the ones the task's host gives these programs
 /// (`tilolang-tilo`'s `what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed`).
 #[test]
 fn a_program_that_asks_a_field_for_when_a_note_changed_is_taught_the_filter_and_answers() {

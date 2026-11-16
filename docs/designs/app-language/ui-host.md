@@ -69,7 +69,7 @@ Decisions made on the way:
   resolved by its instance, and the host is a sandbox without the person's settings and without
   a guarantee of their locale in its environment: the language the session names with the
   instance is what the window speaks, its app's catalogue and the frames' words alike. A
-  language chosen in Settings later is said on the host's door with the formats, and every
+  language chosen in Settings later is said on the host's action API with the formats, and every
   window relabels where it stands.
 - The record store (`RecordStore`) stays with native apps. The tilolang host holds records
   through `InstanceRecord`, using the same history and save code.

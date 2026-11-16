@@ -2696,7 +2696,7 @@ impl BooksApp {
         self.commit_pending_share(doc);
     }
 
-    /// Ask to take the book `id` off the shelf, through the library's door.
+    /// Ask to take the book `id` off the shelf, through the library's api.
     /// Removing is asked first, so nothing changes here yet: the shelf drops
     /// the row when the library no longer lists it ([`Self::adopt_shelf`]),
     /// and this device forgets the book's file once the library no longer
@@ -2712,7 +2712,7 @@ impl BooksApp {
     }
 
     /// Forget what this device kept for the book `id`, which left the
-    /// library, from whichever door: its file grant, its watched-folder entry
+    /// library, from whichever api: its file grant, its watched-folder entry
     /// and its cover. Undo puts the row back but not these, which is why the
     /// removal is asked first.
     fn forget_removed(&mut self, id: &str) {
@@ -3416,7 +3416,7 @@ impl BooksApp {
     }
 
     /// Apply one of the library's field edits or verbs now, through its
-    /// dispatcher: the one door every control, the palette and agents edit
+    /// dispatcher: the one api every control, the palette and agents edit
     /// the library through. A refused edit changes nothing, and the
     /// dispatcher says why.
     fn edit(&self, doc: &mut ui::widget::Edits<'_>, submit: impl ui::framework::Submit<Ebook>) {

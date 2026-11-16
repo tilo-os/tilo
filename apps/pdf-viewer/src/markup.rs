@@ -202,7 +202,7 @@ impl PdfMarkup {
         <Self as tilo_resource::Resource>::read(doc).unwrap_or_default()
     }
 
-    /// Apply `invoke` to `doc` through the door, as a replica of it does.
+    /// Apply `invoke` to `doc` through the API, as a replica of it does.
     #[cfg(test)]
     pub(crate) fn apply_to(
         doc: &mut tilo_resource::Doc,

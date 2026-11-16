@@ -429,7 +429,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
     let mut record = bound(
         &CameraEffect::Record,
         // Finalizing an existing clip needs no live camera. Keep the semantic
-        // stop door available after disconnection, just like the shutter.
+        // stop api available after disconnection, just like the shutter.
         if ctx.recording {
             None
         } else if !ctx.feed_available {

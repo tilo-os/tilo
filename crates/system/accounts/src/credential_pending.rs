@@ -195,7 +195,7 @@ impl CredentialOwner {
             .map(|pending| pending.expires.saturating_duration_since(tilo_clock::now()))
             .min()
     }
-    /// Original Passwords confirmation door. Consumes the opaque request once
+    /// Original Passwords confirmation path. Consumes the opaque request once
     /// and returns permission metadata only. A one-shot credential read cannot
     /// authorize persistent provider startup and is deliberately refused here.
     /// # Errors

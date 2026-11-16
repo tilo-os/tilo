@@ -1,7 +1,7 @@
 # Agents writing tilolang
 
 Agents are excellent at shell one-liners: one `rg … | xargs sed …` does what would take a person
-ten minutes. A tilolang program on the door must be at least as terse, and better: correct where
+ten minutes. A tilolang program on the MCP server must be at least as terse, and better: correct where
 the shell guesses, with authorship, history, permissions and undo. Today's `tilo_*` tools already
 work even with cheap models; tilolang has to beat them, measured (§9).
 
@@ -13,7 +13,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 
 ## 1. One tool, programs, sessions
 
-- The door (Tilo's MCP server, `tilo-runtime-mcp`) has a tool `tilo` that takes a
+- The MCP server (Tilo's, `tilo-runtime-mcp`) has a tool `tilo` that takes a
   **program**. Everything sent and received is tilolang, and output pastes back as input.
 - Only what the task may use is mounted: installed apps' types, views and the actions the task
   is allowed. Anything else is a compile error that names what is allowed, so nothing denied is
@@ -34,7 +34,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 1. **Who:** the task. The program's code author is the agent task, acting for its person; what
    it may do is the lesser of both (authority.md). It never runs as an app or borrows an app's
    authorship.
-2. **Where:** one tilolang host per task, with the task as author (ui-host.md). The door starts
+2. **Where:** one tilolang host per task, with the task as author (ui-host.md). The server starts
    it on the task's first `tilo` call; it lives as long as the task, holds the session's `let`s,
    opens no windows and owns no records.
 3. **What it names:** every installed app's published types and actions, from the one schema
@@ -50,7 +50,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    edit, a method to its type's declared action; each is a broker invocation, a child of the
    task, decided at the action's own node (action-system.md step 3). A program never writes a
    record directly.
-6. **Steps:** one call is one run group for undo. Its changes each commit at their own door,
+6. **Steps:** one call is one run group for undo. Its changes each commit at their own action API,
    and a change that calls another action runs that call as a change of its own: nothing is
    atomic across origins (convergence.md, "Calls"). A preview is a provisional run of those
    invocations; `confirm` sends the same program again.
@@ -60,19 +60,19 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 A workspace's records are sealed per app: today only a connection holding that app's launch custody
 opens them. The task host is not an app, so it gets its own admission instead of borrowing one:
 
-- **Admission.** The door serves the task as *the agent acting for the person* who admitted
+- **Admission.** The MCP server serves the task as *the agent acting for the person* who admitted
   it (`Caller::local_agent(agent).acting_for(person)`; `BrokerActor` agent for person, never
   session-delegated, so no preset widens it). The task host's only connection is its program
-  connection to the door: it holds no app's route, no broker connection and publishes nothing.
+  connection to the server: it holds no app's route, no broker connection and publishes nothing.
   Each connection the person admits is an agent of its own (`claude-code@dev#2`: the client,
   the environment it works from or `host`, an instance), so two sessions of one program are
-  two authors; a program in a confined environment comes in by that environment's own door and
+  two authors; a program in a confined environment comes in by that environment's own socket and
   works in its workspace ([environments.md, "Coding agents"](../../app-model/environments.md#coding-agents)).
-- **Reads, per record.** The task host asks the door for each record it reads, once per
+- **Reads, per record.** The task host asks the MCP server for each record it reads, once per
   program (`{"record": {app, record}}`; the person's own record for an app with
-  `records: .own`). The door answers for every app whose package the session runs: a tilolang
+  `records: .own`). The server answers for every app whose package the session runs: a tilolang
   app the session hosts keeps its record in the session's one record, so its committed content
-  is the door's own to hand over, and no app is started to read it. The broker decides the read
+  is the server's own to hand over, and no app is started to read it. The broker decides the read
   at the record's node with that actor, the lesser of
   the agent's and the person's grants (`RecordReads`, `record_read.rs`), and the workspace's
   document owner captures it under the person's device certificate, whose own check is the
@@ -90,10 +90,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   genesis. Its host hands the workspace the whole copy on its next send; no change is rewritten.
   What the record's origin applied for the task is kept for the task's life and put into every
   record the task reads, so each program reads the task's earlier changes while the copy the
-  door hands over still lags the origin.
+  server hands over still lags the origin.
 - **Changes, never writes.** The task host gets no write custody. It plans the action from the
   app's package over the record it read, for the preview only, and sends the invocation
-  (action, arguments, the record it changes, the planned writes) to the door. The broker
+  (action, arguments, the record it changes, the planned writes) to the server. The broker
   decides it at the action's node for the agent acting for the person (`RecordChanges`): an
   Ask answers that it asks the person first, a Deny never leaves the broker. The record's origin applies it:
   the host of the app's author in that workspace, handed the app's collaboration connection
@@ -114,7 +114,7 @@ opens them. The task host is not an app, so it gets its own admission instead of
   the same way, by the app's id and record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way, and a
   program type-checks against them, so `find(chat.Conversation)` and its fields read as any type's.
-  None of their record is read here: the host asks the app, through the door, for what its own
+  None of their record is read here: the host asks the app, through the action API, for what its own
   `read` view answers, as the task's caller, and the broker starts the app when it is not
   running (`NativeReads`, `native.rs`). It addresses a resource the way the app's directory
   lists it: the resource's own `read` where it offers one (`Calls::reads`), else the record's,
@@ -180,12 +180,12 @@ grep(/^- \[ \] (.*launch.*)/i, in: docs + notes, changed: -14d)
 - Assignments and methods read like ordinary code (`n.title = …`, `t.done = true`,
   `hits.replace("Tilo")`) and compile to the type's real actions: field edits, text splices,
   declared actions. Permissions, attribution and undo apply; nothing bypasses them.
-- **One call is one step.** Changes to workspace resources in one call commit at the door of the
+- **One call is one step.** Changes to workspace resources in one call commit at the action API of the
   action that makes each, in order. Calls to outside origins (a mail server, YouTube) can't be
   atomic with the workspace; they run as calls in order, each a change of its own (convergence.md,
   "Calls").
 - **Preview is a property of the call.** When a program would change many resources or destroy
-  something, the door answers with a preview instead of applying it; the agent sends the same
+  something, the API answers with a preview instead of applying it; the agent sends the same
   program again with `confirm`.
 - Drafts and other undoable changes in the workspace just run. Anything that reaches outside or
   is ask-first parks as the person's request, with an editable draft.
@@ -228,7 +228,7 @@ make first guesses mostly right.
 
 ## 8. Answering and the trail
 
-An answer composes views (agent-ux.md); the door checks it before the person sees it: quotes
+An answer composes views (agent-ux.md); the action API checks it before the person sees it: quotes
 resolve, suggested actions are allowed, it fits. A view answer is a `view` declaration that
 becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its
 result is checked against the request: on by default for small-model profiles, which skip or

@@ -69,7 +69,7 @@ fn a_hub_model_downloads_only_a_fitting_variant_it_showed() {
     );
     assert!(pane.hub.downloadable("F32").is_none());
 
-    // Agents reach the same doors: a row per variant, Download only where
+    // Agents reach the same action APIs: a row per variant, Download only where
     // it fits.
     let rows = pane.hub.rows();
     let actions = |name: &str| {

@@ -1684,7 +1684,7 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     });
     let Some(offer) = offer else {
         // Unknown and not-offered are deliberately one answer, as they are at
-        // the door: a caller must not be able to map what it may not see by
+        // the API: a caller must not be able to map what it may not see by
         // getting a different refusal for it.
         return nothing_found(&format!("the operation {given}"));
     };

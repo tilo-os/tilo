@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
 
     // A window with no account is the person's whole way into Mail: it must name
     // the account route, in the language the person reads, and activating that
-    // named control must reach Settings' External Accounts — the same door the
+    // named control must reach Settings' External Accounts — the same api the
     // pill and the window bar's Add account take.
     phase a_fresh_window_offers_adding_an_account;
     {

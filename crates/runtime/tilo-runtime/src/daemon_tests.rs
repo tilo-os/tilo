@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
     }
 
     phase connect_asks_for_a_workspace_by_its_id;
-    // `--connect --workspace ID` asks the desktop's door for that workspace: it
+    // `--connect --workspace ID` asks the desktop's API for that workspace: it
     // is a client's request of the person, so it goes with `--connect` alone,
     // never with a standalone runtime of the client's own.
     {
@@ -840,7 +840,7 @@ tilo_test_env::scenario! {
         assert_eq!(asked.mode, Mode::Connect);
         assert_eq!(asked.workspace.as_deref(), Some(workspace));
         assert_eq!(args(&["--connect"]).unwrap().workspace, None);
-        assert_eq!(asked.forward, None, "this desktop's own door");
+        assert_eq!(asked.forward, None, "this desktop's own API");
         let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
         assert_eq!(
             elsewhere.workspace, None,
@@ -993,7 +993,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
 }
 
 /// The relay writes the workspace and the agent key into the client's `initialize` and nothing
-/// else: a probe before it and every line after it reach the door as sent.
+/// else: a probe before it and every line after it reach the API as sent.
 #[test]
 fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
     let sent = concat!(
@@ -1039,15 +1039,15 @@ fn the_relay_writes_the_workspace_and_key_into_the_initialize_alone() {
     );
     let hello =
         tilo_mcp::session_api::parse_hello(&serde_json::to_vec(&lines[1]).unwrap()).unwrap();
-    assert_eq!(hello.workspace.as_deref(), Some("w-1"), "the door reads it");
+    assert_eq!(hello.workspace.as_deref(), Some("w-1"), "the API reads it");
     assert_eq!(
         hello.key.as_deref(),
         Some("tilo_ak_0123"),
-        "the door reads the key"
+        "the API reads the key"
     );
     assert_eq!(
         hello.request.pointer(tilo_mcp::session_api::KEY),
         None,
-        "the key is kept out of the request the door goes on to answer"
+        "the key is kept out of the request the API goes on to answer"
     );
 }

@@ -1,5 +1,5 @@
 //! The library on its own: verbs, field edits, the invariant, merging, the published tree
-//! and search, through the same door the host uses.
+//! and search, through the same api the host uses.
 
 use super::*;
 use crate::model::Language;
@@ -53,7 +53,7 @@ fn action<'a>(resource: &'a Published, id: &str) -> &'a ActionSpec {
         .unwrap_or_else(|| panic!("{} offers {id}", resource.id.as_str()))
 }
 
-/// Apply what `spec` builds for `arguments`, as the door does for an action a published
+/// Apply what `spec` builds for `arguments`, as the API does for an action a published
 /// child offers.
 fn invoke_spec(library: &mut Replica<Snippets>, spec: &ActionSpec, arguments: serde_json::Value) {
     let serde_json::Value::Object(arguments) = arguments else {

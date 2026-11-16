@@ -1,5 +1,5 @@
 //! What an agent's task run did, marked where the person sees it (task-legibility.md §3), in
-//! the Notes window as a person uses it: the run goes through the door as the broker sends it,
+//! the Notes window as a person uses it: the run goes through the API as the broker sends it,
 //! stamped with its run; the rows it made carry the agent's face and colour at their own
 //! height, the window's header counts them, the field it renamed takes its colour, all drawn
 //! in pixels; and pressing a mark asks the shell to show the run.

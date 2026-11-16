@@ -28,7 +28,7 @@ There is **one** resource / action / view model. Every app is a
 through the framework dispatcher, and its pixels are a `ViewCx` /
 `ResourceSurface` that only reads resource state and submits actions.
 `tilo_resource::publish` is the only bridge to the tree the palette, agents,
-scripts and the shell door see. Sync (Automerge, history, per-author undo,
+scripts and the shell api see. Sync (Automerge, history, per-author undo,
 collaboration) is on by default — an app does not implement its own sync loop.
 External systems (CalDAV, a shared filesystem file) are projections drained by
 an `Effect`; undo of a document action that wrote a queue entry is the inverse

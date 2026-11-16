@@ -469,7 +469,7 @@ pub mod bundled {
 [00:28.40] Glasslight is breaking over the lane
 [00:36.10] Carry me, carry me, easy and bright
 [00:43.80] Into the hush of the glasslight
-[00:52.00] Shadows fold quiet behind the door
+[00:52.00] Shadows fold quiet behind the API
 [01:00.20] Nothing to keep and nothing to store";
 
     const NEON_MILEAGE_LRC: &str = "\

@@ -1324,7 +1324,7 @@ mod tests {
             app.queue_spotify_effect_control(&MusicEffect::ConnectSpotify);
             let intent = app
                 .take_control_invocation()
-                .expect("choice uses the host action door");
+                .expect("choice uses the host action API");
             assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
             assert!(app.take_control_invocation().is_none());
             app.spotify_catalogue = true;

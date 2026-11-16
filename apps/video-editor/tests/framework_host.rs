@@ -13,14 +13,14 @@ use video_editor::{Project, VideoEditor};
 fn with_sample() -> HeadlessApp<VideoEditor> {
     let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
     // The demo project goes in as one field edit of the whole project — the
-    // same door a script or an agent would use to submit a whole edit.
+    // same api a script or an agent would use to submit a whole edit.
     app.invoke_confirmed(Invoke::edit(&load_project(&sample_project())).unwrap())
         .unwrap();
     app
 }
 
 #[test]
-fn host_door_edits_publish_resources_and_undo_as_one_action() {
+fn host_api_edits_publish_resources_and_undo_as_one_action() {
     {
         let app = with_sample();
         let stored = app.state();
@@ -211,7 +211,7 @@ fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
 }
 
 #[test]
-fn edits_bound_to_the_playhead_reach_the_door() {
+fn edits_bound_to_the_playhead_reach_the_api() {
     let mut app = with_sample();
     let clip = app
         .state()
@@ -301,7 +301,7 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     }
     // Rendering into content reads.
     assert_eq!(agent_answer(&mut app, "render-timeline"), Answer::Allow);
-    // The window's door never runs an ask for someone acting for the
+    // The window's api never runs an ask for someone acting for the
     // person; the broker pauses the agent's run to ask them.
     let asked = app.effect(&video_editor::actions::VideoEditorEffect::Export {
         path: Some("/nonexistent/out.mp4".try_into().unwrap()),

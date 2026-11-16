@@ -110,7 +110,7 @@ impl Chat {
     /// What the chat record holds, for a caller that reads it: with no item,
     /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or through the record door.
+    /// chain the window publishes, or through the record api.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({

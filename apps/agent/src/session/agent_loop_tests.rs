@@ -320,7 +320,7 @@ struct World {
     tilolang: bool,
     /// What each `run-block` answers, by a word its source holds.
     tl_blocks: Vec<(&'static str, Value)>,
-    /// What the door answers each task program, by a word the program holds.
+    /// What the API answers each task program, by a word the program holds.
     tl_programs: Vec<(&'static str, Value)>,
     /// A conversation whose message this is: its reply is where the run
     /// records its turn, so `None` records nothing.

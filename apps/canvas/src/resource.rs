@@ -1081,9 +1081,9 @@ impl Artwork {
 }
 
 impl Artwork {
-    /// Apply `invoke` to `doc` through the door, as a replica of it does. A
+    /// Apply `invoke` to `doc` through the API, as a replica of it does. A
     /// blank document is initialized first, its genesis and its storage
-    /// version, as a door's record is before its first change.
+    /// version, as an action API's record is before its first change.
     #[cfg(test)]
     pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
         use tilo_resource::__private::ReadDoc as _;

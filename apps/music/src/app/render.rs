@@ -645,7 +645,7 @@ impl Widget for Music {
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, _path: &ObjId) {
-        // External controls and completed effects enter the same action door as events.
+        // External controls and completed effects enter the same action API as events.
         self.take_window_toolbar_events(state);
         self.take_shell_events(state);
         if self.back_requested.replace(false) {

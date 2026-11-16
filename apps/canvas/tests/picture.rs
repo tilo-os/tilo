@@ -1,4 +1,4 @@
-//! Pictures through the door an agent uses: placed, cropped, straightened,
+//! Pictures through the API an agent uses: placed, cropped, straightened,
 //! flipped and graded as data, opened as a new artwork, the artwork cut to
 //! them, and exported as PNG, JPEG, WebP and SVG.
 #![allow(

@@ -161,7 +161,7 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
     let blocks: Vec<ClipBlock> = (0..paragraphs)
         .map(|n| ClipBlock {
             kind: if n % 40 == 0 { "heading" } else { "paragraph" }.into(),
-            text: format!("Paragraph {n}: the rehearsal ran long and the doors opened late."),
+            text: format!("Paragraph {n}: the rehearsal ran long and the venue opened late."),
             marks: Vec::new(),
             level: (n % 40 == 0).then_some(2),
             ordered: None,

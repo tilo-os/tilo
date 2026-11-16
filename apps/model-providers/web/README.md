@@ -23,7 +23,7 @@ by the gateway's native HTTP/FD tests).
 
 The test invokes the production controls' semantic routes to add a provider,
 edit its name/endpoint/model, choose the default, and save a private key. It
-uses the production published action door with confirmation for destructive
+uses the production published action API with confirmation for destructive
 key/provider removal. It checks rendered credential status and scans public
 resource/action metadata and runtime snapshots for the key. Delayed HTTP
 failures exercise both metadata and private-key drafts; retrying the key save

@@ -62,7 +62,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 }
 
 #[test]
-fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
+fn read_only_resource_views_filter_roles_and_never_join_the_document_api() {
     use ui::permissions::{PermissionContext, Role};
     let app = "so.tilo.chat";
     let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
@@ -89,7 +89,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     let views = page.resource_views(&resource, "chat.workspace.categories", &viewer);
     assert!(
         !views.is_empty(),
-        "the actual Chat resource declares a viewer navigation door"
+        "the actual Chat resource declares a viewer navigation API"
     );
     assert!(
         views
@@ -108,7 +108,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
         page.resource_views(&resource, "wrong.kind", &viewer)
             .is_empty()
     );
-    // The door offers changes, never views: the record's document actions
+    // The action API offers changes, never views: the record's document actions
     // and those its chat's chain routes to the part they change.
     assert!(
         page.survey()
@@ -558,7 +558,7 @@ fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_api() {
     for (record, mutation) in &started {
         bot.apply_record(record, mutation).unwrap();
     }
-    // The bot's host reads what the bot holds through the record door: the
+    // The bot's host reads what the bot holds through the record API: the
     // chain joined, or its head, the newest part alone.
     let held = tilo_actions::remote::HeldCopies(
         std::iter::once(bot.record_id().clone())

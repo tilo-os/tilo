@@ -35,7 +35,7 @@ The example's production-path tests show what to assert:
 
 The resource runtime supplies storage, history, per-author undo and merge
 semantics. On Tilo, workspace collaborators and roles govern access; agents
-use the same permission-filtered resource/action door as other collaborators.
+use the same permission-filtered resource/action API as other collaborators.
 Device delivery uses the host's collaboration transport. Replica tests prove
 merge behavior; sign-in, authorization and delivery between actual devices
 still need host integration tests. They do not require an app-local database,

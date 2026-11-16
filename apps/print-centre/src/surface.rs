@@ -567,7 +567,7 @@ fn friendly_reason(reason: &str) -> String {
         "print-centre-reason-out-of-paper"
     } else if normalized.contains("jam") {
         "print-centre-reason-jam"
-    } else if normalized.contains("cover-open") || normalized.contains("door-open") {
+    } else if normalized.contains("cover-open") || normalized.contains("api-open") {
         "print-centre-reason-cover-open"
     } else if normalized.contains("toner-low") || normalized.contains("marker-supply-low") {
         "print-centre-reason-supply-low"

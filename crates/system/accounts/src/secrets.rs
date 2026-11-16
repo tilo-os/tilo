@@ -504,7 +504,7 @@ impl CredentialBroker {
     }
 
     /// Read only under an existing exact item/application/origin grant.
-    /// Background account startup and native I/O must use this door: no
+    /// Background account startup and native I/O must use this path: no
     /// permission callback runs and a consumed one-shot grant cannot restart.
     pub fn request_existing(
         &mut self,
@@ -513,7 +513,7 @@ impl CredentialBroker {
         self.request(request, |_, _| AccessDecision::Deny)
     }
     /// Read under an existing exact resource grant; legacy unscoped grants do
-    /// not authorize this door. No permission callback or implicit grant runs.
+    /// not authorize this path. No permission callback or implicit grant runs.
     pub fn request_existing_scoped(
         &mut self,
         request: &AccessRequest,
@@ -524,7 +524,7 @@ impl CredentialBroker {
 
     /// Read a private messaging profile key through its existing exact grant.
     /// Profile custody requires the original system vault; local-file fallback
-    /// and ordinary password items never authorize this door. Private metadata
+    /// and ordinary password items never authorize this path. Private metadata
     /// binds the item itself, independently of the permission grant.
     pub fn request_existing_profile_key(
         &mut self,

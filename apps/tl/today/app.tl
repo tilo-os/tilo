@@ -14,7 +14,7 @@ root Today
 default view today for Today
 
 /// Clears the finished tasks, when there are any, and files a note saying how many were done.
-/// Both changes are the Tasks and Notes apps' own, asked at their doors: what they did comes
+/// Both changes are the Tasks and Notes apps' own, asked at their action APIs: what they did comes
 /// back as their records' next readings.
 action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     let n = list.items.count(x -> x.done)

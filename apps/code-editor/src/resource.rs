@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_tab_and_shift_tab_indent_through_the_document_door_without_leaving_focus() {
+    fn hosted_tab_and_shift_tab_indent_through_the_document_api_without_leaving_focus() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("indent.rs");
         let original = "fn example() {}";

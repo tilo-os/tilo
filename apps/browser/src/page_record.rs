@@ -6,7 +6,7 @@
 //! lives with the page and ends with it. This is where it is kept:
 //! [`PageRecord`], a record Browser keeps in the workspace it is open in,
 //! beside its browsing history. Each action is one recorded change of it,
-//! added after the tab's others and authored by the actor the action door
+//! added after the tab's others and authored by the actor the action API
 //! admitted, so History steps through a tab action by action, a recording is
 //! a stretch of that log, and another device that holds the workspace reads
 //! the same record.
@@ -17,7 +17,7 @@
 //!
 //! Only a window adds to it, and only what its engine listed. Setting an
 //! action down is Browser's own writing (`#[action(by_app)]`), not an action
-//! of the record: no caller is offered it, and the record's door refuses it
+//! of the record: no caller is offered it, and the record's api refuses it
 //! by name, as a value and in a group. So an actor cannot set down what it
 //! never did, and a reviewer reads who did what.
 //!
@@ -26,7 +26,7 @@
 //! MCP server verified its connection came from, which the action system
 //! says on the invoker of each of its actions
 //! ([`ui::tilo_actions::ActionInvoker::device`]). The window writes it from
-//! there, never from what the engine lists, and the record's door refuses an
+//! there, never from what the engine lists, and the record's api refuses an
 //! entry that names any other device than its author's.
 //!
 //! A window remembers whom the action system admitted under a name for the
@@ -261,16 +261,16 @@ impl PageRecord {
     /// Only the window whose engine listed the action sets it down (its
     /// `TabRecorder`). It is the browser keeping its record: not an action
     /// anyone invokes, nor an edit of anyone's to take back. No caller is
-    /// offered it and the record's door refuses it, so nobody sets down an
+    /// offered it and the record's api refuses it, so nobody sets down an
     /// action the engine did not list.
     ///
     /// The window writes each action as whoever did it: the entry's actor
     /// is the name of the invoker its change is authored by, and what a
     /// person typed or did at the window is authored by a person. An entry
     /// under another's name is refused. So is one that names another device
-    /// than the door set on that invoker: an actor is recorded as working
+    /// than the API set on that invoker: an actor is recorded as working
     /// from the device its connection was verified to come from, and from
-    /// none when the door named none.
+    /// none when the API named none.
     #[action(housekeeping, by_app)]
     pub fn set_down(
         &mut self,
@@ -502,8 +502,8 @@ impl PageAction {
     }
 
     /// Whether this action names the device its actor was admitted from:
-    /// `device`, the one the door set on the invoker the change is authored
-    /// by, and no device for an invoker the door named none for. Only an
+    /// `device`, the one the API set on the invoker the change is authored
+    /// by, and no device for an invoker the API named none for. Only an
     /// action that names no device may say that its actor's is not known.
     fn is_from(&self, device: Option<&InvokerDevice>) -> bool {
         match device {
@@ -1037,7 +1037,7 @@ impl TabRecorder {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let typed = listed.get("how").and_then(Value::as_str) == Some("input");
-            // Who the action is written as: its actor, as the door admitted
+            // Who the action is written as: its actor, as the API admitted
             // it; the person for what was typed and for the unnamed actor.
             let named = !typed && !actor.is_empty();
             let (admitted, doubted) = if named {
@@ -1048,7 +1048,7 @@ impl TabRecorder {
             };
             // A name this window does not remember is still an actor of
             // that name, and the action is set down as theirs. Once the
-            // window has forgotten an actor, what the door said of this one
+            // window has forgotten an actor, what the API said of this one
             // may be gone: the entry then says that where they worked from
             // is not known instead of naming no device, which would read as
             // an actor on this one. So does an entry that may be another
@@ -1062,7 +1062,7 @@ impl TabRecorder {
             let mut entry = listed.clone();
             if let Some(fields) = entry.as_object_mut() {
                 fields.insert("seq".into(), self.base.saturating_add(seq).into());
-                // Where an actor works from is what the door that admitted
+                // Where an actor works from is what the API that admitted
                 // it says, never what the engine lists.
                 fields.remove("device");
                 fields.remove("device_name");
@@ -1237,7 +1237,7 @@ impl TabRecorder {
     /// Write into `said`, an entry or who set a field, the device `actor`
     /// worked from when it did the action at `place` of the tab's record,
     /// and take out whatever device it named before: only this window says
-    /// one, from what the door that admitted the actor said. Where the
+    /// one, from what the API that admitted the actor said. Where the
     /// record keeps no such action and this window has forgotten the actor,
     /// it says that the device is not known (`device_unknown`), as the
     /// record does of an action set down so. An action the engine answered

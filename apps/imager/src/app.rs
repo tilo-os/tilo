@@ -5222,9 +5222,9 @@ mod tests {
         assert!(targets.contains_key("imager.prepare-original-files"));
         assert!(!targets.contains_key("imager.confirm"));
         assert!(!targets.contains_key("imager.write"));
-        let door = host.agent_surface();
+        let api = host.agent_surface();
         assert!(
-            door.as_array()
+            api.as_array()
                 .unwrap()
                 .iter()
                 .any(|row| row["action"] == ImagerEffect::PREPARE_OFFLINE_MIGRATION.id)

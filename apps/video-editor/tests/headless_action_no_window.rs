@@ -7,7 +7,7 @@
 //! End-to-end action test without a driving window. A participant with no
 //! window — an agent, a script — holds the editor's view of the project,
 //! attached and never drawn, surveys what it may do, and edits it through the
-//! same door the editor's own window uses; the editor shows the result once
+//! same api the editor's own window uses; the editor shows the result once
 //! the change reaches it.
 
 use tilo_actions::api::{ActionAddress, ApiError};
@@ -112,9 +112,9 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         "the action reported success without changing the document",
     );
 
-    // A negative control in the same run: the door must refuse an address
+    // A negative control in the same run: the API must refuse an address
     // the tree does not carry. Without this, the assertions above would pass
-    // equally against a door that accepted anything.
+    // equally against an action API that accepted anything.
     // As a caller sends it over the wire: an address it made up.
     let bogus = ActionAddress::parse(&format!(
         "{}{}nonexistent-verb",

@@ -109,7 +109,7 @@ fn assert_frame<A: ui::framework::ResourceApp>(
             if let Some(binding) = bindings.iter().find(|binding| binding.control_id == id) {
                 assert!(
                     matches!(binding.kind, ui::widget::ControlBindingKind::Action(_)),
-                    "{id} uses the shared action door"
+                    "{id} uses the shared action API"
                 );
             }
             assert!(
@@ -406,7 +406,7 @@ fn open_settings(
     )?;
     settings
         .with_widget::<settings::Inspected, _>(|app| {
-            // Preserve the live pane's host action door while replacing only
+            // Preserve the live pane's host action API while replacing only
             // its provider dependencies with deterministic local services.
             let mut model = app
                 .areas()

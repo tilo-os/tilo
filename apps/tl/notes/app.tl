@@ -847,7 +847,7 @@ scenario "a first note" -> Note {
     notebook.notes.insert(
         Note(
             title: "Ideas for the garden",
-            body: RichText("Tomatoes along the south wall, herbs by the door."),
+            body: RichText("Tomatoes along the south wall, herbs by the API."),
         ),
     )
 }
@@ -893,7 +893,7 @@ scenario "a note with headings" -> Note {
         Note(
             title: "Autumn plan",
             body: RichText.from_markdown(
-                "## Ship the editor\n\nOffline first, then sharing: nobody waits on a network to write.\n\n### Then\n\nThe importer, the table editor and the find bar.\n\n## Grow the garden\n\nTomatoes along the south wall, herbs by the door.\n\n### Seeds to order\n\nBasil, coriander, two kinds of chilli.",
+                "## Ship the editor\n\nOffline first, then sharing: nobody waits on a network to write.\n\n### Then\n\nThe importer, the table editor and the find bar.\n\n## Grow the garden\n\nTomatoes along the south wall, herbs by the API.\n\n### Seeds to order\n\nBasil, coriander, two kinds of chilli.",
             ),
         ),
     )

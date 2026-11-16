@@ -65,14 +65,14 @@ fn a_tilo_login_relays_to_the_mcp_server_and_starts_no_runtime() {
     let home = root.path().join("home");
     private_dir(&runtime_dir.join("tilo-session"));
     private_dir(&home);
-    let door = UnixListener::bind(runtime_dir.join("tilo-session/agent.sock")).unwrap();
-    // The door's side: answer the first request with its own id, then close.
+    let socket = UnixListener::bind(runtime_dir.join("tilo-session/agent.sock")).unwrap();
+    // The socket's side: answer the first request with its own id, then close.
     let served = std::thread::spawn(move || {
-        let (stream, _) = door.accept().unwrap();
+        let (stream, _) = socket.accept().unwrap();
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-        let reply = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"door":true}});
+        let reply = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"api":true}});
         (&stream)
             .write_all(format!("{reply}\n").as_bytes())
             .unwrap();
@@ -96,7 +96,7 @@ fn a_tilo_login_relays_to_the_mcp_server_and_starts_no_runtime() {
     assert_eq!(served.join().unwrap()["method"], "ping");
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["id"], 7);
-    assert_eq!(reply["result"]["door"], true);
+    assert_eq!(reply["result"]["api"], true);
     assert!(
         !standalone_profile(&home).exists(),
         "a Tilo login's --connect created a standalone profile"
@@ -104,9 +104,9 @@ fn a_tilo_login_relays_to_the_mcp_server_and_starts_no_runtime() {
 }
 
 tilo_test_env::scenario! {
-    fn a_login_missing_its_door_or_its_desktop_name_is_routed_by_what_its_session_serves;
+    fn a_login_missing_its_api_or_its_desktop_name_is_routed_by_what_its_session_serves;
 
-    phase a_tilo_login_without_a_door_fails_and_starts_no_runtime;
+    phase a_tilo_login_without_an_api_fails_and_starts_no_runtime;
     {
         let root = tempfile::tempdir().unwrap();
         let runtime_dir = root.path().join("run");
@@ -126,10 +126,10 @@ tilo_test_env::scenario! {
         assert!(!standalone_profile(&home).exists());
     }
 
-    phase a_login_that_lost_its_desktop_name_still_relays_to_its_door;
+    phase a_login_that_lost_its_desktop_name_still_relays_to_its_api;
     // The failure the user hit: Claude Code ran inside tmux, which had no
     // `XDG_CURRENT_DESKTOP`, so `--connect` took the login for a foreign desktop
-    // and started a second, empty authority. The session's own door is the
+    // and started a second, empty authority. The session's own API is the
     // evidence, not an environment variable.
     {
         let root = tempfile::tempdir().unwrap();
@@ -137,13 +137,13 @@ tilo_test_env::scenario! {
         let home = root.path().join("home");
         private_dir(&runtime_dir.join("tilo-session"));
         private_dir(&home);
-        let door = UnixListener::bind(runtime_dir.join("tilo-session/agent.sock")).unwrap();
+        let socket = UnixListener::bind(runtime_dir.join("tilo-session/agent.sock")).unwrap();
         let served = std::thread::spawn(move || {
-            let (stream, _) = door.accept().unwrap();
+            let (stream, _) = socket.accept().unwrap();
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-            let reply = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"door":true}});
+            let reply = serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"api":true}});
             (&stream)
                 .write_all(format!("{reply}\n").as_bytes())
                 .unwrap();
@@ -165,11 +165,11 @@ tilo_test_env::scenario! {
         );
         served.join().unwrap();
         let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(reply["result"]["door"], true);
+        assert_eq!(reply["result"]["api"], true);
         assert!(!standalone_profile(&home).exists());
     }
 
-    phase a_login_without_its_desktop_name_or_door_fails_and_starts_no_runtime;
+    phase a_login_without_its_desktop_name_or_api_fails_and_starts_no_runtime;
     // A compositor whose MCP server is not (yet) served still serves its admin
     // control socket: that marker is enough to know this is a Tilo login, so the
     // client fails with the reason and starts nothing.

@@ -320,14 +320,14 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     (hosted, host, workspace, state)
 }
 
-/// What an agent through the door asks before it names a record: what runs in
+/// What an agent through the action API asks before it names a record: what runs in
 /// the workspace. The chat its operator seated there is one of them, and the
 /// channel it opens with is where a post goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
     let (hosted, host, workspace, _state) = lounge_with_chat().await;
 
-    // A member of the workspace, through its door.
+    // A member of the workspace, through its action API.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
     admit_person(&hosted, &host, &workspace, &member_device, Role::Editor).await;

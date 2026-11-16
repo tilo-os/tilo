@@ -425,7 +425,7 @@ async fn every_web_app_over_the_session() {
     assert_eq!(
         offered.rows.len(),
         agent.survey(&scratchpad).len(),
-        "the catalogue is the record's whole door, declared and projected"
+        "the catalogue is the record's whole API, declared and projected"
     );
     let text = crate::common::scratchpad_body("Invoked over actionsV1").1;
     let request = InvokeRequest {

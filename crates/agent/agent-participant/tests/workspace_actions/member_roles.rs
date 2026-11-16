@@ -549,7 +549,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         matches!(by_agent, ReceiptStatus::Completed { .. }),
         "{by_agent:?}"
     );
-    // Everything the agent is listed reaches the door that runs it: asked
+    // Everything the agent is listed reaches the action API that runs it: asked
     // without the argument it requires (so nothing runs), each is refused
     // for that argument, never as unknown or not theirs.
     let listed_to_agent = listed(&actions, workspace, &agent, &notes_provider);

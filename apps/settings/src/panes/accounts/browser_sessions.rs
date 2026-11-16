@@ -1,4 +1,4 @@
-//! Selected account removal uses the browser's ordinary action door. Only the
+//! Selected account removal uses the browser's ordinary action API. Only the
 //! browser may fence its engine and retire the selected local profile lease.
 use ui::framework::EffectReply;
 use ui::tilo_actions::remote::{

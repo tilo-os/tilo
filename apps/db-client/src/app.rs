@@ -340,7 +340,7 @@ impl Store {
     }
 
     /// Write the result to a CSV file, asked from the window's bar: export is the record's
-    /// own effect, so the bar asks the same door as the palette and agents.
+    /// own effect, so the bar asks the same api as the palette and agents.
     fn export_result_from_bar(&self) {
         let target = self.link.read(|model| {
             model
@@ -2318,7 +2318,7 @@ mod tests {
                 app.settle();
                 has_schema(&app.harness().resources())
             });
-            // The start door returns a receipt only for an Accepted job;
+            // The start api returns a receipt only for an Accepted job;
             // progress contains worker updates and the eventual result.
             let invocation = app
                 .start_effect(&DbEffect::Query {

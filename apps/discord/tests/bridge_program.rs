@@ -12,7 +12,7 @@
 //! stale; `BLESS=1` rewrites it.
 //!
 //! The program is a fixed run of loops: up to six passes each read Chat's
-//! records through the record door, ask `plan-event` what to do and loop over
+//! records through the record api, ask `plan-event` what to do and loop over
 //! its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
@@ -938,7 +938,7 @@ fn the_bridge_field_edits_only_chats_messages() {
         field_edits,
         ["workspace:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
     );
-    // Where the bot's own door offers and admits the field edit (the
+    // Where the bot's own api offers and admits the field edit (the
     // resource), and where the workspace decides a reaction (its field).
     let messages = ui::permissions::TreePath::workspace("workspace")
         .app(CHAT_APP)

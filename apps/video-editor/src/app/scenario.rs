@@ -310,7 +310,7 @@ impl VideoEditorApp {
         true
     }
 
-    /// The one door meter data comes through, so a capture and a test exercise the same
+    /// The one api meter data comes through, so a capture and a test exercise the same
     /// recording, latching and merging the live monitor does. The signature is pinned to
     /// the project the block describes: otherwise the next frame would read the staged
     /// report as one about a mix that has since changed and throw it away.

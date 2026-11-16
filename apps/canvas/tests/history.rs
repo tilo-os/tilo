@@ -1,4 +1,4 @@
-//! Working with the artwork's history through the door an agent uses:
+//! Working with the artwork's history through the API an agent uses:
 //! catching a bad passage with diff, undoing the run's own steps, looking
 //! at a past version, restoring marks from a checkpoint.
 #![allow(

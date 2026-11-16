@@ -2,7 +2,7 @@
 //! `revoke` action, on the runtime's console socket: `tilo-control --socket
 //! <profile>/console.sock actions list` shows every grant, and `actions
 //! invoke runtime revoke@<grant>` forgets it — which stops a running capture
-//! and asks the person again next time. The same door an assistive tool, a
+//! and asks the person again next time. The same action API an assistive tool, a
 //! script or an agent uses; the consent prompt is the only other surface.
 
 use std::path::Path;
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn grants_are_listed_and_revoked_through_the_action_door() {
+    fn grants_are_listed_and_revoked_through_the_action_api() {
         let dir = tempfile::tempdir().unwrap();
         let grants = DeviceGrants::open(&dir.path().join("device-grants")).unwrap();
         let workspace = "6f7a3c2e-0000-4000-8000-000000000001";
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_console_socket_serves_the_same_door() {
+    fn the_console_socket_serves_the_same_api() {
         use std::io::{BufRead as _, Write as _};
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();

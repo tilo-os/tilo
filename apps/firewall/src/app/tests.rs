@@ -104,7 +104,7 @@ fn public_rules(app: &TestApp<FirewallShell>) -> Vec<Rule> {
         .unwrap_or_default()
 }
 
-/// Every control the captures show is reachable through the action door.
+/// Every control the captures show is reachable through the action API.
 #[test]
 fn populated_firewall_passes_native_certification() {
     for scenario in [
@@ -404,7 +404,7 @@ fn the_row_delete_button_opens_the_confirmation() {
     assert_eq!(app.store.borrow().pending_delete, Some(first));
 }
 
-/// Applying now runs through the same door as the palette and reports how it ended; a unit
+/// Applying now runs through the same api as the palette and reports how it ended; a unit
 /// test plans the same commands without touching the host.
 #[test]
 fn apply_now_reports_the_checked_changes() {

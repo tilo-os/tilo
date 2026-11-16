@@ -520,7 +520,7 @@ fn seed_liked_and_saved(lib: &mut Library) {
     }
 }
 
-/// The sample catalogue as the actions that build it, through the same door as every edit.
+/// The sample catalogue as the actions that build it, through the same api as every edit.
 pub fn sample_actions() -> Vec<Invoke<Library>> {
     let lib = sample_library();
     let paths = Library::paths();

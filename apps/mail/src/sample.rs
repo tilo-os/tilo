@@ -301,7 +301,7 @@ forecast. Travel is tight; should we move the offsite to September?",
             from: Addr::new("Tom Becker", "tom@neighbours.example"),
             to: vec![Addr::bare("garden@lists.neighbours.example")],
             subject: "Community garden: watering rota for July",
-            body: "Thanks to everyone who signed up. The rota for July is on the shed door \
+            body: "Thanks to everyone who signed up. The rota for July is on the shed api \
 and in the shared folder. Please swap directly with each other if you are away.",
             ago_min: DAY_MIN + 2 * HOUR_MIN,
             read: true,

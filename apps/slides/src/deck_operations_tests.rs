@@ -1,5 +1,5 @@
 //! The deck's operations, driven the way an agent drives them: one call
-//! each, on the deck or on the slide it acts on, through the door the host
+//! each, on the deck or on the slide it acts on, through the API the host
 //! uses.
 
 #![allow(

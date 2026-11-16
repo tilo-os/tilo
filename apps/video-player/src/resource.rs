@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn library_controls_reach_the_player_through_the_door() {
+    fn library_controls_reach_the_player_through_the_api() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
         toggle_sidebar(&mut app);
         assert!(surface(&mut app, |player| player.library_visible()));
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_library_changes_through_the_door_as_one_step_each() {
+    fn the_shared_library_changes_through_the_api_as_one_step_each() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
         app.invoke(Library::CREATE_PLAYLIST.with(trip_name()))
             .unwrap();

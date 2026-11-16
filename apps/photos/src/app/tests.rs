@@ -1603,7 +1603,7 @@ tilo_test_env::scenario! {
             ui::framework::testing::TestApp::<crate::resource::PhotosShell>::new().unwrap();
         assert!(
             hosted.effect(&PhotosEffect::RotateShownRight).is_err(),
-            "the production resource door refuses rotation without a photograph"
+            "the production resource api refuses rotation without a photograph"
         );
 
         let image = OpenImage::fixture("/tmp/accessible.png", 100, 50);

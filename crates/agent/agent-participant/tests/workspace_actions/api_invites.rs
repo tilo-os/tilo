@@ -1,5 +1,5 @@
 //! A backend's key brings another person into a customer's workspace through
-//! the door: `workspace/members#invite` answers the link a person's layout
+//! the action API: `workspace/members#invite` answers the link a person's layout
 //! hands over, the person follows it on a page of their own and is in as
 //! the role, and a key they approve themselves reaches the workspace as them.
 //! Neither a key minted for the workspace nor the invited person's key
@@ -42,7 +42,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
     let here = Some(workspace.as_str());
 
-    // It invites as an Editor at most; with an address, the door says it
+    // It invites as an Editor at most; with an address, the action API says it
     // mailed nothing and hands the link over.
     let above = members(
         &mut backend,

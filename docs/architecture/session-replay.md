@@ -88,7 +88,7 @@ of the workspace.
 The report's message in Chat shows the recording's scope and a Replay
 button. The report item publishes the same step as its `replay-recording`
 action, so a script, an agent and assistive technology replay through the
-same door.
+same action API.
 
 Replay opens the recorded app with the recording, the way any app opens
 content another app holds (`tilo_actions::remote::ApplicationLaunch`): the

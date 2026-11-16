@@ -461,7 +461,7 @@ the OS is hiding the machine — which is the entire feeling this design exists 
 avoid.
 
 **Owner operations requiring arbitrary root.** Some operations need arbitrary root: a kernel debug
-session, an out-of-tree driver. `usr.overlay` is that door. It is `bootc
+session, an out-of-tree driver. `usr.overlay` is that way in. It is `bootc
 usr-overlay --read-only` remounted read-write **in a private mount namespace**,
 so — unlike plain `usr-overlay`, which unlocks `/usr` for everything on the
 machine for the rest of the boot — only the holding session sees a writable

@@ -1,4 +1,4 @@
-//! What an edit answers through the door an agent uses: the ids of the
+//! What an edit answers through the API an agent uses: the ids of the
 //! marks it made, the area it selected, and a warning when what it drew
 //! cannot be seen; and a mask that goes with its layer's marks as they move.
 #![allow(

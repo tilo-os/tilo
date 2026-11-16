@@ -337,9 +337,9 @@ tilo_test_env::scenario! {
         let mut env = tilo_test_env::ScopedEnv::new();
         let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
         env.set("TILO_WORKSPACE_ID", workspace);
-        let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
+        let api = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
         let _served = ui::RemoteActions::enter(
-            door.clone(),
+            api.clone(),
             ui::tilo_actions::remote::Caller::local_person("ada"),
         );
         let mut app = open();
@@ -388,7 +388,7 @@ tilo_test_env::scenario! {
                 .perform_a11y_action(chip, &ui::a11y::Action::Activate)
                 .unwrap();
             app.settle();
-            let asked = door.take_asked().pop().expect("one open");
+            let asked = api.take_asked().pop().expect("one open");
             let reference = ui::tilo_reference::ResourceRef::whole(
                 "tasks.tracker.issues",
                 format!("tasks.tracker/issues/{label}"),
@@ -947,9 +947,9 @@ fn choose(app: &mut TestApp<App>, name: &str) {
     let _ = harness.poll_frame();
 }
 
-/// Notes as the session's door reaches it: makes the note each call asks
+/// Notes as the session's api reaches it: makes the note each call asks
 /// for and answers its resource, as `create-page` does.
-fn notes_door() -> ui::tilo_actions::remote::TestHost {
+fn notes_api() -> ui::tilo_actions::remote::TestHost {
     let made = std::sync::atomic::AtomicUsize::new(0);
     ui::tilo_actions::remote::TestHost::new().completing(move |_| {
         let count = made
@@ -978,9 +978,9 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let workspace = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
     env.set("TILO_WORKSPACE_ID", workspace);
-    let door = std::sync::Arc::new(notes_door());
+    let api = std::sync::Arc::new(notes_api());
     let _served = ui::RemoteActions::enter(
-        door.clone(),
+        api.clone(),
         ui::tilo_actions::remote::Caller::local_person("ada"),
     );
     let mut app = open();
@@ -1010,7 +1010,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .expect("the agent's invocation starts");
     app.settle();
 
-    let asked = door.asked();
+    let asked = api.asked();
     assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
     let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
     assert_eq!(
@@ -1085,7 +1085,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .perform_a11y_action(button, &ui::a11y::Action::Activate)
         .unwrap();
     app.settle();
-    let asked = door.asked();
+    let asked = api.asked();
     assert_eq!(asked.len(), 2, "{asked:?}");
     assert_eq!(asked[1].on_behalf_of, None);
     assert_eq!(

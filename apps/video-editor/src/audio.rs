@@ -107,7 +107,7 @@ pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
             continue;
         }
         let level = clip.param_at(crate::param::Param::Volume, t);
-        // Volume goes through the animation door, so a keyframed level is just a
+        // Volume goes through the animation api, so a keyframed level is just a
         // different number here. Clip volume and envelope are a 0..1 trim and the
         // lane's fader scales the result, so no clamp at 1.0: that is what made a
         // quiet clip unfixable.

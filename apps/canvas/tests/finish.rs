@@ -1,4 +1,4 @@
-//! Type, finish and optical measure through the door an agent uses:
+//! Type, finish and optical measure through the API an agent uses:
 //! lettering in the fonts Tilo ships, tracked and set along a curve; grain,
 //! paper tooth, inner shadows and feathered edges; ink measured as the eye
 //! weighs it; and drawings that keep their groups and shadows through SVG.

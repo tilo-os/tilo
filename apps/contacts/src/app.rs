@@ -281,7 +281,7 @@ fn sort_control(sort: Option<&ActionBinding<String>>, sort_choice: &LocalState<S
 }
 
 impl ContactsApp {
-    /// Submit `invoke` through the door, after the event: a destructive
+    /// Submit `invoke` through the API, after the event: a destructive
     /// verb is confirmed by the host there, and a refusal reaches
     /// [`Self::announce_refusal`].
     fn try_perform_action(
