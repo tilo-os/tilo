@@ -892,6 +892,10 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     );
     assert!(page.contains("name=\"browser_pages\""), "{page}");
     assert!(
+        page.contains("unless you let that workspace's own keys run commands unattended"),
+        "what runs unasked in a workspace's machine: {page}"
+    );
+    assert!(
         page.contains("The key opens, fills in and clicks the page without asking you"),
         "{page}"
     );

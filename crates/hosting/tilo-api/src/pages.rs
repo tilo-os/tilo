@@ -194,7 +194,9 @@ pub fn grants<S: std::hash::BuildHasher>(
          workspaces: create them, upload files, run actions, and give each of your customers' agents \
          a key for just one workspace. A key lasts until you revoke it, unless you choose when it \
          expires; the keys it gives out expire within 90 days. Revoking a key ends every key it \
-         gave out.</p>\
+         gave out. A key asks you before each command it runs in a workspace's Linux machine, \
+         unless you let that workspace's own keys run commands unattended; a key for all your \
+         workspaces always asks.</p>\
          <form class=\"new\" method=\"post\" action=\"/grants/keys\"><input type=\"hidden\" name=\"csrf\" value=\"{}\">\
          <input name=\"name\" required maxlength=\"80\" aria-label=\"What will use it\" placeholder=\"What will use it, like Visa backend\">\
          <select name=\"expires_in\" aria-label=\"When the key expires\">\
