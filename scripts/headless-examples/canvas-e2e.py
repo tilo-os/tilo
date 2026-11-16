@@ -254,21 +254,12 @@ def no_overlaps(rows: list[dict]) -> bool:
 # --- windows ---------------------------------------------------------------------------------
 
 def open_apps(session: CanvasSession, apps: list[str]) -> dict:
-    """Open one window of each of `apps` (that has none yet) and wait until each presents a
-    frame: their windows by app id."""
-    for app in apps:
-        until(f"{app} among the applications", lambda: any(
-            a.get("provider") == "applications" and a.get("id") == app
-            for a in session.actions(app)), 60, 0.5)
-    have = {w.get("app_id") for w in session.windows()}
-    for app in apps:
-        if app not in have:
-            session.invoke("applications", app)
-    windows = until("a window of every app", lambda: (lambda ws: ws if all(a in ws for a in apps) else None)(
-        {w.get("app_id"): w for w in session.windows()}), 60)
+    """Open one window of each of `apps` (that has none yet), as a person opens an app: their
+    windows by app id, once every app answers with its own actions."""
+    windows = {app: session.launch(app) for app in apps}
     until("every app answering with its own actions",
           lambda: all(session.answering(a) for a in apps), 60)
-    return {a: windows[a] for a in apps}
+    return windows
 
 
 # --- the canvas' own actions -----------------------------------------------------------------

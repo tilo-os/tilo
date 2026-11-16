@@ -673,16 +673,20 @@ class Session:
 
     def launch(self, app: str, deadline: float = 120.0) -> dict:
         """Open `app` (its directory under apps/, or its application id) through
-        the desktop's own launcher, and answer its window once it is up."""
+        the desktop's own launcher, and answer its window once it is up.
+
+        An app the desktop already shows is answered by that window. The
+        desktop offers an app's open only while it has no window, so waiting
+        for that listing entry would wait on one that never comes; asking it to
+        open an app it already shows is not wanted either. An app this device
+        does not have is refused by the invoke, naming why."""
         ident = app if "." in app else app_id(app)
-        action = until(f"{ident} among the desktop's applications", lambda: next(
-            (action for action in self.actions(ident)
-             if action.get("provider") == "applications" and action.get("id") == ident),
-            None), 60, 0.5)
-        self.invoke("applications", ident)
-        found = until(f"the window of {ident}", lambda: next(
-            (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
-        return {**found, "title": found.get("title") or action.get("title")}
+        found = next((w for w in self.windows() if w.get("app_id") == ident), None)
+        if found is None:
+            self.invoke("applications", ident)
+            found = until(f"the window of {ident}", lambda: next(
+                (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
+        return {**found, "title": found.get("title")}
 
     def processes(self, app: str) -> list:
         """The command lines of the running processes of `app`.

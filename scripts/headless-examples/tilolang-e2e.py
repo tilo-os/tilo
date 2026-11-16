@@ -1121,17 +1121,8 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
 def open_probes(session: Session) -> None:
     """The probe packages up, each with a window: one the shell already shows is left to it (a
     workspace's record says what was open in it), the rest opened as a person opens an app."""
-    def up():
-        windows = {window.get("app_id") for window in session.windows()}
-        missing = [name for name in PROBE_ROUTES if app_id(name) not in windows]
-        for name in missing:
-            opened = next((action for action in session.actions(app_id(name))
-                           if action.get("provider") == "applications"
-                           and action.get("id") == app_id(name)), None)
-            if opened is not None:
-                session.invoke("applications", opened["id"])
-        return windows if not missing else None
-    until("a window of each probe package", up, 120)
+    for name in PROBE_ROUTES:
+        session.launch(app_id(name))
 
 
 def check_routes(session: Session) -> dict:

@@ -98,5 +98,78 @@ class SearchRowsAreTheAnswer(unittest.TestCase):
             "chromium", ("chromium",)))
 
 
+class Desktop:
+    """A session's answers, as `Session.launch` reads them: the windows the desk
+    shows, and the invokes the desktop is asked for."""
+
+    def __init__(self, windows, opened=(), refusal=None):
+        self.shown = list(windows)
+        self.opened = list(opened)
+        self.invokes = []
+        self.refusal = refusal
+
+    def windows(self):
+        return list(self.shown)
+
+    def invoke(self, provider, ident, args=None):
+        self.invokes.append((provider, ident))
+        if self.refusal is not None:
+            raise real_apps.Refused("actions_invoke", self.refusal)
+        if ident in self.opened:
+            self.shown.append({"app_id": ident, "title": "Untitled"})
+        return {"ok": {}}
+
+    def actions(self, query=""):
+        # The desktop lists an app's open only while the app has no window.
+        return []
+
+
+class Launch(unittest.TestCase):
+    """An app the desktop already shows is answered by its window at once, and
+    one this device lacks is refused at once: a launch that waited for the
+    app's listing entry waited out its deadline for every app already open."""
+
+    def setUp(self):
+        self.until = real_apps.until
+
+        def brief(what, check, deadline=60.0, step=0.25):
+            return self.until(what, check, min(deadline, 0.3), step)
+
+        real_apps.until = brief
+
+    def tearDown(self):
+        real_apps.until = self.until
+
+    def session(self, desktop: Desktop) -> real_apps.Session:
+        return type("Launched", (real_apps.Session,), {
+            "windows": lambda _: desktop.windows(),
+            "invoke": lambda _, provider, ident, args=None:
+                desktop.invoke(provider, ident, args),
+            "actions": lambda _, query="": desktop.actions(query),
+        })(Path("/nonexistent-session"))
+
+    def test_an_app_the_desktop_already_shows_is_answered_by_its_window(self):
+        notes = real_apps.app_id("notes")
+        desktop = Desktop([{"app_id": notes, "title": "Untitled"}])
+        window = self.session(desktop).launch("notes")
+        self.assertEqual(window["app_id"], notes)
+        self.assertEqual(window["title"], "Untitled")
+        self.assertEqual(desktop.invokes, [], "an app already shown was opened again")
+
+    def test_an_app_the_desktop_does_not_show_is_opened(self):
+        notes = real_apps.app_id("notes")
+        desktop = Desktop([], opened=[notes])
+        window = self.session(desktop).launch(notes)
+        self.assertEqual(desktop.invokes, [("applications", notes)])
+        self.assertEqual(window["app_id"], notes)
+
+    def test_an_app_this_device_lacks_is_refused_at_once(self):
+        notes = real_apps.app_id("notes")
+        desktop = Desktop([], refusal={"code": "unknown_action",
+                                       "message": f"no application {notes}"})
+        with self.assertRaises(real_apps.Refused):
+            self.session(desktop).launch("notes")
+
+
 if __name__ == "__main__":
     unittest.main()
