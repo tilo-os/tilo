@@ -823,5 +823,43 @@ tilo_test_env::scenario! {
                 .is_some_and(|agent| agent.here),
             "the agent left with its run"
         );
+
+        // It comes back as a new run under the same name, as a second
+        // `tilo mcp` does after `tilo agent check` ran: its steps count from
+        // the first again, below where the stay before ended, but are said
+        // later, and that board takes them rather than keeping the line the
+        // run left on.
+        let later = |line: &str| ShellPresence {
+            sent_at_ms: 2,
+            ..face(line)
+        };
+        assert!(board.speak_for(&[("helper".into(), later("Looking at the apps"))]));
+        for (_, frame) in &board.flush(30.0) {
+            theirs.hear(own, frame, 31.0);
+        }
+        let back = theirs
+            .present(stand_in(own, "helper"))
+            .expect("heard there again");
+        assert!(back.here, "the run is here again");
+        assert_eq!(
+            super::shown(back, 31.0).activity.as_deref(),
+            Some("Looking at the apps"),
+            "the new run's step, not the one the run before left on"
+        );
+
+        // A view of the stay before, arriving late, is not taken over it.
+        let mut stale = face("Editing Notes");
+        stale.seq = 9;
+        assert!(!theirs.hear(
+            own,
+            &Presence::desktop(WORKSPACE, Payload::Shell(Box::new(stale))).spoken_for("helper"),
+            32.0,
+        ));
+        assert_eq!(
+            super::shown(theirs.present(stand_in(own, "helper")).expect("still here"), 32.0)
+                .activity
+                .as_deref(),
+            Some("Looking at the apps")
+        );
     }
 }

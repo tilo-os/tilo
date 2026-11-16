@@ -239,26 +239,26 @@ impl Present {
 
     /// Take `shell`, the view they said of themselves.
     ///
-    /// A run says each step it takes with a higher sequence: a view
-    /// at or below the one already taken is a repeat of it, sent
-    /// again or arrived late, and taking it would say what the run
-    /// was doing before the step it is on now. A person's device
-    /// stamps each view it says with when it said it: each frame is
-    /// a group of its own, which the track hands over as it lands,
-    /// so the caret a burst left at can land before one it passed
-    /// on the way. A view said earlier than the one taken is passed
-    /// over, so the latest always stands. Whether it is a change.
+    /// Every view is stamped with when it was said: each frame is a
+    /// group of its own, which the track hands over as it lands, so
+    /// the caret a burst left at can land before one it passed on the
+    /// way. A view said earlier than the one taken is passed over, so
+    /// the latest always stands. A run also numbers each step it takes
+    /// within one stay, for steps said in the same millisecond: there a
+    /// view below the one taken is a repeat or a late arrival, and
+    /// taking it would say what the run was doing before the step it
+    /// is on now. A run that left and came back under the same name
+    /// numbers its steps from the first again, so the clock, not the
+    /// number, orders it after the stay before. Whether it is a change.
     fn take_shell(&mut self, shell: &ShellPresence) -> bool {
-        if self.spoken_by.is_some() && shell.seq.wrapping_sub(self.shell_seq) >= u32::MAX / 2 {
-            return false;
-        }
-        if self.spoken_by.is_none()
-            && self
-                .shell
-                .as_deref()
-                .is_some_and(|held| shell.sent_at_ms < held.sent_at_ms)
-        {
-            return false;
+        if let Some(held) = self.shell.as_deref() {
+            let earlier = shell.sent_at_ms < held.sent_at_ms;
+            let same_moment = shell.sent_at_ms == held.sent_at_ms;
+            let step_before =
+                self.spoken_by.is_some() && shell.seq.wrapping_sub(self.shell_seq) >= u32::MAX / 2;
+            if earlier || (same_moment && step_before) {
+                return false;
+            }
         }
         self.shell_seq = shell.seq;
         let changed = self.arrive() || self.shell.as_deref() != Some(shell);
