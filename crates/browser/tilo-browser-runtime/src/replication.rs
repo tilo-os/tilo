@@ -499,7 +499,7 @@ pub(crate) fn committed_record(
     Some(doc.save())
 }
 
-/// Ask peer `id`'s workspace `request` through the host's workspaces door; `done`
+/// Ask peer `id`'s workspace `request` through the host's workspaces API; `done`
 /// gets its answer.
 ///
 /// # Errors

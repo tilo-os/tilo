@@ -222,7 +222,7 @@ pub fn request_component_locus(id: u64, target: &str, observe: bool) -> Result<(
 }
 
 /// Invoke one action the mount's application publishes, through the bound
-/// door the palette, agents and assistive technology use: the address must
+/// action API the palette, agents and assistive technology use: the address must
 /// be published now, the mount's permissions must allow it, its arguments
 /// must bind, and a confirmation policy requires `confirmed`. `window` is
 /// as in [`component_actions`].
@@ -244,7 +244,7 @@ pub fn invoke_component_action(
     let by = if confirmed {
         Invoker::Confirmed
     } else {
-        Invoker::Door
+        Invoker::Api
     };
     invoke_as(id, resource, action, &arguments, window.as_deref(), by)
 }
@@ -252,9 +252,9 @@ pub fn invoke_component_action(
 /// Who an action call from the page is.
 #[derive(Clone, Copy)]
 pub(super) enum Invoker {
-    /// Whoever calls the bound door.
-    Door,
-    /// The door's caller, having confirmed this exact request.
+    /// Whoever calls the bound action API.
+    Api,
+    /// The action API's caller, having confirmed this exact request.
     Confirmed,
 }
 
@@ -268,7 +268,7 @@ pub(super) fn invoke_as(
 ) -> Result<String, JsValue> {
     with_mount(id, |m| {
         // The shell's own actions name no window: the mount's layout
-        // carries them, as a native session's door does.
+        // carries them, as a native session's action API does.
         if let Some(desktop) = &m.desktop
             && crate::layout::PageLayout::holds(resource)
         {
@@ -294,7 +294,7 @@ pub(super) fn invoke_as(
             address: tilo_actions::ActionAddress::new(resource, action),
         };
         let started = match by {
-            Invoker::Door => m.frame.invoke_bound_action(&address, arguments),
+            Invoker::Api => m.frame.invoke_bound_action(&address, arguments),
             Invoker::Confirmed => m.frame.invoke_bound_action_confirmed(&address, arguments),
         }
         .map_err(|e| api_error(&e))?;

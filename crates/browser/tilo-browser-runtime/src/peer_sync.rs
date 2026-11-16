@@ -201,17 +201,17 @@ struct Page {
     /// Semantic work its agents narrated since the mounts last took it, by workspace, admitted and
     /// bound to the member that published it.
     narrated: tilo_session_client::narration::Held,
-    /// The doors this page asks the host's actions through, one per workspace: one session path,
+    /// The action APIs this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
-    doors: RefCell<HashMap<WorkspaceId, SessionActions>>,
-    /// Opens a door: the session's remote actions (their wire and the pump answering them) load
+    apis: RefCell<HashMap<WorkspaceId, SessionActions>>,
+    /// Opens an API: the session's remote actions (their wire and the pump answering them) load
     /// with the peer's code, which registers the page, and not with the start module, which only
-    /// asks for a door once a peer is in.
-    open_door: fn(&Link, WorkspaceId, [u8; 32]) -> SessionActions,
+    /// asks for an API once a peer is in.
+    open_api: fn(&Link, WorkspaceId, [u8; 32]) -> SessionActions,
 }
 
-/// A door to `workspace`'s host actions over `handle`, with the host `host`.
-fn open_door(handle: &Link, workspace: WorkspaceId, host: [u8; 32]) -> SessionActions {
+/// An action API to `workspace`'s host actions over `handle`, with the host `host`.
+fn open_api(handle: &Link, workspace: WorkspaceId, host: [u8; 32]) -> SessionActions {
     SessionActions::new(handle, workspace, host)
 }
 
@@ -284,8 +284,8 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 workspaces: HashMap::new(),
                 waved: None,
                 narrated: tilo_session_client::narration::Held::default(),
-                doors: RefCell::default(),
-                open_door,
+                apis: RefCell::default(),
+                open_api,
             },
         );
     });
@@ -314,16 +314,15 @@ pub(crate) fn handle_of(id: u32) -> Option<Link> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.handle.clone()))
 }
 
-/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
+/// The action API to `workspace`'s host actions for `id`'s page, or `None` while its session has no
 /// host: one session path per workspace, whichever of the page's callers asks.
 pub(crate) fn actions_of(id: u32, workspace: WorkspaceId) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;
-        let mut doors = page.doors.borrow_mut();
+        let mut apis = page.apis.borrow_mut();
         Some(
-            doors
-                .entry(workspace)
-                .or_insert_with(|| (page.open_door)(&page.handle, workspace, page.host))
+            apis.entry(workspace)
+                .or_insert_with(|| (page.open_api)(&page.handle, workspace, page.host))
                 .clone(),
         )
     })

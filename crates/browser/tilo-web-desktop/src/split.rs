@@ -149,7 +149,7 @@ macro_rules! lazy_exports {
 // links, the workspaces this page entered, the accounts this browser keeps,
 // the invitation a site shelves for a link and the answers a workspace's host
 // gives a window's catalogue requests. The page loads it once the
-// start module is in, and every door into a workspace waits for it
+// start module is in, and every way into a workspace waits for it
 // (`loadRuntime` of `web/host.mjs`): the entry reads and shelves a link, and
 // drops a workspace its host says is gone, only with the runtime in hand.
 lazy_exports!("peer":

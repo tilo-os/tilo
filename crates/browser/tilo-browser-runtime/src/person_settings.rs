@@ -18,6 +18,6 @@ use tilo_session_client::remote::SessionActions;
 /// host `host` reaches.
 pub(crate) fn serve(session: &DesktopSession, host: &SessionActions) {
     for provider in [person_accounts::PROVIDER, person_models::PROVIDER] {
-        session.serve_person_door(provider, Arc::new(host.clone()));
+        session.serve_person_api(provider, Arc::new(host.clone()));
     }
 }

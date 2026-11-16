@@ -50,7 +50,7 @@ pub(crate) struct Attachment {
 }
 
 /// A request to the workspace's host, made for the workspace this page
-/// replicates: the host's workspaces door reads the workspaces it governs by
+/// replicates: the host's workspaces API reads the workspaces it governs by
 /// their uuid.
 pub(crate) type Ask = Box<dyn FnOnce(&str) -> WorkspacesRequest>;
 
@@ -93,7 +93,7 @@ pub(crate) struct Replicated {
     pub(crate) content: fn(u32) -> Option<tilo_content::ContentStore>,
     /// The workspace's answer whether the person may change `node`.
     pub(crate) permit: fn(u32, &str, bool),
-    /// Ask the workspace's host a request through its workspaces door.
+    /// Ask the workspace's host a request through its workspaces API.
     pub(crate) host_then: fn(u32, Ask, Answer) -> Result<(), String>,
     /// The workspace peer `id` replicates, by its uuid.
     pub(crate) workspace_uuid: fn(u32) -> Option<String>,

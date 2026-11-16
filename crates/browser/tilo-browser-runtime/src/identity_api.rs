@@ -64,7 +64,7 @@ pub(crate) fn serve(
     revoked: &Revoked,
     woken: &Arc<AtomicBool>,
 ) {
-    session.serve_person_door(
+    session.serve_person_api(
         identity_admin::PROVIDER,
         Arc::new(PageIdentity {
             host,

@@ -36,7 +36,7 @@ pub(crate) struct PageDirectoryConfig {
 /// The person a page joins a public workspace as.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct PagePerson {
-    /// Their root key, hex: the key a door admits.
+    /// Their root key, hex: the key an entry admits.
     #[serde(rename = "userPublicKey")]
     pub user: String,
     /// The name a workspace learns of them.

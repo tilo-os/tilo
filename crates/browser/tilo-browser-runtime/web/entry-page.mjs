@@ -1805,7 +1805,7 @@ const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';
 
 /** Set for the one reload after signing in at the entry, to the person
  * signed in as: refused again, the entry says that identity is not in yet. */
-const DOOR_SIGNED_IN = 'tilo-entry-signed-in';
+const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
 
 /**
  * On a page turned away for coming without an invitation, the entry
@@ -1943,8 +1943,8 @@ function offerSignIn({workspace, named, messages, runtime, link}) {
   }
   let signedIn = null;
   try {
-    signedIn = sessionStorage.getItem(DOOR_SIGNED_IN);
-    sessionStorage.removeItem(DOOR_SIGNED_IN);
+    signedIn = sessionStorage.getItem(ENTRY_SIGNED_IN);
+    sessionStorage.removeItem(ENTRY_SIGNED_IN);
   } catch { /* No storage: nothing to say about a sign-in. */ }
   if (signedIn && signedIn === currentIdentity()?.userPublicKey) {
     note.textContent = named
@@ -1959,7 +1959,7 @@ function offerSignIn({workspace, named, messages, runtime, link}) {
       const origins = [...new Set([workspace?.host?.origin, ...membershipOrigins(),
         ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
       const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
-      try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      try { sessionStorage.setItem(ENTRY_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
       // Signed in at the entry of the site's own workspace, the person comes
       // back to a workspace of their own, as a tab their agent signed in
       // does: the home workspace's shared desktop is where people meet, not
@@ -2219,7 +2219,7 @@ let setUpIn = null;
 let letIn;
 const pageLetIn = new Promise(resolve => { letIn = resolve; });
 /** The identity actions watching for agents set up from this tab's codes:
- * told to stop once the host turns the page away (`offerDoor`), where this
+ * told to stop once the host turns the page away, where this
  * person approves nothing. */
 const agentWatchers = new Set();
 /** How long signing in with an agent waits for this tab to be in its workspace. */

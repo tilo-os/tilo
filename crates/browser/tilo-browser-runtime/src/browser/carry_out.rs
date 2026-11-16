@@ -58,7 +58,7 @@ pub(crate) struct DragLink {
     pub(crate) name: String,
 }
 
-/// The page's way out for the workspace's files: the session's door to the host, and the
+/// The page's way out for the workspace's files: the session's API to the host, and the
 /// links it handed out so far.
 pub(crate) struct Carrying {
     inner: Rc<Inner>,
@@ -160,13 +160,13 @@ impl Inner {
             .origin
             .clone()
             .ok_or_else(|| "This page isn't connected to the workspace.".to_owned())?;
-        let door = self
+        let api = self
             .shared
             .peer
             .zip(crate::peer::workspace_id(&self.workspace).ok())
             .and_then(|(peer, id)| crate::peer_sync::actions_of(peer, id))
             .ok_or_else(|| "This page isn't connected to the workspace.".to_owned())?;
-        let link = door
+        let link = api
             .content_link(ask)
             .await
             .ok_or_else(|| "The workspace stopped answering.".to_owned())?

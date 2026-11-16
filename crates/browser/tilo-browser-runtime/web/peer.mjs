@@ -1604,7 +1604,7 @@ function hostUnreached(origin, snapshot) {
 }
 
 /** The codes an entry refuses with (`EntryRefusalCode`), and its entry when not reached. */
-const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
+const ENTRY_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
 
 /** How long a page waits for its host's answer to the entry its session asked for: the host
  * holds an entry for at most 30 seconds (`ENTERING_DEADLINE`), and a connection takes some. */
@@ -1672,7 +1672,7 @@ async function enterOnSession({
     hostText ??= await runtime.hostInfo(httpsPost(origin, fetcher));
     entered = await entry(memberText(hostText, 'hostCert'));
   } catch (error) {
-    if (DOOR_CODES.has(error?.code)) throw error;
+    if (ENTRY_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }
@@ -1702,7 +1702,7 @@ async function enterOnSession({
     // An entry's own refusal (its code, and the wait it asked for) is the caller's to show:
     // `workspaces.mjs` reads it. The workspace refusing the device the entry let in is a refusal
     // of what this browser brings, which the caller answers by coming again as a new device.
-    if (DOOR_CODES.has(error?.code)) throw error;
+    if (ENTRY_CODES.has(error?.code)) throw error;
     console.warn('join refused:', error?.code ?? error?.name, error?.message ?? error);
     throw Object.assign(new AdmissionError('refused', REFUSED_JOIN), {reason: error?.message ?? String(error), code: 'refused'});
   }

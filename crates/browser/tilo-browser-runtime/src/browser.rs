@@ -602,7 +602,7 @@ pub(crate) struct Desktop {
     pub(crate) activity: tilo_session::activity::Activity,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
-    /// The agent grants the person took back at their door since the last
+    /// The agent grants the person took back since the last
     /// frame, for the page to sign.
     revoked: crate::mcp_server::Revoked,
     /// What the session asked of the page for its windows, still open.
@@ -664,7 +664,7 @@ impl Desktop {
         })
     }
 
-    /// Hand the page the agent grants the person took back at their door:
+    /// Hand the page the agent grants the person took back:
     /// their root signs each, as it revokes any of their devices.
     fn revoke_agent_grants(&self) {
         let revoked = std::mem::take(&mut *tilo_lock::MutexRecover::lock_recover(&*self.revoked));
@@ -1162,7 +1162,7 @@ fn with_mount_quietly<R>(
                 .ok_or_else(|| error("closed mount"))?;
             let mount = lease.mount().map_err(|_| error("closed mount"))?;
             // A window reads and acts through its desktop, whatever it does
-            // in this call: an app's own door is made on first use.
+            // in this call: an app's own action API is made on first use.
             let _served = mount.desktop.as_ref().map(Desktop::serve_windows);
             run(mount)
         })
@@ -1671,7 +1671,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // In a workspace, the page's apps may only read until the workspace says what
     // its person may do there (`Joined::follow_standing`): a change they make
     // before that the workspace may refuse, and a write queued under a role the
-    // page only assumed would be refused at the door once the workspace's answer
+    // page only assumed would be refused at the API once the workspace's answer
     // arrives, over the window, though the person never asked for it.
     let assumed = if config.peer.is_some() {
         collab_types::role::Role::Viewer

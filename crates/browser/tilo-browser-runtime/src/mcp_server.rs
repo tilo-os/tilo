@@ -1,13 +1,13 @@
 //! The person's MCP server, as their page carries it
 //! ([`tilo_actions::remote::mcp_server`]).
 //!
-//! The door is served by the person's host: what it let in, read live, and
+//! The action API is served by the person's host: what it let in, read live, and
 //! stopping one run are asked there, through the page's session with it
 //! ([`SessionActions`]). Taking a grant back is the person's root's to
 //! sign, and the root is in this tab, not on the host: a revoke is handed
 //! to the page ([`crate::shell::HostRequest::Revoke`]), which signs it and
 //! announces it on every session of the person's, as it revokes any of
-//! their devices. The door then leaves the agent out, and its read says so.
+//! their devices. The API then leaves the agent out, and its read says so.
 //! Where agents connect over MCP is the page's to say, when the host does
 //! not.
 
@@ -31,7 +31,7 @@ pub(crate) type Revoked = Arc<Mutex<Vec<Revoking>>>;
 pub(crate) use crate::shell::Revoking;
 
 /// The MCP server as the page's desktop asks it.
-struct PageDoor {
+struct PageApi {
     host: SessionActions,
     /// Where agents connect over MCP, as the page names it.
     endpoint: Option<String>,
@@ -40,7 +40,7 @@ struct PageDoor {
     woken: Arc<AtomicBool>,
 }
 
-impl PageDoor {
+impl PageApi {
     fn new(
         host: SessionActions,
         endpoint: Option<String>,
@@ -78,18 +78,18 @@ impl PageDoor {
         })
     }
 
-    /// `state` with the page's MCP address, where the door's read leaves it
+    /// `state` with the page's MCP address, where the API's read leaves it
     /// out.
     fn with_endpoint(&self, mut state: InvocationState) -> InvocationState {
         if let (Some(endpoint), InvocationUpdate::Item { value, .. }) =
             (&self.endpoint, &mut state.update)
-            && let Some(door) = value.as_object_mut()
-            && door
+            && let Some(server) = value.as_object_mut()
+            && server
                 .get("endpoint")
                 .and_then(Value::as_str)
                 .is_none_or(str::is_empty)
         {
-            door.insert("endpoint".into(), Value::String(endpoint.clone()));
+            server.insert("endpoint".into(), Value::String(endpoint.clone()));
         }
         state
     }
@@ -97,9 +97,9 @@ impl PageDoor {
 
 /// Carry the mcp-server asks of the desktop `session` serves, for the
 /// workspace `workspace`, to the host the page's peer `peer` is with, and the
-/// asks of the person's devices there too ([`crate::identity_door`]); the
+/// asks of the person's devices there too ([`crate::identity_api`]); the
 /// keys the person takes back at either, for the page to sign. A page with no
-/// peer has no door: its asks say none answers.
+/// peer has no API: its asks say none answers.
 pub(crate) fn serve(
     session: &DesktopSession,
     peer: Option<u32>,
@@ -109,21 +109,21 @@ pub(crate) fn serve(
 ) -> Revoked {
     let revoked = Revoked::default();
     if let (Some(peer), Ok(workspace)) = (peer, crate::peer::workspace_id(workspace))
-        && let Some(door) = crate::peer_sync::actions_of(peer, workspace)
+        && let Some(api) = crate::peer_sync::actions_of(peer, workspace)
     {
-        session.serve_person_door(
+        session.serve_person_api(
             mcp_server::PROVIDER,
-            Arc::new(PageDoor::new(
-                door.clone(),
+            Arc::new(PageApi::new(
+                api.clone(),
                 endpoint,
                 Arc::clone(&revoked),
                 Arc::clone(woken),
             )),
         );
         // The person's accounts and model providers live on the same host.
-        crate::person_settings::serve(session, &door);
+        crate::person_settings::serve(session, &api);
         if let Some(own) = crate::peer_sync::device_of(peer) {
-            crate::identity_door::serve(session, door, own, &revoked, woken);
+            crate::identity_api::serve(session, api, own, &revoked, woken);
         }
     }
     revoked
@@ -135,7 +135,7 @@ fn invalid(reason: &str) -> ActionHostError {
     }
 }
 
-impl ActionHost for PageDoor {
+impl ActionHost for PageApi {
     fn query(
         &self,
         _caller: &Caller,

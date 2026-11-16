@@ -106,7 +106,7 @@ pub(crate) enum HostRequest {
     Profiles(Vec<String>),
 }
 
-/// One key the person took back: an agent's grant at their door, or one of
+/// One key the person took back: an agent's grant, or one of
 /// their devices in Settings.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct Revoking {
@@ -1316,7 +1316,7 @@ impl BrowserShell {
                 DesktopAsk::HostAction(id) => self.host_action(id),
                 DesktopAsk::ReportProblem => self.report_problem(),
                 // An agent's grant is the device the person runs it on, and it is taken back
-                // at the door, as Console's card takes it back: the root this page holds
+                // like Console's card takes it back: the root this page holds
                 // signs the revocation, as it revokes any of their devices.
                 DesktopAsk::RevokeAgentGrant(grant) => {
                     tilo_desktop::overview_tilo::api::ApiRead::revoke(

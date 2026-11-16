@@ -254,7 +254,7 @@ mod person_settings;
 // The person's devices, as the page administers them on their host: its tests
 // run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
-mod identity_door;
+mod identity_api;
 // The page's collaboration plane: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
 mod peer_sync;

@@ -20,7 +20,7 @@ fn answer(way: way_in::Way) -> Result<String, JsError> {
 }
 
 /// The first way into the workspace `link` (`{scope, malformed?, invite?, ticket?, pair?}`)
-/// names, from what the page knows of its host, `here` (`{door?, entered?, accounts?, tickets?,
+/// names, from what the page knows of its host, `here` (`{entry?, entered?, accounts?, tickets?,
 /// pairing?}`) ([`way_in::way_in`]).
 ///
 /// # Errors

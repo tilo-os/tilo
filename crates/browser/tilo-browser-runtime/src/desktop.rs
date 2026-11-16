@@ -728,7 +728,7 @@ impl Shared {
 /// The workspace's record actions, run by the workspace's host: the page
 /// asks the host over the session it already holds with it
 /// ([`SessionActions`]), as it asks any other device's actions, and the host
-/// runs each through the record's own door as the person. No app code runs in
+/// runs each through the record's own API as the person. No app code runs in
 /// the page for it, so a connector the page never loads (Discord) answers
 /// too.
 #[derive(Clone, Default)]

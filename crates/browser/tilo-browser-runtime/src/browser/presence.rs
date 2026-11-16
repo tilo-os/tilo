@@ -330,7 +330,7 @@ pub fn pointer_tile(id: u64, x: f32, y: f32) -> Result<Option<String>, JsValue> 
 /// Name the people of the mount's workspace, `[{id, name}]`, `id` each
 /// person's key as their actions record it (what `cx.me()` and
 /// `ActionCx::author` answer). Live presence names devices; a page that knows
-/// who belongs to the workspace (its door admitted them) names the people, so
+/// who belongs to the workspace (its entry admitted them) names the people, so
 /// an app shows `cx.people().name(author)` as the person's name rather than
 /// their key.
 ///

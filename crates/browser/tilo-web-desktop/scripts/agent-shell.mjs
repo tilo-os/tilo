@@ -1,7 +1,7 @@
 // The tilo.sh happy path, shot end to end with a real agent.
 //
 // One run: a local hosted Tilo (a `tilo-relay workspace` host: its own user root, a
-// listed workspace whose door lets a person in, the records served), the site
+// listed workspace whose entry lets a person in, the records served), the site
 // in front of it (the desktop bundle, with the `entry.json` a deployment
 // writes and the host's routes behind it at one origin, as an ingress puts
 // them), a first visit in headless Chrome, and a real agent: the code the tab
@@ -392,7 +392,7 @@ const tls = {cert: readFileSync(certPath), key: readFileSync(keyPath)};
 // ---------------------------------------------------------------------------
 // The site: the desktop bundle, with the entry configuration the person's
 // browser reads (`entry.json`: the home workspace, joined through its host's
-// door, and the site's directory).
+// entry, and the site's directory).
 
 const TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.json': 'application/json', '.wasm': 'application/wasm', '.png': 'image/png', '.css': 'text/css',
@@ -452,7 +452,7 @@ const siteOrigin = `https://127.0.0.1:${sitePort}`;
 
 // ---------------------------------------------------------------------------
 // The host: a persistent public workspace, as a hosted Tilo runs, listing it so
-// the site's door lets the person in, and serving its records, so the agent's
+// the site's entry lets the person in, and serving its records, so the agent's
 // actions run there.
 
 const rootFile = join(tlsDir, 'root.hex');

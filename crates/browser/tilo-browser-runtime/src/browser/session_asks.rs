@@ -31,7 +31,7 @@ pub(super) struct Asks {
     reveals: std::cell::RefCell<Vec<Opening>>,
     /// The rows the page's search asks to run in an app's window, before they wait for it.
     asked: Reveals,
-    /// The peer replicating the workspace, through whose workspaces door the windows'
+    /// The peer replicating the workspace, through whose workspaces API the windows'
     /// asks of nodes of the workspace's tree go.
     peer: Option<u32>,
     /// Nodes the workspace answered whether this person may change, waiting to

@@ -460,7 +460,7 @@ struct ConnectConfig {
     /// moment each entry names.
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
-    /// The workspace this device enters through its door as its session
+    /// The workspace this device enters through its entry as its session
     /// opens ([`entry_request`]), when the host has not admitted it yet.
     #[serde(default)]
     entering: Option<tilo_relay_protocol::entering::Entering>,
@@ -876,7 +876,7 @@ pub async fn invitation_entry(
     .to_string())
 }
 
-/// What this page's device (`custody`) enters `workspace` through its door with, on the host whose
+/// What this page's device (`custody`) enters `workspace` through its entry with, on the host whose
 /// certificate is `hostCert` (JSON), through the one entry every device takes
 /// ([`tilo_session_client::device::entry_request`]): the certificate it enters under (the one it holds
 /// from that host where it still serves, else one the person's root `root` certifies now) and the
@@ -2750,11 +2750,11 @@ impl WasmPeer {
         message: &str,
     ) -> Result<String, JsError> {
         let number = workspace_id(workspace)?;
-        let door = crate::peer_sync::actions_of(self.id, number)
+        let api = crate::peer_sync::actions_of(self.id, number)
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
-        tilo_session_client::remote::ask(&door, &caller, message)
+        tilo_session_client::remote::ask(&api, &caller, message)
             .await
             .map_err(|error| js_error(&error))
     }
