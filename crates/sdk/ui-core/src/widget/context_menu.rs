@@ -609,8 +609,6 @@ pub struct ContextMenu {
     owned_typing: bool,
     /// A sentence asked, for an owner that answers it.
     asked: Option<String>,
-    /// Where the menu was opened, which a question points at.
-    ask_at: Point,
     /// While a query narrows the rows, the panel's top edge stays where it
     /// opened: the field under the person's eyes does not move.
     pinned_top: Option<f64>,
@@ -618,12 +616,13 @@ pub struct ContextMenu {
     /// A menu that has settled says so, and the window it floats in stops
     /// asking for frames.
     dirty: bool,
-    /// The send-to box the menu's send row opens beside it, holding the
-    /// sentence typed into the menu and sending it ([`super::SendToBox`]).
+    /// The send-to box the menu's send row opens in the menu's place,
+    /// holding the sentence typed into the menu and sending it
+    /// ([`super::SendToBox`]).
     send_to: super::SendToBox,
-    /// Where a box opened with no menu around it stands: beside this rect,
-    /// which is what the window pointed at, what the menu was opened over, or
-    /// its pointer's place.
+    /// Where the box stands, with no menu around it: beside this rect, which
+    /// is what the window pointed at, what the menu was opened over, or its
+    /// pointer's place.
     alone: Option<Rect>,
 }
 
@@ -675,7 +674,6 @@ impl ContextMenu {
             owner_sends: false,
             owned_typing: false,
             asked: None,
-            ask_at: Point::ZERO,
             pinned_top: None,
             dirty: true,
             send_to: super::SendToBox::new(),
@@ -810,7 +808,9 @@ impl ContextMenu {
     /// the pointer, a control, the keyboard's row — names where it stands
     /// this way, so they are placed by one rule.
     pub fn open_over(&mut self, anchor: Rect) {
-        self.prepare_query(anchor.center());
+        self.send_to.close();
+        self.alone = None;
+        self.prepare_query();
         self.list.reset_scroll();
         self.open = true;
         self.appear.show(true);
@@ -867,7 +867,9 @@ impl ContextMenu {
             self.dirty = true;
         }
         self.layout_at_position();
-        self.send_to.place(self.send_to_anchor(), viewport);
+        if let Some(alone) = self.alone {
+            self.send_to.place(alone, viewport);
+        }
     }
 
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
@@ -901,7 +903,9 @@ impl ContextMenu {
             self.dirty = true;
         }
         self.layout_at_position();
-        self.send_to.place(self.send_to_anchor(), Some(viewport));
+        if let Some(alone) = self.alone {
+            self.send_to.place(alone, Some(viewport));
+        }
     }
 
     fn has_leading_gutter(&self) -> bool {
@@ -1129,6 +1133,12 @@ impl ContextMenu {
         );
         self.send_to.close();
         self.alone = None;
+        self.close_rows();
+    }
+
+    /// Put the rows away, and whatever they opened beside them, leaving the
+    /// box as it stands.
+    fn close_rows(&mut self) {
         self.pinned_top = None;
         self.open = false;
         self.appear.show(false);
@@ -1149,21 +1159,16 @@ impl ContextMenu {
         self.appear.snap(false);
     }
 
-    /// Whether the menu still paints anything: open, or fading out.
+    /// Whether the menu still paints anything: open, or fading out, its rows
+    /// or the box that took their place.
     pub fn is_drawn(&self) -> bool {
-        self.appear.is_drawn()
+        self.appear.is_drawn() || self.send_to_alone_drawn()
     }
 
+    /// Whether it has anything to show: its rows, or the send-to box that
+    /// took their place. A host shows and routes the menu while this holds.
     pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    /// Whether it still has anything to show: its rows, or a send-to box
-    /// opened with no menu around it ([`Self::take_window_send_box`]). A host
-    /// that opens such a box keeps the menu while this holds.
-    #[must_use]
-    pub fn is_showing(&self) -> bool {
-        self.open || self.send_to_alone_open()
+        self.open || self.send_to.is_open()
     }
 
     /// Every pixel the open menu painted in its last
@@ -1553,8 +1558,7 @@ impl ContextMenu {
         self.paint_query(scene, transform, text_renderer, theme, radius);
     }
 
-    /// The send-to box, over the menu: beside the menu that opened it, or on
-    /// its own; its arriving and leaving is its own.
+    /// The send-to box, where the menu was; its arriving and leaving is its own.
     fn paint_send_to(
         &mut self,
         scene: &mut Scene,
@@ -1564,7 +1568,9 @@ impl ContextMenu {
     ) {
         if self.send_to.is_open() || self.send_to.is_drawn() {
             self.send_to.drain_answer();
-            self.send_to.place(self.send_to_anchor(), self.viewport);
+            if let Some(alone) = self.alone {
+                self.send_to.place(alone, self.viewport);
+            }
             self.send_to.paint(scene, transform, text, theme);
         }
     }
@@ -1774,7 +1780,7 @@ impl Widget for ContextMenu {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
-            if self.send_to_alone_open() {
+            if self.send_to.is_open() {
                 self.handle_alone(event, ctx);
             }
             return;
@@ -1786,7 +1792,7 @@ impl Widget for ContextMenu {
             self.close();
             return;
         }
-        if self.route_to_send_to(event, ctx) || self.route_to_submenu(event, ctx) {
+        if self.route_to_submenu(event, ctx) {
             return;
         }
         match event {
@@ -2010,7 +2016,7 @@ impl Widget for ContextMenu {
     }
 
     fn traps_focus(&self) -> bool {
-        self.is_showing()
+        self.is_open()
     }
 
     /// An open menu that takes typing is where typed text goes: its caret
@@ -2030,15 +2036,10 @@ impl Widget for ContextMenu {
     /// Participates in the App's modal-capture contract — suppressing focus
     /// shortcuts while up.
     fn modal_capture(&self) -> Option<Rect> {
-        if self.send_to_alone_open() {
+        if self.send_to.is_open() {
             return Some(self.send_to.rect());
         }
-        let menu = self.open.then_some(self.rect)?;
-        Some(if self.send_to.is_open() {
-            menu.union(self.send_to.rect())
-        } else {
-            menu
-        })
+        self.open.then_some(self.rect)
     }
 
     fn get_rect(&self) -> Rect {
@@ -2162,7 +2163,7 @@ impl Widget for ContextMenu {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !self.open && !self.send_to_alone_open() {
+        if !self.open && !self.send_to.is_open() {
             return false;
         }
         if self.send_to.perform_semantic_action(target, action) {

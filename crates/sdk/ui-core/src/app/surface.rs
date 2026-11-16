@@ -413,7 +413,7 @@ impl App {
 
         // The box the window stands with no menu around it has the pointer and
         // the keys before what the app shows, until it sends or goes.
-        if !handled && app.window_box.send_to_alone_open() {
+        if !handled && app.window_box.is_open() {
             handled = app.window_box_event(&event, window.scale_factor());
             window.request_redraw();
         }

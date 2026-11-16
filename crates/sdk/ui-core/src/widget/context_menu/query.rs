@@ -6,7 +6,7 @@
 //! narrows its entries with the ranking every filtered list shares
 //! (`crate::search::ranked_rows`), and Enter runs the best match. Its last
 //! row, "Send to…", stands there before anything is typed: it opens the
-//! send-to box beside the menu ([`crate::widget::SendToBox`]), carrying what
+//! send-to box in the menu's place ([`crate::widget::SendToBox`]), carrying what
 //! was typed into its message, and the box sends it to whom the person names.
 
 use crate::i18n::{widget_format, widget_text};
@@ -110,13 +110,12 @@ impl ContextMenu {
     /// added. A menu of no more than [`QUERY_MIN_ROWS`] rows that nothing can
     /// answer a sentence for takes none: a short menu of commands is read at a
     /// glance, and the field would only push them down.
-    pub(super) fn prepare_query(&mut self, at: Point) {
+    pub(super) fn prepare_query(&mut self) {
         if let Some(own) = self.own_rows.take() {
             self.items.truncate(own);
         }
         self.pinned_top = None;
         self.asked = None;
-        self.ask_at = at;
         self.send_to
             .set_about(crate::shared_selection::menu_subject(self.about.clone()));
         let long = self.items.len() > QUERY_MIN_ROWS;
@@ -265,12 +264,11 @@ impl ContextMenu {
         crate::widget::note_resource_presentation_changed();
     }
 
-    /// Choose the row that sends what the menu is about: the send-to box
-    /// opens beside the menu, level with that row, holding the sentence typed
-    /// into the menu, and takes the keyboard. The menu stays, its send row
-    /// marked, until the box sends or the person leaves them both; the box is
-    /// the menu's, so every host that shows and routes the open menu shows
-    /// and routes the box with no code of its own.
+    /// Choose the row that sends what the menu is about: the menu goes, as
+    /// for any row, and the send-to box takes its place where it was opened,
+    /// holding the sentence typed into the menu, and takes the keyboard. The
+    /// box is the menu's, so every host that shows and routes the open menu
+    /// shows and routes the box with no code of its own.
     pub(super) fn ask_typed(&mut self) {
         if self.ask_row().is_none() {
             return;
@@ -288,35 +286,17 @@ impl ContextMenu {
             self.close();
             return;
         }
-        self.close_submenu();
+        let anchor = self.anchor.unwrap_or(self.rect);
+        self.close_rows();
+        self.alone = Some(anchor);
         self.send_to
             .open((!text.is_empty()).then_some(text.as_str()), &[]);
-        self.send_to.place(self.send_to_anchor(), self.viewport);
-        self.sync_rows();
-        self.dirty = true;
+        self.send_to.place(anchor, self.viewport);
     }
 
-    /// What the box stands beside: alone, what the window pointed at;
-    /// opened by the send row, the menu, from that row down, so it opens
-    /// level with the row as a nested menu does.
-    pub(super) fn send_to_anchor(&self) -> Rect {
-        if let Some(alone) = self.alone {
-            return alone;
-        }
-        let top = self
-            .ask_row()
-            .and_then(|row| self.item_rect(row))
-            .map_or(self.rect.y0, |row| row.y0.clamp(self.rect.y0, self.rect.y1));
-        Rect::new(self.rect.x0, top, self.rect.x1, self.rect.y1)
-    }
-
-    /// The row marked while what it opened stands beside the menu: its
-    /// nested menu's, or the send row while the box is open.
+    /// The row marked while its nested menu stands beside the menu.
     pub(super) fn marked_row(&self) -> Option<usize> {
-        self.submenu.as_ref().map(|(row, _)| *row).or_else(|| {
-            self.ask_row()
-                .filter(|_| self.alone.is_none() && self.send_to.is_open())
-        })
+        self.submenu.as_ref().map(|(row, _)| *row)
     }
 
     /// The hovered row, when it opens a nested menu.
@@ -434,7 +414,7 @@ impl ContextMenu {
                 text: &query.text,
                 selection: &query.selection,
                 placeholder: &placeholder,
-                show_caret: self.open && !self.send_to.is_focused(),
+                show_caret: self.open,
             },
             Rect::new(field.x0 + inset, field.y0, field.x1 - inset, field.y1),
             &theme.text(TextRole::Body),
@@ -446,7 +426,7 @@ impl ContextMenu {
     pub(super) fn query_caret(&self) -> Option<Rect> {
         self.query
             .as_ref()
-            .filter(|_| self.open && !self.send_to.is_focused())
+            .filter(|_| self.open)
             .and_then(|query| query.composition.ime_cursor_rect())
     }
 

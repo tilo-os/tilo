@@ -1858,11 +1858,7 @@ fn a_right_click_opened_rows_menu_offers_to_send_after_the_release() {
     let send_at = menu.context_menu().items().len() - 1;
     menu.context_menu_mut().click_item(send_at);
     let menu = menu.context_menu();
-    assert!(menu.is_open(), "the menu stays beside its box");
-    assert!(
-        menu.send_to().is_focused(),
-        "the box is what takes the typing"
-    );
+    assert!(menu.send_to().is_open(), "the box takes the menu's place");
     set_send_host_available(false);
 }
 

@@ -912,7 +912,10 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     // The row that sends what the menu is about, which the menu adds itself.
     let send_at = menu.items().len() - 1;
     menu.click_item(send_at);
-    assert!(menu.is_open(), "the menu stays beside its box");
+    assert!(
+        !menu.open && menu.is_open(),
+        "the box took the menu's place"
+    );
     let presence = PresenceCtx::default();
     presence.viewport.set(Some(window));
     let mut scene = Scene::new();
@@ -934,7 +937,7 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
         .children
         .iter()
         .find(|child| child.role == crate::a11y::Role::Dialog)
-        .expect("the box is read beside the menu");
+        .expect("the box is read");
     assert_eq!(
         dialog.bounds.map(crate::a11y::AccessBounds::to_rect),
         Some(box_rect),

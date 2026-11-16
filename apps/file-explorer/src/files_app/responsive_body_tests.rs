@@ -722,7 +722,7 @@ fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
 #[test]
 fn keyboard_and_pointer_events_drive_rename_menus_and_retry() {
     keyboard_context_menu_reaches_selection_actions_and_executes_them();
-    a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu();
+    a_click_runs_a_menu_row_and_send_to_opens_the_box_in_its_place();
     rename_is_edited_in_place_over_the_row();
     typing_in_the_in_place_editor_renames_on_enter();
     narrow_error_retry_uses_the_shared_button_and_recovers();
@@ -937,7 +937,7 @@ fn keyboard_context_menu_reaches_selection_actions_and_executes_them() {
     );
 }
 
-fn a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu() {
+fn a_click_runs_a_menu_row_and_send_to_opens_the_box_in_its_place() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("budget.txt"), b"40 EUR").unwrap();
     let mut h = H::new(Some(dir.path()), 900.0, 720.0);
@@ -974,18 +974,16 @@ fn a_click_runs_a_menu_row_and_send_to_opens_the_box_beside_the_menu() {
     click_row(&mut h, send);
     ui::shared_selection::set_send_host_available(false);
     let menu = &h.w.chrome().context_menu;
-    assert!(menu.is_open(), "the menu stays beside its box");
-    assert!(menu.send_to().is_open(), "the box opened");
-    assert!(
-        menu.send_to().rect().x0 >= menu.get_rect().x1
-            || menu.send_to().rect().x1 <= menu.get_rect().x0,
-        "beside the menu: {:?} by {:?}",
-        menu.send_to().rect(),
-        menu.get_rect()
+    assert_eq!(
+        ui::widget::Widget::modal_capture(menu),
+        Some(menu.send_to().rect()),
+        "the menu went as for any row, and the box took its place"
     );
     h.press_named(winit::keyboard::NamedKey::Escape);
-    h.press_named(winit::keyboard::NamedKey::Escape);
-    assert!(!h.w.chrome().context_menu.is_open());
+    assert!(
+        !h.w.chrome().context_menu.is_open(),
+        "one Escape leaves nothing open"
+    );
 
     open_menu(&mut h);
     let rename =

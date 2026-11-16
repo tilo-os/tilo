@@ -668,4 +668,31 @@ mod tests {
             "a later line's tag covers nothing of the line above: rows {second:?}, line at {second_top}"
         );
     }
+
+    /// Blocks that are a resource's items place a selection in the caret's
+    /// block, yet what is sent, and what its chip reads, is all of it.
+    #[test]
+    fn a_selection_across_resource_blocks_sends_every_block() {
+        use crate::presence::capability::PublishesPresence as _;
+        let mut editor = editor_with(vec![
+            BlockContent::paragraph("a", "Friday plan for the offsite"),
+            BlockContent::paragraph("b", "Book the room"),
+        ]);
+        editor.set_presence_key(Rc::new(|block: &str| PresenceKey::Resource {
+            app: "notes".into(),
+            id: block.into(),
+            kind: "notes.note".into(),
+        }));
+        editor.focus_block(1, super::super::CursorPlacement::End);
+        editor.document_selection = Some(DocumentSelection {
+            anchor: DocumentPosition { block: 0, byte: 0 },
+            cursor: DocumentPosition { block: 1, byte: 13 },
+        });
+        let selection = editor.shared_selection().expect("a selection");
+        assert_eq!(
+            crate::widget::send_to::subject_label(&selection),
+            "Friday plan for the offsite +1",
+            "the chip names where the selection starts and counts the rest"
+        );
+    }
 }

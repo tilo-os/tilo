@@ -161,6 +161,18 @@ fn draw_frame_content_owning(
     // leaves the widgets' damage the whole change.
     let history_shown = history_changed || (app.history.is_some() && !app_live);
     if app_live {
+        // What stands over the widgets and takes the keys (an open menu, a
+        // dialog, the send box) holds the keyboard: the field under it keeps
+        // its place in the text, and only the field the keys go to paints a
+        // caret.
+        let carets = crate::caret_owner::shown()
+            && app.root_widget.modal_capture().is_none()
+            && !app.window_box.is_open();
+        if carets != app.input.widget_carets {
+            app.input.widget_carets = carets;
+            app.root_widget.release_scene_cache();
+        }
+        let _carets = crate::caret_owner::holding(carets);
         crate::widget::native_view_frame_start(app.root_widget.as_mut());
         let widgets: &mut Scene = match culled.as_deref_mut() {
             Some(culled) => {

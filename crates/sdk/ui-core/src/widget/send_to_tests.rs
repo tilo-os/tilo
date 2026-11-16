@@ -237,13 +237,12 @@ tilo_test_env::scenario! {
         assert_eq!(send_to.rows().len(), 1);
         assert_eq!(send_to.hovered_row(), Some(0), "Enter would pick it");
 
-        // Tab: the recipient field, the message, then the menu's own stops.
+        // Tab: the recipient field, the message, then round to the first.
         assert_eq!(send_to.focus(), SendToFocus::Recipients);
         assert!(tab(&mut send_to, false));
         assert_eq!(send_to.focus(), SendToFocus::Message);
         assert!(tab(&mut send_to, false));
-        assert!(!send_to.is_focused(), "past the last stop the menu has it");
-        send_to.focus_first();
+        assert_eq!(send_to.focus(), SendToFocus::Recipients, "past the last stop");
         assert!(tab(&mut send_to, true));
         assert_eq!(
             send_to.focus(),

@@ -617,7 +617,7 @@ fn word_boundaries_walk_starts_ends_and_snap() {
 /// through the menu as it routes the keys, so the row a click takes is the
 /// row Enter takes.
 #[test]
-fn a_click_on_send_to_opens_the_box_beside_the_fields_menu() {
+fn a_click_on_send_to_opens_the_box_in_the_fields_menus_place() {
     let _settled = crate::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
     let mut ti = TextInput::local().with_initial_value("hello world");
@@ -648,24 +648,19 @@ fn a_click_on_send_to_opens_the_box_beside_the_fields_menu() {
         drive(&mut ti, &mut doc, &event, mods(false, false));
     }
     crate::shared_selection::set_send_host_available(false);
-    assert!(ti.context_menu.is_open(), "the menu stays");
-    let box_ = ti.context_menu.send_to();
-    assert!(
-        box_.is_open() && box_.is_focused(),
-        "the box opened, typing"
+    assert_eq!(
+        Widget::modal_capture(ti.context_menu.as_ref()),
+        Some(ti.context_menu.send_to().rect()),
+        "the menu went as for any row, and the box took its place"
     );
+    let box_ = ti.context_menu.send_to();
+    assert!(box_.is_open(), "the box opened, typing");
     assert_eq!(
         box_.subjects()
             .first()
             .and_then(|about| about.anchor.excerpt.as_deref()),
         Some("hello"),
         "about the word the menu was opened on"
-    );
-    assert!(
-        box_.rect().x0 >= ti.context_menu.get_rect().x1,
-        "beside the menu: {:?} by {:?}",
-        box_.rect(),
-        ti.context_menu.get_rect()
     );
     assert_eq!(ti.value(), "hello world", "nothing beneath was edited");
 }

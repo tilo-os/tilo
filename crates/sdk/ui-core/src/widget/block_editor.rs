@@ -10613,9 +10613,10 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
 
     /// The selection for an agent. Keyed by the owning model's ids, it is
     /// placed in the caret's block in characters (a selection spanning
-    /// blocks shares its part there, as presence does) and the excerpt is
-    /// exactly that text. Otherwise the blocks are no resource items, and
-    /// the whole selected text travels without a place.
+    /// blocks shares its part there, as presence does, and names every
+    /// block's part). Otherwise the blocks are no resource items, and the
+    /// selected text travels without a place. Either way the excerpt is the
+    /// whole selected text, every block of it.
     fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
         use crate::shared_selection::SharedSelection;
         let idx = self.focused?;
@@ -10662,7 +10663,10 @@ impl crate::presence::capability::PublishesPresence for BlockEditor {
         } else {
             tilo_actions::SelectionPlace::range(id, chars(from), chars(to))
         };
-        let mut selection = SharedSelection::of_text(selected).at(place).in_kind(kind);
+        let mut selection =
+            SharedSelection::of_text(self.selected_text().as_deref().unwrap_or(selected))
+                .at(place)
+                .in_kind(kind);
         if let Some(selection_across) = self.document_selection {
             selection.anchor = selection
                 .anchor

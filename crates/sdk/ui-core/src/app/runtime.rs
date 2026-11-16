@@ -309,6 +309,9 @@ pub(super) struct InputRuntime {
     /// Whether this window holds the keyboard: its fields keep their text and
     /// selection without it, and paint no caret ([`crate::caret_owner`]).
     pub(super) keyboard_held: bool,
+    /// Whether the widgets last painted their carets: the window held the
+    /// keyboard and nothing standing over them took it.
+    pub(super) widget_carets: bool,
     /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
     pub(super) keyboard_entry_owed: bool,
 }
@@ -320,6 +323,7 @@ impl InputRuntime {
             keyboard_layout: None,
             window_focused: false,
             keyboard_held: true,
+            widget_carets: true,
             keyboard_entry_owed: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),

@@ -373,7 +373,7 @@ fn shells_box() -> (App, UnixStream, Rc<Cell<u32>>) {
 fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
     let (mut app, _shell, keys) = shells_box();
     assert!(
-        app.window_box.send_to_alone_open(),
+        app.window_box.is_open(),
         "the box hears the pointer while it stands"
     );
     app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
@@ -392,7 +392,7 @@ fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
         [RecipientKind::NewAgent],
         "to a new agent, as nobody else was named"
     );
-    assert!(!app.window_box.send_to_alone_open(), "the box went");
+    assert!(!app.window_box.is_open(), "the box went");
     assert_eq!(keys.get(), 0);
 }
 
@@ -400,13 +400,13 @@ fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
 #[test]
 fn escape_puts_the_shells_box_away() {
     let (mut app, _shell, keys) = shells_box();
-    assert!(app.window_box.send_to_alone_open(), "the box stands");
+    assert!(app.window_box.is_open(), "the box stands");
     app.surface_input(
         &Window,
         crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
         false,
     );
-    assert!(!app.window_box.send_to_alone_open(), "Escape put it away");
+    assert!(!app.window_box.is_open(), "Escape put it away");
     app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
     assert_eq!(keys.get(), 1, "the content hears the keys again");
 }
@@ -444,6 +444,6 @@ fn an_agent_writes_in_the_shells_box_and_sends_it() {
         sent[0].to.iter().map(|to| to.kind).collect::<Vec<_>>(),
         [RecipientKind::NewAgent],
     );
-    assert!(!app.window_box.send_to_alone_open(), "the box went");
+    assert!(!app.window_box.is_open(), "the box went");
     assert_eq!(keys.get(), 0, "nothing reached the content");
 }

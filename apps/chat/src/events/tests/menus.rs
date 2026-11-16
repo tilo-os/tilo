@@ -25,11 +25,11 @@ fn the_menus_delete_row_reads_as_it_will_act() {
     ui::widget::note_shift(false);
 }
 
-/// The row that sends what the menu took opens the box beside the menu with
+/// The row that sends what the menu took opens the box in the menu's place with
 /// the typing: Chat keeps the open menu, so the box paints and hears the
 /// keyboard with no code of Chat's own.
 #[test]
-fn sending_a_typed_sentence_opens_the_box_beside_the_menu() {
+fn sending_a_typed_sentence_opens_the_box_in_the_menus_place() {
     ui::shared_selection::set_send_host_available(true);
     let (mut app, mut doc) = app_with_doc();
     let id = send_own(&mut app, &mut doc, "check the plan");
@@ -43,7 +43,11 @@ fn sending_a_typed_sentence_opens_the_box_beside_the_menu() {
     );
     feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
     let menu = app.menu.as_ref().expect("Chat keeps the menu");
-    assert!(menu.widget.is_open(), "the menu stays beside its box");
+    assert_eq!(
+        ui::widget::Widget::modal_capture(&menu.widget),
+        Some(menu.widget.send_to().rect()),
+        "the box took the menu's place"
+    );
     assert!(menu.widget.send_to().is_open(), "the box opened");
     assert_eq!(menu.widget.send_to().text(), "please");
     ui::shared_selection::set_send_host_available(false);

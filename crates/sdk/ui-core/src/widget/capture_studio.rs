@@ -895,9 +895,7 @@ impl CaptureStudio {
     }
 
     pub fn send_menu_open(&self) -> bool {
-        self.send_menu
-            .as_ref()
-            .is_some_and(|menu| menu.is_showing())
+        self.send_menu.as_ref().is_some_and(|menu| menu.is_open())
     }
 
     fn close_send_menu(&mut self) {

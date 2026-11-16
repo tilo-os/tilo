@@ -1,7 +1,7 @@
 //! The send-to box: where a context menu's sentence goes.
 //!
 //! The row that sends what a context menu is about ([`ContextMenu::set_about`])
-//! opens this box beside the menu, with the sentence the person typed into it,
+//! opens this box in the menu's place, with the sentence the person typed into it,
 //! and the keyboard moves to the box. The box says whom the message goes to
 //! (the agent it makes by default, else an agent, a person or a conversation
 //! the host's one search finds), what it is about (the chips, starting with
@@ -95,8 +95,6 @@ pub struct SendToBox {
     text_selection: Selection,
     text_composition: QueryComposition,
     focus: SendToFocus,
-    /// Whether the keyboard is in the box: it takes the typing while open.
-    focused: bool,
     /// The search answered nothing yet for what is typed.
     answered: bool,
     rect: Rect,
@@ -140,7 +138,6 @@ impl SendToBox {
             text_selection: Selection::default(),
             text_composition: QueryComposition::default(),
             focus: SendToFocus::Recipients,
-            focused: false,
             answered: false,
             rect: Rect::ZERO,
             layout: Layout::default(),
@@ -176,12 +173,6 @@ impl SendToBox {
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
-    }
-
-    /// The keyboard is in the box (Tab brought it here, or it opened).
-    #[must_use]
-    pub fn is_focused(&self) -> bool {
-        self.open && self.focused
     }
 
     /// Whether the person sent what the box held, once.
@@ -278,7 +269,6 @@ impl SendToBox {
         // (a menu that goes as it arrives) still shows from this moment.
         self.appear.show(true);
         crate::shared_selection::set_box_open(true);
-        self.focused = true;
         self.sent = false;
         self.dirty = true;
         self.subjects.clear();
@@ -313,7 +303,6 @@ impl SendToBox {
             return;
         }
         self.open = false;
-        self.focused = false;
         self.hovered = None;
         self.appear.show(false);
         crate::shared_selection::set_box_open(false);
@@ -457,7 +446,7 @@ impl SendToBox {
         f64::from(self.theme.tokens.metrics.panel_width_utility) * self.text_scale
     }
 
-    /// The air between the menu and the box.
+    /// The air between what the box is about and the box.
     fn gap(&self) -> f64 {
         f64::from(self.theme.tokens.spacing.s2) * self.text_scale
     }
@@ -763,13 +752,7 @@ impl SendToBox {
                 ..
             } => {
                 if matches!(key, Key::Named(NamedKey::Tab)) {
-                    let shift = ctx.modifiers.state().shift_key();
-                    if self.cycle(shift) {
-                        *ctx.handled = true;
-                        return true;
-                    }
-                    // Out of the box, into the menu.
-                    self.focused = false;
+                    self.cycle(ctx.modifiers.state().shift_key());
                     *ctx.handled = true;
                     return true;
                 }
@@ -883,13 +866,11 @@ impl SendToBox {
         }
         if self.layout.search.contains(at) {
             self.focus = SendToFocus::Recipients;
-            self.focused = true;
             self.changed();
             return true;
         }
         if self.layout.message.contains(at) {
             self.focus = SendToFocus::Message;
-            self.focused = true;
             self.changed();
             return true;
         }
@@ -898,36 +879,32 @@ impl SendToBox {
         true
     }
 
-    /// Tab within the box: the recipient field, then the message. `false`
-    /// when it was on the last and the keyboard leaves for the menu.
-    fn cycle(&mut self, shift: bool) -> bool {
-        let next = match (self.focus, shift) {
-            (SendToFocus::Recipients, _) => Some(SendToFocus::Message),
-            (SendToFocus::Message, false) => None,
-            (SendToFocus::Message, true) => Some(SendToFocus::Recipients),
+    /// Tab within the box: the recipient field, then the message, and past
+    /// it back to the first.
+    fn cycle(&mut self, shift: bool) {
+        self.focus = match (self.focus, shift) {
+            (SendToFocus::Recipients, _) => SendToFocus::Message,
+            (SendToFocus::Message, true) => SendToFocus::Recipients,
+            (SendToFocus::Message, false) => self.first_field(),
         };
-        match next {
-            Some(focus) => {
-                self.focus = focus;
-                self.focused = true;
-                self.changed();
-                true
-            }
-            None => false,
+        self.changed();
+    }
+
+    /// Put the keyboard in the box's first field.
+    pub fn focus_first(&mut self) {
+        if self.open {
+            self.focus = self.first_field();
+            self.changed();
         }
     }
 
-    /// Put the keyboard in the box's first field (the menu's Tab brought it
-    /// here).
-    pub fn focus_first(&mut self) {
-        if self.open {
-            self.focused = true;
-            self.focus = if self.reporting() {
-                SendToFocus::Message
-            } else {
-                SendToFocus::Recipients
-            };
-            self.changed();
+    /// The first field: whom it goes to, or the message of a report, which
+    /// names its own destination.
+    fn first_field(&self) -> SendToFocus {
+        if self.reporting() {
+            SendToFocus::Message
+        } else {
+            SendToFocus::Recipients
         }
     }
 
@@ -1203,7 +1180,7 @@ impl SendToBox {
         // ([`paint_recipient_mark`]) and carries the × that takes it off the
         // message.
         for (index, chip) in self.layout.chips.iter().enumerate() {
-            let armed = self.focused && self.focus == SendToFocus::Recipients && index == 0;
+            let armed = self.open && self.focus == SendToFocus::Recipients && index == 0;
             let pill = RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0));
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1283,7 +1260,7 @@ impl SendToBox {
                     text: &self.search,
                     selection: &self.search_selection,
                     placeholder: &placeholder,
-                    show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
+                    show_caret: self.open && self.focus == SendToFocus::Recipients,
                 },
                 // Its words stand in from its edge as the chips' marks do, so
                 // the field and the chips beside it read as one row.
@@ -1420,11 +1397,20 @@ impl SendToBox {
                     dim,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
-                let shown = text_renderer.elide_to_width_style(
-                    &subject_label(subject),
-                    (chip.width() - self.text_lead() - self.row_height() * 0.2).max(1.0) as f32,
-                    &style,
-                );
+                // A chip too narrow for its label cuts the words, never the
+                // count of the blocks or items after them.
+                let label = subject_label(subject);
+                let (head, more) = match label.rsplit_once(" +") {
+                    Some((head, count)) if count.parse::<usize>().is_ok() => {
+                        (head, format!(" +{count}"))
+                    }
+                    _ => (label.as_str(), String::new()),
+                };
+                let room = (chip.width() - self.text_lead() - self.row_height() * 0.2) as f32;
+                let (more_width, _) = text_renderer.measure_style(&more, None, &style);
+                let shown =
+                    text_renderer.elide_to_width_style(head, (room - more_width).max(1.0), &style)
+                        + &more;
                 let (_, height) = text_renderer.measure_style(&shown, None, &style);
                 text_renderer.draw_style(
                     scene,
@@ -1501,7 +1487,7 @@ impl SendToBox {
                 text: &self.text,
                 selection: &self.text_selection,
                 placeholder: &message_placeholder,
-                show_caret: self.open && self.focused && self.focus == SendToFocus::Message,
+                show_caret: self.open && self.focus == SendToFocus::Message,
             },
             Rect::new(
                 self.layout.message.x0 + inset,
@@ -1598,7 +1584,7 @@ impl SendToBox {
                 .with_bounds(self.layout.search)
                 .with_state(AccessState {
                     focusable: true,
-                    focused: self.focused && self.focus == SendToFocus::Recipients,
+                    focused: self.open && self.focus == SendToFocus::Recipients,
                     ..Default::default()
                 }),
         ));
@@ -1611,7 +1597,7 @@ impl SendToBox {
                     .with_bounds(self.layout.rows.get(index).copied().unwrap_or(Rect::ZERO))
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.focused
+                        focused: self.open
                             && self.focus == SendToFocus::Recipients
                             && self.hovered == Some(index),
                         ..Default::default()
@@ -1660,7 +1646,7 @@ impl SendToBox {
                 .with_bounds(self.layout.message)
                 .with_state(AccessState {
                     focusable: true,
-                    focused: self.focused && self.focus == SendToFocus::Message,
+                    focused: self.open && self.focus == SendToFocus::Message,
                     ..Default::default()
                 }),
         ));

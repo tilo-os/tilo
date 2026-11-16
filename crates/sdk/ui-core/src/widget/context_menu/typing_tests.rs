@@ -181,13 +181,13 @@ fn a_send_row_stands_for_a_host_that_sends_itself() {
     let box_ = menu.send_to();
     assert!(
         box_.is_open(),
-        "the box opens beside the menu, held by the owner that sends it"
+        "the box opens in the menu's place, held by the owner that sends it"
     );
     assert_eq!(box_.text(), "summarise this");
 }
 
 #[test]
-fn a_sentence_no_row_answers_is_sent_from_the_box_beside_the_menu() {
+fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     crate::shared_selection::set_send_host_available(true);
     let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
@@ -204,20 +204,18 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_beside_the_menu() {
     crate::shared_selection::set_send_host_available(false);
     assert!(ran.borrow().is_empty(), "no row ran");
     assert_eq!(menu.take_selection(), None);
-    assert!(menu.is_open(), "the menu stays beside its box");
+    assert!(
+        !menu.open && menu.is_open(),
+        "the box took the menu's place"
+    );
     let box_ = menu.send_to();
     assert!(box_.is_open());
     assert_eq!(box_.text(), "summarise this for Ana");
     assert_eq!(box_.subjects(), std::slice::from_ref(&item));
-    assert!(box_.is_focused(), "the box takes the typing");
-    let (menu_rect, box_rect) = (menu.get_rect(), box_.rect());
+    let box_rect = box_.rect();
     assert!(
-        box_rect.x0 >= menu_rect.x1,
-        "the box stands beside the menu: {box_rect:?} by {menu_rect:?}"
-    );
-    assert!(
-        box_rect.y0 >= menu_rect.y0,
-        "level with its send row, never above the menu: {box_rect:?} by {menu_rect:?}"
+        box_rect.x0 >= 120.0 && box_rect.y0 == 80.0,
+        "the box stands where the menu was opened: {box_rect:?}"
     );
     // Typing goes to the box, never to the menu's field as well.
     type_into(&mut menu, "!");
@@ -247,11 +245,9 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_beside_the_menu() {
         crate::widget::SendToFocus::Recipients,
         "Tab reaches the recipient field"
     );
-    // Escape puts the box away and leaves the menu; a second closes it.
+    // One Escape puts the box away, and nothing of the menu is left.
     dispatch(&mut menu, &named_key(NamedKey::Escape));
-    assert!(!menu.send_to().is_open() && menu.is_open());
-    dispatch(&mut menu, &named_key(NamedKey::Escape));
-    assert!(!menu.is_open());
+    assert!(!menu.send_to().is_open() && !menu.is_open());
 }
 
 #[test]
@@ -335,7 +331,10 @@ fn a_send_pressed_by_its_name_ends_the_box() {
     menu.set_query("summarise this for Ana");
     dispatch(&mut menu, &named_key(NamedKey::Enter));
     crate::shared_selection::set_send_host_available(false);
-    assert!(menu.send_to().is_open(), "the box opened beside the menu");
+    assert!(
+        menu.send_to().is_open(),
+        "the box opened in the menu's place"
+    );
 
     let mut doc = automerge::AutoCommit::new();
     assert!(Widget::perform_semantic_action(
@@ -351,7 +350,7 @@ fn a_send_pressed_by_its_name_ends_the_box() {
         "the message left, once"
     );
     assert!(
-        !menu.send_to().is_open() && !menu.is_showing(),
+        !menu.send_to().is_open() && !menu.is_open(),
         "and the box went with the menu"
     );
 }

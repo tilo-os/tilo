@@ -298,10 +298,10 @@ impl WithKind for BlockContent {
 }
 
 /// The editor's text menu ends in "Send to…", and a click on it opens the
-/// send-to box beside the menu: the editor routes every event to its open
+/// send-to box in the menu's place: the editor routes every event to its open
 /// menu, so the box is the menu's to show and to hear.
 #[test]
-fn a_click_on_send_to_opens_the_box_beside_the_text_menu() {
+fn a_click_on_send_to_opens_the_box_in_the_text_menus_place() {
     let _settled = crate::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
     let mut editor = editing(&[para("plan for friday", Vec::new())]);
@@ -332,16 +332,12 @@ fn a_click_on_send_to_opens_the_box_beside_the_text_menu() {
         Dispatch::new().doc(&mut doc).send(&mut editor, &event);
     }
     crate::shared_selection::set_send_host_available(false);
-    let menu = editor.text_menu().expect("the menu stays open");
+    let menu = editor.text_menu().expect("the box stands");
     let box_ = menu.send_to();
-    assert!(
-        box_.is_open() && box_.is_focused(),
-        "the box opened, typing"
-    );
-    assert!(
-        box_.rect().x0 >= menu.get_rect().x1,
-        "beside the menu: {:?} by {:?}",
-        box_.rect(),
-        menu.get_rect()
+    assert!(box_.is_open(), "the box opened, typing");
+    assert_eq!(
+        Widget::modal_capture(menu),
+        Some(box_.rect()),
+        "the menu went as for any row, and the box took its place"
     );
 }

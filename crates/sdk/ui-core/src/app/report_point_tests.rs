@@ -71,7 +71,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
     );
     frames(&mut app);
     assert!(
-        !app.window_box.send_to_alone_open(),
+        !app.window_box.is_open(),
         "pointing opens no box of its own: the click does"
     );
 
@@ -140,10 +140,7 @@ fn escape_leaves_pointing_without_a_box() {
         &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
     );
     frames(&mut app);
-    assert!(
-        !app.window_box.send_to_alone_open(),
-        "leaving pointing opens nothing"
-    );
+    assert!(!app.window_box.is_open(), "leaving pointing opens nothing");
     assert_ne!(
         app.resolve_cursor(Point::new(10.0, 10.0)),
         Some(winit::window::CursorIcon::Crosshair),

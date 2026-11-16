@@ -47,7 +47,7 @@ fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
     );
     assert!(app.handle_unconsumed_typed_key(&typed("s")));
     set_send_host_available(false);
-    assert!(app.window_box.send_to_alone_open(), "the box was asked for");
+    assert!(app.window_box.is_open(), "the box was asked for");
     let opened = app.window_box.send_to();
     assert_eq!(opened.text(), "s", "the key begins the message");
     assert_eq!(
@@ -75,7 +75,7 @@ fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
             pointing: false,
         }])
     );
-    assert!(app.window_box.send_to_alone_open(), "the box was asked for");
+    assert!(app.window_box.is_open(), "the box was asked for");
     let opened = app.window_box.send_to();
     assert_eq!(
         opened
@@ -108,5 +108,45 @@ fn with_nothing_selected_a_key_asks_nothing() {
     set_send_host_available(true);
     assert!(!app.handle_unconsumed_typed_key(&typed("s")));
     set_send_host_available(false);
-    assert!(!app.window_box.send_to_alone_open());
+    assert!(!app.window_box.is_open());
+}
+
+/// Only the field the keys go to paints a caret: while the box stands, the
+/// window's own fields keep their place and paint none.
+#[cfg(feature = "native")]
+#[test]
+fn the_window_paints_no_caret_under_the_box_that_has_the_keys() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    struct CaretProbe(Rc<Cell<Option<bool>>>);
+    impl Widget for CaretProbe {
+        crate::testing::inert_widget_methods!(leaf_layout);
+        fn name(&self) -> &'static str {
+            "caret-probe"
+        }
+        fn draw(
+            &mut self,
+            _: &mut vello::Scene,
+            _: vello::kurbo::Affine,
+            _: &mut crate::text_render::TextRenderer,
+            _: &crate::theme::Theme,
+            _: &crate::presence::PresenceCtx,
+        ) {
+            self.0.set(Some(crate::caret_owner::shown()));
+        }
+    }
+    let carets = Rc::new(Cell::new(None));
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(CaretProbe(Rc::clone(&carets))));
+    app.init_layout();
+    let draw = |app: &mut App| {
+        carets.set(None);
+        draw_frame_content(app, &mut vello::Scene::new(), 600, 400, 1.0, None);
+        carets.get().expect("the window drew its widgets")
+    };
+    assert!(draw(&mut app), "the window has the keys: a caret");
+    app.open_send_box(None, None, None, &[]);
+    assert!(!draw(&mut app), "the box has the keys: its caret only");
+    app.window_box.close();
+    assert!(draw(&mut app), "the keys came back, and so did the caret");
 }
