@@ -1446,7 +1446,11 @@ fn a_source_made_since_a_time_reads_nothing_made_before_it() {
         doc.put(ROOT, "title", format!("draft {hour}")).unwrap();
         tilo_resource::history::commit_stamped_at(&mut doc, T0 + hour * HOUR);
     }
-    let since = |hour: i64| source().with_max_entries(16).made_since((T0 + hour * HOUR) * 1000);
+    let since = |hour: i64| {
+        source()
+            .with_max_entries(16)
+            .made_since((T0 + hour * HOUR) * 1000)
+    };
     let mut log = HistoryLog::default();
     let (rows, read) = read_since(&since(7), &mut doc, &mut log);
     assert_eq!(read, 3, "only the three changes made since");
@@ -1457,7 +1461,11 @@ fn a_source_made_since_a_time_reads_nothing_made_before_it() {
     let (rows, read) = read_since(&since(8), &mut doc, &mut log);
     assert_eq!(read, 0);
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows, since(8).entries(&mut doc), "as a fresh read lists them");
+    assert_eq!(
+        rows,
+        since(8).entries(&mut doc),
+        "as a fresh read lists them"
+    );
 
     // phase: a change made now is read, one stamped before the time is not
     doc.put(ROOT, "title", "late").unwrap();
