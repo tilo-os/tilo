@@ -59,6 +59,7 @@ impl Device {
                 wake: std::sync::Arc::new(|| ()),
                 fabric: None,
                 relays: host.relays(),
+                lan: None,
             },
             Some(std::sync::Arc::clone(&engine)),
             None,

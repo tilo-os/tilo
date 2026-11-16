@@ -70,7 +70,13 @@ fn permitted() -> Continuity {
 
 /// One of the person's devices, certified by `person` , on its own key.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
-    kept_device(person, seed, label, None, test_relay::loopback())
+    kept_device(person, seed, label, None, test_relay::loopback(), None)
+}
+
+/// Discovery on this machine's loopback instead of the network the session runs on: what a
+/// local-network test needs to hear only its own devices.
+fn loopback_discovery() -> tilo_endpoint_reachability::Nearby {
+    tilo_endpoint_reachability::Nearby::on(Arc::new(|| {}), [std::net::Ipv4Addr::LOCALHOST])
 }
 
 /// [`device`], keeping its fabric under `kept` between runs as a session does.
@@ -80,6 +86,7 @@ fn kept_device(
     label: &str,
     kept: Option<&std::path::Path>,
     relays: tilo_endpoint_reachability::EndpointRelays,
+    lan: Option<tilo_endpoint_reachability::Nearby>,
 ) -> Device {
     let key = test_relay::signing_key(seed);
     let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
@@ -92,6 +99,7 @@ fn kept_device(
             wake: Arc::new(|| {}),
             fabric: kept.map(std::path::Path::to_path_buf),
             relays,
+            lan,
         },
         None,
         None,
@@ -193,6 +201,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         "Laptop",
         Some(kept.path()),
         test_relay::loopback(),
+        None,
     );
     let id = laptop.id.clone();
     laptop.client.connect(session.client.endpoint_addr());
@@ -217,6 +226,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         "Laptop",
         Some(kept.path()),
         test_relay::loopback(),
+        None,
     );
     laptop.client.connect(session.client.endpoint_addr());
     assert!(
@@ -232,6 +242,7 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
         "Branch",
         Some(kept.path()),
         test_relay::loopback(),
+        None,
     );
     assert!(
         !copy.fabric().device_fabric().snapshots().contains_key(&id),
@@ -242,12 +253,9 @@ fn a_device_that_starts_again_continues_its_own_revisions() {
 /// Two of the person's devices on one local network, whose relay is unreachable and which ask no
 /// directory: each is told only the other's key, finds it on the network, and what is copied on one
 /// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
-/// network, is neither dialled nor named.
-///
-/// Ignored where the network refuses multicast: the builder's sandbox drops mDNS, so two devices
-/// cannot hear each other there. A machine on a real local network runs it.
+/// network, is neither dialled nor named. The three discover on this machine's loopback, so the
+/// test hears only them and needs no multicast on the network it runs on.
 #[test]
-#[ignore = "needs a local network whose multicast reaches both devices; the builder's sandbox refuses it"]
 fn the_persons_devices_on_one_network_sync_without_a_relay() {
     let unreachable = || {
         tilo_endpoint_reachability::EndpointRelays::for_choice(&settings_store::relay::Relays::Own(
@@ -255,14 +263,29 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
         ))
     };
     let person = person();
-    let laptop = kept_device(&person, 1, "Laptop", None, unreachable());
-    let session = kept_device(&person, 2, "Session", None, unreachable());
+    let laptop = kept_device(
+        &person,
+        1,
+        "Laptop",
+        None,
+        unreachable(),
+        Some(loopback_discovery()),
+    );
+    let session = kept_device(
+        &person,
+        2,
+        "Session",
+        None,
+        unreachable(),
+        Some(loopback_discovery()),
+    );
     let stranger = kept_device(
         &ed25519_dalek::SigningKey::from_bytes(&[22; 32]),
         3,
         "Stranger",
         None,
         unreachable(),
+        Some(loopback_discovery()),
     );
     laptop
         .client

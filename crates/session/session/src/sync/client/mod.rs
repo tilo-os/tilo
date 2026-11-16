@@ -1307,6 +1307,10 @@ pub struct Entry {
     /// The relays the person's setting names ([`tilo_endpoint_reachability::relays`]), which this
     /// device's endpoint holds back until something needs it dialable.
     pub relays: tilo_endpoint_reachability::EndpointRelays,
+    /// How this device hears the person's other devices on a local network
+    /// ([`tilo_endpoint_reachability::Nearby`]): `None` discovers on the networks the endpoint is
+    /// on, and a caller that knows which one its person's devices share says so.
+    pub lan: Option<tilo_endpoint_reachability::Nearby>,
 }
 
 impl Client {
@@ -1334,7 +1338,9 @@ impl Client {
         let (user, device) = certified_as(identity.as_ref());
         // What this device hears on its local network wakes the session, which shows which of the
         // person's devices are nearby.
-        let lan = tilo_endpoint_reachability::Nearby::new(Arc::clone(&wake));
+        let lan = entry
+            .lan
+            .unwrap_or_else(|| tilo_endpoint_reachability::Nearby::new(Arc::clone(&wake)));
         let host_outbox = HostOutbox {
             commands: commands.clone(),
         };

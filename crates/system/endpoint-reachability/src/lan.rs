@@ -56,12 +56,30 @@ impl Nearby {
     /// heard or its announcement lapses, from the discovery's own thread.
     #[must_use]
     pub fn new(changed: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::hearing(changed, None)
+    }
+
+    /// Nothing heard yet, with this device's lookup speaking only on
+    /// `networks` (IPv4), whatever networks the endpoint is on: a machine on
+    /// more than one network can be told which one its person's other
+    /// devices are on, and a test can keep its discovery to this machine's
+    /// loopback instead of the network it runs on.
+    #[must_use]
+    pub fn on(
+        changed: Arc<dyn Fn() + Send + Sync>,
+        networks: impl IntoIterator<Item = Ipv4Addr>,
+    ) -> Self {
+        Self::hearing(changed, Some(networks.into_iter().collect()))
+    }
+
+    fn hearing(changed: Arc<dyn Fn() + Send + Sync>, on: Option<Vec<Ipv4Addr>>) -> Self {
         let (news, _) = broadcast::channel(64);
         Self {
             shared: Arc::new(Shared {
                 heard: Mutex::default(),
                 news,
                 changed,
+                on,
             }),
         }
     }
@@ -116,6 +134,9 @@ struct Shared {
     heard: Mutex<HashMap<EndpointId, EndpointData>>,
     news: broadcast::Sender<(EndpointId, EndpointData)>,
     changed: Arc<dyn Fn() + Send + Sync>,
+    /// The networks its lookup speaks on, when it was told rather than
+    /// taking them from what the endpoint publishes.
+    on: Option<Vec<Ipv4Addr>>,
 }
 
 impl std::fmt::Debug for LanLookup {
@@ -167,7 +188,7 @@ fn networks(addrs: &BTreeMap<u16, Vec<IpAddr>>) -> BTreeSet<Ipv4Addr> {
 impl LanLookup {
     fn spawn(id: EndpointId, shared: Arc<Shared>) -> Result<Self, AddressLookupBuilderError> {
         let hearing = Arc::clone(&shared);
-        let discoverer = Discoverer::new_interactive(SERVICE_NAME.to_owned(), peer_name(&id))
+        let mut discoverer = Discoverer::new_interactive(SERVICE_NAME.to_owned(), peer_name(&id))
             .with_ip_class(IpClass::Auto)
             .with_callback(move |name: &str, peer: &Peer| {
                 let Some(from) = endpoint_of(name) else {
@@ -192,7 +213,15 @@ impl LanLookup {
                         (hearing.changed)();
                     }
                 }
-            })
+            });
+        if let Some(on) = &shared.on {
+            // Only these networks are spoken on, and only over IPv4: the
+            // machine may be on another network as well.
+            discoverer = discoverer
+                .with_ip_class(IpClass::V4Only)
+                .with_multicast_interfaces_v4(on.clone());
+        }
+        let discoverer = discoverer
             .spawn(&tokio::runtime::Handle::current())
             .map_err(|error| AddressLookupBuilderError::from_err("tilo-lan", error))?;
         Ok(Self {
@@ -210,16 +239,20 @@ impl AddressLookup for LanLookup {
         for addr in data.ip_addrs() {
             by_port.entry(addr.port()).or_default().push(addr.ip());
         }
-        let now = networks(&by_port);
-        {
-            let mut networks = self.networks.lock_recover();
-            for gone in networks.difference(&now) {
-                self.discoverer.remove_interface_v4(*gone);
+        if self.shared.on.is_none() {
+            // The networks this device's addresses say it is on, kept as the
+            // endpoint's addresses come and go.
+            let now = networks(&by_port);
+            {
+                let mut networks = self.networks.lock_recover();
+                for gone in networks.difference(&now) {
+                    self.discoverer.remove_interface_v4(*gone);
+                }
+                for new in now.difference(&networks) {
+                    self.discoverer.add_interface_v4(*new);
+                }
+                *networks = now;
             }
-            for new in now.difference(&networks) {
-                self.discoverer.add_interface_v4(*new);
-            }
-            *networks = now;
         }
         self.discoverer.remove_all();
         for (port, ips) in by_port {
@@ -278,19 +311,18 @@ mod tests {
     const ALPN: &[u8] = b"tilo/lan-discovery-test";
 
     /// Two endpoints on this network find each other by key alone, with no
-    /// relay and no directory: only what the local lookup hears.
-    ///
-    /// Ignored where the network refuses multicast: the builder's sandbox
-    /// drops mDNS, so the two never hear each other there. A machine on a real
-    /// local network runs it.
+    /// relay and no directory: only what the local lookup hears. Both speak
+    /// on this machine's loopback, so the test hears only its own two
+    /// endpoints and needs no multicast on the network it runs on.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "needs a local network whose multicast reaches both endpoints; the builder's sandbox refuses it"]
     async fn two_endpoints_find_each_other_on_the_local_network() {
         let binding = || {
             Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
                 .alpns(vec![ALPN.to_vec()])
-                .address_lookup(Nearby::new(std::sync::Arc::new(|| {})).lookup())
+                .address_lookup(
+                    Nearby::on(std::sync::Arc::new(|| {}), [Ipv4Addr::LOCALHOST]).lookup(),
+                )
         };
         let host = binding().bind().await.expect("the host endpoint binds");
         let guest = binding().bind().await.expect("the guest endpoint binds");

@@ -2363,6 +2363,7 @@ mod transfers_between_devices {
                 wake: Arc::new(|| {}),
                 fabric: None,
                 relays: test_relay::loopback(),
+                lan: None,
             },
             None,
             None,
