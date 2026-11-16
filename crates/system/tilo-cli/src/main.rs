@@ -275,6 +275,21 @@ enum Cmd {
         /// The program to run, by its path here.
         file: std::path::PathBuf,
     },
+    /// Every run in a hosted workspace (-w), newest first, whoever ran it.
+    #[command(
+        after_help = "Examples:\n  tilo runs -w jane-doe\n  tilo runs -w jane-doe --limit 10\n\n\
+                      Each line is a run: its id, how it stands (waiting for you, running, ended, failed,\n\
+                      cancelled, undone), who ran it and what it changed. A long list ends with a cursor:\n\
+                      `tilo runs --cursor <cursor> -w` reads on."
+    )]
+    Runs {
+        /// How many runs at most: 50 unless said, at most 200.
+        #[arg(long)]
+        limit: Option<u32>,
+        /// The cursor a long list ended with, for the older runs.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
     /// Write the SDK's types for a workspace's apps, from their surfaces.
     Sdk {
         #[command(subcommand)]
@@ -998,6 +1013,9 @@ fn run_hosted(
         Cmd::Run { file } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(reach, &workspace, &file)),
+        Cmd::Runs { limit, cursor } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::runs(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
         other => return Err(other),
     })
@@ -1026,6 +1044,7 @@ fn acts_in_a_workspace(cmd: &Cmd) -> bool {
             | Cmd::Members { .. }
             | Cmd::Files { .. }
             | Cmd::Run { .. }
+            | Cmd::Runs { .. }
             | Cmd::Ls { .. }
             | Cmd::Read { .. }
     )
@@ -1073,6 +1092,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Account { .. }
         | Cmd::Files { .. }
         | Cmd::Run { .. }
+        | Cmd::Runs { .. }
         | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
@@ -1917,6 +1937,7 @@ mod tests {
                 &["tilo", "ls", "notes", "-w", "jane-doe", "--json"][..],
                 &["tilo", "read", "notes/Todo", "-w", "jane-doe", "--json"][..],
                 &["tilo", "run", "visa.tl", "-w", "jane-doe", "--json"][..],
+                &["tilo", "runs", "-w", "jane-doe", "--limit", "5", "--json"][..],
             ] {
                 let cli = Cli::try_parse_from(args)
                     .unwrap_or_else(|error| panic!("tilo {args:?}: {error}"));
