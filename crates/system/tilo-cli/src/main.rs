@@ -2237,6 +2237,7 @@ mod tests {
                     "account",
                     "files",
                     "run",
+                    "runs",
                     "sdk",
                     "device",
                     "agent",
@@ -2263,6 +2264,7 @@ mod tests {
                     "  account    Your hosted account: its workspaces\n",
                     "  files      Files into a hosted workspace\n",
                     "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
+                    "  runs       Every run in a hosted workspace (-w), newest first, whoever ran it\n",
                     "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
                     "  device     Your devices: update them, go back, repair them, develop on them\n",
                     "  agent      Connect agents to this desktop, and choose their models\n",
@@ -2310,8 +2312,8 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login", "folders", "migrate"
+                    "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "runs",
+                    "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2330,8 +2332,8 @@ mod tests {
             assert_eq!(
                 listed(nothing),
                 [
-                    "do", "ls", "read", "keys", "members", "account", "files", "run", "sdk",
-                    "login", "folders", "migrate"
+                    "do", "ls", "read", "keys", "members", "account", "files", "run", "runs",
+                    "sdk", "login", "folders", "migrate"
                 ]
             );
             let bare = command_here(nothing).render_help().to_string();
