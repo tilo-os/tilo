@@ -161,7 +161,8 @@ class AppCopyTests(unittest.TestCase):
             own = "session-x = X\n"
             self.crate(root, "crates/session/session", {"en-US": own, "de-DE": own},
                        'use tilo_desktop_surface::i18n::{t, t_args};\n'
-                       'fn pane() { t("settings-title"); t_args("settings-gone", &[]); }\n')
+                       'fn pane() { t("settings-title"); t_args("settings-gone", &[]); '
+                       'crate::i18n::t("session-x"); }\n')
             self.assertEqual(copy.missing_copy(root), [
                 "crates/session/session/src/view.rs:2: de-DE lacks settings-gone "
                 "(crates/session/desktop-surface)",

@@ -198,7 +198,8 @@ def imported_calls(code: str, modules: dict[str, Path]) -> list[Qualified]:
             if name.strip() not in RESOLVERS:
                 continue
             local = (alias or name).strip()
-            pattern = re.compile(rf"\b{re.escape(local)}\s*\(")
+            # A name qualified with a path (`crate::i18n::t`) is that path's, not this import's.
+            pattern = re.compile(rf"(?<!::)\b{re.escape(local)}\s*\(")
             calls.extend(Qualified(module.strip(), call.end())
                          for call in pattern.finditer(code))
     return calls
