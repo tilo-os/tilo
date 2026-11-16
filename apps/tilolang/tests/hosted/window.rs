@@ -953,7 +953,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
         .unwrap();
     assert_eq!(
         record.author,
-        Principal::new(agent_session().0.key()),
+        Principal::new(agent_session().0.acting.by.key()),
         "the suggestion is the agent's"
     );
     assert!(!sent(&mut session, &draft), "nothing left");

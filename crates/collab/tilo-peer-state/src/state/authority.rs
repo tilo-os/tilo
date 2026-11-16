@@ -519,14 +519,18 @@ impl StatePeer {
     /// The bot actor `source` may show other names as: a bot device that
     /// acts in the workspace now (live delegation, live installation, installer
     /// still a member) and whose installation allows `Personas`.
-    pub(super) fn appearance_author(&self, source: &[u8; 32], now: SystemTime) -> Option<String> {
+    pub(super) fn appearance_author(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Option<collab_types::MemberId> {
         self.permissions(*source, now).ok()?;
         let doc = self.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(source))?.clone();
         let identity = GovernedIdentity::decode(&bytes).ok()?;
         let installation = identity.delegate?.installation?;
         (installation.appearance == crate::installation::AppearancePolicy::Personas)
-            .then(|| format!("bot:{}", installation.id))
+            .then(|| collab_types::MemberId::bot(installation.id))
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`

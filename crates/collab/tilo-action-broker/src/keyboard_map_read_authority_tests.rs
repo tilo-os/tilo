@@ -214,10 +214,10 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let wire_id = facade.state().remote_job(&caller, &request.invocation).unwrap();
             let delivered = ui::invocation_scope::PublishedInvocationRequest {
                 wire_id, invocation: request.invocation, address: request.target.address.clone(), argument: None,
-                actor: principal.clone(), participant: Some(tilo_actions::ParticipantId::for_execution(caller.execution_id().unwrap())),
+                actor: tilo_actions::MemberId::person(principal.clone()).into(), participant: Some(tilo_actions::ParticipantId::for_execution(caller.execution_id().unwrap())),
             };
             let lease = authorize(&delivered).unwrap();
-            assert_eq!(delivered.actor, principal);
+            assert_eq!(delivered.actor, tilo_actions::MemberId::person(principal).into());
             assert_eq!(delivered.invocation, request.invocation);
             let mut missing = delivered.clone();
             missing.invocation = tilo_actions::InvocationId::new();
@@ -226,7 +226,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                 "an unretained original cannot borrow worker identity"
             );
             let mut foreign = delivered.clone();
-            foreign.actor = "unrelated-same-role-collaborator".into();
+            foreign.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("unrelated-same-role-collaborator"));
             assert!(
                 authorize(&foreign).is_err(),
                 "caller labels cannot replace broker custody"

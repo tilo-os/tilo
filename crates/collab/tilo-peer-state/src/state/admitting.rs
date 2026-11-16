@@ -388,7 +388,7 @@ impl StatePeer {
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes = collab_types::parse_changes(bytes).map_err(err)?;
             let shows = self.appearance_author(&source, authorization_time);
-            collab_types::check_appearances(&changes, shows.as_deref())
+            collab_types::check_appearances(&changes, shows.as_ref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
         // A record's genesis is not a checkpoint: it is started empty, so

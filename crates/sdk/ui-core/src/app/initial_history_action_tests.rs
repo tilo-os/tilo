@@ -161,7 +161,7 @@ fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
         ZOOM_RESOURCE.into(),
         "zoom-in".into(),
         None,
-        "fixture-user",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
         None,
     );
     assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
             "initial-probe".into(),
             "inspect".into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         assert_eq!(
@@ -249,7 +249,7 @@ tilo_test_env::scenario! {
             "initial-probe".into(),
             "inspect".into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         assert_eq!(calls.get(), 0);
@@ -309,7 +309,7 @@ tilo_test_env::scenario! {
             "initial-probe".into(),
             "inspect".into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         assert_eq!(
@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
             "initial-probe".into(),
             "inspect".into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         assert_eq!(calls.get(), 1);

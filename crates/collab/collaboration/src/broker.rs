@@ -5827,7 +5827,7 @@ fn origin_commit(
         app,
         record,
         &collab_types::CommitAuthor {
-            principal: None,
+            actor: None,
             device,
         },
         mutation,

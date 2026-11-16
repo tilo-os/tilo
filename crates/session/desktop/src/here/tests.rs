@@ -1117,7 +1117,7 @@ tilo_test_env::scenario! {
                 .members
                 .insert(person.into(), tilo_action_policy::Role::Editor);
             workspace.policy.joined.insert(person.into(), admitted);
-            workspace.member_here(Member::keyed(person, "Alex"));
+            workspace.member_here(Member::named(collab_types::MemberId::person(person), "Alex"));
         }
         let tree = Layout {
             active: workspace.id(),

@@ -27,7 +27,7 @@ fn person_write(doc: &mut AutoCommit, text: &str) {
         &action,
         encoded,
         &mut LocalTransport::default(),
-        "Ada",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("Ada")),
         false,
         tilo_actions::ActionContext::default(),
     )
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
                 &action,
                 encoded,
                 &mut LocalTransport::default(),
-                "Ada",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("Ada")),
                 false,
                 tilo_actions::ActionContext::default(),
             )

@@ -5906,7 +5906,8 @@ impl BrowserWidget {
         invoker: Option<&ui::tilo_actions::ActionInvoker>,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
-        let actor = invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.key()));
+        let actor =
+            invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.acting.by.key()));
         self.admitted_to_page(invocation, actor.as_ref(), invoker, &operation);
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {

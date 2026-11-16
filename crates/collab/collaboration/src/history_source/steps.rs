@@ -55,8 +55,8 @@ pub fn names_a_session(kind: &str) -> bool {
 pub enum Scope {
     /// One agent session, by its group id: every invocation of one connection.
     Session(String),
-    /// The principal who invoked, outside any agent run.
-    Invoker(String),
+    /// Who invoked, outside any agent run.
+    Invoker(tilo_actions::Actor),
     /// The actor that wrote, for an invocation that names nobody.
     Actor(String),
 }
@@ -72,7 +72,7 @@ impl Scope {
             return Self::Session(group.id.clone());
         }
         if let Some(invoker) = context.and_then(|context| context.invoker.as_ref()) {
-            return Self::Invoker(invoker.key());
+            return Self::Invoker(invoker.acting.by.clone());
         }
         Self::Actor(actor_hex.to_owned())
     }
@@ -100,7 +100,7 @@ impl Scope {
                 run.is_none()
                     && context
                         .and_then(|context| context.invoker.as_ref())
-                        .is_some_and(|invoker| invoker.key() == *actor)
+                        .is_some_and(|invoker| invoker.acting.by == *actor)
             }
             Self::Actor(actor) => run.is_none() && version.actor.eq_ignore_ascii_case(actor),
         }
@@ -112,7 +112,7 @@ impl Scope {
         match self {
             Self::Session(id) if own => format!("This agent run ({id:?}) has"),
             Self::Session(id) => format!("Agent run {id:?} has"),
-            Self::Invoker(author) if !own => format!("Author {author:?} has"),
+            Self::Invoker(author) if !own => format!("Author {author} has"),
             Self::Invoker(_) | Self::Actor(_) => "You have".into(),
         }
     }

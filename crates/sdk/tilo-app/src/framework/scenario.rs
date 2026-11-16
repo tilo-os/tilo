@@ -521,7 +521,7 @@ fn write_version<R: Resource>(
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
     let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
         .with_change(action.change_kind())
-        .with_host_invoker(version.author.clone(), None);
+        .with_host_actor(&tilo_actions::Acting::of_key(&version.author), None);
     if let Some(described) = action.describe(doc).or_else(|| {
         tilo_actions::Described::of_published(
             &encoded,

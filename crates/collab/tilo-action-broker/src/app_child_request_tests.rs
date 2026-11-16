@@ -170,7 +170,10 @@ fn ran(
     assert!(admitted(answer), "{answer:?}");
     let delivered = notes.try_recv().expect("Notes runs the call");
     assert_eq!(delivered.invocation, request.invocation);
-    assert_eq!(delivered.actor, "agent:scribe");
+    assert_eq!(
+        delivered.actor,
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+    );
     request.invocation
 }
 
@@ -206,7 +209,10 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             let asked = id(0xc4a1);
             invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(delivered.actor, "agent:scribe");
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
 
             // The person could send mail, and the app is theirs; the agent
             // may not, so its effect may not either.
@@ -218,9 +224,17 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             assert!(admitted(&made), "{made:?}");
             let note = notes.try_recv().expect("Notes runs the call");
             assert_eq!(note.action, "create-page");
-            assert_eq!(note.actor, "agent:scribe", "delivered as the agent's own");
+            assert_eq!(
+                note.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
+                "delivered as the agent's own"
+            );
             let invoker = tilo_actions::ActionInvoker::delivered(&note.actor, note.context());
-            assert_eq!(invoker.key(), "agent:scribe", "its history names the agent");
+            assert_eq!(
+                invoker.acting.by.key(),
+                "agent:scribe",
+                "its history names the agent"
+            );
             assert!(notes.try_recv().is_err(), "one call, one delivery");
 
             // Kept under the agent's own custody: the agent follows the

@@ -5241,7 +5241,7 @@ tilo_test_env::scenario! {
         let commit = collab_types::WorkspaceCommit::new(
             "workspace",
             collab_types::CommitAuthor {
-                principal: Some("alice".into()),
+                actor: Some(tilo_actions::MemberId::person("alice").into()),
                 device: [9; 32],
             },
             1,

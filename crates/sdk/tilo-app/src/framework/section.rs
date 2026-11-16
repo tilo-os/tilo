@@ -261,7 +261,7 @@ impl SectionApi {
         let action = self.kind.decode(encoded)?;
         let id = action_id(&encoded.payload);
         self.kind
-            .apply(action.as_ref(), &id, &invoker.key(), invoked_by)?;
+            .apply(action.as_ref(), &id, &invoker.acting.by.key(), invoked_by)?;
         self.notice();
         Ok(())
     }
@@ -602,7 +602,12 @@ impl SettingsRecords {
     pub fn served_for(self, person: &str) -> ui_core::headless::ServedProvider {
         let person = person.to_owned();
         Box::new(move |invocation| {
-            if invocation.actor != person {
+            if invocation
+                .actor
+                .member_id()
+                .and_then(tilo_actions::MemberId::person_id)
+                != Some(person.as_str())
+            {
                 return Err(tilo_actions::ApiError::Unavailable {
                     code: "permission_denied".into(),
                     reason: "Only the person they belong to changes these settings".into(),

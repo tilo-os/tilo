@@ -1218,14 +1218,16 @@ pub fn housekeeping_message(person: &str) -> String {
         .unwrap_or_else(|| change_message(Some(person)))
 }
 
-/// Who made a change of the record, as its message ([`change_message`])
+/// The person who made a change of the record, as its message ([`change_message`])
 /// names them.
 #[must_use]
 pub fn change_author(message: Option<&str>) -> Option<String> {
     tilo_actions::ActionContext::from_change_message(message?)?
-        .invoker
-        .map(|invoker| invoker.key())
-        .filter(|actor| !actor.is_empty())
+        .invoker?
+        .acting
+        .person_id()
+        .filter(|person| !person.is_empty())
+        .map(str::to_owned)
 }
 
 /// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the

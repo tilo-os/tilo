@@ -55,7 +55,7 @@ tilo_test_env::scenario! {
             "test.counter".into(),
             "async-bump".into(),
             None,
-            "original-caller",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
             None,
         );
         assert_eq!(counter(&app), 0);
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
             "test.counter".into(),
             "async-bump".into(),
             None,
-            "original-caller",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
             None,
         );
         for _ in 0..3 {
@@ -951,7 +951,7 @@ fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
         "test.counter".into(),
         "bump".into(),
         None,
-        "original-caller",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
         None,
     );
     assert_eq!(counter(&app), 1);

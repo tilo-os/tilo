@@ -274,7 +274,7 @@ impl LayoutDocument {
         // Who asked for it: the invoker the step records, else the person whose layout it is.
         let who = step
             .invoker
-            .map_or_else(|| person.to_owned(), |invoker| invoker.key());
+            .map_or_else(|| person.to_owned(), |invoker| invoker.acting.by.key());
         let what = match step.what {
             Some(Did::Verb(call)) => call.action.action,
             _ => String::new(),

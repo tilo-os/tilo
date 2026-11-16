@@ -231,8 +231,8 @@ mod tests {
     fn shell() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
         workspace.members_here(vec![
-            Member::keyed("ada", "Ada Lovelace"),
-            Member::keyed("bo", "Bo Brave"),
+            Member::named(collab_types::MemberId::person("ada"), "Ada Lovelace"),
+            Member::named(collab_types::MemberId::person("bo"), "Bo Brave"),
         ]);
         Layout {
             active: workspace.id(),

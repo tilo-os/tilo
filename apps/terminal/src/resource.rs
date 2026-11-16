@@ -235,10 +235,7 @@ impl Terminal {
 
     fn set_up_on(&mut self, cx: &ActionCx, device: Option<String>) {
         self.device = device.filter(|device| !device.is_empty()).map(Atom);
-        self.holder = cx
-            .author()
-            .filter(|author| !author.is_empty())
-            .map(|author| Atom(author.to_owned()));
+        self.holder = cx.author().map(|author| Atom(author.key()));
     }
 
     /// The session stored under `obj` of another record's document: a terminal nested in an editor's
@@ -352,7 +349,14 @@ impl Terminal {
             .map(|entry| entry.value.clone());
         let (actor, for_person) = match asked {
             Some(asked) => (asked.requested_by, asked.for_person),
-            None => (Atom(cx.author().unwrap_or_default().to_owned()), None),
+            None => (
+                Atom(
+                    cx.author()
+                        .map(ui::tilo_resource::MemberId::key)
+                        .unwrap_or_default(),
+                ),
+                None,
+            ),
         };
         let mut items = run.items;
         items.truncate(crate::parse::MAX_ITEMS);
@@ -451,7 +455,11 @@ impl Terminal {
         let by = cx.invoked_by().filter(|by| !by.is_person());
         let request = RunRequest {
             command: Atom(command.to_owned()),
-            requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
+            requested_by: Atom(
+                cx.author()
+                    .map(ui::tilo_resource::MemberId::key)
+                    .unwrap_or_default(),
+            ),
             for_person: by
                 .as_ref()
                 .and_then(|by| by.acted_for_person())

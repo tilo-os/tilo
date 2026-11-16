@@ -47,10 +47,7 @@ pub fn shown(member: &Present, now_ms: f64) -> Shown {
         publisher: hex::encode(member.publisher),
         epoch: member.epoch,
         agent: member.agent(),
-        member: member
-            .run
-            .as_deref()
-            .map(|run| collab_types::MemberId::agent(run).key()),
+        member: member.run.as_deref().map(collab_types::MemberId::agent),
         spoken_by: member.spoken_by.map(hex::encode),
         label: member.label().to_owned(),
         activity: member.activity().map(|(activity, _)| activity.to_owned()),

@@ -1440,7 +1440,7 @@ tilo_test_env::scenario! {
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id();
-        tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
+        tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("alice"), "Alice"));
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default().with_text_scale(1.5);
         lay_out_and_draw_with_theme(&mut bar, 800.0, &theme);
@@ -1836,7 +1836,7 @@ tilo_test_env::scenario! {
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id();
-        tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+        tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada"));
         tree.workspaces[0].present[0].session = Some(7);
         tree.workspaces[0]
             .strips
@@ -1877,8 +1877,8 @@ tilo_test_env::scenario! {
         };
         tree.active = tree.workspaces[0].id();
         tree.workspaces[0].members_here([
-            tilo_desktop_model::Member::keyed("ada", "Ada"),
-            tilo_desktop_model::Member::keyed("lin", "Lin"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("lin"), "Lin"),
         ]);
         tree.workspaces[0].present[0].session = Some(7);
         tree.workspaces[0].present[1].session = Some(9);
@@ -1944,8 +1944,7 @@ tilo_test_env::scenario! {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("owner"),
         ));
-        workspace.member_here(tilo_desktop_model::Member::keyed(
-            "agent:scribe",
+        workspace.member_here(tilo_desktop_model::Member::named(collab_types::MemberId::agent("scribe"),
             "Release Notes Agent",
         ));
         workspace.present[0].session = Some(9);
@@ -1989,7 +1988,7 @@ tilo_test_env::scenario! {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("owner"),
         ));
-        shared.member_here(tilo_desktop_model::Member::keyed("agent:scribe", "scribe"));
+        shared.member_here(tilo_desktop_model::Member::named(collab_types::MemberId::agent("scribe"), "scribe"));
         shared.present[0].session = Some(9);
         let mut strip = Strip::new(tilo_desktop_model::StripId(2), "Main");
         let tab_id = 42;
@@ -2114,8 +2113,8 @@ tilo_test_env::scenario! {
         };
         tree.active = tree.workspaces[0].id();
         tree.workspaces[0].members_here([
-            tilo_desktop_model::Member::keyed("ada", "Ada"),
-            tilo_desktop_model::Member::keyed("lin", "Lin"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("lin"), "Lin"),
         ]);
         tree.workspaces[0].present[0].session = Some(7);
         tree.workspaces[0].present[1].session = Some(9);
@@ -2240,7 +2239,7 @@ tilo_test_env::scenario! {
             ..Default::default()
         };
         tree.active = tree.workspaces[0].id();
-        tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
+        tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("alice"), "Alice"));
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default();
@@ -2449,8 +2448,8 @@ tilo_test_env::scenario! {
 
         // An agent's member key says it is software: it draws as an agent.
         tree.workspaces[0].members_here([
-            tilo_desktop_model::Member::keyed("agent:scribe", "Scribe"),
-            tilo_desktop_model::Member::keyed("ada", "Ada"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::agent("scribe"), "Scribe"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada"),
         ]);
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
@@ -2479,8 +2478,8 @@ tilo_test_env::scenario! {
     {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Tilo Community");
         workspace.members_here(vec![
-            tilo_desktop_model::Member::keyed("agent:scribe", "Claude Code"),
-            tilo_desktop_model::Member::keyed("ada", "Lively Heron"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::agent("scribe"), "Claude Code"),
+            tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Lively Heron"),
         ]);
         let tree = Layout {
             active: workspace.id(),
@@ -2518,7 +2517,7 @@ tilo_test_env::scenario! {
         let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
         let faces = |colour: Option<ui::tokens::PresenceHue>| {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Tilo");
-            let mut row = tilo_desktop_model::Member::keyed("agent:helper@host", "Claude Code #1");
+            let mut row = tilo_desktop_model::Member::named(collab_types::MemberId::agent("helper@host"), "Claude Code #1");
             if let Some(colour) = colour {
                 row.colour = colour;
             }
@@ -2632,7 +2631,7 @@ tilo_test_env::scenario! {
 
         // A member the workspace lists who is not here is no face: presence says who is here.
         let mut elsewhere = empty.clone();
-        elsewhere.workspaces[0].list_member(tilo_desktop_model::Member::keyed("alice", "Alice"));
+        elsewhere.workspaces[0].list_member(tilo_desktop_model::Member::named(collab_types::MemberId::person("alice"), "Alice"));
         let bar = TopBarChrome::from_tree(&elsewhere);
         assert!(
             bar.face_initials().is_empty(),
@@ -2640,8 +2639,7 @@ tilo_test_env::scenario! {
         );
 
         let mut joined = empty;
-        joined.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
-            "peer@11895642303397647149",
+        joined.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("peer@11895642303397647149"),
             "Bob",
         ));
         let bar = TopBarChrome::from_tree(&joined);
@@ -2877,8 +2875,7 @@ tilo_test_env::scenario! {
         };
         tree.active = tree.workspaces[0].id();
         for person in 0..6 {
-            tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
-                &format!("person-{person}"),
+            tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person(&format!("person-{person}")),
                 format!("Person {person}"),
             ));
         }

@@ -33,6 +33,8 @@ use std::collections::BTreeSet;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
 
+use tilo_action_policy::MemberId;
+
 use crate::action::{ActionCx, Refusal};
 use crate::delta::Delta;
 use crate::map::Map;
@@ -54,12 +56,12 @@ pub const MAX_CUSTOM_NAME: usize = 32;
 const KEY_SEPARATOR: char = '\u{1f}';
 
 /// One reaction: who reacted with which emoji, and when.
-#[derive(crate::Model, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(crate::Model, Clone, Debug, PartialEq, Eq)]
 pub struct Reaction {
     /// The emoji: Unicode, or a workspace emoji as `:name:`.
     pub emoji: Atom,
-    /// The participant who invoked it.
-    pub by: Atom,
+    /// The member who invoked it.
+    pub by: MemberId,
     /// The outside account a bot reacted for (`discord/80351110224678912`).
     pub persona: Option<Atom>,
     /// The name the account shows, when a bot reacted for one.
@@ -72,26 +74,26 @@ impl Reaction {
     /// Whether `participant` made this reaction themselves: not a bot
     /// reacting for someone elsewhere.
     #[must_use]
-    pub fn is_own(&self, participant: &str) -> bool {
-        self.persona.is_none() && self.by.0 == participant
+    pub fn is_own(&self, participant: &MemberId) -> bool {
+        self.persona.is_none() && self.by == *participant
     }
 
     fn key(&self) -> String {
         key_of(
             &self.emoji.0,
-            &self.by.0,
+            &self.by,
             self.persona.as_ref().map(|p| p.0.as_str()),
         )
     }
 }
 
-fn key_of(emoji: &str, by: &str, persona: Option<&str>) -> String {
+fn key_of(emoji: &str, by: &MemberId, persona: Option<&str>) -> String {
     let mut key = String::new();
     key.push_str(emoji);
     key.push(KEY_SEPARATOR);
     key.push_str(persona.unwrap_or_default());
     key.push(KEY_SEPARATOR);
-    key.push_str(by);
+    key.push_str(&automerge::ActorId::from(by.actor_bytes()).to_hex_string());
     key
 }
 
@@ -103,8 +105,8 @@ fn emoji_of_key(key: &str) -> &str {
 /// One person (or outside account) among those who reacted with an emoji.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reactor {
-    /// The participant who invoked the reaction.
-    pub by: String,
+    /// The member who invoked the reaction.
+    pub by: MemberId,
     /// The outside account a bot reacted for.
     pub persona: Option<String>,
     /// The name that account shows.
@@ -128,10 +130,10 @@ impl ReactionGroup {
 
     /// Whether `participant` is among them themselves.
     #[must_use]
-    pub fn includes(&self, participant: &str) -> bool {
+    pub fn includes(&self, participant: &MemberId) -> bool {
         self.reactors
             .iter()
-            .any(|reactor| reactor.persona.is_none() && reactor.by == participant)
+            .any(|reactor| reactor.persona.is_none() && reactor.by == *participant)
     }
 }
 
@@ -172,7 +174,7 @@ impl Reactions {
         sorted.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.key().cmp(&b.key())));
         for reaction in sorted {
             let reactor = Reactor {
-                by: reaction.by.0.clone(),
+                by: reaction.by.clone(),
                 persona: reaction.persona.as_ref().map(|p| p.0.clone()),
                 name: reaction.name.as_ref().map(|n| n.0.clone()),
             };
@@ -190,7 +192,7 @@ impl Reactions {
 
     /// Whether `participant` reacted with `emoji` themselves.
     #[must_use]
-    pub fn reacted(&self, emoji: &str, participant: &str) -> bool {
+    pub fn reacted(&self, emoji: &str, participant: &MemberId) -> bool {
         self.entries.contains_key(&key_of(emoji, participant, None))
     }
 
@@ -198,7 +200,7 @@ impl Reactions {
     /// back when they already reacted with it: what a click on a pill or a
     /// pick in the picker does.
     #[must_use]
-    pub fn toggle(&self, emoji: &str, participant: &str) -> EditOp {
+    pub fn toggle(&self, emoji: &str, participant: &MemberId) -> EditOp {
         if self.reacted(emoji, participant) {
             EditOp::Unreact {
                 emoji: emoji.to_owned(),
@@ -399,9 +401,8 @@ impl Model for Reactions {
         let emoji = reaction_emoji(emoji).map_err(ModelError::refused)?;
         let by = cx
             .author()
-            .filter(|author| !author.is_empty() && author.len() <= 4096)
             .ok_or_else(|| ModelError::Refused("a reaction is always someone's".into()))?
-            .to_owned();
+            .clone();
         let appearance = cx.appearance();
         let persona = appearance
             .as_ref()
@@ -433,7 +434,7 @@ impl Model for Reactions {
         }
         let reaction = Reaction {
             emoji: Atom(emoji.to_owned()),
-            by: Atom(by),
+            by,
             name: persona
                 .is_some()
                 .then(|| appearance.map(|appearance| Atom(appearance.name)))

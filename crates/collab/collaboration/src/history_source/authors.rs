@@ -246,10 +246,11 @@ const DEVICE_SEPARATOR: char = '\u{1f}';
 /// part only that device has. Automerge numbers each actor's changes, so
 /// one person writing from two devices under the bare handle would make two
 /// different changes with the same number, which no replica can merge.
-pub fn device_actor(handle: &str, device: &automerge::ActorId) -> Vec<u8> {
+pub fn device_actor(handle: &[u8], device: &automerge::ActorId) -> Vec<u8> {
     use sha2::Digest as _;
     let digest = sha2::Sha256::digest(device.to_bytes());
-    let mut actor = format!("{handle}{DEVICE_SEPARATOR}").into_bytes();
+    let mut actor = handle.to_vec();
+    actor.push(DEVICE_SEPARATOR as u8);
     actor.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
     actor
 }

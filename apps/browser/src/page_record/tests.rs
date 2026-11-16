@@ -280,7 +280,7 @@ fn steps(record: &PersonRecord<PageRecord>, tab: &str) -> Vec<(String, usize, St
             history::versions(&mut doc)
                 .into_iter()
                 .filter_map(|version| {
-                    let author = version.context.as_ref()?.invoker.as_ref()?.key();
+                    let author = version.context.as_ref()?.invoker.as_ref()?.acting.by.key();
                     let then = history::read_at::<PageRecord>(&mut doc, &[version.hash])
                         .expect("a past version of the record reads");
                     let page = then.page(tab, 0);
@@ -1124,7 +1124,7 @@ fn what_the_window_held_is_set_down_with_who_answered() {
             history::versions(&mut doc)
                 .into_iter()
                 .filter_map(|version| version.context.as_ref()?.invoker.clone())
-                .filter(|invoker| invoker.key() == "agent:rev")
+                .filter(|invoker| invoker.acting.agent_id() == Some("rev"))
                 .map(|invoker| invoker.acting.acted_for_person().map(str::to_owned))
                 .collect()
         })
@@ -1747,7 +1747,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
             history::versions(&mut doc)
                 .into_iter()
                 .filter_map(|version| version.context.as_ref()?.invoker.clone())
-                .filter(|invoker| invoker.key() == "agent:intake")
+                .filter(|invoker| invoker.acting.agent_id() == Some("intake"))
                 .map(|invoker| {
                     (
                         invoker.acting.is_agent(),

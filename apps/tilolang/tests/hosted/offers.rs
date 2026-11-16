@@ -30,7 +30,7 @@ fn call(
     argument: Option<String>,
 ) {
     session.deliver(
-        "ada",
+        &ui::tilo_actions::MemberId::person("ada").into(),
         address.resource.clone(),
         address.action.clone(),
         argument,

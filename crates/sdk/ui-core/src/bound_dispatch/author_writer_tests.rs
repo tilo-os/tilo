@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
         assert!(!host_person_invocation_permitted());
         binding
             .with_record_frame(&mut outer, false, |doc, _| {
-                assert_eq!(executing_host_person().as_deref(), Some("person"));
+                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
                 assert!(host_person_invocation_permitted());
                 {
                     let _invoker = InvokerScope::enter(ActionInvoker::person("agent"));
@@ -100,10 +100,10 @@ tilo_test_env::scenario! {
                 nested.host_person = MemberId::person("other-person");
                 nested
                     .with_record_frame(doc, false, |_, _| {
-                        assert_eq!(executing_host_person().as_deref(), Some("other-person"));
+                        assert_eq!(executing_host_person(), Some(MemberId::person("other-person")));
                     })
                     .unwrap();
-                assert_eq!(executing_host_person().as_deref(), Some("person"));
+                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
             })
             .unwrap();
         assert_eq!(executing_host_person(), None);
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
 
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = binding.with_record_frame(&mut outer, false, |_, _| {
-                assert_eq!(executing_host_person().as_deref(), Some("person"));
+                assert_eq!(executing_host_person(), Some(MemberId::person("person")));
                 panic!("callback unwound");
             });
         }));
@@ -141,21 +141,21 @@ tilo_test_env::scenario! {
             .with_record_frame(&mut outer, false, |doc, _| {
                 assert_eq!(
                     ActionCx::for_apply(doc, b"preview", 0).author(),
-                    Some("person")
+                    Some(&MemberId::person("person"))
                 );
                 let _invoker = InvokerScope::enter(ActionInvoker::person("guest"));
                 binding
                     .with_record_frame(doc, false, |doc, _| {
                         assert_eq!(
                             ActionCx::for_apply(doc, b"preview", 0).author(),
-                            Some("guest")
+                            Some(&MemberId::person("guest"))
                         );
                         assert!(!host_person_invocation_permitted());
                     })
                     .unwrap();
                 assert_eq!(
                     ActionCx::for_apply(doc, b"preview", 0).author(),
-                    Some("person")
+                    Some(&MemberId::person("person"))
                 );
             })
             .unwrap();
@@ -164,7 +164,7 @@ tilo_test_env::scenario! {
             let _ = binding.with_record_frame(&mut outer, false, |doc, _| {
                 assert_eq!(
                     ActionCx::for_apply(doc, b"preview", 0).author(),
-                    Some("person")
+                    Some(&MemberId::person("person"))
                 );
                 panic!("preview callback unwound");
             });

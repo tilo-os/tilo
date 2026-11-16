@@ -33,7 +33,10 @@ impl Talk {
         self.said.push(
             cx.id(),
             Said {
-                author: cx.author().unwrap_or_default().to_owned(),
+                author: cx
+                    .author()
+                    .map(|author| author.id().to_owned())
+                    .unwrap_or_default(),
                 text,
             },
         );
@@ -42,8 +45,12 @@ impl Talk {
     /// Mark how far the person has read.
     #[action(housekeeping)]
     pub fn mark_read(&mut self, cx: &mut ActionCx, seen: i64) {
-        self.read
-            .insert(cx.author().unwrap_or_default().to_owned(), seen);
+        self.read.insert(
+            cx.author()
+                .map(|author| author.id().to_owned())
+                .unwrap_or_default(),
+            seen,
+        );
     }
 }
 

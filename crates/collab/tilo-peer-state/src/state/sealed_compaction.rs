@@ -1106,7 +1106,7 @@ impl PeerPublicationMut<'_> {
         let author = delegate.verifying_key().to_bytes();
         let parsed = collab_types::parse_changes(&changes).map_err(err)?;
         let shows = self.peer.appearance_author(&author, now);
-        collab_types::check_appearances(&parsed, shows.as_deref())
+        collab_types::check_appearances(&parsed, shows.as_ref())
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         self.peer
             .clone()

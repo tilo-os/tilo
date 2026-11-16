@@ -354,7 +354,7 @@ pub(crate) fn answer(
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
-    let theirs = invoker.key() == me || invoker.acting.acted_for_person() == Some(me);
+    let theirs = invoker.acting.by.key() == me || invoker.acting.acted_for_person() == Some(me);
     if !theirs {
         return Err(format!(
             "`{}` is {me}'s own; only they change it",

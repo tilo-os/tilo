@@ -421,7 +421,10 @@ fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBin
     };
     app.invoke_bound_target(
         &target,
-        &ResourceInvocation::new(&target.address.address, "probe-author"),
+        &ResourceInvocation::new(
+            &target.address.address,
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("probe-author")),
+        ),
     )
     .unwrap();
     assert_eq!(body(&binding.records, &binding.checkout), "edited");

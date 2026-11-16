@@ -420,7 +420,7 @@ impl AppBrokerState {
             resource: action.resource.clone(),
             action: action.action,
             argument: Some(argument),
-            actor: actor.id,
+            actor: actor.actor(),
             context: Some(context),
         };
         let job = self.start_admitted(super::staged_admission::Admitted::Delivered(Box::new(

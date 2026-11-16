@@ -1439,7 +1439,7 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
     group
         .reactors
         .iter()
-        .map(|reactor| reactor.by.clone())
+        .map(|reactor| reactor.by.id().to_owned())
         .collect()
 }
 
@@ -1736,7 +1736,7 @@ tilo_test_env::scenario! {
         // The agent's answer, as an agent writes it: `record-work` derives the reply the person then
         // gives up on.
         let agent = "agent:tide";
-        let mut answer = ada.part.fork().as_agent_for(agent, ADA);
+        let mut answer = ada.part.fork().as_agent_for("tide", ADA);
         answer
             .apply(
                 ChatPart::RECORD_WORK.with(crate::messages::chat_part::RecordWork {
@@ -2106,7 +2106,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
     let mut part = Replica::<ChatPart>::new()
-        .as_agent_for("agent:grant-a8a42b74", ADA)
+        .as_agent_for("grant-a8a42b74", ADA)
         .named("Company mover");
     part.set_now_ms(1_900_000_000_000);
     let origin = ui::tilo_resource::Origin {

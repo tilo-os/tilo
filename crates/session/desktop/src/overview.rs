@@ -689,7 +689,10 @@ mod workspace_tests {
         fn a_member_makes_the_workspace_read_as_shared_with_them() {
             let mut w = ws("Design");
             w.admit("ada", collab_types::Role::Editor);
-            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("ada"),
+                "Ada",
+            ));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert!(!card.is_private());
@@ -810,7 +813,10 @@ mod workspace_tests {
                 w.admit(who, collab_types::Role::Editor);
             }
             // Only Ada actually showed up.
-            w.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+            w.member_here(tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("ada"),
+                "Ada",
+            ));
             let tree = tree_with(vec![w]);
             let card = &workspace_cards(&tree)[0];
             assert_eq!(card.people.len(), 3, "you + two members");
@@ -909,7 +915,8 @@ mod workspace_tests {
             let strip_id = StripId(fresh_id());
             let tab_id = 71;
             w.admit("ada", collab_types::Role::Editor);
-            let ada = tilo_desktop_model::Member::keyed("ada", "Ada");
+            let ada =
+                tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada");
             w.member_here(ada.clone());
             w.place_presence(tilo_desktop_model::Present {
                 tab: Some(tab_id),

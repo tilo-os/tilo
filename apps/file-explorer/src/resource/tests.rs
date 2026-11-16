@@ -1396,7 +1396,7 @@ tilo_test_env::scenario! {
         ] {
             let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
             app.set_permissions(ui::permissions::PermissionContext::member(
-                invoker.key(),
+                invoker.acting.by.key(),
                 ui::permissions::Role::Owner,
             ));
             let root = tempfile::tempdir().unwrap();

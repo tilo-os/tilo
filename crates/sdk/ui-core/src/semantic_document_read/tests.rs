@@ -179,7 +179,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(983)),
         address: tilo_actions::ActionAddress::new("fixture.document", "read"),
         argument: None,
-        actor: "original-reader".into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-reader")),
         participant: None,
     };
     let lease = crate::invocation_scope::PublishedInvocationLease::new(

@@ -155,7 +155,10 @@ async fn a_turn_is_answered_by_its_agent_and_its_steps_are_the_turns() {
             let request: runtime_collab::TurnRequest =
                 serde_json::from_str(answer.argument.as_deref().unwrap()).unwrap();
             assert_eq!(request.instruction, "Add the release date to the notes");
-            assert_eq!(answer.actor, "agent:scribe");
+            assert_eq!(
+                answer.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
 
             let turn_id = uuid::Uuid::from_bytes(answer.invocation_uuid);
             let receipt =
@@ -172,7 +175,10 @@ async fn a_turn_is_answered_by_its_agent_and_its_steps_are_the_turns() {
                 "{receipt:?}"
             );
             let wire = stream.next().await.unwrap();
-            assert_eq!(wire.actor, "agent:scribe");
+            assert_eq!(
+                wire.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
             let group = wire.context().and_then(|context| context.group.clone());
             assert_eq!(
                 group.map(|group| group.id).as_deref(),

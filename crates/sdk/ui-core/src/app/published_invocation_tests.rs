@@ -9,7 +9,7 @@ fn remote_request(
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(wire_id) + 1000)),
         address: tilo_actions::ActionAddress::new("test.counter", action),
         argument: None,
-        actor: "remote:original".into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:original")),
         participant: None,
     }
 }
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
             match case {
                 1 => delivered.wire_id += 1,
                 2 => delivered.invocation = tilo_actions::InvocationId::new(),
-                3 => delivered.actor = "remote:other".into(),
+                3 => delivered.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:other")),
                 4 => delivered.argument = Some("altered".into()),
                 _ => {}
             }

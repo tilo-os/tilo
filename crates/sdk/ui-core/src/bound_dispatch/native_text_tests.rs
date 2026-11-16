@@ -116,8 +116,8 @@ fn edit(
                         spec: &spec,
                         encoded: tilo_actions::EncodedAction::encode("burst.text", &action)
                             .unwrap(),
-                        actor: &binding.author.key(),
-                        local_author: &binding.author.key(),
+                        actor: &tilo_actions::Actor::Member(binding.author.clone()),
+                        local_author: &binding.author,
                         broker_admitted: false,
                         invocation: tilo_actions::InvocationId::new(),
                         source_invocation: None,

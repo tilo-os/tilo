@@ -153,11 +153,11 @@ impl Emoji {
             .iter()
             .map(|(name, added)| sheet::Emoji {
                 name: name.clone(),
-                added_by: added_by(names, workspace, me, &added.added_by),
+                added_by: added_by(names, workspace, me, &added.added_by.key()),
                 picture: pictures
                     .image(name)
                     .map(|image| sheet::Picture { image, revision }),
-                remove: Self::would_remove(&record, &added.added_by, me).map(|_| {
+                remove: Self::would_remove(&record, &added.added_by.key(), me).map(|_| {
                     t_args(
                         "workspace-settings-emoji-remove",
                         &[("name", name.as_str().into())],
@@ -362,7 +362,7 @@ impl Emoji {
         let Some(added_by) = record.get().get(name).map(|emoji| emoji.added_by.clone()) else {
             return;
         };
-        let removal = match Self::would_remove(&record, &added_by, record.me()) {
+        let removal = match Self::would_remove(&record, &added_by.key(), record.me()) {
             Some(emoji_pane::Removal::Own) => {
                 Record::REMOVE_EMOJI.with(actions::RemoveEmoji { name: name.into() })
             }

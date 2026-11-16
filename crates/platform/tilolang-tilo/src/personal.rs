@@ -300,7 +300,7 @@ fn acting() -> Option<String> {
         invoker
             .acting
             .acted_for_person()
-            .map_or_else(|| invoker.key(), str::to_owned),
+            .map_or_else(|| invoker.acting.by.key(), str::to_owned),
     )
 }
 

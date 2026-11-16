@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
         let opened = service.take_open();
         assert_eq!(opened.len(), 1, "one place asked for");
         let (invoker, place) = &opened[0];
-        assert_eq!(invoker.key(), "agent:tide", "asked as the agent");
+        assert_eq!(invoker.acting.by.key(), "agent:tide", "asked as the agent");
         assert_eq!(place.resource, note, "the note the invocation addressed");
         assert_eq!(place.view, "", "its primary view: its own default `open`");
         assert_eq!(

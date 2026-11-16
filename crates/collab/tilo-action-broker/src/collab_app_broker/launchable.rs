@@ -909,7 +909,7 @@ mod tests {
             let mut stream = streams.try_recv().expect("the app came up");
             let delivered = stream.try_recv().expect("the invocation reached the app");
             assert_eq!(delivered.action, "new-window");
-            assert_eq!(delivered.actor, "owner");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
             assert_eq!(
                 offered_provider(&state, &owner, "new-window").as_deref(),
                 Some("8"),
@@ -943,7 +943,7 @@ mod tests {
             invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
             assert_eq!(
                 notes_stream.try_recv().expect("delivered").actor,
-                "agent:scribe"
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
             );
             let provider = offered_provider(&state, &agent, "new-window")
                 .expect("the closed app's action is offered to the agent");
@@ -960,7 +960,7 @@ mod tests {
                 "the agent's view opens beside the one it works in"
             );
             let mut stream = streams.try_recv().expect("the app came up");
-            assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
 
             state.surfaces.lock().expect("surfaces").remove(&8);
             let owner = Caller::local_person("owner").in_workspace(&workspace);
@@ -995,7 +995,7 @@ mod tests {
                 "the agent's first view opens aside"
             );
             let mut stream = streams.try_recv().expect("the app came up");
-            assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
         }
 
         phase an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it;
@@ -1248,7 +1248,7 @@ mod tests {
                     .unwrap()
             };
             let first = call(&request).expect("the person's confirmation admits the call");
-            assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
             assert_eq!(
                 call(&request).unwrap(),
                 first,
@@ -1317,7 +1317,7 @@ mod tests {
                 None,
             )
             .expect("the agent acts");
-            assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 payload: ui::collaboration::PresencePayload::Interaction(interaction),
                 ..
@@ -1362,7 +1362,7 @@ mod tests {
 
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             invoke(&state, &owner, "5", "new-window", None).expect("the person acts");
-            assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
             assert!(
                 heard.try_recv().is_err(),
                 "a person's own view already shows them"
@@ -1372,7 +1372,7 @@ mod tests {
                 .in_workspace(&workspace)
                 .delegated_to("scribe");
             invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
-            assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 member,
                 key,
@@ -1400,7 +1400,7 @@ mod tests {
                 .in_workspace(&workspace)
                 .running_shortcut("morning");
             invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
-            assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
                 payload: ui::collaboration::PresencePayload::Interaction(interaction),
                 ..
@@ -1446,7 +1446,7 @@ mod tests {
 
             invoke(&state, &client, "5", "new-window", None).expect("within the delegation");
             let delivered = app.try_recv().expect("delivered");
-            assert_eq!(delivered.actor, "agent:mcp-1");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("mcp-1")));
             let invoker = delivered
                 .context()
                 .and_then(|context| context.invoker.clone())
@@ -1473,7 +1473,7 @@ mod tests {
             assert!(app.try_recv().is_err(), "nothing outside ran");
             let owner = Caller::local_person("owner").in_workspace(&workspace);
             invoke(&state, &owner, "5", "send", None).expect("the person may");
-            assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
         }
     }
 
@@ -1574,7 +1574,7 @@ mod tests {
             let mut stream = streams.try_recv().expect("the app came up");
             let delivered = stream.try_recv().expect("the invocation reached the app");
             assert_eq!(delivered.action, "new-window");
-            assert_eq!(delivered.actor, "owner");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
 
             invoke(&state, &owner, &target.provider, "new-window", None)
                 .expect("the running app takes it");
@@ -1687,7 +1687,7 @@ mod tests {
                 .try_recv()
                 .expect("the windowless instance took it");
             assert_eq!(delivered.action, "new-window");
-            assert_eq!(delivered.actor, "owner");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
 
             invoke(&state, &owner, &target.provider, "new-window", None)
                 .expect("the running instance takes it");
@@ -2245,7 +2245,7 @@ mod tests {
             let mut stream = streams.try_recv().expect("the app came up");
             let delivered = stream.try_recv().expect("the invocation reached the app");
             assert_eq!(delivered.action, "new-window");
-            assert_eq!(delivered.actor, "owner");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
 
             let rows = offered_rows(&state, &owner, "new-window");
             assert_eq!(

@@ -21,8 +21,8 @@ pub struct CommitHistory {
     pub commit: [u8; 32],
     /// The workspace whose units the action wrote.
     pub workspace: String,
-    /// The principal that invoked it, when one did.
-    pub principal: Option<String>,
+    /// Who invoked it, when someone did.
+    pub actor: Option<tilo_actions::Actor>,
     /// The device that signed it.
     pub device: [u8; 32],
     /// When it was made, in milliseconds since the Unix epoch.
@@ -42,7 +42,7 @@ impl CommitHistory {
         Self {
             commit: commit.id(),
             workspace: commit.workspace.clone(),
-            principal: commit.author.principal.clone(),
+            actor: commit.author.actor.clone(),
             device: commit.author.device,
             at_ms: commit.at_ms,
             invocation: commit.invocation,
@@ -117,7 +117,7 @@ mod tests {
 
     fn author() -> CommitAuthor {
         CommitAuthor {
-            principal: Some("ada".to_owned()),
+            actor: Some(tilo_actions::MemberId::person("ada").into()),
             device: DEVICE,
         }
     }
@@ -168,7 +168,7 @@ mod tests {
             assert!(log.kept(&commit));
             let history = log.history(WORKSPACE);
             assert_eq!(history.len(), 1, "one action, one entry");
-            assert_eq!(history[0].principal.as_deref(), Some("ada"));
+            assert_eq!(history[0].actor, Some(tilo_actions::MemberId::person("ada").into()));
             assert_eq!(history[0].device, DEVICE);
             assert!(log.history("elsewhere").is_empty());
         }

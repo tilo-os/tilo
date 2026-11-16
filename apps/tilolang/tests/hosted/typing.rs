@@ -155,7 +155,9 @@ fn history_acts(session: &mut Session) -> usize {
 /// The steps the person `person` has in effect in the record, newest first, each the number of
 /// changes it takes back: one for the burst of their typing, however many letters it was.
 fn steps(session: &Session, person: &str) -> Vec<usize> {
-    let scope = ui::history_source::steps::Scope::Invoker(person.to_owned());
+    let scope = ui::history_source::steps::Scope::Invoker(
+        ui::tilo_actions::MemberId::person(person).into(),
+    );
     let doc = record(session).first().expect("the record is held").clone();
     ui::history_source::steps::steps_in_effect(&doc, &|version| scope.owns(version), 16)
         .iter()

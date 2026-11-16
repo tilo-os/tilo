@@ -94,7 +94,7 @@ pub(crate) fn step_change(
         let by = context
             .invoker
             .as_ref()
-            .map(tilo_actions::ActionInvoker::key);
+            .map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
         (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
             .then(|| (change.clone(), context))
     })

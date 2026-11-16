@@ -68,12 +68,12 @@ impl Described for ReactionStripWidget {
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
         let (groups, names, can_react, toggle) = said(props);
-        Self::new(groups, String::new())
+        Self::new(groups, None)
             .with_names(move |reactor: &Reactor| {
                 names
                     .get(&reactor.by)
                     .cloned()
-                    .unwrap_or_else(|| reactor.by.clone())
+                    .unwrap_or_else(|| reactor.by.id().to_owned())
             })
             .can_react(can_react)
             .on_toggle(move |picked| toggle.fire(Some(Value::Text(picked.emoji))))
@@ -88,7 +88,7 @@ impl Described for ReactionStripWidget {
             names
                 .get(&reactor.by)
                 .cloned()
-                .unwrap_or_else(|| reactor.by.clone())
+                .unwrap_or_else(|| reactor.by.id().to_owned())
         });
         self.set_on_toggle(move |picked| {
             toggle.fire(Some(Value::Text(picked.emoji)));
@@ -103,7 +103,7 @@ fn said(
     props: ReactionsProps,
 ) -> (
     Vec<ReactionGroup>,
-    std::collections::HashMap<String, String>,
+    std::collections::HashMap<tilo_resource::MemberId, String>,
     bool,
     Event,
 ) {
@@ -124,11 +124,11 @@ fn said(
                 .into_iter()
                 .map(|person| {
                     let reactor = Reactor {
-                        by: person.identity.clone(),
+                        by: tilo_resource::MemberId::person(person.identity),
                         persona: None,
                         name: None,
                     };
-                    names.insert(person.identity, person.name);
+                    names.insert(reactor.by.clone(), person.name);
                     reactor
                 })
                 .collect(),

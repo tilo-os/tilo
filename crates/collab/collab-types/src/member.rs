@@ -128,11 +128,10 @@ pub struct Member {
 }
 
 impl Member {
-    /// `key`'s row ([`MemberId::parse`]) named `name`, with no role the workspace has decided and
-    /// the colour their kind gives them.
+    /// `id`'s row named `name`, with no role the workspace has decided and the colour their kind
+    /// gives them.
     #[must_use]
-    pub fn keyed(key: &str, name: impl Into<String>) -> Self {
-        let id = MemberId::parse(key).unwrap_or_else(|| MemberId::person(key));
+    pub fn named(id: MemberId, name: impl Into<String>) -> Self {
         let name = name.into();
         match id {
             MemberId::Person(person) => Self::of_person(&Person::new(person, name), None),
@@ -264,19 +263,6 @@ mod tests {
                 .joined_at(Some(7));
             let json = serde_json::to_string(&row).unwrap();
             assert_eq!(serde_json::from_str::<Member>(&json).unwrap(), row);
-        }
-
-        phase a_stored_id_is_spelt_once;
-        {
-            for id in [
-                MemberId::person("a3"),
-                MemberId::agent("helper"),
-                MemberId::bot("bridge"),
-            ] {
-                assert_eq!(MemberId::parse(&id.key()).as_ref(), Some(&id), "{id}");
-            }
-            assert_eq!(MemberId::parse("ada"), Some(MemberId::person("ada")));
-            assert_eq!(MemberId::parse("agent:"), None);
         }
     }
 }

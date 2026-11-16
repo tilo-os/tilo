@@ -47,7 +47,7 @@ fn click(widget: &mut ReactionStripWidget, at: Point) {
 
 fn reactor(by: &str) -> Reactor {
     Reactor {
-        by: by.to_owned(),
+        by: tilo_actions::MemberId::person(by),
         persona: None,
         name: None,
     }
@@ -62,7 +62,7 @@ fn group(emoji: &str, by: &[&str]) -> ReactionGroup {
 }
 
 fn names(reactor: &Reactor) -> String {
-    match reactor.by.as_str() {
+    match reactor.by.id() {
         "ada" => "Ada".into(),
         "bo" => "Bo".into(),
         other => other.to_uppercase(),
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
             .collect();
         let wide = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::new(10.0, 20.0), 2000.0),
             &mut text,
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
         let narrow_width = wide.pills()[2].rect.x1 - 10.0;
         let narrow = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::new(10.0, 20.0), narrow_width),
             &mut text,
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
         let groups = vec![group("👍", &["ada", "me"]), group(":tilo:", &["bo"])];
         let laid = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
             &mut text,
@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
 
         let read_only = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             false,
             (Point::ZERO, 400.0),
             &mut text,
@@ -176,14 +176,14 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let mut bridged = group("🙌", &["ada", "bo", "cy", "me", "dee"]);
         bridged.reactors.push(Reactor {
-            by: "bridge".into(),
+            by: tilo_actions::MemberId::bot("bridge"),
             persona: Some("discord/1".into()),
             name: Some("Eve".into()),
         });
         let groups = vec![group("🎉", &["ada", "bo"]), bridged, group("🔥", &["me"])];
         let laid = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 600.0),
             &mut text,
@@ -210,7 +210,7 @@ tilo_test_env::scenario! {
         let groups = vec![group("👍", &["ada", "me"]), group("🎉", &["bo"])];
         let laid = layout(
             &groups,
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 600.0),
             &mut text,
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
     phase a_read_only_strip_shows_the_pills_and_takes_no_reaction;
     {
         let theme = Theme::dark();
-        let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], "me").can_react(false);
+        let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], Some(tilo_actions::MemberId::person("me"))).can_react(false);
         lay_out_and_draw(&mut widget, 600.0, &theme);
         let laid = widget.strip().laid_out().clone();
         assert!(laid.add_rect().is_none());
@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
         let mut strip = ReactionStrip::new();
         strip.layout(
             &[group("👍", &["ada"])],
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
             &mut text,
@@ -257,7 +257,7 @@ tilo_test_env::scenario! {
         assert!(!strip.is_moving(), "what is there at first rests");
         strip.layout(
             &[group("👍", &["ada", "bo"]), group("🎉", &["bo"])],
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
             &mut text,
@@ -275,10 +275,10 @@ tilo_test_env::scenario! {
         );
         let reduced = theme.clone().with_reduce_motion(true);
         let mut calm = ReactionStrip::new();
-        calm.layout(&[], "me", true, (Point::ZERO, 400.0), &mut text, &reduced);
+        calm.layout(&[], Some(&tilo_actions::MemberId::person("me")), true, (Point::ZERO, 400.0), &mut text, &reduced);
         calm.layout(
             &[group("🎉", &["bo"])],
-            "me",
+            Some(&tilo_actions::MemberId::person("me")),
             true,
             (Point::ZERO, 400.0),
             &mut text,
@@ -308,7 +308,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     let seen = Rc::clone(&toggled);
     let mut widget = ReactionStripWidget::new(
         vec![group("👍", &["ada", "me"]), group("🎉", &["bo"])],
-        "me",
+        Some(tilo_actions::MemberId::person("me")),
     )
     .with_names(names)
     .on_toggle(move |toggle| seen.borrow_mut().push(toggle));
@@ -374,7 +374,10 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
 fn the_add_button_opens_the_shared_picker_and_a_pick_reacts() {
     let theme = Theme::dark();
     crate::emoji_catalogue::record_recent("🌮");
-    let mut widget = ReactionStripWidget::new(vec![group("👍", &["ada"])], "me");
+    let mut widget = ReactionStripWidget::new(
+        vec![group("👍", &["ada"])],
+        Some(tilo_actions::MemberId::person("me")),
+    );
     lay_out_and_draw(&mut widget, 600.0, &theme);
     let add = widget.strip().laid_out().add_rect().expect("add");
     click(&mut widget, add.center());
@@ -416,7 +419,10 @@ fn on_touch_a_pill_is_pressed_within_its_grown_target_and_its_face_stays_compact
     let face_height = StripMetrics::of(&theme).height;
     let side = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
     assert!(face_height < side, "the face is compact: {face_height}");
-    let mut widget = ReactionStripWidget::new(vec![group("👍", &["bo"])], "ada");
+    let mut widget = ReactionStripWidget::new(
+        vec![group("👍", &["bo"])],
+        Some(tilo_actions::MemberId::person("ada")),
+    );
     widget.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
     lay_out_and_draw(&mut widget, 320.0, &theme);
     assert!(

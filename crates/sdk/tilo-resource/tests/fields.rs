@@ -131,7 +131,10 @@ impl Board {
     #[action]
     pub fn add_card(&mut self, cx: &mut ActionCx) {
         self.cards = self.cards.saturating_add(1);
-        cx.author().unwrap_or_default().clone_into(&mut self.author);
+        self.author = cx
+            .author()
+            .map(|author| author.id().to_owned())
+            .unwrap_or_default();
     }
 }
 

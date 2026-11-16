@@ -332,7 +332,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
         resource: archive.resource.clone(),
         action: archive.action.clone(),
         argument: None,
-        actor: actor.to_owned(),
+        actor: tilo_actions::MemberId::person(actor).into(),
         context: None,
     };
     ada.inbox.borrow_mut().push_back(invoke(1, BO));

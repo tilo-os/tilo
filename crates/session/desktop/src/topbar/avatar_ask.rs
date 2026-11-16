@@ -690,8 +690,14 @@ mod tests {
     fn the_open_ask_never_stands_over_the_faces_or_the_people_button() {
         let mut crowded = tree();
         crowded.workspaces[0].members_here(vec![
-            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
-            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::agent("claude"),
+                "Claude Code",
+            ),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("ada"),
+                "Ada Lovelace",
+            ),
         ]);
         for viewport in [(1280, 800), (1024, 768), (720, 900), (390, 844), (360, 780)] {
             let (frame, _) = asking_desktop_over(viewport, &crowded);
@@ -751,7 +757,10 @@ mod tests {
     #[test]
     fn a_phones_face_opens_its_card_with_an_ask_open() {
         let mut here = tree();
-        let agent = tilo_desktop_model::Member::keyed("agent:claude", "Claude Code");
+        let agent = tilo_desktop_model::Member::named(
+            collab_types::MemberId::agent("claude"),
+            "Claude Code",
+        );
         here.workspaces[0].member_here(agent);
         here.workspaces[0].present[0].device = "claude".into();
         for viewport in [(390, 844), (360, 780)] {
@@ -789,7 +798,10 @@ mod tests {
     #[test]
     fn the_open_ask_never_stands_in_the_following_banner() {
         let mut followed = tree();
-        let agent = tilo_desktop_model::Member::keyed("agent:claude", "Claude Code");
+        let agent = tilo_desktop_model::Member::named(
+            collab_types::MemberId::agent("claude"),
+            "Claude Code",
+        );
         followed.workspaces[0].member_here(agent);
         followed.workspaces[0].present[0].followed = true;
         for viewport in [(1280, 800), (1024, 768), (390, 844)] {
@@ -839,8 +851,14 @@ mod tests {
     fn the_open_ask_stays_in_the_bar_band() {
         let mut crowded = tree();
         crowded.workspaces[0].members_here(vec![
-            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
-            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::agent("claude"),
+                "Claude Code",
+            ),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("ada"),
+                "Ada Lovelace",
+            ),
         ]);
         for viewport in [
             (1920, 1080),
@@ -890,8 +908,14 @@ mod tests {
 
         let mut crowded = tree();
         crowded.workspaces[0].members_here(vec![
-            tilo_desktop_model::Member::keyed("agent:claude", "Claude Code"),
-            tilo_desktop_model::Member::keyed("ada", "Ada Lovelace"),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::agent("claude"),
+                "Claude Code",
+            ),
+            tilo_desktop_model::Member::named(
+                collab_types::MemberId::person("ada"),
+                "Ada Lovelace",
+            ),
         ]);
         let theme = Theme::dark();
         let gap = f64::from(theme.tokens.spacing.s1);

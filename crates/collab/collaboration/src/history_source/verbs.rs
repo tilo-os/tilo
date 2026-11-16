@@ -56,9 +56,9 @@ pub enum HistoryEdit {
     Undo {
         steps: Option<u32>,
         run: Option<String>,
-        /// An exact author id from history for steps outside a run.
+        /// An author from history, for steps outside a run.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        by: Option<String>,
+        by: Option<tilo_actions::Actor>,
         /// Every step after this version instead.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<String>,
@@ -423,8 +423,8 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                     .nullable(),
                 ActionParam::optional(
                     "by",
-                    ParamType::Text,
-                    "Exact author id from history, for steps outside a run",
+                    ParamType::Object,
+                    "The actor's `by` of a history entry, for steps outside a run",
                 )
                 .nullable(),
                 ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
@@ -448,15 +448,11 @@ fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
                 {
                     return Err("give step alone".into());
                 }
-                let by = args.text("by").map(str::trim).map(str::to_owned);
-                if by.as_ref().is_some_and(|author| {
-                    author.is_empty() || author.len() > 512 || author.chars().any(char::is_control)
-                }) {
-                    return Err(
-                        "author id must be nonempty, at most 512 bytes, and contain no controls"
-                            .into(),
-                    );
-                }
+                let by = args
+                    .get("by")
+                    .map(|by| serde_json::from_value::<tilo_actions::Actor>(by.to_json()))
+                    .transpose()
+                    .map_err(|_| "by is an author object from history".to_owned())?;
                 if by.is_some() && args.text("run").is_some() {
                     return Err("choose an author or a run, not both".into());
                 }
@@ -576,7 +572,12 @@ fn by(version: &Version) -> String {
         .context
         .as_ref()
         .and_then(|context| context.invoker.as_ref())
-        .map(|invoker| invoker.name.clone().unwrap_or_else(|| invoker.key()))
+        .map(|invoker| {
+            invoker
+                .name
+                .clone()
+                .unwrap_or_else(|| invoker.acting.by.id().to_owned())
+        })
         .or_else(|| super::authors::actor_handle(&version.actor))
         .unwrap_or_else(|| version.actor.chars().take(8).collect())
 }

@@ -19,6 +19,7 @@ use crate::widget::{
     ActionEmitter, ControlBindingKind, ControlBindingMetadata, EventCtx, ModelPath, TaffyTreeExt,
     Widget,
 };
+use tilo_resource::MemberId;
 
 /// A person reacting with an emoji (`react`), or taking their reaction
 /// back: what a pill or a pick in the picker asks for.
@@ -32,7 +33,7 @@ pub struct ReactionToggle {
 /// button that asks for another emoji.
 pub struct ReactionStripWidget {
     groups: Vec<ReactionGroup>,
-    me: String,
+    me: Option<MemberId>,
     can_react: bool,
     names: Rc<dyn Fn(&Reactor) -> String>,
     strip: ReactionStrip,
@@ -57,14 +58,14 @@ pub struct ReactionStripWidget {
 
 impl ReactionStripWidget {
     /// The reactions `groups` (from [`tilo_resource::Reactions::groups`]),
-    /// seen by the participant `me`.
+    /// seen by `me`.
     #[must_use]
-    pub fn new(groups: Vec<ReactionGroup>, me: impl Into<String>) -> Self {
+    pub fn new(groups: Vec<ReactionGroup>, me: Option<MemberId>) -> Self {
         Self {
             groups,
-            me: me.into(),
+            me,
             can_react: true,
-            names: Rc::new(|reactor: &Reactor| reactor.by.clone()),
+            names: Rc::new(|reactor: &Reactor| reactor.by.id().to_owned()),
             strip: ReactionStrip::new(),
             metrics: None,
             rect: Rect::ZERO,
@@ -184,10 +185,9 @@ impl ReactionStripWidget {
         if !self.can_react {
             return;
         }
-        let react = !self
-            .groups
-            .iter()
-            .any(|group| group.emoji == emoji && group.includes(&self.me));
+        let react = !self.groups.iter().any(|group| {
+            group.emoji == emoji && self.me.as_ref().is_some_and(|me| group.includes(me))
+        });
         let toggle = ReactionToggle {
             emoji: emoji.to_owned(),
             react,
@@ -226,7 +226,7 @@ impl ReactionStripWidget {
         let metrics = StripMetrics::of(theme);
         let laid = layout(
             &self.groups,
-            &self.me,
+            self.me.as_ref(),
             self.can_react,
             (self.rect.origin(), self.rect.width()),
             text,
@@ -283,7 +283,7 @@ impl Widget for ReactionStripWidget {
         );
         let laid = layout(
             &self.groups,
-            &self.me,
+            self.me.as_ref(),
             self.can_react,
             (Point::ZERO, width),
             text,
@@ -335,10 +335,10 @@ impl Widget for ReactionStripWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.me.is_empty()
+        if self.me.is_none()
             && let Some(own) = presence.self_id()
         {
-            self.me.clone_from(&own.key());
+            self.me = Some(own.clone());
             self.layout_dirty = true;
         }
         self.relayout(text, theme);

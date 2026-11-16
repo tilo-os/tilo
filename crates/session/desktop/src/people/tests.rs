@@ -433,7 +433,7 @@ tilo_test_env::scenario! {
         use tilo_desktop_model::{Workspace, WorkspaceId};
 
         let mut workspace = Workspace::new(WorkspaceId::from_u128(73), "Lounge");
-        let agent = Member::keyed("agent:claude", "Claude Code");
+        let agent = Member::named(collab_types::MemberId::agent("claude"), "Claude Code");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
             device: "claude".into(),
@@ -561,7 +561,7 @@ tilo_test_env::scenario! {
             device: device.clone(),
             ..Present::of(bot.id)
         });
-        let ada = Member::keyed("ada", "Ada");
+        let ada = Member::named(collab_types::MemberId::person("ada"), "Ada");
         workspace.member_here(ada);
         let desktop = Layout {
             active: workspace.id(),
@@ -591,7 +591,7 @@ tilo_test_env::scenario! {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("owner"),
         ));
-        let agent = Member::keyed("agent:scribe", "Release Notes Agent");
+        let agent = Member::named(collab_types::MemberId::agent("scribe"), "Release Notes Agent");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
             device: agent.id.key(),
@@ -630,7 +630,7 @@ tilo_test_env::scenario! {
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("owner"),
         ));
-        let agent = Member::keyed("agent:scribe", "Scribe");
+        let agent = Member::named(collab_types::MemberId::agent("scribe"), "Scribe");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
             device: "scribe".into(),
@@ -696,8 +696,8 @@ tilo_test_env::scenario! {
         });
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
         workspace.strips = vec![main];
-        let ada = Member::keyed("ada", "Ada");
-        let claude = Member::keyed("agent:claude", "Claude Code");
+        let ada = Member::named(collab_types::MemberId::person("ada"), "Ada");
+        let claude = Member::named(collab_types::MemberId::agent("claude"), "Claude Code");
         workspace.members_here([ada.clone(), claude.clone()]);
         workspace.present[0] = Present {
             tab: Some(7),

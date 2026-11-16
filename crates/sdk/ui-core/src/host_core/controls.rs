@@ -161,7 +161,7 @@ pub(crate) trait ControlHost: HostCore {
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
     ) -> Started {
         let argument = json_argument(&prepared.invocation.arguments);
-        let actor = self.local_author().key();
+        let actor = tilo_actions::Actor::Member(self.local_author().clone());
         self.invoke_local_target(
             &prepared.target,
             &ResourceInvocation::new(&prepared.invocation.address, &actor)
@@ -335,9 +335,10 @@ pub(crate) trait ControlHost: HostCore {
             return result.is_ok();
         }
         let json = json_argument(&intent.arguments);
-        let actor = acting
-            .as_ref()
-            .map_or_else(|| self.local_author().key(), |acting| acting.invoker.key());
+        let actor = acting.as_ref().map_or_else(
+            || tilo_actions::Actor::Member(self.local_author().clone()),
+            |acting| acting.invoker.acting.by.clone(),
+        );
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
@@ -424,9 +425,10 @@ pub(crate) trait ControlHost: HostCore {
             self.bound_control_settled(target, on_behalf_of, &result);
             return result.is_ok();
         }
-        let actor = acting
-            .as_ref()
-            .map_or_else(|| self.local_author().key(), |acting| acting.invoker.key());
+        let actor = acting.as_ref().map_or_else(
+            || tilo_actions::Actor::Member(self.local_author().clone()),
+            |acting| acting.invoker.acting.by.clone(),
+        );
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);

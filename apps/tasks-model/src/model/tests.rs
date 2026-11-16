@@ -269,7 +269,7 @@ fn a_task_syncs_to_another_device_survives_a_restart_and_merges_its_edits() {
     on_desktop
         .apply(Tracker::CREATE.with(create("Gather the ledgers", Some(issue.clone()), None)))
         .unwrap();
-    let mut agent = on_laptop.fork().as_agent_for(AGENT, "ada");
+    let mut agent = on_laptop.fork().as_agent_for("claude", "ada");
     agent
         .apply(Tracker::COMMENT.with(tracker::Comment {
             issue: issue.clone(),
@@ -332,7 +332,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
 
     // Every change says what it did and for whom, in fields the person reads:
     // the agent, the kind of actor, and the person it acted under.
-    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let mut agent = person.fork().as_agent_for("claude", "ada");
     agent
         .apply(Tracker::COMMENT.with(tracker::Comment {
             issue,
@@ -351,7 +351,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
         })
         .expect("the agent's comment is a version with what it did");
     let invoker = spent.invoker.as_ref().expect("the change names its actor");
-    assert_eq!(invoker.key(), AGENT);
+    assert_eq!(invoker.acting.by.key(), AGENT);
     assert!(invoker.acting.is_agent());
     assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
 }
@@ -392,7 +392,7 @@ fn rename_writes_the_issue_title_and_refuses_a_blank_one() {
         .apply(Tracker::CREATE.with(create("Book the room", None, None)))
         .unwrap();
     let issue = id_of(&person, "Book the room");
-    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    let mut agent = person.fork().as_agent_for("claude", "ada");
     agent
         .apply(Tracker::RENAME.with(tracker::Rename {
             issue: issue.clone(),
@@ -410,7 +410,12 @@ fn rename_writes_the_issue_title_and_refuses_a_blank_one() {
         .find_map(|version| version.context.clone())
         .expect("the rename is a version with what it did");
     assert_eq!(
-        spent.invoker.expect("the change names its actor").key(),
+        spent
+            .invoker
+            .expect("the change names its actor")
+            .acting
+            .by
+            .key(),
         AGENT
     );
     assert!(
@@ -968,7 +973,7 @@ fn a_moved_issue_shows_its_original_author_and_date_and_keeps_who_moved_it() {
     let mut person = ada();
     let mut mover = person
         .fork()
-        .as_agent_for("agent:grant-a8a42b74", "ada")
+        .as_agent_for("grant-a8a42b74", "ada")
         .named("Company mover");
     mover.set_now_ms(1_900_000_000_000);
     let written = 1_741_000_000_000;

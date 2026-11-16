@@ -99,7 +99,7 @@ mod tests {
             );
             assert_eq!(invoker_participant(Some(&context)), None);
             assert_eq!(
-                tilo_actions::ActionInvoker::delivered(&actor.id, Some(&context)),
+                tilo_actions::ActionInvoker::delivered(&actor.actor(), Some(&context)),
                 context.invoker.clone().unwrap(),
                 "the worker derives exactly the host-set invoker"
             );

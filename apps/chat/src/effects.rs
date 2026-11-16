@@ -691,7 +691,10 @@ impl ChatApp {
                     message.author == user
                         || message.mentions.iter().any(|mention| mention.user == user)
                         || message.reactions.iter().any(|reaction| {
-                            reaction.reactors.iter().any(|reactor| reactor.by == user)
+                            reaction
+                                .reactors
+                                .iter()
+                                .any(|reactor| reactor.by.key() == user)
                         })
                 })
                 .and_then(|message| self.channel(&message.channel))

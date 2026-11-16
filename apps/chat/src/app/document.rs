@@ -340,7 +340,7 @@ impl ChatApp {
                     ids.insert(linked.to_owned());
                 }
                 for reaction in &message.reactions {
-                    ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));
+                    ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.key()));
                 }
                 ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
             }

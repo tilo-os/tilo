@@ -158,7 +158,7 @@ fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
         .and_then(|version| version.context.as_ref())
         .and_then(|context| context.invoker.as_ref())
         .expect("the step names who made it");
-    assert_eq!(by.key(), "agent:scribe");
+    assert_eq!(by.acting.by.key(), "agent:scribe");
     assert_eq!(by.acting.acted_for_person(), Some("ada"));
 
     app.call_by(agent, kind, "undo", serde_json::json!({}))

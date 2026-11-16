@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
                 2,
                 "peer {who}: both distinct reactors counted once each"
             );
-            assert!(thumbs.includes("u_alice") && thumbs.includes("u_bob"));
+            assert!(thumbs.includes(&ui::tilo_resource::MemberId::person("u_alice")) && thumbs.includes(&ui::tilo_resource::MemberId::person("u_bob")));
         }
 
         // Full convergence: identical timelines on both peers.

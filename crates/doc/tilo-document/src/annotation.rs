@@ -117,7 +117,9 @@ pub fn store_bodies_by_variant(
 
 /// Who writes in an action: whoever invokes it.
 fn signer(cx: &ActionCx) -> String {
-    cx.author().unwrap_or_default().to_owned()
+    cx.author()
+        .map(tilo_resource::MemberId::key)
+        .unwrap_or_default()
 }
 
 /// `ms` after the Unix epoch as the ISO-8601 UTC time a comment is dated

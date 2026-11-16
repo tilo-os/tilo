@@ -718,7 +718,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     assert!(
         invokers
             .iter()
-            .any(|invoker| invoker.key() == person && invoker.acting.is_person()),
+            .any(|invoker| invoker.acting.by.key() == person && invoker.acting.is_person()),
         "{invokers:?}"
     );
     assert!(

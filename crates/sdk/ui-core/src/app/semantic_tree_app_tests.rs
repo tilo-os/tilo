@@ -681,7 +681,7 @@ fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
         "test.counter".into(),
         "bump".into(),
         None,
-        "remote:original",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:original")),
         None,
     );
     assert_eq!(counter(&app), 0);
@@ -718,7 +718,7 @@ fn background_document_job_from_an_unbound_resource_waits_for_broker_admission()
     let sent = Rc::new(RefCell::new(Vec::new()));
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-    let actor = app.collaboration.local_author.key();
+    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
     let started = app
         .invoke_resource_action(ResourceInvocation::new(&address, &actor))
         .unwrap();
@@ -807,7 +807,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
             "the snapshot is retained before fallback"
         );
 
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
 
         assert!(
@@ -824,7 +824,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         ));
 
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(matches!(denied, Err(tilo_actions::ApiError::Unknown(_))));
         assert_eq!(counter(&app), 0, "the denied fallback must not run");
@@ -856,7 +856,7 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
         );
 
         let address = tilo_actions::ActionAddress::new("test.lazy.child", "bump");
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             result.is_ok(),
@@ -1015,7 +1015,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let claimed = tilo_actions::InvocationId::new();
         let ambient = tilo_actions::ActionContext::default().with_source_invocation(Some(claimed));
         let address = tilo_actions::ActionAddress::new("test.counter", "bump");
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         app.invoke_resource_action(
             ResourceInvocation::new(&address, &actor)
                 .invocation(Some(claimed))
@@ -1046,7 +1046,8 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
 
         let address = tilo_actions::ActionAddress::new("test.counter", "bump");
         let admitted_invocation = tilo_actions::InvocationId::new();
-        let request = ResourceInvocation::new(&address, "agent:Scribe")
+        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let request = ResourceInvocation::new(&address, &scribe)
             .confirmed(true)
             .broker_admitted(true)
             .invocation(Some(admitted_invocation))
@@ -1112,7 +1113,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             resource: "test.counter".into(),
             action: "bump".into(),
             argument: None,
-            actor: "agent:Scribe".into(),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
             context: None,
         });
 
@@ -1149,7 +1150,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             resource: "test.counter".into(),
             action: "async-bump".into(),
             argument: None,
-            actor: "agent:Scribe".into(),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
             context: None,
         });
         assert_eq!(counter(&app), 0, "admission alone does not mutate");
@@ -1200,7 +1201,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
         let address = tilo_actions::ActionAddress::new("test.invalid", "decode");
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             matches!(result, Err(tilo_actions::ApiError::UnregisteredType(ref id))
@@ -1218,9 +1219,18 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
         for (action, actor) in [
-            ("host-bump", app.collaboration.local_author.key()),
-            ("inspect", "agent:Scribe".to_string()),
-            ("missing", app.collaboration.local_author.key()),
+            (
+                "host-bump",
+                tilo_actions::Actor::Member(app.collaboration.local_author.clone()),
+            ),
+            (
+                "inspect",
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
+            ),
+            (
+                "missing",
+                tilo_actions::Actor::Member(app.collaboration.local_author.clone()),
+            ),
         ] {
             let address = tilo_actions::ActionAddress::new("test.counter", action);
             let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
@@ -1256,12 +1266,13 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         let mut app = app();
         let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
 
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let local = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(local.is_err(), "an unbrokered client must fail closed");
         assert_eq!(counter(&app), 0);
 
-        let request = ResourceInvocation::new(&address, "agent:Scribe")
+        let scribe = tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe"));
+        let request = ResourceInvocation::new(&address, &scribe)
             .confirmed(true)
             .broker_admitted(true)
             .invocation(Some(tilo_actions::InvocationId::new()));
@@ -1281,7 +1292,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             .invoke_resource_action(
                 ResourceInvocation::new(
                     &tilo_actions::ActionAddress::new("test.counter", "inspect"),
-                    "agent:Scribe",
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
                 )
                 .confirmed(true)
                 .broker_admitted(true)
@@ -1315,7 +1326,7 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             resource = resource.with_action(spec);
         }
         let mut app = lazy_app(resource);
-        let invoke = |app: &mut App, action: &str, actor: &str| {
+        let invoke = |app: &mut App, action: &str, actor: &tilo_actions::Actor| {
             app.invoke_resource_action(
                 ResourceInvocation::new(
                     &tilo_actions::ActionAddress::new("test.folder", action),
@@ -1326,14 +1337,19 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             )
         };
         assert!(matches!(
-            invoke(&mut app, "copy-local-folder", "person:guest"),
+            invoke(&mut app, "copy-local-folder", &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest"))),
             Err(tilo_actions::ApiError::Unavailable { ref code, .. }) if code == "own_device"
         ));
         assert!(
-            invoke(&mut app, "count", "person:guest").is_ok(),
+            invoke(
+                &mut app,
+                "count",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest"))
+            )
+            .is_ok(),
             "a collaborator still reaches the shared effects"
         );
-        let me = app.collaboration.local_author.key();
+        let me = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
     }
 }
@@ -1503,7 +1519,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let mut app = app();
         let before = app.state.doc.get_heads();
         let address = tilo_actions::ActionAddress::new("test.counter", "ping");
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(matches!(
             result,
@@ -1827,7 +1843,7 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
         "test.counter".into(),
         "ping".into(),
         None,
-        "agent:Scribe",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
         None,
     );
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
@@ -1848,14 +1864,14 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
         "test.counter".into(),
         "peek".into(),
         None,
-        "agent:Viewer",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Viewer")),
         None,
     );
     assert_eq!(counter(&app), 1, "the viewer's effect wrote nothing");
     assert!(app.actions.acting_for.is_empty());
 
     // An edit the app submits on its own is the local person's.
-    let local = app.collaboration.local_author.key();
+    let local = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
     app.invoke_resource_action(ResourceInvocation::new(
         &tilo_actions::ActionAddress::new("test.counter", "bump"),
         &local,
@@ -1864,7 +1880,7 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     assert_eq!(counter(&app), 2);
     assert_eq!(
         app.state.peek_last_undo().and_then(|entry| entry.author),
-        Some(crate::permissions::MemberId::person(local))
+        local.member_id().cloned()
     );
 }
 
@@ -1897,7 +1913,7 @@ fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
             "test.counter".into(),
             "ping".into(),
             None,
-            "agent:Scribe",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("Scribe")),
             None,
         );
         assert_eq!(
@@ -1965,7 +1981,7 @@ fn broker_invocation_uuid_collision_preserves_original_operation_route() {
             "test.counter".into(),
             "async-bump".into(),
             None,
-            "device:first",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device:first")),
             None,
         );
         // A conflicting caller must never replace the active operation's
@@ -1976,7 +1992,7 @@ fn broker_invocation_uuid_collision_preserves_original_operation_route() {
             "test.counter".into(),
             conflicting_action.into(),
             None,
-            "device:second",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device:second")),
             None,
         );
         assert_eq!(

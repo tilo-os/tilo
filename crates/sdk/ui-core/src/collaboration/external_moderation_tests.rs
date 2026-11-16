@@ -107,7 +107,7 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
                     "operation": serde_json::to_string(&operation).unwrap(),
                 })
             )),
-            actor: "original-caller".into(),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
             participant: None,
         },
         route,

@@ -49,7 +49,7 @@ fn step_authors(doc: &mut AutoCommit) -> Vec<String> {
     tilo_resource::history::versions(doc)
         .iter()
         .filter_map(|version| version.context.as_ref()?.invoker.as_ref())
-        .map(tilo_actions::ActionInvoker::key)
+        .filter_map(|invoker| invoker.acting.person_id().map(str::to_owned))
         .collect()
 }
 
@@ -138,7 +138,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     // An agent's undo by scope reads the same steps from the document.
     let undone = steps::undo(
         &mut reloaded,
-        &Scope::Invoker("ada".into()),
+        &Scope::Invoker(tilo_actions::MemberId::person("ada").into()),
         1,
         |_, _| Ok(None),
         &Words,

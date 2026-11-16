@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
             .last()
             .and_then(|version| version.context.clone())
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.key());
+            .map(|invoker| invoker.acting.by.key());
         assert_eq!(invoker.as_deref(), Some("agent:writer"));
     }
 }
@@ -752,6 +752,8 @@ fn delayed_receipt_completion_applies_history_as_its_original_invoker() {
             .invoker
             .as_ref()
             .unwrap()
+            .acting
+            .by
             .key(),
         "agent:receipt-writer"
     );

@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
         fixture.app.collaboration.manager = CollaborationManager::new();
         let scope = fixture.app.begin_local_input_capture();
         let target = fixture.target(0, "apply");
-        let actor = fixture.bindings[0].author.key();
+        let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
         fixture
             .app
             .invoke_bound_target(
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
         for _ in 0..2 {
             let scope = fixture.app.begin_local_input_capture();
             let target = fixture.target(0, "apply");
-            let actor = fixture.bindings[0].author.key();
+            let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
             fixture
                 .app
                 .invoke_bound_target(
@@ -803,7 +803,7 @@ tilo_test_env::scenario! {
         let target = fixture.target(0, "apply");
         // This is the same internal API a delivered/model action uses, not the
         // public local-user semantic entry point.
-        let actor = fixture.bindings[0].author.key();
+        let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
         fixture
             .app
             .invoke_bound_target(
@@ -866,7 +866,7 @@ tilo_test_env::scenario! {
         let attempts = fixture.app.actions.action_surface_publication_attempts;
         let scope = fixture.app.begin_local_input_capture();
         let target = fixture.target(0, "apply");
-        let actor = fixture.bindings[0].author.key();
+        let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
         fixture
             .app
             .invoke_bound_target(
@@ -914,7 +914,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let scope = fixture.app.begin_local_input_capture();
         let target = fixture.target(0, "apply");
-        let actor = fixture.bindings[0].author.key();
+        let actor = tilo_actions::Actor::Member(fixture.bindings[0].author.clone());
         fixture
             .app
             .invoke_bound_target(

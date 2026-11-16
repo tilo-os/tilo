@@ -471,7 +471,7 @@ impl AuthorDirectory {
                 author
             };
         };
-        let actor = invoker.key();
+        let actor = invoker.acting.by.key();
         let software = !invoker.acting.is_person();
         let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
         // An agent session that acted for a person (a coding agent on the person's computer,

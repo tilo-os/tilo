@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
                 .app
                 .invoke_bound_target(
                     &target,
-                    &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+                    &ResourceInvocation::new(&target.address.address, &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user"))).confirmed(true),
                 )
                 .unwrap();
             assert_ne!(fixture.app.action_directory_revision(), revision);
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
             .app
             .invoke_bound_target(
                 &target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+                &ResourceInvocation::new(&target.address.address, &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user"))).confirmed(true),
             )
             .unwrap();
         let now = capture_bound_directory(&mut fixture);

@@ -800,7 +800,7 @@ tilo_test_env::scenario! {
             resource: increment.resource.clone(),
             action: increment.action,
             argument: None,
-            actor: "grace".to_owned(),
+            actor: tilo_actions::MemberId::person("grace").into(),
             context: None,
         });
         settle(&mut host, &mut window);
@@ -950,7 +950,7 @@ fn deliver(inbox: &Inbox, id: u64, address: &tilo_actions::ActionAddress, actor:
         resource: address.resource.clone(),
         action: address.action.clone(),
         argument: None,
-        actor: actor.to_owned(),
+        actor: tilo_actions::MemberId::person(actor).into(),
         context: None,
     });
 }

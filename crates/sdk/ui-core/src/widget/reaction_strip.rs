@@ -16,6 +16,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
 use crate::widget::ChipStyle;
+use tilo_resource::MemberId;
 
 #[path = "reaction_strip_widget.rs"]
 mod retained;
@@ -81,7 +82,7 @@ pub struct StripLayout {
     add: Option<Rect>,
     bounds: Rect,
     /// Whose strip it is (`me` reacting toggles their own reaction).
-    me: String,
+    me: Option<MemberId>,
     can_react: bool,
     /// The least a control's target measures each way: its face grown about
     /// its centre to it, the face itself staying compact (0 until a host that
@@ -116,7 +117,7 @@ fn count_label(count: usize) -> String {
 #[must_use]
 pub fn layout(
     groups: &[ReactionGroup],
-    me: &str,
+    me: Option<&MemberId>,
     can_react: bool,
     (origin, max_width): (Point, f64),
     text: &mut TextRenderer,
@@ -154,7 +155,7 @@ pub fn layout(
         pills.push(StripPill {
             emoji: group.emoji.clone(),
             count,
-            mine: group.includes(me),
+            mine: me.is_some_and(|me| group.includes(me)),
             rect,
             reactors: group.reactors.clone(),
             glyph,
@@ -170,7 +171,7 @@ pub fn layout(
         pills,
         add,
         bounds: Rect::new(origin.x, origin.y, x_max, bottom),
-        me: me.to_owned(),
+        me: me.cloned(),
         can_react,
         minimum_target: 0.0,
     }
@@ -191,7 +192,7 @@ pub fn measure_height(
     }
     layout(
         groups,
-        "",
+        None,
         can_react,
         (Point::ZERO, max_width),
         text,
@@ -299,7 +300,7 @@ impl StripLayout {
             return Some((add, crate::i18n::widget_format("reaction-strip-add", &[])));
         }
         let pill = self.pills.iter().find(|pill| pill.rect.contains(point))?;
-        Some((pill.rect, who_reacted(pill, &self.me, name)))
+        Some((pill.rect, who_reacted(pill, self.me.as_ref(), name)))
     }
 
     /// What a pill or the add button says to assistive technology: a toggle
@@ -354,11 +355,15 @@ pub fn pill_name(emoji: &str, mine: bool) -> String {
 }
 
 /// "Ada, Bo and 3 others reacted with thumbs up": you first, as "You".
-fn who_reacted(pill: &StripPill, me: &str, name: &dyn Fn(&Reactor) -> String) -> String {
+fn who_reacted(
+    pill: &StripPill,
+    me: Option<&MemberId>,
+    name: &dyn Fn(&Reactor) -> String,
+) -> String {
     let mut names: Vec<String> = Vec::with_capacity(pill.reactors.len());
     let mut own = false;
     for reactor in &pill.reactors {
-        if reactor.persona.is_none() && reactor.by == me {
+        if reactor.persona.is_none() && Some(&reactor.by) == me {
             own = true;
         } else {
             names.push(
@@ -437,7 +442,7 @@ impl ReactionStrip {
     pub fn layout(
         &mut self,
         groups: &[ReactionGroup],
-        me: &str,
+        me: Option<&MemberId>,
         can_react: bool,
         (origin, max_width): (Point, f64),
         text: &mut TextRenderer,

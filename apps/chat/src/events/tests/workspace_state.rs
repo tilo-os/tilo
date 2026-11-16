@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .reactions
                 .iter()
-                .any(|r| r.emoji == "🔥" && r.includes(model::ME))
+                .any(|r| r.emoji == "🔥" && r.includes(&ui::tilo_resource::MemberId::person(model::ME)))
         };
         assert!(!reacted(&app), "m_me1 starts without my 🔥");
         // Open the add-reaction picker on the message, then pick an emoji.

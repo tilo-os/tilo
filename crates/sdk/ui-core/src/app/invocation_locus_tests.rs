@@ -8,13 +8,18 @@ fn locus_scope(
     crate::invocation_scope::ResourceInvocationScope,
     crate::invocation_scope::PublishedInvocationRequest,
 ) {
-    locus_scope_with(fixture, id, "fixture-user", std::sync::Arc::new(|| Ok(())))
+    locus_scope_with(
+        fixture,
+        id,
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
+        std::sync::Arc::new(|| Ok(())),
+    )
 }
 
 fn locus_scope_with(
     fixture: &ActionFixture,
     id: u128,
-    actor: &str,
+    actor: &tilo_actions::Actor,
     check: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 ) -> (
     crate::invocation_scope::ResourceInvocationScope,
@@ -39,7 +44,7 @@ fn locus_scope_with(
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(id)),
         address: tilo_actions::ActionAddress::new(publication, "apply"),
         argument: None,
-        actor: actor.into(),
+        actor: actor.clone(),
         participant: Some(
             tilo_actions::ParticipantId::new(format!("host-participant-{id}")).unwrap(),
         ),
@@ -126,7 +131,10 @@ tilo_test_env::scenario! {
             .unwrap()
             .expect("actual dispatch captured a basis");
         assert_eq!(basis.invocation(), request.invocation);
-        assert_eq!(basis.actor(), "fixture-user");
+        assert_eq!(
+            basis.actor(),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user"))
+        );
         assert_eq!(basis.participant(), request.participant.as_ref());
         assert_eq!(basis.publication(), &request.address);
         assert_eq!(basis.target(), &target.address.address);
@@ -199,7 +207,7 @@ tilo_test_env::scenario! {
                 0 => target = fixture.target(1, "apply"), // same record, different owner
                 1 => target.address.address.resource = "another-resource".into(),
                 2 => target.address.address.action = "another-action".into(),
-                3 => actor = "another-actor".into(),
+                3 => actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("another-actor")),
                 4 => invocation = tilo_actions::InvocationId::new(),
                 5 | 6 => {}
                 7 => target.binding.lifetime_id = uuid::Uuid::new_v4(),
@@ -225,7 +233,7 @@ tilo_test_env::scenario! {
     phase invocation_locus_oversized_metadata_and_expired_custody_remain_unavailable;
     {
         let fixture = ActionFixture::broker();
-        let actor = "a".repeat(4097);
+        let actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("a".repeat(4097)));
         let (scope, request) = locus_scope_with(&fixture, 7030, &actor, std::sync::Arc::new(|| Ok(())));
         let target = fixture.target(0, "apply");
         let _invoker = crate::invocation_scope::InvokerScope::enter(request.invoker());
@@ -247,7 +255,7 @@ tilo_test_env::scenario! {
         let (scope, request) = locus_scope_with(
             &fixture,
             7031,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             Arc::new(move || {
                 check
                     .load(Ordering::Acquire)

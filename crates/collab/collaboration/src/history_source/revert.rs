@@ -333,7 +333,7 @@ fn later_writers(
     doc: &mut AutoCommit,
     (before, after): (&[ChangeHash], &[ChangeHash]),
     by: Option<&str>,
-    invoker: Option<&str>,
+    invoker: Option<&tilo_actions::Actor>,
     created: &HashSet<ObjId>,
 ) -> Later {
     let versions = tilo_resource::history::versions(doc);
@@ -355,7 +355,7 @@ fn later_writers(
                 v.context
                     .as_ref()
                     .and_then(|context| context.invoker.as_ref())
-                    .is_some_and(|other| other.key() == invoker)
+                    .is_some_and(|other| other.acting.by == *invoker)
             })
         {
             continue;
@@ -586,7 +586,7 @@ pub fn plan_revert(
 fn plan(
     doc: &mut AutoCommit,
     (before, after, covered): (&[ChangeHash], &[ChangeHash], usize),
-    (by, invoker): (Option<&str>, Option<&str>),
+    (by, invoker): (Option<&str>, Option<&tilo_actions::Actor>),
     authors: &dyn ResolveAuthor,
 ) -> (RevertOutcome, Vec<(Patch, bool)>) {
     let forward = doc.diff(before, after);
@@ -686,11 +686,11 @@ pub fn revert_changes(
         let (before, after, covered) = run_bounds(doc, &run)?;
         let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
             .and_then(|context| context.invoker)
-            .map(|invoker| invoker.key());
+            .map(|invoker| invoker.acting.by);
         let (outcome, patches) = plan(
             doc,
             (&before, &after, covered),
-            (Some(actor), invoker.as_deref()),
+            (Some(actor), invoker.as_ref()),
             authors,
         );
         plans.push((outcome, patches, before, after));

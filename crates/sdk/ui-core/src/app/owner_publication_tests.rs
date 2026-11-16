@@ -62,7 +62,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
             resource.clone(),
             if background { "follow-up" } else { "apply" }.into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         let after = fixture
@@ -130,7 +130,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
             resource,
             if background { "follow-up" } else { "apply" }.into(),
             None,
-            "fixture-user",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             None,
         );
         fixture.app.poll_directed_invocations();

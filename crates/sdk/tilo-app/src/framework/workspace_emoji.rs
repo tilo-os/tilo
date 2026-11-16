@@ -210,7 +210,7 @@ impl EmojiSource for WindowEmoji {
             .ok_or_else(|| format!("there is no emoji :{name}:"))?;
         // One's own is removed as such; anyone else's is moderation, which
         // the workspace's roles decide.
-        let removal = if emoji.added_by == record.me() {
+        let removal = if emoji.added_by.key() == record.me() {
             Record::REMOVE_EMOJI.with(actions::RemoveEmoji { name: name.into() })
         } else {
             Record::REMOVE_ANY_EMOJI.with(actions::RemoveAnyEmoji { name: name.into() })

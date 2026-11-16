@@ -1070,7 +1070,7 @@ impl NotesApp {
                     if reactor.name.is_none()
                         && let Some(people) = people
                     {
-                        reactor.name = Some(people.name(&reactor.by));
+                        reactor.name = Some(people.name(&reactor.by.key()));
                     }
                 }
                 group
@@ -1085,7 +1085,7 @@ impl NotesApp {
         (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
             page,
             groups,
-            me: me.unwrap_or_default().to_owned(),
+            me: me.and_then(ui::tilo_resource::MemberId::parse),
             can_react: offered,
         })
     }

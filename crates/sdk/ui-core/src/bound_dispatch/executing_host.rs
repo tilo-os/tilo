@@ -7,7 +7,7 @@ use crate::permissions::MemberId;
 thread_local! {
     static EXECUTING_HOST_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };
     static EXECUTING_HOST_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
-    static EXECUTING_HOST_PERSON: RefCell<Option<String>> = const { RefCell::new(None) };
+    static EXECUTING_HOST_PERSON: RefCell<Option<MemberId>> = const { RefCell::new(None) };
 }
 
 /// Identity of the checked component lifetime, not a caller-selected window ID.
@@ -28,10 +28,10 @@ impl Drop for ExecutingHostScope {
     }
 }
 
-pub(super) struct ExecutingHostPerson(Option<String>);
+pub(super) struct ExecutingHostPerson(Option<MemberId>);
 impl ExecutingHostPerson {
     pub(super) fn enter(person: &MemberId) -> Self {
-        Self(EXECUTING_HOST_PERSON.replace(Some(person.key())))
+        Self(EXECUTING_HOST_PERSON.replace(Some(person.clone())))
     }
 }
 impl Drop for ExecutingHostPerson {
@@ -43,7 +43,7 @@ impl Drop for ExecutingHostPerson {
 /// The immutable local person of the executing checked component callback.
 /// Unavailable outside a callback; never derived from action context or a caller.
 #[must_use]
-pub fn executing_host_person() -> Option<String> {
+pub fn executing_host_person() -> Option<MemberId> {
     EXECUTING_HOST_PERSON.with_borrow(Clone::clone)
 }
 
@@ -53,7 +53,8 @@ pub fn executing_host_person() -> Option<String> {
 #[must_use]
 pub fn host_person_invocation_permitted() -> bool {
     executing_host_person().is_some_and(|person| {
-        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.key() == person)
+        crate::invocation_scope::current_invoker()
+            .is_none_or(|invoker| invoker.acting.member_id() == Some(&person))
     })
 }
 

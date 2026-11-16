@@ -1126,7 +1126,10 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
         PendingPoll::Ready(Ok(_))
     ));
     let running = app.try_recv().unwrap();
-    assert_eq!(running.actor, "agent:scribe");
+    assert_eq!(
+        running.actor,
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+    );
 
     // The app's connection names the effect it runs; nobody else's does.
     let continued = state
@@ -1143,7 +1146,10 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
             .poll_ready(),
         PendingPoll::Ready(Ok(_))
     ));
-    assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+    assert_eq!(
+        app.try_recv().unwrap().actor,
+        tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+    );
     let refused = state
         .action_invoke(&continued, Some(7), None, &invoke("erase"))
         .poll_ready();
@@ -1255,7 +1261,7 @@ tilo_test_env::scenario! {
             let delivery = app.try_recv().unwrap();
             let invoker =
                 tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
-            assert_eq!(invoker.key(), "a1".repeat(32));
+            assert_eq!(invoker.acting.by.key(), "a1".repeat(32));
             let participant = invoker.participant.expect("a run owns a participant view");
             assert_ne!(participant, forged);
             participants.push(participant);

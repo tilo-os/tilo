@@ -20,7 +20,7 @@ pub fn bot(cx: &ActionCx) -> Result<(), Refusal> {
 pub fn person(cx: &ActionCx) -> Result<String, Refusal> {
     let by_person = cx.invoked_by().is_none_or(|by| by.is_person());
     match cx.author() {
-        Some(author) if by_person => Ok(author.to_owned()),
+        Some(author) if by_person => Ok(author.key()),
         _ => Err(Refusal::new("only a person does this, for themselves")),
     }
 }

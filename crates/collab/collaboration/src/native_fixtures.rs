@@ -40,7 +40,7 @@ pub(super) fn native_history_invocation_fixture(
                     resource: "initial-probe".into(),
                     action: "inspect".into(),
                     argument: None,
-                    actor: "fixture-user".into(),
+                    actor: tilo_actions::MemberId::person("fixture-user").into(),
                     context_json: String::new(),
                 })
         }),

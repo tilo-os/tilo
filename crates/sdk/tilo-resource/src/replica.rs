@@ -13,6 +13,7 @@
 //! replica's log into a fresh one to prove determinism.
 
 use automerge::ChangeHash;
+use tilo_action_policy::MemberId;
 use tilo_actions::api::{self, InvocationProvenance};
 use tilo_actions::{
     ActionAddress, ActionEnvelope, ActionError, ActionRegistry, ApiError, LocalTransport,
@@ -30,12 +31,12 @@ pub struct Replica<R: Resource> {
     doc: Doc,
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
-    author: Option<String>,
+    author: Option<MemberId>,
     /// The author as software acting for someone.
     acting: Option<tilo_actions::Acting>,
     /// Who invokes from this replica when it acts as its own device
     /// ([`Self::as_invoker`]).
-    invoker: Option<String>,
+    invoker: Option<MemberId>,
     /// The app later actions are in (id, label), as a host names it.
     app: Option<(String, String)>,
     /// What a bot shows for later actions instead of its own name.
@@ -116,8 +117,8 @@ impl<R: Resource> Replica<R> {
     /// Attribute later actions to `author`, as the host does for a signed-in
     /// collaborator.
     #[must_use]
-    pub fn as_author(mut self, author: &str) -> Self {
-        self.author = Some(author.to_owned());
+    pub fn as_author(mut self, person: &str) -> Self {
+        self.author = Some(MemberId::person(person));
         self
     }
 
@@ -127,8 +128,8 @@ impl<R: Resource> Replica<R> {
     /// stay this replica's own, so the same person on two replicas makes
     /// changes that merge.
     #[must_use]
-    pub fn as_invoker(mut self, author: &str) -> Self {
-        self.invoker = Some(author.to_owned());
+    pub fn as_invoker(mut self, person: &str) -> Self {
+        self.invoker = Some(MemberId::person(person));
         self
     }
 
@@ -136,10 +137,9 @@ impl<R: Resource> Replica<R> {
     /// a host does for an agent's calls.
     #[must_use]
     pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
-        self.author = Some(agent.to_owned());
+        self.author = Some(MemberId::agent(agent));
         self.acting = Some(
-            tilo_actions::Acting::agent(agent.strip_prefix("agent:").unwrap_or(agent))
-                .acting_for(tilo_actions::Acting::person(person)),
+            tilo_actions::Acting::agent(agent).acting_for(tilo_actions::Acting::person(person)),
         );
         self
     }
@@ -148,7 +148,7 @@ impl<R: Resource> Replica<R> {
     /// acting for `installer`, as a bot host does for a bot's calls.
     #[must_use]
     pub fn as_bot_for(mut self, installation: &str, installer: &str) -> Self {
-        self.author = Some(format!("bot:{installation}"));
+        self.author = Some(MemberId::bot(installation));
         self.acting = Some(
             tilo_actions::Acting::bot(installation)
                 .acting_for(tilo_actions::Acting::person(installer)),
@@ -247,7 +247,7 @@ impl<R: Resource> Replica<R> {
         // device of its own.
         let actor = self.author.as_ref().map_or_else(
             || self.doc.get_actor().to_bytes().to_vec(),
-            |author| author.as_bytes().to_vec(),
+            MemberId::actor_bytes,
         );
         // An author is also the invoker a verb reads (`ActionCx::author`), as
         // the host pins the signed-in person.
@@ -258,7 +258,9 @@ impl<R: Resource> Replica<R> {
             .map(|author| {
                 let invoker = match &self.acting {
                     Some(acting) => tilo_actions::ActionInvoker::admitted(acting),
-                    None => tilo_actions::ActionInvoker::person(author.clone()),
+                    None => tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::member(
+                        author.clone(),
+                    )),
                 };
                 let invoker = invoker
                     .with_appearance(self.appearance.clone())

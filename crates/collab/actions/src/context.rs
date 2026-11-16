@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::InvocationId;
 use crate::entry::{ActionItem, Described, Did, PathStep};
 use crate::key::ActionKind;
-use tilo_action_policy::Acting;
+use tilo_action_policy::{Acting, Actor};
 
 /// Prefix used when an entry is embedded in an Automerge change message,
 /// followed by the entry in its compact form ([`crate::compact`]).
@@ -367,20 +367,8 @@ impl ActionContext {
     }
 
     /// Host-side rewrite of a caller-supplied context: the invoker becomes
-    /// exactly the authenticated actor whose key is `actor` and the host-derived
-    /// `participant`, discarding whatever invoker the caller put in the
-    /// envelope.
-    #[must_use]
-    pub fn with_host_invoker(
-        self,
-        actor: impl Into<String>,
-        participant: Option<ParticipantId>,
-    ) -> Self {
-        self.with_host_actor(&Acting::of_key(&actor.into()), participant)
-    }
-
-    /// [`Self::with_host_invoker`] for any admitted actor: an agent, a
-    /// Shortcut or an app, with the person it acts for.
+    /// exactly the authenticated `actor` and the host-derived `participant`,
+    /// discarding whatever invoker the caller put in the envelope.
     #[must_use]
     pub fn with_host_actor(mut self, actor: &Acting, participant: Option<ParticipantId>) -> Self {
         let mut invoker = ActionInvoker::admitted(actor);
@@ -1281,13 +1269,6 @@ impl ActionInvoker {
         Self::admitted(&Acting::automation(id))
     }
 
-    /// The actor's key ([`tilo_action_policy::Actor::key`]): the id a
-    /// person's own views read as `me`.
-    #[must_use]
-    pub fn key(&self) -> String {
-        self.acting.by.key()
-    }
-
     #[must_use]
     pub fn with_participant(mut self, participant: ParticipantId) -> Self {
         self.participant = Some(participant);
@@ -1339,24 +1320,25 @@ impl ActionInvoker {
     }
 
     /// The invoker an application worker may act on for one delivered
-    /// invocation. `actor` is the key of the actor the host authenticated and
-    /// put on the delivery; `context` is the host-built provenance of the same
+    /// invocation. `actor` is the actor the host authenticated and put on
+    /// the delivery; `context` is the host-built provenance of the same
     /// delivery. The participant, the person it acts for and the device it
     /// works from are kept only when the context names this exact actor, or an
     /// automation acting for exactly that actor. A context the host did not rewrite for this actor
     /// therefore never routes to anybody's view.
-    pub fn delivered(actor: &str, context: Option<&ActionContext>) -> Self {
+    pub fn delivered(actor: &Actor, context: Option<&ActionContext>) -> Self {
         let invoker = context.and_then(|context| context.invoker.as_ref());
         // An automation's step is delivered as the person it runs for; the
         // host names the automation acting for exactly that person.
         if let Some(automation) = invoker.filter(|invoker| {
-            invoker.acting.is_automation() && invoker.acting.acted_for_person() == Some(actor)
+            invoker.acting.is_automation()
+                && invoker.acting.acted_for.first().map(|node| &node.by) == Some(actor)
         }) {
             return automation.clone();
         }
-        match invoker.filter(|invoker| invoker.key() == actor) {
+        match invoker.filter(|invoker| invoker.acting.by == *actor) {
             Some(named) => named.clone(),
-            None => Self::admitted(&Acting::of_key(actor)),
+            None => Self::admitted(&Acting::from(actor.clone())),
         }
     }
 }
@@ -1447,6 +1429,7 @@ mod tests {
     use super::*;
     use crate::entry::{EditOp, FieldEdit, PathStep, Scalar};
     use crate::key::ActionKey;
+    use tilo_action_policy::MemberId;
 
     fn laptop() -> InvokerDevice {
         InvokerDevice::certified([0x5c; 32], "  Studio\u{7} laptop ")
@@ -1481,10 +1464,10 @@ mod tests {
         phase the_host_rewriting_the_invoker_drops_an_appearance_the_caller_put_there;
         {
             let smuggled = ActionContext::default().with_invoker(
-                ActionInvoker::person("person:mallory")
+                ActionInvoker::person("mallory")
                     .with_appearance(Some(crate::Appearance::new("Ada", None, None).unwrap())),
             );
-            let hosted = smuggled.with_host_invoker("person:mallory", None);
+            let hosted = smuggled.with_host_actor(&crate::Acting::person("mallory"), None);
             assert_eq!(hosted.invoker.unwrap().appearance, None);
         }
 
@@ -1495,11 +1478,11 @@ mod tests {
                 ActionInvoker::bot("7f1c").with_appearance(Some(appearance.clone())),
             );
             assert_eq!(
-                ActionInvoker::delivered("bot:7f1c", Some(&context)).appearance,
+                ActionInvoker::delivered(&MemberId::bot("7f1c").into(), Some(&context)).appearance,
                 Some(appearance)
             );
             assert_eq!(
-                ActionInvoker::delivered("person:b", Some(&context)).appearance,
+                ActionInvoker::delivered(&MemberId::person("b").into(), Some(&context)).appearance,
                 None
             );
         }
@@ -1535,15 +1518,15 @@ mod tests {
                 ActionInvoker::agent("task-7").from_device(Some(laptop())),
             );
             assert_eq!(
-                ActionInvoker::delivered("agent:task-7", Some(&context)).device,
+                ActionInvoker::delivered(&MemberId::agent("task-7").into(), Some(&context)).device,
                 Some(laptop())
             );
             assert_eq!(
-                ActionInvoker::delivered("agent:task-8", Some(&context)).device,
+                ActionInvoker::delivered(&MemberId::agent("task-8").into(), Some(&context)).device,
                 None,
                 "another actor is not on that device because a context names it"
             );
-            assert_eq!(ActionInvoker::delivered("agent:task-7", None).device, None);
+            assert_eq!(ActionInvoker::delivered(&MemberId::agent("task-7").into(), None).device, None);
         }
 
         phase invoker_round_trips_and_is_enriched_from_ambient;
@@ -1581,7 +1564,7 @@ mod tests {
             let task = ParticipantId::new("agent-alpha-view").unwrap();
             let rewritten = forged
                 .clone()
-                .with_host_invoker("agent:alpha", Some(task.clone()));
+                .with_host_actor(&crate::Acting::agent("alpha"), Some(task.clone()));
             assert_eq!(
                 rewritten.invoker,
                 Some(ActionInvoker::agent("alpha").with_participant(task))
@@ -1603,29 +1586,30 @@ mod tests {
         {
             let participant = ParticipantId::new("agent-a-view").unwrap();
             let context =
-                ActionContext::default().with_host_invoker("agent:a", Some(participant.clone()));
+                ActionContext::default()
+                    .with_host_actor(&crate::Acting::agent("a"), Some(participant.clone()));
             assert_eq!(
-                ActionInvoker::delivered("agent:a", Some(&context)),
+                ActionInvoker::delivered(&MemberId::agent("a").into(), Some(&context)),
                 ActionInvoker::agent("a").with_participant(participant)
             );
             // A context naming another actor never routes to a view, and the
             // actor always comes from the delivery.
             assert_eq!(
-                ActionInvoker::delivered("person:b", Some(&context)),
-                ActionInvoker::person("person:b")
+                ActionInvoker::delivered(&MemberId::person("b").into(), Some(&context)),
+                ActionInvoker::person("b")
             );
             assert_eq!(
-                ActionInvoker::delivered("person:b", None),
-                ActionInvoker::person("person:b")
+                ActionInvoker::delivered(&MemberId::person("b").into(), None),
+                ActionInvoker::person("b")
             );
             // A Shortcut step is delivered as its person; the Shortcut acting for
             // exactly that person is kept, for anybody else it is not.
-            let shortcut = ActionInvoker::automation("morning").acting_for("person:b");
+            let shortcut = ActionInvoker::automation("morning").acting_for("b");
             let run = ActionContext::default().with_invoker(shortcut.clone());
-            assert_eq!(ActionInvoker::delivered("person:b", Some(&run)), shortcut);
+            assert_eq!(ActionInvoker::delivered(&MemberId::person("b").into(), Some(&run)), shortcut);
             assert_eq!(
-                ActionInvoker::delivered("person:c", Some(&run)),
-                ActionInvoker::person("person:c")
+                ActionInvoker::delivered(&MemberId::person("c").into(), Some(&run)),
+                ActionInvoker::person("c")
             );
         }
 

@@ -48,15 +48,14 @@ pub const COMMIT_FRAME_PREFIX: &[u8] = b"tilo-commit-frame-v1\0";
 /// payload adds to a document frame beyond its mutation budget.
 pub const MAX_COMMIT_BYTES: usize = 256 * 1024;
 
-/// Who made an action: the authenticated principal that invoked it, and the
+/// Who made an action: who invoked it, and the
 /// device that signed it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitAuthor {
-    /// The principal the action was invoked as (`alice`), when the action
-    /// came through a door that admitted one. `None` for a change nothing
-    /// but its device accounts for.
-    pub principal: Option<String>,
+    /// Who invoked the action, when it came through a door that admitted them. `None` for a
+    /// change nothing but its device accounts for.
+    pub actor: Option<tilo_action_policy::Actor>,
     /// The device key that signed the part carrying this commit. Every part
     /// of one commit is signed by this key, and a receiver refuses a part
     /// any other device signed.
@@ -125,7 +124,7 @@ pub struct WorkspaceCommit {
     pub version: u16,
     /// The workspace whose units the action wrote.
     pub workspace: String,
-    /// Who made it: the principal and the device that signed it.
+    /// Who made it: who invoked it and the device that signed it.
     pub author: CommitAuthor,
     /// When the action was made, in milliseconds since the Unix epoch, as the
     /// author's device read the clock.
@@ -302,17 +301,17 @@ impl WorkspaceCommit {
         first: &Read,
         parts: &[&Read],
     ) -> Self {
-        let principal = parts
+        let actor = parts
             .iter()
-            .find_map(|part| part.principal.clone())
-            .or_else(|| author.principal.clone());
+            .find_map(|part| part.actor.clone())
+            .or_else(|| author.actor.clone());
         // The author's own change times, so every peer reads one time for the
         // action and a restarted one reads the same.
         let at_ms = parts.iter().map(|part| part.at_ms).max().unwrap_or(0);
         Self::new(
             workspace,
             CommitAuthor {
-                principal,
+                actor,
                 device: author.device,
             },
             at_ms,
@@ -593,7 +592,7 @@ struct Read {
     /// The run the unit's changes were invoked in.
     run: Option<CommitGroup>,
     /// Who invoked the action.
-    principal: Option<String>,
+    actor: Option<tilo_action_policy::Actor>,
     /// When its latest change was made, in milliseconds since the Unix epoch.
     at_ms: u64,
 }
@@ -616,7 +615,7 @@ impl Read {
             },
             signature: None,
             run: None,
-            principal: None,
+            actor: None,
             at_ms: 0,
         };
         let mut one_action = true;
@@ -642,11 +641,11 @@ impl Read {
             };
             // The first change that says who invoked it speaks for the
             // action: every change of one action shares that context.
-            if read.principal.is_none() {
-                read.principal = context
+            if read.actor.is_none() {
+                read.actor = context
                     .invoker
                     .as_ref()
-                    .map(tilo_actions::ActionInvoker::key);
+                    .map(|invoker| invoker.acting.by.clone());
             }
             if read.run.is_none() {
                 read.run = context.group.as_ref().map(|group| CommitGroup {
@@ -675,7 +674,7 @@ mod tests {
 
     fn author(device: [u8; 32]) -> CommitAuthor {
         CommitAuthor {
-            principal: Some("alice".to_owned()),
+            actor: Some(tilo_action_policy::MemberId::person("alice").into()),
             device,
         }
     }
@@ -950,7 +949,7 @@ mod tests {
             assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
             assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
             assert_eq!(action.invocation, Some(invocation.0));
-            assert_eq!(action.author.principal.as_deref(), Some("alice"));
+            assert_eq!(action.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
             assert_eq!(
                 action.author.device, [0; 32],
                 "the transport stamps the device"
@@ -1010,7 +1009,7 @@ mod tests {
                 "tasks",
                 "a",
                 &CommitAuthor {
-                    principal: None,
+                    actor: None,
                     device: [7; 32],
                 },
                 &mutation,
@@ -1018,7 +1017,7 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(commit.invocation, Some(invocation.0));
-            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+            assert_eq!(commit.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
             assert_eq!(commit.parts[0].changes, vec![hash.0]);
             assert_eq!(
                 commit.at_ms, 1_700_000_000_000,
@@ -1098,7 +1097,7 @@ mod tests {
             let commit = WorkspaceCommit::of_units(
                 "workspace",
                 &CommitAuthor {
-                    principal: None,
+                    actor: None,
                     device: [0; 32],
                 },
                 &[unit(&next, Some(doc.document()))],
@@ -1106,7 +1105,7 @@ mod tests {
             .unwrap()[0]
                 .clone()
                 .expect("the next letter alone is still its action's");
-            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+            assert_eq!(commit.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
         }
 
         phase a_field_edit_is_a_commit_too;

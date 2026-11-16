@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         fixture.assert_idle();
         let before = fixture.app.state.doc.save();
         let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
-        let actor = fixture.app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let started = fixture
             .app
             .invoke_resource_action(ResourceInvocation::new(&address, &actor))
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
             "test.counter".into(),
             "async-bump".into(),
             None,
-            "original-caller",
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
             None,
         );
         assert!(app.pump_hosted_model_as(false).synced);

@@ -1,6 +1,6 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
-use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, Party, roles};
+use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, MemberId, Party, roles};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
 
 use super::*;
@@ -371,8 +371,8 @@ fn change_by(invoker: tilo_actions::ActionInvoker) -> Vec<automerge::Change> {
     parse_changes(&doc.save()).unwrap()
 }
 
-fn bot(actor: &str) -> tilo_actions::ActionInvoker {
-    tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor))
+fn bot(installation: &str) -> tilo_actions::ActionInvoker {
+    tilo_actions::ActionInvoker::bot(installation)
 }
 
 tilo_test_env::scenario! {
@@ -382,14 +382,14 @@ tilo_test_env::scenario! {
     phase an_appearance_is_admitted_only_from_the_bot_allowed_it;
     {
         let alice = tilo_actions::Appearance::new("alice", None, None).unwrap();
-        let by_bot = change_by(bot("bot:7f1c").with_appearance(Some(alice.clone())));
-        assert_eq!(check_appearances(&by_bot, Some("bot:7f1c")), Ok(()));
+        let by_bot = change_by(bot("7f1c").with_appearance(Some(alice.clone())));
+        assert_eq!(check_appearances(&by_bot, Some(&MemberId::bot("7f1c"))), Ok(()));
         assert!(matches!(
             check_appearances(&by_bot, None),
             Err(ReceiptRefusal::Appearance { .. })
         ));
         assert!(matches!(
-            check_appearances(&by_bot, Some("bot:other")),
+            check_appearances(&by_bot, Some(&MemberId::bot("other"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
         // An invoker whose key spells a bot's actor id without being one is refused.
@@ -397,14 +397,14 @@ tilo_test_env::scenario! {
             tilo_actions::ActionInvoker::person("bot:7f1c").with_appearance(Some(alice.clone())),
         );
         assert!(matches!(
-            check_appearances(&posing, Some("bot:7f1c")),
+            check_appearances(&posing, Some(&MemberId::bot("7f1c"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
         let by_person = change_by(
             tilo_actions::ActionInvoker::person("person:mallory").with_appearance(Some(alice)),
         );
         assert!(matches!(
-            check_appearances(&by_person, Some("bot:7f1c")),
+            check_appearances(&by_person, Some(&MemberId::bot("7f1c"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
         let plain = change_by(tilo_actions::ActionInvoker::person("person:ada"));
@@ -418,9 +418,9 @@ tilo_test_env::scenario! {
             avatar: None,
             persona: None,
         };
-        let changes = change_by(bot("bot:7f1c").with_appearance(Some(hidden)));
+        let changes = change_by(bot("7f1c").with_appearance(Some(hidden)));
         assert!(matches!(
-            check_appearances(&changes, Some("bot:7f1c")),
+            check_appearances(&changes, Some(&MemberId::bot("7f1c"))),
             Err(ReceiptRefusal::Appearance { .. })
         ));
     }

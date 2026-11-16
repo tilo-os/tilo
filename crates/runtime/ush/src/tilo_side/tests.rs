@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
             ("ush-1-1", "echo hi > a.txt")
         );
         assert_eq!(
-            writes[0].invoker.as_ref().map(tilo_actions::ActionInvoker::key).as_ref(),
+            writes[0].invoker.as_ref().map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key()).as_ref(),
             Some(&state.person),
             "attributed to the person"
         );

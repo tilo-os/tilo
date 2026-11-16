@@ -1112,7 +1112,7 @@ fn a_moved_note_keeps_its_origin_and_who_moved_it() {
     let mut notebook = Replica::<Notebook>::new();
     let mut mover = notebook
         .fork()
-        .as_agent_for("agent:grant-a8a42b74", "ada")
+        .as_agent_for("grant-a8a42b74", "ada")
         .named("Company mover");
     let origin = Origin {
         author: "Jane Doe".into(),

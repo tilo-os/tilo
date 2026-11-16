@@ -112,7 +112,7 @@ impl LiveMember {
             automatic: shown.automatic,
             place: shown.place.clone(),
             user: shown.user.clone(),
-            member: shown.member.clone(),
+            member: shown.member.as_ref().map(collab_types::MemberId::key),
             wave: shown.wave.clone(),
             layout: shown.layout.clone(),
             following: shown.following.clone(),

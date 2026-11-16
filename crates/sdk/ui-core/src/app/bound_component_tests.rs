@@ -761,7 +761,7 @@ fn bound_components_keep_child_binding() {
             .is_some(),
             "fixture must publish its operation before admission"
         );
-        let actor = app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         assert!(matches!(
             app.invoke_resource_action(
                 ResourceInvocation::new(
@@ -1012,7 +1012,7 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
     DOCUMENT_JOB_MODE.set(true);
     let mut fixture = ActionFixture::broker();
     let target = fixture.target(0, "apply");
-    let actor = fixture.app.collaboration.local_author.key();
+    let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
     let before = fixture
         .records
         .read(&target.binding.checkout.id, |doc| doc.clone().get_heads())
@@ -1089,7 +1089,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let mut fixture = ActionFixture::broker();
         let outer = fixture.app.state.doc.get_heads();
         let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
-        let actor = fixture.app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let error = fixture
             .app
             .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
@@ -1263,7 +1263,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         );
         assert_eq!(fixture.app.state.doc.get_heads(), outer);
         fixture.app.close_components();
-        let actor = fixture.app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         assert!(
             fixture
                 .app
@@ -1342,7 +1342,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_none()
         );
-        let actor = fixture.app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         assert!(
             fixture
                 .app
@@ -1587,9 +1587,14 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 .app
                 .invoke_bound_target(
                     &target,
-                    &ResourceInvocation::new(&target.address.address, "fixture-user")
-                        .confirmed(true)
-                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
+                    &ResourceInvocation::new(
+                        &target.address.address,
+                        &tilo_actions::Actor::Member(tilo_actions::MemberId::person(
+                            "fixture-user",
+                        )),
+                    )
+                    .confirmed(true)
+                    .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
                 )
                 .unwrap();
             if mode == 0 {
@@ -1656,9 +1661,14 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 .app
                 .invoke_bound_target(
                     &target,
-                    &ResourceInvocation::new(&target.address.address, "fixture-user")
-                        .confirmed(true)
-                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
+                    &ResourceInvocation::new(
+                        &target.address.address,
+                        &tilo_actions::Actor::Member(tilo_actions::MemberId::person(
+                            "fixture-user",
+                        )),
+                    )
+                    .confirmed(true)
+                    .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
                 )
                 .unwrap_err();
             assert_eq!(
@@ -1725,8 +1735,13 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
                 .app
                 .invoke_bound_target(
                     &target,
-                    &ResourceInvocation::new(&target.address.address, "fixture-user")
-                        .confirmed(true),
+                    &ResourceInvocation::new(
+                        &target.address.address,
+                        &tilo_actions::Actor::Member(tilo_actions::MemberId::person(
+                            "fixture-user",
+                        )),
+                    )
+                    .confirmed(true),
                 )
                 .unwrap();
             assert_eq!(
@@ -1779,7 +1794,11 @@ fn compound_bound_effects_preserve_typing_custody_and_redo() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = fixture.app.invoke_bound_target(
                 &target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+                &ResourceInvocation::new(
+                    &target.address.address,
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
+                )
+                .confirmed(true),
             );
         }));
         assert!(result.is_err());
@@ -2123,7 +2142,11 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             .app
             .invoke_bound_target(
                 target,
-                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+                &ResourceInvocation::new(
+                    &target.address.address,
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
+                )
+                .confirmed(true),
             )
             .unwrap();
         fixture.app.open_action_palette();
@@ -2170,7 +2193,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
         let resources = fixture.app.publication_resources();
-        let actor = fixture.app.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
         let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
         // This seam captures submission only; no broker acceptance is simulated.
@@ -2302,7 +2325,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
             let target = fixture.target(1, "apply");
             let first = fixture.bindings[0].clone();
             let outer = fixture.app.state.doc.get_heads();
-            let actor = fixture.app.collaboration.local_author.key();
+            let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
             let result = first
                 .with_document(&mut fixture.app.state.doc, |doc, _| {
                     doc.put(ROOT, "before-nested", "A").unwrap();
@@ -2443,7 +2466,11 @@ fn assert_bound_broker_route_refused(
         .app
         .invoke_bound_target_with_broker(
             target,
-            &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+            &ResourceInvocation::new(
+                &target.address.address,
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
+            )
+            .confirmed(true),
             Some(&mut |_| sent = true),
         )
         .unwrap_err();
@@ -2459,7 +2486,7 @@ fn assert_bound_broker_route_refused(
         alias.to_owned(),
         "follow-up".into(),
         None,
-        "fixture-user",
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
         None,
     );
     assert!(
@@ -2478,7 +2505,7 @@ fn assert_bound_broker_route_refused(
             &fixture.target(1, "view"),
             &ResourceInvocation::new(
                 &tilo_actions::ActionAddress::new("bound:probe", "view"),
-                "fixture-user",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("fixture-user")),
             )
             .confirmed(true),
         )
@@ -2867,7 +2894,7 @@ fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
     let mut fixture = ActionFixture::broker();
     fixture.app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
     let target = fixture.target(0, "follow-up");
-    let actor = fixture.app.collaboration.local_author.key();
+    let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
     let granted = fixture.permissions.borrow().clone();
     fixture.app.continuation.owner_view.following = true;
     fixture.app.continuation.owner_view.pending =

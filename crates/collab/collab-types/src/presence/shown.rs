@@ -84,11 +84,10 @@ pub struct Shown {
     pub epoch: u64,
     /// Their presence says they are an agent.
     pub agent: bool,
-    /// The workspace member this presence is, where it names one: an agent's
-    /// key for a row its host speaks for. A device's member is the person
-    /// behind it, which [`Self::user`] names.
+    /// The workspace member this presence is, where it names one: an agent a host speaks for.
+    /// A device's member is the person behind it, which [`Self::user`] names.
     #[serde(default)]
-    pub member: Option<String>,
+    pub member: Option<tilo_action_policy::MemberId>,
     /// The workspace's host, hex, when it speaks for this member: an
     /// agent's or a key's run it executes, which says nothing itself. A
     /// surface shows them as the agent, said by the host.
@@ -137,15 +136,14 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// The member this presence is: an agent by its workspace key, a person by the root their
+    /// The member this presence is: an agent as its host names it, a person by the root their
     /// device's certificate names. `None` for a device whose person is not known yet.
     #[must_use]
     pub fn member_id(&self) -> Option<tilo_action_policy::MemberId> {
         if self.agent {
             return self
                 .member
-                .as_deref()
-                .and_then(tilo_action_policy::MemberId::parse)
+                .clone()
                 .filter(|member| !member.is_person())
                 .or_else(|| Some(tilo_action_policy::MemberId::agent(&self.publisher)));
         }

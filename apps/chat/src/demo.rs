@@ -409,9 +409,10 @@ pub fn demo_part(me: &str) -> ChatPart {
             for user in users {
                 reactions.insert(ui::tilo_resource::Reaction {
                     emoji: Atom(emoji.clone()),
-                    by: Atom(mine(&user)),
+                    by: ui::tilo_resource::MemberId::person(mine(&user)),
                     at: message.ts.saturating_mul(1000),
-                    ..ui::tilo_resource::Reaction::default()
+                    persona: None,
+                    name: None,
                 });
             }
         }

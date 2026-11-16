@@ -56,7 +56,7 @@ fn history(doc: &mut automerge::AutoCommit) -> UndoLog {
 /// (`ui::history_source::authors::device_actor`).
 fn actor(engine: &Engine, person: &str) -> automerge::ActorId {
     automerge::ActorId::from(ui::history_source::authors::device_actor(
-        person,
+        person.as_bytes(),
         &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
     ))
 }
@@ -1198,7 +1198,7 @@ impl Layouts {
         // Who asked for it: the invoker the step records, else the person whose layout it is.
         let who = step
             .invoker
-            .map_or_else(|| person.to_owned(), |invoker| invoker.key());
+            .map_or_else(|| person.to_owned(), |invoker| invoker.acting.by.key());
         let what = match step.what {
             Some(Did::Verb(call)) => call.action.action,
             _ => String::new(),
@@ -2397,7 +2397,7 @@ mod tests {
     fn an_undo_never_takes_another_persons_window_from_the_strip() {
         let as_person = |person: &str, device: u8| {
             automerge::ActorId::from(ui::history_source::authors::device_actor(
-                person,
+                person.as_bytes(),
                 &automerge::ActorId::from(vec![device; 32]),
             ))
         };

@@ -77,6 +77,17 @@ impl MemberId {
         matches!(self, Self::Bot(_))
     }
 
+    /// The bytes a document names this member's changes by: a person's root key as written, an
+    /// agent's `agent:<id>`, a bot's `bot:<id>`, as history reads them back.
+    #[must_use]
+    pub fn actor_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Person(id) => id.as_bytes().to_vec(),
+            Self::Agent(id) => [b"agent:", id.as_bytes()].concat(),
+            Self::Bot(id) => [b"bot:", id.as_bytes()].concat(),
+        }
+    }
+
     /// The spelling a stored id uses: a person's root key as it is, an agent's
     /// `agent:<id>`, a bot's `bot:<id>`.
     #[must_use]
@@ -244,6 +255,16 @@ impl Actor {
         match self {
             Self::Member(member) => member.key(),
             Self::Automation(id) => format!("automation:{}", id.as_str()),
+        }
+    }
+
+    /// The bytes a document names this actor's changes by: a member's
+    /// [`MemberId::actor_bytes`], an automation's `automation:<id>`.
+    #[must_use]
+    pub fn actor_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Member(member) => member.actor_bytes(),
+            Self::Automation(id) => [b"automation:", id.as_str().as_bytes()].concat(),
         }
     }
 

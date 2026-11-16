@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
             ada.apply(map(MappedKind::Channel, "c1", "d_general"))
                 .is_err()
         );
-        let mut agent = bot.fork().as_agent_for("agent:x", ADA);
+        let mut agent = bot.fork().as_agent_for("x", ADA);
         assert!(
             agent
                 .apply(map(MappedKind::Channel, "c1", "d_general"))
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
                 .is_err(),
             "over Discord's limit"
         );
-        let mut agent = bot.fork().as_agent_for("agent:x", ADA);
+        let mut agent = bot.fork().as_agent_for("x", ADA);
         assert!(
             agent.apply(send("d_general", "wh1", "hi")).is_err(),
             "an agent queues nothing"
@@ -649,7 +649,7 @@ tilo_test_env::scenario! {
     phase an_agent_cannot_block;
     {
         let mut bot = connected();
-        let mut agent = bot.fork().as_agent_for("agent:x", ADA);
+        let mut agent = bot.fork().as_agent_for("x", ADA);
         assert!(
             agent
                 .apply(Guild::BLOCK_PERSONA.with(guild::BlockPersona {

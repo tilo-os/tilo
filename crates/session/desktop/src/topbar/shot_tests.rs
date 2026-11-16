@@ -41,15 +41,15 @@ fn tree(others: &[(&str, &str, bool)]) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Studio");
     // The host lists this person among who is here too, as a roster of everyone does.
     workspace.members_here(
-        std::iter::once(Member::keyed(OWN, "Jo Doe")).chain(others.iter().map(
-            |(id, name, agent)| {
+        std::iter::once(Member::named(collab_types::MemberId::person(OWN), "Jo Doe")).chain(
+            others.iter().map(|(id, name, agent)| {
                 if *agent {
-                    Member::keyed(&format!("agent:{id}"), *name)
+                    Member::named(collab_types::MemberId::agent(*id), *name)
                 } else {
-                    Member::keyed(id, *name)
+                    Member::named(collab_types::MemberId::person(*id), *name)
                 }
-            },
-        )),
+            }),
+        ),
     );
     Layout {
         active: workspace.id(),

@@ -463,7 +463,7 @@ mod tests {
                         let heads = doc.get_heads();
                         let copy = doc.get_actor().clone();
                         doc.set_actor(automerge::ActorId::from(
-                            crate::bound_dispatch::document_writer("alice", doc),
+                            crate::bound_dispatch::document_writer(&tilo_actions::Actor::Member(tilo_actions::MemberId::person("alice")), doc),
                         ));
                         doc.put(automerge::ROOT, "message", value).unwrap();
                         let hash = doc.commit().unwrap();

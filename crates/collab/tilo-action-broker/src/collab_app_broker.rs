@@ -735,7 +735,7 @@ pub struct InvocationEnvelope {
     pub resource: String,
     pub action: String,
     argument: Option<String>,
-    pub actor: String,
+    pub actor: tilo_actions::Actor,
     context: Option<tilo_actions::ActionContext>,
 }
 
@@ -5501,7 +5501,7 @@ impl AppBrokerState {
                         action: offered.1.action.clone(),
                     },
                     argument: argument.map(str::to_string),
-                    actor: actor.id.clone(),
+                    actor: actor.actor(),
                     participant: invoker::invoker_participant(context.as_ref()),
                 },
                 offered.0.route.clone(),
@@ -5540,7 +5540,7 @@ impl AppBrokerState {
             resource: offered.1.resource,
             action: offered.1.action,
             argument: argument.map(str::to_string),
-            actor: actor.id.clone(),
+            actor: actor.actor(),
             context,
         };
         Ok(StagedJob {

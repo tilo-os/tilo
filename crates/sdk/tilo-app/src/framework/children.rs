@@ -557,7 +557,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             self.workspace
                 .store
                 .with_history(&record, |doc, history| {
-                    let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
+                    let writer = ui_core::bound_dispatch::document_writer(&invoker.acting.by, doc);
                     let applied = tilo_actions::apply_local_with_context(
                         doc,
                         &action,
@@ -845,7 +845,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             .store
             .with_history(&record, |doc, history| {
                 let before = doc.get_heads();
-                let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
+                let writer = ui_core::bound_dispatch::document_writer(&invoker.acting.by, doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
                     action,

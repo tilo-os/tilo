@@ -189,7 +189,7 @@ pub struct Invocation {
     pub resource: String,
     pub action: String,
     pub argument: Option<String>,
-    pub actor: String,
+    pub actor: tilo_actions::Actor,
     /// The `tilo_actions::ActionContext` it was invoked in, as JSON.
     pub context: Option<String>,
 }

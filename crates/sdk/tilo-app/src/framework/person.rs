@@ -167,8 +167,10 @@ impl<P: Resource> PersonRecord<P> {
         shared
             .record
             .edit(change == ChangeKind::Content, |doc| {
-                let writer =
-                    ui_core::history_source::authors::device_actor(&shared.me, doc.get_actor());
+                let writer = ui_core::history_source::authors::device_actor(
+                    shared.me.as_bytes(),
+                    doc.get_actor(),
+                );
                 tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
                     .map(|_| ())
                     .map_err(|error| error.to_string())
@@ -802,7 +804,9 @@ impl PersonState {
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
-        if invoker.key() != self.me && invoker.acting.acted_for_person() != Some(self.me.as_str()) {
+        if invoker.acting.by.key() != self.me
+            && invoker.acting.acted_for_person() != Some(self.me.as_str())
+        {
             return Err(format!(
                 "`{}` is {}'s own; only they change it",
                 request.record, self.me
@@ -814,7 +818,7 @@ impl PersonState {
             .find(|published| published.id == request.record)
             .ok_or_else(|| format!("no record of yours is open as {}", request.record))?;
         let mut taken = 0;
-        while taken < steps && (record.step)(request.undo, &invoker.key()) {
+        while taken < steps && (record.step)(request.undo, &invoker.acting.by.key()) {
             taken = taken.saturating_add(1);
         }
         if taken == 0 {

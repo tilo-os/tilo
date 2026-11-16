@@ -141,7 +141,8 @@ tilo_test_env::scenario! {
         assert_eq!(entry["what"]["op"], "restore");
         assert_eq!(entry["actor"]["by"]["member"]["agent"], "historian");
         assert_eq!(entry["actor"]["for"][0]["by"]["member"]["person"], "person:ada");
-        app.call("undo", json!({"by": "agent:historian"})).unwrap();
+        app.call("undo", json!({"by": {"member": {"agent": "historian"}}}))
+            .unwrap();
         assert_eq!(cards(&app), ["storm", "Peer's sea"]);
         assert_eq!(app.state().title, "Peer's title");
     }

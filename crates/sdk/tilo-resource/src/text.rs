@@ -42,7 +42,13 @@ pub fn mark_authored(
     let Some(author) = crate::action::writing_author() else {
         return Ok(());
     };
-    tilo_automerge::mark_text_author(doc, obj, at, inserted, &author)
+    tilo_automerge::mark_text_author(
+        doc,
+        obj,
+        at,
+        inserted,
+        &automerge::ActorId::from(author.actor_bytes()).to_hex_string(),
+    )
 }
 
 /// The registry type id [`TextEdit`]s replay under.
@@ -408,10 +414,10 @@ mod tests {
             assert_eq!(
                 runs,
                 vec![
-                    ("alice".to_owned(), "héllo".to_owned()),
-                    ("bob".to_owned(), " wörld".to_owned()),
+                    (hex::encode("alice"), "héllo".to_owned()),
+                    (hex::encode("bob"), " wörld".to_owned()),
                 ],
-                "each person's typing carries their name"
+                "each person's typing carries the actor their changes are named by"
             );
 
             let mut plain = Doc::new();

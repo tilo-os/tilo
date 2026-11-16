@@ -606,7 +606,11 @@ mod tests {
 
     fn shell(people: &[(&str, &str)]) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
-        workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
+        workspace.members_here(
+            people
+                .iter()
+                .map(|(id, name)| Member::named(collab_types::MemberId::person(*id), *name)),
+        );
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());

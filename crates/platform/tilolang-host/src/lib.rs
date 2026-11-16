@@ -1045,7 +1045,7 @@ impl TilolangHost {
         let undo = collaboration::WorkspaceCommit::of_units(
             &workspace,
             &collaboration::CommitAuthor {
-                principal: None,
+                actor: None,
                 device: [0; 32],
             },
             &units

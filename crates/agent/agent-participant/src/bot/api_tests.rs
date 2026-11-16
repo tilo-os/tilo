@@ -107,7 +107,7 @@ impl ApiParticipant for FakeParticipant {
                     && context
                         .invoker
                         .as_ref()
-                        .map(tilo_actions::ActionInvoker::key)
+                        .map(|invoker| invoker.acting.by.key())
                         .as_deref()
                         == Some(actor)
             })
@@ -234,7 +234,7 @@ fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
     }));
     block(api.invoke(&bot(), post())).unwrap();
     let (by, context, _) = invoked.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(by.key(), "bot:b1");
+    assert_eq!(by.acting.by, tilo_actions::MemberId::bot("b1").into());
     assert!(by.acting.is_bot());
     assert_eq!(by.acting.acted_for_person(), Some("ada"));
     assert_eq!(

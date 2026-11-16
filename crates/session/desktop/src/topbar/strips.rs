@@ -507,8 +507,8 @@ mod tests {
         let mut quiet = Strip::new(StripId(12), "Quiet");
         quiet.window_groups = vec![group(2)];
         workspace.strips = vec![Strip::new(StripId(10), "Main"), games, quiet];
-        let ada = Member::keyed("ada", "Ada");
-        let bo = Member::keyed("bo", "Bo");
+        let ada = Member::named(collab_types::MemberId::person("ada"), "Ada");
+        let bo = Member::named(collab_types::MemberId::person("bo"), "Bo");
         workspace.members_here([ada, bo]);
         workspace.present[0].tab = Some(1001);
         workspace.present[1].tab = Some(1002);

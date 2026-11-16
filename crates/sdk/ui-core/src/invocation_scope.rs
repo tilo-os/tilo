@@ -83,7 +83,7 @@ pub struct PublishedInvocationRequest {
     pub invocation: tilo_actions::InvocationId,
     pub address: tilo_actions::ActionAddress,
     pub argument: Option<String>,
-    pub actor: String,
+    pub actor: tilo_actions::Actor,
     /// Whose view this invocation resolves against. Set only by the host that admitted `actor` (for an
     /// agent task, derived from the admitted task), never taken from a caller's envelope. It routes to
     /// view state and is never authority.
@@ -92,7 +92,7 @@ pub struct PublishedInvocationRequest {
 impl PublishedInvocationRequest {
     /// The invoker this request resolves for: the admitted actor plus the host-set participant.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        let invoker = tilo_actions::ActionInvoker::person(self.actor.clone());
+        let invoker = tilo_actions::ActionInvoker::admitted(&self.actor.clone().into());
         match &self.participant {
             Some(participant) => invoker.with_participant(participant.clone()),
             None => invoker,
@@ -232,15 +232,16 @@ pub(crate) fn check_continuation(
 
 /// Whether `actor` may invoke the View operation `contract` here. The local person always may.
 pub fn view_operation_permitted(
-    actor: &str,
-    local_author: &str,
+    actor: &tilo_actions::Actor,
+    local_author: &tilo_actions::MemberId,
     contract: &tilo_actions::ActionContract,
 ) -> bool {
-    actor == local_author
+    actor.member_id() == Some(local_author)
         || contract.reads_record()
         || (contract.is_participant_view()
-            && current_invoker()
-                .is_some_and(|invoker| invoker.key() == actor && invoker.participant.is_some()))
+            && current_invoker().is_some_and(|invoker| {
+                invoker.acting.by == *actor && invoker.participant.is_some()
+            }))
 }
 
 /// Inert declaration retained by the actual host at original admission. This is not authority, and is
@@ -362,7 +363,7 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationLocusBasis {
     invocation: tilo_actions::InvocationId,
-    actor: String,
+    actor: tilo_actions::Actor,
     participant: Option<tilo_actions::ParticipantId>,
     publication: tilo_actions::ActionAddress,
     target: crate::bound_dispatch::BoundActionAddress,
@@ -376,7 +377,7 @@ impl InvocationLocusBasis {
     pub fn invocation(&self) -> tilo_actions::InvocationId {
         self.invocation
     }
-    pub fn actor(&self) -> &str {
+    pub fn actor(&self) -> &tilo_actions::Actor {
         &self.actor
     }
     pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
@@ -505,7 +506,7 @@ impl ResourceInvocationScope {
         &self,
         target: &crate::bound_dispatch::BoundActionTarget,
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         document: &AutoCommit,
     ) {
         let request = &self.lease.request;
@@ -515,7 +516,7 @@ impl ResourceInvocationScope {
                 .same_owner(&HistoryOwner::component(target.binding.clone()))
             && self.owner.lifetime_id() == Some(target.binding.lifetime_id)
             && invocation == request.invocation
-            && actor == request.actor
+            && *actor == request.actor
             && current_invoker().as_ref() == Some(&request.invoker())
             && self.check_read_loan(document).is_ok();
         if !valid {
@@ -532,7 +533,7 @@ impl ResourceInvocationScope {
             return;
         }
         let fields = [
-            request.actor.as_str(),
+            request.actor.id(),
             request
                 .participant
                 .as_ref()
@@ -668,7 +669,10 @@ impl ResourceInvocationScope {
         paths: Vec<String>,
     ) -> Result<Option<WriteAttributionReceipt>, String> {
         self.check()?;
-        if !self.lease.request.actor.starts_with("agent:") {
+        if !matches!(
+            self.lease.request.actor,
+            tilo_actions::Actor::Member(tilo_actions::MemberId::Agent(_))
+        ) {
             return Ok(None);
         }
         #[cfg(feature = "broker-transport")]
@@ -1228,7 +1232,7 @@ impl DocumentAuthorization {
             for len in [
                 request.address.resource.capacity(),
                 request.address.action.capacity(),
-                request.actor.capacity(),
+                request.actor.id().len(),
                 request.argument.as_ref().map_or(0, String::capacity),
                 request
                     .participant

@@ -161,7 +161,7 @@ impl SurfacePeer {
                     resource: request.target.address.resource,
                     action: request.target.address.action,
                     argument,
-                    actor: crate::collaboration::local_user_id().key(),
+                    actor: crate::collaboration::local_user_id().into(),
                     context: None,
                 });
                 None

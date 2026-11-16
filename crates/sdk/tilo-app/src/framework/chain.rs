@@ -563,7 +563,7 @@ impl<P: Chained> ChainState<P> {
             let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
                 .with_app(self.workspace.app_id, self.workspace.app_title)
                 .with_invoker(entry.invoker.clone());
-            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.key(), &doc);
+            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.acting.by, &doc);
             if let Err(error) = tilo_actions::apply_local_with_context(
                 &mut doc,
                 &action,
@@ -1181,7 +1181,7 @@ impl<P: Chained> ChainState<P> {
             .store
             .with_history(&id, |doc, history| {
                 let before = doc.get_heads();
-                let writer = ui_core::bound_dispatch::document_writer(&invoker.key(), doc);
+                let writer = ui_core::bound_dispatch::document_writer(&invoker.acting.by, doc);
                 let applied = tilo_actions::apply_local_with_context(
                     doc,
                     action,

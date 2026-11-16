@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
             APP,
             "tally",
             &collab_types::CommitAuthor {
-                principal: Some("ada".to_owned()),
+                actor: Some(collab_types::MemberId::person("ada").into()),
                 device: [1; 32],
             },
             &change,

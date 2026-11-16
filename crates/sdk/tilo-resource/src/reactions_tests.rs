@@ -1,4 +1,5 @@
 use crate::{ActionCx, Collection, Id, Invoke, Model, Reactions, Replica, resource};
+use tilo_action_policy::MemberId;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -51,7 +52,7 @@ fn counts(reactions: &Reactions, me: &str) -> Vec<(String, usize, bool)> {
         .groups()
         .into_iter()
         .map(|group| {
-            let (mine, count) = (group.includes(me), group.count());
+            let (mine, count) = (group.includes(&MemberId::person(me)), group.count());
             (group.emoji, count, mine)
         })
         .collect()
@@ -90,7 +91,7 @@ tilo_test_env::scenario! {
             ],
             "concurrent first reactions with one emoji both count, the first emoji first"
         );
-        assert!(reactions.reacted("🎉", "u_bo"));
+        assert!(reactions.reacted("🎉", &MemberId::person("u_bo")));
         assert_eq!(
             counts(&state.reactions, "u_bo"),
             [("👍".to_owned(), 1, true)]
@@ -121,12 +122,12 @@ tilo_test_env::scenario! {
             );
         }
         assert!(edit(&mut ada, &reactions.react(" 👍🏽 ")).is_ok(), "trimmed");
-        assert!(ada.state().unwrap().reactions.reacted("👍🏽", "u_ada"));
+        assert!(ada.state().unwrap().reactions.reacted("👍🏽", &MemberId::person("u_ada")));
         // Nobody adds a reaction in someone else's name through a generic edit.
         let forged = crate::Edit::<Board>::new(
             vec![crate::Segment::Field("reactions".into())],
             crate::EditOp::Set {
-                value: serde_json::json!([{"emoji": "👍", "by": "u_bo", "at": 0}]),
+                value: serde_json::json!([{"emoji": "👍", "by": {"person": "u_bo"}, "at": 0}]),
             },
         );
         assert!(edit(&mut ada, &forged).is_err());
@@ -165,15 +166,15 @@ tilo_test_env::scenario! {
         let mut ada = board("u_ada");
         let reactions = Board::paths().reactions;
         let toggle = |replica: &Replica<Board>| {
-            let op = replica.state().unwrap().reactions.toggle("👍", "u_ada");
+            let op = replica.state().unwrap().reactions.toggle("👍", &MemberId::person("u_ada"));
             crate::Edit::<Board>::new(vec![crate::Segment::Field("reactions".into())], op)
         };
         let first = toggle(&ada);
         edit(&mut ada, &first).unwrap();
-        assert!(ada.state().unwrap().reactions.reacted("👍", "u_ada"));
+        assert!(ada.state().unwrap().reactions.reacted("👍", &MemberId::person("u_ada")));
         let json = ada.state().unwrap().reactions.to_json();
         assert_eq!(json[0]["emoji"], "👍");
-        assert_eq!(json[0]["by"], "u_ada");
+        assert_eq!(json[0]["by"], serde_json::json!({"person": "u_ada"}));
         assert_eq!(
             Reactions::from_json(&json).unwrap(),
             ada.state().unwrap().reactions

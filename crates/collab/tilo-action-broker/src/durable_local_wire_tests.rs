@@ -324,7 +324,10 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 "the person cannot cancel their agent's invocation"
             );
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(delivered.actor, "agent:scribe");
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
             let request = ui::invocation_scope::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation,
@@ -435,7 +438,10 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
             let invocation = id(0xc001);
             invoke(&agent.handle, invocation).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(delivered.actor, "agent:scribe");
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
 
             let continued = rig
                 .state
@@ -499,7 +505,10 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                     .await,
                 Some(Ok(_))
             ));
-            assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+            assert_eq!(
+                app.try_recv().unwrap().actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
             assert!(!matches!(
                 rig.state
                     .action_invoke(&continued, Some(903), None, &edit("erase"))

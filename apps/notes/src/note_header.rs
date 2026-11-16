@@ -206,7 +206,12 @@ impl NoteHeader {
         let mut strip = ReactionStripWidget::new(reactions.groups.clone(), reactions.me.clone())
             .with_id("notes.reactions")
             .can_react(reactions.can_react && toggled.is_some())
-            .with_names(|reactor| reactor.name.clone().unwrap_or_else(|| reactor.by.clone()));
+            .with_names(|reactor| {
+                reactor
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| reactor.by.id().to_owned())
+            });
         if let Some(binding) = toggled {
             strip = strip.on_action(binding);
         }

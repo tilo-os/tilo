@@ -75,7 +75,7 @@ pub enum ReceiptRefusal {
     #[error("{actor} may not show the appearance it carries: {reason}")]
     Appearance {
         /// The invoker the change names.
-        actor: String,
+        actor: tilo_action_policy::Actor,
         /// Why the appearance is refused.
         reason: String,
     },
@@ -465,8 +465,7 @@ pub fn decide_op(
 
 /// Refuse changes whose invoker shows an appearance unless they come from
 /// the one bot actor their author device may show other names as
-/// (`persona_author`, `bot:<installation>` for a bot device whose
-/// installation allows `Personas`), and the appearance is valid as written.
+/// (`persona_author`, the bot of a bot device whose installation allows `Personas`), and the appearance is valid as written.
 /// The relay cannot read a sealed change, so devices run this once they hold
 /// the plaintext.
 ///
@@ -474,7 +473,7 @@ pub fn decide_op(
 /// [`ReceiptRefusal::Appearance`] for the first change that breaks the rule.
 pub fn check_appearances(
     changes: &[automerge::Change],
-    persona_author: Option<&str>,
+    persona_author: Option<&tilo_action_policy::MemberId>,
 ) -> Result<(), ReceiptRefusal> {
     for change in changes {
         let Some(invoker) = change
@@ -487,8 +486,8 @@ pub fn check_appearances(
         let Some(appearance) = &invoker.appearance else {
             continue;
         };
-        let actor = invoker.key();
-        if !invoker.acting.is_bot() || persona_author != Some(actor.as_str()) {
+        let actor = invoker.acting.by.clone();
+        if !invoker.acting.is_bot() || persona_author != invoker.acting.member_id() {
             return Err(ReceiptRefusal::Appearance {
                 actor,
                 reason: "its author is not a bot allowed to post under other names".into(),

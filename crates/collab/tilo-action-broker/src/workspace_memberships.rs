@@ -1344,7 +1344,7 @@ mod tests {
             action: action.into(),
             argument: argument
                 .map(|value| format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value)),
-            actor: "not-authority".into(),
+            actor: tilo_actions::MemberId::person("not-authority").into(),
             context: None,
         }
     }

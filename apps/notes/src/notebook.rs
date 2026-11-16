@@ -147,10 +147,7 @@ impl Page {
     #[must_use]
     pub fn made(self, cx: &ActionCx) -> Self {
         Self {
-            creator: cx
-                .author()
-                .filter(|author| !author.is_empty())
-                .map(|author| Atom(author.to_owned())),
+            creator: cx.author().map(|author| Atom(author.key())),
             creator_name: cx.acting_name(),
             ..self
         }
@@ -866,7 +863,7 @@ impl Notebook {
         }
         let id = match title.as_deref().map(str::trim) {
             Some(title) if !title.is_empty() => self.titled(title)?,
-            _ => self.made_by(cx.author())?,
+            _ => self.made_by(cx.author().map(ui::tilo_resource::MemberId::key).as_deref())?,
         };
         let note = self.pages.get(&id).ok_or("no such note")?;
         let (title, path) = (note.title.clone(), note.path.clone());

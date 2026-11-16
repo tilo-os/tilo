@@ -172,7 +172,7 @@ fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
             tilo_app::tilo_resource::history::versions(&mut doc.clone())
                 .into_iter()
                 .filter_map(|version| version.context?.invoker)
-                .map(|invoker| invoker.key())
+                .map(|invoker| invoker.acting.by.key())
                 .collect()
         })
         .unwrap();

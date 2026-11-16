@@ -119,7 +119,10 @@ impl TestTree {
             focus_history: Vec::new(),
         });
         let mut home = empty_workspace(workspace_id, "Home", vec![strip]);
-        home.members_here([tilo_desktop_model::Member::keyed("alice", "Alice")]);
+        home.members_here([tilo_desktop_model::Member::named(
+            collab_types::MemberId::person("alice"),
+            "Alice",
+        )]);
         let mut tree = Self {
             desktop: Layout {
                 workspaces: vec![home],
@@ -138,8 +141,8 @@ impl TestTree {
             .find(|workspace| workspace.id() == research)
         {
             workspace.members_here([
-                tilo_desktop_model::Member::keyed("alice", "Alice"),
-                tilo_desktop_model::Member::keyed("bob", "Bob"),
+                tilo_desktop_model::Member::named(collab_types::MemberId::person("alice"), "Alice"),
+                tilo_desktop_model::Member::named(collab_types::MemberId::person("bob"), "Bob"),
             ]);
         }
         tree.append_empty_workspace("Design");

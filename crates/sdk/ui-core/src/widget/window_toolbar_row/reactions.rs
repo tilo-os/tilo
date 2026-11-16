@@ -49,24 +49,31 @@ impl Default for RowReactions {
     }
 }
 
-const REACTION_SHOWER: &str = "\u{1}you";
+/// The reactor a pill the person reacted to marks as theirs.
+fn shower() -> tilo_resource::MemberId {
+    tilo_resource::MemberId::person("\u{1}you")
+}
 
 fn group(pill: &ToolbarReaction) -> tilo_resource::ReactionGroup {
-    let named = |by: &str, name: Option<&str>| tilo_resource::Reactor {
-        by: by.to_owned(),
+    let named = |by: tilo_resource::MemberId, name: Option<&str>| tilo_resource::Reactor {
+        by,
         persona: None,
         name: name.map(str::to_owned),
     };
     let mut reactors: Vec<tilo_resource::Reactor> = Vec::new();
     if pill.mine {
-        reactors.push(named(REACTION_SHOWER, None));
+        reactors.push(named(shower(), None));
     }
-    reactors.extend(pill.names.iter().map(|name| named("", Some(name))));
+    reactors.extend(
+        pill.names
+            .iter()
+            .map(|name| named(tilo_resource::MemberId::person(""), Some(name))),
+    );
     let count = usize::try_from(pill.count)
         .unwrap_or(usize::MAX)
         .min(10_000);
     while reactors.len() < count {
-        reactors.push(named("", Some("")));
+        reactors.push(named(tilo_resource::MemberId::person(""), Some("")));
     }
     tilo_resource::ReactionGroup {
         emoji: pill.emoji.clone(),
@@ -163,7 +170,7 @@ impl ToolbarRow {
                 let laid = crate::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
-                        REACTION_SHOWER,
+                        Some(&shower()),
                         reactions.can_react,
                         (Point::ZERO, f64::MAX / 4.0),
                         text,
@@ -348,7 +355,7 @@ impl ToolbarRow {
         };
         self.reactions.strip.layout(
             &groups,
-            REACTION_SHOWER,
+            Some(&shower()),
             can_react,
             (origin.origin(), end - origin.x0 + 1.0),
             tr,

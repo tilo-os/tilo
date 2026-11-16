@@ -64,7 +64,7 @@ fn a_by_app_verb_is_declared_and_published_to_no_caller() {
 
 #[test]
 fn a_caller_invokes_a_by_app_verb_by_no_name_value_or_group() {
-    let mut replica = Replica::<Visits>::new().as_agent_for("agent:eve", "ada");
+    let mut replica = Replica::<Visits>::new().as_agent_for("eve", "ada");
 
     // By its id, the door finds no such action.
     let named = replica.apply(Visits::NOTE.with("forged")).map(drop);

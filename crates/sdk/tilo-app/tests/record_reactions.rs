@@ -76,7 +76,10 @@ fn a_shared_record_offers_reactions_and_a_press_reacts_as_the_person() {
     let groups = app.state().reactions.groups();
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].emoji, "🎉");
-    assert!(groups[0].includes(ME), "the reaction is the person's own");
+    assert!(
+        groups[0].includes(&tilo_resource::MemberId::person(ME)),
+        "the reaction is the person's own"
+    );
     let shown = reactions().expect("shown");
     assert_eq!(
         shown.pills,
@@ -125,7 +128,9 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
     );
     press(&mut app, "👀");
     assert!(
-        app.state().reactions.reacted("👀", ME),
+        app.state()
+            .reactions
+            .reacted("👀", &tilo_resource::MemberId::person(ME)),
         "a commenter's reaction lands: {:?}",
         app.refused()
     );

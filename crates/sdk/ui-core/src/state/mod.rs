@@ -610,7 +610,7 @@ mod tests {
             doc.commit();
             let mut frontier = DocumentFrontier::at_document(&mut doc);
             let handled = automerge::ActorId::from(
-                crate::history_source::authors::device_actor("alice", &device).as_slice(),
+                crate::history_source::authors::device_actor(b"alice", &device).as_slice(),
             );
             doc.set_actor(handled.clone());
             doc.put(ROOT, "named", "alice").unwrap();

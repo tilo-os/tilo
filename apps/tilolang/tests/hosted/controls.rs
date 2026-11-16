@@ -245,8 +245,14 @@ impl super::Session {
         let doing = ui::tilo_actions::ActionAddress::parse(identity)
             .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
         let arguments = format!("{}{arguments}", ui::tilo_actions::ARGUMENTS_JSON_PREFIX);
-        self.deliver(actor, doing.resource, doing.action, Some(arguments), None)
-            .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
+        self.deliver(
+            &ui::tilo_actions::MemberId::person(actor).into(),
+            doing.resource,
+            doing.action,
+            Some(arguments),
+            None,
+        )
+        .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
     }
 
     /// What the window's control called `name` says it does: the identity every caller names it
@@ -597,9 +603,10 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        let actor = invoker
-            .as_ref()
-            .map_or_else(|| self.person.clone(), ui::tilo_actions::ActionInvoker::key);
+        let actor = invoker.as_ref().map_or_else(
+            || ui::tilo_actions::MemberId::person(self.person.clone()).into(),
+            |invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.by.clone(),
+        );
         let context = match invoker {
             Some(invoker) => Some(ambient.cloned().unwrap_or_default().with_invoker(invoker)),
             None => ambient.cloned(),
@@ -628,7 +635,7 @@ impl super::Session {
     /// `context`, and let the host answer it: what the door last said of it.
     pub(super) fn deliver(
         &mut self,
-        actor: &str,
+        actor: &ui::tilo_actions::Actor,
         resource: String,
         action: String,
         arguments: Option<String>,
@@ -644,7 +651,7 @@ impl super::Session {
                 resource,
                 action,
                 argument: arguments,
-                actor: actor.to_owned(),
+                actor: actor.clone(),
                 context: context.map(Box::new),
             });
         self.settle();

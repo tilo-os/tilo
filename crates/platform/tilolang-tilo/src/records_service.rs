@@ -624,10 +624,10 @@ impl RecordService {
         context: ActionContext,
     ) -> Result<(), String> {
         let _in_records = self.in_records();
-        let author = context
-            .invoker
-            .as_ref()
-            .map_or_else(|| self.person.clone(), tilo_actions::ActionInvoker::key);
+        let author = context.invoker.as_ref().map_or_else(
+            || self.person.clone(),
+            |invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key(),
+        );
         let store = self.host.store();
         self.host
             .with_schemas(|| {
@@ -698,9 +698,11 @@ impl RecordService {
             // The action is planned to be carried out at once: what its plan writes is its
             // change, written once, as the invoker's.
             let resources = self.resources();
-            let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
-                tilo_actions::api::encode_json(&resources, &address, arguments)
-            })?;
+            let encoded = self
+                .host
+                .carrying_out(invoker.acting.by.key().as_bytes(), || {
+                    tilo_actions::api::encode_json(&resources, &address, arguments)
+                })?;
             if encoded.type_id == crate::effects::OPEN_OPERATION {
                 let mut open =
                     open_asked(&encoded.payload, resource).map_err(ApiError::InvalidArguments)?;

@@ -2204,7 +2204,7 @@ impl RichTextAction {
         let cx = tilo_resource::ActionCx::for_apply(doc, &payload, 0);
         // Who typed the text in: the invoker the envelope pins, so a replay
         // marks exactly what the origin marked.
-        let author = cx.author().map(str::to_owned);
+        let author = cx.author().map(tilo_resource::MemberId::key);
         let mut ids = tilo_doc::model::IdGen::for_action(cx);
         let mut dm = DocMut {
             doc,

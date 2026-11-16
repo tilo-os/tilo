@@ -174,7 +174,7 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
             .reactions
             .iter()
             .any(|reaction| reaction.emoji == "👍"
-                && reaction.includes(crate::model::ME)
+                && reaction.includes(&ui::tilo_resource::MemberId::person(crate::model::ME))
                 && reaction.count() == 1)
     );
 }

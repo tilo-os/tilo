@@ -14,6 +14,7 @@ use tilo_sort::CompactSort as _;
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tilo_action_policy::MemberId;
 use tilo_actions::{ActionError, ExecutionLocus, RiskLevel};
 
 use crate::collection::Id;
@@ -34,31 +35,41 @@ pub struct ActionCx {
     /// The ids [`Self::id`] minted, in order.
     ids: Vec<Id>,
     now_ms: i64,
-    author: Option<String>,
+    author: Option<MemberId>,
     invocation: Option<tilo_actions::InvocationId>,
 }
 
 /// Who invoked the action applying now, as its envelope pinned it.
-fn invoking_author() -> Option<String> {
+fn invoking_author() -> Option<MemberId> {
     tilo_actions::invoking_context()
         .and_then(|context| context.invoker)
-        .map(|invoker| invoker.key())
+        .and_then(|invoker| invoker_member(&invoker))
         .or_else(|| RECORD_ACTOR.with_borrow(Clone::clone))
+}
+
+/// The member an invoker acts as: the member itself, or for an automation the
+/// member it runs for.
+fn invoker_member(invoker: &tilo_actions::ActionInvoker) -> Option<MemberId> {
+    invoker
+        .acting
+        .members()
+        .first()
+        .map(|member| (*member).clone())
 }
 
 /// Who writes now: the invoker the envelope of the action applying now
 /// pinned; outside an action, the actor a record write is lent. Inside an
 /// action only its envelope counts, so every replica replaying it reads the
 /// same author.
-pub(crate) fn writing_author() -> Option<String> {
+pub(crate) fn writing_author() -> Option<MemberId> {
     match tilo_actions::invoking_context() {
-        Some(context) => context.invoker.map(|invoker| invoker.key()),
+        Some(context) => context.invoker.and_then(|invoker| invoker_member(&invoker)),
         None => RECORD_ACTOR.with_borrow(Clone::clone),
     }
 }
 
 thread_local! {
-    static RECORD_ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static RECORD_ACTOR: std::cell::RefCell<Option<MemberId>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Attribution lent by the SDK's checked record callback. Compensation is
@@ -66,12 +77,12 @@ thread_local! {
 /// actual admitted actor rather than an anonymous ambient host.
 ///
 /// This supplies attribution only, never permission to access host resources.
-pub struct RecordActorScope(Option<String>);
+pub struct RecordActorScope(Option<MemberId>);
 
 impl RecordActorScope {
     /// Lend the actor admitted by the record host for this callback.
     #[must_use]
-    pub fn enter(actor: String) -> Self {
+    pub fn enter(actor: MemberId) -> Self {
         Self(RECORD_ACTOR.replace(Some(actor)))
     }
 }
@@ -205,8 +216,8 @@ impl ActionCx {
     /// like its time, so every replica reads the same author; the payload
     /// need not carry it. `None` for an action applied with no invoker
     /// (an edit written straight into a document outside the host).
-    pub fn author(&self) -> Option<&str> {
-        self.author.as_deref()
+    pub fn author(&self) -> Option<&MemberId> {
+        self.author.as_ref()
     }
 
     /// The invocation admitted by the action door, pinned in the action

@@ -687,7 +687,7 @@ pub struct Invocation {
     /// Who asked, as the session resolved them. An attribution the
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
-    pub actor: String,
+    pub actor: tilo_actions::Actor,
     /// Serialized broker-owned `tilo_actions::ActionContext`, empty when
     /// the broker named none, so application callers that carry no context
     /// stay context-neutral.

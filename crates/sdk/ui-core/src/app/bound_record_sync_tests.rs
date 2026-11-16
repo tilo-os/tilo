@@ -355,7 +355,10 @@ fn every_letter_typed_into_the_primary_record_travels_under_its_action() {
             .unwrap();
         let (_, heads, commit) = fixture.app.pending_primary_document().unwrap().unwrap();
         let commit = commit.expect("every letter travels under its action");
-        assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+        assert_eq!(
+            commit.author.actor,
+            Some(tilo_actions::MemberId::person("alice").into())
+        );
         fixture.app.advance_primary_document(heads);
     }
 }

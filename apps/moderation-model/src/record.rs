@@ -149,15 +149,15 @@ fn reporter(cx: &ActionCx) -> Result<String, Refusal> {
         .is_none_or(ui::tilo_actions::Acting::is_person);
     let by_software = invoked_by.is_some_and(|by| by.is_agent() || by.is_bot());
     match cx.author() {
-        Some(author) if by_person => Ok(author.to_owned()),
-        Some(author) if by_software && author == crate::AGENT => Ok(author.to_owned()),
+        Some(author) if by_person => Ok(author.key()),
+        Some(author) if by_software && author.key() == crate::AGENT => Ok(author.key()),
         _ => Err(Refusal::new("only a person reports, for themselves")),
     }
 }
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
-        .map(str::to_owned)
+        .map(ui::tilo_resource::MemberId::key)
         .ok_or_else(|| Refusal::new("a decision names who took it"))
 }
 

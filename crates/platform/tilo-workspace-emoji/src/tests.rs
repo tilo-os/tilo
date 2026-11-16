@@ -46,7 +46,7 @@ fn an_emoji_is_added_under_a_free_valid_name_with_who_and_when() {
     let state = record.state().unwrap();
     assert_eq!(state.names(), ["party_parrot", "tilo"]);
     let parrot = state.get("party_parrot").unwrap();
-    assert_eq!(parrot.added_by, ALICE);
+    assert_eq!(parrot.added_by, tilo_actions::MemberId::person(ALICE));
     assert_eq!(parrot.added_at, 1_700_000_000_000);
     assert_eq!(parrot.image.bytes(), png(1, 300));
 

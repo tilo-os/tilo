@@ -197,7 +197,7 @@ fn deliver(
     app: &mut App,
     id: u64,
     action: &str,
-    actor: &str,
+    actor: &tilo_actions::Actor,
     context: Option<tilo_actions::ActionContext>,
 ) {
     app.apply_collab_event_for_test(CollabEvent::Invocation {
@@ -206,7 +206,7 @@ fn deliver(
         resource: "test.doc".into(),
         action: action.into(),
         argument: None,
-        actor: actor.into(),
+        actor: actor.clone(),
         context: context.map(Box::new),
     });
 }
@@ -218,10 +218,13 @@ fn who(app: &App) -> Option<String> {
     }
 }
 
-fn host_context(actor: &str, participant: Option<ParticipantId>) -> tilo_actions::ActionContext {
+fn host_context(
+    actor: &tilo_actions::Acting,
+    participant: Option<ParticipantId>,
+) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default()
         .with_group("11111111-1111-4111-8111-111111111111", "task", "task")
-        .with_host_invoker(actor, participant)
+        .with_host_actor(actor, participant)
 }
 
 crate::testing::test_app_widget!(TwoViews, "Two views");
@@ -264,8 +267,8 @@ tilo_test_env::scenario! {
             &mut app,
             1,
             "mark",
-            "agent:scribe",
-            Some(host_context("agent:scribe", Some(participant()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
         );
         assert_eq!(
             who(&app).as_deref(),
@@ -291,7 +294,7 @@ tilo_test_env::scenario! {
         );
 
         // Without a participant the same address resolves in this window's view.
-        deliver(&mut app, 2, "mark", "agent:scribe", None);
+        deliver(&mut app, 2, "mark", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
         assert_eq!(who(&app).as_deref(), Some("own"));
     }
 
@@ -305,8 +308,8 @@ tilo_test_env::scenario! {
             &mut app,
             3,
             "mark",
-            "person:guest",
-            Some(host_context("agent:scribe", Some(participant()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
         );
         assert_eq!(who(&app).as_deref(), Some("own"));
         let changes = app.state.doc.get_changes(&[]);
@@ -329,8 +332,8 @@ tilo_test_env::scenario! {
             &mut app,
             4,
             "move-caret",
-            "agent:scribe",
-            Some(host_context("agent:scribe", Some(participant()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
         );
         assert_eq!(
             probe.borrow().view_ops,
@@ -342,11 +345,11 @@ tilo_test_env::scenario! {
             &mut app,
             5,
             "zoom",
-            "agent:scribe",
-            Some(host_context("agent:scribe", Some(participant()))),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
         );
         // A remote actor without its own participant cannot move any view.
-        deliver(&mut app, 6, "move-caret", "agent:scribe", None);
+        deliver(&mut app, 6, "move-caret", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
         assert_eq!(
             probe.borrow().view_ops.len(),
             1,

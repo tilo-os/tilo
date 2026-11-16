@@ -1608,7 +1608,7 @@ impl Hosted {
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
         // A member's own record is that person's alone: anyone else is refused before anything
         // of it is read.
-        let key = invoker.key();
+        let key = invoker.acting.by.key();
         let person = if invoker.acting.is_person() {
             Some(key.as_str())
         } else {
@@ -1850,7 +1850,7 @@ impl Hosted {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let (address, encoded) = host.carrying_out(invoker.key().as_bytes(), || {
+        let (address, encoded) = host.carrying_out(invoker.acting.by.key().as_bytes(), || {
             self.encode_named(&surface, &shown, address, argument)
         });
         CALLER.with(|slot| *slot.borrow_mut() = None);
@@ -2742,7 +2742,7 @@ impl Applier {
         // Made as the invoker's step: the store writes it as theirs.
         self.host
             .store()
-            .writing_as(invoker.key().as_bytes(), || {
+            .writing_as(invoker.acting.by.key().as_bytes(), || {
                 self.host.root_record(&self.spec.app, ty)
             })
             .map_err(|error| error.to_string())?;
@@ -2793,9 +2793,11 @@ impl Applier {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
-        let encoded = self.host.carrying_out(invoker.key().as_bytes(), || {
-            tilo_actions::api::encode_json(&resources, &address, &change.arguments)
-        });
+        let encoded = self
+            .host
+            .carrying_out(invoker.acting.by.key().as_bytes(), || {
+                tilo_actions::api::encode_json(&resources, &address, &change.arguments)
+            });
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded = match encoded {
             Ok(encoded) if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE => {

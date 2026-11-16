@@ -248,11 +248,11 @@ fn write_edit(
     author: Option<&automerge::ActorId>,
 ) -> Result<(), tilo_actions::ActionError> {
     // An author's actor is the bytes of their key ([`TiloStore::writing_as`]).
-    let _lent = author.map(|author| {
-        tilo_resource::action::RecordActorScope::enter(
-            String::from_utf8_lossy(author.to_bytes()).into_owned(),
-        )
-    });
+    let _lent = author
+        .and_then(|author| {
+            tilo_resource::MemberId::parse(&String::from_utf8_lossy(author.to_bytes()))
+        })
+        .map(tilo_resource::action::RecordActorScope::enter);
     apply_edits(doc, app, std::slice::from_ref(edit), &edit_seed(index))
 }
 

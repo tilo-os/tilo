@@ -77,7 +77,10 @@ impl Bus {
         let members = members
             .iter()
             .map(|(id, name)| {
-                let mut member = collaboration::Member::keyed(id, name.clone());
+                let mut member = collaboration::Member::named(
+                    collaboration::MemberId::person(id.clone()),
+                    name.clone(),
+                );
                 member.is_self = id == person;
                 member
             })

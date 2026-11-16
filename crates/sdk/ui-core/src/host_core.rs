@@ -294,7 +294,7 @@ pub(crate) struct HostDocument<'a> {
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceInvocation<'a> {
     pub(crate) address: &'a tilo_actions::ActionAddress,
-    pub(crate) actor: &'a str,
+    pub(crate) actor: &'a tilo_actions::Actor,
     pub(crate) argument: Option<&'a str>,
     pub(crate) confirmation_satisfied: bool,
     pub(crate) broker_admitted: bool,
@@ -305,7 +305,10 @@ pub(crate) struct ResourceInvocation<'a> {
 }
 
 impl<'a> ResourceInvocation<'a> {
-    pub(crate) fn new(address: &'a tilo_actions::ActionAddress, actor: &'a str) -> Self {
+    pub(crate) fn new(
+        address: &'a tilo_actions::ActionAddress,
+        actor: &'a tilo_actions::Actor,
+    ) -> Self {
         Self {
             address,
             actor,

@@ -147,7 +147,7 @@ impl Tracker {
 
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
-        .map(str::to_owned)
+        .map(tilo_resource::MemberId::key)
         .ok_or_else(|| Refusal::new("Sign in to do this"))
 }
 

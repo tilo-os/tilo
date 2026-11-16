@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
         app.merge_peer(&mut peer).unwrap();
         assert_eq!(app.state().count, 1);
         let version = app.versions().into_iter().last().unwrap();
-        assert_eq!(version.context.unwrap().invoker.unwrap().key(), AGENT);
+        assert_eq!(version.context.unwrap().invoker.unwrap().acting.by.key(), AGENT);
     }
 
     phase history_names_the_agent_its_app_and_the_run_it_acts_in;
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
             panic!("the agent's edit records its verb: {context:?}");
         };
         assert_eq!(verb.action.action, "bump");
-        assert_eq!(context.invoker.unwrap().key(), AGENT);
+        assert_eq!(context.invoker.unwrap().acting.by.key(), AGENT);
         assert_eq!(context.app.unwrap().id, TallyApp::ID);
         assert_eq!(context.group.unwrap().id, "run-1");
     }

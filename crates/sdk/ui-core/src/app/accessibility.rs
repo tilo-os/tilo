@@ -1193,7 +1193,7 @@ impl App {
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
             return self.open_action_palette_at(address);
         }
-        let actor = self.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
         let accepted = self
             .invoke_resource_action(ResourceInvocation::new(address, &actor).argument(argument))
             .is_ok();
@@ -1661,7 +1661,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         arg: Option<&str>,
     ) -> Result<bool, String> {
-        let actor = self.collaboration.local_author.key();
+        let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
         let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
@@ -1739,7 +1739,7 @@ impl App {
                 if arg.is_some() {
                     return Err("Deferred action accepts no argument".into());
                 }
-                let actor = self.collaboration.local_author.key();
+                let actor = tilo_actions::Actor::Member(self.collaboration.local_author.clone());
                 match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
                     Ok(_) => {
                         self.needs_sync = true;

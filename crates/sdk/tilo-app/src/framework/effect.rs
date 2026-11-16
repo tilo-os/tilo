@@ -753,7 +753,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// reads whose it is here, never from the view.
     pub fn person(&self) -> Option<String> {
         match ui_core::invocation_scope::current_invoker() {
-            Some(invoker) => invoker.acting.is_person().then(|| invoker.key()),
+            Some(invoker) => invoker.acting.is_person().then(|| invoker.acting.by.key()),
             None => self.env.dispatch.me().map(str::to_owned),
         }
     }

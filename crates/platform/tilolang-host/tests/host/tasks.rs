@@ -291,7 +291,7 @@ tilo_test_env::scenario! {
                 "{}{arguments}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX
             )),
-            actor: "ada".to_owned(),
+            actor: tilo_actions::MemberId::person("ada").into(),
             context: None,
         });
         settle(&mut host, &mut window);
@@ -685,7 +685,7 @@ impl Shell {
                 resource: address.resource.clone(),
                 action: address.action.clone(),
                 argument,
-                actor: "ada".to_owned(),
+                actor: tilo_actions::MemberId::person("ada").into(),
                 context: None,
             });
     }

@@ -386,7 +386,7 @@ mod tests {
     /// Who publishes from this device.
     fn publisher() -> collab_types::CommitAuthor {
         collab_types::CommitAuthor {
-            principal: None,
+            actor: None,
             device: DEVICE,
         }
     }
@@ -522,7 +522,7 @@ mod tests {
             assert_eq!(history.len(), 1, "one action, one entry: {history:?}");
             let action = &history[0];
             assert_eq!(action.commit, commit.id());
-            assert_eq!(action.principal.as_deref(), Some("alice"));
+            assert_eq!(action.actor, Some(tilo_actions::MemberId::person("alice").into()));
             assert_eq!(action.device, DEVICE);
             assert_eq!(action.at_ms, commit.at_ms);
             assert_eq!(
@@ -690,7 +690,7 @@ mod tests {
                 let commit = WorkspaceCommit::new(
                     WORKSPACE,
                     collab_types::CommitAuthor {
-                        principal: None,
+                        actor: None,
                         device: DEVICE,
                     },
                     u64::try_from(index).unwrap(),

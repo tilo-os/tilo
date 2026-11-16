@@ -564,7 +564,10 @@ impl ChatApp {
                                     .iter()
                                     .find(|reaction| reaction.emoji == *emoji)
                             })
-                            .is_some_and(|reaction| reaction.includes(&self.me.id));
+                            .is_some_and(|reaction| {
+                                ui::tilo_resource::MemberId::parse(&self.me.id)
+                                    .is_some_and(|me| reaction.includes(&me))
+                            });
                         (
                             content(ui::widget::reaction_strip::pill_name(emoji, mine)),
                             Role::ToggleButton,
@@ -723,7 +726,7 @@ impl ChatApp {
                 .iter()
                 .filter(|((_, id), _)| id == msg)
                 .find_map(|(_, strip)| {
-                    strip.tooltip_at(point, &|reactor| self.user_name(&reactor.by))
+                    strip.tooltip_at(point, &|reactor| self.user_name(&reactor.by.key()))
                 })
         {
             return Some(tip);

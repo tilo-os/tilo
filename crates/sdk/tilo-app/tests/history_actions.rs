@@ -391,11 +391,11 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         for (actor, text) in [
-            ("agent:clipboard-helper", "agent card"),
-            ("person:owner", "person card"),
+            (tilo_actions::ActionInvoker::agent("clipboard-helper"), "agent card"),
+            (tilo_actions::ActionInvoker::person("person:owner"), "person card"),
         ] {
             app.call_by(
-                tilo_actions::ActionInvoker::person(actor),
+                actor,
                 "test.board",
                 "add",
                 json!({"text": text}),
@@ -408,9 +408,9 @@ tilo_test_env::scenario! {
             .unwrap()
             .iter()
             .find(|entry| entry["what"]["args"]["text"] == "agent card")
-            .and_then(|entry| entry["by"].as_str())
+            .map(|entry| entry["actor"]["by"].clone())
             .expect("history publishes the exact invoker");
-        assert_eq!(author, "agent:clipboard-helper");
+        assert_eq!(author, json!({"member": {"agent": "clipboard-helper"}}));
         app.call_by(
             tilo_actions::ActionInvoker::person("person:owner"),
             "test.board",
@@ -606,7 +606,7 @@ tilo_test_env::scenario! {
             .and_then(|version| version.context)
             .expect("the agent's edit is recorded");
         let invoker = entry.invoker.expect("attributed");
-        assert_eq!(invoker.key(), "agent:claude");
+        assert_eq!(invoker.acting.by.key(), "agent:claude");
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some("person:ada"));
         let listed = newest(&mut app);

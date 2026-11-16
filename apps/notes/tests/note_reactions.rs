@@ -18,7 +18,11 @@ fn reactions_of(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<Str
         .groups()
         .into_iter()
         .map(|group| {
-            let by = group.reactors.iter().map(|r| r.by.clone()).collect();
+            let by = group
+                .reactors
+                .iter()
+                .map(|r| r.by.id().to_owned())
+                .collect();
             (group.emoji, by)
         })
         .collect()

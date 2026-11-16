@@ -285,7 +285,10 @@ impl PageRecord {
         }
         let action = PageAction::of(&entry)
             .ok_or_else(|| Refusal::new("a page action has a place and says what was done"))?;
-        if !action.is_by(cx.author(), cx.invoked_by().as_ref()) {
+        if !action.is_by(
+            cx.author().map(ui::tilo_resource::MemberId::key).as_deref(),
+            cx.invoked_by().as_ref(),
+        ) {
             return Err(Refusal::new(
                 "a page action is set down by the actor who did it",
             ));

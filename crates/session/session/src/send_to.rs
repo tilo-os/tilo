@@ -389,7 +389,7 @@ impl Shared {
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
             Addressed::Report(destination) => {
-                let key = by.map(tilo_actions::ActionInvoker::key);
+                let key = by.map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
                 let from = key.as_deref().unwrap_or(CHAT);
                 let report = destination.report(from, attached, text)?;
                 (
@@ -429,10 +429,12 @@ impl Shared {
             .perform(&workspace, target, &mut |own| {
                 let look = &mut tilo_session_core::surfaces::Look::none();
                 match agent {
-                    Some(by) => {
-                        self.published
-                            .invoke_as(&by.key(), &own.address, &own.arguments, look)
-                    }
+                    Some(by) => self.published.invoke_as(
+                        &by.acting.by.key(),
+                        &own.address,
+                        &own.arguments,
+                        look,
+                    ),
                     None => self.published.invoke(&own.address, &own.arguments, look),
                 }
                 .map(drop)

@@ -191,7 +191,7 @@ pub struct NoteReactions {
     /// named.
     pub groups: Vec<ui::tilo_resource::ReactionGroup>,
     /// Who the person is: their own reactions are the chosen pills.
-    pub me: String,
+    pub me: Option<ui::tilo_resource::MemberId>,
     /// The person may react here, and the add button shows.
     pub can_react: bool,
 }

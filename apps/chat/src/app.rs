@@ -1245,9 +1245,11 @@ impl ChatApp {
             return;
         };
         let reacting = self.message(msg).is_some_and(|m| {
-            m.reactions
-                .iter()
-                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
+            m.reactions.iter().any(|r| {
+                r.emoji == emoji
+                    && ui::tilo_resource::MemberId::parse(&self.me.id)
+                        .is_some_and(|me| r.includes(&me))
+            })
         });
         let reactions = crate::resource::Chat::paths()
             .feedback
@@ -1275,9 +1277,11 @@ impl ChatApp {
     ) -> ui::tilo_resource::Edit<crate::parts::ChatPart> {
         use crate::parts::ChatPart;
         let reacting = self.message(msg).is_some_and(|m| {
-            m.reactions
-                .iter()
-                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
+            m.reactions.iter().any(|r| {
+                r.emoji == emoji
+                    && ui::tilo_resource::MemberId::parse(&self.me.id)
+                        .is_some_and(|me| r.includes(&me))
+            })
         });
         let reactions = ChatPart::paths()
             .messages

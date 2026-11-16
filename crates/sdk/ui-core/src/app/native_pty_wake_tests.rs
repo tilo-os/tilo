@@ -226,7 +226,7 @@ fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
     app.init_layout();
     app.sync_model(true);
     app.publish_action_surface();
-    let actor = app.collaboration.local_author.key();
+    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
     let invocation = tilo_actions::InvocationId::new();
     app.invoke_published_action(
         9601,

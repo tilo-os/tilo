@@ -468,7 +468,7 @@ fn a_bot_replica_edits_within_its_grant_for_its_installer() {
         .flatten()
         .expect("the bot's change records its entry");
     let invoker = entry.invoker.clone().unwrap();
-    assert_eq!(invoker.key(), "bot:b1");
+    assert_eq!(invoker.acting.by.key(), "bot:b1");
     assert!(invoker.acting.is_bot());
     assert_eq!(invoker.acting.acted_for_person(), Some("ada"));
     assert_eq!(entry.caused_by.as_ref().unwrap().event, "e1");

@@ -751,7 +751,7 @@ pub(super) fn unit_commits(
     units: &[collab_types::UnitMutation],
 ) -> Vec<Option<collab_types::WorkspaceCommit>> {
     let author = collab_types::CommitAuthor {
-        principal: None,
+        actor: None,
         device: [0; 32],
     };
     collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, units).unwrap_or_else(
@@ -1113,7 +1113,7 @@ mod tests {
             assert!(action.covers("so.tilo.test-tasks", ""));
             assert!(action.covers("so.tilo.test-discussion", "thread"));
             assert_eq!(action.invocation, Some(invocation));
-            assert_eq!(action.author.principal.as_deref(), Some("alice"));
+            assert_eq!(action.author.actor, Some(tilo_actions::MemberId::person("alice").into()));
             assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
             assert_eq!(
                 action.author.device, [0; 32],
@@ -1193,7 +1193,7 @@ mod tests {
                 let commit = commit
                     .as_ref()
                     .expect("every letter travels under its action");
-                assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+                assert_eq!(commit.author.actor, Some(tilo_actions::MemberId::person("alice").into()));
             }
         }
     }

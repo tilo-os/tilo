@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone)]
 struct OriginalCaller {
-    actor: String,
+    actor: tilo_actions::Actor,
     expiry: u64,
 }
 
@@ -22,7 +22,7 @@ fn scope(
     time: &Arc<AtomicU64>,
 ) -> ResourceInvocationScope {
     let caller = OriginalCaller {
-        actor: actor.into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(actor)),
         expiry,
     };
     let sampled = time.clone();
@@ -31,7 +31,7 @@ fn scope(
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
         address: tilo_actions::ActionAddress::new("fixture", "write"),
         argument: None,
-        actor: actor.into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(actor)),
         participant: None,
     };
     let lease = PublishedInvocationLease::new(
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
                 {
                     return Err("current original caller denied".into());
                 }
-                seen.insert(original.actor.clone());
+                seen.insert(original.actor.id().to_owned());
                 Ok(())
             })
             .unwrap();
@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
         assert_eq!(authorization.0.contributions.len(), 1);
         assert_eq!(
             authorization.0.contributions[0].lease.request.actor,
-            "caller-b"
+            tilo_actions::Actor::Member(tilo_actions::MemberId::person("caller-b"))
         );
         time.store(99, Ordering::Release);
         assert!(
@@ -423,7 +423,9 @@ fn scope_with_original_callback_gate(
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
         address: tilo_actions::ActionAddress::new("fixture", "write"),
         argument: None,
-        actor: "original-blocked-caller".into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(
+            "original-blocked-caller",
+        )),
         participant: None,
     };
     let lease = PublishedInvocationLease::new(
@@ -446,7 +448,9 @@ fn scope_with_original_callback_gate(
         }),
     )
     .with_owner_token(Arc::new(OriginalCaller {
-        actor: "original-blocked-caller".into(),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(
+            "original-blocked-caller",
+        )),
         expiry: 200,
     }))
     .unwrap();
@@ -476,11 +480,9 @@ tilo_test_env::scenario! {
             .push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
         assert_eq!(super::current_invoker(), None);
         // The local person may always change its own view.
-        assert!(super::view_operation_permitted("me", "me", &own_view));
+        assert!(super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::person("me")), &tilo_actions::MemberId::person("me"), &own_view));
         // A remote actor outside any delivered invocation may not.
-        assert!(!super::view_operation_permitted(
-            "agent:a",
-            "me",
+        assert!(!super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
             &participant_view
         ));
         {
@@ -488,25 +490,21 @@ tilo_test_env::scenario! {
                 ActionInvoker::agent("a").with_participant(participant.clone()),
             );
             assert_eq!(super::current_participant(), Some(participant.clone()));
-            assert!(super::view_operation_permitted(
-                "agent:a",
-                "me",
+            assert!(super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
                 &participant_view
             ));
             assert!(
-                !super::view_operation_permitted("agent:a", "me", &own_view),
+                !super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"), &own_view),
                 "an untagged View op would move somebody else's view"
             );
             assert!(
-                !super::view_operation_permitted("agent:b", "me", &participant_view),
+                !super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("b")), &tilo_actions::MemberId::person("me"), &participant_view),
                 "only the current invoker's own view"
             );
             {
                 let _inner = super::InvokerScope::enter(ActionInvoker::agent("a"));
                 assert_eq!(super::current_participant(), None);
-                assert!(!super::view_operation_permitted(
-                    "agent:a",
-                    "me",
+                assert!(!super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
                     &participant_view
                 ));
             }
@@ -522,10 +520,8 @@ tilo_test_env::scenario! {
         use tilo_actions::ActionContract;
         let mut read = ActionContract::view();
         read.tags.push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
-        assert!(super::view_operation_permitted("agent:a", "me", &read));
-        assert!(!super::view_operation_permitted(
-            "agent:a",
-            "me",
+        assert!(super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"), &read));
+        assert!(!super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
             &ActionContract::view()
         ));
     }

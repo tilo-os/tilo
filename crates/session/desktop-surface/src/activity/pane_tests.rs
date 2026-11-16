@@ -1700,7 +1700,7 @@ mod tests {
         {
             let (mut tree, _, _) = busy_workspace();
             tree.desktop.workspaces[0]
-                .member_here(tilo_desktop_model::Member::keyed("ghost", "Never Edited"));
+                .member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("ghost"), "Never Edited"));
             let pane = pane_over(&mut tree);
             assert!(
                 !pane.contributors.iter().any(|c| c == "Never Edited"),

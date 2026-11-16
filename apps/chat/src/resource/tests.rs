@@ -693,9 +693,11 @@ fn an_agent_posts_and_reacts_in_one_call_each_as_itself_for_its_person() {
         reacted.reactions[0]
             .reactors
             .iter()
-            .map(|reactor| reactor.by.as_str())
+            .map(|reactor| reactor.by.clone())
             .collect::<Vec<_>>(),
-        ["agent:44444444-4444-4444-8444-444444444444"],
+        [ui::tilo_resource::MemberId::agent(
+            "44444444-4444-4444-8444-444444444444"
+        )],
         "the reaction is the agent's"
     );
 }
@@ -1025,7 +1027,7 @@ tilo_test_env::scenario! {
 
         let sentences = app.sentences(app.history().iter().filter(|entry| {
             entry.invoker.as_ref().is_some_and(|invoker| {
-                invoker.key() == "agent:55555555-5555-4555-8555-555555555555"
+                invoker.acting.by.key() == "agent:55555555-5555-4555-8555-555555555555"
             })
         }));
         assert_eq!(

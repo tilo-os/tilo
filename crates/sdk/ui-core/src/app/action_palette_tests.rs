@@ -981,7 +981,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         ..Default::default()
     }));
     app.service_idle_model();
-    let actor = app.collaboration.local_author.key();
+    let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
     let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
     let invocation = tilo_actions::InvocationId::new();
     assert_eq!(
@@ -1000,9 +1000,12 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
     );
     assert!(
         app.invoke_resource_action(
-            ResourceInvocation::new(&address, "remote-editor")
-                .broker_admitted(true)
-                .invocation(Some(tilo_actions::InvocationId::new()))
+            ResourceInvocation::new(
+                &address,
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote-editor"))
+            )
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new()))
         )
         .is_err()
     );

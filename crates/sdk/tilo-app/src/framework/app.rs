@@ -1002,7 +1002,7 @@ fn apply_seed_actions(
     actions: &[&dyn tilo_actions::Action],
     encoded: Vec<tilo_actions::EncodedAction>,
 ) -> Result<(), String> {
-    let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
+    let writer = ui_core::history_source::authors::device_actor(author.as_bytes(), doc.get_actor());
     for (action, encoded) in actions.iter().zip(encoded) {
         let context = tilo_actions::ActionContext::for_resource(app.kind, app.kind, app.label)
             .with_app(app.id(), app.title())

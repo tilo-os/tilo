@@ -254,7 +254,7 @@ impl AttachedView {
             content,
         } = view;
         let invoker = &invoker;
-        let me = &*invoker.key();
+        let me = &*invoker.acting.by.key();
         let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
@@ -665,7 +665,7 @@ impl AttachedView {
         self.context
             .as_ref()
             .and_then(|context| context.invoker.clone())
-            .filter(|invoker| invoker.key() == self.invoker.key())
+            .filter(|invoker| invoker.acting.by == self.invoker.acting.by)
             .unwrap_or_else(|| self.invoker.clone())
             .with_appearance(appearance)
     }

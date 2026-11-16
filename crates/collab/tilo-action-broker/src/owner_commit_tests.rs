@@ -353,7 +353,7 @@ mod owner_commit_tests {
             resource,
             action: "append-paragraph".into(),
             argument: Some("Added through the broker".into()),
-            actor: "worker".into(),
+            actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("worker")),
             context: None,
         });
         app.pump_collab_presence();

@@ -411,7 +411,10 @@ impl PdfMarkup {
             page_id: annotation.page_id,
             kind: annotation.mark,
             color: annotation.color,
-            author: cx.author().unwrap_or_default().to_owned(),
+            author: cx
+                .author()
+                .map(ui::tilo_resource::MemberId::key)
+                .unwrap_or_default(),
             chars: annotation.chars,
             created_ms: cx.now_ms(),
             space: annotation.space,
@@ -616,7 +619,9 @@ impl PdfMarkup {
             return Ok(());
         }
         let signer = if signature.signer.trim().is_empty() {
-            cx.author().unwrap_or_default().to_owned()
+            cx.author()
+                .map(ui::tilo_resource::MemberId::key)
+                .unwrap_or_default()
         } else {
             signature.signer
         };

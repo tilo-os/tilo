@@ -791,7 +791,7 @@ impl InstanceRecord {
     /// history verbs `undo` and `redo` would take for them.
     #[must_use]
     pub fn can_undo_as(&self, person: &str) -> (bool, bool) {
-        let scope = Scope::Invoker(person.to_owned());
+        let scope = Scope::Invoker(tilo_actions::Acting::of_key(person).by);
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let mut undo = false;
         let mut redo = false;
@@ -808,7 +808,7 @@ impl InstanceRecord {
     /// action that made it names, in this unit and in every other one the action wrote.
     #[must_use]
     pub fn last_step_invocation(&self) -> Option<InvocationId> {
-        let scope = Scope::Invoker(self.person.clone());
+        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
         let step = self.last_step(&scope)?;
         self.invocation_of(&step)
     }
@@ -891,7 +891,7 @@ impl InstanceRecord {
         let Some(chunk) = self.chunk_of_change(change) else {
             return false;
         };
-        let scope = Scope::Invoker(self.person.clone());
+        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
         self.read(|chunks| {
             chunks.held(chunk).is_some_and(|doc| {
                 steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
@@ -946,7 +946,7 @@ impl InstanceRecord {
         resource: &str,
         kind: &str,
     ) -> Result<bool, RecordError> {
-        let scope = Scope::Invoker(self.person.clone());
+        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
         let Some(step) = self.last_step(&scope) else {
             return Ok(false);
         };
@@ -1030,7 +1030,7 @@ impl InstanceRecord {
         if !self.can_undo().1 {
             return Ok(false);
         }
-        let scope = Scope::Invoker(self.person.clone());
+        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let ambient = ActionContext {
             source_invocation: Some(InvocationId::new()),
@@ -1359,7 +1359,7 @@ impl InstanceRecord {
             .collect();
         let workspace = self.route.cluster_id.to_string();
         let author = collab_types::CommitAuthor {
-            principal: None,
+            actor: None,
             device: [0; 32],
         };
         collab_types::WorkspaceCommit::of_units(&workspace, &author, &units).map_or_else(
@@ -1674,7 +1674,7 @@ impl InstanceRecord {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let author = invoker.key();
+        let author = invoker.acting.by.key();
         let context = context.with_invoker(invoker);
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();

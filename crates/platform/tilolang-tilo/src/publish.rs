@@ -65,7 +65,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
     /// What the API admitted of `invoker`, as the runtime reads it.
     fn from(invoker: &tilo_actions::ActionInvoker) -> Self {
         Self {
-            actor: invoker.key(),
+            actor: invoker.acting.by.key(),
             agent: !invoker.acting.is_person(),
             on_behalf_of: invoker.acting.acted_for_person().map(str::to_owned),
         }

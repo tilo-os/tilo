@@ -1067,7 +1067,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .and_then(|version| version.context.as_ref())
         .and_then(|context| context.invoker.as_ref())
         .expect("the step names who made it");
-    assert_eq!(by.key(), "agent:scribe");
+    assert_eq!(by.acting.by.key(), "agent:scribe");
 
     app.call_by(scribe, "tasks.tracker", "undo", json!({}))
         .expect("the agent undoes its step");

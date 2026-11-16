@@ -1199,7 +1199,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(calls.get(), 2);
             let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
-            let actor = app.collaboration.local_author.key();
+            let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
             assert!(
                 app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
                     .is_err()
@@ -1304,7 +1304,7 @@ tilo_test_env::scenario! {
                 .put(ROOT, "changed-contract", true)
                 .unwrap();
             let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
-            let actor = app.collaboration.local_author.key();
+            let actor = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
             let error = app
                 .invoke_resource_action(ResourceInvocation::new(&address, &actor))
                 .unwrap_err();

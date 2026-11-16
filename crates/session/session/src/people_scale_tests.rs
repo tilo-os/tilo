@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
         // shell, and there is no panel of it whose Put back in the bar a pointer could press.
         let here = WorkspaceId::new();
         let mut session = Workspace::new(here, "Session");
-        session.member_here(Member::keyed("ada", "Ada"));
+        session.member_here(Member::named(collab_types::MemberId::person("ada"), "Ada"));
         let (_shell, handle) = DesktopSurface::new(
             Layout {
                 active: session.id(),
@@ -347,7 +347,7 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
             ))),
             here: Rc::new(|tree: &mut Layout| {
                 if let Some(workspace) = tree.workspaces.first_mut() {
-                    let agent = Member::keyed("agent:run", "Claude Code");
+                    let agent = Member::named(collab_types::MemberId::agent("run"), "Claude Code");
                     workspace.member_here(agent.clone());
                     if let Some(here) = workspace
                         .present

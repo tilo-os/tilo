@@ -224,7 +224,10 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let asked = id(0xa0d2);
             invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(delivered.actor, "agent:scribe");
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
 
             let beyond = app_asks(
                 &app,

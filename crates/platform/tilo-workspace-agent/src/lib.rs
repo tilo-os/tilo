@@ -635,11 +635,11 @@ fn no_such(agent: &Id) -> Refusal {
     Refusal::new(format!("there is no agent {agent}"))
 }
 
-/// Who the action is by: an agent is always someone's.
+/// The person the action is by, or acted for: an agent is always someone's.
 fn author(cx: &ActionCx) -> Result<String, Refusal> {
-    cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= MAX_KEEPER)
-        .map(str::to_owned)
+    cx.invoked_by()
+        .and_then(|acting| acting.people().first().map(|person| (*person).to_owned()))
+        .filter(|person| !person.is_empty() && person.len() <= MAX_KEEPER)
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
 }
 

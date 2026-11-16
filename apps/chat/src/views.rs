@@ -420,7 +420,7 @@ impl Channel {
                         who: group
                             .reactors
                             .iter()
-                            .map(|reactor| reactor.by.clone())
+                            .map(|reactor| reactor.by.key())
                             .collect(),
                     })
                     .collect(),

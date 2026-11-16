@@ -96,7 +96,7 @@ fn what_an_agent_session_does_is_its_own_for_the_person_and_grouped_under_its_se
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_some_and(|invoker| invoker.key() == agent_session().0.key())
+                .is_some_and(|invoker| invoker.acting.by == agent_session().0.acting.by)
         })
         .collect();
     assert!(
@@ -125,7 +125,7 @@ fn what_an_agent_session_does_is_its_own_for_the_person_and_grouped_under_its_se
                 .context
                 .as_ref()
                 .and_then(|context| context.invoker.as_ref())
-                .is_none_or(|invoker| invoker.key() != agent_session().0.key())
+                .is_none_or(|invoker| invoker.acting.by != agent_session().0.acting.by)
         })
         .filter(|version| {
             version

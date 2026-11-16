@@ -396,7 +396,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 let original = id(0xc510);
                 invoke(&agent.handle, original).await.unwrap();
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-                assert_eq!(delivered.actor, "agent:scribe");
+                assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")));
                 // A different certified connection cannot borrow the worker's parent.
                 assert!(
                     agent
@@ -515,7 +515,10 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     tilo_actions::remote::ReceiptStatus::Accepted
                 );
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-                assert_eq!(delivered.actor, person);
+                assert_eq!(
+                    delivered.actor,
+                    tilo_actions::MemberId::person(person.clone()).into()
+                );
                 assert_eq!(delivered.invocation_uuid, original.0.into_bytes());
                 let handle = rig.worker.handle.clone();
                 let pending = tokio::task::spawn_local(async move {
@@ -582,7 +585,10 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             let before_delivery = rig.state.admit_app_open(&app, &workspace, original, target);
             invoke(&agent.handle, original).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            assert_eq!(delivered.actor, "agent:scribe");
+            assert_eq!(
+                delivered.actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe"))
+            );
             let another_app =
                 rig.state
                     .admit_app_open("so.tilo.chat", &workspace, original, target);

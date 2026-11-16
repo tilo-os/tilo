@@ -10,7 +10,7 @@ pub(crate) struct HostedInvocation {
     pub(crate) address: tilo_actions::ActionAddress,
     pub(crate) argument: tilo_actions::remote::InvokeArgument,
     /// Who invoked it here.
-    pub(crate) actor: String,
+    pub(crate) actor: tilo_actions::Actor,
     /// The person confirmed it here, where its value asks first.
     pub(crate) confirmed: bool,
 }
@@ -23,7 +23,7 @@ impl HostedInvocation {
         address: &tilo_actions::ActionAddress,
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         confirmed: bool,
     ) -> Option<Self> {
         let run = spec.run_by_provider()?;
@@ -54,7 +54,7 @@ impl HostedInvocation {
             provider: run.provider.clone(),
             address: tilo_actions::ActionAddress::new(resource, action),
             argument,
-            actor: actor.to_owned(),
+            actor: actor.clone(),
             confirmed,
         })
     }

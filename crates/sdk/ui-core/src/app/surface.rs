@@ -2177,7 +2177,7 @@ mod tests {
             offered(&mut app),
             "agents and scripts see the window's zoom"
         );
-        let person = app.collaboration.local_author.key();
+        let person = tilo_actions::Actor::Member(app.collaboration.local_author.clone());
         app.invoke_resource_action(
             ResourceInvocation::new(&address("zoom-out"), &person).broker_admitted(true),
         )
@@ -2188,8 +2188,11 @@ mod tests {
         let before = app.content_zoom();
         assert!(
             app.invoke_resource_action(
-                ResourceInvocation::new(&address("zoom-in"), "a-collaborator")
-                    .broker_admitted(true),
+                ResourceInvocation::new(
+                    &address("zoom-in"),
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("a-collaborator"))
+                )
+                .broker_admitted(true),
             )
             .is_err(),
             "a collaborator never zooms someone else's window"

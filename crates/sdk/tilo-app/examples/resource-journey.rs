@@ -10,12 +10,12 @@ use tilo_app::prelude::*;
 static CATALOG: EmbeddedCatalog =
     EmbeddedCatalog::new("en-US", &[("en-US", include_str!("resource-journey.ftl"))]);
 
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 /// One task, with the platform-provided author of its creation.
 pub struct Task {
     pub title: String,
     pub done: bool,
-    pub author: String,
+    pub author: tilo_resource::MemberId,
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -37,10 +37,7 @@ impl Checklist {
         if title.is_empty() {
             return Err("Give the task a title before adding it");
         }
-        let author = cx
-            .author()
-            .ok_or("Sign in before adding a task")?
-            .to_owned();
+        let author = cx.author().ok_or("Sign in before adding a task")?.clone();
         self.tasks.push(
             cx.id(),
             Task {
@@ -184,7 +181,7 @@ mod tests {
         app.call("add", json!({})).expect("add");
         assert_eq!(
             app.state().tasks.values().next().expect("task").author,
-            "ada"
+            tilo_resource::MemberId::person("ada")
         );
 
         let id = app.state().tasks.ids().next().cloned().expect("task id");
@@ -229,7 +226,7 @@ mod tests {
                 .state()
                 .tasks
                 .values()
-                .all(|task| task.done && task.author == "ada")
+                .all(|task| task.done && task.author == tilo_resource::MemberId::person("ada"))
         );
     }
 

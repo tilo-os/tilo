@@ -1006,7 +1006,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     let all = snapshot.root.nodes();
     let caret = all
         .iter()
-        .find(|node| node.path == format!("presence-mark-{}", agent.key()))
+        .find(|node| node.path == format!("presence-mark-{}", agent.acting.by.key()))
         .unwrap_or_else(|| panic!("the agent's caret is drawn in the title"));
     let named = caret
         .semantics

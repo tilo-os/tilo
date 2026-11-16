@@ -249,7 +249,10 @@ async fn an_agent_session_takes_an_app_action() {
                 .unwrap();
             assert!(went_on(&receipt), "{receipt:?}");
             let wire = stream.next().await.unwrap();
-            assert_eq!(wire.actor, format!("agent:{}", agent.delegation.agent_id));
+            assert_eq!(
+                wire.actor,
+                tilo_actions::MemberId::agent(agent.delegation.agent_id.clone()).into()
+            );
             let context = wire.context().cloned().expect("the session's context");
             let named = context.invoker.and_then(|invoker| invoker.name);
             assert_eq!(named.as_deref(), Some(NAME));
@@ -289,7 +292,7 @@ async fn an_application_is_told_the_device_an_agent_session_came_from() {
             .unwrap();
             let invoker = delivered_invoker(&stream.next().await.unwrap());
             assert_eq!(
-                invoker.key(),
+                invoker.acting.by.key(),
                 format!("agent:{}", agent.delegation.agent_id)
             );
             assert_eq!(invoker.device, Some(laptop), "the device the host verified");
@@ -528,7 +531,10 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
                 .unwrap();
             assert!(went_on(&receipt), "{receipt:?}");
             let wire = stream.next().await.unwrap();
-            assert_eq!(wire.actor, format!("agent:{}", agent.delegation.agent_id));
+            assert_eq!(
+                wire.actor,
+                tilo_actions::MemberId::agent(agent.delegation.agent_id.clone()).into()
+            );
             let next = answered(&f, host.invoke(&caller, append_request(72)))
                 .await
                 .expect("answered")

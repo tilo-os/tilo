@@ -1084,8 +1084,7 @@ pub(crate) fn prepare_file_post(
 /// is always someone's.
 pub(crate) fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(str::to_owned)
+        .map(ui::tilo_resource::MemberId::key)
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
 }
 

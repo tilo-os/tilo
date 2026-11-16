@@ -195,6 +195,8 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
             .invoker
             .as_ref()
             .unwrap()
+            .acting
+            .by
             .key(),
         "agent:canvas-finder"
     );

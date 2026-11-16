@@ -548,7 +548,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             if let Some(argument) = argument {
                 meter.string_capacity(argument);
             }
-            meter.string_capacity(actor);
+            serialized_bytes(actor, &mut meter);
             if let Some(context) = context {
                 serialized_bytes(context.as_ref(), &mut meter);
             }

@@ -173,8 +173,8 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
                     .is_none_or(|app| app_of(&change.did).as_deref() == Some(app.as_str()))
                 && from
                     .as_ref()
-                    .is_none_or(|from| *from == change.actor.by.key())
-                && saver.is_none_or(|saver| saver != change.actor.by.key())
+                    .is_none_or(|from| change.actor.person_id() == Some(from.as_str()))
+                && saver.is_none_or(|saver| change.actor.person_id() != Some(saver))
         }
         (
             TriggerSpec::Connector {
@@ -222,7 +222,7 @@ fn self_triggered(firer: &Firer<'_>, event: Event<'_>) -> bool {
         return false;
     };
     match firer {
-        Firer::Bot { .. } => change.actor.by.key() == firer.key(),
+        Firer::Bot { installation } => change.actor.bot_id() == Some(*installation),
         Firer::Shortcut { shortcut, .. } => change.shortcut.as_deref() == Some(*shortcut),
     }
 }

@@ -1355,7 +1355,7 @@ impl ChatApp {
         let strip = strips.entry((thread, m.id.clone())).or_default();
         let laid = strip.layout(
             &m.reactions,
-            &self.me.id,
+            ui::tilo_resource::MemberId::parse(&self.me.id).as_ref(),
             self.can_participate(),
             (origin, width),
             tr,

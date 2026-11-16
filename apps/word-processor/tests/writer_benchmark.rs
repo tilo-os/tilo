@@ -328,7 +328,7 @@ fn typed_arm(receipt: &mut Receipt) -> App {
             entry
                 .invoker
                 .as_ref()
-                .is_none_or(|invoker| invoker.key() != AGENT)
+                .is_none_or(|invoker| invoker.acting.by.key() != AGENT)
         })
         .count();
     receipt.record(

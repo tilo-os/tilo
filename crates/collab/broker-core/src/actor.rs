@@ -289,6 +289,13 @@ impl BrokerActor {
         })
     }
 
+    /// Who this actor is.
+    #[must_use]
+    pub fn actor(&self) -> tilo_action_policy::Actor {
+        self.delegate()
+            .unwrap_or_else(|| tilo_action_policy::Actor::Member(MemberId::person(self.id.clone())))
+    }
+
     /// Who this actor's actions are: a person, an agent or bot acting for the
     /// person who delegated it, an app acting as the person whose session
     /// runs it.

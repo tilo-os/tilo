@@ -1254,7 +1254,7 @@ impl TransformService {
         resource: &str,
         action: &str,
         argument: Option<&str>,
-        actor: &str,
+        actor: &tilo_actions::Actor,
         context: Option<&ActionContext>,
     ) -> Option<InvocationUpdate> {
         let Directed { id, invocation } = directed;
@@ -1285,7 +1285,7 @@ impl TransformService {
         tracing::info!(
             invocation = id,
             action,
-            actor,
+            actor = %actor,
             app = context
                 .and_then(|c| c.app.as_ref())
                 .map(|app| app.id.as_str()),
@@ -1731,7 +1731,7 @@ mod tests {
                     RESOURCE_ID,
                     "summarise",
                     Some(&argument),
-                    "ada",
+                    &tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada")),
                     None,
                 )
                 .is_none(),
@@ -1764,7 +1764,7 @@ mod tests {
                 RESOURCE_ID,
                 "summarise",
                 Some(&argument),
-                "ada",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada")),
                 None,
             );
             assert_eq!(started, None, "the broker owns acceptance");
@@ -1773,7 +1773,7 @@ mod tests {
                 "agent.transform:other",
                 "summarise",
                 Some(&argument),
-                "ada",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada")),
                 None,
             );
             assert!(matches!(wrong, Some(InvocationUpdate::Failed { .. })));
@@ -1791,7 +1791,7 @@ mod tests {
                 RESOURCE_ID,
                 "summarise",
                 Some(&argument),
-                "ada",
+                &tilo_actions::Actor::Member(tilo_actions::MemberId::person("ada")),
                 None,
             );
             assert!(matches!(

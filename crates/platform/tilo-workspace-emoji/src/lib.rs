@@ -9,6 +9,7 @@
 //! keeps it below the size at which an action's payload moves to content.
 
 use base64::Engine as _;
+use tilo_resource::MemberId;
 use tilo_resource::{ActionCx, Doc, Map, Model, ModelError, Refusal, Settable, Slot, resource};
 
 #[cfg(test)]
@@ -26,8 +27,6 @@ pub const KIND: &str = "tilo.workspace.emoji";
 pub const MAX_IMAGE_BYTES: usize = 12_000;
 
 pub const MAX_EMOJI: usize = 250;
-
-const MAX_AUTHOR: usize = 4096;
 
 /// An emoji's picture, PNG or WebP, kept inside the record as one bytes
 /// value: written whole, last writer wins. Its JSON form is base64.
@@ -109,12 +108,12 @@ impl Model for EmojiImage {
 }
 
 /// One emoji of the workspace.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Emoji {
     /// Its picture.
     pub image: EmojiImage,
     /// Who added it: they may remove it again.
-    pub added_by: String,
+    pub added_by: MemberId,
     /// When, in milliseconds since the Unix epoch.
     pub added_at: i64,
 }
@@ -236,9 +235,6 @@ impl WorkspaceEmoji {
                     ":{name}:'s picture is not a PNG or WebP of at most {MAX_IMAGE_BYTES} bytes"
                 )));
             }
-            if emoji.added_by.is_empty() || emoji.added_by.len() > MAX_AUTHOR {
-                return Err(Refusal::new(format!(":{name}: names nobody who added it")));
-            }
         }
         Ok(())
     }
@@ -300,9 +296,8 @@ fn no_such(name: &str) -> Refusal {
     Refusal::new(format!("there is no emoji :{name}:"))
 }
 
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
+fn author(cx: &ActionCx) -> Result<MemberId, Refusal> {
     cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= MAX_AUTHOR)
-        .map(str::to_owned)
+        .cloned()
         .ok_or_else(|| Refusal::new("an emoji is always added by someone"))
 }

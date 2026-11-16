@@ -40,13 +40,19 @@ impl Board {
     /// Make whoever invokes this the board's owner.
     #[action]
     pub fn claim(&mut self, cx: &mut ActionCx) {
-        cx.author().unwrap_or_default().clone_into(&mut self.owner);
+        self.owner = cx
+            .author()
+            .map(|author| author.id().to_owned())
+            .unwrap_or_default();
     }
 
     /// Post a note, signed by whoever posts it.
     #[action]
     pub fn post(&mut self, cx: &mut ActionCx, text: String) {
-        let author = cx.author().unwrap_or_default().to_owned();
+        let author = cx
+            .author()
+            .map(|author| author.id().to_owned())
+            .unwrap_or_default();
         self.notes.push(cx.id(), Note { text, author });
     }
 
@@ -318,7 +324,7 @@ tilo_test_env::scenario! {
         assert_eq!(resource.label, "Studio mixer");
         assert_ne!(resource.label, <Board as Resource>::LABEL);
         let invoker = context.invoker.unwrap();
-        assert_eq!(invoker.key(), "test-author");
+        assert_eq!(invoker.acting.by.key(), "test-author");
 
         // A past version is read by nobody in particular.
         let first = app.versions().first().unwrap().hash;
@@ -340,7 +346,7 @@ tilo_test_env::scenario! {
             .find_map(|version| version.context)
             .unwrap();
         assert_eq!(seed.change, tilo_actions::ChangeKind::External);
-        assert_eq!(seed.invoker.unwrap().key(), "test-author");
+        assert_eq!(seed.invoker.unwrap().acting.by.key(), "test-author");
 
         // Neither Ctrl+Z nor the `undo` action takes the seed back.
         assert!(!app.undo());

@@ -2485,8 +2485,8 @@ pub fn minted_items(
 /// restored from a backup) would number its next change again. Two changes
 /// under one writer and sequence cannot both be held, and a record keeping
 /// both no longer reads whole.
-pub fn document_writer(actor: &str, doc: &AutoCommit) -> Vec<u8> {
-    crate::history_source::authors::device_actor(actor, doc.get_actor())
+pub fn document_writer(actor: &tilo_actions::Actor, doc: &AutoCommit) -> Vec<u8> {
+    crate::history_source::authors::device_actor(&actor.actor_bytes(), doc.get_actor())
 }
 
 fn execute_document(
@@ -2494,7 +2494,7 @@ fn execute_document(
     action: &dyn tilo_actions::Action,
     encoded: tilo_actions::EncodedAction,
     transport: &mut dyn tilo_actions::ActionTransport,
-    actor: &str,
+    actor: &tilo_actions::Actor,
     broker_admitted: bool,
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::ApiError> {
@@ -2579,19 +2579,19 @@ pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
 /// the device of whoever invokes it, so only the person at this device, or an agent the broker admitted
 /// acting for them, has it as their own.
 pub(crate) fn runs_own_device(
-    actor: &str,
-    local_author: &str,
+    actor: &tilo_actions::Actor,
+    local_author: &tilo_actions::MemberId,
     broker_admitted: bool,
     ambient: Option<&tilo_actions::ActionContext>,
 ) -> bool {
-    actor == local_author
+    actor.member_id() == Some(local_author)
         || (broker_admitted
             && ambient
                 .and_then(|context| context.invoker.as_ref())
                 .is_some_and(|invoker| {
-                    invoker.key() == actor
+                    invoker.acting.by == *actor
                         && invoker.acting.is_agent()
-                        && invoker.acting.acted_for_person() == Some(local_author)
+                        && Some(invoker.acting.acted_for_person()) == Some(local_author.person_id())
                 }))
 }
 
@@ -2602,8 +2602,8 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) resource: &'a ResourceSpec,
     pub(crate) spec: &'a tilo_actions::ActionSpec,
     pub(crate) encoded: tilo_actions::EncodedAction,
-    pub(crate) actor: &'a str,
-    pub(crate) local_author: &'a str,
+    pub(crate) actor: &'a tilo_actions::Actor,
+    pub(crate) local_author: &'a tilo_actions::MemberId,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
     /// Exact invocation retained by an admitted external dispatch.
@@ -2665,8 +2665,9 @@ pub(crate) fn execute_resource_operation(
     }
     // The admitted caller is who the action is by, local or delivered:
     // pinned with it, so its `apply` reads the same author everywhere.
-    if context.invoker.is_none() && !actor.is_empty() {
-        context = context.with_invoker(tilo_actions::ActionInvoker::person(actor));
+    if context.invoker.is_none() {
+        context =
+            context.with_invoker(tilo_actions::ActionInvoker::admitted(&actor.clone().into()));
     }
     // Ambient context is descriptive and may arrive from the caller. The
     // retained dispatch boundary is the sole source for invocation
@@ -2936,7 +2937,7 @@ pub(crate) fn execute_resource_operation(
 pub(crate) struct ResourceActionRequest<'a> {
     pub(crate) argument: Option<&'a str>,
     pub(crate) arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
-    pub(crate) actor: &'a str,
+    pub(crate) actor: &'a tilo_actions::Actor,
     pub(crate) confirmed: bool,
     pub(crate) broker_admitted: bool,
     pub(crate) invocation: tilo_actions::InvocationId,
@@ -3074,7 +3075,7 @@ pub(crate) fn invoke_resource_action(
                     if spec.kind == tilo_actions::OperationKind::View
                         && !crate::invocation_scope::view_operation_permitted(
                             actor,
-                            binding.author.key().as_str(),
+                            &binding.author,
                             &spec.contract,
                         )
                     {
@@ -3123,7 +3124,7 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        with_native_text(if actor == binding.author.key() && crate::history_source::authors::agent_principal_name(actor).is_none() { target.input } else { Input::Discrete }, || execute_resource_operation(
+                        with_native_text(if actor.member_id().is_some_and(|member| *member == binding.author && !member.is_agent()) { target.input } else { Input::Discrete }, || execute_resource_operation(
                             widget,
                             doc,
                             path,
@@ -3136,7 +3137,7 @@ pub(crate) fn invoke_resource_action(
                                 spec,
                                 encoded,
                                 actor,
-                                local_author: &binding.author.key(),
+                                local_author: &binding.author,
                                 broker_admitted,
                                 invocation,
                                 source_invocation,
@@ -4771,7 +4772,8 @@ impl CallbackBinding {
             _scope: ExecutingHostScope::enter(self.lifetime_id),
             _actor: tilo_resource::action::RecordActorScope::enter(
                 crate::invocation_scope::current_invoker()
-                    .map_or_else(|| self.author.key(), |invoker| invoker.key()),
+                    .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
+                    .unwrap_or_else(|| self.author.clone()),
             ),
         })
     }

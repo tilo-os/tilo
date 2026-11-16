@@ -1056,7 +1056,7 @@ mod members_tests {
             );
             // The roster knows Ada from presence; the workspace's own record of her has no name.
             let mut listed = ws.clone();
-            listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+            listed.member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("ada"), "Ada"));
             let desktop = tilo_desktop_model::Layout {
                 active: listed.id(),
                 workspaces: vec![listed],
@@ -1548,8 +1548,14 @@ mod permissions_tests {
             let mut ws = Workspace::new(WorkspaceId::from_u128(5), "names");
             ws.set_owner(&ada);
             ws.members_here([
-                tilo_desktop_model::Member::keyed(&ada, "Ada Lovelace"),
-                tilo_desktop_model::Member::keyed(&bea, "Bea"),
+                tilo_desktop_model::Member::named(
+                    collab_types::MemberId::person(ada.clone()),
+                    "Ada Lovelace",
+                ),
+                tilo_desktop_model::Member::named(
+                    collab_types::MemberId::person(bea.clone()),
+                    "Bea",
+                ),
             ]);
             ws.grant_as(
                 &ada,

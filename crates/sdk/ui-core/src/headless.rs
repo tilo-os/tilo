@@ -366,7 +366,7 @@ pub struct ProvidedInvocation<'a> {
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: &'a tilo_actions::remote::InvokeArgument,
     /// Who invoked it.
-    pub actor: &'a str,
+    pub actor: &'a tilo_actions::Actor,
     /// The person confirmed it, where its value asks first.
     pub confirmed: bool,
 }
@@ -6818,7 +6818,7 @@ impl FrameHarness {
                     continuation.invoker.clone(),
                     invocation,
                 );
-                let actor = continuation.invoker.key();
+                let actor = continuation.invoker.acting.by.clone();
                 self.invoke_bound_action_for(
                     address,
                     arguments,
@@ -7088,7 +7088,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         ambient: Option<&tilo_actions::ActionContext>,
-        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
+        delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
         let answered =
@@ -7115,12 +7115,12 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
         ambient: Option<&tilo_actions::ActionContext>,
-        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
+        delivered: Option<(tilo_actions::InvocationId, Option<&tilo_actions::Actor>)>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
         let (invocation, actor) =
             delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
-        let author = self.author.key();
+        let author = tilo_actions::Actor::Member(self.author.clone());
         let actor = actor.unwrap_or(&author);
         let translated = self.bound_publication.target(&address.address)?;
         if translated
@@ -7260,7 +7260,7 @@ impl FrameHarness {
                     }
                     crate::bound_dispatch::ControlContinuationArguments::Immediate => None,
                 };
-                let author = self.author.key();
+                let author = tilo_actions::Actor::Member(self.author.clone());
                 self.invoke_local_target(
                     &request.target,
                     &crate::host_core::ResourceInvocation::new(&request.address, &author)
@@ -8228,7 +8228,7 @@ impl FrameHarness {
         .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
         .map_err(crate::bound_dispatch::BoundActionError::into_api)?;
         let argument = crate::host_core::json_argument(arguments);
-        let author = self.author.key();
+        let author = tilo_actions::Actor::Member(self.author.clone());
         let request = crate::host_core::ResourceInvocation::new(address, &author)
             .argument(Some(&argument))
             .confirmed(confirmed);
@@ -8797,7 +8797,8 @@ impl crate::host_core::ControlHost for FrameHarness {
         let argument = request.argument;
         let confirmed = request.confirmation_satisfied;
         let invocation = request.invocation.unwrap_or_default();
-        let resources = self.outer_resources(address, request.actor == self.author.key());
+        let resources =
+            self.outer_resources(address, request.actor.member_id() == Some(&self.author));
         let (arguments, resource, spec) = crate::bound_dispatch::resolve_resource_invocation(
             &resources, address, argument, None, confirmed,
         )?;
@@ -8833,7 +8834,7 @@ impl crate::host_core::ControlHost for FrameHarness {
                 spec,
                 encoded,
                 actor: request.actor,
-                local_author: &self.author.key(),
+                local_author: &self.author,
                 broker_admitted: request.broker_admitted,
                 invocation,
                 source_invocation: None,
@@ -8847,7 +8848,7 @@ impl crate::host_core::ControlHost for FrameHarness {
                 before,
                 None,
                 None,
-                crate::permissions::MemberId::parse(request.actor),
+                request.actor.member_id().cloned(),
             );
         }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {

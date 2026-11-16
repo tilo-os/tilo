@@ -57,8 +57,8 @@ impl ReactionsIndicator {
             self.show(None);
             return;
         };
-        let me = input.dispatch.me();
-        if let Some(me) = me {
+        let me = input.dispatch.me().and_then(tilo_resource::MemberId::parse);
+        if let Some(me) = &me {
             for emoji in presses {
                 input.dispatch.submit_reaction(
                     vec![Segment::Field(key.to_owned())],
@@ -66,7 +66,7 @@ impl ReactionsIndicator {
                 );
             }
         }
-        let shown = shown(input, reactions, me);
+        let shown = shown(input, reactions, me.as_ref());
         self.show(shown);
     }
 
@@ -83,7 +83,7 @@ impl ReactionsIndicator {
 fn shown(
     input: &ReactionsInput<'_>,
     reactions: &tilo_resource::Reactions,
-    me: Option<&str>,
+    me: Option<&tilo_resource::MemberId>,
 ) -> Option<ToolbarReactions> {
     if input.dispatch.is_past() {
         return None;
@@ -105,13 +105,15 @@ fn shown(
             names: group
                 .reactors
                 .iter()
-                .filter(|reactor| reactor.persona.is_some() || me.is_none_or(|me| reactor.by != me))
+                .filter(|reactor| {
+                    reactor.persona.is_some() || me.is_none_or(|me| reactor.by != *me)
+                })
                 .take(ui_core::window_toolbar::MAX_REACTOR_NAMES)
                 .map(|reactor| {
                     reactor
                         .name
                         .clone()
-                        .unwrap_or_else(|| input.people.name(&reactor.by))
+                        .unwrap_or_else(|| input.people.name(&reactor.by.key()))
                 })
                 .collect(),
         })
