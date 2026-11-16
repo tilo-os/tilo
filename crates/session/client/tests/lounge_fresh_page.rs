@@ -840,11 +840,13 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     }
     heard += arriving.drain().len();
     // A bridge that kept each frame would hold at least an event per frame: the busy window runs
-    // until that many frames have reached it, so the bound means the same on a busy machine as on
-    // a quiet one.
+    // until the frames heard would have cost more than the bound, which is what lets the bound tell
+    // keeping them from not. The window cannot fill twice the bound: the lounge's relay carries the
+    // page's frames to a device at about a hundred a second, and the suite's hang bound ends the
+    // window long before.
     // One more than the bound divides into: `kept_each` must be over it, not level with it.
     let enough =
-        usize::try_from(BRIDGE_GROWTH * 2).unwrap_or(usize::MAX) / std::mem::size_of::<Event>() + 1;
+        usize::try_from(BRIDGE_GROWTH).unwrap_or(usize::MAX) / std::mem::size_of::<Event>() + 1;
     let heard_before = heard;
     let before = tilo_test_env::held::bytes();
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
@@ -865,11 +867,11 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         "the bridge heard {heard} presence frame(s); the process holds {before} bytes before and \
          {after} after ({grown} more)"
     );
-    // The bound must be well under what the frames would cost the bridge if it kept them, or it
-    // would not tell the two apart.
+    // The bound must be under what the frames would cost the bridge if it kept them, or it would
+    // not tell the two apart.
     let kept_each = isize::try_from(heard * std::mem::size_of::<Event>()).unwrap_or(isize::MAX);
     assert!(
-        kept_each > BRIDGE_GROWTH * 2,
+        kept_each > BRIDGE_GROWTH,
         "too few frames reached the bridge ({heard}) to tell keeping them from not"
     );
     assert!(
