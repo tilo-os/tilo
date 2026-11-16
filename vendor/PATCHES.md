@@ -8,6 +8,14 @@ synced folder's tree, edited once per file written into the folder, grew from
 1 GB to 4 GB in a minute during a git checkout. `vendor/hexane` shrinks the left
 half after a split; see `vendor/hexane/TILO-PATCH.md`.
 
+## iroh-blobs metadata database page cache
+
+`iroh-blobs` 0.103.1 opened its file store's redb database with redb's default page cache
+of 1 GiB, and blobs up to 16 KiB live in its pages. A synced folder that an agent keeps
+editing grew the process holding it toward that gigabyte. `vendor/iroh-blobs` lets the
+store's owner bound the cache (`Options::meta_cache_bytes`); Tilo's content store sets it
+to 32 MiB. See `vendor/iroh-blobs/TILO-PATCH.md`.
+
 ## iroh relay handshake without its confirmation's round trip
 
 `iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in

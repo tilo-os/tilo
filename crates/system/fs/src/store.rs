@@ -254,6 +254,12 @@ async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
 /// is read again and again and is small: manifests, the chunks of small files, thumbnails.
 pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Pages of the loose-blob store's metadata database it keeps in memory, read and written. Small
+/// blobs are stored inside those pages, so redb's own default (1 GiB) let a store that small files
+/// keep being written to grow toward a gigabyte of them; the hot cache above is what serves
+/// repeated reads, and the kernel's page cache serves the rest.
+pub const META_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
 /// Largest blob the hot cache admits. Anything larger is file-backed content or document media, both
 /// read by range, and one such blob would take a large share of the budget for a single read.
 pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
@@ -374,6 +380,7 @@ impl ContentStore {
         let gc_ready = Arc::new(AtomicBool::new(false));
         let gc = GcGate::default();
         let mut options = iroh_blobs::store::fs::options::Options::new(dir);
+        options.meta_cache_bytes = META_CACHE_BYTES;
         // Selective eviction is an explicit user action and must not wait for the ordinary
         // maintenance cadence. Unscoped passes wait in the callback, so the short interval only
         // separates the sweeps of one authorized eviction.
