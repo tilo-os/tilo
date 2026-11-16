@@ -620,6 +620,10 @@ impl<L: Layout> crate::widget::RowContentBox for Arranged<L> {
 }
 
 impl<L: Layout + 'static> Widget for Arranged<L> {
+    /// What it holds, each slot where the arrangement puts it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
     crate::provides!(dyn crate::widget::RowContentBox);
 
     fn build_layout(

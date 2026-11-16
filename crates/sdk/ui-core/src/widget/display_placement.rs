@@ -250,6 +250,8 @@ pub struct DisplayPlacement {
     dirty: bool,
     focused: bool,
     rect: Rect,
+    /// Bumped each time it paints anew: what a page's picture of it is versioned by.
+    paint_generation: u64,
 }
 
 impl DisplayPlacement {
@@ -275,6 +277,7 @@ impl DisplayPlacement {
             dirty: true,
             focused: false,
             rect: Rect::ZERO,
+            paint_generation: 0,
         }
     }
 
@@ -1023,6 +1026,11 @@ struct TileState {
 }
 
 impl Widget for DisplayPlacement {
+    /// The placement as it draws it, each display a choice a page reaches.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.painted_targets(self.paint_generation);
+    }
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(
@@ -1206,6 +1214,7 @@ impl Widget for DisplayPlacement {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.paint_generation = self.paint_generation.wrapping_add(1);
         crate::widget::Widget::mark_children_drawn(self);
     }
 

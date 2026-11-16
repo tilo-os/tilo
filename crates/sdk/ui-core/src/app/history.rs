@@ -1004,6 +1004,10 @@ struct FrameworkPresentation<'a> {
     layout_root: taffy::NodeId,
 }
 impl Widget for FrameworkPresentation<'_> {
+    /// The widgets it presents, composed as its content.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
     fn build_layout(
         &mut self,
         _: &mut taffy::TaffyTree<()>,

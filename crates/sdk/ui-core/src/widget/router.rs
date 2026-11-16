@@ -350,6 +350,10 @@ impl Router {
 }
 
 impl Widget for Router {
+    /// The screen it shows, as its content.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);

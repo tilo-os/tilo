@@ -184,3 +184,18 @@ test("a button's face is its icon and words on its ground, not a picture", () =>
   assert.equal(byPath(layer, 'Button[0]#label').textContent, 'Share');
   assert.equal(all(layer).some(node => node.localName === 'canvas'), false, 'no picture of its paint');
 });
+
+test('a separator says how far it stands, and which way it divides', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  show(presenter, widget('Split[0]', [0, 0, 400, 300], {children: [
+    widget('Split[0]#divider', [198, 0, 4, 300], {tag: 'div', focusable: true,
+      semantics: {role: 'Separator', name: 'Resize preview', value: '55%', state: {}}}),
+  ]}));
+  const divider = byPath(layer, 'Split[0]#divider');
+  assert.equal(divider.getAttribute('role'), 'separator');
+  assert.equal(divider.getAttribute('aria-valuenow'), '55');
+  assert.equal(divider.getAttribute('aria-valuetext'), '55%');
+  assert.equal(divider.getAttribute('aria-orientation'), 'vertical');
+  assert.equal(divider.getAttribute('aria-label'), 'Resize preview');
+});

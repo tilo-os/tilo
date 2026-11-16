@@ -392,6 +392,18 @@ fn content_name(align: taffy::JustifyContent) -> &'static str {
     }
 }
 
+/// Whether `node` or a widget under it already composes the control `target`.
+fn composed_target(node: &Composed, target: &str) -> bool {
+    node.semantics
+        .as_ref()
+        .and_then(|node| node.action_target.as_deref())
+        == Some(target)
+        || node
+            .children
+            .iter()
+            .any(|child| composed_target(child, target))
+}
+
 /// One widget of a composition.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Composed {
@@ -596,6 +608,54 @@ impl HtmlCx<'_> {
     pub fn blocks(&mut self, blocks: Vec<DocBlock>, edges: DocEdges) {
         self.element("article");
         self.composed.own = Some(Own::Blocks { blocks, edges });
+    }
+
+    /// Each control the widget's accessibility tree names — a target with bounds — as a part
+    /// standing where it stands: a real button a page, a reader and the keyboard reach, over what
+    /// the widget draws itself. One the widget already composed ([`Self::part`]) is not composed
+    /// twice.
+    pub fn targets(&mut self) {
+        let Some(root) = self.composed.semantics.clone() else {
+            return;
+        };
+        let mut found = Vec::new();
+        let mut pending = std::collections::VecDeque::from([root]);
+        while let Some(node) = pending.pop_front() {
+            pending.extend(node.children.iter().cloned());
+            let Some(target) = node.action_target.clone() else {
+                continue;
+            };
+            let Some(bounds) = node.bounds else {
+                continue;
+            };
+            let rect = bounds.to_rect();
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                found.push((target, rect, node));
+            }
+        }
+        for (target, rect, node) in found {
+            if composed_target(&self.composed, &target) {
+                continue;
+            }
+            let part = self.part(&format!("target:{target}"), "Target", rect);
+            part.tag = Some("button");
+            part.focusable = true;
+            part.semantics = Some(node);
+        }
+    }
+
+    /// The widget's `version` of what it draws, with the controls it names ([`Self::targets`]) over
+    /// it: for a widget that draws its own tabs, buttons and toggles rather than holding them as
+    /// widgets of it.
+    pub fn painted_targets(&mut self, version: u64) {
+        self.painted(version);
+        self.targets();
+    }
+
+    /// The widget is drawn at `version` — a count it bumps each time it paints anew: it shows as a
+    /// picture of its paint, fetched again when the version changes.
+    pub fn painted(&mut self, version: u64) {
+        self.composed.painted(version);
     }
 
     /// The widget is drawn: it shows as a picture of it paint, redrawn whenever what it shows or its

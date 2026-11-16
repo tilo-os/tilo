@@ -304,6 +304,10 @@ pub fn immediate(
 }
 
 impl Widget for ResourceActionHost {
+    /// What it hosts, as its content.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
     crate::provides!(
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations

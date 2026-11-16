@@ -2408,6 +2408,9 @@ impl Widget for ModalDialog<dyn Widget> {
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.as_dyn().html(cx);
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

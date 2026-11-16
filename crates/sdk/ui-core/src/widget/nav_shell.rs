@@ -684,6 +684,10 @@ struct InertPart;
 static INERT_PART: InertPart = InertPart;
 
 impl Widget for InertPart {
+    /// Nothing: a push screen that is not in front stands in no page either.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

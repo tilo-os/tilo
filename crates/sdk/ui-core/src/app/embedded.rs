@@ -50,6 +50,8 @@ use crate::widget::SETTLE_FRAMES;
 )]
 pub struct EmbeddedApp {
     app: Box<App>,
+    /// Bumped each time it paints anew: what a page's picture of the app is versioned by.
+    paint_generation: u64,
     /// Its actions are offered to this device's automation only.
     device_local: bool,
     rect: KurboRect,
@@ -157,6 +159,7 @@ impl EmbeddedApp {
         }
         Ok(Self {
             app: Box::new(app),
+            paint_generation: 0,
             rect: KurboRect::ZERO,
             region: Region {
                 size: winit::dpi::PhysicalSize::new(0, 0),
@@ -448,6 +451,11 @@ impl crate::widget::SearchableWindow for EmbeddedApp {
 }
 
 impl Widget for EmbeddedApp {
+    /// The embedded app paints its own frame here: a picture of it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("section");
+        cx.painted(self.paint_generation);
+    }
     crate::provides!(
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::widget::CompleteContentProvider,
@@ -510,6 +518,7 @@ impl Widget for EmbeddedApp {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.paint_generation = self.paint_generation.wrapping_add(1);
         let mut painted = self.painted.borrow_mut();
         let mut painted_parts = self.painted_parts.borrow_mut();
         let due = self

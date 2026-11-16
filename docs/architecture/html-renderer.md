@@ -44,10 +44,25 @@ once a widget gets its own, so the list only shrinks and new widgets cannot
 skip it.
 
 Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
-`Button` (a `<button>` whose face is still its picture), `ListRow`, `Column`,
-`Row`, `Stack`, `Container`, `Scrollable`, `VirtualList`, `NavShell` and its
-header title, `ModalDialog` and `OverflowButton`. The window's bar of slots,
-which the frame hosts over a page that mounts one app, is a `<header>`
+`Button` (a `<button>` whose face is its icon, words and state), `ListRow`,
+`Column`, `Row`, `Stack`, `Container`, `Scrollable`, `VirtualList`, `NavShell`
+and its header title, `ModalDialog` and its footer actions (buttons with their
+words), `OverflowButton`; the composition primitives (`Spacer`, `When` and the
+`Arranged` containers, `Router`, `UiGraph`'s live UI, the app root binding, the
+hosts that hold one widget) are their children and the container's own style,
+never a picture; the `ActionPalette` is a `role=dialog` with a real search
+`<input>` and a `role=listbox` of options, each a row with its icon, its words
+and its shortcut; the window's search is its field and its buttons; a floating
+window is its title, its close button and the content it holds; the window
+strip's tiles, groups and their controls are their children and their glyphs;
+the history host and the framework's presentation compose their children, and
+the header a client-drawn window draws is a `<header>`. What a widget draws
+itself — a web view, a native surface mounted by the platform, an embedded
+app, a capture's canvas, a display arrangement, a split's rule — is a picture
+of that paint, with the controls it names (`HtmlCx::targets`) as real buttons
+over it: `HtmlCx::painted` takes the count a widget bumps each time it paints,
+so the page fetches a new picture when there is one. The window's bar of
+slots, which the frame hosts over a page that mounts one app, is a `<header>`
 toolbar of real buttons over its painted band.
 
 ## How a frame reaches the page

@@ -32,6 +32,9 @@ const ARIA_ROLES = {
   ProgressBar: 'progressbar', Tooltip: 'tooltip', Image: 'img', Group: 'group', Dialog: 'dialog',
 };
 
+// The roles whose value is a number on a range.
+const RANGED_ROLES = new Set(['Slider', 'Separator', 'ProgressBar', 'SpinButton']);
+
 // A role as the composition writes it: a name, or `{Heading: {level}}`.
 const roleOf = semantics => {
   const role = semantics?.role;
@@ -181,6 +184,17 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(element, '@aria-selected', semantics?.state?.selected ? 'true' : null);
     write(element, '@aria-pressed', role?.name === 'ToggleButton' ? String(Boolean(semantics?.state?.checked)) : null);
     write(element, '@aria-expanded', semantics?.state?.expanded === undefined || semantics?.state?.expanded === null ? null : String(semantics.state.expanded));
+    // A slider, a split's divider or a progress bar says how far along it is; the number is the
+    // one its value starts with, and what it says ("55%") stays as the words read out.
+    const ranged = role && RANGED_ROLES.has(role.name);
+    const amount = ranged ? String(semantics?.value ?? '') : '';
+    const number = amount ? /^-?\d+(?:\.\d+)?/.exec(amount)?.[0] : undefined;
+    write(element, '@aria-valuenow', number ?? null);
+    write(element, '@aria-valuetext', number && amount !== number ? amount : null);
+    // A divider is measured across the way it separates.
+    write(element, '@aria-orientation', role?.name === 'Separator' ? (h >= w ? 'vertical' : 'horizontal') : null);
+    // A dialog that holds the keyboard says so while it is the one the person is in.
+    write(element, '@aria-modal', role?.name === 'Dialog' && semantics?.state?.modal ? 'true' : null);
     write(element, '@aria-disabled', semantics?.state?.disabled ? 'true' : null);
     write(element, '@data-widget', node.widget || null);
     // A notice is read out as it arrives, without moving the keyboard.

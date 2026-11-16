@@ -107,6 +107,8 @@ pub struct ScreenshotMarkup {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// Bumped each time it paints anew: what a page's picture of it is versioned by.
+    paint_generation: u64,
 }
 
 /// The editor opening out of the captured shot: one thing becoming another
@@ -209,6 +211,7 @@ impl ScreenshotMarkup {
             entrance_progress_override: None,
             keyboard: None,
             focused: false,
+            paint_generation: 0,
         }
     }
 
@@ -736,6 +739,11 @@ impl ScreenshotMarkup {
 }
 
 impl Widget for ScreenshotMarkup {
+    /// The markup as it draws it, its tools and colours buttons over it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.painted_targets(self.paint_generation);
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1326,6 +1334,7 @@ impl Widget for ScreenshotMarkup {
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.paint_generation = self.paint_generation.wrapping_add(1);
         crate::widget::Widget::mark_children_drawn(self);
     }
 

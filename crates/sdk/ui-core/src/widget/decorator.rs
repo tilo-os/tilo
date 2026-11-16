@@ -196,6 +196,9 @@ macro_rules! decorator_trait {
 
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
+            fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                Decorator::html(self, cx)
+            }
             $($impl_items)*
             $(
                 $(#[$ref_attr])*
@@ -260,6 +263,9 @@ macro_rules! decorator_trait {
                     }
 
                     impl Widget for $d ty {
+                        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+                            Decorator::html(self, cx)
+                        }
                         $($impl_items)*
                         $(
                             $(#[$ref_attr])*
@@ -297,6 +303,12 @@ decorator_trait! {
         fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
             visitor(self.inner().as_dyn_widget());
             true
+        }
+
+        /// What it shows, as its inner widget shows it: a decorator is its inner widget plus
+        /// what it adds.
+        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+            self.inner().html(cx)
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>)
@@ -484,7 +496,6 @@ decorator_trait! {
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
         fn own_page_title() -> Option<String>;
-        fn html(cx: &mut crate::composition::HtmlCx<'_>);
         fn is_item_opened_in_place() -> bool;
         fn page_title_is_heading() -> bool;
         fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);

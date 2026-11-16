@@ -769,6 +769,10 @@ impl crate::undo::LocalUndo for WebView {
 }
 
 impl Widget for WebView {
+    /// The page the engine draws: a picture of it, as it paints.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.painted(self.engine.paint_seq());
+    }
     crate::described!();
 
     crate::provides!(

@@ -16,6 +16,8 @@ use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub(crate) struct PreviewCanvas {
     pub(crate) preview: Option<Box<dyn HistoryPreview>>,
+    /// Bumped each time it paints anew: what a page's picture of it is versioned by.
+    paint_generation: u64,
     rect: Rect,
     cursor: Point,
     error: Option<String>,
@@ -54,6 +56,7 @@ impl PreviewCanvas {
     pub(crate) fn new() -> Self {
         Self {
             preview: None,
+            paint_generation: 0,
             rect: Rect::ZERO,
             cursor: Point::new(-1.0, -1.0),
             error: None,
@@ -63,6 +66,28 @@ impl PreviewCanvas {
     }
 }
 impl Widget for PreviewCanvas {
+    /// What the domain renderer drew, or what it says instead when it has nothing to show.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        if self.preview.is_some() && self.error.is_none() && self.status.is_none() {
+            cx.painted(self.paint_generation);
+            return;
+        }
+        let message = self
+            .error
+            .clone()
+            .or_else(|| self.status.clone())
+            .unwrap_or_else(|| {
+                crate::i18n::I18nManager::lookup_plain("history-mode-content-unavailable")
+            });
+        let theme = cx.theme().clone();
+        let look = crate::composition::TextLook::new(
+            message,
+            &theme.text(crate::tokens::TextRole::Body),
+            Some(theme.tokens.colors.text_dim),
+        );
+        cx.text(look);
+    }
     fn name(&self) -> &'static str {
         "Historical content"
     }
@@ -125,6 +150,7 @@ impl Widget for PreviewCanvas {
                 None,
             );
         }
+        self.paint_generation = self.paint_generation.wrapping_add(1);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {

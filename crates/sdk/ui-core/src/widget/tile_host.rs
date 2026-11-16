@@ -444,6 +444,26 @@ struct Running {
 }
 
 impl TileHost {
+    /// What a window with no app in it draws as a card: its title and the line under it.
+    fn card_words(&self) -> Option<(String, String)> {
+        if let Some(detail) = &self.record_error {
+            return Some((record_unavailable_title(), detail.clone()));
+        }
+        if let Some(detail) = &self.record_transition_error {
+            return Some((
+                crate::i18n::widget_format("widget-document-switch-blocked", &[]),
+                detail.clone(),
+            ));
+        }
+        match &self.content {
+            TileContent::Stub { kind, label } => {
+                Some((label.clone(), format!("{} coming soon", kind.as_str())))
+            }
+            TileContent::Notice { title, detail } => Some((title.clone(), detail.clone())),
+            TileContent::App(_) | TileContent::Arriving => None,
+        }
+    }
+
     /// Move the tile by `dx`; see
     /// [`super::window_group::WindowGroup::offset_layout`]. The content keeps
     /// the rect it was laid out at and is drawn translated instead.
@@ -1644,6 +1664,27 @@ impl FullscreenProvider for TileHost {
 }
 
 impl Widget for TileHost {
+    /// The app it holds as its content; a place with none yet says what it will hold.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        if let Some((title, detail)) = self.card_words() {
+            let theme = cx.theme().clone();
+            let mut words = title;
+            if !detail.is_empty() {
+                words.push_str("\n\n");
+                words.push_str(&detail);
+            }
+            let look = crate::composition::TextLook::new(
+                words,
+                &theme.text(crate::tokens::TextRole::Body),
+                Some(theme.tokens.colors.text_primary),
+            );
+            cx.text(look);
+            return;
+        }
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::FullscreenProvider,
         dyn crate::widget::Continuable,

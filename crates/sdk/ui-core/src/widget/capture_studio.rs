@@ -388,6 +388,8 @@ pub struct CaptureStudio {
     rect: Rect,
     overlay_rect: Rect,
     open: bool,
+    /// Bumped each time it paints anew: what a page's picture of it is versioned by.
+    paint_generation: u64,
     /// The person put the bar down themselves (Escape, the receipt's own ✕),
     /// rather than the bar going down to hand the capture on: what it was
     /// still saying goes down with it.
@@ -453,6 +455,7 @@ impl Default for CaptureStudio {
             rect: Rect::ZERO,
             overlay_rect: Rect::ZERO,
             open: false,
+            paint_generation: 0,
             put_away: false,
             opened_at: None,
             mode: CaptureMode::Screenshot,
@@ -1971,6 +1974,14 @@ fn overlap(a: Rect, b: Rect) -> f64 {
 }
 
 impl Widget for CaptureStudio {
+    /// Its overlay as it draws it, every control it names a button over it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        if !self.open {
+            return;
+        }
+        cx.painted_targets(self.paint_generation);
+    }
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -2021,6 +2032,7 @@ impl Widget for CaptureStudio {
             menu.draw_overlay(s, t, tr, theme, &PresenceCtx::default());
         }
         s.pop_layer();
+        self.paint_generation = self.paint_generation.wrapping_add(1);
     }
 
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

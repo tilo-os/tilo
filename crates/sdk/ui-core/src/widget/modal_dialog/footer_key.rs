@@ -49,6 +49,23 @@ impl FooterKey {
 }
 
 impl Widget for FooterKey {
+    /// Its words as a button, in the ink the dialog's footer gives them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("button");
+        let theme = cx.theme().clone();
+        let ink = if self.enabled {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        let look = crate::composition::TextLook::new(
+            crate::i18n::widget_text(&self.label),
+            &theme.text(crate::tokens::TextRole::Label),
+            Some(ink),
+        )
+        .with_max_lines(Some(1));
+        cx.text(look);
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -135,5 +152,38 @@ impl Widget for FooterKey {
 
     fn needs_redraw(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(label: &str) -> FooterKey {
+        FooterKey {
+            slot: Slot::Primary,
+            label: label.to_owned(),
+            run: None,
+            action_target: "modal.primary".to_owned(),
+            rect: Rect::new(0.0, 0.0, 96.0, 32.0),
+            focused: false,
+            enabled: true,
+            test_id: "modal.primary".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_page_gets_the_footer_action_as_a_button_with_its_words() {
+        let composed =
+            crate::composition::compose_alone(&key("Save"), &Theme::dark(), "modal.primary");
+        assert_eq!(composed.tag, Some("button"));
+        let Some(crate::composition::Own::Text(words)) = &composed.own else {
+            panic!("the action's words are its text: {composed:#?}");
+        };
+        assert_eq!(words.text, "Save");
+        assert_eq!(
+            composed.semantics.as_ref().map(|node| node.role),
+            Some(crate::a11y::Role::Button)
+        );
     }
 }

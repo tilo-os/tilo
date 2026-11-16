@@ -220,6 +220,10 @@ impl Described for WindowWell {
 }
 
 impl Widget for WindowWell {
+    /// Nothing of its own: the place's own window shows there.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+    }
     fn name(&self) -> &'static str {
         "WindowWell"
     }
@@ -290,6 +294,18 @@ mod tests {
     use taffy::{AvailableSpace, FlexDirection, NodeId, Size, Style, TaffyTree};
 
     use super::{WINDOW_ASPECT, WindowWell};
+
+    #[test]
+    fn a_page_gets_an_empty_place_where_the_window_shows() {
+        let composed =
+            crate::composition::compose_alone(&WindowWell::new("window-1"), &Theme::dark(), "well");
+        assert_eq!(composed.tag, Some("div"));
+        assert!(
+            composed.own.is_none(),
+            "the well draws nothing: {composed:#?}"
+        );
+        assert!(composed.children.is_empty());
+    }
     use crate::theme::Theme;
     use crate::widget::Widget as _;
 
