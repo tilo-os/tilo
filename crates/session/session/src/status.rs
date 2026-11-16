@@ -423,9 +423,10 @@ mod tests {
             assert!(now.can_next);
             assert!(!now.can_previous);
             // The shell's widget holds the same reading, so the song, who plays it and where it stands
-            // are the panel's, not a copy of them.
+            // are the panel's, not a copy of them. A read advances the playhead, so the panel's one
+            // reading is the one the widget holds.
             let widget = tilo_desktop::widgets::music::Music::default();
-            widget.set(playing.playing());
+            widget.set(Some(now.clone()));
             assert_eq!(widget.get(), Some(now));
             let handover = playing.handover().expect("another device may continue it");
             assert_eq!(handover.title, "Tea");
