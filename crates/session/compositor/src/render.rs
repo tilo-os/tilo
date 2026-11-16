@@ -429,7 +429,7 @@ where
         }
         // Its own cover is over the windows behind it, from here on.
         if let Some(cover) =
-            crate::state::describe(state, window).and_then(|info| state.covers.get(&info.id))
+            crate::state::describe(state, window).and_then(|info| state.cover_of(info.id))
         {
             let (x, y, width, height) = cover.rect;
             let rect = Rectangle::new((x, y).into(), (width, height).into());

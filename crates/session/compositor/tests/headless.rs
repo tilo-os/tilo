@@ -1160,6 +1160,38 @@ fn the_window_behind_a_floating_card_shows_under_its_shadow() {
     );
 }
 
+/// Floating windows stand in the order the shell stacks their cards, whatever order they opened in:
+/// the card the shell draws on top is the one whose window shows.
+#[test]
+fn floating_windows_stand_as_the_shell_stacks_their_cards() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    compositor.set_window_frame(WindowFrame::corners(0.0));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    let square = Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
+    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    let _first = mapped_client(&mut compositor, "first", (200, 100), [0, 255, 0, 255]);
+    let _second = mapped_client(&mut compositor, "second", (200, 100), [255, 255, 0, 255]);
+    let windows = compositor.windows();
+    let card = |(id, (x, y, w, h)): &(WindowInfo, (i32, i32, i32, i32))| WindowCover {
+        window: id.id,
+        rect: (*x, *y, *w, *h),
+        shadows: Vec::new(),
+    };
+    // The shell draws the second window's card first and the first's over it.
+    log.borrow_mut().covers = vec![card(&windows[1]), card(&windows[0])];
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let (_, (x, y, w, h)) = windows[0];
+    assert_eq!(
+        frame.pixel((x + w / 2).unsigned_abs(), (y + h / 2).unsigned_abs()),
+        Some([0, 255, 0, 255]),
+        "the first window, whose card is on top, shows: {windows:?}"
+    );
+}
+
 /// A floating stack whose focus and closes a test sets, as a desktop's own controls would.
 #[derive(Default)]
 struct Steered {

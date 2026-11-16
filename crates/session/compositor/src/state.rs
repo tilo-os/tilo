@@ -234,10 +234,10 @@ pub struct State {
     pub(crate) frame: crate::window_frame::WindowFrame,
     /// The frames of the windows that are framed differently, by id.
     pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
-    /// The cards the shell draws in front of the windows, by the window each one is the card of:
+    /// The cards the shell draws in front of the windows, bottom first as the shell stacks them:
     /// the shell draws a floating window's bar and body round it, and the windows beneath the card
     /// are drawn around it, as a window under a floating one is, and under its shadows.
-    pub(crate) covers: std::collections::BTreeMap<u64, tilo_session_core::surface::WindowCover>,
+    pub(crate) covers: Vec<tilo_session_core::surface::WindowCover>,
     /// The part of the layout each window is cut to, by id, as the policy arranged it: a window
     /// draws and takes the pointer there only ([`crate::policy::Arrangement::clip`]).
     pub(crate) clips: std::collections::HashMap<u64, smithay::utils::Rectangle<i32, Logical>>,
@@ -422,7 +422,7 @@ impl State {
             effects: std::collections::HashMap::new(),
             frame: crate::window_frame::WindowFrame::default(),
             window_frames: std::collections::HashMap::new(),
-            covers: std::collections::BTreeMap::new(),
+            covers: Vec::new(),
             clips: std::collections::HashMap::new(),
             layer_counts: Vec::new(),
             frame_images: crate::window_frame::FrameImages::default(),
@@ -747,6 +747,11 @@ impl State {
         describe(self, window).and_then(|info| self.clips.get(&info.id).copied())
     }
 
+    /// The card the shell draws in front of the windows for the window `id` , if it floats.
+    pub(crate) fn cover_of(&self, id: u64) -> Option<&tilo_session_core::surface::WindowCover> {
+        self.covers.iter().find(|cover| cover.window == id)
+    }
+
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
         describe(self, window)
@@ -842,7 +847,7 @@ impl State {
             // What the shell covers them with for this window is over the windows behind it, from
             // here on.
             if let Some(info) = describe(self, window)
-                && let Some(cover) = self.covers.get(&info.id)
+                && let Some(cover) = self.cover_of(info.id)
             {
                 covers.push(size(&cover.rect));
             }
@@ -1619,7 +1624,8 @@ impl State {
         let windows = self.windows();
         let outputs = self.output_geometries();
         let Some(arrangements) = self.policy.arrange(&windows, &outputs) else {
-            // Focus and closes the policy asked for apply all the same.
+            // The stacking, focus and closes the policy asked for apply all the same.
+            self.restack();
             self.apply_policy_focus_and_closes();
             return;
         };
@@ -1677,14 +1683,23 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all();
         }
+        self.restack();
+        self.apply_policy_focus_and_closes();
+    }
+
+    /// Stack the floating windows, the dialogs and the cards apps draw in front of the rest.
+    fn restack(&mut self) {
         // A window floating over the shell stands in front of the strips' windows, a focused or
         // maximized one included; the dialogs stay in front of the windows they belong to, and a
         // card an app draws stays in front of them all.
+        // The floats stand in the order the shell stacks their cards.
         let floats: Vec<_> = self
-            .space
-            .elements()
-            .filter(|window| {
-                describe(self, window).is_some_and(|info| self.covers.contains_key(&info.id))
+            .covers
+            .iter()
+            .filter_map(|cover| {
+                self.space.elements().find(|window| {
+                    describe(self, window).is_some_and(|info| info.id == cover.window)
+                })
             })
             .cloned()
             .collect();
@@ -1715,7 +1730,6 @@ impl State {
         for window in cards {
             self.space.raise_element(&window, true);
         }
-        self.apply_policy_focus_and_closes();
     }
 
     /// Give the keyboard to the window the policy brought forward, and ask the clients of the

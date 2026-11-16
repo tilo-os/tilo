@@ -2135,12 +2135,13 @@ impl Compositor {
         // What the surfaces draw over the windows, by the window each part is of: a floating window
         // stands over the ones beneath it whole, so they are drawn around the card the shell covers
         // them with for it and under its shadows, and a press on the card is the shell's.
-        let mut covers = std::collections::BTreeMap::new();
-        for host in &self.data.state.hosts {
-            for cover in host.drawn_over_windows() {
-                covers.insert(cover.window, cover);
-            }
-        }
+        let covers: Vec<_> = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .flat_map(|host| host.drawn_over_windows())
+            .collect();
         if self.data.state.covers != covers {
             self.data.state.covers = covers;
             self.data.state.mark_redraw_all();
