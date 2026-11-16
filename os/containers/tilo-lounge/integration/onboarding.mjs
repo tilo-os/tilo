@@ -702,10 +702,7 @@ try {
   const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
-  for (const deadline = Date.now() + stepLimit(OWN_WORKSPACE_STEPS); !await ownWorkspace(returning.tab).catch(() => '');) {
-    if (Date.now() > deadline) await fail(`the signed-in tab is titled ${await ownProgress(returning.tab)}, not after the person's own workspace`);
-    await sleep(250);
-  }
+  await until(returning.tab, OWN_WORKSPACE, 'the signed-in tab in the person\'s own workspace', stepLimit(3));
   const signedIn = await person(returning.tab);
   report.signedIn = signedIn;
   if (signedIn.user !== report.landed.user) await fail(`the agent signed in ${signedIn.user}, not ${report.landed.user}`);
