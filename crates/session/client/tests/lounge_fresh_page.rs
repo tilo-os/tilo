@@ -777,17 +777,28 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     page.close();
 }
 
-/// How much more an agent's bridge may hold after a busy workspace's traffic than before it.
-const BRIDGE_GROWTH: isize = 1 << 20;
-/// The pointer moves that fill the plane's window of recent groups first, at the rate this test
-/// says them (about a thousand a second): ten seconds of them.
-const WINDOW_MOVES: u32 = 10_000;
+/// The presence frames one sample drives: few enough that the lounge's relay, which carries a
+/// device about a hundred frames a second, delivers them inside the suite's bound, and enough
+/// that one frame's cost stands above an allocator's noise.
+const BRIDGE_SAMPLE_FRAMES: usize = 500;
+
+/// How long the page says presence before the sample is measured: a plane keeps what it publishes
+/// and what it hears for thirty seconds, for a reader that joins it late (`tilo_live`'s ingress
+/// and egress pools), so the sample starts once one of those windows has gone by and what the
+/// frames before it left has expired.
+const BRIDGE_WARM: Duration = Duration::from_secs(35);
+
+/// What one presence frame may cost the process it reaches, in kB: the plane charges a frame's
+/// payload and the group that carries it, about a kilobyte for a frame of tens of bytes, and this
+/// is that charge with room for an allocator's slack. A release that costs a device more per frame
+/// than the plane's own cache does fails it.
+const BRIDGE_FRAME_KB: usize = 3;
 
 /// An agent's bridge (`tilo mcp`) is a device of the person in their workspace, asking the host's
 /// actions through its session, while the person's page in the same workspace says where its
 /// pointer is many times a second. The bridge reads none of that presence, so it keeps none of
-/// it: its memory stays flat however long the page is open, rather than growing with every frame
-/// the workspace fans out to it.
+/// it: the frames cost it what the plane keeps of what any device hears, and not a frame's worth
+/// of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let lounge = Lounge::fresh();
@@ -809,7 +820,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         "Claude Code",
     )
     .actions(workspace_id);
-    // Only to count that the frames reach the bridge: a reader that keeps nothing.
+    // Only to count that the frames reach the bridge: a reader that keeps nothing of them.
     let arriving = bridge.events_where(|event| {
         matches!(
             event,
@@ -828,59 +839,73 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         ))
         .unwrap();
     };
-    // The plane keeps the groups of the last few seconds for a reader that joins late (moq's
-    // `max_age`): the bridge is measured once that window is full, as it is after the page has
-    // been open a while.
-    for n in 0..WINDOW_MOVES {
-        say(n);
-        if n % 50 == 0 {
-            heard += arriving.drain().len();
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-    heard += arriving.drain().len();
-    // A bridge that kept each frame would hold at least an event per frame: the busy window runs
-    // until the frames heard would have cost more than the bound, which is what lets the bound tell
-    // keeping them from not. The window cannot fill twice the bound: the lounge's relay carries the
-    // page's frames to a device at about a hundred a second, and the suite's hang bound ends the
-    // window long before.
-    // One more than the bound divides into: `kept_each` must be over it, not level with it.
-    let enough =
-        usize::try_from(BRIDGE_GROWTH).unwrap_or(usize::MAX) / std::mem::size_of::<Event>() + 1;
-    let heard_before = heard;
+    // The page is busy for longer than a plane keeps what it hears, so what it holds of that
+    // window has expired and replaced what the frames before it left: the sample measures the
+    // steady state, where a bridge that kept every frame would still grow by one.
+    say_presence(&arriving, &say, &mut heard, usize::MAX, BRIDGE_WARM).await;
     let before = tilo_test_env::held::bytes();
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-    let mut n = 0_u32;
-    while heard - heard_before < enough && std::time::Instant::now() < deadline {
-        say(n);
-        if n.is_multiple_of(50) {
-            heard += arriving.drain().len();
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-        n = n.saturating_add(1);
-    }
-    heard += arriving.drain().len();
+    let heard_before = heard;
+    say_presence(
+        &arriving,
+        &say,
+        &mut heard,
+        BRIDGE_SAMPLE_FRAMES,
+        Duration::MAX,
+    )
+    .await;
     let after = tilo_test_env::held::bytes();
-    let grown = after - before;
-    let heard = heard - heard_before;
+    let grown = after.saturating_sub(before);
+    let frames = heard.saturating_sub(heard_before);
     println!(
-        "the bridge heard {heard} presence frame(s); the process holds {before} bytes before and \
-         {after} after ({grown} more)"
+        "the bridge heard {frames} presence frame(s) and the process grew {grown} bytes over them"
     );
-    // The bound must be under what the frames would cost the bridge if it kept them, or it would
-    // not tell the two apart.
-    let kept_each = isize::try_from(heard * std::mem::size_of::<Event>()).unwrap_or(isize::MAX);
+    // What the frames may cost it, at what one frame costs a device that reads none of them: the
+    // plane charges a frame's payload and the group that carries it (moq's pool, `tilo_live`'s
+    // egress), about a kilobyte for a frame of tens of bytes, and the bound is that charge with
+    // room for an allocator's slack. A release that costs a device more per frame than the plane's
+    // own cache does fails it.
+    let may = frames.saturating_mul(BRIDGE_FRAME_KB).saturating_mul(1024);
     assert!(
-        kept_each > BRIDGE_GROWTH,
-        "too few frames reached the bridge ({heard}) to tell keeping them from not"
-    );
-    assert!(
-        grown < BRIDGE_GROWTH,
-        "the bridge grew {grown} bytes over {heard} presence frames it never reads"
+        usize::try_from(grown).unwrap_or(0) <= may,
+        "the bridge grew {grown} bytes over {frames} presence frames it never reads, past the \
+         {may} bytes they may cost it: it keeps what it heard"
     );
     drop(actions);
     bridge.close();
     tab.close();
+}
+
+/// Say presence frames at `say` until the bridge heard `frames` more than `heard` counted when it
+/// started, or until `spans` elapsed when that is sooner: `frames` is `usize::MAX` or `spans` is
+/// `Duration::MAX` for the bound that does not apply. Each one is said only once the one before it
+/// arrived, so the page builds no queue of its own, which is not what this test asks about; a
+/// bridge that hears none fails naming what it waited for at the suite's bound.
+async fn say_presence(
+    arriving: &Events,
+    say: &(impl Fn(u32) + Sync),
+    heard: &mut usize,
+    frames: usize,
+    spans: Duration,
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    let started = std::time::Instant::now();
+    let before = *heard;
+    let mut n = 0_u32;
+    while heard.saturating_sub(before) < frames && started.elapsed() < spans {
+        say(n);
+        let want = heard.saturating_add(1);
+        while *heard < want {
+            *heard = heard.saturating_add(arriving.drain().len());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bridge heard {} of the presence frames it was sent and no more",
+                heard.saturating_sub(before)
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        n = n.saturating_add(1);
+    }
+    *heard = heard.saturating_add(arriving.drain().len());
 }
 
 /// Wait until `page` is in the workspace's live plane: the plane reports the
