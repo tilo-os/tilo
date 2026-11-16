@@ -237,3 +237,133 @@ fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
     let _ = app_process.kill();
     let _ = app_process.wait();
 }
+
+/// The tab the shell gives `app`'s window `surface`.
+fn tab_of_window(session: &Session, app: &str, surface: u64) -> u64 {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .find(|tab| {
+                matches!(
+                    &tab.tile,
+                    tilo_desktop_model::TileContent::Foreign { app_id, surface_id }
+                        if app_id == app && *surface_id == surface
+                )
+            })
+            .map_or_else(
+                || panic!("the window of {app} at {surface} has no tab"),
+                |tab| tab.id,
+            )
+    })
+}
+
+/// The surface of the newest mapped window of `app`.
+fn newest_window(session: &mut Session, app: &str) -> u64 {
+    session
+        .compositor()
+        .windows()
+        .into_iter()
+        .filter(|(info, _)| info.app_id.as_deref() == Some(app))
+        .map(|(info, _)| info.id)
+        .max()
+        .expect("the app has a window")
+}
+
+/// A session with two windows of [`APP`] open, each its own process and its own shell-ui
+/// connection, and the second in front: what an app with a window parked after its tab closed
+/// looks like.
+fn session_with_two_windows_of_one_app() -> (
+    Session,
+    Window,
+    Window,
+    Vec<TestClient>,
+    std::process::Child,
+    std::process::Child,
+) {
+    let launches = Arc::new(tilo_session::Launches::default());
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        launches: Arc::clone(&launches),
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("a frame");
+    let mut processes = Vec::new();
+    let mut windows = Vec::new();
+    let mut clients = Vec::new();
+    for index in 1..=2 {
+        let process = std::process::Command::new("sleep")
+            .arg("120")
+            .spawn_locked()
+            .expect("a launched app's process");
+        launches.started(process.id(), APP, "private", false);
+        clients.push(mapped(&mut session, APP));
+        // The second window of the app maps after the first: wait for it before naming its tab.
+        for _ in 0..500 {
+            let mapped = session
+                .compositor()
+                .windows()
+                .into_iter()
+                .filter(|(info, _)| info.app_id.as_deref() == Some(APP))
+                .count();
+            if mapped == index {
+                break;
+            }
+            session.step(Duration::from_millis(2)).expect("step");
+        }
+        let surface = newest_window(&mut session, APP);
+        let tab = tab_of_window(&session, APP, surface);
+        let mut window = Window::open_at(&launches, APP, process.id(), tab);
+        window.hello();
+        window.say(&FloatingSurfaceClientMessage::SelectionCapable);
+        windows.push(window);
+        processes.push(process);
+    }
+    for _ in 0..200 {
+        session.step(Duration::from_millis(2)).expect("step");
+    }
+    let mut windows = windows.into_iter();
+    let mut processes = processes.into_iter();
+    (
+        session,
+        windows.next().expect("the window behind"),
+        windows.next().expect("the window in front"),
+        clients,
+        processes.next().expect("the window behind's process"),
+        processes.next().expect("the window in front's process"),
+    )
+}
+
+/// Two windows of one app, the second in front: the report chord asks the one in front, never
+/// the app's other window, which would draw the box where nobody sees it.
+#[test]
+fn the_report_chord_asks_the_window_in_front_of_two_of_one_app() {
+    let _home = told_where_reports_go();
+    let _settled = ui::motion::testing::settled();
+    let (mut session, mut behind, mut front, _clients, mut behind_process, mut front_process) =
+        session_with_two_windows_of_one_app();
+
+    press_report_key(&mut session);
+    let (asked, pointing) =
+        asked_for_box(&mut front, &mut session).expect("the window in front is asked");
+    assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
+    assert!(
+        pointing,
+        "the window lights what is under the pointer, and the box is about what the person clicks"
+    );
+    assert!(
+        asked_for_box(&mut behind, &mut session).is_none(),
+        "the app's window behind is not asked"
+    );
+    assert!(
+        window(session.compositor(), "so.tilo.chat").is_none(),
+        "Chat opens no window: the box stands in the window the person works in"
+    );
+
+    let _ = behind_process.kill();
+    let _ = behind_process.wait();
+    let _ = front_process.kill();
+    let _ = front_process.wait();
+}

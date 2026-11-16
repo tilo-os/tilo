@@ -41,8 +41,19 @@ pub(super) struct Window {
 impl Window {
     /// The connection of a window of `app` , run by the launch `pid` .
     pub(super) fn open(launches: &Arc<tilo_session::Launches>, app: &str, pid: u32) -> Self {
+        Self::open_at(launches, app, pid, 7)
+    }
+
+    /// The connection of the window of `app` that takes the tab `instance` , run by the launch
+    /// `pid` .
+    pub(super) fn open_at(
+        launches: &Arc<tilo_session::Launches>,
+        app: &str,
+        pid: u32,
+        instance: u64,
+    ) -> Self {
         let stream: UnixStream = tilo_session::app_tabs::ServiceLinks::new(Arc::clone(launches))
-            .shell_ui(app, 7, Some(pid))
+            .shell_ui(app, instance, Some(pid))
             .expect("the app's shell-ui connection")
             .into();
         let from_session = stream.try_clone().expect("a reading end");

@@ -481,9 +481,22 @@ impl AppTabs {
     /// window is in front answers with its one window that takes boxes, and none when it holds
     /// more.
     fn link_in_front(&self, desktop: &DesktopHost, compositor: &Compositor) -> Option<&Link> {
-        let ready = || self.links.values().filter(|link| link.selection);
-        let focused = desktop
-            .with_policy(|policy| policy.focused())
+        let ready = || self.links.iter().filter(|(_, link)| link.selection);
+        // The window in front is the tab exactly one connection speaks for: another window of
+        // the same app — one parked after its tab closed, one on another strip — is another
+        // window, and never the one the person works in.
+        let front = desktop.with_policy(|policy| (policy.focused(), policy.focused_tab()));
+        let (focused, tab) = front;
+        if let Some(tab) = tab
+            && let Some((_, link)) = ready().find(|(connection, link)| {
+                window_of(&self.links, desktop, **connection, &link.app) == Some(tab)
+            })
+        {
+            return Some(link);
+        }
+        // A window whose app has not named its tab yet: the launch of the window in front, when
+        // it has one window that opens a box.
+        let launch = focused
             .and_then(|window| {
                 compositor
                     .windows()
@@ -492,13 +505,16 @@ impl AppTabs {
             })
             .and_then(|(held, _)| held.pid)
             .and_then(|pid| self.launches.launch_of(pid));
-        if let Some(launch) = focused
-            && let Some(link) = ready().find(|link| link.launch == launch)
-        {
-            return Some(link);
+        if let Some(launch) = launch {
+            let mut of_launch = ready().filter(|(_, link)| link.launch == launch);
+            if let Some((_, link)) = of_launch.next()
+                && of_launch.next().is_none()
+            {
+                return Some(link);
+            }
         }
         let mut only = ready();
-        let first = only.next()?;
+        let (_, first) = only.next()?;
         only.next().is_none().then_some(first)
     }
 
@@ -692,6 +708,33 @@ impl AppTabs {
     }
 }
 
+/// The window that speaks on `connection`: the tab the session gave the connection, else the tab
+/// the window names in its asks, else the app's only window. A connection its launcher made that
+/// named no window yet, in an app with several, speaks for none of them until it does: which one
+/// stands in front says nothing about who is talking.
+fn window_of(
+    links: &BTreeMap<u64, Link>,
+    desktop: &DesktopHost,
+    connection: u64,
+    app: &str,
+) -> Option<u64> {
+    let link = links.get(&connection)?;
+    if let Some(instance) = link.instance.or(link.named) {
+        return desktop.with_policy(|policy| policy.tab_of_instance(app, instance));
+    }
+    desktop.with_policy(|policy| {
+        let mut windows = policy
+            .app_tabs_in_front()
+            .into_iter()
+            .filter(|(_, id)| app_ids_match(id, app))
+            .map(|(tab, _)| tab);
+        match (windows.next(), windows.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    })
+}
+
 /// What one pass of answers reaches: the shell, the services the person answers through, and the
 /// connections the answers go back on.
 struct Answers<'a> {
@@ -745,28 +788,9 @@ impl Answers<'_> {
         }
     }
 
-    /// The window that speaks on `connection`: the tab the session gave the connection, else
-    /// the tab the window names in its asks, else the app's only window. A connection its
-    /// launcher made that named no window yet, in an app with several, speaks for none of them
-    /// until it does: which one stands in front says nothing about who is talking.
+    /// The window that speaks on `connection` ([`window_of`]).
     fn window_of(&self, connection: u64, app: &str) -> Option<u64> {
-        let link = self.links.get(&connection)?;
-        if let Some(instance) = link.instance.or(link.named) {
-            return self
-                .desktop
-                .with_policy(|policy| policy.tab_of_instance(app, instance));
-        }
-        self.desktop.with_policy(|policy| {
-            let mut windows = policy
-                .app_tabs_in_front()
-                .into_iter()
-                .filter(|(_, id)| app_ids_match(id, app))
-                .map(|(tab, _)| tab);
-            match (windows.next(), windows.next()) {
-                (Some(only), None) => Some(only),
-                _ => None,
-            }
-        })
+        window_of(self.links, self.desktop, connection, app)
     }
 
     /// Take up the offer the window on `connection` made of its page, for the window the

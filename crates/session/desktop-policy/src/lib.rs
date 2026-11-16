@@ -1299,6 +1299,15 @@ impl DesktopPolicy {
         }
     }
 
+    /// The tab in front of the focused group of the shown strip: the window the person works
+    /// in, told apart from another window of the same app.
+    #[must_use]
+    pub fn focused_tab(&self) -> Option<u64> {
+        self.handle.read(|tree| {
+            tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab)
+        })
+    }
+
     /// The window in front of the focused group of the shown strip, or
     /// its newest dialog: a window with a dialog open answers it first.
     #[must_use]
