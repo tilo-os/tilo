@@ -1,7 +1,7 @@
 //! The desktop's keyboard shortcuts as one typed catalogue.
 //!
 //! Every surface that lists or changes a desktop shortcut reads this module:
-//! the shell publishes it on the action door as the `keyboard-shortcuts`
+//! the shell publishes it on the action API as the `keyboard-shortcuts`
 //! resource, the shortcut guide and Settings render it, and the shell's
 //! fixed-chord router is built from [`FIXED_SHORTCUTS`]. An entry has a
 //! stable id, a Fluent label key (resolved by whoever shows it), the chords
