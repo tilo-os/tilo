@@ -482,6 +482,7 @@ impl DocStore {
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         let bytes = doc.save();
         let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
+        tilo_automerge::shared::hold(&bytes, doc);
         self.commit(WriteOp::Replace(bytes))?;
         self.keep_load_hint(hint.as_deref());
         self.has_base = Some(true);
@@ -664,9 +665,17 @@ fn decode_canonical_with(
             None => options,
         }
     };
+    // A reader on this thread that holds the document these bytes are (the workspace replica
+    // that captured them, the writer that saved them) hands over a copy of it.
+    if let Some(doc) = tilo_automerge::shared::held(bytes) {
+        return Ok((doc, None));
+    }
     let (mut doc, repair) =
         match AutoCommit::load_with_options(bytes, options(OnPartialLoad::Error)) {
-            Ok(doc) => (doc, false),
+            Ok(doc) => {
+                tilo_automerge::shared::hold(bytes, &doc);
+                (doc, false)
+            }
             Err(error) if !recover_partial => return Err(automerge_error(error)),
             Err(_) => (
                 AutoCommit::load_with_options(bytes, options(OnPartialLoad::Ignore))
@@ -1170,6 +1179,8 @@ mod tests {
             assert_eq!(load_hint::hashes_for(&hint, &saved), Some(hashes.clone()));
 
             let loaded_hashes = |store: &mut DocStore| {
+                // What the store and its hint give, not a copy of a document this thread holds.
+                tilo_automerge::shared::clear();
                 store
                     .load()
                     .unwrap()

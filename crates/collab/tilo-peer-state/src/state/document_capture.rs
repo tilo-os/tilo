@@ -213,6 +213,10 @@ impl KeptRecord {
         let captured = if bytes.len() > maximum {
             Err(PeerDocumentReadError::Capacity)
         } else {
+            // Whoever loads these bytes next on this thread (the window showing the record,
+            // the activity reading its list of records) takes a copy of the document they
+            // were saved from instead of loading it again.
+            tilo_automerge::shared::hold(&bytes, &opened.document);
             Ok(bytes.clone())
         };
         opened.captured = Some((bytes, heads));

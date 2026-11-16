@@ -589,15 +589,23 @@ mod loaded {
                 return Ok(read);
             }
             documents.kept.remove(&at);
-            #[cfg(test)]
-            LOADED_WHOLE.with(|loaded| loaded.set(loaded.get().saturating_add(1)));
             // Kept only when it loads whole: a tail still being written is left out of what is
-            // read, and the next read loads it again.
-            let Ok(mut doc) = AutoCommit::load_with_options(
-                bytes,
-                LoadOptions::new().on_partial_load(OnPartialLoad::Error),
-            ) else {
-                return whole(bytes);
+            // read, and the next read loads it again. A reader on this thread that holds the
+            // document these bytes are (the workspace's replica, a window showing the record)
+            // hands over a copy of it instead.
+            let mut doc = if let Some(doc) = tilo_automerge::shared::held(bytes) {
+                doc
+            } else {
+                #[cfg(test)]
+                LOADED_WHOLE.with(|loaded| loaded.set(loaded.get().saturating_add(1)));
+                let Ok(doc) = AutoCommit::load_with_options(
+                    bytes,
+                    LoadOptions::new().on_partial_load(OnPartialLoad::Error),
+                ) else {
+                    return whole(bytes);
+                };
+                tilo_automerge::shared::hold(bytes, &doc);
+                doc
             };
             if doc.get_missing_deps(&[]).is_empty() {
                 documents.kept.insert(

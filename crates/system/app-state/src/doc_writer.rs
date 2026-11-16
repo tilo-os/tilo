@@ -746,6 +746,7 @@ impl DocWriter {
         let bytes = doc.save_committed();
         let len = bytes.len();
         let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
+        tilo_automerge::shared::hold(&bytes, doc);
         self.submit(WriteOp::Replace(bytes), heads)?;
         // Only the primary writer keeps one: shared writers' hints would race
         // for one file.
@@ -1473,6 +1474,8 @@ mod tests {
             let appended = doc.committed_document().change_hashes().to_vec();
             assert_eq!(appended.len(), hashes.len() + 1);
             let loaded_hashes = |owner: &DocOwner| {
+                // What the store and its hint give, not a copy of a document this thread holds.
+                tilo_automerge::shared::clear();
                 let loaded = owner.load().unwrap().expect("stored document");
                 loaded
                     .document()

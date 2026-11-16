@@ -86,16 +86,28 @@ pub struct Touched {
 /// what the record does: a host follows a large record's mentions without reading it whole.
 #[must_use]
 pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -> Option<Touched> {
-    use automerge::legacy::{MarkData, OpType};
+    use automerge::legacy::{Key, MarkData, OpType};
     let mut touched = Touched::default();
     for change in automerge::Automerge::parse_changes(changes).ok()? {
         for op in change.decode().operations {
+            // A person's id is written in many places that are no mention of them (who wrote a
+            // change, who sits where): only a mention's mark, or the value a stored mark span
+            // keeps ([`Walk::mark_value`]), can make one.
+            let mark_value = matches!(
+                &op.key,
+                Key::Map(key) if matches!(key.as_str(), "value" | STR_FIELD | STR_FIELD_FLAT)
+            );
             match &op.action {
                 OpType::Put(ScalarValue::Str(value))
-                | OpType::MarkBegin(MarkData {
+                    if mark_value && people.contains(value.as_str()) =>
+                {
+                    touched.names = true;
+                }
+                OpType::MarkBegin(MarkData {
+                    name,
                     value: ScalarValue::Str(value),
                     ..
-                }) if people.contains(value.as_str()) => touched.names = true,
+                }) if name == MARK && people.contains(value.as_str()) => touched.names = true,
                 OpType::MarkBegin(MarkData {
                     value: ScalarValue::Null,
                     ..

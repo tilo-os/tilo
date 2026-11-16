@@ -133,6 +133,32 @@ impl RecordSync {
         Ok(changed)
     }
 
+    /// Merge `mutation`, which the peer delivered as the record standing at
+    /// `heads`; whether it changed. The peer holds the record there, so what
+    /// this replica sends it next is only what lies past those heads, never
+    /// the record whole: a window that opened a record before its workspace
+    /// delivered it would otherwise send a large record back whole, as its
+    /// own write.
+    ///
+    /// # Errors
+    /// The bytes are not a valid mutation of this record, or it is not open.
+    pub fn merge_delivered(
+        &mut self,
+        store: &RecordStore,
+        checkout: &RecordCheckout,
+        mutation: DocumentMutation,
+        heads: Vec<ChangeHash>,
+    ) -> Result<bool, String> {
+        if heads.is_empty() {
+            return self.merge(store, checkout, mutation);
+        }
+        let (changed, _) = store.merge_replica(checkout, mutation)?;
+        // Every change the mutation carried lies under the heads it stands at.
+        self.frontier.hold(heads);
+        self.snapshotted = true;
+        Ok(changed)
+    }
+
     /// Move this replica's own changes past the frontier and keep them for
     /// [`Self::take_set_aside`]: for a caller that publishes on its own
     /// schedule and cannot take the frontier's heads itself.
@@ -260,6 +286,41 @@ mod tests {
             let mut sync = RecordSync::delivered(heads);
             assert!(sync.snapshotted());
             assert!(sync.take_outbound(&store, &want.id).unwrap().is_none());
+        }
+
+        phase a_record_the_peer_delivered_into_an_open_window_is_not_sent_back_whole;
+        {
+            // The window opened the record before the workspace delivered it.
+            let (store, want) = opened("what the window wrote first");
+            let delivered = peer_change(&store, &want, "what the workspace holds");
+            let DocumentMutation::Incremental(changes) = &delivered else {
+                unreachable!()
+            };
+            let mut whole = store.with(&want.id, |doc| doc.clone()).unwrap();
+            whole.load_incremental(changes).unwrap();
+            let heads = whole.get_heads();
+            let mut sync = RecordSync::new();
+            assert!(
+                sync.merge_delivered(&store, &want, DocumentMutation::Snapshot(whole.save()), heads)
+                    .unwrap()
+            );
+            assert!(sync.snapshotted(), "the peer holds the record it delivered");
+            assert!(
+                sync.take_outbound(&store, &want.id).unwrap().is_none(),
+                "nothing it delivered goes back"
+            );
+            store.with(&want.id, |doc| {
+                put_text(doc, "mine");
+                doc.commit();
+            });
+            let next = sync
+                .take_outbound(&store, &want.id)
+                .unwrap()
+                .expect("the window's change");
+            let DocumentMutation::Incremental(bytes) = &next.mutation else {
+                panic!("only what lies past the delivered heads goes");
+            };
+            assert_eq!(automerge::Automerge::parse_changes(bytes).unwrap().len(), 1);
         }
 
         phase a_peers_changes_are_not_this_replicas_to_publish_and_its_own_still_go;

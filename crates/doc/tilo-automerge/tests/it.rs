@@ -35,5 +35,7 @@ mod patch_log_memory;
 mod scattered_apply;
 #[path = "sequence_apply.rs"]
 mod sequence_apply;
+#[path = "shared_load.rs"]
+mod shared_load;
 #[path = "speculative_writes.rs"]
 mod speculative_writes;

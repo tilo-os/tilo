@@ -353,7 +353,7 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
         .engine()
         .record(&joined.uuid, app, record)
         .ok()??;
-    AutoCommit::load(&bytes).ok()
+    tilo_automerge::shared::load(&bytes).ok()
 }
 
 /// What changed of `record` of `app` since `heads`, as the workspace holds it: its changes alone
@@ -1066,6 +1066,13 @@ impl Joined {
                 &route.record,
                 kept.as_deref(),
             );
+            // What reaches a record is news only once the workspace replayed what it held, and
+            // only once this page holds the record: the first that reaches it (a record the
+            // workspace sends when a window opens it) is what the workspace already held.
+            let held = self
+                .read_heads
+                .contains_key(&(route.app_id.clone(), route.record.clone()));
+            let replayed = !self.ready || !held;
             if let Ok(
                 RecordReading::Captured { heads, .. } | RecordReading::Changes { heads, .. },
             ) = &read
@@ -1075,15 +1082,15 @@ impl Joined {
             }
             let applied = match read {
                 Ok(RecordReading::Captured { bytes, heads, .. }) => {
-                    self.apply(&route, (bytes, &heads), &mut woken)
+                    self.apply(&route, (bytes, &heads), replayed, &mut woken)
                 }
                 Ok(RecordReading::Changes { bytes, heads, .. })
                     if self.is_open(&route.app_id, &route.record) =>
                 {
-                    self.apply_open_changes(&route, &bytes, &heads, &mut woken)
+                    self.apply_open_changes(&route, &bytes, &heads, replayed, &mut woken)
                 }
                 Ok(RecordReading::Changes { bytes, heads, .. }) => {
-                    self.apply_kept_changes(&route, bytes, &heads, &mut woken)
+                    self.apply_kept_changes(&route, bytes, &heads, replayed, &mut woken)
                 }
                 // Still arriving (its keys, or the checkpoint it builds on): it lands again.
                 Ok(RecordReading::Unchanged(_) | RecordReading::Pending) => Ok(()),
@@ -1302,6 +1309,7 @@ impl Joined {
         &mut self,
         route: &DocumentRoute,
         (bytes, heads): (Vec<u8>, &[[u8; 32]]),
+        replayed: bool,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         if route.app_id == DESKTOP_APP {
@@ -1309,9 +1317,7 @@ impl Joined {
         }
         let app = route.app_id.clone();
         let record = route.record.clone();
-        // What reaches the record is news only once the workspace has replayed what it already
-        // held: before that it is what the device had.
-        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        self.changes.note(&self.uuid, &app, &record, replayed);
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1327,7 +1333,12 @@ impl Joined {
                     .records
                     .entry((app.clone(), record.clone()))
                     .or_default();
-                if replica.merge(store, &checkout, DocumentMutation::Snapshot(bytes.clone()))? {
+                if replica.merge_delivered(
+                    store,
+                    &checkout,
+                    DocumentMutation::Snapshot(bytes.clone()),
+                    delivered_heads(heads),
+                )? {
                     woken.insert(id);
                 }
                 mounted
@@ -1428,10 +1439,11 @@ impl Joined {
         route: &DocumentRoute,
         changes: &[u8],
         heads: &[[u8; 32]],
+        replayed: bool,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         let (app, record) = (route.app_id.clone(), route.record.clone());
-        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        self.changes.note(&self.uuid, &app, &record, replayed);
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 if store.app_and_home().0 != app {
@@ -1446,10 +1458,11 @@ impl Joined {
                     .records
                     .entry((app.clone(), record.clone()))
                     .or_default();
-                if replica.merge(
+                if replica.merge_delivered(
                     store,
                     &checkout,
                     DocumentMutation::Incremental(changes.to_vec()),
+                    delivered_heads(heads),
                 )? {
                     woken.insert(id);
                 }
@@ -1469,10 +1482,11 @@ impl Joined {
         route: &DocumentRoute,
         changes: Vec<u8>,
         heads: &[[u8; 32]],
+        replayed: bool,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
         let (app, record) = (route.app_id.clone(), route.record.clone());
-        self.changes.note(&self.uuid, &app, &record, !self.ready);
+        self.changes.note(&self.uuid, &app, &record, replayed);
         let key = tilo_session::platform::records::storage_key(&app, &self.uuid, &record)
             .ok_or("not a record id")?;
         let writer = self
@@ -1840,6 +1854,15 @@ pub(crate) fn takes(event: &Event) -> bool {
 }
 
 /// `heads` sorted, as a read of a record names the heads it starts from.
+/// `heads` as the record's change hashes.
+fn delivered_heads(heads: &[[u8; 32]]) -> Vec<ui::automerge::ChangeHash> {
+    heads
+        .iter()
+        .copied()
+        .map(ui::automerge::ChangeHash)
+        .collect()
+}
+
 fn sorted_heads(heads: &[[u8; 32]]) -> Vec<[u8; 32]> {
     let mut heads = heads.to_vec();
     heads.sort_unstable();

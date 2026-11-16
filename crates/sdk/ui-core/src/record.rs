@@ -3472,7 +3472,10 @@ impl RecordStore {
             // still tells the route that these are the sender's own.
             let delivered = match &mutation {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
-                    let mut incoming = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+                    // The workspace's replica on this thread holds the document these bytes
+                    // were saved from: a copy of it, not a load.
+                    let mut incoming =
+                        tilo_automerge::shared::load(bytes).map_err(|error| error.to_string())?;
                     // The host's empty document for a record a member is
                     // creating carries nothing to merge, and no identity.
                     if incoming.get_heads().is_empty() {

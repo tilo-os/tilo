@@ -123,6 +123,16 @@ impl DocumentFrontier {
         self.observed.clear();
     }
 
+    /// The destination holds the document at `heads` too, beside what it held: what is
+    /// sent next is what lies past both.
+    pub fn hold(&mut self, heads: impl IntoIterator<Item = ChangeHash>) {
+        for head in heads {
+            if !self.heads.contains(&head) {
+                self.heads.push(head);
+            }
+        }
+    }
+
     /// Treat the document's current state as already observed on this route.
     pub fn rebase(&mut self, doc: &mut AutoCommit) {
         self.heads = doc.get_heads();

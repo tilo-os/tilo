@@ -26,6 +26,7 @@ heap-probe = []
 
 [dependencies]
 automerge.workspace = true
+blake3.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

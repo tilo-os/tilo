@@ -32,6 +32,7 @@ tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 automerge.workspace = true
+tilo-automerge.workspace = true
 # Binds a load hint to the exact document bytes it was made for.
 blake3.workspace = true
 hex.workspace = true

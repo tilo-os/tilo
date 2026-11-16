@@ -13,7 +13,7 @@
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
-use ui::automerge::{AutoCommit, ChangeHash};
+use ui::automerge::ChangeHash;
 use ui::record::RecordStore;
 
 /// What a page did with a record its host sent.
@@ -53,8 +53,10 @@ pub(crate) fn keep(
             .map(|_| Landed::Kept(heads))
             .map_err(|error| error.to_string());
     };
-    let mut doc = AutoCommit::load(&stored).map_err(|error| error.to_string())?;
-    let mut incoming = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+    // Either may be bytes a reader on this thread holds as a document (the workspace's replica
+    // captured `bytes`): copies of those, not loads.
+    let mut doc = tilo_automerge::shared::load(&stored).map_err(|error| error.to_string())?;
+    let mut incoming = tilo_automerge::shared::load(&bytes).map_err(|error| error.to_string())?;
     let before = doc.get_heads();
     let shared: Vec<_> = before
         .iter()
@@ -70,8 +72,10 @@ pub(crate) fn keep(
     if heads == before {
         return Ok(Landed::Kept(heads));
     }
+    let saved = doc.save();
+    tilo_automerge::shared::hold(&saved, &doc);
     store
-        .write(key, WriteOp::Replace(doc.save()), writer.as_deref())
+        .write(key, WriteOp::Replace(saved), writer.as_deref())
         .map(|_| Landed::Kept(heads))
         .map_err(|error| error.to_string())
 }

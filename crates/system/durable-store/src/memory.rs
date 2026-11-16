@@ -34,6 +34,11 @@ pub struct MemoryStore {
     claims: RefCell<BTreeMap<StorageKey, String>>,
     write_hook: RefCell<Option<Rc<dyn Fn()>>>,
     settle_wakes: RefCell<BTreeMap<StorageKey, Vec<ReadyWake>>>,
+    /// What writers kept beside their values ([`crate::DurableStore::write_hint`]): a page's
+    /// window writing a large record keeps its change hashes, so the next open of it here need
+    /// not rebuild and hash every change. Held for as long as the store, never written to its
+    /// host.
+    hints: RefCell<BTreeMap<StorageKey, Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -141,6 +146,7 @@ impl MemoryStore {
             claims: RefCell::default(),
             write_hook: RefCell::default(),
             settle_wakes: RefCell::default(),
+            hints: RefCell::default(),
         }
     }
 
@@ -448,6 +454,15 @@ impl crate::DurableStore for MemoryStore {
             .collect())
     }
 
+    fn write_hint(&self, key: &StorageKey, hint: &[u8]) -> Result<(), StoreError> {
+        self.hints.borrow_mut().insert(key.clone(), hint.to_vec());
+        Ok(())
+    }
+
+    fn read_hint(&self, key: &StorageKey) -> Option<Vec<u8>> {
+        self.hints.borrow().get(key).cloned()
+    }
+
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
         let mut claims = self.claims.borrow_mut();
         let owner = claims
@@ -485,6 +500,17 @@ mod tests {
 
     fn key() -> StorageKey {
         StorageKey::document("pkg", "room", "rec")
+    }
+
+    /// A writer's hint stays beside the value for the next reader of it here.
+    #[test]
+    fn a_hint_is_kept_beside_its_value() {
+        let store = MemoryStore::queued();
+        assert_eq!(store.read_hint(&key()), None);
+        store.write_hint(&key(), b"hashes").unwrap();
+        assert_eq!(store.read_hint(&key()).as_deref(), Some(&b"hashes"[..]));
+        store.write_hint(&key(), b"newer").unwrap();
+        assert_eq!(store.read_hint(&key()).as_deref(), Some(&b"newer"[..]));
     }
 
     #[test]
