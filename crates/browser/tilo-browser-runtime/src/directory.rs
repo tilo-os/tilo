@@ -77,13 +77,13 @@ impl tilo_session::directory::Host for PageHost {
     }
 
     fn add(&self, joined: &Joined) -> Result<(), String> {
-        let door = joined.granted.door();
+        let entry = joined.granted.entry_url();
         self.requests.borrow_mut().push(HostRequest::Joined {
-            // A door's host is reached at the door's own origin.
-            origin: door
-                .map(|door| door.origin().ascii_serialization())
+            // An entry's host is reached at its own origin.
+            origin: entry
+                .map(|entry| entry.origin().ascii_serialization())
                 .unwrap_or_default(),
-            door: door.map(ToString::to_string),
+            entry: entry.map(ToString::to_string),
             invitation: joined.granted.invitation().map(str::to_owned),
             workspace: joined.granted.workspace.clone(),
             name: joined.name.clone(),

@@ -81,12 +81,12 @@ pub(crate) enum HostRequest {
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
     /// The person chose a workspace in the directory
     /// (`mountDesktop({onJoinGranted})`): the page enters it through its
-    /// `door` on the session it opens with the door's host at `origin`, or
+    /// `entry` on the session it opens with the entry's host at `origin`, or
     /// redeems the `invitation` a pasted link brought, and opens it.
     Joined {
         origin: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        door: Option<String>,
+        entry: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         invitation: Option<String>,
         workspace: String,
