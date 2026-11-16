@@ -185,7 +185,7 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
          <option value=\"7776000\">90 days</option><option value=\"31536000\">1 year</option></select>\
          <label class=\"browser-pages\"><input type=\"checkbox\" name=\"browser_pages\" value=\"on\" checked>\
          Operate web pages in Browser</label>\
-         <span class=\"quiet\">The key opens, fills in and clicks the page without asking you each\
+         <span class=\"quiet\">The key opens, fills in and clicks the page without asking you each \
          time. Submitting still asks you.</span>\
          <button class=\"primary\">Create API key</button></form>",
         escape(csrf)
