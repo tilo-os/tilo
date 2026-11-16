@@ -125,6 +125,12 @@ impl WorkspaceShells {
         self.vms.is_some()
     }
 
+    /// The hosted-VM service these shells run Linux programs on, and for whom.
+    #[must_use]
+    pub const fn hosted(&self) -> Option<&HostedTarget> {
+        self.vms.as_ref()
+    }
+
     /// The same shells, whose workspaces' Browser starts on the hosted-VM
     /// service at `socket` (the one the environment names, unless a host
     /// names it another way).

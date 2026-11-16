@@ -356,3 +356,155 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
         "its profile kept among the workspace's own files: {store:?}"
     );
 }
+
+fn machine_request(
+    target: tilo_actions::remote::RemoteActionTarget,
+    argument: &impl serde::Serialize,
+) -> InvokeRequest {
+    let serde_json::Value::Object(map) = serde_json::to_value(argument).unwrap() else {
+        panic!("a machine's request is an object");
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target,
+        argument: InvokeArgument::Json(map),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+fn branching(from: &str) -> InvokeRequest {
+    use tilo_actions::remote::environment_machines::{self, BranchMachine};
+    machine_request(
+        environment_machines::branch_target(),
+        &BranchMachine {
+            from: from.into(),
+            account: "acct-1".into(),
+            size: "small".into(),
+        },
+    )
+}
+
+fn deleting() -> InvokeRequest {
+    use tilo_actions::remote::environment_machines::{self, DeleteMachine};
+    machine_request(environment_machines::delete_target(), &DeleteMachine {})
+}
+
+/// Follow an invocation until it ends: what it answered, or the words it failed with.
+fn ended(
+    runs: &EnvironmentRuns,
+    caller: &Caller,
+    id: InvocationId,
+) -> Result<Option<serde_json::Value>, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if Instant::now() >= deadline {
+            return Err("it never ended".into());
+        }
+        if let Some(change) = runs.next_change(caller, &id) {
+            answered(change);
+        }
+        let Some(state) = runs.observe(caller, &id) else {
+            return Err("the member forgot it".into());
+        };
+        match state.update {
+            InvocationUpdate::Succeeded { output, .. } => return Ok(output.value),
+            InvocationUpdate::Failed { error, .. } => return Err(error.message),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn only_the_hosts_own_devices_branch_and_delete_a_workspaces_machine() {
+    use legacy_vm::hosted::control::{Reply, Request, VmRequest};
+    use tilo_actions::remote::environment_machines::MachineBranched;
+    let dir = tempfile::tempdir().unwrap();
+    let (socket, asked) = fake_hosted(
+        dir.path(),
+        vec![
+            Reply::Done,
+            Reply::NoVm {
+                workspace: "ws-new".into(),
+            },
+            Reply::Error("the VM of workspace ws-0 belongs to another account".into()),
+            Reply::Done,
+        ],
+    );
+    let runs = browser_member(dir.path(), socket);
+
+    let stranger = Caller::authenticated([9; 32], [2; 32]).in_workspace("ws-1");
+    for request in [branching("ws-0"), deleting()] {
+        let refused = answered(runs.invoke(&stranger, request));
+        assert!(
+            matches!(refused, Err(ActionHostError::NotPermitted)),
+            "a device not the host's could copy or delete a workspace's machine: {refused:?}"
+        );
+    }
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "nothing a stranger asked reached the hosted-VM service"
+    );
+
+    let branched = |from: &str| {
+        let receipt = answered(runs.invoke(&host(), branching(from))).unwrap();
+        ended(&runs, &host(), receipt.invocation)
+    };
+    let made: MachineBranched = serde_json::from_value(branched("ws-0").unwrap().unwrap()).unwrap();
+    assert!(made.branched, "the branch's disk is there");
+    let none: MachineBranched =
+        serde_json::from_value(branched("ws-new").unwrap().unwrap()).unwrap();
+    assert!(
+        !none.branched,
+        "a source without a machine is answered as one, not as a failure"
+    );
+    let failed = branched("ws-0").unwrap_err();
+    assert!(
+        failed.contains("belongs to another account"),
+        "the service's refusal is the branch's failure, word for word: {failed}"
+    );
+
+    let receipt = answered(runs.invoke(&host(), deleting())).unwrap();
+    assert_eq!(ended(&runs, &host(), receipt.invocation), Ok(None));
+
+    let branch = Request::Branch {
+        vm: VmRequest {
+            workspace: "ws-1".into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: legacy_vm::hosted::size::VmSize::Small,
+        },
+        from: "ws-0".into(),
+    };
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 4, "{asked:?}");
+    assert_eq!(
+        asked[0], branch,
+        "the machine made is the caller's workspace's, for the account the host named"
+    );
+    assert_eq!(
+        asked[3],
+        Request::Delete {
+            workspace: "ws-1".into(),
+            environment: "default".into(),
+        },
+        "the machine deleted is the caller's workspace's"
+    );
+}
+
+#[test]
+fn a_member_that_runs_no_vms_has_no_machine_to_branch_or_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let runs = member(dir.path());
+    for request in [branching("ws-0"), deleting()] {
+        let refused = answered(runs.invoke(&host(), request));
+        assert!(
+            matches!(refused, Err(ActionHostError::Unavailable { .. })),
+            "{refused:?}"
+        );
+    }
+}

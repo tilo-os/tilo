@@ -6,13 +6,16 @@
 //! host, runs the command line in the session's shell over the member's own copy of the
 //! workspace's files ([`WorkspaceShells`]), streams what it prints, and answers how it
 //! went. The host can stop a run it started, which ends the command as Ctrl+C does
-//! ([`CommandRan::cancelled`]).
+//! ([`CommandRan::cancelled`]). It also branches a workspace's machine from another's and
+//! deletes one ([`tilo_actions::remote::environment_machines`]), on the hosted-VM service's own
+//! socket.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use tilo_actions::remote::browser::{self, OpenBrowser};
+use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
@@ -29,6 +32,13 @@ const PROFILE_STORE: &str = ".tilo/browser";
 const REMEMBERED: usize = 1024;
 
 const CHANGE_WAIT: Duration = Duration::from_secs(1);
+
+/// How long the hosted-VM service is given to branch or delete a machine: a source asleep is
+/// woken for its copy.
+const MACHINE_PATIENCE: Duration = Duration::from_secs(300);
+
+/// How often a branch waiting for room to wake its source asks again.
+const MACHINE_RETRY: Duration = Duration::from_secs(2);
 
 pub struct EnvironmentRuns(Arc<Inner>);
 
@@ -277,6 +287,105 @@ impl Inner {
     }
 }
 
+impl Inner {
+    /// Answer `run` by making `workspace`'s machine a branch of the one `asked` names, or by
+    /// deleting it, on this host's hosted-VM service.
+    fn start_machine(self: &Arc<Self>, run: Run, workspace: String, asked: Option<BranchMachine>) {
+        let inner = Arc::clone(self);
+        let invocation = run.state().invocation();
+        std::thread::spawn(move || {
+            let outcome = match (inner.shells.hosted_socket(), asked) {
+                (None, _) => Err("this member runs no workspace VMs".to_owned()),
+                (Some(socket), Some(asked)) => branch_machine(&socket, &workspace, &asked)
+                    .map(|branched| serde_json::to_value(MachineBranched { branched }).ok()),
+                (Some(socket), None) => delete_machine(&socket, &workspace).map(|()| None),
+            };
+            let update = match outcome {
+                Ok(value) => InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ActionOutput {
+                        value,
+                        resources: Vec::new(),
+                    },
+                },
+                Err(message) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: "unavailable".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            inner.set(&run, update);
+        });
+    }
+}
+
+/// Make `workspace`'s machine a branch of `asked.from`'s on the hosted-VM service at `socket`:
+/// `true` once its disk is there, `false` when the source has no machine, so nothing was made. A
+/// source asleep on a host with no room to wake it is asked for again until there is.
+fn branch_machine(
+    socket: &std::path::Path,
+    workspace: &str,
+    asked: &BranchMachine,
+) -> Result<bool, String> {
+    use legacy_vm::hosted::control::{ENVIRONMENT, Reply, Request, VmRequest};
+    let size = legacy_vm::hosted::size::VmSize::parse(&asked.size)
+        .ok_or_else(|| format!("{:?} is not a machine's size", asked.size))?;
+    let request = Request::Branch {
+        vm: VmRequest {
+            workspace: workspace.to_owned(),
+            environment: ENVIRONMENT.to_owned(),
+            account: asked.account.clone(),
+            size,
+        },
+        from: asked.from.clone(),
+    };
+    let until = std::time::Instant::now().checked_add(MACHINE_PATIENCE);
+    loop {
+        match ask_service(socket, &request)? {
+            Reply::Done => return Ok(true),
+            Reply::NoVm { .. } => return Ok(false),
+            Reply::Busy(_) if until.is_some_and(|until| std::time::Instant::now() < until) => {
+                std::thread::sleep(MACHINE_RETRY);
+            }
+            Reply::Busy(words) | Reply::Error(words) => return Err(words),
+            Reply::Refused(refusal) => return Err(refusal.message),
+            other => return Err(format!("the hosted-VM service answered {other:?}")),
+        }
+    }
+}
+
+/// Delete `workspace`'s machine on the hosted-VM service at `socket`: done too when it had none.
+fn delete_machine(socket: &std::path::Path, workspace: &str) -> Result<(), String> {
+    use legacy_vm::hosted::control::{ENVIRONMENT, Reply, Request};
+    let request = Request::Delete {
+        workspace: workspace.to_owned(),
+        environment: ENVIRONMENT.to_owned(),
+    };
+    match ask_service(socket, &request)? {
+        Reply::Done => Ok(()),
+        Reply::Busy(words) | Reply::Error(words) => Err(words),
+        other => Err(format!("the hosted-VM service answered {other:?}")),
+    }
+}
+
+fn ask_service(
+    socket: &std::path::Path,
+    request: &legacy_vm::hosted::control::Request,
+) -> Result<legacy_vm::hosted::control::Reply, String> {
+    legacy_vm::hosted::control::ask(socket, request, MACHINE_PATIENCE)
+        .map_err(|error| format!("the hosted-VM service at {}: {error}", socket.display()))?
+        .ok_or_else(|| {
+            format!(
+                "no hosted-VM service answers at {}, so no machine was changed",
+                socket.display()
+            )
+        })
+}
+
 fn ran_of(ran: ShellRun) -> CommandRan {
     CommandRan {
         command: ran.command,
@@ -365,6 +474,8 @@ impl EnvironmentRuns {
             browser::STOP,
             linux_apps::OPEN,
             linux_apps::STOP,
+            environment_machines::BRANCH,
+            environment_machines::DELETE,
         ]
         .contains(&action);
         let browsers = self.0.browsers.as_ref().filter(|_| in_vm);
@@ -388,6 +499,8 @@ impl EnvironmentRuns {
             browser::STOP => Asked::Browser(None),
             linux_apps::OPEN => Asked::App(Some(open_argument(request, "a Linux app")?)),
             linux_apps::STOP => Asked::App(None),
+            environment_machines::BRANCH => Asked::Machine(Some(branch_argument(request)?)),
+            environment_machines::DELETE => Asked::Machine(None),
             _ => return Err(not_served()),
         };
         let invocation = request.invocation;
@@ -418,6 +531,7 @@ impl EnvironmentRuns {
                         let browsers = browsers.cloned();
                         self.0.start_app(run, workspace, asked, browsers);
                     }
+                    Asked::Machine(asked) => self.0.start_machine(run, workspace, asked),
                 }
                 Ok(receipt)
             }
@@ -429,6 +543,21 @@ enum Asked {
     Run(RunCommand),
     Browser(Option<OpenBrowser>),
     App(Option<OpenApp>),
+    /// A branch of the workspace's machine from another's, or its deletion.
+    Machine(Option<BranchMachine>),
+}
+
+fn branch_argument(request: &InvokeRequest) -> Result<BranchMachine, ActionHostError> {
+    let InvokeArgument::Json(map) = &request.argument else {
+        return Err(ActionHostError::InvalidRequest {
+            reason: "a machine's branch names its source as JSON".into(),
+        });
+    };
+    serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
+        ActionHostError::InvalidRequest {
+            reason: format!("not a machine to branch: {error}"),
+        }
+    })
 }
 
 fn open_argument<T: serde::de::DeserializeOwned>(
