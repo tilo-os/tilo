@@ -878,7 +878,7 @@ action attach(b: Board, list: todo.TodoList) {
             .clone();
         let root = replica.host.root_of(&meta.app).unwrap().id_string();
         replica.commit();
-        collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta], &SourceWords).unwrap());
+        collab_types::app_surface::register_package(&meta.app, &surface_toml(&[&meta], &SourceWords).unwrap());
         let record = collab_types::Record {
             workspace: "workspace",
             app: &meta.app,
@@ -886,7 +886,7 @@ action attach(b: Board, list: todo.TodoList) {
         };
         let refuse = |replica: &mut Replica, start: &[automerge::ChangeHash]| {
             let change = replica.doc.save_after(start);
-            collaboration::app_surface::refusal(
+            collab_types::app_surface::refusal(
                 &record,
                 &collab_types::DocumentMutation::Incremental(change),
             )

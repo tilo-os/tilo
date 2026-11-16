@@ -6,8 +6,8 @@
 use super::*;
 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
 use tilo_session_client::Event;
+use tilo_session_client::remote::Heard;
 use tilo_session_client::{Cmd, Outbox};
-use tilo_session_core::remote::Heard;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {

@@ -109,7 +109,7 @@ pub enum TransportCommand {
     /// naming the kind its record holds so a host that creates the record on
     /// this device's first change knows what it holds. Repeated joins of one
     /// route are idempotent.
-    Join(RouteSpec, crate::record::RecordKind),
+    Join(RouteSpec, collab_types::record::RecordKind),
     /// Report the remote end's decision about the latest primary `Hello`,
     /// ordered behind every command submitted before it.
     ConfirmPrimaryRoute,
@@ -262,7 +262,7 @@ pub trait CollabTransport: Send {
     /// named it. A change that arrives before the route's join resolved
     /// re-joins naming this kind, so a host creating the record knows what
     /// it holds.
-    fn joined_record_kind(&self, channel: &str) -> Option<crate::record::RecordKind> {
+    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::record::RecordKind> {
         let _ = channel;
         None
     }

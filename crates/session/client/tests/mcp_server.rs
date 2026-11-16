@@ -25,7 +25,7 @@ use tilo_actions::remote::{
 };
 use tilo_relay_client::revoke_device;
 use tilo_session_client::device::run_as_agent;
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 

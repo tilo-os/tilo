@@ -306,7 +306,7 @@ pub async fn settled<H: ActionHost + Clone + Send + Sync + 'static>(
             }
             _ => {}
         }
-        let now = web_time::Instant::now();
+        let now = tilo_clock::now();
         let until = now.checked_add(MAX_REMOTE_WAIT).unwrap_or(now);
         update = settle_with(host, caller, invocation, None, until)
             .await

@@ -541,7 +541,8 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let client = tilo_workspace_directory::client()?;
+        let client = tilo_workspace_directory::client()
+            .map_err(|error| tilo_sheets::directory::said(&error))?;
         let info = tilo_relay_client::https::host_info(&tilo_relay_client::https::Origin::new(
             &client, origin,
         ))

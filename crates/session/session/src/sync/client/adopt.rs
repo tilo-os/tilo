@@ -131,7 +131,8 @@ async fn through_door(
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
     use tilo_relay_protocol::entering::{Entered, Entering, Through};
     let topic = workspace;
-    let client = tilo_workspace_directory::client()?;
+    let client =
+        tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
     let origin = door.origin().ascii_serialization();
     let host = tilo_relay_client::https::Origin::new(&client, &origin);
     let info = tilo_relay_client::https::host_info(&host)

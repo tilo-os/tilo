@@ -20,10 +20,9 @@ oneshot.workspace = true
 # The layout's model: the workspaces a participant takes part in, and the windows presence places
 # people in.
 tilo-desktop-model = { path = "../desktop-model" }
-# The toolkit's clock and presence vocabulary, which a participant's face is drawn with on every
-# host.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { path = "../../collab/collab-types" }
+# What a file uploaded through the session is, and so the app it lands in.
+tilo-content-types = { path = "../../system/content-types" }
 # The workspace's live plane: the board of who is here, and the tracks presence travels on.
 tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
 # This device's workspaces as its host keeps them, and where a device hosting one is reached.
@@ -54,8 +53,6 @@ bytes.workspace = true
 n0-future = "0.3"
 web-time = "1"
 rand.workspace = true
-# What asking another device's actions hears back.
-tilo-session-core = { path = "../core" }
 # The action a message from another member is, and the claims access answers it with, holding
 # every message to the workspace's own policy.
 tilo-action-policy = { path = "../../collab/action-policy" }

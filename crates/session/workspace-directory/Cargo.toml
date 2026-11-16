@@ -27,19 +27,16 @@ tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-prot
 # The reads and joins run as one app task.
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 # What the sheet shows: the list as plain data.
-tilo-sheets = { version = "0.1.0", path = "../sheets" }
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Invitations are verified for the person they were granted to.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
-tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
 test-http = { path = "../../dev/test-http" }
-tokio = { workspace = true, features = ["rt", "time"] }
 
 [lints]
 workspace = true

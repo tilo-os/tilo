@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, RemoteActionFrame, RemoteActionMessage};
 use tilo_relay_protocol::WorkspaceId;
+use tilo_session_client::remote::Heard;
 use tilo_session_client::{Cmd, Event, InboundActions, Outbox};
-use tilo_session_core::remote::Heard;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{

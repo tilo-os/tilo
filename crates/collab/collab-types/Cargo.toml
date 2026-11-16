@@ -25,6 +25,10 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+# A file's record id, kept in the extended attribute the filesystem serves.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+fnv.workspace = true
+tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # A capability names the app whose sandbox it is.

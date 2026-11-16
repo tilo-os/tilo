@@ -3,6 +3,7 @@ use host_fs::attributes as xattr;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
+use collab_types::record::RECORD_ID_XATTR;
 use fs_protocol::projection::{
     MAX_RECORD_INDEX_PAGE_BYTES, RECORD_INDEX_BY_ID_XATTR_PREFIX, RECORD_INDEX_PAGE_ENTRIES,
     RECORD_INDEX_V2_VERSION, RECORD_INDEX_V2_XATTR, RECORD_INDEX_V3_VERSION, RECORD_INDEX_V3_XATTR,
@@ -11,8 +12,8 @@ use fs_protocol::projection::{
 };
 use fs_protocol::{
     AVAILABILITY_XATTR, AvailabilityProjectionV1, CONTENT_HASH_XATTR, HISTORY_XATTR,
-    HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, RECORD_ID_XATTR, Residency,
-    SYNC_XATTR, SyncState, THUMB_XATTR,
+    HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, Residency, SYNC_XATTR, SyncState,
+    THUMB_XATTR,
 };
 
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {

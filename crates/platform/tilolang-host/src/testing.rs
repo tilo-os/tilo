@@ -7,8 +7,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use collab_types::record::RecordKind;
 use collaboration::commit_log::CommitHistory;
-use collaboration::record::RecordKind;
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
 };

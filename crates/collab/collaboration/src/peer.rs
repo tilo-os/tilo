@@ -28,7 +28,11 @@ pub trait PeerTransport {
     }
     /// Join `route`, whose record holds `record_kind`. The kind is what a
     /// host needs to create the record on this device's first change.
-    fn join_route(&mut self, _: RouteSpec, _: crate::record::RecordKind) -> Result<(), String> {
+    fn join_route(
+        &mut self,
+        _: RouteSpec,
+        _: collab_types::record::RecordKind,
+    ) -> Result<(), String> {
         Err("route joining unavailable".into())
     }
     fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
@@ -263,7 +267,11 @@ mod tests {
         fn poll(&mut self) -> Vec<CollabEvent> {
             vec![]
         }
-        fn join_route(&mut self, _: RouteSpec, _: crate::record::RecordKind) -> Result<(), String> {
+        fn join_route(
+            &mut self,
+            _: RouteSpec,
+            _: collab_types::record::RecordKind,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn send_to_route(&mut self, _: RouteSpec, request: CollabRequest) -> Result<(), String> {

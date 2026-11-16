@@ -174,7 +174,7 @@ pub(super) async fn join_route(
     if spec
         .record
         .as_deref()
-        .and_then(crate::record::RecordId::parse)
+        .and_then(collab_types::record::RecordId::parse)
         .is_some_and(|record| record.is_chain_head())
     {
         committed_document::ask_chain_head(&channel, spec, inbound_tx).await?;

@@ -61,7 +61,7 @@ impl OwnPresence {
     reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
 )]
 pub fn now_ms() -> f64 {
-    ui::time::unix_now_ms() as f64
+    tilo_clock::unix_now_ms() as f64
 }
 
 /// One workspace this session takes part in: its topic, and the board of who is here.

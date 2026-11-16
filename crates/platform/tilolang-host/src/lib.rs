@@ -87,7 +87,7 @@ pub fn route_under(
 /// Whether an instance joining `route` opens the record `asked`, as a launch names it: a member's
 /// own, by its id. The workspace's record of the app is no record a launch names.
 fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
-    collaboration::record::RecordId::parse(asked)
+    collab_types::record::RecordId::parse(asked)
         .is_some_and(|asked| asked.route() == route.record.as_deref().unwrap_or_default())
 }
 
@@ -680,7 +680,7 @@ impl TilolangHost {
         }
         let _scope = self.scope.enter();
         let manager = collaboration::CollaborationManager::join_instance(
-            &collaboration::record::RecordKind::new(bundle.meta.record_kind()),
+            &collab_types::record::RecordKind::new(bundle.meta.record_kind()),
             broker,
             identity.as_fd(),
             route,
@@ -717,14 +717,14 @@ impl TilolangHost {
         let surface = bundle
             .surface()
             .map_err(|error| AdmitError::Module(error.to_string()))?;
-        collaboration::app_surface::register_package(&bundle.meta.app, &surface);
+        collab_types::app_surface::register_package(&bundle.meta.app, &surface);
         // The records the route names: the app's own, or those of the id it had before, kept
         // where that app kept them. The changes made there name the app's surface too.
         let records = manager
             .primary_route()
             .map_or_else(|| spec.app.clone(), |joined| joined.route().app_id.clone());
         if records != bundle.meta.app {
-            collaboration::app_surface::register_package(&records, &surface);
+            collab_types::app_surface::register_package(&records, &surface);
         }
         let kept = self
             .kept(&records)
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn an_instance_opens_only_the_record_its_route_names() {
         let workspace = uuid::Uuid::from_u128(7);
-        let own = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(9));
+        let own = collab_types::record::RecordId::for_file_record(uuid::Uuid::from_u128(9));
         let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
         let owns = collaboration::RouteSpec::record("so.tilo.lang.notes", workspace, own.route());
         assert!(opens_record(&owns, own.as_str()));
@@ -1207,12 +1207,12 @@ mod tests {
             !opens_record(&workspaces, own.as_str()),
             "the workspace's record is never named: a launch that names one names another"
         );
-        let other = collaboration::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
+        let other = collab_types::record::RecordId::for_file_record(uuid::Uuid::from_u128(10));
         assert!(!opens_record(&owns, other.as_str()));
         assert!(!opens_record(&owns, "not a record"));
         // Naming nothing names no record: not the workspace's, whose route names none, by the
         // empty name or by the key its custody keeps it under, and not a member's own.
-        let primary = collaboration::record::RecordId::package_primary();
+        let primary = collab_types::record::RecordId::package_primary();
         for unnamed in ["", primary.as_str()] {
             assert!(
                 !opens_record(&workspaces, unnamed),

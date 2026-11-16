@@ -29,7 +29,7 @@ pub trait ComponentBinding {
     /// The app the component belongs to.
     fn app_id(&self) -> &str;
     /// The record the component is bound to.
-    fn checkout(&self) -> &crate::record::RecordCheckout;
+    fn checkout(&self) -> &collab_types::record::RecordCheckout;
     /// Enter the component's owner.
     fn enter(&self) -> Result<Self::Entry, Self::EnterError>;
     /// Merge a committed history into the bound record.
@@ -617,7 +617,7 @@ impl InitialReadBridge {
     /// not hold yet, which is new and which the app makes there), and the
     /// record opens as one without a bridge would. A record the workspace sends
     /// this device only once it asks
-    /// ([`crate::record::RecordId::arrives_on_demand`]) is asked for and
+    /// ([`collab_types::record::RecordId::arrives_on_demand`]) is asked for and
     /// never waited on: [`RecordReadError::Arriving`] until it
     /// is here, and the store's readers are woken when it arrives. One the
     /// app's own channel answers never arrives committed: it opens without a
@@ -626,7 +626,7 @@ impl InitialReadBridge {
         &self,
         app: &str,
         workspace: &str,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &collab_types::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
         if checkout.id.arrives_on_demand() {
             self.check_scope(app, Some(workspace))
@@ -647,7 +647,7 @@ impl InitialReadBridge {
         &self,
         app: &str,
         workspace: &str,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &collab_types::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, String> {
         self.check_scope(app, Some(workspace))?;
         if checkout.id.is_package_primary() {
@@ -662,7 +662,7 @@ impl InitialReadBridge {
     /// channel's: a record a sealed workspace does not hold yet, which is new and
     /// which the app makes there. Never the primary route, which the bridge
     /// reads committed.
-    pub fn answered_by_own_channel(&self, checkout: &crate::record::RecordCheckout) -> bool {
+    pub fn answered_by_own_channel(&self, checkout: &collab_types::record::RecordCheckout) -> bool {
         !checkout.id.is_package_primary()
             && self.state.document_reads.answered_by_own_channel(
                 &RouteSpec::record(
@@ -684,7 +684,7 @@ impl InitialReadBridge {
     /// `None` once the broker answered that the app's own channel serves it.
     fn read(
         &self,
-        checkout: Option<&crate::record::RecordCheckout>,
+        checkout: Option<&collab_types::record::RecordCheckout>,
     ) -> Result<Option<CommittedDocument>, String> {
         self.check()?;
         let route = checkout.map_or_else(
@@ -737,7 +737,7 @@ impl InitialReadBridge {
     /// readers.
     fn arrived(
         &self,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &collab_types::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, String> {
         self.check()?;
         let route = RouteSpec::record(
@@ -816,14 +816,17 @@ impl InitialReadBridge {
         &self,
         _app: &str,
         _workspace: &str,
-        _checkout: &crate::record::RecordCheckout,
+        _checkout: &collab_types::record::RecordCheckout,
     ) -> Result<Option<CommittedDocument>, RecordReadError> {
         match self.never {}
     }
     fn read_primary(&self) -> Result<CommittedDocument, String> {
         match self.never {}
     }
-    pub fn answered_by_own_channel(&self, _checkout: &crate::record::RecordCheckout) -> bool {
+    pub fn answered_by_own_channel(
+        &self,
+        _checkout: &collab_types::record::RecordCheckout,
+    ) -> bool {
         match self.never {}
     }
 }
@@ -841,12 +844,12 @@ mod tests {
     #[test]
     fn a_record_the_apps_own_channel_answers_has_no_committed_read() {
         let workspace = uuid::Uuid::new_v4();
-        let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::parse(
+        let checkout = collab_types::record::RecordCheckout::new(
+            collab_types::record::RecordId::parse(
                 "derived:part.0@derived:messages@derived:default@tab:0000000000000000",
             )
             .expect("a record id"),
-            crate::record::RecordKind::new("chat.part"),
+            collab_types::record::RecordKind::new("chat.part"),
         );
         let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();
@@ -876,10 +879,10 @@ mod tests {
     #[test]
     fn a_read_of_a_route_that_did_not_join_fails_with_its_reason() {
         let workspace = uuid::Uuid::new_v4();
-        let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::parse("uuid:00000000-0000-0000-0000-000000000001")
+        let checkout = collab_types::record::RecordCheckout::new(
+            collab_types::record::RecordId::parse("uuid:00000000-0000-0000-0000-000000000001")
                 .expect("a record id"),
-            crate::record::RecordKind::new("chat.part"),
+            collab_types::record::RecordKind::new("chat.part"),
         );
         let route = RouteSpec::record("so.tilo.chat", workspace, checkout.id.as_str());
         let state = BridgeState::new();

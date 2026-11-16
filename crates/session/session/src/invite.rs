@@ -16,9 +16,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_sheets::SheetState as _;
+use tilo_sheets::directory::Store;
 use tilo_sheets::invite as sheet;
 use tilo_sheets::{word, words};
-use tilo_workspace_directory::Store;
 
 use crate::Shared;
 use crate::platform::clipboard::Clipboard;

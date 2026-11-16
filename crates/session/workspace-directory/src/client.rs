@@ -23,6 +23,8 @@ use serde::Deserialize;
 use tilo_net::Client;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 
+use crate::SiteError;
+
 /// How long establishing a connection to a site may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a site's entry, its directory or its door may take to answer.
@@ -37,7 +39,7 @@ pub const MAX_DIRECTORY_BYTES: usize = 1024 * 1024;
 ///
 /// # Errors
 /// The TLS and HTTP stack could not be initialised.
-pub fn client() -> Result<Client, String> {
+pub fn client() -> Result<Client, SiteError> {
     Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -54,7 +56,7 @@ pub fn client() -> Result<Client, String> {
 /// machine's loopback only (a host under development). A `*.localhost` name
 /// is loopback too, as browsers and resolvers take it: the local tilo.sh
 /// serves its site as `tilo.localhost`.
-pub fn web_origin(text: &str) -> Result<url::Url, String> {
+pub fn web_origin(text: &str) -> Result<url::Url, SiteError> {
     let url = url::Url::parse(text).map_err(|_| "that is not a web address")?;
     let loopback = url.host_str().is_some_and(|host| {
         matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")
@@ -72,7 +74,7 @@ pub fn web_origin(text: &str) -> Result<url::Url, String> {
 
 /// The entry a person typed: a site's address, with or without its scheme
 /// and path. The route of a link is not part of it.
-pub fn site_entry(text: &str) -> Result<url::Url, String> {
+pub fn site_entry(text: &str) -> Result<url::Url, SiteError> {
     let text = text.trim();
     if text.is_empty() || text.chars().any(char::is_whitespace) {
         return Err("that is not a web address".into());
@@ -187,7 +189,7 @@ pub struct SiteEntry {
 
 /// Read what the site at `entry` names: its home workspace and its directory
 /// of public workspaces.
-pub async fn read_site(client: &Client, entry: &url::Url) -> Result<SiteEntry, String> {
+pub async fn read_site(client: &Client, entry: &url::Url) -> Result<SiteEntry, SiteError> {
     let config: EntryJson = get_json(
         client,
         &entry
@@ -209,7 +211,7 @@ pub async fn read_site(client: &Client, entry: &url::Url) -> Result<SiteEntry, S
 }
 
 /// The home workspace a site's `entry.json` names.
-fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, String> {
+fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, SiteError> {
     let origin = web_origin(&home.host.origin)?;
     let admission = home
         .admission
@@ -237,7 +239,7 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, St
 pub async fn fetch_directory(
     client: &Client,
     directory: &url::Url,
-) -> Result<tilo_relay_protocol::directory::DirectoryPage, String> {
+) -> Result<tilo_relay_protocol::directory::DirectoryPage, SiteError> {
     let response = client
         .post(directory.as_str())
         .timeout(ANSWER_TIMEOUT)
@@ -294,7 +296,7 @@ pub fn door_workspace(door: &url::Url) -> Option<String> {
 ///
 /// # Errors
 /// The door names no workspace.
-pub fn through_door(door: &url::Url) -> Result<Granted, String> {
+pub fn through_door(door: &url::Url) -> Result<Granted, SiteError> {
     let workspace = door_workspace(door).ok_or_else(|| {
         said(
             "a door names no workspace",
@@ -320,10 +322,10 @@ pub fn through_door(door: &url::Url) -> Result<Granted, String> {
 ///
 /// This is the door a listing's Join enters through: a community is joined
 /// as a public workspace is.
-pub(crate) async fn join_home(
+pub async fn join_home(
     client: &Client,
     site: &url::Url,
-) -> Result<Option<(String, Granted)>, String> {
+) -> Result<Option<(String, Granted)>, SiteError> {
     let Some(home) = read_site(client, site).await?.home else {
         return Ok(None);
     };
@@ -336,12 +338,27 @@ pub(crate) async fn join_home(
 
 /// An invitation verified for `person`: the workspace it grants, and the text
 /// the workspace's host admits this device by.
-pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
+pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, SiteError> {
     let workspace = verify_workspace(text, person.user)?;
     Ok(Granted {
         workspace,
         way: Way::Invitation(text.trim().to_owned()),
     })
+}
+
+/// An invitation left on a site's shelf: the link a person hands over, and
+/// what takes the ciphertext back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shelved {
+    /// The link: the site, the handle the invitation is under, and the key
+    /// that opens it, which is in no request.
+    pub link: String,
+    /// The site that keeps it.
+    pub site: url::Url,
+    /// The handle it is kept under.
+    pub handle: String,
+    /// The secret that takes it back. It is in no link.
+    pub delete: String,
 }
 
 /// Seal `invitation`, the signed bytes of one, under a fresh key and leave it
@@ -359,10 +376,10 @@ pub async fn shelve(
     host: Option<&str>,
     invitation: &[u8],
     expires_at_ns: u64,
-) -> Result<crate::Shelved, String> {
+) -> Result<Shelved, SiteError> {
     let sealed = tilo_workspace_join::sealed::seal(invitation)?;
     let link = leave(client, site, host, &sealed, expires_at_ns).await?;
-    Ok(crate::Shelved {
+    Ok(Shelved {
         link,
         site: site.clone(),
         handle: sealed.handle,
@@ -381,7 +398,7 @@ async fn leave(
     host: Option<&str>,
     sealed: &tilo_workspace_join::sealed::Sealed,
     expires_at_ns: u64,
-) -> Result<String, String> {
+) -> Result<String, SiteError> {
     let url = site
         .join(&format!("i/{}", sealed.handle))
         .map_err(|_| "that is not a web address".to_owned())?;
@@ -412,7 +429,7 @@ async fn leave(
             "directory-error-status",
         ));
     }
-    sealed.link(site.as_str())
+    Ok(sealed.link(site.as_str())?)
 }
 
 /// Take `sealed` back off `site`'s shelf, with the secret it was left with:
@@ -421,12 +438,12 @@ async fn leave(
 /// # Errors
 /// Why the site did not take it back: it could not be reached, refused, or
 /// holds nothing there any more.
-pub(crate) async fn take_back(
+pub async fn take_back(
     client: &Client,
     site: &url::Url,
     handle: &str,
     delete: &str,
-) -> Result<(), String> {
+) -> Result<(), SiteError> {
     let url = site
         .join(&format!("i/{handle}"))
         .map_err(|_| "that is not a web address".to_owned())?;
@@ -464,10 +481,10 @@ pub(crate) async fn take_back(
 /// # Errors
 /// Why there is none: the site could not be reached, holds nothing under the
 /// handle any more, or the key does not open what it answered with.
-pub(crate) async fn redeem(
+async fn redeem(
     client: &Client,
     link: &tilo_workspace_join::sealed::SealedLink,
-) -> Result<SealedInvitation, String> {
+) -> Result<SealedInvitation, SiteError> {
     let site = web_origin(&format!("{}/", link.site))?;
     let url = site
         .join(&format!("i/{}", link.handle))
@@ -553,7 +570,7 @@ pub struct SealedInvitation {
 /// # Errors
 /// Why there is none: the site could not be reached, holds nothing under the
 /// handle any more, or the key does not open what it answered with.
-pub async fn sealed_invitation(site: &str, secret: &str) -> Result<SealedInvitation, String> {
+pub async fn sealed_invitation(site: &str, secret: &str) -> Result<SealedInvitation, SiteError> {
     let Some((handle, key)) = tilo_workspace_join::sealed::parse_ref(secret) else {
         return Ok(SealedInvitation {
             invitation: secret.to_owned(),
@@ -571,33 +588,33 @@ pub async fn sealed_invitation(site: &str, secret: &str) -> Result<SealedInvitat
 /// The workspace an invitation for this person joins, without redeeming it:
 /// what a session the host set up for a workspace knows before the join
 /// settles.
-pub fn invited_workspace(text: &str, person: &Person) -> Result<String, String> {
+pub fn invited_workspace(text: &str, person: &Person) -> Result<String, SiteError> {
     verify_workspace(text, person.user)
 }
 
 /// The workspace an invitation grants `user`, verified for them.
-fn verify_workspace(text: &str, user: [u8; 32]) -> Result<String, String> {
+fn verify_workspace(text: &str, user: [u8; 32]) -> Result<String, SiteError> {
     let verified = tilo_workspace_join::decode_and_verify_invitation_text(
         text.trim(),
         Some(user),
         &tilo_user_identity::RevocationList::new(),
         tilo_clock::unix_now_ns(),
     )
-    .map_err(|error| format!("that invitation is not for you: {error}"))?;
+    .map_err(|error| SiteError::Plain(format!("that invitation is not for you: {error}")))?;
     Ok(verified.grant().workspace_id.to_string())
 }
 
 /// What joining the pasted `text` got: the name the workspace goes by, when
 /// what was pasted says it, and what it was granted.
-pub(crate) struct Taken {
-    pub(crate) name: String,
-    pub(crate) granted: Result<Granted, String>,
+pub struct Taken {
+    pub name: String,
+    pub granted: Result<Granted, SiteError>,
 }
 
 /// Join what the person pasted, as [`classify`] reads it: an invitation's
 /// text is redeemed where it says; a site or a workspace link is joined
 /// through the door of the workspace it names, on the site it names.
-pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &Person) -> Taken {
+pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Person) -> Taken {
     let pasted = match classify(text) {
         Ok(pasted) => pasted,
         Err(error) => {
@@ -623,7 +640,7 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
                 .map(|site| host_of(&site))
                 .unwrap_or_default(),
             granted: match client {
-                Err(error) => Err(format!("no network to join over: {error}")),
+                Err(error) => Err(error.clone()),
                 Ok(client) => redeem(client, &link)
                     .await
                     .and_then(|sealed| verify_invitation(&sealed.invitation, person)),
@@ -632,7 +649,7 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
         Pasted::Site { entry, workspace } => match client {
             Err(error) => Taken {
                 name: host_of(&entry),
-                granted: Err(format!("no network to join over: {error}")),
+                granted: Err(error.clone()),
             },
             Ok(client) => match read_site(client, &entry).await {
                 Ok(read) => {
@@ -644,10 +661,10 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
                         Some(door) => {
                             through_door(&door).and_then(|granted| match workspace {
                                 Some(workspace) if workspace.to_string() != granted.workspace => {
-                                    Err(
+                                    Err(SiteError::Plain(
                                         "that link is for another workspace on this site: ask whoever shared it for an invitation"
                                             .to_owned(),
-                                    )
+                                    ))
                                 }
                                 _ => Ok(granted),
                             })
@@ -708,10 +725,10 @@ enum Pasted {
 
 /// Read what the person pasted: a sealed link, an invitation's text, a
 /// workspace link, or a site.
-fn classify(text: &str) -> Result<Pasted, String> {
+fn classify(text: &str) -> Result<Pasted, SiteError> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("that is not a link or a code".to_owned());
+        return Err("that is not a link or a code".into());
     }
     if let Some(link) = tilo_workspace_join::sealed::parse_link(text) {
         return Ok(Pasted::Sealed { link });
@@ -723,7 +740,7 @@ fn classify(text: &str) -> Result<Pasted, String> {
         });
     }
     if !text.contains('.') && !text.contains(':') && !text.contains('/') {
-        return Err("that is not a link or a code".to_owned());
+        return Err("that is not a link or a code".into());
     }
     if text.contains('#') {
         let entry = link_entry(text);
@@ -736,7 +753,7 @@ fn classify(text: &str) -> Result<Pasted, String> {
         {
             let entry = site_entry(entry)?;
             if link.secrets.pair.is_some() {
-                return Err("that link pairs a device with a host, not a workspace".to_owned());
+                return Err("that link pairs a device with a host, not a workspace".into());
             }
             let tilo_reference::link::Scope::Workspace { id: room, .. } = link.target.scope else {
                 return Ok(Pasted::Site {
@@ -786,16 +803,16 @@ fn link_entry(url: &str) -> Option<String> {
 /// What a site answered when its entry or its directory was read, in the
 /// sheet's own words: the protocol's detail (an error, a status code) goes to
 /// the log for whoever reads it, never into what the person sees.
-fn said(logged: &'static str, error: impl std::fmt::Display, shown: &str) -> String {
+fn said(logged: &'static str, error: impl std::fmt::Display, shown: &'static str) -> SiteError {
     tracing::warn!(%error, "{logged}");
-    tilo_sheets::word(shown)
+    SiteError::Said(shown)
 }
 
 /// Read `url` as JSON, at most [`MAX_ANSWER_BYTES`] of it.
 async fn get_json<T: serde::de::DeserializeOwned>(
     client: &Client,
     url: &url::Url,
-) -> Result<T, String> {
+) -> Result<T, SiteError> {
     let response = client
         .get(url.as_str())
         .timeout(ANSWER_TIMEOUT)
@@ -955,7 +972,7 @@ mod tests {
             let read = tilo_workspace_join::sealed::parse_link(&link)
                 .ok_or("the link the site answered with does not read back")?;
             let redeemed = redeem(&client, &read).await?;
-            Ok::<_, String>((link, redeemed))
+            Ok::<_, SiteError>((link, redeemed))
         })
         .expect("the app runtime")
         .expect("a shelf round trip");
@@ -1030,7 +1047,7 @@ mod tests {
             .expect_err("an invitation taken back");
         assert_eq!(
             refused,
-            tilo_sheets::word("directory-error-invitation-gone"),
+            SiteError::Said("directory-error-invitation-gone"),
             "the person is told it lapsed or was taken back, not a status code"
         );
     }

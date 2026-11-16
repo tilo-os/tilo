@@ -1607,10 +1607,6 @@ doc = false
 "zvariant_utils-3_4_0" = { package = "zvariant_utils", version = "^3.4.0", default-features = false, features = ["default"] }
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.build-dependencies]
-"accesskit-0_25_0" = { package = "accesskit", version = "^0.25.0", default-features = false, features = [] }
-"accesskit_atspi_common-0_20_0" = { package = "accesskit_atspi_common", version = "^0.20.0", default-features = false, features = [] }
-"accesskit_consumer-0_39_0" = { package = "accesskit_consumer", version = "^0.39.0", default-features = false, features = [] }
-"accesskit_unix-0_23_0" = { package = "accesskit_unix", path = "../../../vendor/accesskit_unix", default-features = false, features = ["tokio"] }
 "account-custody" = { path = "../../../crates/system/account-custody", default-features = false, features = ["custody", "default", "hints", "hugging-face"] }
 "accounts" = { path = "../../../crates/system/accounts", default-features = false, features = ["person"] }
 "acto-0_8_2" = { package = "acto", version = "^0.8.2", default-features = false, features = ["tokio"] }
@@ -1623,7 +1619,6 @@ doc = false
 "aes-0_9_3" = { package = "aes", version = "^0.9.3", default-features = false, features = ["zeroize"] }
 "aes-gcm-0_10_3" = { package = "aes-gcm", version = "^0.10.3", default-features = false, features = ["aes", "alloc", "default", "getrandom", "rand_core"] }
 "aes-gcm-0_11_1" = { package = "aes-gcm", version = "^0.11.1", default-features = false, features = ["aes", "zeroize"] }
-"agent-provider-config" = { path = "../../../crates/agent/provider-config", default-features = false, features = ["model"] }
 "ahash-0_8_12" = { package = "ahash", version = "^0.8.12", default-features = false, features = ["default", "getrandom", "no-rng", "runtime-rng", "std"] }
 "aho-corasick-1_1_4" = { package = "aho-corasick", version = "^1.1.4", default-features = false, features = ["default", "perf-literal", "std"] }
 "alloc-no-stdlib-2_0_4" = { package = "alloc-no-stdlib", version = "^2.0.4", default-features = false, features = [] }
@@ -1655,8 +1650,6 @@ doc = false
 "async-stream-impl-0_3_6" = { package = "async-stream-impl", version = "^0.3.6", default-features = false, features = [] }
 "async-trait-0_1_92" = { package = "async-trait", version = "^0.1.92", default-features = false, features = [] }
 "atomic-waker-1_1_2" = { package = "atomic-waker", version = "^1.1.2", default-features = false, features = [] }
-"atomic_refcell-0_1_13" = { package = "atomic_refcell", version = "^0.1.13", default-features = false, features = ["default"] }
-"atspi-0_29_0" = { package = "atspi", path = "../../../vendor/atspi", default-features = false, features = ["proxies"] }
 "atspi-common-0_13_0" = { package = "atspi-common", path = "../../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
 "atspi-proxies-0_13_0" = { package = "atspi-proxies", path = "../../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 "attohttpc-0_30_1" = { package = "attohttpc", version = "^0.30.1", default-features = false, features = [] }
@@ -1707,8 +1700,6 @@ doc = false
 "byteorder-lite-0_1_0" = { package = "byteorder-lite", version = "^0.1.0", default-features = false, features = ["default", "std"] }
 "bytes-1_12_1" = { package = "bytes", version = "^1.12.1", default-features = false, features = ["default", "serde", "std"] }
 "cached_proc_macro-0_27_0" = { package = "cached_proc_macro", version = "^0.27.0", default-features = false, features = [] }
-"calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
-"calloop-wayland-source-0_4_1" = { package = "calloop-wayland-source", version = "^0.4.1", default-features = false, features = [] }
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
@@ -1744,7 +1735,6 @@ doc = false
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
-"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
 "color_quant-1_1_0" = { package = "color_quant", version = "^1.1.0", default-features = false, features = [] }
 "colorchoice-1_0_4" = { package = "colorchoice", version = "^1.0.4", default-features = false, features = [] }
@@ -1760,7 +1750,6 @@ doc = false
 "convert_case-0_12_0" = { package = "convert_case", version = "^0.12.0", default-features = false, features = [] }
 "cordyceps-0_3_4" = { package = "cordyceps", version = "^0.3.4", default-features = false, features = ["default"] }
 "core_maths-0_1_1" = { package = "core_maths", version = "^0.1.1", default-features = false, features = [] }
-"cosmic-text-0_19_0" = { package = "cosmic-text", path = "../../../vendor/cosmic-text", default-features = false, features = ["fontconfig", "peniko", "std", "swash", "sys-locale"] }
 "cpubits-0_1_1" = { package = "cpubits", version = "^0.1.1", default-features = false, features = [] }
 "cpufeatures-0_2_17" = { package = "cpufeatures", version = "^0.2.17", default-features = false, features = [] }
 "cpufeatures-0_3_0" = { package = "cpufeatures", version = "^0.3.0", default-features = false, features = [] }
@@ -1823,14 +1812,10 @@ doc = false
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
 "digest-0_10_7" = { package = "digest", version = "^0.10.7", default-features = false, features = ["alloc", "block-buffer", "const-oid", "core-api", "default", "mac", "oid", "std", "subtle"] }
 "digest-0_11_3" = { package = "digest", version = "^0.11.3", default-features = false, features = ["alloc", "block-api", "default", "mac", "oid", "rand_core"] }
-"dirs-5_0_1" = { package = "dirs", version = "^5.0.1", default-features = false, features = [] }
-"dirs-sys-0_4_1" = { package = "dirs-sys", version = "^0.4.1", default-features = false, features = [] }
 "displaydoc-0_2_5" = { package = "displaydoc", version = "^0.2.5", default-features = false, features = ["default", "std"] }
 "dlib-0_5_3" = { package = "dlib", version = "^0.5.3", default-features = false, features = [] }
 "document-features-0_2_12" = { package = "document-features", version = "^0.2.12", default-features = false, features = ["default"] }
-"downcast-rs-1_2_1" = { package = "downcast-rs", version = "^1.2.1", default-features = false, features = ["default", "std"] }
 "downcast-rs-2_0_2" = { package = "downcast-rs", version = "^2.0.2", default-features = false, features = ["default", "std", "sync"] }
-"dpi-0_1_2" = { package = "dpi", version = "^0.1.2", default-features = false, features = ["default", "std"] }
 "durable-store" = { path = "../../../crates/system/durable-store", default-features = false, features = ["conformance"] }
 "ecdsa-0_16_9" = { package = "ecdsa", version = "^0.16.9", default-features = false, features = ["alloc", "arithmetic", "der", "digest", "hazmat", "pem", "pkcs8", "rfc6979", "signing", "spki", "std", "verifying"] }
 "ecdsa-0_17_0" = { package = "ecdsa", version = "^0.17.0", default-features = false, features = ["algorithm", "alloc", "default", "der", "digest", "getrandom", "pem", "pkcs8", "spki", "std"] }
@@ -1841,7 +1826,6 @@ doc = false
 "either-1_15_0" = { package = "either", version = "^1.15.0", default-features = false, features = ["default", "std", "use_std"] }
 "elliptic-curve-0_13_8" = { package = "elliptic-curve", version = "^0.13.8", default-features = false, features = ["alloc", "arithmetic", "digest", "ecdh", "ff", "group", "hazmat", "pem", "pkcs8", "sec1", "std"] }
 "elliptic-curve-0_14_1" = { package = "elliptic-curve", version = "^0.14.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ff", "getrandom", "group", "pem", "pkcs8", "sec1", "std"] }
-"emoji" = { path = "../../../crates/text/emoji", default-features = false, features = [] }
 "encoding_rs-0_8_35" = { package = "encoding_rs", version = "^0.8.35", default-features = false, features = ["alloc", "default"] }
 "endi-1_1_1" = { package = "endi", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "enum-assoc-1_3_0" = { package = "enum-assoc", version = "^1.3.0", default-features = false, features = [] }
@@ -1866,7 +1850,6 @@ doc = false
 "fax_derive-0_2_0" = { package = "fax_derive", version = "^0.2.0", default-features = false, features = [] }
 "fdeflate-0_3_7" = { package = "fdeflate", version = "^0.3.7", default-features = false, features = [] }
 "fearless_simd-0_4_1" = { package = "fearless_simd", version = "^0.4.1", default-features = false, features = ["default", "std"] }
-"fearless_simd-0_7_0" = { package = "fearless_simd", version = "^0.7.0", default-features = false, features = ["std"] }
 "ff-0_13_1" = { package = "ff", version = "^0.13.1", default-features = false, features = ["alloc"] }
 "ff-0_14_0" = { package = "ff", version = "^0.14.0", default-features = false, features = ["alloc"] }
 "filetime-0_2_27" = { package = "filetime", version = "^0.2.27", default-features = false, features = [] }
@@ -1923,28 +1906,15 @@ doc = false
 "ghash-0_5_1" = { package = "ghash", version = "^0.5.1", default-features = false, features = [] }
 "ghash-0_6_0" = { package = "ghash", version = "^0.6.0", default-features = false, features = ["zeroize"] }
 "gif-0_14_2" = { package = "gif", version = "^0.14.2", default-features = false, features = ["color_quant", "default", "raii_no_panic", "std"] }
-"gio-sys-0_21_5" = { package = "gio-sys", version = "^0.21.5", default-features = false, features = [] }
 "gl_generator-0_14_0" = { package = "gl_generator", version = "^0.14.0", default-features = false, features = [] }
-"glib-0_21_5" = { package = "glib", version = "^0.21.5", default-features = false, features = ["default", "gio", "gio-sys"] }
 "glib-macros-0_21_5" = { package = "glib-macros", version = "^0.21.5", default-features = false, features = [] }
-"glib-sys-0_21_5" = { package = "glib-sys", version = "^0.21.5", default-features = false, features = [] }
 "glob-0_3_3" = { package = "glob", version = "^0.3.3", default-features = false, features = [] }
 "glow-0_17_0" = { package = "glow", version = "^0.17.0", default-features = false, features = [] }
-"gobject-sys-0_21_5" = { package = "gobject-sys", version = "^0.21.5", default-features = false, features = [] }
 "gpu-allocator-0_28_0" = { package = "gpu-allocator", version = "^0.28.0", default-features = false, features = ["d3d12", "hashbrown", "vulkan"] }
 "gpu-descriptor-0_3_2" = { package = "gpu-descriptor", version = "^0.3.2", default-features = false, features = ["default", "std"] }
 "gpu-descriptor-types-0_2_0" = { package = "gpu-descriptor-types", version = "^0.2.0", default-features = false, features = [] }
-"grid-1_0_0" = { package = "grid", version = "^1.0.0", default-features = false, features = ["std"] }
 "group-0_13_0" = { package = "group", version = "^0.13.0", default-features = false, features = ["alloc"] }
 "group-0_14_0" = { package = "group", version = "^0.14.0", default-features = false, features = ["alloc"] }
-"gstreamer-0_24_5" = { package = "gstreamer", version = "^0.24.5", default-features = false, features = ["default", "v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-app-0_24_5" = { package = "gstreamer-app", version = "^0.24.5", default-features = false, features = ["default", "v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-app-sys-0_24_5" = { package = "gstreamer-app-sys", version = "^0.24.5", default-features = false, features = ["v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-base-0_24_5" = { package = "gstreamer-base", version = "^0.24.5", default-features = false, features = ["default", "v1_14_1", "v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-base-sys-0_24_5" = { package = "gstreamer-base-sys", version = "^0.24.5", default-features = false, features = ["v1_14_1", "v1_14_3", "v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-sys-0_24_5" = { package = "gstreamer-sys", version = "^0.24.5", default-features = false, features = ["v1_16", "v1_18", "v1_18_3", "v1_20", "v1_20_4", "v1_22", "v1_24"] }
-"gstreamer-video-0_24_5" = { package = "gstreamer-video", version = "^0.24.5", default-features = false, features = ["default", "v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
-"gstreamer-video-sys-0_24_5" = { package = "gstreamer-video-sys", version = "^0.24.5", default-features = false, features = ["v1_16", "v1_18", "v1_20", "v1_22", "v1_24"] }
 "guillotiere-0_7_0" = { package = "guillotiere", version = "^0.7.0", default-features = false, features = ["std", "svg_fmt"] }
 "h2-0_4_19" = { package = "h2", version = "^0.4.19", default-features = false, features = ["stream"] }
 "half-2_7_1" = { package = "half", version = "^2.7.1", default-features = false, features = ["alloc", "default", "num-traits", "std"] }
@@ -2042,8 +2012,6 @@ doc = false
 "iroh-util-0_6_0" = { package = "iroh-util", version = "^0.6.0", default-features = false, features = [] }
 "irpc-0_17_0" = { package = "irpc", version = "^0.17.0", default-features = false, features = ["derive", "spans", "stream", "varint-util"] }
 "irpc-derive-0_17_0" = { package = "irpc-derive", version = "^0.17.0", default-features = false, features = [] }
-"is-docker-0_2_0" = { package = "is-docker", version = "^0.2.0", default-features = false, features = [] }
-"is-wsl-0_4_0" = { package = "is-wsl", version = "^0.4.0", default-features = false, features = [] }
 "is_terminal_polyfill-1_70_2" = { package = "is_terminal_polyfill", version = "^1.70.2", default-features = false, features = ["default"] }
 "itertools-0_13_0" = { package = "itertools", version = "^0.13.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
 "itertools-0_14_0" = { package = "itertools", version = "^0.14.0", default-features = false, features = ["default", "use_alloc", "use_std"] }
@@ -2057,7 +2025,6 @@ doc = false
 "khronos-egl-6_0_0" = { package = "khronos-egl", version = "^6.0.0", default-features = false, features = ["1_0", "1_1", "1_2", "1_3", "1_4", "1_5", "default", "dynamic", "libloading"] }
 "khronos_api-3_1_0" = { package = "khronos_api", version = "^3.1.0", default-features = false, features = [] }
 "kio-0_5_9" = { package = "kio", version = "^0.5.9", default-features = false, features = [] }
-"kstring-2_0_2" = { package = "kstring", version = "^2.0.2", default-features = false, features = ["default", "std", "unsafe"] }
 "kurbo-0_13_1" = { package = "kurbo", version = "^0.13.1", default-features = false, features = ["default", "std"] }
 "landlock-0_4_5" = { package = "landlock", version = "^0.4.5", default-features = false, features = [] }
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
@@ -2105,7 +2072,6 @@ doc = false
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "moxcms-0_8_1" = { package = "moxcms", version = "^0.8.1", default-features = false, features = ["avx", "avx_luts", "avx_shaper_fixed_point_paths", "avx_shaper_paths", "default", "lut", "neon", "neon_luts", "neon_shaper_fixed_point_paths", "neon_shaper_paths", "sse", "sse_luts", "sse_shaper_fixed_point_paths", "sse_shaper_paths"] }
-"muldiv-1_0_1" = { package = "muldiv", version = "^1.0.1", default-features = false, features = [] }
 "murmurhash32-0_4_0" = { package = "murmurhash32", version = "^0.4.0", default-features = false, features = [] }
 "n0-error-1_0_0" = { package = "n0-error", version = "^1.0.0", default-features = false, features = ["default"] }
 "n0-error-macros-1_0_0" = { package = "n0-error-macros", version = "^1.0.0", default-features = false, features = [] }
@@ -2131,11 +2097,9 @@ doc = false
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
-"num-complex-0_4_6" = { package = "num-complex", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-conv-0_2_0" = { package = "num-conv", version = "^0.2.0", default-features = false, features = [] }
 "num-derive-0_4_2" = { package = "num-derive", version = "^0.4.2", default-features = false, features = [] }
 "num-integer-0_1_46" = { package = "num-integer", version = "^0.1.46", default-features = false, features = ["default", "i128", "std"] }
-"num-rational-0_4_2" = { package = "num-rational", version = "^0.4.2", default-features = false, features = [] }
 "num-traits-0_2_19" = { package = "num-traits", version = "^0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
 "num_cpus-1_17_0" = { package = "num_cpus", version = "^1.17.0", default-features = false, features = [] }
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
@@ -2146,16 +2110,12 @@ doc = false
 "once_cell-1_21_4" = { package = "once_cell", version = "^1.21.4", default-features = false, features = ["alloc", "critical-section", "default", "portable-atomic", "race", "std"] }
 "oneshot-0_1_13" = { package = "oneshot", version = "^0.1.13", default-features = false, features = ["async", "default", "std"] }
 "opaque-debug-0_3_1" = { package = "opaque-debug", version = "^0.3.1", default-features = false, features = [] }
-"open-5_3_5" = { package = "open", version = "^5.3.5", default-features = false, features = [] }
 "openmls-0_9_0" = { package = "openmls", version = "^0.9.0", default-features = false, features = [] }
 "openmls_basic_credential-0_6_0" = { package = "openmls_basic_credential", version = "^0.6.0", default-features = false, features = [] }
 "openmls_memory_storage-0_6_0" = { package = "openmls_memory_storage", version = "^0.6.0", default-features = false, features = [] }
 "openmls_rust_crypto-0_6_0" = { package = "openmls_rust_crypto", version = "^0.6.0", default-features = false, features = [] }
 "openmls_serialization_helpers-0_1_0" = { package = "openmls_serialization_helpers", version = "^0.1.0", default-features = false, features = [] }
 "openmls_traits-0_6_0" = { package = "openmls_traits", version = "^0.6.0", default-features = false, features = ["default"] }
-"option-ext-0_2_0" = { package = "option-ext", version = "^0.2.0", default-features = false, features = [] }
-"option-operations-0_6_1" = { package = "option-operations", version = "^0.6.1", default-features = false, features = ["default", "std"] }
-"ordered-channel-1_2_0" = { package = "ordered-channel", version = "^1.2.0", default-features = false, features = ["crossbeam-channel"] }
 "ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
 "ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
@@ -2174,7 +2134,6 @@ doc = false
 "password-hash-0_6_1" = { package = "password-hash", version = "^0.6.1", default-features = false, features = ["getrandom"] }
 "paste-1_0_15" = { package = "paste", version = "^1.0.15", default-features = false, features = [] }
 "pastey-0_2_3" = { package = "pastey", version = "^0.2.3", default-features = false, features = [] }
-"pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
 "peg-macros-0_8_6" = { package = "peg-macros", version = "^0.8.6", default-features = false, features = [] }
@@ -2189,7 +2148,6 @@ doc = false
 "pest_generator-2_9_2" = { package = "pest_generator", version = "^2.9.2", default-features = false, features = ["std"] }
 "pest_meta-2_9_2" = { package = "pest_meta", version = "^2.9.2", default-features = false, features = ["default"] }
 "phf-0_13_1" = { package = "phf", version = "^0.13.1", default-features = false, features = ["default", "macros", "phf_macros", "std"] }
-"phf-0_14_0" = { package = "phf", version = "^0.14.0", default-features = false, features = ["default", "macros", "phf_macros", "std"] }
 "phf_codegen-0_13_1" = { package = "phf_codegen", version = "^0.13.1", default-features = false, features = [] }
 "phf_generator-0_13_1" = { package = "phf_generator", version = "^0.13.1", default-features = false, features = [] }
 "phf_generator-0_14_0" = { package = "phf_generator", version = "^0.14.0", default-features = false, features = [] }
@@ -2210,8 +2168,6 @@ doc = false
 "pkg-config-0_3_32" = { package = "pkg-config", version = "^0.3.32", default-features = false, features = [] }
 "plist-1_10_0" = { package = "plist", version = "^1.10.0", default-features = false, features = ["default", "serde"] }
 "png-0_18_1" = { package = "png", version = "^0.18.1", default-features = false, features = [] }
-"polling-3_11_0" = { package = "polling", version = "^3.11.0", default-features = false, features = [] }
-"pollster-0_4_0" = { package = "pollster", version = "^0.4.0", default-features = false, features = [] }
 "poly1305-0_8_0" = { package = "poly1305", version = "^0.8.0", default-features = false, features = [] }
 "poly1305-0_9_1" = { package = "poly1305", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "polycool-0_4_0" = { package = "polycool", version = "^0.4.0", default-features = false, features = ["std"] }
@@ -2230,7 +2186,6 @@ doc = false
 "presser-0_3_1" = { package = "presser", version = "^0.3.1", default-features = false, features = [] }
 "prettyplease-0_2_37" = { package = "prettyplease", version = "^0.2.37", default-features = false, features = ["verbatim"] }
 "prettyplease-0_3_0" = { package = "prettyplease", version = "^0.3.0", default-features = false, features = [] }
-"primal-check-0_3_4" = { package = "primal-check", version = "^0.3.4", default-features = false, features = [] }
 "primefield-0_14_0" = { package = "primefield", version = "^0.14.0", default-features = false, features = [] }
 "primeorder-0_13_6" = { package = "primeorder", version = "^0.13.6", default-features = false, features = [] }
 "primeorder-0_14_0" = { package = "primeorder", version = "^0.14.0", default-features = false, features = ["alloc", "basepoint-table", "std"] }
@@ -2255,7 +2210,6 @@ doc = false
 "pyo3-build-config-0_30_1" = { package = "pyo3-build-config", version = "^0.30.1", default-features = false, features = ["default", "extension-module"] }
 "pyo3-macros-0_30_1" = { package = "pyo3-macros", version = "^0.30.1", default-features = false, features = [] }
 "pyo3-macros-backend-0_30_1" = { package = "pyo3-macros-backend", version = "^0.30.1", default-features = false, features = [] }
-"qrcode-0_14_1" = { package = "qrcode", version = "^0.14.1", default-features = false, features = [] }
 "quick-error-2_0_1" = { package = "quick-error", version = "^2.0.1", default-features = false, features = [] }
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
@@ -2275,7 +2229,6 @@ doc = false
 "rand_distr-0_5_1" = { package = "rand_distr", version = "^0.5.1", default-features = false, features = ["alloc", "default", "std"] }
 "rand_pcg-0_10_2" = { package = "rand_pcg", version = "^0.10.2", default-features = false, features = [] }
 "range-collections-0_4_6" = { package = "range-collections", version = "^0.4.6", default-features = false, features = ["default", "new_unchecked", "serde"] }
-"rangemap-1_7_1" = { package = "rangemap", version = "^1.7.1", default-features = false, features = [] }
 "raw-window-handle-0_6_2" = { package = "raw-window-handle", version = "^0.6.2", default-features = false, features = ["alloc", "std"] }
 "rayon-1_12_0" = { package = "rayon", version = "^1.12.0", default-features = false, features = [] }
 "rayon-core-1_13_0" = { package = "rayon-core", version = "^1.13.0", default-features = false, features = [] }
@@ -2317,7 +2270,6 @@ doc = false
 "rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = [] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
-"rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
 "rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
@@ -2336,10 +2288,8 @@ doc = false
 "salsa20-0_11_0" = { package = "salsa20", version = "^0.11.0", default-features = false, features = [] }
 "same-file-1_0_6" = { package = "same-file", version = "^1.0.6", default-features = false, features = [] }
 "schemars_derive-1_2_3" = { package = "schemars_derive", version = "^1.2.3", default-features = false, features = [] }
-"scoped-tls-1_0_1" = { package = "scoped-tls", version = "^1.0.1", default-features = false, features = [] }
 "scopeguard-1_2_0" = { package = "scopeguard", version = "^1.2.0", default-features = false, features = ["default", "use_std"] }
 "scrypt-0_12_0" = { package = "scrypt", version = "^0.12.0", default-features = false, features = [] }
-"sctk-adwaita-0_11_1" = { package = "sctk-adwaita", version = "^0.11.1", default-features = false, features = [] }
 "seahash-4_1_0" = { package = "seahash", version = "^4.1.0", default-features = false, features = ["default"] }
 "sec1-0_7_3" = { package = "sec1", version = "^0.7.3", default-features = false, features = ["alloc", "default", "der", "pem", "pkcs8", "point", "std", "subtle", "zeroize"] }
 "sec1-0_8_1" = { package = "sec1", version = "^0.8.1", default-features = false, features = ["alloc", "ctutils", "default", "der", "pem", "point", "std", "subtle", "zeroize"] }
@@ -2390,14 +2340,11 @@ doc = false
 "slab-0_4_12" = { package = "slab", version = "^0.4.12", default-features = false, features = ["default", "std"] }
 "slotmap-1_1_1" = { package = "slotmap", version = "^1.1.1", default-features = false, features = ["std"] }
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
-"smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["calloop", "calloop-wayland-source"] }
-"smithay-clipboard-0_7_3" = { package = "smithay-clipboard", version = "^0.7.3", default-features = false, features = ["default", "dlopen"] }
 "smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }
-"spellbook-0_4_2" = { package = "spellbook", version = "^0.4.2", default-features = false, features = ["default", "default-hasher"] }
 "spez-0_1_2" = { package = "spez", version = "^0.1.2", default-features = false, features = [] }
 "spin-0_10_1" = { package = "spin", version = "^0.10.1", default-features = false, features = ["mutex", "spin_mutex"] }
 "spin-0_9_9" = { package = "spin", version = "^0.9.9", default-features = false, features = ["barrier", "default", "lazy", "lock_api", "lock_api_crate", "mutex", "once", "rwlock", "spin_mutex", "std"] }
@@ -2408,14 +2355,11 @@ doc = false
 "ssh-cipher-0_3_0" = { package = "ssh-cipher", version = "^0.3.0", default-features = false, features = ["aes", "chacha20poly1305", "encoding", "rand_core", "zeroize"] }
 "ssh-encoding-0_3_0" = { package = "ssh-encoding", version = "^0.3.0", default-features = false, features = ["alloc", "base64", "bytes", "ctutils", "digest", "pem", "zeroize"] }
 "ssh-key-0_7_0-rc_11" = { package = "ssh-key", version = "^0.7.0-rc.11", default-features = false, features = ["alloc", "default", "ecdsa", "ed25519", "encryption", "p256", "p384", "p521", "ppk", "rand_core", "sha1", "std"] }
-"ssip-client-0_10_2" = { package = "ssip-client", version = "^0.10.2", default-features = false, features = [] }
 "stable_deref_trait-1_2_1" = { package = "stable_deref_trait", version = "^1.2.1", default-features = false, features = ["alloc", "default", "std"] }
 "static_assertions-1_1_0" = { package = "static_assertions", version = "^1.1.0", default-features = false, features = [] }
-"strength_reduce-0_2_4" = { package = "strength_reduce", version = "^0.2.4", default-features = false, features = [] }
 "strict-num-0_1_1" = { package = "strict-num", version = "^0.1.1", default-features = false, features = ["approx-eq", "default", "float-cmp"] }
 "string_cache_codegen-0_6_1" = { package = "string_cache_codegen", version = "^0.6.1", default-features = false, features = [] }
 "strsim-0_11_1" = { package = "strsim", version = "^0.11.1", default-features = false, features = [] }
-"strum-0_26_3" = { package = "strum", version = "^0.26.3", default-features = false, features = ["default", "std"] }
 "strum-0_28_0" = { package = "strum", version = "^0.28.0", default-features = false, features = ["default", "derive", "std", "strum_macros"] }
 "strum_macros-0_26_4" = { package = "strum_macros", version = "^0.26.4", default-features = false, features = [] }
 "strum_macros-0_27_2" = { package = "strum_macros", version = "^0.27.2", default-features = false, features = [] }
@@ -2424,16 +2368,13 @@ doc = false
 "svg_fmt-0_4_5" = { package = "svg_fmt", version = "^0.4.5", default-features = false, features = [] }
 "svgtypes-0_16_1" = { package = "svgtypes", version = "^0.16.1", default-features = false, features = ["default", "std"] }
 "swarm-discovery-0_6_5" = { package = "swarm-discovery", version = "^0.6.5", default-features = false, features = [] }
-"swash-0_2_10" = { package = "swash", version = "^0.2.10", default-features = false, features = ["render", "scale", "std"] }
 "syn-2_0_117" = { package = "syn", version = "^2.0.117", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "syn-3_0_9" = { package = "syn", version = "^3.0.9", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
 "sync_wrapper-1_0_2" = { package = "sync_wrapper", version = "^1.0.2", default-features = false, features = ["futures", "futures-core"] }
 "synstructure-0_13_2" = { package = "synstructure", version = "^0.13.2", default-features = false, features = ["default", "proc-macro"] }
 "syntect-5_3_0" = { package = "syntect", version = "^5.3.0", default-features = false, features = ["bincode", "dump-create", "dump-load", "fancy-regex", "flate2", "fnv", "parsing", "plist", "plist-load", "regex-fancy", "regex-syntax", "yaml-load", "yaml-rust"] }
-"sys-locale-0_3_2" = { package = "sys-locale", version = "^0.3.2", default-features = false, features = [] }
 "sysinfo-0_36_1" = { package = "sysinfo", version = "^0.36.1", default-features = false, features = ["component", "default", "disk", "network", "objc2-io-kit", "system", "user"] }
 "system-deps-7_0_8" = { package = "system-deps", version = "^7.0.8", default-features = false, features = [] }
-"taffy-0_10_1" = { package = "taffy", path = "../../../vendor/taffy", default-features = false, features = ["alloc", "block_layout", "calc", "content_size", "default", "detailed_layout_info", "flexbox", "float_layout", "grid", "std", "taffy_tree"] }
 "tagptr-0_2_0" = { package = "tagptr", version = "^0.2.0", default-features = false, features = [] }
 "tantivy-0_27_0" = { package = "tantivy", version = "^0.27.0", default-features = false, features = ["fs4", "memmap2", "mmap", "tempfile"] }
 "tantivy-bitpacker-0_27_0" = { package = "tantivy-bitpacker", version = "^0.27.0", default-features = false, features = [] }
@@ -2455,69 +2396,48 @@ doc = false
 "thread_local-1_1_9" = { package = "thread_local", version = "^1.1.9", default-features = false, features = [] }
 "threshold-identity" = { path = "../../../crates/collab/threshold-identity", default-features = false, features = [] }
 "tiff-0_11_3" = { package = "tiff", version = "^0.11.3", default-features = false, features = ["default", "deflate", "fax", "jpeg", "lzw"] }
-"tilo-accesskit-winit-0_34_0" = { package = "tilo-accesskit-winit", path = "../../../vendor/accesskit_winit", default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
-"tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = [] }
-"tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
 "tilo-automerge-fork-0_12_0" = { package = "tilo-automerge-fork", path = "../../../vendor/automerge", default-features = false, features = [] }
 "tilo-automerge-isolate" = { path = "../../../crates/doc/tilo-automerge-isolate", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
-"tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
 "tilo-clock" = { path = "../../../crates/platform/tilo-clock", default-features = false, features = ["test-support"] }
 "tilo-content" = { path = "../../../crates/system/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-device" = { path = "../../../crates/system/content-device", default-features = false, features = [] }
 "tilo-content-types" = { path = "../../../crates/system/content-types", default-features = false, features = [] }
-"tilo-cpu-raster" = { path = "../../../crates/sdk/tilo-cpu-raster", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
-"tilo-dialogs" = { path = "../../../crates/platform/tilo-dialogs", default-features = false, features = ["test-support"] }
 "tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-doc-codecs" = { path = "../../../crates/doc/tilo-doc-codecs", default-features = false, features = ["all", "default", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
-"tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
-"tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
-"tilo-highlight" = { path = "../../../crates/text/highlight", default-features = false, features = [] }
-"tilo-highlight-grammars" = { path = "../../../crates/text/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../../crates/sdk/tilo-history", default-features = false, features = [] }
-"tilo-host" = { path = "../../../crates/sdk/tilo-host", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
-"tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
-"tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
-"tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
-"tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "realtime", "test-support"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
-"tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["runtime-client"] }
 "tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-host", "sockets", "webtransport"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
-"tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-oauth" = { path = "../../../crates/system/tilo-oauth", default-features = false, features = ["client", "default", "fake"] }
-"tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-power-mgmt" = { path = "../../../crates/system/power", default-features = false, features = ["default", "service"] }
-"tilo-presentation" = { path = "../../../crates/platform/tilo-presentation", default-features = false, features = ["gpu-damage"] }
 "tilo-process" = { path = "../../../crates/platform/tilo-process", default-features = false, features = ["native", "native-editor"] }
 "tilo-reference" = { path = "../../../crates/collab/reference", default-features = false, features = [] }
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "dial"] }
@@ -2527,40 +2447,25 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
-"tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "gpu-video", "mpris"] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
-"tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
-"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
-"tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
-"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
-"tilo-theme-sdk" = { path = "../../../crates/sdk/theme-sdk", default-features = false, features = [] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = [] }
-"tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
-"tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "realtime-video", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-macros" = { path = "../../../crates/sdk/ui-macros", default-features = false, features = [] }
-"tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
-"tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
-"tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
 "tilo-view-macros" = { path = "../../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
-"tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-words" = { path = "../../../crates/text/tilo-words", default-features = false, features = [] }
-"tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
-"tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
-"tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "time-macros-0_2_27" = { package = "time-macros", version = "^0.2.27", default-features = false, features = ["formatting", "parsing", "serde"] }
@@ -2594,12 +2499,10 @@ doc = false
 "tracing-core-0_1_36" = { package = "tracing-core", version = "^0.1.36", default-features = false, features = ["default", "once_cell", "std"] }
 "tracing-log-0_2_0" = { package = "tracing-log", version = "^0.2.0", default-features = false, features = ["log-tracer", "std"] }
 "tracing-subscriber-0_3_22" = { package = "tracing-subscriber", version = "^0.3.22", default-features = false, features = ["alloc", "ansi", "default", "env-filter", "fmt", "matchers", "nu-ansi-term", "once_cell", "registry", "sharded-slab", "smallvec", "std", "thread_local", "tracing", "tracing-log"] }
-"transpose-0_2_3" = { package = "transpose", version = "^0.2.3", default-features = false, features = [] }
 "trash-5_2_6" = { package = "trash", version = "^5.2.6", default-features = false, features = ["chrono", "coinit_apartmentthreaded", "default"] }
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
-"two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
 "type-map-0_5_1" = { package = "type-map", version = "^0.5.1", default-features = false, features = [] }
 "typed-path-0_12_3" = { package = "typed-path", version = "^0.12.3", default-features = false, features = ["default", "std"] }
 "typeid-1_0_3" = { package = "typeid", version = "^1.0.3", default-features = false, features = [] }
@@ -2617,7 +2520,6 @@ doc = false
 "unicode-bidi-mirroring-0_4_0" = { package = "unicode-bidi-mirroring", version = "^0.4.0", default-features = false, features = [] }
 "unicode-ccc-0_4_0" = { package = "unicode-ccc", version = "^0.4.0", default-features = false, features = [] }
 "unicode-ident-1_0_24" = { package = "unicode-ident", version = "^1.0.24", default-features = false, features = [] }
-"unicode-linebreak-0_1_5" = { package = "unicode-linebreak", version = "^0.1.5", default-features = false, features = [] }
 "unicode-normalization-0_1_25" = { package = "unicode-normalization", version = "^0.1.25", default-features = false, features = ["default", "std"] }
 "unicode-properties-0_1_4" = { package = "unicode-properties", version = "^0.1.4", default-features = false, features = ["default", "emoji", "general-category"] }
 "unicode-script-0_5_8" = { package = "unicode-script", version = "^0.5.8", default-features = false, features = [] }
@@ -2640,9 +2542,7 @@ doc = false
 "uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5", "v7"] }
 "vcpkg-0_2_15" = { package = "vcpkg", version = "^0.2.15", default-features = false, features = [] }
 "vello_common-0_0_8" = { package = "vello_common", version = "^0.0.8", default-features = false, features = ["png", "std"] }
-"vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
-"vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
 "vergen-9_0_6" = { package = "vergen", version = "^9.0.6", default-features = false, features = ["build", "time"] }
 "vergen-gitcl-1_0_8" = { package = "vergen-gitcl", version = "^1.0.8", default-features = false, features = ["build"] }
 "vergen-lib-0_1_6" = { package = "vergen-lib", version = "^0.1.6", default-features = false, features = ["build", "default", "git"] }
@@ -2661,17 +2561,7 @@ doc = false
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wasmtime-internal-core-50_0_1" = { package = "wasmtime-internal-core", version = "^50.0.1", default-features = false, features = ["serde", "std"] }
 "wasmtime-internal-versioned-export-macros-50_0_1" = { package = "wasmtime-internal-versioned-export-macros", version = "^50.0.1", default-features = false, features = [] }
-"wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
-"wayland-client-0_31_14" = { package = "wayland-client", version = "^0.31.14", default-features = false, features = ["system"] }
-"wayland-csd-frame-0_3_0" = { package = "wayland-csd-frame", version = "^0.3.0", default-features = false, features = [] }
-"wayland-cursor-0_31_12" = { package = "wayland-cursor", version = "^0.31.12", default-features = false, features = [] }
-"wayland-protocols-0_32_12" = { package = "wayland-protocols", version = "^0.32.12", default-features = false, features = ["client", "server", "staging", "unstable", "wayland-client", "wayland-server"] }
-"wayland-protocols-experimental-20250721_0_1" = { package = "wayland-protocols-experimental", version = "^20250721.0.1", default-features = false, features = ["client", "wayland-client"] }
-"wayland-protocols-misc-0_3_10" = { package = "wayland-protocols-misc", version = "^0.3.10", default-features = false, features = ["client", "server", "wayland-client", "wayland-server"] }
-"wayland-protocols-plasma-0_3_10" = { package = "wayland-protocols-plasma", version = "^0.3.10", default-features = false, features = ["client", "wayland-client"] }
-"wayland-protocols-wlr-0_3_10" = { package = "wayland-protocols-wlr", version = "^0.3.10", default-features = false, features = ["client", "server", "wayland-client", "wayland-server"] }
 "wayland-scanner-0_31_11" = { package = "wayland-scanner", version = "^0.31.11", default-features = false, features = [] }
-"wayland-server-0_31_13" = { package = "wayland-server", version = "^0.31.13", default-features = false, features = [] }
 "wayland-sys-0_31_11" = { package = "wayland-sys", version = "^0.31.11", default-features = false, features = ["client", "dlopen", "egl", "once_cell"] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
 "web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }
@@ -2693,7 +2583,6 @@ doc = false
 "write16-1_0_0" = { package = "write16", version = "^1.0.0", default-features = false, features = ["alloc"] }
 "writeable-0_6_4" = { package = "writeable", version = "^0.6.4", default-features = false, features = ["alloc"] }
 "x-wing-0_1_0" = { package = "x-wing", version = "^0.1.0", default-features = false, features = [] }
-"x11-dl-2_21_0" = { package = "x11-dl", version = "^2.21.0", default-features = false, features = [] }
 "x11rb-0_13_2" = { package = "x11rb", version = "^0.13.2", default-features = false, features = ["allow-unsafe-code", "as-raw-xcb-connection", "composite", "dl-libxcb", "libc", "libloading", "once_cell", "randr", "render", "res", "resource_manager", "shape", "xfixes", "xinput", "xkb"] }
 "x11rb-protocol-0_13_2" = { package = "x11rb-protocol", version = "^0.13.2", default-features = false, features = ["composite", "randr", "render", "res", "resource_manager", "shape", "std", "xfixes", "xinput", "xkb"] }
 "x25519-dalek-2_0_1" = { package = "x25519-dalek", version = "^2.0.1", default-features = false, features = ["alloc", "default", "precomputed-tables", "static_secrets", "zeroize"] }
@@ -2701,15 +2590,11 @@ doc = false
 "x509-cert-0_2_5" = { package = "x509-cert", version = "^0.2.5", default-features = false, features = ["default", "pem", "std"] }
 "x509-parser-0_18_1" = { package = "x509-parser", version = "^0.18.1", default-features = false, features = ["default", "ring", "verify"] }
 "xattr-1_7_0" = { package = "xattr", version = "^1.7.0", default-features = false, features = ["default", "unsupported"] }
-"xcursor-0_3_10" = { package = "xcursor", version = "^0.3.10", default-features = false, features = [] }
-"xkbcommon-dl-0_4_2" = { package = "xkbcommon-dl", version = "^0.4.2", default-features = false, features = ["x11"] }
-"xkeysym-0_2_1" = { package = "xkeysym", version = "^0.2.1", default-features = false, features = [] }
 "xml-rs-0_8_28" = { package = "xml-rs", version = "^0.8.28", default-features = false, features = [] }
 "xmltree-0_10_3" = { package = "xmltree", version = "^0.10.3", default-features = false, features = ["default"] }
 "xmlwriter-0_1_0" = { package = "xmlwriter", version = "^0.1.0", default-features = false, features = [] }
 "yaml-rust-0_4_5" = { package = "yaml-rust", version = "^0.4.5", default-features = false, features = [] }
 "yasna-0_5_2" = { package = "yasna", version = "^0.5.2", default-features = false, features = ["default", "std", "time"] }
-"yazi-0_2_1" = { package = "yazi", version = "^0.2.1", default-features = false, features = ["std"] }
 "yoke-0_8_3" = { package = "yoke", version = "^0.8.3", default-features = false, features = ["alloc", "default", "derive", "serde", "zerofrom"] }
 "yoke-derive-0_8_2" = { package = "yoke-derive", version = "^0.8.2", default-features = false, features = [] }
 "zbus-5_16_0" = { package = "zbus", path = "../../../vendor/zbus", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
@@ -2718,7 +2603,6 @@ doc = false
 "zbus_macros-5_16_0" = { package = "zbus_macros", version = "^5.16.0", default-features = false, features = ["blocking-api", "default"] }
 "zbus_names-4_3_2" = { package = "zbus_names", version = "^4.3.2", default-features = false, features = [] }
 "zbus_xml-5_1_1" = { package = "zbus_xml", version = "^5.1.1", default-features = false, features = [] }
-"zeno-0_3_3" = { package = "zeno", version = "^0.3.3", default-features = false, features = ["eval", "std"] }
 "zerocopy-0_8_39" = { package = "zerocopy", version = "^0.8.39", default-features = false, features = ["derive", "simd", "zerocopy-derive"] }
 "zerocopy-derive-0_8_39" = { package = "zerocopy-derive", version = "^0.8.39", default-features = false, features = [] }
 "zerofrom-0_1_6" = { package = "zerofrom", version = "^0.1.6", default-features = false, features = ["alloc", "derive"] }

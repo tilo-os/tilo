@@ -16,7 +16,7 @@ use tilo_actions::remote::{
     InvocationState, InvokeRequest, Pending, person_accounts, person_models,
 };
 use tilo_desktop_surface::session::DesktopSession;
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 /// One person's provider, asked of the host the page's session is with.
 struct Forwarded {

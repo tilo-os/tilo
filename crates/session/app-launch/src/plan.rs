@@ -785,7 +785,7 @@ mod tests {
             let workspace = Workspace::under(directory.path(), "workspace-9");
             let environment = displays();
             let context = context(&environment, &workspace);
-            let record = collaboration::record::RecordId::for_file("/home/you/Notes.note");
+            let record = collab_types::record::RecordId::for_file("/home/you/Notes.note");
             let launch = Launch::parse(&format!("record:so.tilo.notes:{}", record.as_str()))
                 .expect("a record launch");
             let open = match launch {

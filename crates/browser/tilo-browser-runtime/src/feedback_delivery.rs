@@ -18,8 +18,8 @@ use tilo_feedback_transport::{
 };
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::remote::Heard;
 use tilo_session_client::{Events, Link};
-use tilo_session_core::remote::Heard;
 use tilo_user_identity::DeviceCert;
 
 /// How long the owner's admission of this reporter stands: long enough to

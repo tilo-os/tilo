@@ -31,8 +31,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The channels a workspace's records are sealed in: the gate a governance state keeps.
 tilo-workspace-keys = { version = "0.1.0", path = "../workspace-keys" }
 key-group = { version = "0.1.0", path = "../key-group" }
-# A record id, as the document history names it.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 uuid.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true

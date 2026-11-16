@@ -226,8 +226,8 @@ pub use resource::{
     ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
     Noun, PROMPTED_PARAM, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
     ResourceType, ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target,
-    flatten, in_words, kind_mirrors_a_control, listed_for_people, listed_row, listed_row_problems,
-    plural, singular, sole_text_argument,
+    action_label, app_label, flatten, in_words, kind_mirrors_a_control, listed_for_people,
+    listed_row, listed_row_problems, plural, singular, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

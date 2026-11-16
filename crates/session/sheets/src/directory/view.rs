@@ -3,12 +3,13 @@
 
 use std::collections::BTreeSet;
 
+use crate::directory::{Directory, Listing, ListingAction};
 use tilo_relay_protocol::directory::Activity;
 use tilo_relay_protocol::workspaces::Role;
-use tilo_sheets::directory::{Directory, Listing, ListingAction};
 
-use crate::Listed;
-use crate::store::Store;
+use tilo_workspace_directory::Listed;
+
+use super::store::Store;
 
 /// A workspace the caller already holds: its id, which leaves it out of what
 /// the sheet offers to join, and the key its shell knows it by and the name it
@@ -39,7 +40,7 @@ impl Store {
         let joining = self.joining();
         let failures = self.failures.borrow().clone();
         let mut listings = Vec::new();
-        for listing in crate::ordered(self.listed.borrow().clone(), now_ms) {
+        for listing in tilo_workspace_directory::ordered(self.listed.borrow().clone(), now_ms) {
             if held_by.contains(listing.entry.workspace.as_str()) {
                 continue;
             }
@@ -61,12 +62,13 @@ impl Store {
                     listing.entry.description.clone()
                 },
                 host: listing.host.clone(),
-                tag: listing.entry.community.then(|| {
-                    tilo_sheets::words("directory-community-tag", &[("host", &listing.host)])
-                }),
+                tag: listing
+                    .entry
+                    .community
+                    .then(|| crate::words("directory-community-tag", &[("host", &listing.host)])),
                 activity: failure.map_or_else(
                     || activity_line(&listing, now_ms),
-                    |reason| tilo_sheets::words("directory-join-failed-line", &[("error", reason)]),
+                    |reason| crate::words("directory-join-failed-line", &[("error", reason)]),
                 ),
                 members: failure.map_or_else(|| members_line(&listing), |_| None),
                 joins_as: joins_as(&listing),
@@ -91,7 +93,7 @@ impl Store {
 
 /// The words a role is shown with.
 fn role_label(role: Role) -> String {
-    tilo_sheets::word(match role {
+    crate::word(match role {
         Role::Viewer => "directory-role-viewer",
         Role::Commenter => "directory-role-commenter",
         Role::Editor => "directory-role-editor",
@@ -104,11 +106,11 @@ fn role_label(role: Role) -> String {
 fn activity_line(listing: &Listed, now_ms: u64) -> String {
     match listing.activity(now_ms) {
         Activity::HereNow(count) => {
-            tilo_sheets::words("directory-here-now", &[("count", &count.to_string())])
+            crate::words("directory-here-now", &[("count", &count.to_string())])
         }
-        Activity::ActiveToday => tilo_sheets::word("directory-active-today"),
-        Activity::ActiveThisWeek => tilo_sheets::word("directory-active-week"),
-        Activity::Quiet => tilo_sheets::word("directory-quiet"),
+        Activity::ActiveToday => crate::word("directory-active-today"),
+        Activity::ActiveThisWeek => crate::word("directory-active-week"),
+        Activity::Quiet => crate::word("directory-quiet"),
     }
 }
 
@@ -117,7 +119,7 @@ fn activity_line(listing: &Listed, now_ms: u64) -> String {
 fn members_line(listing: &Listed) -> Option<String> {
     match listing.entry.members {
         0 => None,
-        members => Some(tilo_sheets::words(
+        members => Some(crate::words(
             "directory-members",
             &[("count", &members.to_string())],
         )),
@@ -126,7 +128,7 @@ fn members_line(listing: &Listed) -> Option<String> {
 
 /// The role people who join `listing` get, as its button describes it.
 fn joins_as(listing: &Listed) -> String {
-    tilo_sheets::words(
+    crate::words(
         "directory-joins-as",
         &[("role", &role_label(listing.entry.default_role))],
     )

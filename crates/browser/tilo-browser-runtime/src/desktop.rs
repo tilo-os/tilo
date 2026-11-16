@@ -22,8 +22,8 @@ use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
+use tilo_session_client::remote::SessionActions;
 use tilo_session_core::layout::{LayoutDocument, Store};
-use tilo_session_core::remote::SessionActions;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };

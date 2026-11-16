@@ -487,7 +487,7 @@ impl Platform for HostPlatform {
     /// Receivers decide each change against the surface of the build that runs now.
     fn surface_changed(&self, app: &str, bundle: &Bundle) {
         match bundle.surface() {
-            Ok(surface) => collaboration::app_surface::register_package(app, &surface),
+            Ok(surface) => collab_types::app_surface::register_package(app, &surface),
             // The surface registered before stays: receivers keep deciding against it.
             Err(error) => tracing::error!(app, %error, "the later build's surface is unusable"),
         }

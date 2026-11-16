@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use app_state::DocWriter;
 use automerge::ChangeHash;
+use collab_types::record::RecordId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
-use collaboration::record::RecordId;
 use collaboration::record::save::{open_stored, record_document};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
@@ -52,7 +52,7 @@ impl PersonalRecord {
         let route = RouteSpec::record(personal::OWNER, workspace, id.clone());
         manager.join_route(
             route.clone(),
-            collaboration::record::RecordKind::new(personal::KIND),
+            collab_types::record::RecordKind::new(personal::KIND),
         );
         let stored = RecordId::parse(&id)
             .ok_or_else(|| format!("`{id}` is no record id"))

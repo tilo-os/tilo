@@ -2,13 +2,8 @@
 //! copying a link in one press, or inviting an address from the wait list,
 //! has no loop that takes the directory's answers in, as the sheet has.
 
-#![allow(
-    clippy::expect_used,
-    reason = "a fixture that cannot see its own reply has no fallback"
-)]
-
 use test_http::{Reply, Responder};
-use tilo_workspace_directory::Store;
+use tilo_sheets::directory::Store;
 
 /// A store nobody reads answers the caller that awaits its link: the site
 /// kept the sealed invitation, and the link names that site.

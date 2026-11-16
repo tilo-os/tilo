@@ -8,6 +8,8 @@
 //! sentence, with its own word order ("Writing in Trip plan", "Schreibt in
 //! Trip plan"), rather than words assembled from an English verb and a name.
 
+pub mod lines;
+
 use crate::i18n::widget_format;
 use tilo_actions::step::Step;
 

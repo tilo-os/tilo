@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::Entry;
 
 use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
-use tilo_session_core::remote::NOT_CONNECTED;
+use crate::remote::NOT_CONNECTED;
 
 /// Where the host's answer to another entry goes ([`Cmd::Enter`]).
 pub(super) type EntryCompletion =

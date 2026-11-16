@@ -1859,7 +1859,7 @@ impl SessionAt {
             .cloned()
             .unwrap_or_else(|| {
                 (
-                    tilo_session_client::narration::action_label(&request.target.address.action),
+                    tilo_actions::action_label(&request.target.address.action),
                     None,
                 )
             });

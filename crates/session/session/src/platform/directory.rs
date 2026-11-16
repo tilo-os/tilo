@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_workspace_directory::{Held, Person};
+use tilo_sheets::directory::Held;
+use tilo_workspace_directory::Person;
 
 use crate::directory::{Host, Joined, Store};
 
@@ -120,6 +121,7 @@ pub(crate) fn take(store: &Store, text: &str) -> Result<(), String> {
 /// else, has expired, or is not an invitation.
 pub(crate) fn invited_workspace(text: &str) -> Result<String, String> {
     tilo_workspace_directory::invited_workspace(text, &person()?)
+        .map_err(|error| tilo_sheets::directory::said(&error))
 }
 
 /// This computer's person: the one its device certificate names.

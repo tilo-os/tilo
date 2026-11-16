@@ -2872,7 +2872,7 @@ fn a_click_on_a_tasks_box_marks_it_done() {
     let surface = package(package_of(TASKS))
         .surface()
         .expect("the package has a surface");
-    collaboration::app_surface::register_package(TASKS, &surface);
+    collab_types::app_surface::register_package(TASKS, &surface);
     let mut session = live_task("Water the plants");
     let (_, shown) = session
         .window

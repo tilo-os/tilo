@@ -13,6 +13,27 @@
 
 pub use tilo_words::{in_words, plural, singular};
 
+/// An app's name as a person reads it: the last part of its id in words,
+/// capitalised (`so.tilo.word-processor` is "Word processor").
+#[must_use]
+pub fn app_label(app: &str) -> String {
+    let last = app.rsplit('.').next().unwrap_or(app);
+    capitalised(&in_words(last)).unwrap_or_else(|| app.to_owned())
+}
+
+/// An action's id as the words a person reads (`append-paragraph` is
+/// "Append paragraph").
+#[must_use]
+pub fn action_label(action: &str) -> String {
+    capitalised(action.replace(['-', '_'], " ").trim()).unwrap_or_else(|| action.to_owned())
+}
+
+fn capitalised(words: &str) -> Option<String> {
+    let mut characters = words.chars();
+    let first = characters.next()?;
+    Some(first.to_uppercase().chain(characters).collect())
+}
+
 /// What one of something is called and what several are, in a sentence:
 /// `mailbox` and `mailboxes`, `person` and `people`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

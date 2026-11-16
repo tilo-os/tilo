@@ -9,7 +9,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::{Directory, DirectoryState, Status};
-use tilo_workspace_directory::{Held, Joined, Person, Store};
+use tilo_sheets::directory::{Held, Joined, Store};
+use tilo_workspace_directory::Person;
 
 use crate::over_page::{OverSheet, PageSheet};
 use crate::shell::{HostRequest, HostRequests};

@@ -816,12 +816,12 @@ impl CollabTransport for BrokerTransport {
         }))
     }
 
-    fn joined_record_kind(&self, channel: &str) -> Option<crate::record::RecordKind> {
+    fn joined_record_kind(&self, channel: &str) -> Option<collab_types::record::RecordKind> {
         self.state
             .route_record_kinds
             .lock_recover()
             .get(channel)
-            .map(crate::record::RecordKind::new)
+            .map(collab_types::record::RecordKind::new)
     }
 
     fn route_join_failure(&self, channel: &str) -> Option<String> {
@@ -2554,7 +2554,7 @@ impl CollaborationManager {
 
     pub fn switch_native_record(
         &mut self,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &collab_types::record::RecordCheckout,
     ) -> Result<(), String> {
         let primary = self
             .primary_route
@@ -2592,7 +2592,7 @@ impl CollaborationManager {
     /// why the connection ended before it answered.
     #[cfg(feature = "native")]
     pub fn for_native_launch(
-        kind: &crate::record::RecordKind,
+        kind: &collab_types::record::RecordKind,
         connection: crate::NativeConnection,
     ) -> Result<Self, crate::NativeLaunchError> {
         Self::join_native(kind, connection)?
@@ -2617,7 +2617,7 @@ impl CollaborationManager {
     /// unavailable or this device's identity cannot be loaded.
     #[cfg(feature = "native")]
     pub fn join_native(
-        kind: &crate::record::RecordKind,
+        kind: &collab_types::record::RecordKind,
         connection: crate::NativeConnection,
     ) -> Result<Self, crate::NativeLaunchError> {
         let configured = crate::host::environment()
@@ -2682,7 +2682,7 @@ impl CollaborationManager {
     /// host's, not the app's. `identity` must outlive the manager.
     #[cfg(all(feature = "native", unix))]
     pub fn join_instance(
-        kind: &crate::record::RecordKind,
+        kind: &collab_types::record::RecordKind,
         connection: runtime_portal::windows::Descriptor,
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,
@@ -5855,7 +5855,7 @@ fn origin_claims(
     app_id: &str,
     mutation: &collab_types::DocumentMutation,
 ) -> Vec<collab_types::ChangeClaim> {
-    crate::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
+    collab_types::app_surface::claims_of(app_id, mutation).unwrap_or_else(|error| {
         #[cfg(debug_assertions)]
         if let collab_types::DocumentMutation::Incremental(bytes) = mutation
             && collab_types::parse_changes(bytes).is_ok()
@@ -5997,7 +5997,7 @@ async fn try_send_frame(
     if op.encryption.is_some() {
         op = op.with_claims(claims.to_vec());
     }
-    op = op.with_surface(crate::app_surface::hash_of(&route.spec.app_id));
+    op = op.with_surface(collab_types::app_surface::hash_of(&route.spec.app_id));
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {

@@ -21,7 +21,7 @@ use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
 use tilo_fs::tree_record::record as tree_record;
 use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 /// The tree the workspace's host keeps, as the record its members read.
 async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tree {

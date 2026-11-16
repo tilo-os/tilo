@@ -21,8 +21,8 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, UpdateMark, pending, serve,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
+use tilo_clock::time::Instant;
 use tilo_lock::MutexRecover as _;
-use web_time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gets;
@@ -168,9 +168,9 @@ impl<T> Asked<T> {
         Self {
             answer,
             again,
-            until: Instant::now()
+            until: tilo_clock::now()
                 .checked_add(REPLY_DEADLINE)
-                .unwrap_or_else(Instant::now),
+                .unwrap_or_else(tilo_clock::now),
         }
     }
 }
@@ -697,7 +697,7 @@ fn expire(inner: &Weak<Inner>) -> bool {
         if waiting.is_empty() {
             return true;
         }
-        waiting.expire(Instant::now(), &mut give);
+        waiting.expire(tilo_clock::now(), &mut give);
     }
     for give in give {
         give();
@@ -763,9 +763,9 @@ impl Inner {
         if again.times >= ASKED_AGAIN_AT_MOST {
             return false;
         }
-        let due = Instant::now()
+        let due = tilo_clock::now()
             .checked_add(ASK_AGAIN_AFTER)
-            .unwrap_or_else(Instant::now);
+            .unwrap_or_else(tilo_clock::now);
         again.refused_on = Some((self.session.connections(), due));
         true
     }
@@ -778,7 +778,7 @@ impl Inner {
             let Some((refused_on, not_before)) = again.refused_on else {
                 return;
             };
-            if Instant::now() < not_before
+            if tilo_clock::now() < not_before
                 || again.times >= ASKED_AGAIN_AT_MOST
                 || !self.session.carrying()
                 || self.session.connections() <= refused_on
@@ -988,7 +988,7 @@ impl ActionHost for SessionActions {
             drop(waiting);
             return Some(change);
         }
-        followed.asked = Some(Instant::now());
+        followed.asked = Some(tilo_clock::now());
         let seen = UpdateMark::of(&followed.state.update);
         let (answer, answered) = pending();
         let wait_ms = u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX);

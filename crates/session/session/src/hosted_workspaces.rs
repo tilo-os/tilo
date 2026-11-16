@@ -31,8 +31,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_relay_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
+use tilo_session_client::remote::SessionActions;
 use tilo_session_client::{Cmd, Outbox as _};
-use tilo_session_core::remote::SessionActions;
 
 use crate::engine::Engine;
 

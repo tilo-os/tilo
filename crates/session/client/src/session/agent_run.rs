@@ -5,7 +5,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_session::RelayClient;
 
 use super::Task;
-use tilo_session_core::remote::NOT_CONNECTED;
+use crate::remote::NOT_CONNECTED;
 
 /// Where whether the session is now the agent's run goes ([`crate::Cmd::AgentRun`]).
 pub(super) type AgentRunCompletion = crate::Answer<Result<(), String>>;

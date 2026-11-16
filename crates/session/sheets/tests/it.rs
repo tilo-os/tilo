@@ -14,6 +14,8 @@ mod delete_workspace;
 mod dictation;
 #[path = "directory.rs"]
 mod directory;
+#[path = "directory_shelf.rs"]
+mod directory_shelf;
 #[path = "display_confirm.rs"]
 mod display_confirm;
 #[path = "displays.rs"]

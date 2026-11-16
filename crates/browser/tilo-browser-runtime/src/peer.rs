@@ -710,7 +710,7 @@ pub async fn sealed_invitation_link(
     .map_err(js_error)?;
     // The shelf this leaves it on lives as long as the invitation: the link
     // is used, not kept, so no caller takes it back from here.
-    let store = tilo_workspace_directory::Store::default();
+    let store = tilo_sheets::directory::Store::default();
     store
         .shelve_soon(
             &hex::encode(join.invite_id()),
@@ -2675,7 +2675,7 @@ impl WasmPeer {
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
-        tilo_session_core::remote::ask(&door, &caller, message)
+        tilo_session_client::remote::ask(&door, &caller, message)
             .await
             .map_err(|error| js_error(&error))
     }
@@ -2702,11 +2702,17 @@ impl WasmPeer {
     ) -> Result<String, JsValue> {
         let listing = self
             .device
-            .enter_own_workspace(name.as_deref(), workspace.as_deref(), &shown_as, |id| {
-                entered
-                    .call1(&JsValue::NULL, &JsValue::from_str(id))
-                    .is_ok_and(|answer| answer.is_truthy())
-            })
+            .enter_own_workspace(
+                &ui::i18n::I18nManager::window_locale(),
+                name.as_deref(),
+                workspace.as_deref(),
+                &shown_as,
+                |id| {
+                    entered
+                        .call1(&JsValue::NULL, &JsValue::from_str(id))
+                        .is_ok_and(|answer| answer.is_truthy())
+                },
+            )
             .await
             .map_err(|refusal| refusal_error(&refusal))?;
         serde_json::to_string(&listing).map_err(|error| js_error(error).into())

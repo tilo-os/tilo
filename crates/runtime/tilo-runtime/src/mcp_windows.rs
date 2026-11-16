@@ -18,7 +18,7 @@ use tilo_actions::remote::{
     settle_with,
 };
 use tilo_relay_protocol::live::LiveRecord;
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 use crate::mcp::ActedRecord;
 

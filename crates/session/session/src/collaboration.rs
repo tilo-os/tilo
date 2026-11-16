@@ -115,7 +115,7 @@ impl Session {
     /// works in: one presence per session, listed beside everyone else for everyone there, in its
     /// agent's colour, saying what it is doing and the window of the app it does it in.
     fn say_agents_here(&self, sync: &crate::sync::Client) {
-        use tilo_session_client::narration::lines;
+        use ui::step::lines;
         let present = self.shared.agent_sessions.here();
         let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
             present

@@ -16,7 +16,7 @@ use tilo_relay::hosted_browser::{
 };
 use tilo_relay_protocol::hosted::Material;
 use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 /// The provider a fake environment's window publishes under: its peer
 /// in the session holding it, as a window's is.

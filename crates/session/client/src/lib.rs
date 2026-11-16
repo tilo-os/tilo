@@ -39,6 +39,7 @@ pub mod membership;
 pub mod narration;
 pub mod plane;
 pub mod presence;
+pub mod remote;
 mod replica;
 /// This session's presence tracks, as a participant's client says on them.
 pub mod saying;

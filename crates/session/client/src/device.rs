@@ -21,11 +21,11 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
 
+use crate::remote::SessionActions;
 use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
 use tilo_relay_protocol::WorkspaceId;
-use tilo_session_core::remote::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
@@ -376,7 +376,7 @@ impl Device {
     /// for each `name` they give; the one called `workspace`, a UUID, when it says, made under that name
     /// for a person who has none yet), and this very device redeems the invitation into it, so the
     /// key this session holds is the one that opens it next. One the person did not name is named
-    /// in this device's language. A workspace `entered` says this device is
+    /// in `language`, the one they read. A workspace `entered` says this device is
     /// in already is not redeemed again. `shown_as` is the name its members see.
     ///
     /// # Errors
@@ -384,6 +384,7 @@ impl Device {
     /// device.
     pub async fn enter_own_workspace(
         &self,
+        language: &str,
         name: Option<&str>,
         workspace: Option<&str>,
         shown_as: &str,
@@ -397,10 +398,7 @@ impl Device {
             arguments.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
         }
         // The host names a workspace the person did not, so it is told the language they read.
-        arguments.insert(
-            "language".to_owned(),
-            Value::String(ui::i18n::I18nManager::window_locale()),
-        );
+        arguments.insert("language".to_owned(), Value::String(language.to_owned()));
         let (listing, invitation) = self.own_workspace(arguments, &self.label).await?;
         if !entered(&listing.workspace) {
             self.redeem(&invitation, shown_as)

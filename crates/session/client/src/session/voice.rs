@@ -3,8 +3,8 @@
 //! tracks of the page's own plane ([`super::plane`]).
 
 use super::{Envelope, RelayClient, Task};
+use crate::remote::NOT_CONNECTED;
 use tilo_relay_protocol::WorkspaceId;
-use tilo_session_core::remote::NOT_CONNECTED;
 
 impl Task {
     pub(super) fn voice_calls(

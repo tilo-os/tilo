@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_runtime::mcp_windows;
 use tilo_session_client::Outbox;
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 /// The app the agent writes in.
 const WRITER: &str = "so.tilo.word-processor";
@@ -204,7 +204,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         // What it does reads as the catalogue's own line for such a step, in
         // the app as a person reads its name, not as an English verb glued to
         // an id.
-        let working = tilo_session_client::narration::lines::step(&tilo_actions::Step::new(
+        let working = ui::step::lines::step(&tilo_actions::Step::new(
             tilo_actions::StepKind::Work,
             Some("Word processor"),
         ));

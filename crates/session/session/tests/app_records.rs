@@ -388,7 +388,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_door() {
             launcher::services::write_identity_handshake(&mut identity, TASKS, &workspace)
                 .map_err(|e| e.to_string())?;
             let manager = collaboration::CollaborationManager::join_instance(
-                &collaboration::record::RecordKind::new(kind.clone()),
+                &collab_types::record::RecordKind::new(kind.clone()),
                 std::os::fd::OwnedFd::from(plane),
                 std::os::fd::AsFd::as_fd(&identity),
                 collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),

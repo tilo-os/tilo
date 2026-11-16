@@ -15,11 +15,12 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
+use collab_types::record::RecordId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
+use collaboration::record::RecordSaveStatus;
 use collaboration::record::save::{open_stored, record_document};
-use collaboration::record::{RecordId, RecordSaveStatus};
 use collaboration::record_content::{ContentLane, RecordContent};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
@@ -1455,7 +1456,7 @@ impl InstanceRecord {
             }
             self.manager.join_route(
                 self.chunk_route(chunk),
-                collaboration::record::RecordKind::new(self.kind.clone()),
+                collab_types::record::RecordKind::new(self.kind.clone()),
             );
         }
     }
@@ -1653,7 +1654,7 @@ impl InstanceRecord {
     ///
     /// What the chunk holds past those heads is kept only if the workspace takes it, as every
     /// receiver decides its claims against the app's surface
-    /// ([`collaboration::app_surface::refusal`]): a change the workspace refuses is taken out of
+    /// ([`collab_types::app_surface::refusal`]): a change the workspace refuses is taken out of
     /// the chunk again, with all of it, so it is never kept here, built on and written to disk
     /// while the workspace holds none of it.
     ///
@@ -1940,10 +1941,7 @@ fn refusal_of(
     if change.is_empty() {
         return None;
     }
-    collaboration::app_surface::refusal(
-        record,
-        &collab_types::DocumentMutation::Incremental(change),
-    )
+    collab_types::app_surface::refusal(record, &collab_types::DocumentMutation::Incremental(change))
 }
 
 /// Take `doc` back to the heads `before`, writing on under the actor it had.
@@ -2000,7 +1998,7 @@ pub struct ReadRecord {
 impl ReadRecord {
     /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
     pub fn join(route: RouteSpec, manager: &mut CollaborationManager, kind: &str) -> Self {
-        manager.join_route(route.clone(), collaboration::record::RecordKind::new(kind));
+        manager.join_route(route.clone(), collab_types::record::RecordKind::new(kind));
         Self {
             route,
             kind: kind.to_owned(),
@@ -2089,7 +2087,7 @@ impl ReadRecord {
             }
             manager.join_route(
                 chunk_route(&self.route, chunk),
-                collaboration::record::RecordKind::new(self.kind.clone()),
+                collab_types::record::RecordKind::new(self.kind.clone()),
             );
         }
     }

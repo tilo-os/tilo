@@ -523,7 +523,7 @@ tilo_test_env::scenario! {
         for request in sent.borrow().iter() {
             if let CollabRequest::Document { mutation, .. } = request {
                 let claims =
-                    collaboration::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
+                    collab_types::app_surface::claims_of(APP, mutation).unwrap_or_else(|error| {
                         panic!("every change the workspace is handed is claimed: {error}")
                     });
                 if let Some(claim) = claims.iter().find(|claim| claim.change == stamp.0) {
@@ -1337,7 +1337,7 @@ impl PeerTransport for SlowBroker {
     fn join_route(
         &mut self,
         _: RouteSpec,
-        _: collaboration::record::RecordKind,
+        _: collab_types::record::RecordKind,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -2282,7 +2282,7 @@ fn a_change_the_workspace_refuses_is_never_kept() {
         "a_change_the_workspace_refuses_is_never_kept",
         || {
             let (address, doc) = increment();
-            collaboration::app_surface::register_package(
+            collab_types::app_surface::register_package(
                 APP,
                 b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
             );

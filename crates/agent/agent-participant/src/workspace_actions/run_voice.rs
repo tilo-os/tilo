@@ -93,9 +93,9 @@ impl Runs {
         let app = record
             .as_ref()
             .map_or(target.provider.as_str(), |record| record.app.as_str());
-        let line = narration::lines::doing(app, &target.address.action, args);
+        let line = ui::step::lines::doing(app, &target.address.action, args);
         let line = match phase {
-            InteractionPhase::Failed { .. } => narration::lines::failed(&line),
+            InteractionPhase::Failed { .. } => ui::step::lines::failed(&line),
             _ => line,
         };
         let selection = left_at
@@ -165,7 +165,7 @@ impl Runs {
     pub(super) fn arrived(&mut self, (peer, cluster): (&Link, &str), caller: &Caller) {
         let _ = self.at((peer, cluster), caller, |voice| {
             if voice.activity.is_none() {
-                voice.activity = Some(narration::lines::waiting());
+                voice.activity = Some(ui::step::lines::waiting());
             }
         });
     }
@@ -340,11 +340,11 @@ impl super::Worker {
             .map(|route| route.app_id);
         let app = query.app_id.as_deref().or(routed.as_deref());
         let line = if !query.needle.trim().is_empty() {
-            narration::lines::searching(&query.needle)
+            ui::step::lines::searching(&query.needle)
         } else if query.view_resource.is_some() {
-            narration::lines::reading(app.unwrap_or_default())
+            ui::step::lines::reading(app.unwrap_or_default())
         } else {
-            narration::lines::looking(app)
+            ui::step::lines::looking(app)
         };
         workspace.runs.saying(
             (&workspace.peer, &cluster),

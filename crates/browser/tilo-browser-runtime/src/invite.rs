@@ -16,8 +16,8 @@ use tilo_desktop::here::Here;
 use tilo_relay_protocol::workspaces::{PendingInvite, WorkspacesReply, WorkspacesRequest};
 use tilo_session::invite::{Answer, Invite, Issued, Refused, Workspace};
 use tilo_sheets::Presentation;
+use tilo_sheets::directory::Store;
 use tilo_sheets::invite::{self as sheet, Choosing, InviteEffect};
-use tilo_workspace_directory::Store;
 
 use ui::LocalState;
 

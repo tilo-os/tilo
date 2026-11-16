@@ -19,9 +19,6 @@ pub const THUMB_XATTR: &str = "user.tilo.thumb";
 /// Absent for directories, empty files, and CRDT documents without an opaque
 /// content manifest.
 pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
-/// Raw 16-byte UUID for the stable collaborative file record. Unlike a path,
-/// this identity survives rename and move and is the scope used by sharing.
-pub const RECORD_ID_XATTR: &str = "user.tilo.record-id";
 /// Bounded rich metadata copied from the signed replicated record.
 pub const METADATA_XATTR: &str = "user.tilo.metadata";
 /// Revisioned, pageable workspace-root catalog of every record visible through

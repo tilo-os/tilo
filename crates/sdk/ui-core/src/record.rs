@@ -6,9 +6,10 @@
 
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
-pub use ::collaboration::record::{
+pub use ::collaboration::record::RecordSaveStatus;
+pub use collab_types::record::{
     MAX_FORMER_IDS, MAX_RECORD_RELATION_BYTES, RecordCheckout, RecordId, RecordKind, RecordRef,
-    RecordSaveStatus, valid_label,
+    valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};

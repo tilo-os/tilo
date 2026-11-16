@@ -71,7 +71,6 @@ impl FrameSession {
             std::thread::sleep(POLL);
         }
     }
-
 }
 
 impl VideoFrames for FrameSession {

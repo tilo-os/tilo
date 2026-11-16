@@ -2145,7 +2145,7 @@ fn a_refused_route_join_says_why() {
     assert_eq!(manager.route_join_failure(&beside), None);
     manager.join_route(
         beside.clone(),
-        crate::record::RecordKind::new("tilo.rich-text"),
+        collab_types::record::RecordKind::new("tilo.rich-text"),
     );
     tilo_test_env::wait_until("the refused join to say why", || {
         manager.route_join_failure(&beside).is_some()
@@ -2344,7 +2344,7 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
     };
     manager.join_route(
         secondary.clone(),
-        crate::record::RecordKind::new("tilo.rich-text"),
+        collab_types::record::RecordKind::new("tilo.rich-text"),
     );
     tilo_test_env::wait_until(
         "`broker_state(&manager).document_reads.publishable(&secondary.channel_id())`",
@@ -3296,7 +3296,7 @@ fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
     assert!(settled > 0, "the app's own route asked for its keys");
     manager.join_route(
         RouteSpec::cluster(Uuid::new_v4()),
-        crate::record::RecordKind::new(""),
+        collab_types::record::RecordKind::new(""),
     );
     // The join's key round, were there one, has run before this probe is
     // answered (the shovel serves its commands in order, and the probe
@@ -3603,7 +3603,7 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
     };
     manager.join_route(
         drafts.clone(),
-        crate::record::RecordKind::new("chat.drafts"),
+        collab_types::record::RecordKind::new("chat.drafts"),
     );
     eventually("the drafts route to join", || {
         manager.document_route_publishable(&drafts)

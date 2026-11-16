@@ -5,13 +5,14 @@
 
 use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_sheets::SheetState as _;
+use tilo_sheets::directory::Held;
 use tilo_sheets::directory::{Directory, DirectoryEffect, DirectoryState, ListingAction};
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
-use tilo_workspace_directory::{Held, Person};
+use tilo_workspace_directory::Person;
 
 use crate::platform::notice::{Notice, Notices};
 
-pub(crate) use tilo_workspace_directory::{Joined, Store};
+pub(crate) use tilo_sheets::directory::{Joined, Store};
 
 /// What the directory asks of the host it runs on. Each `Err` is the sentence the sheet says.
 pub trait Host {

@@ -6222,7 +6222,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::RECORD_ID_XATTR) {
+        if name.to_str() == Some(collab_types::record::RECORD_ID_XATTR) {
             let record_id = self.ns().record_id_for(ino.0);
             match record_id {
                 Some(record_id) => reply_xattr_bytes(reply, record_id.0.as_bytes(), size),
@@ -6407,7 +6407,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
         if self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(fs_protocol::RECORD_ID_XATTR.as_bytes());
+            buf.extend_from_slice(collab_types::record::RECORD_ID_XATTR.as_bytes());
             buf.push(0);
         }
         if self.metadata_projection_for(ino.0).is_some() {

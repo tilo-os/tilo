@@ -17,7 +17,7 @@ use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
 use tilo_session_client::Link;
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 

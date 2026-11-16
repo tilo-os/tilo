@@ -731,7 +731,7 @@ impl AgentParticipant {
                 ..
             } if workspace_id == self.workspace_id => self.record_answered(route, frames),
             Event::Landed { route, author } => self.document_said(route, author),
-            Event::Remote(tilo_session_core::remote::Heard::Action {
+            Event::Remote(tilo_session_client::remote::Heard::Action {
                 workspace_id,
                 from,
                 frame,

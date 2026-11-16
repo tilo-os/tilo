@@ -75,7 +75,7 @@ fn a_read_the_app_takes_its_time_over_wakes_nothing() {
     };
     let (fd, _captures, _thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.notes", workspace);
-    manager.join_route(route.clone(), crate::record::RecordKind::new(""));
+    manager.join_route(route.clone(), collab_types::record::RecordKind::new(""));
     let tid = shovel_thread(&manager);
     // The route's first read arrives as an event for the app, which takes
     // its time: this test never merges it.

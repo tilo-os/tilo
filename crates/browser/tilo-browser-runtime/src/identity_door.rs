@@ -33,7 +33,7 @@ use tilo_relay_session::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_PERSONAL, PERSONAL_DEVICE_NAME,
 };
 #[cfg(target_arch = "wasm32")]
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 
 #[cfg(target_arch = "wasm32")]
 use crate::mcp_server::{Revoked, Revoking};

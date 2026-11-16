@@ -80,7 +80,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A host that keeps no workspaces of people's own says so in a code the page reads, not in
     // words it would have to match.
     let none = device
-        .enter_own_workspace(None, None, "Bob", |_| false)
+        .enter_own_workspace("en-US", None, None, "Bob", |_| false)
         .await
         .unwrap_err();
     assert_eq!(none.code, "unknown_action", "{none:?}");
@@ -101,7 +101,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let named = "5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b";
     let asked = Cell::new(0);
     let own = device
-        .enter_own_workspace(None, Some(named), "Bob", |_| {
+        .enter_own_workspace("en-US", None, Some(named), "Bob", |_| {
             asked.set(asked.get() + 1);
             false
         })
@@ -191,7 +191,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device
-        .enter_own_workspace(None, None, "Bob", |id| id == own.workspace)
+        .enter_own_workspace("en-US", None, None, "Bob", |id| id == own.workspace)
         .await
         .unwrap();
     assert_eq!(again.workspace, own.workspace);
@@ -231,7 +231,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "Laptop",
     );
     let theirs = laptop
-        .enter_own_workspace(None, Some(named), "Bob", |_| false)
+        .enter_own_workspace("en-US", None, Some(named), "Bob", |_| false)
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);

@@ -64,9 +64,9 @@ pub(crate) fn keep(hash: &str, bytes: Vec<u8>) -> bool {
 /// The surface this page runs `app` with, when it is `hash`.
 #[cfg(feature = "toolkit")]
 fn running(app: &str, hash: &str) -> Option<Vec<u8>> {
-    let carried = ui::app_surface::hash_of(app)?;
+    let carried = collab_types::app_surface::hash_of(app)?;
     (hex::encode(carried) == hash)
-        .then(|| ui::app_surface::bytes_of(app).map(<[u8]>::to_vec))
+        .then(|| collab_types::app_surface::bytes_of(app).map(<[u8]>::to_vec))
         .flatten()
 }
 
@@ -91,7 +91,7 @@ pub fn surfaces() -> collab_types::Surfaces {
 /// with.
 #[cfg(feature = "toolkit")]
 fn signed_surface(app: &str) -> Option<[u8; 32]> {
-    ui::app_surface::hash_of(app)
+    collab_types::app_surface::hash_of(app)
 }
 
 /// Decide every workspace's members' writes against the surfaces this page

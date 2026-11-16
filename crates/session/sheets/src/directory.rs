@@ -23,6 +23,12 @@ use ui::widget::{
     ListRow, ModalDialog, Row, SearchField, Section, Text, Widget,
 };
 
+mod store;
+mod view;
+
+pub use store::{Joined, Store, Wake};
+pub use view::Held;
+
 use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
 
@@ -610,4 +616,14 @@ impl ui::widget::Decorator for Searching {
 /// The app's definition, which the shell mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(DirectoryApp)
+}
+
+/// What a site's failure says to the person: the sheet's own words where it
+/// has them.
+#[must_use]
+pub fn said(error: &tilo_workspace_directory::SiteError) -> String {
+    match error {
+        tilo_workspace_directory::SiteError::Said(key) => crate::word(key),
+        tilo_workspace_directory::SiteError::Plain(text) => text.clone(),
+    }
 }

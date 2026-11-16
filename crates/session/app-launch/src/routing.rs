@@ -17,7 +17,7 @@
 
 use std::path::Path;
 
-use collaboration::record::RecordId;
+use collab_types::record::RecordId;
 use desktop_policy::{
     AppCandidate, DefaultAppResolver, MimeAppsChain, PersonalDefaults, ResourceKind,
     WorkspaceDefaults,

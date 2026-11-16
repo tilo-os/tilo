@@ -172,7 +172,7 @@ impl PeerTransport for Routed {
     fn join_route(
         &mut self,
         route: RouteSpec,
-        _kind: collaboration::record::RecordKind,
+        _kind: collab_types::record::RecordKind,
     ) -> Result<(), String> {
         self.wire.join(&self.me, &route, &self.mine);
         Ok(())

@@ -5,10 +5,9 @@
 //! A site names its home workspace and the directory of its public ones in
 //! its `entry.json`; the directory then lists every public workspace it
 //! serves with what it is, who is in it now and how lively it is
-//! ([`tilo_relay_protocol::directory`]). [`Store`] reads those sites and asks
-//! their doors on one app task ([`Store::read`], [`Store::join`],
-//! [`Store::take`]), and answers with what the sites said
-//! ([`Store::answered`]) — never on the caller's loop.
+//! ([`tilo_relay_protocol::directory`]). The directory sheet's store
+//! (`tilo_sheets::directory::Store`) reads those sites and asks their doors
+//! through this crate.
 //!
 //! Joining one enters it through its door ([`through_door`]), on the session
 //! the device opens with the door's host; a pasted invitation is verified for
@@ -21,8 +20,6 @@
 //! identity on disk and a page that does not.
 
 mod client;
-mod store;
-mod view;
 
 use std::collections::BTreeSet;
 
@@ -30,12 +27,43 @@ use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
 use tilo_relay_protocol::workspaces::Role;
 
 pub use client::{
-    Granted, Person, SiteEntry, SiteWorkspace, Way, client, door_workspace, fetch_directory,
-    invited_workspace, read_site, sealed_invitation, shelve, site_entry, through_door,
-    verify_invitation, web_origin,
+    Granted, Person, SealedInvitation, Shelved, SiteEntry, SiteWorkspace, Taken, Way, client,
+    door_workspace, fetch_directory, invited_workspace, join_home, read_site, sealed_invitation,
+    shelve, site_entry, take, take_back, through_door, verify_invitation, web_origin,
 };
-pub use store::{Joined, Shelved, Store, Wake};
-pub use view::Held;
+
+/// Why a site, its door or its shelf gave nothing to use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SiteError {
+    /// What the directory sheet says, by the key of its catalogue's message
+    /// (`directory-error-unreachable`): the detail went to the log.
+    Said(&'static str),
+    /// What is said as it is: an address or an invitation that does not read.
+    Plain(String),
+}
+
+impl std::fmt::Display for SiteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Said(key) => f.write_str(key),
+            Self::Plain(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for SiteError {}
+
+impl From<String> for SiteError {
+    fn from(text: String) -> Self {
+        Self::Plain(text)
+    }
+}
+
+impl From<&str> for SiteError {
+    fn from(text: &str) -> Self {
+        Self::Plain(text.to_owned())
+    }
+}
 
 /// One public workspace a directory lists, with where it is joined.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,7 +94,7 @@ impl Listed {
     }
 
     /// How lively it is at `now_ms`.
-    fn activity(&self, now_ms: u64) -> Activity {
+    pub fn activity(&self, now_ms: u64) -> Activity {
         self.entry.activity(now_ms)
     }
 }

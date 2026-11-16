@@ -350,7 +350,10 @@ fn a_record_route_opening_on_the_apps_own_channel_wakes_its_owner() {
         cluster_id: workspace,
         record: Some("derived:part.0@derived:messages".into()),
     };
-    manager.join_route(part.clone(), crate::record::RecordKind::new("chat.part"));
+    manager.join_route(
+        part.clone(),
+        collab_types::record::RecordKind::new("chat.part"),
+    );
     poll_on_wakes(
         &mut manager,
         &wakes,

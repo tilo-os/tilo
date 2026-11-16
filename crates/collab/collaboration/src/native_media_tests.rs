@@ -149,7 +149,7 @@ fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
     for route in &routes {
         manager.join_route(
             route.clone(),
-            crate::record::RecordKind::new("tilo.rich-text"),
+            collab_types::record::RecordKind::new("tilo.rich-text"),
         );
     }
     manager

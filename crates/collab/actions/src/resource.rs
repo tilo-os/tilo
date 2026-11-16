@@ -704,7 +704,7 @@ impl ResourceSemanticIdentity {
     }
 }
 
-pub use crate::noun::{Noun, ResourceType, in_words, plural, singular};
+pub use crate::noun::{Noun, ResourceType, action_label, app_label, in_words, plural, singular};
 
 /// Whether `kind` names a control the window already draws, or an
 /// operation of the host it runs on: nodes published so a caller can

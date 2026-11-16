@@ -28,7 +28,7 @@ use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_peer_state::join::Role;
 use tilo_relay_protocol::directory::Listing;
 use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_session_core::remote::SessionActions;
+use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
 const NOTES: &str = "so.tilo.notes";

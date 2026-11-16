@@ -238,7 +238,7 @@ impl BrokerChannels {
         )
     }
 
-    /// The records of trees ([`ui::record::RecordId::tree`]: a chain's
+    /// The records of trees ([`collab_types::record::RecordId::tree`]: a chain's
     /// parts, a container's children) of the app `subscriber` names in its
     /// workspace that this device holds: ops of them were admitted here this
     /// session ([`Self::record_history`]), or their history is kept on disk
@@ -267,7 +267,7 @@ impl BrokerChannels {
         let mut held: Vec<String> = admitted
             .chain(kept)
             .filter(|record| {
-                ui::record::RecordId::parse(record)
+                collab_types::record::RecordId::parse(record)
                     .and_then(|id| id.tree())
                     .is_some()
             })

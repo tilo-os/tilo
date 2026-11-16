@@ -3733,7 +3733,12 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, fs_protocol::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(
+            &before,
+            collab_types::record::RECORD_ID_XATTR,
+            record.as_bytes(),
+        )
+        .unwrap();
         xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let widget = FileExplorerWidget::new();
@@ -4310,7 +4315,12 @@ mod command_path_tests {
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(
+            &file,
+            collab_types::record::RECORD_ID_XATTR,
+            record_id.as_bytes(),
+        )
+        .unwrap();
         crate::model::sync_state_tests::set_record_index(
             dir.path(),
             &[serde_json::json!({

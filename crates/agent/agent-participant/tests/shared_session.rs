@@ -61,7 +61,7 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_session_core::remote::Heard;
+use tilo_session_client::remote::Heard;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,

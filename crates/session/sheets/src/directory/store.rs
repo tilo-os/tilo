@@ -4,14 +4,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::directory::Status;
+use crate::invite as sheet;
 use tilo_net::Client;
-use tilo_sheets::directory::Status;
-use tilo_sheets::invite as sheet;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tokio::sync::mpsc;
 
-use crate::client::{self, Granted, Person};
-use crate::{Listed, home_listing, listings_of};
+use super::said;
+use tilo_workspace_directory::{
+    self as client, Granted, Listed, Person, Shelved, SiteError, home_listing, listings_of,
+};
 
 /// Called whenever something landed, from the task that read or joined: what
 /// wakes the caller's loop to take it in.
@@ -31,21 +33,6 @@ pub struct Joined {
     /// asked for the join: the person's community joins on its own as their
     /// session starts. `None` for a join a person chose.
     pub community: Option<String>,
-}
-
-/// An invitation left on a site's shelf: the link a person hands over, and
-/// what takes the ciphertext back.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Shelved {
-    /// The link: the site, the handle the invitation is under, and the key
-    /// that opens it, which is in no request.
-    pub link: String,
-    /// The site that keeps it.
-    pub site: url::Url,
-    /// The handle it is kept under.
-    pub handle: String,
-    /// The secret that takes it back. It is in no link.
-    pub delete: String,
 }
 
 /// What the task is asked.
@@ -343,7 +330,7 @@ impl Store {
     /// it is: the sheet says so until it lands.
     pub fn expect_enrollment(&self, workspace: &str) {
         *self.settling.borrow_mut() = Some(workspace.to_owned());
-        *self.note.borrow_mut() = Some(tilo_sheets::word("directory-joining"));
+        *self.note.borrow_mut() = Some(crate::word("directory-joining"));
     }
 
     /// Whether a join is still being settled.
@@ -364,7 +351,7 @@ impl Store {
         match result {
             Ok(()) => *self.note.borrow_mut() = None,
             Err(reason) => {
-                self.failing(tilo_sheets::words(
+                self.failing(crate::words(
                     "directory-join-failed",
                     &[("name", name), ("error", reason)],
                 ));
@@ -563,10 +550,7 @@ impl Store {
                 // there is.
                 if !self.settling() {
                     *self.note.borrow_mut() = (!failures.is_empty()).then(|| {
-                        tilo_sheets::words(
-                            "directory-sites-unread",
-                            &[("error", &failures.join("; "))],
-                        )
+                        crate::words("directory-sites-unread", &[("error", &failures.join("; "))])
                     });
                 }
             }
@@ -585,7 +569,7 @@ impl Store {
                         );
                         // The sheet says why, and the row says it was not
                         // joined, to try again.
-                        self.failing(tilo_sheets::words(
+                        self.failing(crate::words(
                             "directory-join-failed",
                             &[("name", &name), ("error", &reason)],
                         ));
@@ -624,7 +608,7 @@ impl Store {
                 match granted {
                     Ok(granted) => {
                         let listed = if name.is_empty() {
-                            tilo_sheets::word("directory-joined-name")
+                            crate::word("directory-joined-name")
                         } else {
                             name
                         };
@@ -639,10 +623,7 @@ impl Store {
                             outcome = "failed",
                             "join: the pasted link or code joined no workspace"
                         );
-                        self.failing(tilo_sheets::words(
-                            "directory-code-failed",
-                            &[("error", &reason)],
-                        ));
+                        self.failing(crate::words("directory-code-failed", &[("error", &reason)]));
                         self.failures.borrow_mut().insert(key, reason);
                     }
                 }
@@ -763,12 +744,14 @@ async fn work(
             Ask::Join { key, name, door } => Answer::Joined {
                 key,
                 name,
-                granted: client::through_door(&door),
+                granted: client::through_door(&door).map_err(|error| said(&error)),
             },
             Ask::Community { site } => Answer::Community {
                 joined: match &client {
-                    Ok(client) => client::join_home(client, &site).await,
-                    Err(error) => Err(format!("no network to join over: {error}")),
+                    Ok(client) => client::join_home(client, &site)
+                        .await
+                        .map_err(|error| said(&error)),
+                    Err(error) => Err(format!("no network to join over: {}", said(error))),
                 },
                 site: site.to_string(),
             },
@@ -777,7 +760,7 @@ async fn work(
                 Answer::Taken {
                     key: text,
                     name: taken.name,
-                    granted: taken.granted,
+                    granted: taken.granted.map_err(|error| said(&error)),
                 }
             }
             Ask::Shelve {
@@ -789,10 +772,11 @@ async fn work(
                 awaiting,
             } => {
                 let result = match &client {
-                    Err(error) => Err(format!("no network to leave it over: {error}")),
+                    Err(error) => Err(format!("no network to leave it over: {}", said(error))),
                     Ok(client) => {
                         client::shelve(client, &site, host.as_deref(), &invitation, expires_at_ns)
                             .await
+                            .map_err(|error| said(&error))
                     }
                 };
                 match awaiting {
@@ -813,8 +797,10 @@ async fn work(
             } => Answer::Unshelved {
                 invite,
                 result: match &client {
-                    Err(error) => Err(format!("no network to take it back over: {error}")),
-                    Ok(client) => client::take_back(client, &site, &handle, &delete).await,
+                    Err(error) => Err(format!("no network to take it back over: {}", said(error))),
+                    Ok(client) => client::take_back(client, &site, &handle, &delete)
+                        .await
+                        .map_err(|error| said(&error)),
                 },
             },
         };
@@ -830,7 +816,7 @@ async fn work(
 /// What the community site and `site` list, in the order the sheet shows
 /// them.
 async fn read(
-    client: &Result<Client, String>,
+    client: &Result<Client, SiteError>,
     community: Option<url::Url>,
     site: Option<String>,
 ) -> Snapshot {
@@ -844,7 +830,7 @@ async fn read(
             Err(error) => {
                 return Snapshot {
                     listings: Vec::new(),
-                    failures: vec![error],
+                    failures: vec![said(&error)],
                 };
             }
         }
@@ -857,7 +843,10 @@ async fn read(
         Err(error) => {
             return Snapshot {
                 listings: Vec::new(),
-                failures: vec![format!("no network to read the directory over: {error}")],
+                failures: vec![format!(
+                    "no network to read the directory over: {}",
+                    said(error)
+                )],
             };
         }
     };
@@ -873,7 +862,7 @@ async fn read(
                 {
                     match client::fetch_directory(client, directory).await {
                         Ok(page) => listed = listings_of(page, directory, Some(site)),
-                        Err(error) => failures.push(error),
+                        Err(error) => failures.push(said(&error)),
                     }
                 }
                 if let Some(home) = &read.home
@@ -893,7 +882,7 @@ async fn read(
                 }
                 listings.extend(listed);
             }
-            Err(error) => failures.push(error),
+            Err(error) => failures.push(said(&error)),
         }
     }
     tracing::info!(
