@@ -60,10 +60,12 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
     );
     assert_header_inventory(&surface, &mut app);
     let expected = std::fs::read_to_string(&golden).unwrap_or_default();
-    assert!(
-        expected == text,
-        "the agent surface changed ({compact} bytes); review the diff and update with TILO_UPDATE_GOLDEN=1:\n{text}"
-    );
+    if expected != text {
+        let (was, now, at) = changed_lines(&expected, &text);
+        panic!(
+            "the agent surface changed ({compact} bytes) at line {at}; update with TILO_UPDATE_GOLDEN=1:\n--- golden\n{was}\n+++ now\n{now}"
+        );
+    }
     let actions: Vec<&str> = surface
         .as_array()
         .unwrap()
@@ -100,6 +102,27 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
             .any(|row| row["resource_kind"] == "tilo.control.segmented"),
         "the tool rail is reachable"
     );
+}
+
+/// The lines the golden and the surface disagree on, trimmed to their
+/// common start and end, and the line the first difference is on.
+fn changed_lines<'a>(expected: &'a str, text: &'a str) -> (String, String, usize) {
+    let was: Vec<&str> = expected.lines().collect();
+    let now: Vec<&str> = text.lines().collect();
+    let start = was.iter().zip(&now).take_while(|(a, b)| a == b).count();
+    let room = was.len().min(now.len()) - start;
+    let end = was
+        .iter()
+        .rev()
+        .zip(now.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    (
+        was[start..was.len() - end].join("\n"),
+        now[start..now.len() - end].join("\n"),
+        start + 1,
+    )
 }
 
 fn assert_header_inventory(surface: &serde_json::Value, app: &mut TestApp<App>) {
