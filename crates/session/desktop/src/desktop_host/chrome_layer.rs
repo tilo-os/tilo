@@ -2257,6 +2257,10 @@ impl Widget for DesktopChrome {
             self.apply_workspace_choice(choice);
             changed = true;
         }
+        for tab in self.handle.take_new_strip_moves() {
+            self.move_to_new_strip(tab);
+            changed = true;
+        }
         // The mark reads as pressed while the overview it zoomed out to is up.
         let overview_open = self.overview.is_open();
         if self.menu_shown.replace(overview_open) != overview_open {

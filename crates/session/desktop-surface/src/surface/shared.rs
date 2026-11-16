@@ -78,6 +78,7 @@ impl Shared {
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),
+            new_strip_moves: Vec::new(),
             asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,

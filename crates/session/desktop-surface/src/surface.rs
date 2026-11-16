@@ -227,6 +227,9 @@ struct Shared {
     /// The windows whose menu asked to be shared with their workspace, or to stop, waiting for
     /// the host ([`DesktopHandle::take_workspace_share_asks`]).
     workspace_share_asks: Vec<(TabId, bool)>,
+    /// The windows whose menu asked to go to a new strip, waiting for the host
+    /// ([`DesktopHandle::take_new_strip_moves`]).
+    new_strip_moves: Vec<TabId>,
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,

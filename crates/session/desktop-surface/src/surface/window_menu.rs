@@ -54,6 +54,12 @@ impl DesktopHandle {
         std::mem::take(&mut self.shared.borrow_mut().menus)
     }
 
+    /// The windows whose menu asked since the last call to go to a new strip ([`MOVE_TO_NEW_STRIP`]),
+    /// in the order they asked. The host makes the strip, as the person's own, and moves each there.
+    pub fn take_new_strip_moves(&self) -> Vec<TabId> {
+        std::mem::take(&mut self.shared.borrow_mut().new_strip_moves)
+    }
+
     /// Ask for the menu of the window covering the display the person works on, standing `at` a
     /// place on the shell, as a secondary click on its bar would. False when no window covers it.
     pub fn ask_covering_window_menu(&self, at: ui::kurbo::Point) -> bool {
@@ -137,6 +143,8 @@ pub const EQUALIZE: &str = "window-width-equal";
 pub const MOVE_LEFT: &str = "window-move-left";
 pub const MOVE_RIGHT: &str = "window-move-right";
 pub const MOVE_TO_STRIP: &str = "window-move-to-strip";
+/// Carry the window into a strip made for it below the last one.
+pub const MOVE_TO_NEW_STRIP: &str = "window-move-to-new-strip";
 pub const MOVE_TO_WORKSPACE: &str = "window-move-to-workspace";
 pub const MOVE_TO_DISPLAY: &str = "window-move-to-display";
 pub const WIDTH: &str = "window-width";
@@ -588,22 +596,34 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
             rows.push(Row::offered(id, t(label)).with_icon(icon));
         }
     }
-    let strips: Vec<Row> = workspace_at(tree, route)
-        .map(|workspace| {
+    let workspace = workspace_at(tree, route);
+    let mut strips: Vec<Row> = workspace
+        .into_iter()
+        .flat_map(|workspace| workspace.strips.iter().enumerate())
+        .filter(|(_, strip)| strip.id != route.strip)
+        .map(|(index, strip)| {
+            Row::offered(
+                move_to_strip_id(strip.id),
+                crate::names::strip_named(&strip.name, index),
+            )
+        })
+        .collect();
+    // Below the last strip, a strip of its own: for a window that shares its strip, as one alone
+    // would leave its strip empty behind it.
+    let shares_its_strip = workspace
+        .and_then(|workspace| {
             workspace
                 .strips
                 .iter()
-                .enumerate()
-                .filter(|(_, strip)| strip.id != route.strip)
-                .map(|(index, strip)| {
-                    Row::offered(
-                        move_to_strip_id(strip.id),
-                        crate::names::strip_named(&strip.name, index),
-                    )
-                })
-                .collect()
+                .find(|strip| strip.id == route.strip)
         })
-        .unwrap_or_default();
+        .is_some_and(|strip| strip.window_groups.len() > 1);
+    if shares_its_strip {
+        strips.push(Row::offered(
+            MOVE_TO_NEW_STRIP,
+            t("strip-switcher-new-strip"),
+        ));
+    }
     if !strips.is_empty() {
         rows.push(
             Row::submenu(MOVE_TO_STRIP, t("window-menu-move-to-strip"), strips)
@@ -1257,6 +1277,13 @@ impl crate::surface::DesktopHandle {
         }
         // The share with the workspace is the session's: the row leaves the ask for it, and the
         // session invokes its window share with the tab.
+        // The new strip is the person's, made by the host that keeps who made each strip.
+        if id == MOVE_TO_NEW_STRIP {
+            let mut shared = self.shared.borrow_mut();
+            shared.new_strip_moves.push(tab);
+            shared.wake.wake();
+            return Ok(());
+        }
         if id == SHARE_WITH_WORKSPACE || id == STOP_SHARING_WITH_WORKSPACE {
             self.ask_workspace_share(tab, id == SHARE_WITH_WORKSPACE);
             return Ok(());

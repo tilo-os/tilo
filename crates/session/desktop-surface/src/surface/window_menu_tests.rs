@@ -517,6 +517,35 @@ fn a_window_moves_to_another_strip_by_its_name() {
     assert_eq!(strips, vec![StripId(90)], "the window is there now");
 }
 
+/// With one strip, a window that shares it is offered a new strip below, and choosing it leaves
+/// the move for the host that makes the strip; a window alone there is offered no strip at all.
+#[test]
+fn a_window_sharing_the_only_strip_is_offered_a_new_one() {
+    let (_surface, handle) = shell(2);
+    let route = first_route(&handle);
+    let rows = handle.window_menu(route.tab);
+    let strips = row(&rows, MOVE_TO_STRIP).expect("the strip submenu shows");
+    assert_eq!(
+        ids(&strips.children),
+        [MOVE_TO_NEW_STRIP],
+        "its one row makes a new strip"
+    );
+    assert_eq!(strips.children[0].label, "New strip");
+
+    handle
+        .choose_window_menu(route.tab, MOVE_TO_NEW_STRIP, None)
+        .expect("the row is offered, so it is chosen");
+    assert_eq!(handle.take_new_strip_moves(), vec![route.tab]);
+    assert!(handle.take_new_strip_moves().is_empty(), "taken once");
+
+    let (_surface, alone) = shell(1);
+    let route = first_route(&alone);
+    assert!(
+        row(&alone.window_menu(route.tab), MOVE_TO_STRIP).is_none(),
+        "a window alone in the only strip has nowhere to go"
+    );
+}
+
 /// A window moves into another workspace, by that workspace's name.
 #[test]
 fn a_window_moves_to_another_workspace_by_its_name() {
