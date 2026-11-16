@@ -2061,29 +2061,20 @@ impl AppWindow {
         }
     }
 
-    /// What the person typed, where it goes in what the field shows now: a splice of the shown text
-    /// and the place the typing keeps from its end.
+    /// What the person typed, where it goes in what the field shows now: their edit of what the
+    /// field showed when they began (`held`'s base), rebased over the app's edit of that same
+    /// text to what it sent since (`shown`), as a splice of the shown text.
     fn place_of(held: &Held, shown: &Value) -> (usize, usize, String) {
         let (base_text, now_text) = held.texts();
-        let (at, delete, insert) = splice_between(&base_text, &now_text);
         let shown = match shown {
             Value::Text(text) => text.clone(),
             Value::Rich(rich) => rich_text_of(rich),
             _ => base_text.clone(),
         };
-        let after = base_text.len().saturating_sub(at.saturating_add(delete));
-        let mut start = shown.len().saturating_sub(after.saturating_add(delete));
-        while !shown.is_char_boundary(start) {
-            start = start.saturating_sub(1);
-        }
-        // What they deleted that the field no longer shows is gone already: the app took it out
-        // meanwhile (an entry it emptied once what was typed in it was made). Only what is still
-        // there is deleted.
-        let mut end = start.saturating_add(delete).min(shown.len());
-        while !shown.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        (start, end.saturating_sub(start), insert)
+        rebase_splice(
+            splice_between(&base_text, &now_text),
+            splice_between(&base_text, &shown),
+        )
     }
 
     /// What the person typed into the field of a resource the lane left: an edit of the resource
@@ -2367,6 +2358,42 @@ fn say(words: &Words) -> String {
             t_args(id, &args)
         }
     }
+}
+
+/// The splice `ours` of a text, made against the same text as `theirs`, as a splice of the text
+/// `theirs` made: what both inserted stays, ours after theirs where both insert at one place,
+/// and what ours deletes that theirs deleted already is gone. Offsets are bytes.
+#[must_use]
+pub fn rebase_splice(
+    (at, delete, insert): (usize, usize, String),
+    (their_at, their_delete, their_insert): (usize, usize, String),
+) -> (usize, usize, String) {
+    let end = at.saturating_add(delete);
+    let their_end = their_at.saturating_add(their_delete);
+    let added = their_insert.len();
+    // Wholly before what they changed: in place. An insert where theirs is goes after it.
+    if end < their_at || (end == their_at && delete > 0) {
+        return (at, delete, insert);
+    }
+    // Wholly after: moved by what theirs grew or shrank the text by.
+    if at >= their_end {
+        let moved = at.saturating_sub(their_delete).saturating_add(added);
+        return (moved, delete, insert);
+    }
+    // Ours starts in what theirs replaced: it goes after their insert, deleting only what theirs
+    // left of its range.
+    if at >= their_at {
+        let after = their_at.saturating_add(added);
+        return (after, end.saturating_sub(their_end), insert);
+    }
+    // Ours starts before theirs and reaches into it: ours deletes from its start to theirs, and on
+    // past theirs as far as it reached; their insert stays, after ours.
+    let past = end.saturating_sub(their_end);
+    let reach = their_at
+        .saturating_sub(at)
+        .saturating_add(added)
+        .saturating_add(past);
+    (at, reach, insert + &their_insert)
 }
 
 #[must_use]

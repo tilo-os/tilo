@@ -4,6 +4,43 @@ use super::*;
 use crate::adapter::{SLOT, kind};
 use tilo_render_protocol::patch::local;
 
+/// `base` edited to `ours` and, meanwhile, to `theirs`: what the text holds once ours is rebased
+/// over theirs.
+fn merged(base: &str, ours: &str, theirs: &str) -> String {
+    let (at, delete, insert) =
+        rebase_splice(splice_between(base, ours), splice_between(base, theirs));
+    let mut text = theirs.to_owned();
+    text.replace_range(at..at.saturating_add(delete), &insert);
+    text
+}
+
+#[test]
+fn held_typing_is_rebased_over_what_the_app_changed_since_it_was_typed() {
+    // Typed at the end while the app changed nothing: as typed.
+    assert_eq!(
+        merged("Q3 summari", "Q3 summarise", "Q3 summari"),
+        "Q3 summarise"
+    );
+    // The app inserted before the typing: the typing keeps its place in the text.
+    assert_eq!(merged("plan", "plans", "Q3 plan"), "Q3 plans");
+    // The app inserted after it: untouched.
+    assert_eq!(merged("plan", "Xplan", "plan v2"), "Xplan v2");
+    // Both inserted at one place: theirs first, ours after.
+    assert_eq!(merged("", "abc", "note"), "noteabc");
+    // The entry emptied itself after a submit the app took and emptied too: nothing left to do.
+    assert_eq!(merged("New task", "", ""), "");
+    // The person deleted a word and its space, the app replaced the word: the app's word stands,
+    // the space the person deleted goes.
+    assert_eq!(
+        merged("alpha beta gamma", "alpha gamma", "alpha B gamma"),
+        "alpha Bgamma"
+    );
+    // The person deleted across what the app inserted into: the rest of their delete goes.
+    assert_eq!(merged("abcdef", "af", "abXcdef"), "aXf");
+    // Multi-byte text keeps whole characters.
+    assert_eq!(merged("日本", "日本語", "新日本"), "新日本語");
+}
+
 #[test]
 fn a_splice_is_where_the_texts_differ() {
     assert_eq!(
@@ -18,7 +55,7 @@ fn a_splice_is_where_the_texts_differ() {
     for (before, after) in [("naïve", "naive"), ("日本", "日本語"), ("x", "")] {
         let (at, delete, insert) = splice_between(before, after);
         let mut text = before.to_owned();
-        text.replace_range(at..at + delete, &insert);
+        text.replace_range(at..at.saturating_add(delete), &insert);
         assert_eq!(text, after);
     }
 }
