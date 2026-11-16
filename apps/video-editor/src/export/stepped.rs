@@ -4,8 +4,9 @@
 //! Each step composites at most one frame through the same compositor the preview uses, hands a
 //! frame whose pixels are back to a [`media::edit::ClipEncoder`], and returns. A frame whose
 //! sources have not reached their exact picture is composited again later, never written with a
-//! stand-in. The file is written to the destination chosen before the render began: a page saves
-//! by contents, and its Save dialog needs the press that started the export.
+//! stand-in. The finished file goes back to the export's job, which writes it where the person
+//! chose before the render began: a page saves by contents, and its Save dialog needs the press
+//! that started the export.
 //!
 //! Sound is mixed by the preview's mixer a frame's worth at a time, and the render waits for
 //! every source's sound before the first frame, so the file never starts silent.
@@ -15,7 +16,7 @@ use std::sync::atomic::Ordering;
 use media::edit::{ClipEncoder, EncoderState};
 
 use super::{
-    CANCELLED, ExportSettings, ExportStatus, JobState, RenderPlan, audio_frame_at,
+    CANCELLED, ExportSettings, ExportStatus, JobState, RenderPlan, Rendered, audio_frame_at,
     audio_frames_for, output_dims,
 };
 use crate::gpu::seek_source::{Fetch, SeekFrameSource};
@@ -40,22 +41,22 @@ pub(super) struct SteppedRender {
     encoder: ClipEncoder,
     /// The sources' sound, when the project has any.
     sound: Option<crate::page_sound::PagePcm>,
-    destination: ui::portal::SaveDestination,
+    /// Where the finished file goes; `None` once it went.
+    rendered: Option<std::sync::mpsc::Sender<Rendered>>,
     /// The next frame to composite, and the composite of it on its way back.
     next: u64,
     pending: Option<PendingFrame>,
     /// Since when the next frame has been waiting for its sources.
     waiting_since: Option<ui::time::Instant>,
-    saving: Option<ui::portal::SaveChannel>,
     patience: std::time::Duration,
 }
 
 impl SteppedRender {
-    /// Begin rendering `project` for `destination`.
+    /// Begin rendering `project`; the file goes to `rendered`.
     pub(super) fn start(
         project: &Project,
         settings: ExportSettings,
-        destination: ui::portal::SaveDestination,
+        rendered: std::sync::mpsc::Sender<Rendered>,
         state: &JobState,
     ) -> Result<Self, String> {
         let missing = super::unreadable_sources(project);
@@ -88,11 +89,10 @@ impl SteppedRender {
                 .with_max_side(width.max(height)),
             encoder,
             sound,
-            destination,
+            rendered: Some(rendered),
             next: 0,
             pending: None,
             waiting_since: None,
-            saving: None,
             patience: state.frame_patience,
         })
     }
@@ -108,36 +108,24 @@ impl SteppedRender {
 
     fn advance(&mut self, state: &JobState) -> Result<(), ExportStatus> {
         let failed = |reason: String| ExportStatus::Failed { reason };
-        if self.saving.is_none() && state.cancel.load(Ordering::Relaxed) {
+        let Some(rendered) = &self.rendered else {
+            // The file went to the job, which writes it.
+            return Ok(());
+        };
+        if state.cancel.load(Ordering::Relaxed) {
             return Err(failed(CANCELLED.to_string()));
-        }
-        if let Some(saving) = &self.saving {
-            return match saving.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
-                Ok(ui::portal::SaveOutcome::Saved) => Err(ExportStatus::Done {
-                    path: if self.sound.is_some() && !self.encoder.has_sound() {
-                        // A browser that encodes no Opus: said rather than
-                        // left for the person to discover.
-                        format!("{} (picture only, without sound)", self.destination.name())
-                    } else {
-                        self.destination.name().to_string()
-                    },
-                }),
-                Ok(ui::portal::SaveOutcome::Cancelled) => Err(failed(CANCELLED.to_string())),
-                Ok(ui::portal::SaveOutcome::Failed(why)) => {
-                    Err(failed(format!("The video could not be saved: {why}")))
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(failed(
-                    "The video could not be saved: the save stopped answering".into(),
-                )),
-            };
         }
         match self.encoder.state() {
             EncoderState::Opening | EncoderState::Finishing => return Ok(()),
             EncoderState::Failed(why) => return Err(failed(format!("Cannot export: {why}"))),
             EncoderState::Done => {
-                let bytes = self.encoder.take_bytes();
-                self.saving = Some(self.destination.write(bytes));
+                let _sent = rendered.send(Rendered {
+                    bytes: self.encoder.take_bytes(),
+                    // A browser that encodes no Opus: said rather than left
+                    // for the person to discover.
+                    without_sound: self.sound.is_some() && !self.encoder.has_sound(),
+                });
+                self.rendered = None;
                 return Ok(());
             }
             EncoderState::Ready => {}

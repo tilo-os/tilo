@@ -6,6 +6,12 @@ use super::*;
 
 type Cx = ui::framework::EffectCx<Project>;
 
+/// The export's job: its completions get the window.
+type ExportCx = ui::framework::EffectCx<Project, VideoEditorApp>;
+
+/// The one export the window runs at a time: choosing where, rendering, and writing.
+const EXPORTING: &str = "video-editor-export";
+
 impl VideoEditorApp {
     // ---- project files ---------------------------------------------------
     //
@@ -211,9 +217,10 @@ impl VideoEditorApp {
 
     /// The picker is the grant: under a strict sandbox it is what earns the write to somewhere
     /// like `~/Videos`, and without it the file lands in a temp directory the user cannot
-    /// find.
+    /// find. The chooser opens inside the press, which a page's Save dialog needs; the
+    /// render runs once the person chose.
     pub(super) fn request_export(&mut self) {
-        if self.export_job.is_some() {
+        if self.export_job.is_some() || self.choosing_export() {
             return; // one render at a time
         }
         // The same api the button is painted from: a render that cannot run
@@ -222,16 +229,94 @@ impl VideoEditorApp {
             self.export_status = ExportStatus::Failed { reason };
             return;
         }
-        let name = self.export.suggested_filename(&self.project.name);
-        let ext = self.export.container.extension();
-        self.export_notice = Some(crate::resource::CATALOG.t("video-editor-save-where"));
-        if crate::export::renders_by_steps() {
-            // A page saves by contents: the file is chosen now, while the press still lets the
-            // page open its Save dialog, and written when the render finishes.
-            self.export_save_rx = Some(portal::request_export_save(&name, ext));
+        let Some(jobs) = self.jobs.clone() else {
             return;
+        };
+        let request = portal::export_request(
+            &self.export.suggested_filename(&self.project.name),
+            self.export.container.extension(),
+        );
+        self.export_status = ExportStatus::Idle;
+        self.export_notice = Some(crate::resource::CATALOG.t("video-editor-save-where"));
+        jobs.start::<Self>(EXPORTING, move |cx| {
+            Ok(cx.choose_destination(request, |app, chosen, cx| {
+                app.export_notice = None;
+                match chosen {
+                    Some(destination) => Ok(app.export_to(destination, cx)),
+                    None => Ok(ui::framework::Effected::done()),
+                }
+            }))
+        });
+    }
+
+    /// Whether the person is choosing where an export goes, or a render
+    /// waits to be written there.
+    pub(super) fn choosing_export(&self) -> bool {
+        self.jobs
+            .as_ref()
+            .is_some_and(|jobs| jobs.is_running(EXPORTING))
+    }
+
+    /// Stop choosing where an export goes; a render already running goes on.
+    pub(super) fn stop_choosing_export(&self) {
+        if let Some(jobs) = &self.jobs {
+            jobs.cancel(EXPORTING);
         }
-        self.export_dest_rx = Some(portal::request_export_destination(&name, ext));
+    }
+
+    /// Render to the file the person chose, on a worker thread.
+    #[cfg(any(feature = "gst", feature = "decode"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a render by steps keeps the destination to write it later"
+    )]
+    fn export_to(
+        &mut self,
+        destination: ui::portal::SaveDestination,
+        _cx: &mut ExportCx,
+    ) -> ui::framework::Effected {
+        let path = destination.location().map_or_else(
+            || crate::export::output_path(&self.export, &self.project),
+            Path::to_path_buf,
+        );
+        self.begin_export_to(path);
+        ui::framework::Effected::done()
+    }
+
+    /// Render a step at a time each frame, then write the file where the
+    /// person chose: the job waits for both.
+    #[cfg(not(any(feature = "gst", feature = "decode")))]
+    fn export_to(
+        &mut self,
+        destination: ui::portal::SaveDestination,
+        cx: &mut ExportCx,
+    ) -> ui::framework::Effected {
+        let (job, rendered) = crate::export::ExportJob::stepped(&self.project, self.export);
+        self.export_status = ExportStatus::Rendering { progress: 0.0 };
+        self.export_job = Some(job);
+        cx.wait_for(rendered, move |_, rendered, cx| {
+            // Without a file the render stopped, and its status says why.
+            let Some(rendered) = rendered else {
+                return Ok(ui::framework::Effected::done());
+            };
+            let name = if rendered.without_sound {
+                format!("{} (picture only, without sound)", destination.name())
+            } else {
+                destination.name().to_owned()
+            };
+            Ok(
+                cx.write_destination(&destination, rendered.bytes, move |app, written, _| {
+                    app.export_job = None;
+                    app.export_status = match written {
+                        Ok(()) => ExportStatus::Done { path: name },
+                        Err(why) => ExportStatus::Failed {
+                            reason: format!("The video could not be saved: {why}"),
+                        },
+                    };
+                    Ok(ui::framework::Effected::done())
+                }),
+            )
+        })
     }
 
     pub(super) fn begin_export_to(&mut self, destination: PathBuf) {
@@ -247,93 +332,10 @@ impl VideoEditorApp {
     /// Every frame: `needs_animation_frame` keeps frames coming while a job runs, so the
     /// progress bar moves.
     pub(super) fn poll_export(&mut self) {
-        // Destination round-trip.
-        let mut outcome = None;
-        let mut clear = false;
-        if let Some(rx) = self.export_dest_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(o) => {
-                    outcome = Some(o);
-                    clear = true;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
-            }
+        // A chooser that failed ended the job and said why on the window's bar.
+        if !self.choosing_export() {
+            self.export_notice = None;
         }
-        if clear {
-            self.export_dest_rx = None;
-        }
-        match outcome {
-            Some(portal::ExportDestOutcome::Opened(path)) => self.begin_export_to(path),
-            Some(portal::ExportDestOutcome::Cancelled) => {
-                self.export_notice = None;
-                if self.resource_reply.is_some() {
-                    self.settle_resource_job(Err(
-                        "export destination selection was cancelled".into()
-                    ));
-                }
-            }
-            Some(portal::ExportDestOutcome::Failed(reason)) => {
-                // No portal on this box. Say where the file will go rather than
-                // silently dropping it somewhere the user will never look.
-                let fallback = crate::export::output_path(&self.export, &self.project);
-                self.export_notice = Some(crate::resource::CATALOG.t_args(
-                    "video-editor-export-saving-to",
-                    &[
-                        ("reason", ui::i18n::ArgValue::Text(reason)),
-                        (
-                            "path",
-                            ui::i18n::ArgValue::Text(fallback.display().to_string()),
-                        ),
-                    ],
-                ));
-                self.begin_export_to(fallback);
-            }
-            None => {}
-        }
-        // A destination chosen for a render run a step at a time.
-        let chosen = match self
-            .export_save_rx
-            .as_ref()
-            .map(ui::portal::DestinationChannel::try_recv)
-        {
-            None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => None,
-            Some(answer) => {
-                self.export_save_rx = None;
-                Some(answer)
-            }
-        };
-        match chosen {
-            Some(Ok(ui::portal::DestinationOutcome::Chosen(destination))) => {
-                self.export_notice = None;
-                self.export_status = ExportStatus::Rendering { progress: 0.0 };
-                self.export_job = Some(Self::stepped_export(
-                    &self.project,
-                    self.export,
-                    destination,
-                ));
-            }
-            Some(Ok(ui::portal::DestinationOutcome::Cancelled)) => {
-                self.export_notice = None;
-                if self.resource_reply.is_some() {
-                    self.settle_resource_job(Err(
-                        "export destination selection was cancelled".into()
-                    ));
-                }
-            }
-            Some(Ok(ui::portal::DestinationOutcome::Failed(reason))) => {
-                self.export_notice = None;
-                self.export_status = ExportStatus::Failed { reason };
-            }
-            Some(Err(_)) => {
-                self.export_notice = None;
-                self.export_status = ExportStatus::Failed {
-                    reason: crate::resource::CATALOG.t("video-editor-export-no-answer"),
-                };
-            }
-            None => {}
-        }
-        // Running render.
         if let Some(job) = self.export_job.as_mut() {
             job.pump();
             let status = job.status();
@@ -343,34 +345,6 @@ impl VideoEditorApp {
                 self.export_job = None;
             }
         }
-    }
-
-    #[cfg(not(any(feature = "gst", feature = "decode")))]
-    fn stepped_export(
-        project: &crate::model::Project,
-        settings: crate::export::ExportSettings,
-        destination: ui::portal::SaveDestination,
-    ) -> crate::export::ExportJob {
-        crate::export::ExportJob::stepped(project, settings, destination)
-    }
-
-    /// A `GStreamer` build renders on a worker thread and never asks for a
-    /// destination this way; one that somehow did writes where it was told.
-    #[cfg(any(feature = "gst", feature = "decode"))]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the stepped build's signature, which keeps the destination"
-    )]
-    fn stepped_export(
-        project: &crate::model::Project,
-        settings: crate::export::ExportSettings,
-        destination: ui::portal::SaveDestination,
-    ) -> crate::export::ExportJob {
-        let path = destination.location().map_or_else(
-            || crate::export::output_path(&settings, project),
-            Into::into,
-        );
-        crate::export::start_export(project, &settings, path)
     }
 
     /// Whether a render is in flight (so Cancel means "stop it", not "close").

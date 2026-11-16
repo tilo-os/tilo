@@ -92,6 +92,7 @@ impl VideoEditorApp {
         app.actions = Some(cx.dispatcher());
         app.content = cx.content();
         app.live = Some(cx.live().clone());
+        app.jobs = Some(cx.window_jobs::<Self>());
         let mode = cx.mode();
         app.seed.capture = mode == RunMode::Capture;
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();

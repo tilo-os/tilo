@@ -660,7 +660,6 @@ video-editor-exported-project = Projektdatei exportiert
 video-editor-exported-name = { $name } exportiert
 video-editor-export-failed = Export nicht möglich: { $reason }
 video-editor-save-where = Speicherort wählen…
-video-editor-export-saving-to = { $reason }. Gespeichert wird in { $path }
 video-editor-export-missing-sources = Dieser Schnitt verweist auf { $sources }, die auf diesem Gerät fehlen
 
 ## What a search result says under its name
@@ -683,4 +682,3 @@ video-editor-undo-command = { $verb }: { $summary }
 video-editor-not-a-timecode = Keine Zeitangabe
 video-editor-export-summary = { $width }×{ $height }, { $length }, { $size }
 video-editor-export-marked-range = { $width }×{ $height }, { $length } des markierten Bereichs, { $size }
-video-editor-export-no-answer = Die Dateiauswahl wurde ohne Antwort geschlossen

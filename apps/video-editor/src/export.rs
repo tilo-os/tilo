@@ -497,6 +497,14 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     dir.join(settings.suggested_filename(&project.name))
 }
 
+/// The file a render run a step at a time made, for its job to write.
+#[cfg(not(any(feature = "gst", feature = "decode")))]
+pub struct Rendered {
+    pub bytes: Vec<u8>,
+    /// The project has sound this browser could not encode.
+    pub without_sound: bool,
+}
+
 pub struct ExportJob {
     shared: Arc<JobState>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -522,14 +530,15 @@ struct JobState {
 
 impl ExportJob {
     /// Start a render that runs a step at a time on the calling thread
-    /// (each [`Self::pump`]) and writes its file to `destination`: how a
-    /// browser page exports, with the encoder the browser has.
+    /// (each [`Self::pump`]) and hands its file to the receiver it returns,
+    /// which closes without one when the render stops: how a browser page
+    /// exports, with the encoder the browser has.
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     pub fn stepped(
         project: &Project,
         settings: ExportSettings,
-        destination: ui::portal::SaveDestination,
-    ) -> Self {
+    ) -> (Self, std::sync::mpsc::Receiver<Rendered>) {
+        let (rendered, file) = std::sync::mpsc::channel();
         let shared = Arc::new(JobState {
             done: AtomicU64::new(0),
             total: AtomicU64::new(0),
@@ -538,7 +547,7 @@ impl ExportJob {
             frame_patience: EXPORT_FRAME_PATIENCE,
             report: None,
         });
-        let stepped = match stepped::SteppedRender::start(project, settings, destination, &shared) {
+        let stepped = match stepped::SteppedRender::start(project, settings, rendered, &shared) {
             Ok(render) => Some(render),
             Err(reason) => {
                 if let Ok(mut slot) = shared.outcome.lock() {
@@ -547,11 +556,12 @@ impl ExportJob {
                 None
             }
         };
-        Self {
+        let job = Self {
             shared,
             handle: None,
             stepped,
-        }
+        };
+        (job, file)
     }
 
     pub fn pump(&mut self) {

@@ -81,26 +81,10 @@ mod media_stack {
     ));
 }
 
-/// A render outlives its dialog: once dismissed, the progress stays on the
-/// tree a reader hears, exactly once.
-#[test]
-#[cfg(feature = "gst")]
-#[serial_test::serial(video_editor_gst)]
-fn a_dismissed_render_is_still_announced() {
+/// A title `seconds` long: generated, so the cut has nothing to fetch.
+fn titled_cut(seconds: f64) -> video_editor::Project {
     use video_editor::Project;
     use video_editor::model::{MediaItem, MediaKind, TextSource, Track, TrackKind};
-    if !media_stack::media_stack() {
-        return;
-    }
-    let (services, host) = ui::host::HostServices::recording();
-    ui::host::install_default(services);
-    let out = tempfile::tempdir().unwrap();
-    host.respond_to_pick(ui::portal::PortalOutcome::Opened(
-        out.path().join("Tiny.mp4"),
-    ));
-
-    // A title is generated, so this cut has nothing to fetch; it runs long
-    // enough that the render is still going when the dialog is dismissed.
     let mut project = Project::new("Tiny");
     project.set_frame_size(320, 180);
     let media = uuid::Uuid::new_v4();
@@ -108,7 +92,7 @@ fn a_dismissed_render_is_still_announced() {
         id: media,
         name: "Title".into(),
         kind: MediaKind::Text,
-        duration: 30.0,
+        duration: seconds,
         text: Some(TextSource::new("Hi")),
         ..MediaItem::default()
     });
@@ -121,8 +105,68 @@ fn a_dismissed_render_is_still_announced() {
         ..Track::default()
     });
     let clip = project.add_clip(track, media, 0.0).unwrap();
-    project.clip_mut(clip).unwrap().out_point = 30.0;
-    let mut app = editor_with(&project);
+    project.clip_mut(clip).unwrap().out_point = seconds;
+    project
+}
+
+/// Export asks where to save, and a person who cancels the chooser gets the
+/// export answered rather than left waiting.
+#[test]
+#[cfg(feature = "gst")]
+fn a_cancelled_chooser_answers_the_export() {
+    let (services, host) = ui::host::HostServices::recording();
+    ui::host::install_default(services);
+    let mut app = editor_with(&titled_cut(1.0));
+    let answer = app.effect(&video_editor::actions::VideoEditorEffect::Export { path: None });
+    let refused = answer.expect_err("nothing was exported").to_string();
+    assert!(refused.contains("no file was chosen"), "{refused}");
+    let asked: Vec<String> = host
+        .pick_requests()
+        .iter()
+        .map(|request| request.title().to_owned())
+        .collect();
+    assert_eq!(asked, ["Export video"]);
+}
+
+/// Export renders into the file the person chose, and answers once it is
+/// there.
+#[test]
+#[cfg(feature = "gst")]
+#[serial_test::serial(video_editor_gst)]
+fn export_renders_into_the_chosen_file() {
+    if !media_stack::media_stack() {
+        return;
+    }
+    let (services, host) = ui::host::HostServices::recording();
+    ui::host::install_default(services);
+    let out = tempfile::tempdir().unwrap();
+    let file = out.path().join("Tiny.mp4");
+    host.respond_to_pick(ui::portal::PortalOutcome::Opened(file.clone()));
+    let mut app = editor_with(&titled_cut(1.0));
+    app.effect(&video_editor::actions::VideoEditorEffect::Export { path: None })
+        .expect("the export answers once the file is written");
+    let written = std::fs::metadata(&file).map_or(0, |meta| meta.len());
+    assert!(written > 0, "the render went where the chooser said");
+}
+
+/// A render outlives its dialog: once dismissed, the progress stays on the
+/// tree a reader hears, exactly once.
+#[test]
+#[cfg(feature = "gst")]
+#[serial_test::serial(video_editor_gst)]
+fn a_dismissed_render_is_still_announced() {
+    if !media_stack::media_stack() {
+        return;
+    }
+    let (services, host) = ui::host::HostServices::recording();
+    ui::host::install_default(services);
+    let out = tempfile::tempdir().unwrap();
+    host.respond_to_pick(ui::portal::PortalOutcome::Opened(
+        out.path().join("Tiny.mp4"),
+    ));
+    // It runs long enough that the render is still going when the dialog
+    // is dismissed.
+    let mut app = editor_with(&titled_cut(30.0));
 
     chord(&mut app, "ctrl", "e");
     press(&mut app, Role::Button, "Start export");

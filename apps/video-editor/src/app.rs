@@ -1092,13 +1092,11 @@ pub struct VideoEditorApp {
     /// publishes progress; this polls it each frame. Dropped once its status
     /// is terminal and the dialog has shown the outcome.
     export_job: Option<crate::export::ExportJob>,
-    /// Where a render run a step at a time will be saved, being chosen
-    /// before it starts ([`crate::export::renders_by_steps`]).
-    export_save_rx: Option<ui::portal::DestinationChannel>,
-    export_dest_rx: Option<portal::ExportDestChannel>,
-    /// A short, honest line about the export flow itself — choosing a
-    /// destination, or why the round-trip failed. Distinct from
-    /// [`ExportStatus`], which reports the *render*.
+    /// The window's own jobs: the export's chooser, render and write.
+    jobs: Option<ui::framework::Jobs<Project>>,
+    /// A short line about the export flow itself while the person chooses
+    /// where it goes. Distinct from [`ExportStatus`], which reports the
+    /// *render*.
     export_notice: Option<String>,
     /// What the last project-file operation did, said in the window's bar.
     /// Never a fake success: an export that failed says why, and a project
@@ -1264,8 +1262,7 @@ impl VideoEditorApp {
             waveforms: crate::waveform::WaveformCache::new(),
             projected_media: HashSet::new(),
             export_job: None,
-            export_save_rx: None,
-            export_dest_rx: None,
+            jobs: None,
             export_notice: None,
             project_notice: ui::widget::toast::Transient::new(),
             resource_operation: None,
@@ -4784,9 +4781,11 @@ impl VideoEditorApp {
                 .resource_reply
                 .as_ref()
                 .is_some_and(ui::framework::EffectReply::is_cancelled)
-            && let Some(job) = self.export_job.as_ref()
         {
-            job.cancel();
+            self.stop_choosing_export();
+            if let Some(job) = self.export_job.as_ref() {
+                job.cancel();
+            }
         }
         let outcome: Option<Result<(), String>> = match operation {
             VideoEditorEffect::Import { .. }
@@ -4803,6 +4802,10 @@ impl VideoEditorApp {
             VideoEditorEffect::Export { .. } => match &self.export_status {
                 ExportStatus::Done { .. } => Some(Ok(())),
                 ExportStatus::Failed { reason } => Some(Err(reason.clone())),
+                // The person cancelled the chooser, or it failed and said why.
+                _ if self.export_job.is_none() && !self.choosing_export() => {
+                    Some(Err("no file was chosen to export to".into()))
+                }
                 _ => None,
             },
             _ => None,
@@ -5837,8 +5840,6 @@ impl Widget for VideoEditorApp {
             || self.import_rx.is_some()
             || self.bin_rename.is_some() // a live rename blinks its caret
             || self.export_job.is_some() // a running render moves its progress bar
-            || self.export_dest_rx.is_some() // …and a picker is still an action in flight
-            || self.export_save_rx.is_some()
             // A meter that stopped mid-fall reads as a level that is still
             // there. Frames keep coming until the bars are down.
             || self.mix_meter_is_live()
