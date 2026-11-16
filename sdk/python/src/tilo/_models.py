@@ -26,6 +26,8 @@ class WorkspaceInfo:
     with (`viewer`, `commenter`, `editor`, `administrator`). It is `""` when
     the API did not say. `labels` are what the person labelled it with when
     they made it (`{"customer_id": "cus_8121"}`), read by their own keys alone.
+    `unattended` is whether the person let the keys made for it alone run
+    commands in its Linux machine without asking them each time.
     """
 
     id: str
@@ -33,6 +35,7 @@ class WorkspaceInfo:
     host: str
     role: str = ""
     labels: Mapping[str, str] = field(default_factory=dict)
+    unattended: bool = False
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> WorkspaceInfo:
@@ -47,6 +50,7 @@ class WorkspaceInfo:
                 for name, value in (labels.items() if isinstance(labels, Mapping) else ())
                 if isinstance(value, str)
             },
+            unattended=raw.get("unattended") is True,
         )
 
 

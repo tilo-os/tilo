@@ -8,8 +8,8 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote
 
-from ._endpoint import CURRENT, Endpoint, RunGroup, segments
-from ._errors import ProtocolError
+from ._endpoint import CURRENT, Endpoint, RunGroup, result_of, segments
+from ._errors import AskPending, ProtocolError
 from ._models import (
     Event,
     Hit,
@@ -343,6 +343,31 @@ class Workspace:
         return self.client.handoff(
             self.client._branch_workspace(self, name, labels or {}, idempotency_key)
         )
+
+    def unattended(self, on: bool = True) -> Any:
+        """Let the keys made for this workspace alone run commands in its
+        Linux machine (`terminal#run`) without asking the person each time,
+        here and in the branches made from it; `on=False` asks again from the
+        next command.
+
+        Turning it on asks the person on their approving device, whichever
+        key asks: it raises `AskPending`, and `ask.wait()` answers
+        `{"workspace": id, "unattended": True}` once they allow it, or raises
+        `Refused` if they do not. Turning it off asks nobody. A key reaching
+        all their workspaces is still asked, and so is everything else that
+        asks.
+        """
+        return self.client.handoff(self._unattended(on))
+
+    async def _unattended(self, on: bool) -> Any:
+        endpoint = await self._endpoint()
+        answer = await endpoint.json(
+            "PUT", endpoint.path("unattended"), json={"on": on}, grouped=False
+        )
+        try:
+            return endpoint.follow(answer)
+        except AskPending as ask:
+            raise ask._then(result_of) from None
 
     def run(self, title: str) -> RunOpening:
         """Group the calls inside into one run: one undo step per app."""

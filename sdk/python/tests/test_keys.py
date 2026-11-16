@@ -125,6 +125,41 @@ async def test_a_workspace_invited_into_is_not_branched(tilo):
     assert raised.value.code == "not_found"
 
 
+async def test_a_workspace_runs_commands_unattended_once_the_person_allows_it(tilo, api):
+    workspace = tilo.workspace("jane-doe")
+    with pytest.raises(AskPending) as raised:
+        await workspace.unattended()
+
+    ask = raised.value
+    assert ask.invocation_id == f"unattended-{WORKSPACE_ID}"
+    call = api.asked("PUT", "/unattended")[-1]
+    assert call["path"] == f"/v1/workspaces/{WORKSPACE_ID}/unattended"
+    assert call["body"] == b'{"on": true}'
+    assert not (await tilo.workspaces.list())[0].unattended, "off until they answer"
+
+    api.unattended_allowed = True
+    assert await ask.wait() == {"workspace": WORKSPACE_ID, "unattended": True}
+    assert (await tilo.workspaces.list())[0].unattended
+
+
+async def test_a_workspace_the_person_did_not_let_stays_asking(tilo, api):
+    with pytest.raises(AskPending) as raised:
+        await tilo.workspace("jane-doe").unattended()
+
+    api.unattended_allowed = False
+    with pytest.raises(Refused) as refused:
+        await raised.value.wait()
+    assert "did not allow" in refused.value.message
+    assert not (await tilo.workspaces.list())[0].unattended
+
+
+async def test_running_commands_unattended_is_turned_off_without_asking(tilo, api):
+    answer = await tilo.workspace("jane-doe").unattended(on=False)
+
+    assert answer == {"workspace": WORKSPACE_ID, "unattended": False}
+    assert api.asked("PUT", "/unattended")[-1]["body"] == b'{"on": false}'
+
+
 async def test_a_minted_key_makes_a_client_of_its_own(tilo):
     minted = await tilo.keys.mint(WORKSPACE_ID)
 

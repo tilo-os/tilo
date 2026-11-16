@@ -158,6 +158,9 @@ class FakeApi:
         self.ran: dict[str, int] = {}
         # The branches made, by the idempotency key each was asked with.
         self.branches: dict[str, dict[str, Any]] = {}
+        # Whether the person answers a workspace's ask to run commands
+        # unattended: `None` while they have not, then whether they allowed it.
+        self.unattended_allowed: bool | None = None
 
     # -- what a test drives ----------------------------------------------
 
@@ -300,6 +303,8 @@ class FakeApi:
             )
         if after == "members/invitations":
             return self.invite(call)
+        if after == "unattended" and request.method == "PUT":
+            return self.unattended(call, workspace)
         if after == "programs":
             return self.program(call)
         if after == "uploads":
@@ -371,6 +376,28 @@ class FakeApi:
         self.branches[call["headers"].get("idempotency-key", "")] = made
         self.ran["workspaces#branch"] = self.ran.get("workspaces#branch", 0) + 1
         return self.answer(201, made)
+
+    def unattended(self, call: dict[str, Any], workspace: str) -> httpx.Response:
+        """Running commands unattended in `workspace`: off at once, on only
+        once the person allows it, a run waiting for them meanwhile."""
+        row = next(row for row in self.workspaces if row["id"] == workspace)
+        if row["role"] != "owner":
+            return self.refuse(
+                403, "not_permitted", "the workspace refused: that workspace is not one of your own"
+            )
+        if not json.loads(call["body"] or b"{}").get("on"):
+            row.pop("unattended", None)
+            return self.answer(
+                200,
+                {"status": "ok", "path": "workspace/unattended#set",
+                 "result": {"workspace": workspace, "unattended": False}},
+            )
+        run = f"unattended-{workspace}"
+        self.asks[run] = {"path": "workspace/unattended#set", "workspace": workspace}
+        return self.answer(
+            202,
+            {"status": "pending", "run": run, "path": "workspace/unattended#set", "ask": {}},
+        )
 
     def delete_workspace(self, workspace: str) -> httpx.Response:
         own = [
@@ -622,6 +649,20 @@ class FakeApi:
         finished = self.finished.get(run)
         if finished is not None:
             return self.answer(200, finished)
+        if run in self.asks and "workspace" in self.asks[run]:
+            if self.unattended_allowed is None:
+                return self.answer(202, {"status": "pending", "run": run, "ask": {}})
+            if not self.unattended_allowed:
+                return self.refuse(403, "refused", "the workspace refused: the person did not allow it")
+            workspace = self.asks[run]["workspace"]
+            for row in self.workspaces:
+                if row["id"] == workspace:
+                    row["unattended"] = True
+            return self.answer(
+                200,
+                {"status": "ok", "run": run, "path": "workspace/unattended#set",
+                 "result": {"workspace": workspace, "unattended": True}},
+            )
         if run in self.asks:
             if not self.ask_answered:
                 return self.answer(202, {"status": "pending", "run": run, "ask": {"url": "https://tilo.sh/ask/1"}})
