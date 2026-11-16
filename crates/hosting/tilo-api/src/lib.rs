@@ -69,6 +69,8 @@ const MAX_PENDING: usize = 4_096;
 /// The prefix of a key's API run in the session table.
 const API_SESSION: &str = "api ";
 /// How long a person has to sign in and decide.
+/// How long the grants page waits for a host to name a grant's workspace.
+const NAME_WAIT: Duration = Duration::from_secs(3);
 const PENDING_LIFETIME_MS: u64 = 15 * 60 * 1000;
 
 /// What the server is called and where people sign in.
@@ -439,7 +441,7 @@ impl Server {
                 self.approve_key(id)
             }
             (&Method::POST, "/grants/keys") => self.new_key_from_page(headers, body),
-            (&Method::GET, "/grants") => self.grants_page(headers),
+            (&Method::GET, "/grants") => self.grants_page(headers).await,
             (&Method::POST, path)
                 if let Some(grant) = path
                     .strip_prefix("/grants/")
@@ -973,7 +975,7 @@ impl Server {
         text(StatusCode::OK, "")
     }
 
-    fn grants_page(&self, headers: &hyper::HeaderMap) -> Reply {
+    async fn grants_page(&self, headers: &hyper::HeaderMap) -> Reply {
         let now = now_ms();
         let Some(person) = self.browsers.person(headers, now) else {
             // Not signed in, or the sign-in expired: through the person's
@@ -986,11 +988,45 @@ impl Server {
                 }
             };
         };
-        let grants = self.store.grants_of(&person);
         let Ok(csrf) = self.page_token(headers) else {
             return busy("/grants");
         };
+        self.name_workspaces_of(&person).await;
+        let grants = self.store.grants_of(&person);
         html(StatusCode::OK, &pages::grants(&grants, &csrf))
+    }
+
+    /// Learn the name of each workspace one of `person`'s grants reaches
+    /// alone, where the server does not know it yet: the host it is on
+    /// names it to the grant's own key. A host that does not answer in time
+    /// leaves the name for the next read.
+    async fn name_workspaces_of(&self, person: &str) {
+        let unnamed: Vec<(String, String, GrantKey)> = self
+            .store
+            .grants_of(person)
+            .into_iter()
+            .filter(|grant| grant.workspace_name.is_none())
+            .filter_map(|grant| match (&grant.scope, grant.key()) {
+                (store::Scope::Workspace(workspace), Some(key)) => {
+                    Some((grant.id.clone(), workspace.clone(), key))
+                }
+                _ => None,
+            })
+            .collect();
+        let asks = unnamed
+            .into_iter()
+            .map(|(grant, workspace, key)| async move {
+                let named = async {
+                    let connection = self.connection(&grant, &key).await.ok()?;
+                    self.relay.workspace(&connection, &workspace).await.ok()?
+                };
+                if let Ok(Some(found)) = tokio::time::timeout(NAME_WAIT, named).await
+                    && let Err(error) = self.store.name_workspace(&grant, &found.name)
+                {
+                    tracing::warn!(%error, "the API could not keep a workspace's name");
+                }
+            });
+        futures_util::future::join_all(asks).await;
     }
 
     /// Whether `form` was posted from the grants page of the browser that

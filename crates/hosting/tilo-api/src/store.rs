@@ -103,6 +103,11 @@ pub struct Grant {
     /// a key or a minted grant was given. Its runs are named after it.
     pub client_name: String,
     pub scope: Scope,
+    /// The name of the one workspace [`Scope::Workspace`] reaches, as its
+    /// host called it when the server last asked: the grants page shows it.
+    /// `None` until the server learned it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     #[serde(default)]
     pub kind: GrantKind,
     /// When the grant's certificate expires, in Unix milliseconds; `None`
@@ -530,6 +535,7 @@ impl Store {
             client_id: client.id.clone(),
             client_name: client.name.clone(),
             scope: scope_of(key),
+            workspace_name: None,
             kind: GrantKind::Agent,
             expires_ms: expiry_ms(key),
             browser_pages: key.browser_pages(),
@@ -730,6 +736,7 @@ impl Store {
             client_id: String::new(),
             client_name: name.to_owned(),
             scope: scope_of(key),
+            workspace_name: None,
             kind,
             expires_ms: expiry_ms(key),
             browser_pages: key.browser_pages(),
@@ -836,6 +843,28 @@ impl Store {
                 return Vec::new();
             }
             revoke_with_minted(state, grant, now_ms)
+        })
+    }
+
+    /// Keep `name` as what grant `id`'s one workspace is called. A grant
+    /// that is gone, or reaches all workspaces, keeps nothing.
+    ///
+    /// # Errors
+    /// The store could not be written.
+    pub fn name_workspace(&self, id: &str, name: &str) -> io::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        self.change(|state| {
+            if let Some(grant) = state
+                .grants
+                .get_mut(id)
+                .filter(|grant| matches!(grant.scope, Scope::Workspace(_)))
+                && grant.workspace_name.as_deref() != Some(name)
+            {
+                grant.workspace_name = Some(name.to_owned());
+            }
         })
     }
 

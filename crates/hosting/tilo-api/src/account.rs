@@ -871,14 +871,19 @@ impl Server {
             parent: grant.id.clone(),
         };
         match self.store.record_key(&minted, &name, kind, None, now) {
-            Ok((minted, token)) => Outcome::Ok(json!({
+            Ok((minted, token)) => {
+                // Shown on the grants page beside the key; a store that
+                // cannot keep it now asks the host when the page is read.
+                let _ = self.store.name_workspace(&minted.id, &found.name);
+                Outcome::Ok(json!({
                 "grant": minted.id,
                 "name": minted.client_name,
                 "token": token,
                 "workspace": workspace,
                 "mcp_url": format!("{}/w/{workspace}/mcp", self.config.issuer),
                 "expires_at_ms": minted.expires_ms,
-            })),
+                }))
+            }
             Err(_) => failed(
                 "unavailable",
                 "the key could not be kept",

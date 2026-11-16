@@ -29,6 +29,8 @@ ul.grants{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 ul.grants li{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 14px;border-radius:10px;background:var(--field-bg);border:1px solid var(--line)}
 ul.grants li span{min-width:0;overflow-wrap:anywhere}
 ul.grants strong{color:var(--heading);font-weight:600}
+ul.grants ul.facts{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-wrap:wrap;column-gap:14px;row-gap:0;color:var(--quiet);font-size:13px}
+ul.grants ul.facts li{display:block;padding:0;border:0;background:none;border-radius:0}
 .actions{display:flex;flex-direction:row-reverse;justify-content:flex-start;gap:8px;flex-wrap:wrap}
 button,a.button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--button-line);background:transparent;color:var(--button);cursor:pointer;text-decoration:none;display:inline-block}
 button:hover,a.button:hover{background:var(--button-hover)}
@@ -113,6 +115,16 @@ fn page(title: &str, body: &str) -> String {
     )
 }
 
+/// `facts` as one line of separate items, each its own element: the
+/// stylesheet spaces them, and a reader or a copy takes each on its own.
+fn facts(facts: &[String]) -> String {
+    let items = facts.iter().fold(String::new(), |mut items, fact| {
+        let _ = write!(items, "<li>{}</li>", escape(fact));
+        items
+    });
+    format!("<ul class=\"facts\">{items}</ul>")
+}
+
 /// The person's grants, each with a revoke button.
 #[must_use]
 pub fn grants(grants: &[Grant], csrf: &str) -> String {
@@ -122,51 +134,51 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
             |grant| grant.client_name.clone(),
         )
     };
-    let rows = grants
-        .iter()
-        .fold(String::new(), |mut rows, grant| {
-            // The server keeps no workspace names, so a grant pinned to one
-            // says what it reaches without an id only the relay could name.
-            let mut reach = match &grant.scope {
-                Scope::Account => "All your workspaces".to_owned(),
-                Scope::Workspace(_) => "One workspace".to_owned(),
-            };
-            match &grant.kind {
-                GrantKind::Agent => {}
-                GrantKind::Key => reach.push_str(" \u{b7} API key"),
-                GrantKind::Minted { parent } => {
-                    let _ = write!(reach, " \u{b7} made by {}", name_of_grant(parent));
-                }
+    let rows = grants.iter().fold(String::new(), |mut rows, grant| {
+        let mut reach = vec![match &grant.scope {
+            Scope::Account => "All your workspaces".to_owned(),
+            // Named by its host when the server could ask it; a host that
+            // has not answered yet leaves the plain count.
+            Scope::Workspace(_) => grant
+                .workspace_name
+                .clone()
+                .unwrap_or_else(|| "One workspace".to_owned()),
+        }];
+        match &grant.kind {
+            GrantKind::Agent => {}
+            GrantKind::Key => reach.push("API key".to_owned()),
+            GrantKind::Minted { parent } => {
+                reach.push(format!("Made by {}", name_of_grant(parent)));
             }
-            if grant.browser_pages {
-                reach.push_str(" \u{b7} operates web pages in Browser");
-            }
-            let mut use_line = grant
+        }
+        if grant.browser_pages {
+            reach.push("Operates web pages in Browser".to_owned());
+        }
+        let mut use_line = vec![
+            grant
                 .last_used_ms
-                .map_or_else(|| "Never used".to_owned(), |ms| format!("Last used {}", date(ms)));
-            if let Some(device) = &grant.created_by {
-                let _ = write!(use_line, " \u{b7} approved on {device}");
-            }
-            match grant.expires_ms {
-                Some(ms) => {
-                    let _ = write!(use_line, " \u{b7} expires {}", date(ms));
-                }
-                None => use_line.push_str(" \u{b7} lasts until revoked"),
-            }
-            let _ = write!(
-                rows,
-                "<li><span><strong>{}</strong><br><span class=\"quiet\">{}</span>\
-                 <br><span class=\"quiet\">{}</span></span>\
-                 <form method=\"post\" action=\"/grants/{}/revoke\"><input type=\"hidden\" name=\"csrf\" value=\"{}\">\
-                 <button class=\"danger\">Revoke</button></form></li>",
-                escape(&grant.client_name),
-                escape(&reach),
-                escape(&use_line),
-                escape(&grant.id),
-                escape(csrf),
-            );
-            rows
-        });
+                .map_or_else(|| "Never used".to_owned(), |ms| format!("Last used {}", date(ms))),
+        ];
+        if let Some(device) = &grant.created_by {
+            use_line.push(format!("Approved on {device}"));
+        }
+        use_line.push(grant.expires_ms.map_or_else(
+            || "Lasts until revoked".to_owned(),
+            |ms| format!("Expires {}", date(ms)),
+        ));
+        let _ = write!(
+            rows,
+            "<li><span><strong>{}</strong>{}{}</span>\
+             <form method=\"post\" action=\"/grants/{}/revoke\"><input type=\"hidden\" name=\"csrf\" value=\"{}\">\
+             <button class=\"danger\">Revoke</button></form></li>",
+            escape(&grant.client_name),
+            facts(&reach),
+            facts(&use_line),
+            escape(&grant.id),
+            escape(csrf),
+        );
+        rows
+    });
     let list = if grants.is_empty() {
         "<p class=\"quiet\">No agent is connected.</p>".to_owned()
     } else {

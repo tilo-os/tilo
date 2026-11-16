@@ -876,11 +876,16 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
         page.contains(&format!("Last used {}", pages::date(later))),
         "{page}"
     );
-    assert!(page.contains("approved on Laptop"), "{page}");
-    assert!(page.contains("lasts until revoked"), "{page}");
+    // Each fact of the row is its own item, never joined into one line.
+    assert!(page.contains("<li>Approved on Laptop</li>"), "{page}");
+    assert!(page.contains("<li>Lasts until revoked</li>"), "{page}");
+    assert!(!page.contains('\u{b7}'), "{page}");
     // What a person reads of the scope: on the key's row, and the box the
     // next key is made with.
-    assert!(page.contains("operates web pages in Browser"), "{page}");
+    assert!(
+        page.contains("<li>Operates web pages in Browser</li>"),
+        "{page}"
+    );
     assert!(page.contains("name=\"browser_pages\""), "{page}");
     assert!(
         page.contains("The key opens, fills in and clicks the page without asking you"),
@@ -981,6 +986,28 @@ async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_on
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
     let reply = answer(&server, &answer_form(&asked, &proof, &lasting)).await;
     assert_eq!(reply.status(), StatusCode::FORBIDDEN);
+}
+
+#[test]
+fn a_key_for_one_workspace_is_listed_by_that_workspace_s_name() {
+    let grant = |name: Option<&str>| -> store::Grant {
+        serde_json::from_value(json!({
+            "id": "grant-1",
+            "person": "aa",
+            "client_id": "",
+            "client_name": "Jane",
+            "scope": {"workspace": "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21"},
+            "workspace_name": name,
+            "kind": "key",
+            "created_ms": 1,
+        }))
+        .unwrap()
+    };
+    let unnamed = pages::grants(&[grant(None)], "csrf");
+    assert!(unnamed.contains("<li>One workspace</li>"), "{unnamed}");
+    let named = pages::grants(&[grant(Some("Applicant: Jane Doe"))], "csrf");
+    assert!(named.contains("<li>Applicant: Jane Doe</li>"), "{named}");
+    assert!(!named.contains("One workspace"), "{named}");
 }
 
 #[test]
