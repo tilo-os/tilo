@@ -770,4 +770,15 @@ fn a_copy_keeps_reaching_the_workspace_its_source_hosts_past_what_its_custody_ho
         let _window = copy.window(NOTES, &title);
         wait_reaches(&copy, &laptop, &hosted, &title);
     }
+    // Neither device refused a write of the other's to their person's own store: a write a link's
+    // catch-up already carries is not sent after it, where its sibling would refuse it as a replay.
+    for device in [&laptop, &copy] {
+        let log = device.log();
+        assert!(
+            !log.contains("a peer's write was refused"),
+            "{} refused a write of its person's own store:\n{}",
+            device.label,
+            device.warnings()
+        );
+    }
 }

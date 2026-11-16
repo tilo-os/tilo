@@ -36,7 +36,7 @@ use super::PeerPersonal;
 use crate::NeighbourMsg;
 use crate::frames::{OUTGOING, bump};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::frames::{REFUSED, from_device, read_message, send_all, write_message};
+use crate::frames::{REFUSED, from_device, read_message, write_message};
 use collab_types::signer::DeviceSigner;
 #[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::Connection;
@@ -260,7 +260,8 @@ impl PersonalSync {
         // before the catch-up is taken from it.
         self.publish_devices();
         // Subscribe before anything is taken from the store, so a write
-        // published in between is sent after it rather than lost.
+        // published in between is not lost: the catch-up carries the ones
+        // below its sequence, and the rest follow it.
         let live = self.0.outgoing.subscribe();
         let changes = self.0.changed.subscribe();
         let send = connection
@@ -323,7 +324,24 @@ impl PersonalSync {
                 },
             }
         };
-        send_all(send, remote, documents, live, hands).await
+        // A record's snapshot is published at its author's next sequence and
+        // holds every change up to it, so the writes below its sequence are
+        // in the state the sibling is handed. Sent after it, one of them
+        // would reach the sibling as a replay of a write it already has.
+        for message in &documents {
+            write_message(&mut send, message).await?;
+        }
+        loop {
+            match live.recv().await {
+                Ok(message) if from_device(&message, remote) || !hands(&message) => {}
+                Ok(message) if carried_by(&documents, &message) => {}
+                Ok(message) => write_message(&mut send, &message).await?,
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    return Err("the link fell behind the device's changes".into());
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            }
+        }
     }
 
     /// A snapshot of every document this device holds, for `remote` to catch
@@ -389,6 +407,34 @@ impl PersonalSync {
     }
 }
 
+/// Whether the catch-up `documents` already carries `message`: a record's
+/// snapshot is signed at its author's next sequence and holds every change up
+/// to it, so a write at or below its sequence is in the state the sibling was
+/// handed.
+#[cfg(not(target_arch = "wasm32"))]
+fn carried_by(documents: &[NeighbourMsg], message: &NeighbourMsg) -> bool {
+    let NeighbourMsg::AppDocument {
+        app_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        return false;
+    };
+    documents.iter().any(|document| {
+        matches!(
+            document,
+            NeighbourMsg::AppDocument {
+                app_id: sent_app,
+                record_id: sent_record,
+                envelope: sent,
+                ..
+            } if sent_app == app_id && sent_record == record_id && sent.seq >= envelope.seq
+        )
+    })
+}
+
 /// The document `message` carries, as local apps are handed it.
 fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     let NeighbourMsg::AppDocument {
@@ -417,5 +463,158 @@ impl ProtocolHandler for PersonalSync {
         self.run(&connection)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::super::PersonalStore;
+    use super::*;
+    use automerge::AutoCommit;
+    use automerge::transaction::Transactable as _;
+    use collab_types::{CommitNamed as _, DocumentMutation};
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+    const APP: &str = "tube";
+    const RECORD: &str = "prefs";
+
+    fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
+        let key = SigningKey::from_bytes(&[n; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.device_public_key(),
+            device_label: format!("device-{n}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        (key, cert)
+    }
+
+    fn record(field: &str, value: &str) -> DocumentMutation {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, field, value).unwrap();
+        doc.commit_edit(APP, field);
+        DocumentMutation::Snapshot(doc.save())
+    }
+
+    fn change(field: &str, value: &str) -> DocumentMutation {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, field, value).unwrap();
+        doc.commit_edit(APP, field);
+        DocumentMutation::Incremental(doc.save())
+    }
+
+    fn field(doc: &[u8], name: &str) -> Option<String> {
+        use automerge::ReadDoc as _;
+        let doc = AutoCommit::load(doc).unwrap();
+        let (value, _) = doc.get(automerge::ROOT, name).unwrap()?;
+        value.into_string().ok()
+    }
+
+    fn hello(cert: &DeviceCert) -> NeighbourMsg {
+        NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(cert.clone()),
+            revocations: Vec::new(),
+        }
+    }
+
+    fn seq_of(message: &NeighbourMsg) -> u64 {
+        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+            panic!("not a document: {message:?}");
+        };
+        envelope.seq
+    }
+
+    /// A write published while a link takes its catch-up is in the state that
+    /// catch-up carries, so the link does not send it after the snapshot: a
+    /// sibling would refuse it as a replay of a write it already has. Its edit
+    /// reaches the sibling in the snapshot all the same, and a write published
+    /// after the catch-up still follows it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_the_catch_up_carries_reaches_its_sibling_without_a_refusal() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let (a_key, a_cert) = device(&root, 2);
+        let (b_key, b_cert) = device(&root, 3);
+        let now = tilo_clock::wall();
+
+        // A holds a record and B's certificate: its catch-up starts as soon
+        // as the link opens.
+        let mut a = PersonalStore::open(root_key, a_cert, now).unwrap();
+        a.receive(&a_key, b_key.device_public_key(), hello(&b_cert), now)
+            .unwrap();
+        a.publish(APP, RECORD, &record("theme", "dark"), &a_key, now)
+            .unwrap();
+        a.publish(APP, RECORD, &change("accent", "blue"), &a_key, now)
+            .unwrap();
+        let a = PersonalSync::over(PeerPersonal::new(a), a_key.clone());
+
+        // The link subscribes, and then a write lands: the snapshot the
+        // catch-up is taken from carries it.
+        let live = a.0.outgoing.subscribe();
+        a.publish(|store, key, now| store.publish(APP, RECORD, &change("font", "serif"), key, now))
+            .unwrap();
+        let (sent, mut frames) = tokio::io::duplex(1 << 20);
+        let sending = tokio::spawn({
+            let a = a.clone();
+            let remote = b_key.device_public_key();
+            let changes = a.changes();
+            async move { a.send_to(sent, remote, live, changes).await }
+        });
+
+        let greeting = read_message(&mut frames).await.unwrap().unwrap();
+        assert!(matches!(greeting, NeighbourMsg::IdentityHello { .. }));
+        let catch_up = read_message(&mut frames).await.unwrap().unwrap();
+        assert_eq!(
+            seq_of(&catch_up),
+            4,
+            "the snapshot is the record's next write"
+        );
+
+        // The next frame is the write published after the catch-up, not the
+        // one the catch-up carries.
+        a.publish(|store, key, now| store.publish(APP, RECORD, &change("size", "large"), key, now))
+            .unwrap();
+        let next = read_message(&mut frames).await.unwrap().unwrap();
+        assert_eq!(
+            seq_of(&next),
+            5,
+            "the write the catch-up carries is not sent after it"
+        );
+
+        // Everything the link sent reaches B, and nothing is refused.
+        let mut b = PersonalStore::open(root_key, b_cert, now).unwrap();
+        for message in [greeting, catch_up, next] {
+            b.receive(&b_key, a_key.device_public_key(), message, now)
+                .unwrap();
+        }
+        assert!(
+            b.write_refusals().is_empty(),
+            "no write was refused: {:?}",
+            b.write_refusals()
+        );
+        let held = b.document(APP, RECORD).unwrap();
+        assert_eq!(
+            field(&held, "font").as_deref(),
+            Some("serif"),
+            "the edit the catch-up carried is here"
+        );
+        assert_eq!(field(&held, "size").as_deref(), Some("large"));
+        assert_eq!(field(&held, "theme").as_deref(), Some("dark"));
+
+        sending.abort();
     }
 }
