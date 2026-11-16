@@ -25,12 +25,12 @@ pub(crate) fn strip_name(name: &str) -> Result<String, String> {
 
 /// Give the workspace's shared desktop a strip named each of `names`, in order,
 /// in its first workspace where none has that name yet. A workspace with no
-/// desktop starts one: a workspace named `shown` holding those strips.
+/// desktop starts one holding those strips; the workspace's name is its
+/// governance's, not the layout's.
 /// Returns whether it changed the desktop.
 pub(crate) fn settle_strips(
     doc: &mut automerge::AutoCommit,
     workspace: &str,
-    shown: &str,
     names: &[String],
 ) -> Result<bool, String> {
     if names.is_empty() {
@@ -43,7 +43,7 @@ pub(crate) fn settle_strips(
         // The desktop's workspace is the workspace itself, by its id, as every member's shell is.
         let identity = WorkspaceId::parse(workspace)
             .ok_or_else(|| format!("{workspace:?} is not a workspace id"))?;
-        let workspace = Workspace::new(identity, shown);
+        let workspace = Workspace::new(identity, "");
         tree.active = workspace.id();
         tree.workspaces.push(workspace);
     }
@@ -134,14 +134,14 @@ mod tests {
         fn settling_strips_adds_only_the_listed_ones_that_are_missing;
 
         phase a_workspace_without_a_desktop_starts_with_the_listed_strips;
-        // A workspace without a desktop starts one: the workspace itself, by its id, with its
-        // name and the listed strips.
+        // A workspace without a desktop starts one: the workspace itself, by its id,
+        // holding the listed strips. It carries no name; the governance holds that.
         {
             let mut doc = automerge::AutoCommit::new();
-            assert!(settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main", "Games"])).unwrap());
+            assert!(settle_strips(&mut doc, WORKSPACE, &names(&["Main", "Games"])).unwrap());
             assert_eq!(strips(&doc), ["Main", "Games"]);
             let tree: Layout = desktop(&doc).tree;
-            assert_eq!(tree.workspaces[0].name, "Hangout");
+            assert!(tree.workspaces[0].name.is_empty(), "the layout carries no name");
             assert_eq!(tree.workspaces[0].id().to_string(), WORKSPACE);
             assert_eq!(tree.active, tree.workspaces[0].id());
         }
@@ -151,7 +151,7 @@ mod tests {
         // what is there, and the strips people made and who made them are kept.
         {
             let mut doc = automerge::AutoCommit::new();
-            settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main"])).unwrap();
+            settle_strips(&mut doc, WORKSPACE, &names(&["Main"])).unwrap();
             let mut value = desktop(&doc);
             value.tree.workspaces[0]
                 .strips
@@ -159,8 +159,8 @@ mod tests {
             value.authors.insert(77, "alice".into());
             shared_record::write(&mut doc, &value).unwrap();
 
-            assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main"])).unwrap());
-            assert!(settle_strips(&mut doc, WORKSPACE, "Hangout", &names(&["Main", "Quiet"])).unwrap());
+            assert!(!settle_strips(&mut doc, WORKSPACE, &names(&["Main"])).unwrap());
+            assert!(settle_strips(&mut doc, WORKSPACE, &names(&["Main", "Quiet"])).unwrap());
             assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
             let value = desktop(&doc);
             assert_eq!(value.authors.get(&77).map(String::as_str), Some("alice"));
@@ -176,7 +176,7 @@ mod tests {
         // No listed strips leaves the record alone, even an absent one.
         {
             let mut doc = automerge::AutoCommit::new();
-            assert!(!settle_strips(&mut doc, WORKSPACE, "Hangout", &[]).unwrap());
+            assert!(!settle_strips(&mut doc, WORKSPACE, &[]).unwrap());
             assert!(shared_record::read(&doc, None).is_none());
         }
 

@@ -1052,7 +1052,6 @@ pub(crate) async fn settle_strips(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    shown: &str,
     strips: &[String],
 ) -> anyhow::Result<()> {
     if strips.is_empty() {
@@ -1060,7 +1059,7 @@ pub(crate) async fn settle_strips(
     }
     workspaces
         .author_workspace_record(workspace, cert, crate::workspace_strips::DESKTOP, |doc| {
-            crate::workspace_strips::settle_strips(doc, workspace, shown, strips)
+            crate::workspace_strips::settle_strips(doc, workspace, strips)
         })
         .await
         .map(drop)
@@ -1442,7 +1441,6 @@ pub(crate) async fn run(
             &workspaces,
             &workspace,
             &host_cert,
-            &shown,
             &persistent.strips,
         )
         .await?;
