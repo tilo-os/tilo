@@ -139,8 +139,7 @@ pub struct PeerStatus {
     /// When each of a joined workspace's people was admitted, by workspace, by person id: the
     /// order people who share a name are numbered in, as the workspace's roster numbers them.
     pub workspace_joined: BTreeMap<String, BTreeMap<String, u64>>,
-    /// What the host answered the entry this session asked for
-    /// (its entry entry), once it did.
+    /// What the host answered the entry this session asked for, once it did.
     pub entry: Option<Entry>,
 }
 

@@ -152,7 +152,7 @@ mod tests {
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
-        fn the_doors_limits_count_asks_per_network_and_window;
+        fn the_entrys_limits_count_asks_per_network_and_window;
 
         phase ipv6_addresses_share_their_slash_64;
         {

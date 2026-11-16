@@ -872,7 +872,7 @@ impl Workspaces {
         let Some((door, mail)) = self.inner.entry.mail.get() else {
             return Err(CollaborationError::new("this entry sends no mail"));
         };
-        if !tilo_relay_protocol::workspaces::invitation_on_door(door, &link) {
+        if !tilo_relay_protocol::workspaces::invitation_on_entry(door, &link) {
             return Err(CollaborationError::new(
                 "only an invitation on this entry is mailed",
             ));

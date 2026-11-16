@@ -485,7 +485,7 @@ mod tests {
         let grant = issue_agent_grant(
             &root,
             agent,
-            "Claude Code via door.example",
+            "Claude Code via entry.example",
             DeviceCapabilities::agent_grant(scope),
             Some(now + week),
         )
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(grant.capabilities, DeviceCapabilities::agent_grant(scope));
         assert!(grant.capabilities.agent_grant_holds());
         assert_eq!(grant.expires_at_ns, Some(now + week));
-        assert_eq!(grant.device_label, "Claude Code via door.example");
+        assert_eq!(grant.device_label, "Claude Code via entry.example");
         assert!(verify_device_cert_at(&grant, now + week).is_err());
 
         let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);

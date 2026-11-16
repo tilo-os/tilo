@@ -108,7 +108,7 @@ mod tests {
 
     use super::*;
 
-    const AUDIENCE: &str = "https://door.example";
+    const AUDIENCE: &str = "https://entry.example";
 
     fn device(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
         let mut cert = DeviceCert {
@@ -182,16 +182,16 @@ mod tests {
     fn a_grant_is_labelled_by_its_client_and_service() {
         assert_eq!(
             grant_label("Claude Code", AUDIENCE),
-            "Claude Code via door.example"
+            "Claude Code via entry.example"
         );
         assert_eq!(
             grant_label("Claude Code", "http://localhost:8787"),
             "Claude Code via localhost:8787"
         );
-        assert_eq!(grant_label("  ", AUDIENCE), "An agent via door.example");
+        assert_eq!(grant_label("  ", AUDIENCE), "An agent via entry.example");
         assert_eq!(
             grant_label("two\nlines", AUDIENCE),
-            "twolines via door.example"
+            "twolines via entry.example"
         );
         let long = grant_label(&"é".repeat(100), AUDIENCE);
         assert!(
@@ -200,7 +200,7 @@ mod tests {
             long.len()
         );
         assert!(long.starts_with(&"é".repeat(10)));
-        assert!(long.ends_with(" via door.example"));
+        assert!(long.ends_with(" via entry.example"));
         let long_service = grant_label(
             "Claude Code",
             &format!("https://{}.example", "a".repeat(100)),

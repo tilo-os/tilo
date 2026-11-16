@@ -1854,7 +1854,7 @@ fn wait_list_page(
     clippy::significant_drop_tightening,
     reason = "the relay and its workspaces serve the entry until the relay shuts down at the end"
 )]
-async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off() {
+async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off() {
     use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
 
     let root = SigningKey::from_bytes(&[150; 32]);

@@ -685,7 +685,7 @@ impl EntryMail {
     /// Whether `link` is an invitation on this entry, which is all a member
     /// may have the entry mail.
     pub fn on_page(&self, link: &str) -> bool {
-        tilo_relay_protocol::workspaces::invitation_on_door(&self.entry, link)
+        tilo_relay_protocol::workspaces::invitation_on_entry(&self.entry, link)
     }
 
     /// The entry's page, which its mails' links open.
@@ -865,7 +865,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn the_door_mails_only_what_is_safe_and_stays_honest_about_it;
+        fn the_entry_mails_only_what_is_safe_and_stays_honest_about_it;
 
         phase confirmation_acceptance_and_queue_failure_stay_honest_across_restart;
         {
@@ -934,7 +934,7 @@ mod tests {
             assert!(!logged.contains("ada@") && !logged.contains("c0ffee"));
         }
 
-        phase a_member_has_only_invitations_on_this_door_mailed;
+        phase a_member_has_only_invitations_on_this_entry_mailed;
         {
             let entry = EntryMail::new(
                 Arc::new(FakeMailer::default()),
@@ -970,7 +970,7 @@ mod tests {
             }
         }
 
-        phase the_door_mails_only_plain_https_links_on_a_page_that_is_one;
+        phase the_entry_mails_only_plain_https_links_on_a_page_that_is_one;
         {
             assert!(safe_url("https://tilo.example/", false));
             assert!(safe_url(

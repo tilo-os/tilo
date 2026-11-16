@@ -603,7 +603,7 @@ impl super::Workspaces {
     /// for whoever runs the relay to send from the web entry `entry`: until
     /// this is called, the workspaces send no mail and refuse to, and they mail
     /// only invitations on that entry
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]). `None` once
+    /// ([`tilo_relay_protocol::workspaces::invitation_on_entry`]). `None` once
     /// called before.
     #[must_use]
     pub fn mail_wait_list(
@@ -617,7 +617,7 @@ impl super::Workspaces {
 
     /// The page the workspace's entry mails from, when it mails at all: a link
     /// an invitation is mailed at leads there
-    /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]).
+    /// ([`tilo_relay_protocol::workspaces::invitation_on_entry`]).
     #[must_use]
     pub fn mail_door(&self) -> Option<String> {
         self.inner.entry.mail.get().map(|(entry, _)| entry.clone())

@@ -524,7 +524,7 @@ pub const MAX_INVITATION_LINK: usize = 16 * 1024;
 /// than [`MAX_INVITATION_LINK`] and without spaces or control characters.
 /// Only such a link is mailed to an address on a wait list for a member.
 #[must_use]
-pub fn invitation_on_door(entry: &str, link: &str) -> bool {
+pub fn invitation_on_entry(entry: &str, link: &str) -> bool {
     entry.ends_with('/')
         && link.len() <= MAX_INVITATION_LINK
         && link
@@ -606,11 +606,11 @@ mod tests {
         phase a_mailed_invitation_is_on_the_door;
         {
             let entry = "https://tilo.example/";
-            assert!(invitation_on_door(
+            assert!(invitation_on_entry(
                 entry,
                 "https://tilo.example/#/workspace?invite=signed-invitation"
             ));
-            assert!(invitation_on_door(
+            assert!(invitation_on_entry(
                 entry,
                 "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
             ));
@@ -622,7 +622,7 @@ mod tests {
                 "https://tilo.example/i/han dle#key",
                 "https://elsewhere.example/i/handle#key",
             ] {
-                assert!(!invitation_on_door(entry, elsewhere), "{elsewhere:?}");
+                assert!(!invitation_on_entry(entry, elsewhere), "{elsewhere:?}");
             }
         }
 
