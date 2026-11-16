@@ -17,6 +17,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
 use ui::widget::Widget;
+use ui::widget::solve_built_layout;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -834,28 +835,21 @@ fn run_bench_scroll(
             &[child],
         )?;
 
-        let solve = |taffy: &mut TaffyTree<()>,
+        let available = Size {
+            width: AvailableSpace::Definite(w as f32),
+            height: AvailableSpace::Definite(h as f32),
+        };
+        let solve = |widget: &dyn Widget,
+                     taffy: &mut TaffyTree<()>,
                      node_map: &HashMap<NodeId, *mut dyn Widget>,
                      tr: &mut TextRenderer|
          -> Result<(), Box<dyn std::error::Error>> {
-            taffy.compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
+            // SAFETY: the tree, its node map and the renderer stay exclusively borrowed.
+            unsafe { solve_built_layout(widget, taffy, root, node_map, tr, available) }?;
             Ok(())
         };
 
-        solve(&mut taffy, &node_map, &mut tr)?;
+        solve(widget.as_ref(), &mut taffy, &node_map, &mut tr)?;
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
             let mut scene = Scene::new();
@@ -898,7 +892,7 @@ fn run_bench_scroll(
             }
             if force_compute || needs_measure {
                 let t = ui::time::now();
-                solve(&mut taffy, &node_map, &mut tr)?;
+                solve(widget.as_ref(), &mut taffy, &node_map, &mut tr)?;
                 compute.push(t.elapsed().as_micros());
             } else {
                 compute.push(0);
