@@ -1602,15 +1602,15 @@ impl Worker {
 
     /// Whether a request for `workspace_id` can run now: the workspace is
     /// joined, or it could not be joined at all, which the request reports;
-    /// and what it reads has opened, or the host holds no keys to hand it;
-    /// and for an open that shows a record on the layout, the layout too.
+    /// and what it reads has opened, or the host holds no keys to hand it.
+    /// Nothing else holds a request back: an open waits for no window
+    /// layout, which only shows what the action did.
     fn ready(&mut self, workspace_id: WorkspaceId, keys: &Keys) -> bool {
         if !self.joined(workspace_id) {
             return false;
         }
         let needs = keys.needs();
-        (matches!(needs, Needs::Joined) || self.opened(workspace_id, needs))
-            && self.layout_opened(workspace_id, keys)
+        matches!(needs, Needs::Joined) || self.opened(workspace_id, needs)
     }
 
     /// Hand this device the host's keys for the records of `workspace_id`
@@ -2600,10 +2600,12 @@ impl Worker {
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
         let layout = crate::participant::desktop_route(named);
+        // Read, not acted on: a layout this host cannot open yet refuses nothing, it only goes
+        // without the window.
         let state = self
             .refresh(
                 workspace_id,
-                Needs::Act {
+                Needs::Read {
                     app_id: &layout.app_id,
                     record: &layout.record,
                 },
@@ -2625,16 +2627,14 @@ impl Worker {
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        // A host that holds no layout of the workspace starts none: the people's pages place
-        // their windows on the layout they hold.
+        // A host that holds no layout of the workspace starts none and waits for none: the open is
+        // done, and the people's pages show the record on the layout they hold, in their own way.
         let Some(held) = workspace
             .records
             .as_ref()
             .and_then(WorkspaceRecords::desktop)
         else {
-            return Err(Outcome::Rejected(ActionHostError::Refused {
-                reason: "this host holds no layout of the workspace".to_owned(),
-            }));
+            return Ok(ActionOutput::default());
         };
         let view = tilo_desktop_model::place::View {
             app_id: app,

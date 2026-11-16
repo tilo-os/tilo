@@ -27,10 +27,6 @@ pub(super) enum Keys {
         record: String,
         act: bool,
     },
-    /// The record an open shows, read, and the workspace's layout it shows it on: the layout as
-    /// the people left it, which the workspace sends this member only once asked, so a window
-    /// the open adds lands beside theirs rather than in a layout of its own.
-    Shown { app_id: String, record: String },
 }
 
 impl Keys {
@@ -39,24 +35,20 @@ impl Keys {
             Self::Joined => Needs::Joined,
             Self::Workspace => Needs::Workspace,
             Self::Record { act: true, .. } => self.act(),
-            Self::Record { act: false, .. } | Self::Shown { .. } => self.read(),
+            Self::Record { act: false, .. } => self.read(),
         }
     }
 
     pub(super) fn act(&self) -> Needs<'_> {
         match self {
-            Self::Record { app_id, record, .. } | Self::Shown { app_id, record } => {
-                Needs::Act { app_id, record }
-            }
+            Self::Record { app_id, record, .. } => Needs::Act { app_id, record },
             other => other.needs(),
         }
     }
 
     pub(super) fn read(&self) -> Needs<'_> {
         match self {
-            Self::Record { app_id, record, .. } | Self::Shown { app_id, record } => {
-                Needs::Read { app_id, record }
-            }
+            Self::Record { app_id, record, .. } => Needs::Read { app_id, record },
             other => other.needs(),
         }
     }

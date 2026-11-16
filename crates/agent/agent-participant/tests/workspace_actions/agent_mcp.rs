@@ -1145,3 +1145,65 @@ async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
         drop(agent);
     }
 }
+
+/// What a write may take at most: a write answers in well under a second, and one that
+/// waited out the host's ten-second wait for what it reads takes several times this.
+const WRITE_WITHIN: Duration = Duration::from_secs(3);
+
+/// An agent's writes on a logged-in computer answer as soon as the host ran them, in a
+/// workspace no page wrote a window layout in: an action waits for the data it reads and
+/// writes, never for a layout or a window to show it on, whether it makes a record,
+/// writes in one, or opens one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    // The person's page is in, and has written no layout.
+    let browser = Browser::open(&hosted, &browser_device, &host).await;
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-1", "Claude Code");
+    // Reads warm the agent's session up; what is timed below is the writes.
+    let (apps, failed) = tool(&server, "tilo_ls", json!({})).await;
+    assert!(!failed, "{apps}");
+
+    let mut slow = Vec::new();
+    for (path, args) in [
+        ("tasks#create", json!({"title": "First"})),
+        ("tasks#create", json!({"title": "Second"})),
+        ("tasks#create-area", json!({"name": "Launch"})),
+        ("tasks#open", json!({})),
+        ("notes#new-note", json!({"title": "Plan"})),
+        (
+            "notes#append-to-note",
+            json!({"title": "Plan", "markdown": "Ship."}),
+        ),
+    ] {
+        let asked = Instant::now();
+        let (answer, failed) = tool(&server, "tilo_do", json!({"path": path, "args": args})).await;
+        let took = asked.elapsed();
+        assert!(!failed, "{path}: {answer}");
+        eprintln!("{path}: {took:?}");
+        if took > WRITE_WITHIN {
+            slow.push((path, took));
+        }
+    }
+    assert!(
+        slow.is_empty(),
+        "writes waited out a timeout rather than running once the host was ready: {slow:?}"
+    );
+}

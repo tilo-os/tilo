@@ -213,15 +213,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// open does: its app's `open` on it, asked of the host as a step of this call's run. The host
     /// leaves a record a window already shows where the people put it. A provider that is no
     /// record (a window of a device) names the app `app_id`'s own record; an empty `app_id` then
-    /// names nothing. Whether it showed is no matter to the call: a record the host cannot show is
-    /// still what the agent changed.
+    /// names nothing. Whether it showed is no matter to the call, which answers once the host took
+    /// the open and never waits for the window: a record the host cannot show is still what the
+    /// agent changed, and each page watching shows the change in its own way.
     pub(super) async fn show(&self, provider: &str, app_id: &str) {
         use tilo_actions::remote::{
             APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
-            ReceiptStatus, application_action_target, application_record_target,
+            application_action_target, application_record_target,
         };
-        /// Longest a call waits for the host to show the window before it answers.
-        const SHOWING: std::time::Duration = std::time::Duration::from_secs(5);
         let (app, record) = match tilo_actions::remote::record_parts(provider) {
             Some((app, record)) => (app, record),
             None if !app_id.is_empty() => (app_id, ""),
@@ -257,14 +256,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             appearance: None,
         };
         let shown = match self.host().invoke(&self.caller(), request).await {
-            Some(Ok(receipt)) if matches!(receipt.status, ReceiptStatus::Accepted) => {
-                self.settled(invocation, SHOWING).await
-            }
-            Some(Ok(receipt)) => Ok(json!(format!("{:?}", receipt.status))),
+            Some(Ok(receipt)) => Ok(receipt.status),
             Some(Err(error)) => Err(error.to_string()),
             None => Err("the host did not answer".to_owned()),
         };
-        tracing::debug!(?shown, provider, app, "mcp: a window shown on the layout");
+        tracing::debug!(
+            ?shown,
+            provider,
+            app,
+            "mcp: a window asked for on the layout"
+        );
     }
 
     /// "Show this window" (`descriptor`, answered `value`) shows it to the person: its record opens
