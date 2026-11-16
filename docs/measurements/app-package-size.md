@@ -125,8 +125,8 @@ linking in release binaries, not this KPI.
 ## What the apps gained, 2026-11-09 to 11-15
 
 The budgets were last raised at 9ee2d3e1439 (run ra2f0869c96). Four days later 25 tapps were
-over them. Symbols builds at a4106fe8b0c (the first commit that day that compiles: code-editor
-did not, for 52 minutes) and at 0c8ae209a88, summed by crate with
+over them. Symbols builds at a4106fe8b0c (the first commit after that raise that compiles:
+code-editor's own build was broken in between) and at 0c8ae209a88, summed by crate with
 `tools/perf/tapp_symbol_sizes.py`, attribute the growth. Named code is what `nm` sees; a tapp is
 larger by its unwind tables, read-only data and the package format.
 
