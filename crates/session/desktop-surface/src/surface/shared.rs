@@ -17,18 +17,27 @@ impl Shared {
         self.wake.wake();
     }
 
-    /// Say that the window `tab` showed was closed, with the Undo that reopens it.
-    pub(super) fn said_closed(&self, tab: &tilo_desktop_model::Tab) {
+    /// Close the window `tab` as the person does, saying what closed with the Undo that reopens
+    /// it (the reopen Shift+Super+T makes).
+    pub(super) fn close(
+        &mut self,
+        tab: tilo_desktop_model::TabId,
+    ) -> Option<tilo_desktop_model::RemovedTab> {
+        let removed = self.tree.close_tab(tab)?;
         let reopen = Rc::clone(&self.reopen);
         self.acknowledger.say_with_action(
             crate::i18n::t_args(
                 "shell-window-closed",
-                &[("window", super::tile_content::window_name(tab).into())],
+                &[(
+                    "window",
+                    super::tile_content::window_name(&removed.tab).into(),
+                )],
             ),
             crate::i18n::t("shell-window-closed-undo"),
             move || reopen(),
         );
         self.wake.wake();
+        Some(removed)
     }
 
     /// What the person sees changed, or did not.

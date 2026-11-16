@@ -1635,10 +1635,7 @@ impl DesktopSurface {
                 }
             }
             for tab in group.take_pending_close_commits() {
-                if let Some(removed) = shared.tree.close_tab(tab) {
-                    shared.said_closed(&removed.tab);
-                    changed = true;
-                }
+                changed |= shared.close(tab).is_some();
             }
             if let Some((from, to)) = group.take_pending_tab_reorder() {
                 changed |= shared

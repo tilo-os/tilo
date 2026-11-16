@@ -1028,14 +1028,13 @@ fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op:
         .unwrap_or_default();
     let mut last = None;
     for tab in tabs {
-        match shared.tree.close_tab(tab) {
+        match shared.close(tab) {
             Some(removed) => last = Some(removed),
             None => break,
         }
     }
     match last {
         Some(removed) => {
-            shared.said_closed(&removed.tab);
             ops.push(super::row_op::RowOp::Close {
                 strip: removed.strip,
                 group: removed.group,
