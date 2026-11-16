@@ -202,6 +202,10 @@ pub struct Relay {
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
     _workspace_keys: Option<Arc<crate::workspace_keys::KeyService>>,
+    /// What puts its workspaces' questions about running commands unattended
+    /// to people: the relay's confirmations, held here so that its workspaces
+    /// hold them only weakly and nothing of the relay outlives it.
+    _asks_people: Arc<crate::certification::CertificationProtocol>,
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`RelayConfig::packet_relay`]).
     packet_server: Option<iroh_relay::server::Server>,
@@ -636,11 +640,15 @@ impl Relay {
             live.clone(),
             Some(workspaces.clone()),
         );
+        let asks_people = Arc::new(certification.clone());
         if let Some(governed) = &governed {
             certification.keep_issued_in(governed.clone());
             // Whether a workspace of theirs runs commands unattended is the
-            // person's to answer, on their approving devices.
-            governed.ask_people(Arc::new(certification.clone()));
+            // person's to answer, on their approving devices. The workspaces
+            // hold the confirmations weakly: they hold the workspaces.
+            governed.ask_people(Arc::new(crate::certification::AsksThroughConfirmations(
+                Arc::downgrade(&asks_people),
+            )));
         }
         let web = Box::new(WebContext {
             relay: handler.clone(),
@@ -736,6 +744,7 @@ impl Relay {
             #[cfg(feature = "web")]
             content_links: Arc::default(),
             _workspace_keys: workspace_keys,
+            _asks_people: asks_people,
             packet_server: packet_relay,
         })
     }

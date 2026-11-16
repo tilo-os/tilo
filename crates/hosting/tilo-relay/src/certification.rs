@@ -986,16 +986,25 @@ async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError
     Ok(())
 }
 
+/// The relay's confirmations as its workspaces reach them: weakly, since the
+/// confirmations hold the workspaces, and a relay that stopped asks nobody.
+pub(crate) struct AsksThroughConfirmations(pub(crate) std::sync::Weak<CertificationProtocol>);
+
 /// Whether a workspace runs commands unattended is asked as an agent's
 /// action is: on the approving devices of the person, who alone answer it.
-impl tilo_workspace_host::workspaces::AsksPeople for CertificationProtocol {
+impl tilo_workspace_host::workspaces::AsksPeople for AsksThroughConfirmations {
     fn ask(
         &self,
         person: [u8; 32],
         question: PendingConfirmation,
     ) -> tilo_workspace_host::workspaces::PersonAnswer {
-        let asked = self.clone();
-        Box::pin(async move { asked.confirm_for(person, question).await })
+        let asked = self.0.upgrade().map(|asked| (*asked).clone());
+        Box::pin(async move {
+            match asked {
+                Some(asked) => asked.confirm_for(person, question).await,
+                None => Err("this host stopped".into()),
+            }
+        })
     }
 }
 
