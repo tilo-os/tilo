@@ -20,13 +20,13 @@ use tilo_api::Server;
 use tilo_relay::workspaces::{BranchContent, Branched, Workspaces};
 
 /// A key's calls of `/v1`.
-struct Key<'a> {
-    api: &'a Arc<Server>,
-    token: String,
+pub(super) struct Key<'a> {
+    pub(super) api: &'a Arc<Server>,
+    pub(super) token: String,
 }
 
 impl Key<'_> {
-    async fn send(
+    pub(super) async fn send(
         &self,
         method: hyper::Method,
         path: &str,
@@ -45,11 +45,16 @@ impl Key<'_> {
             .await
     }
 
-    async fn get(&self, path: &str) -> (u16, Value) {
+    pub(super) async fn get(&self, path: &str) -> (u16, Value) {
         json_of(self.send(hyper::Method::GET, path, b"", &[]).await).await
     }
 
-    async fn post(&self, path: &str, body: &Value, extra: &[(&'static str, &str)]) -> (u16, Value) {
+    pub(super) async fn post(
+        &self,
+        path: &str,
+        body: &Value,
+        extra: &[(&'static str, &str)],
+    ) -> (u16, Value) {
         let body = body.to_string();
         json_of(
             self.send(hyper::Method::POST, path, body.as_bytes(), extra)
@@ -59,7 +64,7 @@ impl Key<'_> {
     }
 
     /// `POST path` with `body`, which must succeed: its answer.
-    async fn did(&self, path: &str, body: &Value) -> Value {
+    pub(super) async fn did(&self, path: &str, body: &Value) -> Value {
         let (status, answer) = self.post(path, body, &[]).await;
         assert!((200..300).contains(&status), "{path} {body}: {answer}");
         answer
@@ -67,7 +72,7 @@ impl Key<'_> {
 }
 
 /// A person on `on_relay`, their page and a key reaching all their workspaces.
-async fn person(on_relay: &OnRelay, name: &str) -> (SigningKey, String) {
+pub(super) async fn person(on_relay: &OnRelay, name: &str) -> (SigningKey, String) {
     let (root, _) = tilo_user_identity::UserIdentity::generate(name, 1);
     let page = enrol(
         &root,

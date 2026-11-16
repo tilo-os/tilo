@@ -55,6 +55,9 @@ mod api_unattended;
 #[path = "workspace_actions/api_v1.rs"]
 mod api_v1;
 #[cfg(test)]
+#[path = "workspace_actions/branch_files.rs"]
+mod branch_files;
+#[cfg(test)]
 #[path = "workspace_actions/branch_workspace.rs"]
 mod branch_workspace;
 
