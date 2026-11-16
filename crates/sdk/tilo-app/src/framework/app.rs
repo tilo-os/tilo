@@ -741,6 +741,29 @@ pub(crate) enum Editing {
     ReadOnly,
 }
 
+/// The permission that makes the record `run` opened editable: writing the
+/// app's records of the workspace, or, for a member's own record, writing that
+/// record, which the policy leaves to its person whatever their role.
+fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
+    match run
+        .launched
+        .record
+        .as_ref()
+        .map(ui_core::record::RecordId::route)
+    {
+        Some(record) if ui_core::permissions::policy::member_record(record).is_some() => {
+            PermissionScope::Action {
+                node: ui_core::permissions::TreePath::root()
+                    .app(app.id())
+                    .kind(app.kind)
+                    .resource(record),
+                kind: ActionKind::Undoable,
+            }
+        }
+        _ => PermissionScope::app(app.id(), ActionKind::Undoable),
+    }
+}
+
 /// What a root is built with besides its resource type: who edits it and
 /// how, what it was built for, and where its settings are kept.
 struct RootShell {
@@ -760,18 +783,19 @@ impl RootShell {
         storage: AppStorage,
         hosted: super::settings::Hosted,
     ) -> Self {
-        let scope = PermissionScope::app(app.id(), ActionKind::Undoable);
         let (permissions, read_only, me, run) = match editing {
             Editing::Live {
                 permissions,
                 me,
                 run,
-            } => {
-                let read_only = !permissions.check(&scope);
-                (Some(permissions), read_only, Some(me), run)
-            }
+            } => (Some(permissions), false, Some(me), run),
             Editing::ReadOnly => (None, true, None, Run::past()),
         };
+        let scope = write_scope(app, &run);
+        let read_only = read_only
+            || permissions
+                .as_ref()
+                .is_some_and(|permissions| !permissions.check(&scope));
         let run = run.for_participant(me.as_deref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
