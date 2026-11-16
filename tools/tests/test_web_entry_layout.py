@@ -189,7 +189,9 @@ class Layout(unittest.TestCase):
             for href in re.findall(r'href="([^"]+)"', text):
                 if href.startswith('data:'):
                     continue
-                self.assertTrue((site / href).is_file(), href)
+                # A link to a directory (`./` is the site's own root) is laid out too.
+                target = site / href
+                self.assertTrue(target.is_file() or target.is_dir(), href)
             self.assertFalse((site / 'v' / version / 'sign-in.html').exists(),
                              'a page under v/ would be served with that directory\'s own entry.json')
 
