@@ -1267,7 +1267,9 @@ impl HostedBrowsers {
         tracing::info!(%workspace, record, "placing the workspace's Browser in its VM");
         let (device, material) = {
             let authority = self.authority.lock_recover();
-            let authority = authority.as_ref().ok_or("this host is not running yet")?;
+            let authority = authority
+                .as_ref()
+                .ok_or("Browser is still starting. Try again in a minute.")?;
             let (device, secret) = certified(&authority.cert, &authority.key, DEVICE_LABEL)?;
             let material = Material {
                 workspace: workspace.to_owned(),
@@ -1293,7 +1295,8 @@ impl HostedBrowsers {
             crate::environment::EnvironmentScope::for_record(workspace_id, APP, record),
             until_ns,
         ) {
-            return Err(format!("Browser did not open: {error}"));
+            tracing::warn!(%error, "the Browser's device could not be confined");
+            return Err("Browser couldn't start. Try again in a minute.".to_owned());
         }
         let window = match self.sessions.start(&material) {
             Ok(window) => window,
@@ -1347,17 +1350,20 @@ impl HostedBrowsers {
         let mut apps = self.apps.lock_recover();
         let (device, material) = {
             let authority = self.authority.lock_recover();
-            let authority = authority
-                .as_ref()
-                .ok_or_else(|| words("this host is not running yet".to_owned()))?;
+            let authority = authority.as_ref().ok_or_else(|| {
+                words("Linux apps are still starting. Try again in a minute.".to_owned())
+            })?;
             // A session already up keeps its device: the material only
             // starts a session, and the VM host hands the app to the one
             // running.
             let (device, secret) = match apps.get(&workspace_id) {
                 Some(up) => (up.device.clone(), [0; 32]),
-                None => {
-                    certified(&authority.cert, &authority.key, APPS_DEVICE_LABEL).map_err(words)?
-                }
+                None => certified(&authority.cert, &authority.key, APPS_DEVICE_LABEL).map_err(
+                    |error| {
+                        tracing::warn!(%error, "the Linux apps device could not be certified");
+                        words("The app couldn't start. Try again in a minute.".to_owned())
+                    },
+                )?,
             };
             let material = Material {
                 workspace: workspace.to_owned(),
@@ -1385,7 +1391,10 @@ impl HostedBrowsers {
                 ),
                 until_ns,
             )
-            .map_err(|error| words(format!("the Linux app did not open: {error}")))?;
+            .map_err(|error| {
+                tracing::warn!(%error, "the Linux app's device could not be confined");
+                words("The app couldn't start. Try again in a minute.".to_owned())
+            })?;
         }
         let window = match self.sessions.start_app(&material, launch) {
             Ok(window) => window,
@@ -1558,7 +1567,7 @@ impl HostedBrowsers {
     ) -> Result<(), String> {
         let authority = self.authority.lock_recover();
         let Some(authority) = authority.as_ref() else {
-            return Err("this host is not running yet".to_owned());
+            return Err("The workspace isn't ready yet.".to_owned());
         };
         authority
             .environments
@@ -1870,12 +1879,36 @@ fn question(
     let address = &request.target.address;
     let context = request.context.as_ref();
     let agent_id = caller.acting().agent_id().unwrap_or_default().to_owned();
+    // A question about a page is put by the page itself when no agent named
+    // itself, and its detail names the site it leaves from rather than the
+    // record it is kept under: a person reads the address they are on.
+    let about_a_page = departure.is_some();
+    let agent_label = caller
+        .agent_name()
+        .map(str::to_owned)
+        .or_else(|| about_a_page.then(|| "This page".to_owned()))
+        .unwrap_or_else(|| address.action.clone());
+    let resource_label = departure.as_ref().map_or_else(
+        || {
+            context
+                .and_then(|context| context.resource.as_ref())
+                .map_or_else(
+                    || address.resource.clone(),
+                    |resource| resource.label.clone(),
+                )
+        },
+        |page| {
+            if page.page.is_empty() {
+                page.destination.clone()
+            } else {
+                page.page.clone()
+            }
+        },
+    );
     PendingConfirmation {
         id,
         agent_id,
-        agent_label: caller
-            .agent_name()
-            .map_or_else(|| address.action.clone(), str::to_owned),
+        agent_label,
         action_label: departure.as_ref().map_or_else(
             || {
                 context
@@ -1884,12 +1917,7 @@ fn question(
             },
             PageDeparture::doing,
         ),
-        resource_label: context
-            .and_then(|context| context.resource.as_ref())
-            .map_or_else(
-                || address.resource.clone(),
-                |resource| resource.label.clone(),
-            ),
+        resource_label,
         risk: context
             .and_then(|context| {
                 context
@@ -1898,6 +1926,14 @@ fn question(
                     .find(|facet| facet.key == tilo_actions::RISK_FACET)
             })
             .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
+        // A page about to send something is acting outside Tilo: the sheet
+        // says so instead of guessing "it deletes something" from a page it
+        // never inspected.
+        kind: if about_a_page {
+            "outside".to_owned()
+        } else {
+            String::new()
+        },
         workspace: workspace.to_owned(),
         expires_at_ns: until_ns,
         page: departure,
@@ -1955,20 +1991,16 @@ pub fn no_payment_method(free: u64) -> Refusal {
 }
 
 /// What a host that places no Browser refuses an open of it with: words that
-/// say why, since a Browser window needs a session this host has not.
+/// say why, since a Browser window cannot run here.
 #[must_use]
 pub fn unplaced() -> String {
-    "Browser does not open here: this host places no browser session, and a Browser \
-     window needs one. Open it on your own device instead."
-        .to_owned()
+    "Browser doesn't open here. Open it on your own device instead.".to_owned()
 }
 
 /// What a host that places no Linux apps refuses an open of one with.
 #[must_use]
 pub fn unplaced_linux_apps() -> String {
-    "Linux apps do not open here: this host runs no VM for the workspace. Open the app on \
-     your own device instead."
-        .to_owned()
+    "Linux apps don't open here. Open the app on your own device instead.".to_owned()
 }
 
 /// What a host knows of one of a caller's invocations: how it follows an open that answers with
@@ -2124,13 +2156,13 @@ fn place_record(
 ) -> RemoteActionMessage {
     let placement = browsers
         .workspace_name(workspace_id)
-        .ok_or_else(|| "this host serves no such workspace".to_owned())
+        .ok_or_else(|| "The workspace isn't ready yet. Try again in a minute.".to_owned())
         .and_then(|workspace| browsers.place(&workspace, workspace_id, record));
     match placement {
         Ok(_) => message,
         Err(reason) => {
             tracing::warn!(%workspace_id, %reason, "the workspace's Browser did not open");
-            refused(invocation, format!("Browser did not open: {reason}"))
+            refused(invocation, reason)
         }
     }
 }
@@ -2239,15 +2271,20 @@ pub fn placed_linux_app(
     };
     let placement = browsers
         .workspace_name(workspace_id)
-        .ok_or_else(|| AppRefusal::Words("this host serves no such workspace".to_owned()))
+        .ok_or_else(|| {
+            AppRefusal::Words("The workspace isn't ready yet. Try again in a minute.".to_owned())
+        })
         .and_then(|workspace| browsers.place_app(&workspace, workspace_id, &record, launch));
     match placement {
         Ok(_) => message,
         Err(AppRefusal::Refused(refusal)) => refused_by_plan(invocation, &refusal),
-        Err(AppRefusal::Words(reason)) => refused(
-            invocation,
-            format!("{} did not open: {reason}", launch.desktop_id),
-        ),
+        Err(AppRefusal::Words(reason)) => {
+            tracing::warn!(%workspace_id, %reason, "the workspace's Linux app did not open");
+            refused(
+                invocation,
+                "The app couldn't start. Try again in a minute.".to_owned(),
+            )
+        }
     }
 }
 

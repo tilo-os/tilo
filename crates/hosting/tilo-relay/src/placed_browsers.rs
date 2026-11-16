@@ -135,8 +135,7 @@ impl PlacedBrowsers {
         let opened: OpenedBrowser = follow(&device, &asked, linux_apps::target())
             .map_err(|error| match error {
                 OnMember::Plan(refusal) => AppRefusal::Refused(refusal),
-                OnMember::Refused(words) => AppRefusal::Words(words),
-                OnMember::Error(words) => AppRefusal::Words(format!("{host}: {words}")),
+                OnMember::Refused(words) | OnMember::Error(words) => AppRefusal::Words(words),
             })?
             .unwrap_or_default();
         Ok(Opened {
@@ -202,7 +201,7 @@ impl PlacedBrowsers {
         let opened = open_on(&device, &asked).map_err(|error| match error {
             OnMember::Refused(words) => OpenError::Refused(words),
             OnMember::Plan(refusal) => OpenError::Refused(refusal.message),
-            OnMember::Error(words) => OpenError::Error(format!("{host}: {words}")),
+            OnMember::Error(words) => OpenError::Error(words),
         })?;
         Ok(Opened {
             host,
@@ -235,7 +234,7 @@ impl PlacedBrowsers {
     /// Where `host`'s member device is reached.
     fn member(&self, host: &str) -> Result<iroh::EndpointAddr, String> {
         let member = self.placed.members().get(host).ok_or_else(|| {
-            format!("the placer named {host}, which is no VM host this host knows")
+            format!("the machine that runs this workspace is not reachable ({host})")
         })?;
         placed_shells::member_address(member)
     }
@@ -314,18 +313,25 @@ fn follow(
     // asks for, never sent.
     let caller = Caller::local_app("tilo.relay");
     let receipt = placed_shells::settled(device.invoke(&caller, request))
-        .map_err(OnMember::Error)?
-        .map_err(|error| OnMember::Error(format!("the VM host refused it: {error}")))?;
+        .map_err(|error| {
+            tracing::warn!(%error, "asking a machine to start a session failed");
+            OnMember::Error("The machine couldn't start it.".to_owned())
+        })?
+        .map_err(|error| {
+            tracing::warn!(%error, "a machine refused to start a session");
+            OnMember::Error("The machine couldn't start it.".to_owned())
+        })?;
     if let ReceiptStatus::Rejected { error } = receipt.status {
-        return Err(OnMember::Refused(format!(
-            "the VM host refused it: {error}"
-        )));
+        tracing::warn!(%error, "a machine refused a session");
+        return Err(OnMember::Refused(
+            "The machine couldn't start it.".to_owned(),
+        ));
     }
     let until = Instant::now().checked_add(OPEN_PATIENCE);
     loop {
         if until.is_some_and(|until| Instant::now() >= until) {
             return Err(OnMember::Error(
-                "the VM host did not answer in time".to_owned(),
+                "It is taking too long to start.".to_owned(),
             ));
         }
         if let Some(mut change) = device.next_change(&caller, &invocation) {
@@ -351,10 +357,16 @@ fn follow(
                     .then(|| error.details.clone())
                     .flatten()
                     .and_then(|details| serde_json::from_value::<Refusal>(details).ok());
-                return Err(plan.map_or(OnMember::Error(error.message), OnMember::Plan));
+                if plan.is_none() {
+                    tracing::warn!(%error.message, "a machine failed to start a session");
+                }
+                return Err(plan.map_or_else(
+                    || OnMember::Error("The machine couldn't start it.".to_owned()),
+                    OnMember::Plan,
+                ));
             }
             InvocationUpdate::Cancelled { .. } => {
-                return Err(OnMember::Error("the open was cancelled".to_owned()));
+                return Err(OnMember::Error("The start was cancelled.".to_owned()));
             }
             InvocationUpdate::Accepted { .. }
             | InvocationUpdate::Progress { .. }
@@ -369,11 +381,19 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
     /// Hand `material` to the session in the workspace's VM, and answer its
     /// window once it is up.
     fn start(&self, material: &Material) -> Result<Window, String> {
-        let written = serde_json::to_string(material)
-            .map_err(|error| format!("Browser's material: {error}"))?;
+        let written = serde_json::to_string(material).map_err(|error| {
+            tracing::warn!(%error, "the Browser's material could not be written");
+            "Browser couldn't start. Try again in a minute.".to_owned()
+        })?;
         let opened = self
             .open(&material.workspace, &written)
-            .map_err(|error| format!("Browser did not open: {error}"))?;
+            .map_err(|error| match error {
+                OpenError::Refused(words) => words,
+                OpenError::Error(words) => {
+                    tracing::warn!(%words, "opening the workspace's Browser failed");
+                    "Browser couldn't start. Try again in a minute.".to_owned()
+                }
+            })?;
         Ok(Window {
             device: material.device.device_public_key,
             provider: opened.provider,
@@ -390,8 +410,10 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
     /// Hand `launch` to the workspace's Linux apps session, started with
     /// `material` when none runs.
     fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Window, AppRefusal> {
-        let written = serde_json::to_string(material)
-            .map_err(|error| AppRefusal::Words(format!("the apps session's material: {error}")))?;
+        let written = serde_json::to_string(material).map_err(|error| {
+            tracing::warn!(%error, "the apps session's material could not be written");
+            AppRefusal::Words("The app couldn't start. Try again in a minute.".to_owned())
+        })?;
         let opened = self.open_app(&material.workspace, &written, launch)?;
         Ok(Window {
             device: material.device.device_public_key,

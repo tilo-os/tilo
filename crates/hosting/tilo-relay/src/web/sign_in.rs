@@ -100,7 +100,7 @@ impl Web {
         tilo_user_identity::verify_device_cert_at(&cert, now_ns)
             .map_err(|_| forbidden("this is no live certificate of a device"))?;
         if cert.capabilities.stand_in {
-            return Err(forbidden("a stand-in is no device of the person"));
+            return Err(forbidden("that is not a device of a person"));
         }
         let revocations = self.context.certification.revocations();
         if revocations.refuses(&cert) {
@@ -120,7 +120,7 @@ impl Web {
         let user = cert.user_public_key;
         if self.stand_ins.live(&user, &revocations, now_ns).is_none() {
             return Err(forbidden(
-                "this person keeps no stand-in on this host to approve the tab",
+                "No device of this person can approve this browser here. Sign in from one of their devices first.",
             ));
         }
         let expires_at_ms = self

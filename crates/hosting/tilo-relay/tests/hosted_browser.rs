@@ -1176,10 +1176,17 @@ async fn a_click_on_a_submit_button_is_asked_about_by_what_leaves() {
 /// picture of the filled page.
 fn assert_leaves(question: &tilo_relay::certify::PendingConfirmation) {
     assert_eq!(
-        question.action_label, "send the form to https://visa.example (POST)",
-        "the person is told what leaves, where, and how"
+        question.action_label, "send the form to https://visa.example",
+        "the person is told what leaves and where"
     );
-    assert_eq!(question.resource_label, PAGE_RESOURCE);
+    assert_eq!(
+        question.resource_label, "https://visa.example/apply",
+        "the question names the page it leaves from, not an internal record"
+    );
+    assert_eq!(
+        question.kind, "outside",
+        "a page's departure acts outside Tilo"
+    );
     let page = question
         .page
         .as_ref()
@@ -2020,10 +2027,11 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_name
         .unwrap();
     let question = asked(&mut approver).await;
     assert_eq!(
-        question.action_label, "send the form to https://orders.example (POST)",
-        "the person is told what leaves, where, and how"
+        question.action_label, "send the form to https://orders.example",
+        "the person is told what leaves and where"
     );
-    assert_eq!(question.resource_label, PAGE_RESOURCE);
+    assert_eq!(question.resource_label, "https://orders.example");
+    assert_eq!(question.kind, "outside");
     let page = question
         .page
         .as_ref()
