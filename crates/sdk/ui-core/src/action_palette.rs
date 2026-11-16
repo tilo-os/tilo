@@ -384,6 +384,9 @@ pub struct ActionPalette {
     engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
+    /// Whether a palette over its host's rows closes when the keyboard's focus leaves it. A host
+    /// that decides itself when its palette stands turns this off ([`Self::set_host_keeps_open`]).
+    closes_on_blur: bool,
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
     /// `Some` while collecting the explicit confirmation required by the selected action contract.
@@ -661,6 +664,7 @@ impl ActionPalette {
             engine_generation: crate::search::engine_generation(),
             search_announcement: None,
             open: false,
+            closes_on_blur: true,
             arg: None,
             confirm: None,
             confirmation_sheet: crate::widget::ModalSheet::new(),

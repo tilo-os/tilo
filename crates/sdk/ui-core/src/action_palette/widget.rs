@@ -63,6 +63,10 @@ impl Widget for ActionPalette {
     fn set_focus(&mut self, focused: bool) {
         self.dirty = true;
         if self.hosts_rows() {
+            if !focused && !self.closes_on_blur {
+                // Its host closes it, not a focus that moved elsewhere: it stays as it stands.
+                return;
+            }
             self.open = focused;
             self.results.set_focused(focused);
             self.sync_field_focus();

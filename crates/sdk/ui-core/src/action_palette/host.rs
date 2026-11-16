@@ -226,6 +226,15 @@ impl ActionPalette {
         self.sync_empty_state();
     }
 
+    /// The host alone opens and closes this palette over its rows: the keyboard's focus leaving
+    /// the card (the frame focusing a field of another surface, or blurring what it does not
+    /// treat as active) leaves it standing. A host that stands its palette over others, and closes
+    /// it on a press beside the card, on Escape or on a choice, turns this on; a palette that
+    /// follows focus closes when focus leaves it.
+    pub fn set_host_keeps_open(&mut self, keeps: bool) {
+        self.closes_on_blur = !keeps;
+    }
+
     /// Every row the host fed shows unless the host lets the palette narrow
     /// by the query. A host doing its matching turns narrowing off, so
     /// hits whose labels don't literally spell the query aren't hidden by
