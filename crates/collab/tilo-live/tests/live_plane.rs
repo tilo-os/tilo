@@ -298,6 +298,16 @@ impl Carriers {
             .expect("the device dialled this relay");
         connection.close(VarInt::from_u32(0), b"the network went away");
     }
+
+    /// The relay's end of `device`'s connection.
+    fn connection(&self, device: [u8; 32]) -> Connection {
+        self.0
+            .lock()
+            .unwrap()
+            .get(&device)
+            .cloned()
+            .expect("the device dialled this relay")
+    }
 }
 
 /// The relay role as [`serve`], remembering each connection it accepted so a
@@ -972,6 +982,41 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
         b.publish(Track::Presence, sequence, b"shell=here").unwrap();
         sequence = sequence.saturating_add(1);
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_let_go_closes_its_carrier() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint) = (endpoint().await, endpoint().await);
+    let a_key = *a_endpoint.id().as_bytes();
+    let a_cert = authority.admit_device(a_key);
+    let relay = Relay::new(authority.clone());
+    let carriers = Carriers::default();
+    let _router = serve_cuttable(&relay, &relay_endpoint, &carriers);
+
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, authority.roster(), keys()),
+    )
+    .await
+    .unwrap();
+    wait_until("the session admitted", || relay.counters().accepted == 1);
+    let connection = carriers.connection(a_key);
+
+    // A device leaves the plane (the workspace went, its session started over): the connection it
+    // dialled goes with it, long before the connection would idle out. One left open is kept,
+    // with all it buffers, on both ends for as long as the device runs.
+    drop(a);
+    let since = std::time::Instant::now();
+    while connection.close_reason().is_none() {
+        assert!(
+            since.elapsed() < Duration::from_secs(5),
+            "the carrier of a plane let go is still open after {:?}",
+            since.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 

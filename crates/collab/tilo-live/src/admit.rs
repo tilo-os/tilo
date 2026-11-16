@@ -54,6 +54,16 @@ pub(crate) fn close<S: Carrier>(session: &S, code: u32, reason: &str) {
     wt::Session::close(&mut session, code, reason);
 }
 
+/// Closes its session when dropped: once the session's driver ended, and when
+/// the task running it is aborted because its [`Connected`] was let go.
+struct Closing<S: Carrier>(S);
+
+impl<S: Carrier> Drop for Closing<S> {
+    fn drop(&mut self) {
+        close(&self.0, 0, "");
+    }
+}
+
 /// Write every byte of `buf`; `false` if the stream failed or stopped taking
 /// bytes.
 pub(crate) async fn write_all<S>(stream: &mut S, mut buf: &[u8]) -> bool
@@ -269,17 +279,23 @@ where
     .map_err(|_| AdmissionError::Unavailable)?;
     let wire = wire(&transport);
     let watched = session.clone();
-    let task_transport = transport.clone();
+    let closing = Closing(transport.clone());
     let task = n0_future::task::spawn(async move {
+        let _closing = closing;
         // A revocation closes the session under the driver; the driver then
-        // ends, and the transport is closed once.
-        let revoker = n0_future::task::spawn(async move {
+        // ends, and the transport is closed once. The watch for it runs in
+        // this task, so a carrier let go mid-session ([`Connected`]'s drop)
+        // takes it along: a watch of its own outlived the carrier, holding
+        // the session and its connection open with nothing reading them.
+        let revoked = async {
             admitted.revoked().await;
             watched.abort(moq_net::Error::Cancel);
-        });
-        let _ = moq_net::time::run(driver).await;
-        revoker.abort();
-        close(&task_transport, 0, "");
+            std::future::pending::<()>().await;
+        };
+        let running = async {
+            let _ = moq_net::time::run(driver).await;
+        };
+        n0_future::future::or(running, revoked).await;
     });
     Ok(Connected {
         session,
