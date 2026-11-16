@@ -1714,7 +1714,8 @@ impl App {
 
         let actual = window.fullscreen().is_some();
         changed |= self.note_actual_fullscreen(actual);
-        self.reconcile_minimum_size(window, false);
+        // No frame is drawn here, so none waits for a size asked for.
+        let _ = self.reconcile_minimum_size(window, false);
 
         changed
     }
@@ -2379,9 +2380,11 @@ impl App {
     }
 
     /// `frame` re-reads a fitted size from its motion; between frames, asking again on every
-    /// configure would resize the window without drawing at each size.
+    /// configure would resize the window without drawing at each size. Whether the window asked
+    /// for a size it gets later: a layer surface's size is the compositor's answer, and a frame
+    /// drawn before it comes is at a size the compositor no longer shows.
     #[cfg(feature = "native")]
-    fn reconcile_minimum_size(&mut self, window: &Window, frame: bool) {
+    fn reconcile_minimum_size(&mut self, window: &Window, frame: bool) -> bool {
         if frame && self.window.preferred_size.is_some() {
             self.window.preferred_size =
                 crate::widget::preferred_window_size(self.root_widget.as_ref());
@@ -2395,20 +2398,24 @@ impl App {
             window.set_min_inner_size(size);
             window.set_max_inner_size(size);
             if let Some(size) = size {
-                let _ = window.request_inner_size(size);
+                let wanted = size.to_physical::<u32>(window.scale_factor());
+                return window
+                    .request_inner_size(size)
+                    .is_some_and(|given| given != wanted);
             }
         }
         if self.window.preferred_size.is_some() {
-            return;
+            return false;
         }
         let wanted = self.window.minimum_width;
         if wanted == self.window.minimum_width_stated {
-            return;
+            return false;
         }
         self.window.minimum_width_stated = wanted;
         window.set_min_inner_size(
             wanted.map(|width| winit::dpi::LogicalSize::new(width.ceil(), 1.0)),
         );
+        false
     }
 
     /// Takes effect when the window is created, so set before [`App::run`].

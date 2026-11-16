@@ -103,6 +103,10 @@ struct Placed {
     /// How many frames its client has committed: what says a frame was drawn after something the
     /// session asked it for.
     frames: u64,
+    /// The size its client last asked for and was answered: a client that asks for another size
+    /// waits for the configure that answers it before it draws, whether or not the size it gets
+    /// changes.
+    asked: Size<i32, Logical>,
 }
 
 impl Placed {
@@ -295,6 +299,7 @@ impl State {
             rect: Rectangle::default(),
             drawn: Rectangle::default(),
             frames: 0,
+            asked: Size::default(),
         });
         let index = self.layers.surfaces.len().saturating_sub(1);
         self.place_layer(index, true);
@@ -351,7 +356,9 @@ impl State {
         placed.surface.with_pending_state(|state| {
             state.size = Some(rect.size);
         });
-        if placed.surface.has_pending_changes() {
+        let asked = request.size != placed.asked;
+        placed.asked = request.size;
+        if placed.surface.has_pending_changes() || asked {
             placed.surface.send_configure();
         }
     }

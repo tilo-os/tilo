@@ -2632,8 +2632,13 @@ impl AppHandler {
         mark_first_frame("first-frame-layout-done");
         // A window that fits its content asks for the size its layout just measured before this
         // frame is committed: the frame a client sees is at the size its page needs, not one
-        // drawn at the size it was given and resized after.
-        app.reconcile_minimum_size(window, true);
+        // drawn at the size it was given and resized after. Where that size is the compositor's
+        // answer (a layer surface), this frame would be at a size the compositor no longer shows
+        // and would hold the render thread from the one it will: the configure redraws instead.
+        if app.reconcile_minimum_size(window, true) {
+            app.layout.structure_dirty = true;
+            return;
+        }
         // A local read this frame would show has not answered and is still
         // inside its frame budget ([`crate::arriving`]): the frame on screen
         // stays until the data lands (its wake redraws) or the budget runs

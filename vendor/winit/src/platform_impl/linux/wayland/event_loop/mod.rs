@@ -512,7 +512,9 @@ impl<T: 'static> EventLoop<T> {
                     .lock()
                     .unwrap();
 
-                if window.frame_callback_state() == FrameCallbackState::Requested {
+                if window.frame_callback_state() == FrameCallbackState::Requested
+                    || window.awaits_layer_size()
+                {
                     return None;
                 }
 

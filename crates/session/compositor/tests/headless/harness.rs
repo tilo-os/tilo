@@ -239,6 +239,8 @@ pub struct Seen {
     pub layer_shell: Option<ZwlrLayerShellV1>,
     /// The size the compositor gave the layer surface.
     pub layer_size: Option<(u32, u32)>,
+    /// How many configures the layer surface has had.
+    pub layer_configures: u32,
     /// Where the pointer is on the surface it is over, in that surface's coordinates.
     pub pointer_at: Option<(f64, f64)>,
 }
@@ -1777,6 +1779,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Seen {
         {
             surface.ack_configure(serial);
             seen.layer_size = Some((width, height));
+            seen.layer_configures += 1;
         }
     }
 }

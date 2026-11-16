@@ -171,6 +171,10 @@ pub struct WindowState {
     /// Whether the compositor sent the first configure of a layer surface.
     layer_configured: bool,
 
+    /// A layer surface asked the compositor for a size it does not have, and has not had its
+    /// configure yet: a frame drawn meanwhile is at a size the compositor no longer shows.
+    layer_size_asked: bool,
+
     // NOTE: The spec says that destroying parent(`window` in our case), will unmap the
     // subsurfaces. Thus to achieve atomic unmap of the client, drop the decorations
     // frame after the `window` is dropped. To achieve that we rely on rust's struct
@@ -252,6 +256,7 @@ impl WindowState {
             stateless_size: initial_size.to_logical(1.),
             initial_size: Some(initial_size),
             layer_configured: false,
+            layer_size_asked: false,
             text_inputs: Vec::new(),
             ime_cursor_area: None,
             theme,
@@ -340,6 +345,12 @@ impl WindowState {
                 let data = pointer.pointer().winit_data();
                 callback(pointer.as_ref(), data);
             })
+    }
+
+    /// Whether a layer surface waits for the configure that answers the size it asked for: its
+    /// redraws wait with it, as a toplevel's first frame waits for its first configure.
+    pub fn awaits_layer_size(&self) -> bool {
+        self.layer_size_asked
     }
 
     /// Get the current state of the frame callback.
@@ -747,6 +758,7 @@ impl WindowState {
     /// whether it changed.
     pub fn layer_configure(&mut self, configure: &LayerSurfaceConfigure) -> bool {
         self.layer_configured = true;
+        self.layer_size_asked = false;
         let (width, height) = configure.new_size;
         // Zero on an axis lets the surface pick its own size there: keep the
         // one it asked for.
@@ -851,6 +863,7 @@ impl WindowState {
             let size: LogicalSize<u32> = inner_size.to_logical(self.scale_factor());
             layer.set_size(size.width, size.height);
             layer.commit();
+            self.layer_size_asked |= size != self.size;
             return logical_to_physical_rounded(self.inner_size(), self.scale_factor());
         }
         if self

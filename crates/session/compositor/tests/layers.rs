@@ -448,3 +448,44 @@ fn an_idle_session_draws_nothing() {
     assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
     assert_eq!(frame.pixel(320, 200), Some([0, 0, 255, 255]), "the window");
 }
+
+/// A layer surface that asks for another size waits for the configure that answers it before it
+/// draws, so it is answered whether or not the size it gets changes: a bar that spans its output
+/// keeps its width whatever width it asks for, and still hears back.
+#[test]
+fn a_size_asked_for_is_answered_even_when_it_changes_nothing() {
+    let mut compositor = headless();
+    let mut bar = TestClient::connect_trusted(&mut compositor);
+    pump(&mut compositor, &mut [&mut bar], |_, clients| {
+        clients[0].seen.compositor.is_some() && clients[0].seen.layer_shell.is_some()
+    });
+    let (surface, layer) = bar.layer_surface(
+        zwlr_layer_shell_v1::Layer::Top,
+        zwlr_layer_surface_v1::Anchor::Top
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right,
+        (0, 32),
+        32,
+        zwlr_layer_surface_v1::KeyboardInteractivity::None,
+    );
+    pump(&mut compositor, &mut [&mut bar], |_, clients| {
+        clients[0].seen.layer_size == Some((640, 32))
+    });
+    let configured = bar.seen.layer_configures;
+
+    layer.set_size(300, 32);
+    surface.commit();
+    pump(&mut compositor, &mut [&mut bar], |_, clients| {
+        clients[0].seen.layer_configures > configured
+    });
+    assert_eq!(bar.seen.layer_size, Some((640, 32)), "it spans its output");
+
+    // Asking for nothing new is not answered again.
+    let configured = bar.seen.layer_configures;
+    surface.commit();
+    for _ in 0..20 {
+        compositor.dispatch(Duration::from_millis(2)).unwrap();
+        bar.exchange();
+    }
+    assert_eq!(bar.seen.layer_configures, configured);
+}
