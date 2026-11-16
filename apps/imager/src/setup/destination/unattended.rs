@@ -135,7 +135,7 @@ impl Invocation {
         )
         .map_err(io::Error::other)?;
 
-        let mut app = InstallerApp::for_unattended().with_console(console.console.clone());
+        let mut app = InstallerApp::for_unattended().with_console(console.server.clone());
         app.enable_unattended_mode();
 
         let recipe = match self.recipe.read() {
