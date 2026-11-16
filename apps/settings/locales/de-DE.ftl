@@ -3147,7 +3147,7 @@ settings-notifications-unmute-app-now = Mitteilungen wieder einschalten
 settings-notifications-mute-app-hour = Mitteilungen eine Stunde stummschalten
 
 settings-web-accounts-list = Mailkonten
-settings-web-accounts-none = In diesem Arbeitsbereich ist noch kein Mailkonto hinterlegt.
+settings-web-accounts-none = Du hast noch kein Mailkonto.
 settings-web-accounts-add-title = Mailkonto hinzuf체gen
 settings-web-accounts-add = Konto hinzuf체gen
 settings-web-accounts-adding = Es wird bereits ein Konto hinzugef체gt.
@@ -3165,7 +3165,7 @@ settings-web-accounts-added = { $name } wurde zu diesem Arbeitsbereich hinzugef�
 settings-web-accounts-removed = { $name } wurde aus diesem Arbeitsbereich entfernt.
 settings-web-accounts-unreadable = Die vom Host gelieferten Konten sind nicht lesbar.
 settings-web-providers-list = Modellanbieter
-settings-web-providers-none = In diesem Arbeitsbereich ist noch kein Modellanbieter eingerichtet.
+settings-web-providers-none = Du hast noch keinen Modellanbieter.
 settings-web-providers-add-title = Anbieter hinzuf체gen
 settings-web-providers-add = Anbieter hinzuf체gen
 settings-web-providers-name = Name

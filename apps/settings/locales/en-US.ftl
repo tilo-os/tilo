@@ -3149,7 +3149,7 @@ settings-notifications-mute-app-hour = Mute notifications for an hour
 # The person's accounts and model providers on a page: the host that runs
 # their workspace keeps them, so the pane shows what it answered.
 settings-web-accounts-list = Mail accounts
-settings-web-accounts-none = No mail account is kept in this workspace yet.
+settings-web-accounts-none = You have no mail account yet.
 settings-web-accounts-add-title = Add a mail account
 settings-web-accounts-add = Add account
 settings-web-accounts-adding = An account is being added already.
@@ -3167,7 +3167,7 @@ settings-web-accounts-added = { $name } is added to this workspace.
 settings-web-accounts-removed = { $name } is removed from this workspace.
 settings-web-accounts-unreadable = The accounts the host answered are not readable.
 settings-web-providers-list = Model providers
-settings-web-providers-none = No model provider is set up in this workspace yet.
+settings-web-providers-none = You have no model provider yet.
 settings-web-providers-add-title = Add a provider
 settings-web-providers-add = Add provider
 settings-web-providers-name = Name
