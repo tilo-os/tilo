@@ -41,7 +41,11 @@ impl Store {
     /// Take `effect` for the window: a file read or write with a path waits
     /// for the next sync, one without asks the file chooser; the rest are
     /// done when the window next looks.
-    fn answer(&mut self, effect: TypstEffect, cx: &mut EffectCx<Workspace>) -> EffectAnswer {
+    fn answer(
+        &mut self,
+        effect: TypstEffect,
+        cx: &mut EffectCx<Workspace, TypstApp>,
+    ) -> EffectAnswer {
         let file = matches!(
             effect,
             TypstEffect::OpenFile { .. }
@@ -96,7 +100,16 @@ pub(crate) fn window(cx: &ViewCx<Workspace>) -> Element {
     let store = Rc::clone(&window.store);
     {
         let store = Rc::clone(&store);
-        cx.effects(move |effect: TypstEffect, cx| store.borrow_mut().answer(effect, cx));
+        cx.window_host_effects(move |app: &mut TypstApp, effect: TypstEffect, cx| {
+            // Saving and exporting without a path ask the chooser, which answers
+            // on the window.
+            match effect {
+                TypstEffect::Save { path: None } => app.save(cx),
+                TypstEffect::SaveAs => Ok(app.save_as(cx)),
+                TypstEffect::ExportPdf { path: None } => Ok(app.export_pdf(cx)),
+                effect => store.borrow_mut().answer(effect, cx),
+            }
+        });
     }
     {
         let store = Rc::clone(&store);

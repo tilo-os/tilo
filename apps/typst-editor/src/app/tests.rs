@@ -166,7 +166,7 @@ fn file_effects_save_and_export_real_files() {
         ui::host::scoped(&services, || app.open());
         work.run_pending();
         app.sync(&doc, &ROOT);
-        assert!(app.io.is_none());
+        assert!(app.opening.is_none());
         assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
     }
 }
@@ -234,53 +234,39 @@ impl ui::host::FilePicker for PathlessHost {
 
 #[test]
 fn open_save_and_export_work_where_files_have_no_paths() {
+    use crate::actions::TypstEffect;
     let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let host = std::sync::Arc::new(PathlessHost {
         opened: Some(("notes.typ".into(), b"= Notes\nHello".to_vec())),
         saved: std::sync::Arc::clone(&saved),
     });
     let services = ui::host::HostServices::null().with_files(host);
-    let (mut app, mut doc) = fresh();
-    let dispatcher = ui::framework::testing::dispatcher::<Workspace>(
-        <TypstEditorShell as ui::framework::ResourceApp>::ID,
-    );
-    app.actions = Some(dispatcher.clone());
-    ui::host::scoped(&services, || app.open());
-    app.sync(&doc, &ROOT);
-    ui::framework::testing::resolve(&dispatcher, &mut doc).expect("the open applies");
-    present(&mut app, &doc);
-    app.sync(&doc, &ROOT);
-    assert!(app.io.is_none(), "the open landed");
-    let file = app.current_file().cloned().expect("a file is shown");
+    let _host = ui::host::enter(&services);
+    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    app.effect(&TypstEffect::OpenFile { path: None })
+        .expect("the open lands");
+    app.settle();
+    let file = app
+        .with_widget(|window: &mut TypstApp| window.current_file().cloned())
+        .unwrap()
+        .expect("a file is shown");
     assert_eq!(file.source, "= Notes\nHello");
     assert_eq!(file.name.0, "notes.typ");
     assert_eq!(file.path, None, "a browser file lives nowhere until saved");
 
-    ui::host::scoped(&services, || app.save()).unwrap();
-    app.sync(&doc, &ROOT);
-    app.sync(&doc, &ROOT);
-    assert!(app.io.is_none(), "the save landed");
-    assert!(matches!(app.saves.state(), Some(ui::SaveState::Saved)));
-
-    ui::host::scoped(&services, || app.export_pdf());
-    app.sync(&doc, &ROOT);
-    app.sync(&doc, &ROOT);
-    assert!(app.io.is_none(), "the export landed");
-
+    app.effect(&TypstEffect::Save { path: None })
+        .expect("the save lands");
+    let state = app
+        .with_widget(|window: &mut TypstApp| window.saves.state())
+        .unwrap();
+    assert!(matches!(state, Some(ui::SaveState::Saved)));
+    app.effect(&TypstEffect::ExportPdf { path: None })
+        .expect("the export lands");
     // The next Save writes where the first one went, without asking; only
     // Save As asks again.
-    ui::host::scoped(&services, || app.save()).unwrap();
-    assert!(
-        matches!(app.io, Some(PendingIo::Writing { .. })),
-        "the second Save writes at once, with no chooser"
-    );
-    app.sync(&doc, &ROOT);
-    assert!(app.io.is_none(), "the second save landed");
-    ui::host::scoped(&services, || app.save_as());
-    assert!(
-        matches!(app.io, Some(PendingIo::SaveTyp(_))),
-        "Save As asks where"
-    );
+    app.effect(&TypstEffect::Save { path: None })
+        .expect("the second save lands");
+    app.effect(&TypstEffect::SaveAs).expect("Save As lands");
 
     let saved = saved.lock().unwrap().clone();
     assert_eq!(
@@ -294,6 +280,7 @@ fn open_save_and_export_work_where_files_have_no_paths() {
         ("notes.typ".to_owned(), b"= Notes\nHello".to_vec()),
         "the second Save wrote to the kept place"
     );
+    assert_eq!(saved.len(), 4, "Save As chose a place and wrote there");
 }
 
 #[test]
@@ -577,7 +564,7 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
         );
         work.run_pending();
         app.sync(&doc, &ROOT);
-        assert!(app.io.is_none());
+        assert!(app.opening.is_none());
         // What the dialog came to may be said in the window's bar; only
         // that notice leaving wakes the editor, no polling.
         assert_eq!(

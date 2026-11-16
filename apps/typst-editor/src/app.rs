@@ -30,6 +30,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::framework::{EffectAnswer, Effected};
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::surface::Region;
@@ -40,16 +41,9 @@ mod store;
 pub(crate) use store::window;
 use store::{Shared, Store};
 
-enum PendingIo {
-    OpenTyp(ui::portal::ContentsChannel),
-    SaveTyp(ui::portal::DestinationChannel),
-    ExportPdf(ui::portal::DestinationChannel),
-    Writing {
-        export: bool,
-        name: String,
-        written: ui::portal::SaveChannel,
-    },
-}
+/// What a file effect the window answers itself runs through: the chooser and its
+/// write finish on the window.
+type FileCx = ui::framework::EffectCx<crate::resource::Workspace, TypstApp>;
 
 #[derive(Clone, Debug)]
 enum ResourceIo {
@@ -141,7 +135,8 @@ pub struct TypstApp {
     pending_open: bool,
     known_files: Vec<Id>,
     actions: Option<ui::framework::Dispatcher<crate::resource::Workspace>>,
-    io: Option<PendingIo>,
+    /// The file chooser an Open is waiting on.
+    opening: Option<ui::portal::ContentsChannel>,
     background_poll_deadline: Cell<Option<Instant>>,
     store: Shared,
     live: Option<ui::framework::Live<crate::resource::Workspace>>,
@@ -205,7 +200,7 @@ impl TypstApp {
             kept: std::collections::HashMap::new(),
             pending_open: false,
             known_files: Vec::new(),
-            io: None,
+            opening: None,
             background_poll_deadline: Cell::new(None),
             store: Rc::default(),
             live: None,
@@ -298,12 +293,6 @@ impl TypstApp {
         }
         for ask in asks {
             match ask {
-                crate::actions::TypstEffect::Save { path: None } => match self.save() {
-                    Ok(true) => self.finish_file_effect(Ok(())),
-                    // The chooser or the write answers when it settles.
-                    Ok(false) => {}
-                    Err(error) => self.finish_file_effect(Err(error)),
-                },
                 other => self.perform_resource_operation(other),
             }
             self.dirty = true;
@@ -557,41 +546,46 @@ impl TypstApp {
             .map_or_else(|| "untitled.typ".into(), |file| file.name.0.clone())
     }
 
-    /// Save the file shown where it was opened from or last saved, else to a path
-    /// the host's dialog asks for. The chosen path is handled in [`Self::drain_io`].
-    fn save(&mut self) -> Result<bool, String> {
+    /// Save the file shown where it was opened from or last saved, else where the
+    /// person chooses.
+    fn save(&mut self, cx: &mut FileCx) -> EffectAnswer {
         if let Some(path) = self.current_file().and_then(|file| file.path.clone()) {
-            return self
-                .save_typ_to(std::path::Path::new(&path.0))
-                .map(|()| true);
-        }
-        if self.io.is_some() {
-            return Ok(false);
+            self.save_typ_to(std::path::Path::new(&path.0))?;
+            return Ok(Effected::done());
         }
         let kept = self
             .current
             .as_ref()
             .and_then(|id| self.kept.get(id))
             .cloned();
-        if let Some(kept) = kept {
-            self.write_to(&kept, false)?;
-            return Ok(false);
+        match kept {
+            Some(kept) => self.write_to(&kept, false, cx),
+            None => Ok(self.save_as(cx)),
         }
-        self.save_as();
-        Ok(false)
     }
 
     /// Ask where to save the file shown, even when it has a place already,
     /// and save it there.
-    fn save_as(&mut self) {
-        if self.io.is_some() {
-            return;
-        }
-        let name = self.current_name();
-        self.io = Some(PendingIo::SaveTyp(
-            typ_save_request(&name).send_save_destination(),
-        ));
+    fn save_as(&mut self, cx: &mut FileCx) -> Effected {
         self.set_flash("Choose where to save…");
+        cx.choose_destination(typ_save_request(&self.current_name()), |app, chosen, cx| {
+            let Some(destination) = chosen else {
+                return Err("cancelled".into());
+            };
+            if let Some(path) = destination.location() {
+                // A file on this device: it lives there from now on.
+                if let Some(id) = &app.current {
+                    app.kept.remove(id);
+                }
+                app.save_typ_to(path)?;
+                return Ok(Effected::done());
+            }
+            // Kept: the next Save writes here without asking.
+            if let Some(id) = app.current.clone() {
+                app.kept.insert(id, destination.clone());
+            }
+            app.write_to(&destination, false, cx)
+        })
     }
 
     /// Core: write the source of the file shown to `path`, which the file
@@ -631,21 +625,20 @@ impl TypstApp {
         }
     }
 
-    /// Open the host Save dialog to choose where to export the compiled PDF,
-    /// seeded with the file's name and a `.pdf` extension (unless a chooser
-    /// is already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn export_pdf(&mut self) {
-        if self.io.is_some() {
-            return;
-        }
+    /// Ask where to export the compiled PDF, seeded with the file's name and a
+    /// `.pdf` extension, and write it there.
+    fn export_pdf(&mut self, cx: &mut FileCx) -> Effected {
         let pdf_name = std::path::Path::new(&self.current_name())
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
-        self.io = Some(PendingIo::ExportPdf(
-            pdf_export_request(&pdf_name).send_save_destination(),
-        ));
         self.set_flash("Choose where to export the PDF");
+        cx.choose_destination(pdf_export_request(&pdf_name), |app, chosen, cx| {
+            let Some(destination) = chosen else {
+                return Err("cancelled".into());
+            };
+            app.write_to(&destination, true, cx)
+        })
     }
 
     /// Compile the source shown to a PDF and write it to the exact `path`.
@@ -678,10 +671,10 @@ impl TypstApp {
     }
 
     fn open(&mut self) {
-        if self.io.is_some() {
+        if self.opening.is_some() {
             return;
         }
-        self.io = Some(PendingIo::OpenTyp(typ_open_request().send_contents()));
+        self.opening = Some(typ_open_request().send_contents());
         self.set_flash("Choose a .typ file to open");
     }
 
@@ -741,115 +734,38 @@ impl TypstApp {
         self.submit(crate::resource::new_file(&name, path.as_deref(), &src));
     }
 
-    /// Run a finished Open, Save or Export dialog against the chosen path. The UI
-    /// thread never blocks: the portal round-trip runs in a worker thread.
+    /// Run a finished Open dialog against the chosen file. The UI thread never
+    /// blocks: the portal round-trip runs in a worker thread.
     fn drain_io(&mut self) {
-        let Some(io) = self.io.take() else { return };
-        let result = match io {
-            PendingIo::OpenTyp(rx) => match rx.try_recv() {
-                Ok(ui::portal::ContentsOutcome::Picked(files)) => match files.into_iter().next() {
-                    Some(file) => self.open_typ_picked(file),
-                    None => Err("cancelled".into()),
-                },
-                Ok(ui::portal::ContentsOutcome::Cancelled) => Err("cancelled".into()),
-                Ok(ui::portal::ContentsOutcome::Failed(e)) => self.chooser_failed(e),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.io = Some(PendingIo::OpenTyp(rx));
-                    return;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Err("file picker disconnected".into())
-                }
-            },
-            PendingIo::SaveTyp(rx) => match rx.try_recv() {
-                Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
-                    if let Some(path) = destination.location().map(std::path::Path::to_path_buf) {
-                        // A file on this device: it lives there from now on.
-                        if let Some(id) = &self.current {
-                            self.kept.remove(id);
-                        }
-                        self.save_typ_to(&path)
-                    } else {
-                        let written = self.write_to(&destination, false);
-                        // Kept: the next Save writes here without asking.
-                        if let Some(id) = self.current.clone() {
-                            self.kept.insert(id, destination);
-                        }
-                        written
-                    }
-                }
-                Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
-                Ok(ui::portal::DestinationOutcome::Failed(e)) => self.chooser_failed(e),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.io = Some(PendingIo::SaveTyp(rx));
-                    return;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Err("file picker disconnected".into())
-                }
-            },
-            PendingIo::ExportPdf(rx) => match rx.try_recv() {
-                Ok(ui::portal::DestinationOutcome::Chosen(destination)) => {
-                    self.write_to(&destination, true)
-                }
-                Ok(ui::portal::DestinationOutcome::Cancelled) => Err("cancelled".into()),
-                Ok(ui::portal::DestinationOutcome::Failed(e)) => self.chooser_failed(e),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.io = Some(PendingIo::ExportPdf(rx));
-                    return;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Err("file picker disconnected".into())
-                }
-            },
-            PendingIo::Writing {
-                export,
-                name,
-                written,
-            } => match written.try_recv() {
-                Ok(ui::portal::SaveOutcome::Saved) => {
-                    if export {
-                        self.set_flash(format!("Exported {name}"));
-                    } else {
-                        self.saves.saved();
-                    }
-                    Ok(())
-                }
-                Ok(ui::portal::SaveOutcome::Cancelled) => Err("cancelled".into()),
-                Ok(ui::portal::SaveOutcome::Failed(e)) => {
-                    if export {
-                        self.set_flash(format!("Export failed: {e}"));
-                    } else {
-                        self.saves.failed(e.clone());
-                    }
-                    Err(e)
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.io = Some(PendingIo::Writing {
-                        export,
-                        name,
-                        written,
-                    });
-                    return;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Err("the save went away".into())
-                }
-            },
+        let Some(rx) = self.opening.take() else {
+            return;
         };
-        // A write still under way answers when it lands.
-        if self.io.is_none() {
-            self.finish_file_effect(result);
-        }
+        let result = match rx.try_recv() {
+            Ok(ui::portal::ContentsOutcome::Picked(files)) => match files.into_iter().next() {
+                Some(file) => self.open_typ_picked(file),
+                None => Err("cancelled".into()),
+            },
+            Ok(ui::portal::ContentsOutcome::Cancelled) => Err("cancelled".into()),
+            Ok(ui::portal::ContentsOutcome::Failed(e)) => self.chooser_failed(e),
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.opening = Some(rx);
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("file picker disconnected".into())
+            }
+        };
+        self.finish_file_effect(result);
     }
 
     /// Write the source shown (or, for `export`, its PDF) where the person
-    /// chose; the write is drained by [`Self::drain_io`].
+    /// chose.
     fn write_to(
         &mut self,
         destination: &ui::portal::SaveDestination,
         export: bool,
-    ) -> Result<(), String> {
+        cx: &mut FileCx,
+    ) -> EffectAnswer {
         let bytes = if export {
             self.compiled_pdf().inspect_err(|e| {
                 self.set_flash(format!("Export failed: {e}"));
@@ -862,11 +778,9 @@ impl TypstApp {
                 .into_bytes()
         };
         let name = destination.name().to_owned();
-        let location = destination.location().map(std::path::Path::to_path_buf);
-        let written = destination.write(bytes);
         // A file saved on this device lives there from now on.
         if !export
-            && let Some(path) = location
+            && let Some(path) = destination.location()
             && let Some(id) = self.current.clone()
         {
             self.submit(crate::resource::Workspace::SAVED_AT.with(
@@ -876,12 +790,24 @@ impl TypstApp {
                 },
             ));
         }
-        self.io = Some(PendingIo::Writing {
-            export,
-            name,
-            written,
-        });
-        Ok(())
+        Ok(
+            cx.write_destination(destination, bytes, move |app, written, _| {
+                match written {
+                    Ok(()) if export => app.set_flash(format!("Exported {name}")),
+                    Ok(()) => app.saves.saved(),
+                    Err(e) if export => {
+                        app.set_flash(format!("Export failed: {e}"));
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        app.saves.failed(e.clone());
+                        return Err(e);
+                    }
+                }
+                app.dirty = true;
+                Ok(Effected::done())
+            }),
+        )
     }
 
     fn chooser_failed(&mut self, reason: String) -> Result<(), String> {
@@ -904,8 +830,13 @@ impl TypstApp {
             Command::ShowEditor => TypstEffect::Editor,
             Command::ShowPreview => TypstEffect::Preview,
         };
+        self.invoke(&effect);
+    }
+
+    /// Run one of the window's effects as a control or the palette would.
+    fn invoke(&self, effect: &crate::actions::TypstEffect) {
         if let Some(actions) = &self.actions {
-            actions.effect(&effect);
+            actions.effect(effect);
         }
     }
 
@@ -919,12 +850,9 @@ impl TypstApp {
         use crate::actions::TypstEffect;
         match operation {
             TypstEffect::Compile => self.force_recompile(),
-            TypstEffect::Save { .. } => {
-                let _ = self.save();
-            }
-            TypstEffect::SaveAs => self.save_as(),
+            // Answered where they are invoked, with the chooser.
+            TypstEffect::Save { .. } | TypstEffect::SaveAs | TypstEffect::ExportPdf { .. } => {}
             TypstEffect::OpenFile { .. } => self.open(),
-            TypstEffect::ExportPdf { .. } => self.export_pdf(),
             TypstEffect::ZoomOut => self.preview.zoom_out(),
             TypstEffect::ZoomIn => self.preview.zoom_in(),
             TypstEffect::FitWidth => self.preview.fit_width(),
@@ -1602,11 +1530,11 @@ impl TypstApp {
                     "s" => {
                         // A failed save says so in the flash. Shift asks
                         // where, even when the file has a place.
-                        if mods.shift_key() {
-                            self.save_as();
+                        self.invoke(&if mods.shift_key() {
+                            crate::actions::TypstEffect::SaveAs
                         } else {
-                            let _ = self.save();
-                        }
+                            crate::actions::TypstEffect::Save { path: None }
+                        });
                         *handled = true;
                         return;
                     }
@@ -1616,7 +1544,7 @@ impl TypstApp {
                         return;
                     }
                     "e" => {
-                        self.export_pdf();
+                        self.invoke(&crate::actions::TypstEffect::ExportPdf { path: None });
                         *handled = true;
                         return;
                     }
@@ -1986,7 +1914,7 @@ impl TypstApp {
     }
 
     fn background_wake(&self) -> Option<Instant> {
-        if self.io.is_none() && !self.store.borrow().waiting() && !self.compiling() {
+        if self.opening.is_none() && !self.store.borrow().waiting() && !self.compiling() {
             return None;
         }
         // Poll completed work independently of animation preferences. Repeated
