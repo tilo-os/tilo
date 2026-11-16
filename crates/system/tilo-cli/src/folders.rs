@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Value, json};
 
@@ -106,7 +106,7 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
     match cmd {
         FoldersCmd::List | FoldersCmd::Status => Ok(list(&dir, json)),
         FoldersCmd::Start => {
-            let running = start()?;
+            let running = started()?;
             if !json {
                 println!("{}", running_said(&running));
             }
@@ -195,10 +195,50 @@ fn start() -> Result<crate::service::Running> {
     crate::service::start()
 }
 
+/// What keeps the folders in sync, started when nothing does: `tilo status`
+/// and `tilo folders` start it themselves and say how it stands, rather
+/// than asking the person to.
+///
+/// # Errors
+/// This computer is not logged in, or its background sync did not start.
+pub(crate) fn sync() -> Result<Value> {
+    if let Some(status) = crate::mcp::ask_peer() {
+        return Ok(status);
+    }
+    started()?;
+    crate::mcp::ask_peer().ok_or_else(|| {
+        anyhow!(
+            "Tilo's background sync started but isn't answering yet: run `tilo status` again in \
+             a minute."
+        )
+    })
+}
+
+/// [`start`], saying plainly when it did not.
+fn started() -> Result<crate::service::Running> {
+    start().map_err(|error| {
+        crate::login::debug_why("starting Tilo's background sync", &error);
+        anyhow!(
+            "Tilo's background sync didn't start on this computer. Run `tilo folders start` to \
+             try again."
+        )
+    })
+}
+
 /// The folders, as the peer shows them and as kept here.
 fn list(dir: &Path, json: bool) -> ExitCode {
     let folders = Folders::load(dir).unwrap_or_default();
-    let peer = crate::mcp::ask_peer();
+    // Nothing running is started here: a person reading their folders gets
+    // them kept in sync, not a command to run first.
+    let peer = match sync() {
+        Ok(status) => Some(status),
+        Err(error) => {
+            if !json {
+                eprintln!("{error:#}");
+            }
+            None
+        }
+    };
     if json {
         println!(
             "{}",
@@ -211,7 +251,7 @@ fn list(dir: &Path, json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let Some(peer) = peer else {
-        println!("Nothing keeps your folders in sync on this computer: run `tilo folders start`.");
+        println!("Your folders aren't in sync on this computer right now.");
         for (id, folder) in folders
             .workspaces
             .iter()

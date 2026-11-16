@@ -138,9 +138,7 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
             only,
         } => {
             let source = source_name(&source)?;
-            let mut review = place
-                .review(&source)?
-                .ok_or_else(|| not_reviewed(&source))?;
+            let mut review = reviewed_for_start(&place, &home, &source)?;
             review.choose(&items, !leave_out, only)?;
             if source != thunderbird::SOURCE {
                 services::choose(&place, &review)?;
@@ -207,7 +205,33 @@ fn source_name(source: &str) -> Result<String> {
 }
 
 fn not_reviewed(source: &str) -> anyhow::Error {
-    anyhow!("{source} is not reviewed yet: `tilo migrate review {source}` first")
+    anyhow!("{source} hasn't been reviewed yet. Run `tilo migrate review {source}` first.")
+}
+
+/// The review `start` and `choose` work from: the one the person made, or
+/// one made now with every item chosen, so one command brings a source over
+/// without a listing step first.
+fn reviewed_for_start(place: &Place, home: &Path, source: &str) -> Result<Review> {
+    if let Some(review) = place.review(source)? {
+        return Ok(review);
+    }
+    let mut review = review(place, home, source, None)?;
+    let every: Vec<String> = review
+        .items
+        .iter()
+        .filter(|item| item.within.is_none())
+        .map(|item| item.key.clone())
+        .collect();
+    review.choose(&every, true, false)?;
+    if source != thunderbird::SOURCE {
+        services::choose(place, &review)?;
+    }
+    place.keep_review(&review)?;
+    eprintln!(
+        "{source} wasn't reviewed yet, so everything it holds is coming over. `tilo migrate \
+         review {source}` lists it item by item, and `tilo migrate choose` narrows what comes."
+    );
+    Ok(review)
 }
 
 fn review(place: &Place, home: &Path, source: &str, profile: Option<&str>) -> Result<Review> {
@@ -269,10 +293,11 @@ fn review_answer(review: &Review, journal: &Journal) -> Value {
 }
 
 fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> {
-    let review = place.review(source)?.ok_or_else(|| not_reviewed(source))?;
+    let review = reviewed_for_start(place, home, source)?;
     if review.chosen().is_empty() {
         bail!(
-            "nothing of {source} is chosen: `tilo migrate choose {source} <key>…` with keys `tilo migrate review {source}` lists"
+            "Nothing of {source} is chosen. `tilo migrate review {source}` lists what it holds, \
+             and `tilo migrate choose {source} <key>…` picks what comes over."
         );
     }
     let mut journal = place.journal(source)?;

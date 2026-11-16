@@ -459,13 +459,12 @@ pub(crate) fn describe(status: &serde_json::Value) -> String {
             .unwrap_or("?")
     };
     let mut said = format!(
-        "This computer is {} in Tilo, a device of person {}…, through {}.\n",
+        "This computer is \"{}\" in Tilo, one of the person's computers, through {}.\n",
         text("device"),
-        text("person").get(..12).unwrap_or("?"),
         text("host"),
     );
     if let Some(why) = status.get("not_in").and_then(serde_json::Value::as_str) {
-        let _ = writeln!(said, "Not in the workspace: {why}");
+        let _ = writeln!(said, "{why}");
     }
     let mounted = status
         .get("mounted")

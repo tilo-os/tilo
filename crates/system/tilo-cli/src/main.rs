@@ -1417,15 +1417,16 @@ fn system_available() -> bool {
 /// `tilo status` on a computer logged in as one of the person's devices:
 /// who it is, which workspaces it shows where, and whether they are in sync.
 fn peer_status(json: bool) -> ExitCode {
-    let Some(status) = mcp::ask_peer() else {
-        if json {
-            println!("{}", serde_json::json!({"running": false}));
-        } else {
-            println!(
-                "This computer is logged in, but nothing keeps its folders in sync: run `tilo folders start`."
-            );
+    let status = match folders::sync() {
+        Ok(status) => status,
+        Err(error) => {
+            if json {
+                println!("{}", serde_json::json!({"running": false}));
+            } else {
+                eprintln!("{error:#}");
+            }
+            return ExitCode::from(1);
         }
-        return ExitCode::from(1);
     };
     if json {
         println!("{status}");

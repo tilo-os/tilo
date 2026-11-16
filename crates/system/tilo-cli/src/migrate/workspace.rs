@@ -89,9 +89,19 @@ impl Held {
         let stream = if let Some(stream) = held::connect(&place) {
             stream
         } else {
-            crate::service::start().context("this computer's peer did not start")?;
-            held::connect(&place)
-                .ok_or_else(|| anyhow!("this computer's peer started but does not listen"))?
+            crate::service::start().map_err(|error| {
+                tracing::debug!(%error, "Tilo's background sync did not start");
+                anyhow!(
+                    "Tilo's background sync didn't start on this computer. Run `tilo status` to \
+                     see how it stands, then try again."
+                )
+            })?;
+            held::connect(&place).ok_or_else(|| {
+                anyhow!(
+                    "Tilo's background sync isn't answering on this computer yet. Run `tilo \
+                     status` to see how it stands, then try again."
+                )
+            })?
         };
         stream.set_read_timeout(Some(ACTION_WAIT))?;
         let writer = stream.try_clone()?;
@@ -188,7 +198,8 @@ impl Held {
             }
             if std::time::Instant::now() >= until {
                 bail!(
-                    "{action} waits for the person to allow it in their tab; start this again once they did"
+                    "{action} is waiting for the person to allow it in their Tilo tab. Allow it \
+                     there, then run the same command again; what it did so far is kept."
                 );
             }
         }

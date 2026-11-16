@@ -354,3 +354,25 @@ fn a_step_the_workspace_answers_pending_is_waited_on_not_failed() {
         "ok"
     );
 }
+
+#[test]
+fn starting_without_a_review_reviews_the_source_and_takes_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    let place = Place::at(&dir.path().join("state"));
+    assert!(
+        place.review(thunderbird::SOURCE).unwrap().is_none(),
+        "nothing reviewed yet"
+    );
+    let review = super::reviewed_for_start(&place, &home, thunderbird::SOURCE).unwrap();
+    assert!(
+        review
+            .chosen()
+            .iter()
+            .any(|item| item.key == "ada@example.com"),
+        "the first start reviews the source and takes its accounts: {review:#?}"
+    );
+    // Kept: a second start works from the same review.
+    assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
+}
