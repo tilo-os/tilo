@@ -124,12 +124,28 @@ pub(crate) fn restore_reviewed_history(
             },
         }
     };
-    let context = tilo_actions::ActionContext::for_resource(
+    // What the restore did, so History says it: an earlier version returned, or the chosen
+    // changes taken back. Naming a range changes nothing anyone reads.
+    let did = match (&extent, &changes) {
+        (RestoreExtent::Name(_), _) => None,
+        (_, Some(changes)) => Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Undo,
+            u32::try_from(changes.len()).unwrap_or(u32::MAX),
+            None,
+        )),
+        (_, None) => Some(tilo_actions::Did::history(
+            tilo_actions::HistoryOp::Restore,
+            1,
+            None,
+        )),
+    };
+    let mut context = tilo_actions::ActionContext::for_resource(
         review.resource().record_id.as_str(),
         "document",
         title,
     )
     .with_app(&review.resource().app_id, title);
+    context.what = did;
     let apply = |authority: &PermissionContext,
                  author: &MemberId,
                  file: bool,

@@ -389,6 +389,9 @@ pub(crate) struct Shared {
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).
     pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
+    /// What the workspace's governance calls each of its people, by their person (root key,
+    /// hex): whoever is not here now is named by it, never by their key.
+    pub names: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
     /// When the workspace admitted each of its people, once heard, by their person (root key,
     /// hex): who shares a name is numbered in this order here, as in the workspace's roster.
     pub joined: Rc<RefCell<std::collections::BTreeMap<String, u64>>>,

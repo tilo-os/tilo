@@ -520,3 +520,20 @@ fn a_window_speaks_one_language() {
         "nothing to choose among: the person's own"
     );
 }
+
+/// An item labelled only by its id (a record with no title yet) is said as unnamed: a row never
+/// reads "Renamed 8a6a72fc-…".
+#[test]
+fn an_item_labelled_by_its_id_is_said_as_unnamed() {
+    let named = |id: &str, label: &str| tilo_actions::ActionItem {
+        id: id.into(),
+        label: label.into(),
+    };
+    assert_eq!(item_label(&named("page:1", "Plan")), Some("Plan"));
+    assert_eq!(item_label(&named("page:abc", "abc")), None);
+    assert_eq!(
+        item_label(&named("x", "8a6a72fc-2051-4bc1-9a3e-1f2d3c4b5a69")),
+        None
+    );
+    assert_eq!(item_label(&named("x", "  ")), None);
+}

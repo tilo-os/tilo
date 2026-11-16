@@ -46,11 +46,15 @@ pub fn sentence(entry: &ActionContext) -> String {
 /// change: the name it carries is a name, and whom software acted for is
 /// said here once.
 pub fn author_line(author: &HistoryAuthor) -> String {
+    let reader = author.relation == AuthorRelation::Reader;
     actor_line(
         &author.name,
+        // The reader's own change, made through software for them, is theirs: "You", never
+        // "You, for" themselves.
         author
             .attribution
             .as_ref()
+            .filter(|_| !(reader && author.for_reader))
             .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
         author.for_reader,
         author.relation == AuthorRelation::Reader,
@@ -83,9 +87,18 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
     let label = attribution.writer_label.as_deref();
     match attribution.writer.as_ref()? {
-        fs_protocol::AttributedWriter::Agent { agent, .. } => agent_tool_name(agent)
+        // The agent by its own name. A session's label is the session's title, which the
+        // hover shows ([`attribution_hover`]): never the agent's name.
+        fs_protocol::AttributedWriter::Agent { agent, session } => agent_tool_name(agent)
             .map(str::to_owned)
-            .or_else(|| label.map(str::to_owned)),
+            .or_else(|| {
+                session
+                    .is_none()
+                    .then_some(label)
+                    .flatten()
+                    .map(str::to_owned)
+            })
+            .or_else(|| Some(agent.trim().to_owned())),
         fs_protocol::AttributedWriter::App(_) | fs_protocol::AttributedWriter::Program(_) => {
             label.map(str::to_owned)
         }
@@ -283,6 +296,25 @@ impl collaboration::history_source::words::HistoryWords for ThreadWords {
 /// actor said they were doing. `None` when the entry says neither.
 pub fn step_summary(entry: &ActionContext) -> Option<String> {
     collaboration::history_source::verbs::step_summary(entry, &ThreadWords)
+}
+
+/// The one thing a step acted on, apart from what it did, when its sentence says the two as
+/// "what it did" then "the thing" ("Deleted" and "Supplier terms"): a row shows them as separate
+/// elements, the thing as a link that opens it. `None` for a step on no named item, or whose
+/// sentence says more after the thing ("Renamed Draft to Plan"), which stays one sentence.
+#[must_use]
+pub fn step_target(entry: &ActionContext, summary: &str) -> Option<crate::widget::EntryTarget> {
+    let item = entry.item.as_ref()?;
+    let label = tilo_history::item_label(item)?;
+    let action = summary.trim_end().strip_suffix(label)?;
+    // The framework's own words for an action it has no sentence for put a colon between the
+    // two ("Write note: Supplier terms"): the row lays them out apart instead.
+    let action = action.trim_end().trim_end_matches(':').trim();
+    (!action.is_empty()).then(|| crate::widget::EntryTarget {
+        action: action.to_owned(),
+        label: label.to_owned(),
+        id: item.id.clone(),
+    })
 }
 
 /// What one step did, said without anything it carried: an action by its

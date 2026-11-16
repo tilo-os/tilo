@@ -70,6 +70,7 @@ notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }
 notes-append-to-note = Added to { $title }
+notes-write-note = Edited { $item }
 
 ## Keyboard shortcuts sheet
 notes-help-title = Keyboard shortcuts

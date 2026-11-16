@@ -1569,7 +1569,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -2359,6 +2359,27 @@ impl RootPublishes for ResourceRoot {
 // The root owns the file whose history it shows beside the resource's (the
 // runner checks the source it registered is this root's); everything else
 // about History is its content's, as before.
+// How History shows this app's changes is the view's to say; what a change acted on opens as
+// any item of the app opens, so a row's link to the thing it changed works in every app whose
+// views open items, not only in an app that presents its changes itself.
+impl ui_core::history_mode::capability::PresentsHistoryEntries for ResourceRoot {
+    fn history_entry_presenter(
+        &self,
+    ) -> Option<std::rc::Rc<dyn ui_core::widget::HistoryEntryPresenter>> {
+        ui_core::history_mode::capability::history_entry_presenter(self.content.as_ref())
+    }
+
+    fn open_history_entry(&mut self, entry: &ui_core::widget::HistoryEntry) -> bool {
+        if ui_core::history_mode::capability::open_history_entry(self.content.as_mut(), entry) {
+            return true;
+        }
+        entry
+            .target
+            .as_ref()
+            .is_some_and(|target| self.stages.opens() && self.stages.open(&target.id).is_ok())
+    }
+}
+
 impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
     fn history_registration(
         &self,

@@ -297,6 +297,25 @@ pub fn message_keys(app: &str, what: &Did) -> Vec<String> {
     }
 }
 
+/// What an item is called, when it is called anything: a label that only repeats the item's
+/// id (what a record with no title yet is labelled by) names nothing a person reads, and the
+/// sentence says the item unnamed instead of printing the id.
+pub fn item_label(item: &tilo_actions::ActionItem) -> Option<&str> {
+    let label = item.label.trim();
+    let id = item.id.trim().to_ascii_lowercase();
+    let repeats_id = id.ends_with(&label.to_ascii_lowercase()) || is_uuid(label);
+    (!label.is_empty() && !repeats_id).then_some(label)
+}
+
+/// Whether `text` is a UUID in its usual hyphenated form: an id, never a name.
+fn is_uuid(text: &str) -> bool {
+    text.len() == 36
+        && text.char_indices().all(|(at, c)| match at {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
 /// `new-snippet` → `New snippet`: a readable name for an id nothing labels.
 fn humanize(id: &str) -> String {
     let words = tilo_actions::entry::kebab(id).replace('-', " ");
@@ -347,14 +366,14 @@ impl<'a> Reader<'a> {
     /// name who did it.
     pub fn sentence_by(&self, entry: &ActionContext, who: Option<&Who<'_>>) -> String {
         let app = entry.app.as_ref().map_or("", |app| app.id.as_str());
-        let item = entry
-            .item
-            .as_ref()
-            .map(|item| item.label.as_str())
-            .filter(|label| !label.trim().is_empty());
+        let item = entry.item.as_ref().and_then(item_label);
+        // A step on an item of the resource that has no name yet is about that item: it says
+        // the item unnamed rather than borrowing the resource's name ("Renamed Notebook to …"
+        // for a note that had no title).
         let resource = entry
             .resource
             .as_ref()
+            .filter(|_| entry.item.is_none())
             .map(|resource| resource.label.as_str())
             .filter(|label| !label.trim().is_empty());
         let scope = Scope {
@@ -372,11 +391,7 @@ impl<'a> Reader<'a> {
     /// The sentence for one described step, as an undo names what it took
     /// back.
     pub fn described(&self, described: &Described, app: &str) -> String {
-        let item = described
-            .item
-            .as_ref()
-            .map(|item| item.label.as_str())
-            .filter(|label| !label.trim().is_empty());
+        let item = described.item.as_ref().and_then(item_label);
         self.did(
             &described.what,
             &Scope {
@@ -623,11 +638,7 @@ impl<'a> Reader<'a> {
         // What it took back is named as the step itself was: on its item,
         // else in the resource the undo ran in.
         let one = step.of.as_deref().map(|described| {
-            let item = described
-                .item
-                .as_ref()
-                .map(|item| item.label.as_str())
-                .filter(|label| !label.trim().is_empty());
+            let item = described.item.as_ref().and_then(item_label);
             self.did(
                 &described.what,
                 &Scope {

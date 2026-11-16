@@ -410,6 +410,31 @@ impl Replicas {
         .ok()
     }
 
+    /// What `workspace_id`'s governance calls each of its people, by person (root key, hex): the
+    /// name its member list shows, also for someone it removed, whose changes still read as
+    /// theirs. Everything that names a person here who is not here now names them by this.
+    pub(crate) fn member_names(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<BTreeMap<String, String>> {
+        self.with_workspace(workspace_id, |view| {
+            let list = view
+                .peer()
+                .governance()
+                .governed_members(tilo_clock::wall())?;
+            Ok(list
+                .members
+                .iter()
+                .filter_map(|member| {
+                    let person = member.id.person_id()?.to_owned();
+                    let name = member.name.trim();
+                    (!name.is_empty()).then(|| (person, name.to_owned()))
+                })
+                .collect())
+        })?
+        .ok()
+    }
+
     /// Whose each of `workspace_id`'s member devices is, as its governance admitted them: device
     /// (hex) to person (root key, hex), for every device a current member is here from. What
     /// shows a device by its person (who is here, a call's roster) reads it off this.

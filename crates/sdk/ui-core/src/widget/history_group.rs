@@ -106,6 +106,9 @@ pub struct HistoryGroup {
     /// The kind of explicit work unit (`task`, `agent-run`, `shortcut`, …)
     /// the band is, when its changes share one rather than a person's name.
     pub work: Option<String>,
+    /// What an agent session was titled (by its agent, often its conversation), when the band is one:
+    /// detail a hover shows, never the band's title, which says what the run did.
+    pub work_title: Option<String>,
     pub open: bool,
     pub start: usize,
     pub end: usize,
@@ -344,6 +347,7 @@ struct Placed {
     persisted: bool,
     named_by: Option<HistoryAuthor>,
     work: Option<String>,
+    work_title: Option<String>,
     start: usize,
     end: usize,
     open: bool,
@@ -407,6 +411,7 @@ pub fn group_entries(
             persisted: true,
             named_by: r.named_by.clone(),
             work: None,
+            work_title: None,
             start,
             end,
             open,
@@ -440,9 +445,19 @@ pub fn group_entries(
             .iter()
             .any(|named| run_start < named.end && run_end > named.start);
         if !overlaps_named {
+            // An agent session is titled by what it did, as derived bands are: the label it
+            // carries is what its session called itself, which says who ran it at best.
+            let agent_session = group.kind == tilo_actions::context::AGENT_SESSION_GROUP;
             resolved.push(Placed {
                 id: format!("action-group:{}", group.id),
-                label: group.label.clone(),
+                label: if agent_session {
+                    String::new()
+                } else {
+                    group.label.clone()
+                },
+                work_title: agent_session
+                    .then(|| group.title.clone().unwrap_or_else(|| group.label.clone()))
+                    .filter(|title| !title.trim().is_empty()),
                 persisted: false,
                 named_by: None,
                 work: Some(group.kind.clone()),
@@ -639,12 +654,15 @@ fn finish_group(
     };
     Some(HistoryGroup {
         key,
-        name: named.map(|n| n.label.clone()),
+        name: named
+            .map(|n| n.label.clone())
+            .filter(|label| !label.is_empty()),
         record_id: named
             .filter(|named| named.persisted)
             .map(|named| named.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
         work: named.and_then(|n| n.work.clone()),
+        work_title: named.and_then(|n| n.work_title.clone()),
         open: named.is_some_and(|n| n.open),
         start,
         end,
@@ -854,12 +872,44 @@ mod tests {
                 );
             }
 
+            fn an_agent_session_is_titled_by_what_it_did_not_by_its_title() {
+                let mut entries = vec![
+                    entry(1, "Ada", 1000, EntryKind::Text),
+                    entry(2, "Ada", 1010, EntryKind::Text),
+                ];
+                for (entry, action) in entries.iter_mut().zip(["Edited", "Deleted"]) {
+                    entry.context = Some(
+                        tilo_actions::ActionContext::default().with_group(
+                            "run:1",
+                            "Workspace folder, sixth round",
+                            tilo_actions::context::AGENT_SESSION_GROUP,
+                        ),
+                    );
+                    entry.target = Some(EntryTarget {
+                        action: action.into(),
+                        label: "Supplier terms".into(),
+                        id: "page:1".into(),
+                    });
+                }
+                let groups = group_entries(&entries, &[], &GroupingConfig::default());
+                assert_eq!(groups.len(), 1);
+                assert_eq!(groups[0].name, None);
+                assert_eq!(
+                    groups[0].work_title.as_deref(),
+                    Some("Workspace folder, sixth round")
+                );
+                let title = groups[0].title(&entries);
+                assert!(title.contains("Supplier terms"), "{title}");
+                assert!(!title.contains("sixth round"), "{title}");
+            }
+
             a_typing_run_by_one_person_is_one_group();
             a_five_minute_gap_ends_the_session();
             a_different_author_always_starts_a_new_group();
             a_governance_act_is_not_swallowed_by_a_typing_run();
             a_group_never_grows_past_the_cap();
             explicit_work_group_collapses_across_people_and_action_families();
+            an_agent_session_is_titled_by_what_it_did_not_by_its_title();
         }
 
         phase named_groups_override_nest_and_converge;

@@ -186,6 +186,8 @@ pub(crate) struct Joined {
     /// The workspace's members as its governance lists them, once heard: what
     /// someone no longer among them made on the desktop is released.
     members: Option<std::collections::BTreeSet<String>>,
+    /// What the workspace's governance calls each of its people, by their person (root key, hex).
+    names: std::collections::BTreeMap<String, String>,
     /// When the workspace admitted each of its people, once heard, by their person (root key,
     /// hex): who shares a name is numbered in this order.
     admitted_at: std::collections::BTreeMap<String, u64>,
@@ -247,6 +249,7 @@ pub(crate) fn open(
         permitted: BTreeMap::new(),
         permit_answers: Arc::default(),
         members: None,
+        names: BTreeMap::new(),
         admitted_at: BTreeMap::new(),
         settled: Arc::default(),
         content: ContentWants::default(),
@@ -556,6 +559,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             shared.members.replace(joined.members.clone());
+            shared.names.replace(joined.names.clone());
             joined.moderates = Arc::clone(&shared.moderates);
             joined.invitable = Arc::clone(&shared.invitable);
             joined.administers = Arc::clone(&shared.administers);
@@ -1751,14 +1755,21 @@ impl Joined {
             .get(&self.uuid)
             .cloned()
             .unwrap_or_default();
-        if members == self.members && joined == self.admitted_at {
+        let names = status
+            .workspace_names
+            .get(&self.uuid)
+            .cloned()
+            .unwrap_or_default();
+        if members == self.members && joined == self.admitted_at && names == self.names {
             return;
         }
         self.members = members;
         self.admitted_at = joined;
+        self.names = names;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.members.replace(self.members.clone());
+                shared.names.replace(self.names.clone());
                 shared.joined.replace(self.admitted_at.clone());
                 woken.insert(id);
             }

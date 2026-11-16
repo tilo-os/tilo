@@ -25,6 +25,9 @@ pub(crate) struct Presence {
     pub(crate) seen: Vec<MemberId>,
     /// Who a caret is drawn for, by publisher: a member who stops selecting has theirs taken away.
     pub(crate) carets: Vec<MemberId>,
+    /// The names of the workspace's people as its governance last gave them, as this mount put
+    /// them on its presence.
+    pub(crate) named: std::collections::BTreeMap<String, String>,
 }
 
 impl Mount {
@@ -50,13 +53,25 @@ impl Mount {
             .here
             .borrow_mut()
             .set_joined(&desktop.shared.joined.borrow());
-        if !std::mem::take(&mut self.here_stale) && !numbered {
+        let renamed = *desktop.shared.names.borrow() != self.presence.named;
+        if !std::mem::take(&mut self.here_stale) && !numbered && !renamed {
             return;
         }
+        self.presence.named = desktop.shared.names.borrow().clone();
         let tree = desktop.handle.read(Clone::clone);
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();
+        let own = here.own_user().map(str::to_owned);
+        let named = &self.presence.named;
         self.frame.update_presence(|presence| {
+            // Everyone the workspace lists is named as its governance calls them, here or not:
+            // a change someone made while away reads as theirs, never as their key. Who is here
+            // is then named as their presence says, as everywhere else.
+            for (person, name) in named {
+                if own.as_deref() != Some(person.as_str()) {
+                    presence.set_display_name(MemberId::person(person.clone()), name);
+                }
+            }
             here.show_waves(presence);
             here.register_windows(&people, presence);
             true

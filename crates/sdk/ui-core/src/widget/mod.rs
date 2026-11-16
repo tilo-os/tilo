@@ -2760,9 +2760,9 @@ pub use activity_timeline_component::{
 };
 pub use collab_types::ArtifactKind;
 pub use history::{
-    AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
-    HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
-    hue_to_rgb,
+    AuthorRelation, EntryKind, EntryTarget, HistoryAttribution, HistoryAuthor,
+    HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
+    format_relative_time, hue_to_rgb,
 };
 pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
 

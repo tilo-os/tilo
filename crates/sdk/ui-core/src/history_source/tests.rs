@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             rows,
             [
-                ("claude for you".to_owned(), AuthorRelation::Software),
+                ("You".to_owned(), AuthorRelation::Reader),
                 ("ada".to_owned(), AuthorRelation::Person),
                 ("You".to_owned(), AuthorRelation::Reader),
             ]
@@ -879,18 +879,24 @@ tilo_test_env::scenario! {
         let mut authors = AuthorDirectory::new();
         authors.set_reader("kai");
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        // The person it acted for, with the agent beside them as its own field.
         let author = &entries.last().unwrap().author;
-        assert_eq!(author.name, "claude");
-        assert_eq!(crate::author_line(author), "claude for ada");
-        assert_eq!(author.relation, AuthorRelation::Software);
+        assert_eq!(author.name, "ada");
+        assert_eq!(author.relation, AuthorRelation::Person);
+        let parts = crate::history_source::sentence::author_parts(author);
+        assert_eq!(parts.person, "ada");
+        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
         assert_eq!(
             author.attribution,
             Some(HistoryAttribution {
                 acting: tilo_actions::Acting::agent("claude")
                     .acting_for(tilo_actions::Acting::person("ada")),
                 on_behalf_of_name: Some("ada".into()),
-                writer: None,
-                writer_label: None,
+                writer: Some(fs_protocol::AttributedWriter::Agent {
+                    agent: "claude".into(),
+                    session: None,
+                }),
+                writer_label: Some("claude".into()),
                 device: None,
                 folder: None,
             })
@@ -973,12 +979,12 @@ tilo_test_env::scenario! {
         authors.set_reader("kai");
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
-        assert_eq!(entry.author.name, "claude");
+        assert_eq!(entry.author.name, "ada");
         assert_eq!(
             crate::author_line(&entry.author),
             "ada via task ‘Prepare Q3 financials’"
         );
-        assert_eq!(entry.author.relation, AuthorRelation::Software);
+        assert_eq!(entry.author.relation, AuthorRelation::Person);
         let group = entry
             .context
             .as_ref()

@@ -69,6 +69,7 @@ notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
 notes-append-to-note = Zu { $title } hinzugefügt
+notes-write-note = { $item } bearbeitet
 
 ## Keyboard shortcuts sheet
 notes-help-title = Tastenkürzel

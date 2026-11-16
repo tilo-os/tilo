@@ -136,6 +136,9 @@ pub struct PeerStatus {
     /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
     /// person from it, so someone the live plane never certified to this page is still theirs.
     pub workspace_devices: BTreeMap<String, BTreeMap<String, String>>,
+    /// What each joined workspace's governance calls its people, by workspace, by person id
+    /// (root key, hex): how a page names someone who is not here now, never by their key.
+    pub workspace_names: BTreeMap<String, BTreeMap<String, String>>,
     /// When each of a joined workspace's people was admitted, by workspace, by person id: the
     /// order people who share a name are numbered in, as the workspace's roster numbers them.
     pub workspace_joined: BTreeMap<String, BTreeMap<String, u64>>,
@@ -163,6 +166,7 @@ impl PeerStatus {
             key_state: String::new(),
             workspace_members: BTreeMap::new(),
             workspace_devices: BTreeMap::new(),
+            workspace_names: BTreeMap::new(),
             workspace_joined: BTreeMap::new(),
             entry: None,
         }

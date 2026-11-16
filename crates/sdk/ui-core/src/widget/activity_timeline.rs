@@ -265,6 +265,9 @@ struct RowGroup {
     restorable: bool,
     is_section: bool,
     work: Option<(crate::icons::Icon, &'static str)>,
+    /// What an agent session was titled, which hovering the band shows
+    /// ([`HistoryGroup::work_title`]).
+    work_title: Option<String>,
 }
 
 /// A band header's hover chips, in the order they are laid out.
@@ -1919,6 +1922,7 @@ impl ActivityTimeline {
             restorable,
             is_section: false,
             work: g.work.as_deref().and_then(work_icon),
+            work_title: g.work_title.clone(),
         });
         rows.push(VisualRow::Group(gi));
         if !expanded {
@@ -2251,6 +2255,7 @@ impl ActivityTimeline {
             restorable: false,
             is_section: true,
             work: None,
+            work_title: None,
         });
         rows.push(VisualRow::Group(gi));
     }
@@ -3476,8 +3481,24 @@ impl Widget for ActivityTimeline {
             return None;
         }
         (0..self.row_count()).find_map(|i| {
+            // A band an agent ran says what the run called itself (its session's title) on
+            // hover: detail, never the band's headline.
+            if let Some(VisualRow::Group(g)) = self.rows.get(i) {
+                let row = self.row_rect(i).filter(|row| row.contains(point))?;
+                let title = self.row_groups.get(*g)?.work_title.clone()?;
+                return Some((row, format!("‘{title}’")));
+            }
             let face = self.avatar_rect(i).filter(|face| face.contains(point))?;
-            Some((face, self.author_label(self.row_entry(i)?)))
+            let entry = self.row_entry(i)?;
+            // The person, then what wrote for them, a fact to a line: the agent, its name, its
+            // session's title, the computer and the folder.
+            let mut tip = self.author_label(entry);
+            if let Some(writer) = crate::history_source::sentence::attribution_hover(&entry.author)
+            {
+                tip.push('\n');
+                tip.push_str(&writer);
+            }
+            Some((face, tip))
         })
     }
 

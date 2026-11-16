@@ -447,13 +447,19 @@ impl AuthorDirectory {
             invoker.acting.agent_session.as_ref(),
             on_behalf_of.as_deref(),
         ) {
-            return self.agent_session_author(invoker, (agent, session.as_str()), person);
+            return self.agent_session_author(invoker, (agent, Some(session.as_str())), person);
         }
         // A delegated agent writing as itself, under its own principal.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
             && invoker.acting.member_id() == Some(&agent.agent)
         {
             return self.agent_author(actor_hex, agent);
+        }
+        // Any other agent that acted for a person, outside a session the change recorded: the
+        // person, with the agent beside them, as a session's change reads. The name its
+        // connection gave it (often its session's title) is detail, never the person's place.
+        if let (Some(agent), Some(person)) = (invoker.acting.agent_id(), on_behalf_of.as_deref()) {
+            return self.agent_session_author(invoker, (agent, None), person);
         }
         // The person's own writer names them as the directory knows them;
         // anyone else by their principal, without its namespace.
@@ -524,19 +530,20 @@ impl AuthorDirectory {
         author
     }
 
-    /// The author of a change agent session `session` of `agent` made for `person`: the
-    /// person, with the agent as the writer beside them ([`Self::resolve_entry`]).
+    /// The author of a change `agent` made for `person`, in its session `session` when the
+    /// change recorded one: the person, with the agent as the writer beside them
+    /// ([`Self::resolve_entry`]).
     fn agent_session_author(
         &self,
         invoker: &tilo_actions::ActionInvoker,
-        (agent, session): (&str, &str),
+        (agent, session): (&str, Option<&str>),
         person: &str,
     ) -> HistoryAuthor {
         let principal = hex::encode(person.as_bytes());
         let name = self.resolve(&principal).name;
         let writer = fs_protocol::AttributedWriter::Agent {
             agent: agent.to_owned(),
-            session: Some(session.to_owned()),
+            session: session.map(str::to_owned),
         };
         let label = invoker
             .name
@@ -786,9 +793,10 @@ mod tests {
     tilo_test_env::scenario! {
         fn an_identity_wears_one_colour_wherever_it_is_shown;
 
-        phase an_agents_change_wears_the_agents_presence_colour;
-        // An agent's change is painted in the colour presence paints that agent in, from its
-        // member id, never in its person's.
+        phase an_agents_change_wears_its_persons_face_and_its_own_chip;
+        // An agent's change made for a person wears that person's face and colour, with the
+        // agent beside them as its own chip: one agent reads alike whatever its connection
+        // called it.
         {
             let of = |name: &str| {
                 let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(
@@ -800,14 +808,14 @@ mod tests {
                 AuthorDirectory::new().resolve_entry("00", Some(&entry))
             };
             let first = of("Claude Code #1");
-            assert_eq!(first.name, "Claude Code #1");
+            assert_eq!(first.name, "ada");
             assert_eq!(
-                first.rgb(),
-                crate::presence::member_color(&crate::permissions::MemberId::agent("claude-code"), Some("ada"))
+                crate::history_source::sentence::author_parts(&first).writer.as_deref(),
+                Some("Claude Code #1")
             );
             let second = of("Claude Code #2");
-            assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
-            assert_ne!(first.rgb(), crate::presence::user_color("ada"));
+            assert_eq!(second.rgb(), first.rgb(), "one person, one colour");
+            assert_eq!(first.rgb(), crate::presence::user_color("ada"));
         }
 
         phase history_and_presence_pick_the_same_colour_for_the_same_identity;
@@ -1122,6 +1130,53 @@ mod tests {
             Some("Claude Code")
         );
         assert_eq!(author.task.as_deref(), Some("Workspace folder"));
+    }
+
+    /// An agent that acted for its person outside a recorded session (a change written before
+    /// sessions were recorded, or by a host that names none) still reads as the person with the
+    /// agent beside them: the name its connection gave it, here its session's title, is never
+    /// the row's name nor the agent's chip.
+    #[test]
+    fn an_agent_without_a_session_reads_as_its_person_and_never_by_its_session_title() {
+        let person = "ada";
+        let mut authors = AuthorDirectory::new();
+        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        let invoker = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent("claude").acting_for(tilo_actions::Acting::person(person)),
+        )
+        .named(Some("Workspace folder, sixth round".into()));
+        let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+        let author = authors.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
+        assert_eq!(author.name, "Ada");
+        assert_ne!(author.relation, AuthorRelation::Software);
+        let parts = crate::history_source::sentence::author_parts(&author);
+        assert_eq!(parts.person, "Ada");
+        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
+        // The session's title is detail, on the hover.
+        let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
+        assert!(hover.contains("Workspace folder, sixth round"), "{hover}");
+    }
+
+    /// An agent no tool name is known for, working in a session, is named by its own id: the
+    /// session's title the attribution carries names the session, not the agent.
+    #[test]
+    fn an_unknown_agents_session_title_is_not_its_name() {
+        let person = "ada";
+        let mut authors = AuthorDirectory::new();
+        authors.register_person(person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+        let invoker = tilo_actions::ActionInvoker::admitted(
+            &tilo_actions::Acting::agent("scribe")
+                .in_session("s1")
+                .acting_for(tilo_actions::Acting::person(person)),
+        )
+        .named(Some("Tidy the intro".into()));
+        let entry = tilo_actions::ActionContext::default().with_invoker(invoker);
+        let author = authors.resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
+        assert_eq!(author.name, "Ada");
+        assert_eq!(
+            crate::history_source::sentence::writer_badge(&author).as_deref(),
+            Some("scribe")
+        );
     }
 
     #[test]

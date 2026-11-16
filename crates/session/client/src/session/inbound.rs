@@ -313,6 +313,13 @@ impl Task {
                     None => _ = status.workspace_devices.remove(&workspace),
                 });
             }
+            let names = self.replicas.member_names(workspace_id);
+            if self.reports.status().workspace_names.get(&workspace) != names.as_ref() {
+                self.reports.change(|status| match names {
+                    Some(names) => _ = status.workspace_names.insert(workspace.clone(), names),
+                    None => _ = status.workspace_names.remove(&workspace),
+                });
+            }
             let joined = self.replicas.member_joined(workspace_id);
             if self.reports.status().workspace_joined.get(&workspace) != joined.as_ref() {
                 self.reports.change(|status| match joined {

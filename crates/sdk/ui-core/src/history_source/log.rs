@@ -398,6 +398,9 @@ impl HistoryLog {
                 run.id = logged.id;
                 run.timestamp = timestamp_from_ms(logged.time_ms);
                 run.summary = summary(context.as_ref());
+                run.target = context
+                    .as_ref()
+                    .and_then(|context| super::sentence::step_target(context, &run.summary));
                 run.entry_kind = reading.entry_kind;
                 run.text_delta = run.text_delta.zip(reading.text_delta).map(
                     |((added, removed), (more, fewer))| {
@@ -419,6 +422,11 @@ impl HistoryLog {
             if let Some(field) = typed {
                 typing.start(&logged.actor, field, logged.time_ms, out.len());
             }
+            let summary = summary(context.as_ref());
+            let target = context
+                .as_ref()
+                .filter(|_| !genesis)
+                .and_then(|context| super::sentence::step_target(context, &summary));
             out.push(HistoryEntry {
                 id: logged.id,
                 author: source
@@ -427,7 +435,7 @@ impl HistoryLog {
                 entry_kind: reading.entry_kind,
                 artifact_kind: source.artifact_kind,
                 timestamp: timestamp_from_ms(logged.time_ms),
-                summary: summary(context.as_ref()),
+                summary,
                 text_delta: reading.text_delta,
                 // The scrubber re-derives state via `materialize_at` /
                 // `heads_for_entry` rather than cracking open a payload.
@@ -436,7 +444,7 @@ impl HistoryLog {
                 // artifact and not reachable from a bare document.
                 redaction: None,
                 context,
-                target: None,
+                target,
             });
         }
         out
