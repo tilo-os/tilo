@@ -70,6 +70,7 @@ client_roots = [
 # workspace) stays AGPL. The check fails when the graph reaches a crate that is
 # not here, and when one here is no longer reached.
 client_side = [
+    "app-fleet",               # the kinds each fleet app declares its members' own
     "collab-types",            # a document's signed envelopes, and resource paths
     "neighbour-wire",
     "runtime-portal",
