@@ -52,6 +52,7 @@ mod close_button_tests;
 mod close_motion_tests;
 mod commands;
 mod displays;
+mod drawn;
 pub use displays::{display_rect, working_display};
 mod floating;
 mod floats;
@@ -297,6 +298,9 @@ struct Shared {
     search_asks: Vec<(usize, Option<String>)>,
     /// The open search, as last shown: its query and rows, and whether it is still filling in.
     shown_search: search::ShownSearch,
+    /// The windows whose shown tab has drawn what it shows, as of the last update pass
+    /// ([`DesktopHandle::drawn`]).
+    drawn: std::collections::BTreeSet<TabId>,
     /// The field the person types into in the desktop itself, as last
     /// shown, and the text committed into it from outside the keyboard,
     /// taken on the next update pass.
@@ -2039,8 +2043,10 @@ impl Widget for DesktopSurface {
         // Last, so a row this pass rebuilt shows its windows' own artwork in the same frame it
         // appeared in.
         let artwork = self.sync_window_artwork();
+        let drawn = self.sync_drawn();
         self.seen_search = self.shared.borrow().search_revision;
         changed
+            || drawn
             || row_changed
             || bars_changed
             || share_asked

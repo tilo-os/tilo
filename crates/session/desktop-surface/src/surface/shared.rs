@@ -94,6 +94,7 @@ impl Shared {
             search_refusal: None,
             search_asks: Vec::new(),
             shown_search: super::search::ShownSearch::default(),
+            drawn: std::collections::BTreeSet::new(),
             typed_field: Err(super::search::TypedRefusal::NoField),
             typed_ask: None,
             personal_ask: None,

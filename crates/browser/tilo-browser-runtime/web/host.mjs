@@ -1,4 +1,5 @@
 import {createMediaPump} from './voice-controls.mjs';
+import {changed as pageChanged} from './changes.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
@@ -324,6 +325,8 @@ export async function mountDesktop(target,options={}) {
     if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
     if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
     options.onStatus?.(noFiles?{files:'unavailable',filesError:noFiles,...data}:data);
+    // Whoever waits on the page's state reads it again now (`changes.mjs`).
+    pageChanged();
   };
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();

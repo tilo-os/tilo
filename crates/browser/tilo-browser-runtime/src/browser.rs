@@ -904,6 +904,12 @@ impl Mount {
             .map(|d| d.shared.loading_apps())
             .unwrap_or_default()
             .into();
+        // Where each window stands (`arriving`, `landed`, `drawn`, `could-not-open` with why), by
+        // its tab in hex: what a caller that opened a window waits on.
+        value["windows"] = desktop
+            .map(|d| d.shared.window_states(&d.handle))
+            .unwrap_or_default()
+            .into();
     }
 
     /// What the open search stands on, as the shell shows it: the query the field holds and the rows

@@ -348,6 +348,11 @@ pub(crate) struct Shared {
     /// before the record itself arrived, or the tab's application is still
     /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// The tabs whose window could not open what it names, with what the window says instead
+    /// ([`crate::window_states`]).
+    pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
+    /// The tabs whose app runs on its record in their window.
+    landed: Rc<RefCell<std::collections::HashSet<TabId>>>,
     /// The record ids of tabs this page has not bound yet: an application
     /// whose code has not loaded, one it does not run, or a record it does not
     /// read. Each is written back to the shared shell under the spelling it
@@ -496,6 +501,29 @@ impl Shared {
             .iter()
             .find(|(_, checkout)| shows(checkout.id.route()) && checkout.kind == kind)
             .map(|(tab, _)| *tab)
+    }
+
+    /// Where each window of the desktop stands ([`crate::window_states`]), by its tab in hex as
+    /// the page's status names tabs.
+    pub(crate) fn window_states(
+        &self,
+        handle: &DesktopHandle,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let drawn = handle.drawn();
+        let unopened = self.unopened.borrow();
+        let landed = self.landed.borrow();
+        handle.read(|tree| {
+            tree.tabs()
+                .map(|tab| {
+                    let state = crate::window_states::WindowState::of(
+                        unopened.get(&tab.id).map(String::as_str),
+                        landed.contains(&tab.id),
+                        drawn.contains(&tab.id),
+                    );
+                    (format!("{:x}", tab.id), window_state_json(&state))
+                })
+                .collect()
+        })
     }
 
     /// The applications whose code the page is fetching now: a window of one
@@ -1325,6 +1353,8 @@ impl TileSource for Tiles {
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
+                self.shared.unopened.borrow_mut().remove(&tab.id);
+                self.shared.landed.borrow_mut().insert(tab.id);
                 // Built, but its first frame is not drawn yet: the window
                 // stands with what the app declared for that time (its
                 // manifest's `arrival-skeleton`) until it presents.
@@ -1341,6 +1371,8 @@ impl TileSource for Tiles {
             // `arrival-skeleton`), and the app goes on with that arrival once
             // built.
             Err(Unready::Arriving) => {
+                self.shared.unopened.borrow_mut().remove(&tab.id);
+                self.shared.landed.borrow_mut().remove(&tab.id);
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return TileHost::new(ui::widget::TileContent::Arriving)
                         .arriving_from(code_host());
@@ -1351,6 +1383,11 @@ impl TileSource for Tiles {
                     .with_arrival_shape(shape)
             }
             Err(Unready::Notice(detail)) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
@@ -1819,6 +1856,20 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
     }
     shared.linked = linked_accounts(&shared, notify);
     shared
+}
+
+/// A window's state as the page's status says it: `{"state": …}`, with the `reason` of a window
+/// that could not open.
+fn window_state_json(state: &crate::window_states::WindowState) -> serde_json::Value {
+    use crate::window_states::WindowState;
+    match state {
+        WindowState::Arriving => serde_json::json!({"state": "arriving"}),
+        WindowState::Landed => serde_json::json!({"state": "landed"}),
+        WindowState::Drawn => serde_json::json!({"state": "drawn"}),
+        WindowState::CouldNotOpen { reason } => {
+            serde_json::json!({"state": "could-not-open", "reason": reason})
+        }
+    }
 }
 
 pub(crate) fn mount(

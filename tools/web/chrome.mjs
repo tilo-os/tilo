@@ -296,6 +296,76 @@ const MEDIA_ASKS = ['--use-fake-device-for-media-stream', '--autoplay-policy=no-
  * every other: a run that wants the machine's GPU (a recording) passes
  * `--enable-gpu --use-angle=vulkan --enable-features=Vulkan
  * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
+/**
+ * The page-side wait `waitFor` evaluates: `expression` read now and again on
+ * each change the page tells (`globalThis.tiloChanges`), each change to its
+ * document, and each step of its loading, until it is truthy (answered) or
+ * `withinMs` passed (answered `undefined`). A read that throws counts as not
+ * yet. An expression may answer a promise.
+ */
+/**
+ * The page-side pause until the page's next change (`globalThis.tiloChanges`),
+ * or a change to its document while its modules are not in yet: answers
+ * `true` on one, `false` when none came within `withinMs`.
+ */
+export function nextChange(withinMs) {
+  const within = Math.max(0, Math.floor(withinMs));
+  return `(globalThis.tiloChanges ? globalThis.tiloChanges.next(${within}) : new Promise(resolve => {
+    const observer = new MutationObserver(() => { clearTimeout(timer); observer.disconnect(); resolve(true); });
+    const timer = setTimeout(() => { observer.disconnect(); resolve(false); }, ${within});
+    observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+  }))`;
+}
+
+export function untilTruthy(expression, withinMs) {
+  return `new Promise(resolve => {
+    let done = false, reading = false, again = false;
+    const stops = [];
+    const finish = value => {
+      if (done) return;
+      done = true;
+      for (const stop of stops) stop();
+      resolve(value);
+    };
+    const look = async () => {
+      if (done) return;
+      if (reading) { again = true; return; }
+      reading = true;
+      do {
+        again = false;
+        let value;
+        try { value = await (${expression}); } catch { value = undefined; }
+        if (value) { finish(value); break; }
+      } while (again && !done);
+      reading = false;
+    };
+    const timer = setTimeout(() => finish(undefined), ${Math.max(0, Math.floor(withinMs))});
+    stops.push(() => clearTimeout(timer));
+    const observer = new MutationObserver(look);
+    observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+    stops.push(() => observer.disconnect());
+    for (const [target, event] of [[document, 'readystatechange'], [globalThis, 'load'], [globalThis, 'hashchange'], [globalThis, 'popstate']]) {
+      target.addEventListener(event, look);
+      stops.push(() => target.removeEventListener(event, look));
+    }
+    // The page's own changes, once its modules are in: a document still
+    // loading them tells its loading steps above until they are.
+    let followed = null;
+    const follow = () => {
+      if (followed || !globalThis.tiloChanges?.listen) return;
+      followed = globalThis.tiloChanges.listen(look);
+      stops.push(followed);
+    };
+    follow();
+    if (!followed) {
+      const seek = new MutationObserver(() => { follow(); if (followed) seek.disconnect(); });
+      seek.observe(document, {subtree: true, childList: true, attributes: true});
+      stops.push(() => seek.disconnect());
+    }
+    void look();
+  })`;
+}
+
 export async function launch({args = [], media = false} = {}) {
   sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
@@ -432,8 +502,16 @@ export async function launch({args = [], media = false} = {}) {
     // out the whole answer timeout, so the tab says it died once, here, where
     // a flow's failure dump shows it, and refuses further commands at once.
     let dead = null;
+    // Each new document's script context, counted: a wait whose document
+    // went away carries on once the next one is there.
+    let documents = 0;
+    const loaded = new Set();
     const listener = message => {
       if (message.sessionId !== sessionId) return;
+      if (message.method === 'Runtime.executionContextCreated' && message.params?.context?.auxData?.isDefault) {
+        documents += 1;
+        for (const done of [...loaded]) done();
+      }
       if (message.method === 'Inspector.targetCrashed') {
         // Why, where the browser has said: its own report for this page's
         // target, which names the exit or says it ended it for memory.
@@ -480,15 +558,30 @@ export async function launch({args = [], media = false} = {}) {
       }
       return reply.result.result.value;
     };
-    const waitFor = async (expression, {timeout = 120000, interval = 250} = {}) => {
+    // Waits in the page, reading `expression` again whenever the page says
+    // something it shows changed (`globalThis.tiloChanges`, which the
+    // page's mounts and session tell on every status), its document changed,
+    // or it loaded further: never on a clock. A navigation ends the document
+    // the wait ran in, and it carries on in the next one.
+    const waitFor = async (expression, {timeout = 120000} = {}) => {
       const deadline = Date.now() + timeout;
       for (;;) {
-        const value = await evaluate(expression).catch(() => undefined);
+        const left = deadline - Date.now();
+        if (left <= 0) throw new Error(`timed out waiting for ${expression}`);
+        const document = documents;
+        const value = await evaluate(untilTruthy(expression, left), {timeout: left + 5_000})
+          .catch(() => undefined);
         if (value) return value;
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${expression}`);
-        await sleep(interval);
+        // The document went away under the wait (a navigation, a reload):
+        // the next one is waited on once it is there.
+        if (documents === document) await nextDocument(deadline - Date.now());
       }
     };
+    const nextDocument = within => new Promise(resolve => {
+      const done = () => { clearTimeout(timer); loaded.delete(done); resolve(); };
+      const timer = setTimeout(done, Math.max(0, within));
+      loaded.add(done);
+    });
     // One capture at a time: Chromium answers two overlapping
     // `Page.captureScreenshot`s (a recording's frame and a shot) with frames
     // of each other's size, so a shot came back as the page tiled 2x2.
@@ -509,6 +602,11 @@ export async function launch({args = [], media = false} = {}) {
       send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,
+      /** How many documents the tab started: a read that saw the count stay
+       * the same read the tab's current document. */
+      documents: () => documents,
+      /** Resolves once the tab started its next document, or `within` ms. */
+      nextDocument,
       /** Bring the tab to the front: the browser answers a passkey or a
        * permission prompt in the tab the person is looking at, and puts a tab
        * nobody looks at to sleep. A tab already closed has nothing to bring. */
