@@ -375,6 +375,10 @@ fn follow(
     }
 }
 
+/// The waits before a Browser start that failed on the way is tried again;
+/// past the last, the person is told.
+const START_AGAIN_AFTER: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
+
 /// What the relay's Browser asks of a workspace's VM, on the VM host the
 /// placer names.
 impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
@@ -385,15 +389,27 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
             tracing::warn!(%error, "the Browser's material could not be written");
             "Browser couldn't start. Try again in a minute.".to_owned()
         })?;
-        let opened = self
-            .open(&material.workspace, &written)
-            .map_err(|error| match error {
-                OpenError::Refused(words) => words,
-                OpenError::Error(words) => {
-                    tracing::warn!(%words, "opening the workspace's Browser failed");
-                    "Browser couldn't start. Try again in a minute.".to_owned()
+        // A start that failed on the way (the machine was slow to answer, or
+        // to start the session) is tried again, with a wait between, before the
+        // person is told: what they see is one Browser that opens, a little
+        // later. A refusal (no room, the plan) is said at once.
+        let mut waits = START_AGAIN_AFTER.iter();
+        let opened = loop {
+            match self.open(&material.workspace, &written) {
+                Ok(opened) => break opened,
+                Err(OpenError::Refused(words)) => return Err(words),
+                Err(OpenError::Error(words)) => {
+                    let Some(wait) = waits.next() else {
+                        tracing::warn!(%words, "opening the workspace's Browser failed");
+                        return Err(
+                            "Browser couldn't start. Open it again to try once more.".to_owned()
+                        );
+                    };
+                    tracing::info!(%words, ?wait, "opening the workspace's Browser failed; trying again");
+                    std::thread::sleep(*wait);
                 }
-            })?;
+            }
+        };
         Ok(Window {
             device: material.device.device_public_key,
             provider: opened.provider,

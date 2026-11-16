@@ -25,16 +25,19 @@ pub enum Limited {
     /// Too many changes: the budget admits the next one `retry_after` from
     /// now.
     Changes { retry_after: Duration },
-    /// Too many record content bytes this hour.
-    Content,
+    /// Too many record content bytes this hour: the budget holds the piece
+    /// `retry_after` from now.
+    Content { retry_after: Duration },
 }
 
 impl std::fmt::Display for Limited {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Changes { .. } => tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
-            Self::Content => tilo_relay_protocol::refusal::TOO_MUCH_CONTENT,
-        })
+        match self {
+            Self::Changes { .. } => f.write_str(tilo_relay_protocol::refusal::TOO_MANY_CHANGES),
+            Self::Content { retry_after } => f.write_str(
+                &tilo_relay_protocol::refusal::too_much_content(*retry_after),
+            ),
+        }
     }
 }
 
@@ -89,12 +92,18 @@ impl Bucket {
 /// A person's buckets: guest changes, owner changes, content.
 type Buckets = (Bucket, Bucket, Bucket);
 
+/// How often a person whose content the budget refuses is told so: each
+/// refused piece would say it again, and once tells them when to try.
+const TELL_EVERY: Duration = Duration::from_secs(60);
+
 /// The change and content budgets of every person a public host saw.
 pub struct MemberLimits {
     changes: Rate,
     owner_changes: Rate,
     content: Rate,
     people: Mutex<HashMap<[u8; 32], Buckets>>,
+    /// When each person was last told their content was refused.
+    told: Mutex<HashMap<[u8; 32], Instant>>,
 }
 
 impl MemberLimits {
@@ -121,6 +130,7 @@ impl MemberLimits {
                 per_second: content / 3600.0,
             },
             people: Mutex::default(),
+            told: Mutex::default(),
         }
     }
 
@@ -186,7 +196,24 @@ impl MemberLimits {
         )]
         let amount = bytes as f64;
         self.with_buckets(user, now, |(_, _, content)| content.take(amount, rate, now))
-            .map_err(|_| Limited::Content)
+            .map_err(|retry_after| Limited::Content { retry_after })
+    }
+
+    /// Whether `user` is to be told now that their content was refused: not
+    /// when they were told within the last minute.
+    pub fn tell_refused(&self, user: &[u8; 32], now: Instant) -> bool {
+        let mut told = self.told.lock_recover();
+        if told
+            .get(user)
+            .is_some_and(|at| now.saturating_duration_since(*at) < TELL_EVERY)
+        {
+            return false;
+        }
+        if told.len() >= KEPT {
+            told.retain(|_, at| now.saturating_duration_since(*at) < TELL_EVERY);
+        }
+        told.insert(*user, now);
+        true
     }
 }
 
@@ -251,7 +278,15 @@ mod tests {
         let limits = MemberLimits::new(MemberLimitsConfig::default());
         let (user, start) = ([1; 32], tilo_clock::now());
         limits.admit_content(&user, 8 * 1024 * 1024, start).unwrap();
-        assert_eq!(limits.admit_content(&user, 1, start), Err(Limited::Content));
+        // 8 MiB an hour: one more MiB after 450 s, which the refusal says.
+        assert!(matches!(
+            limits.admit_content(&user, 1024 * 1024, start),
+            Err(Limited::Content { retry_after })
+                if (retry_after.as_secs_f64() - 450.0).abs() < 1.0
+        ));
+        assert!(limits.tell_refused(&user, start));
+        assert!(!limits.tell_refused(&user, start + Duration::from_secs(59)));
+        assert!(limits.tell_refused(&user, start + Duration::from_secs(60)));
         limits
             .admit_content(&user, 1024 * 1024, start + Duration::from_secs(450))
             .unwrap();

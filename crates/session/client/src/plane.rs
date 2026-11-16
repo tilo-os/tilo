@@ -205,6 +205,10 @@ pub enum Event {
         changes: Vec<[u8; 32]>,
         reason: String,
     },
+    /// The host did not pass on content this device sent in `ws`: its person's content budget
+    /// is spent. `reason` is the host's, which says when it holds content again
+    /// (`tilo_relay_protocol::refusal::plain_reason` reads it for a person).
+    ContentRefused { ws: Topic, reason: String },
     /// A live frame the device `from` published on `ws`, opened with its record's channel keys.
     Live {
         ws: Topic,

@@ -5,6 +5,7 @@
 //! the workspace's. The author's device keeps that text for its log and shows
 //! the person [`plain_reason`] of it instead.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 /// Why a host turns away everyone in a workspace its owner deleted, live or
@@ -54,12 +55,45 @@ pub fn busy_wait(message: &str) -> Option<Duration> {
 }
 /// The member content budget's refusal.
 pub const TOO_MUCH_CONTENT: &str = "too much content this hour";
+
+/// What a host says when the content budget refuses a piece: why, and when
+/// the budget holds that piece again.
+#[must_use]
+pub fn too_much_content(wait: Duration) -> String {
+    let ms = wait.as_millis().max(1);
+    format!("{TOO_MUCH_CONTENT}{RETRY_IN}{ms} ms")
+}
+
+/// The wait a content budget's refusal `raw` says, when it says one.
+#[must_use]
+pub fn content_wait(raw: &str) -> Option<Duration> {
+    raw.trim()
+        .strip_prefix(TOO_MUCH_CONTENT)?
+        .strip_prefix(RETRY_IN)?
+        .strip_suffix(" ms")?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_millis)
+}
+
 /// Sending too fast: the change budget refused it.
 pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
-/// The hourly content budget refused it. The budget refills continuously and
-/// does not say how long it holds, so the words ask for a wait rather than a
-/// time.
+/// The hourly content budget refused it, from a host that did not say when
+/// it holds the piece again.
 pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour. Try again in a little while.";
+
+/// The hourly content budget refused it, and holds it again after `wait`:
+/// said in whole minutes, rounded up, so the person never tries too early.
+#[must_use]
+pub fn plain_too_much(wait: Duration) -> String {
+    let minutes = wait.as_secs().div_ceil(60).max(1);
+    if minutes == 1 {
+        "You've shared too much this hour. Try again in a minute.".to_owned()
+    } else {
+        format!("You've shared too much this hour. Try again in {minutes} minutes.")
+    }
+}
 /// A person's own workspace keeps as much as the host keeps for them, so the
 /// change was not kept: make room, then send it again.
 pub const PLAIN_FULL: &str = "Your workspace is full, so this change wasn't kept. Remove something to make room, then try again.";
@@ -74,7 +108,8 @@ pub const PLAIN_NOT_GRANTED: &str =
     "This workspace doesn't allow that. Ask a workspace owner for access.";
 /// The person is no longer a member, or this device no longer counts as one.
 pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this workspace.";
-/// The session was not ready for the change; sending it again may work.
+/// The session was not ready for the change, and was still not after the
+/// device sent it again a few times ([`RETRY_NOT_READY_MS`]).
 pub const PLAIN_NOT_READY: &str = "The workspace wasn't ready for that change. Try again.";
 /// Anything else.
 pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
@@ -110,18 +145,38 @@ const NOT_READY: &[&str] = &[
     "already committed with different content",
 ];
 
+/// Refusals the host makes of a change it was not ready for yet: the session
+/// had not subscribed, or the workspace was not bound here yet. The same
+/// change goes through once it is, so a device sends it again before it tells
+/// anyone ([`RETRY_NOT_READY_MS`]).
+const RETRIED: &[&str] = &["before subscribing", "not bound on this relay"];
+
+/// The waits, in ms, before a device sends again a change its host was not
+/// ready for ([`retry_helps`]); past the last, the person is told.
+pub const RETRY_NOT_READY_MS: [u64; 5] = [500, 1_000, 2_000, 4_000, 8_000];
+
+/// Whether `raw`, a host's refusal of a change, is one sending the same
+/// change again a moment later gets through.
+#[must_use]
+pub fn retry_helps(raw: &str) -> bool {
+    RETRIED.iter().any(|needle| raw.contains(needle))
+}
+
 /// The person-readable form of `raw`, a host's refusal of a change.
 #[must_use]
-pub fn plain_reason(raw: &str) -> &'static str {
+pub fn plain_reason(raw: &str) -> Cow<'static, str> {
     let raw = raw.trim();
     if raw == TOO_MANY_CHANGES {
-        return PLAIN_TOO_FAST;
+        return PLAIN_TOO_FAST.into();
+    }
+    if let Some(wait) = content_wait(raw) {
+        return plain_too_much(wait).into();
     }
     if raw == TOO_MUCH_CONTENT {
-        return PLAIN_TOO_MUCH;
+        return PLAIN_TOO_MUCH.into();
     }
     if raw.contains(FULL) {
-        return PLAIN_FULL;
+        return PLAIN_FULL.into();
     }
     let has = |needles: &[&str]| needles.iter().any(|needle| raw.contains(needle));
     if has(NOT_A_MEMBER) {
@@ -135,6 +190,7 @@ pub fn plain_reason(raw: &str) -> &'static str {
     } else {
         PLAIN_REFUSED
     }
+    .into()
 }
 
 #[cfg(test)]
@@ -165,10 +221,29 @@ mod tests {
             assert_eq!(busy_wait("offline: the device left"), None);
         }
 
+        phase only_a_host_that_was_not_ready_is_asked_again;
+        {
+            assert!(retry_helps("commit sent before subscribing to workspace"));
+            assert!(retry_helps("workspace not bound on this relay"));
+            assert!(!retry_helps("already committed with different content"));
+            assert!(!retry_helps(TOO_MANY_CHANGES));
+        }
+
         phase budgets_read_as_what_to_do;
         {
             assert_eq!(plain_reason(TOO_MANY_CHANGES), PLAIN_TOO_FAST);
             assert_eq!(plain_reason(TOO_MUCH_CONTENT), PLAIN_TOO_MUCH);
+            // A host that says its window: the person is told when.
+            let said = too_much_content(Duration::from_secs(19 * 60 + 1));
+            assert_eq!(content_wait(&said), Some(Duration::from_secs(19 * 60 + 1)));
+            assert_eq!(
+                plain_reason(&said),
+                "You've shared too much this hour. Try again in 20 minutes."
+            );
+            assert_eq!(
+                plain_reason(&too_much_content(Duration::from_millis(1))),
+                "You've shared too much this hour. Try again in a minute."
+            );
             assert_eq!(
                 plain_reason(
                     r#"{"reason":{"storage_full":{"limit_bytes":1,"used_bytes":2}},"message":"m","next":[]}"#

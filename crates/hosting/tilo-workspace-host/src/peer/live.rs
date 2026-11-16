@@ -519,6 +519,14 @@ pub(super) async fn route_record_content(
         )
     {
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");
+        // The sender's person is told, and when the budget holds it again:
+        // the piece is not passed on, so whatever they shared stops here.
+        if limits.tell_refused(&peer.user_public_key, tilo_clock::now()) {
+            let _ = session.outbound.try_send(Envelope::RecordContentRefused {
+                workspace_id,
+                reason: limited.to_string(),
+            });
+        }
         return;
     }
     if to == *session.own_device_public_key {

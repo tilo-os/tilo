@@ -371,6 +371,8 @@ pub struct Sending {
     sent: std::collections::BTreeSet<[u8; 32]>,
     /// How many writes in custody the last pass held back: they may not leave now.
     held: usize,
+    /// Writes the host was not ready for, each with when (Unix ms) it goes again.
+    later: std::collections::BTreeMap<[u8; 32], u64>,
 }
 
 impl Sending {
@@ -430,17 +432,26 @@ impl Sending {
     ) -> bool {
         let queued: std::collections::BTreeSet<_> = queued.collect();
         self.sent.retain(|id| queued.contains(id));
+        self.later.retain(|id, _| queued.contains(id));
+        let now = tilo_clock::unix_now_ms();
         for write in writes {
             let id = write.id;
-            if self.sent.contains(&id) {
+            if self.sent.contains(&id) || self.later.get(&id).is_some_and(|at| *at > now) {
                 continue;
             }
+            self.later.remove(&id);
             if !send(write) {
                 return false;
             }
             self.sent.insert(id);
         }
         true
+    }
+
+    /// Send write `id` again at `at_ms` (Unix ms), not before: the host was not ready for it.
+    pub fn send_again_at(&mut self, id: [u8; 32], at_ms: u64) {
+        self.sent.remove(&id);
+        self.later.insert(id, at_ms);
     }
 
     /// The write this connection sent whose id begins with `prefix`, taken out of what it sent:
@@ -522,6 +533,30 @@ mod tests {
             assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
             assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
         }
+    }
+
+    #[test]
+    fn a_write_the_host_was_not_ready_for_goes_again_once_its_wait_is_over() {
+        let mut sending = Sending::default();
+        let sent = std::cell::Cell::new(0_u32);
+        let count = |_: Outgoing<'_>| {
+            sent.set(sent.get().saturating_add(1));
+            true
+        };
+        let queued = || std::iter::once([4; 32]);
+        sending.pass(queued(), std::iter::once(write(4)), count);
+        assert_eq!(sending.answered(&[4; 16]), Some([4; 32]));
+        // Not ready: it waits, still in custody, and is not sent meanwhile.
+        sending.send_again_at([4; 32], tilo_clock::unix_now_ms().saturating_add(60_000));
+        sending.pass(queued(), std::iter::once(write(4)), count);
+        assert_eq!(
+            sent.get(),
+            1,
+            "a write waiting to go again does not leave early"
+        );
+        sending.send_again_at([4; 32], tilo_clock::unix_now_ms());
+        sending.pass(queued(), std::iter::once(write(4)), count);
+        assert_eq!(sent.get(), 2, "once its wait is over, it leaves again");
     }
 
     #[test]

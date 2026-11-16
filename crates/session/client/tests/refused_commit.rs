@@ -107,7 +107,7 @@ fn withdrawn_as_refused(
     // The page withdraws what the workspace refused, and the app hears of it as
     // a refusal of the verb it invoked, for the note it would have pinned.
     assert!(
-        app.refused_by_workspace(changes, plain_reason(reason))
+        app.refused_by_workspace(changes, &plain_reason(reason))
             .unwrap()
     );
     assert_eq!(app.state().notes.len(), pinned, "the refused note is gone");

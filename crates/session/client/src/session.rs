@@ -328,6 +328,7 @@ fn session_task(
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
         sending: BTreeMap::new(),
+        not_ready: BTreeMap::new(),
         awaiting_surface: BTreeMap::new(),
         surfaces_arrived: false,
         compactions: Vec::new(),
@@ -491,6 +492,9 @@ struct Task {
     barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
     /// What this connection sent its host of each workspace's custody.
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::custody::Sending>,
+    /// The writes the host was not ready for, by how often it said so: each is sent again after
+    /// a wait ([`tilo_relay_protocol::refusal::RETRY_NOT_READY_MS`]) before it is refused.
+    not_ready: BTreeMap<[u8; 32], usize>,
     /// Writes the owner holds for an app surface this page does not have, by that surface: the
     /// routes the host replays once it arrived.
     awaiting_surface: BTreeMap<[u8; 32], (WorkspaceId, DocumentRoute)>,

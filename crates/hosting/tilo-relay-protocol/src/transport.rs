@@ -681,6 +681,16 @@ pub enum Envelope {
     /// download one per member. Said once, before the session subscribes,
     /// and it stays for the session.
     KeyFollower,
+
+    /// The host did not pass on a piece of record content this device sent
+    /// ([`Envelope::RecordContent`]): its person's content budget is spent.
+    /// `reason` says so and when the budget holds the piece again
+    /// ([`crate::refusal::too_much_content`]); the device's person is told
+    /// ([`crate::refusal::plain_reason`]). Said at most once a minute.
+    RecordContentRefused {
+        workspace_id: WorkspaceId,
+        reason: String,
+    },
 }
 
 impl Envelope {
@@ -742,6 +752,7 @@ impl Envelope {
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
+            Self::RecordContentRefused { .. } => "RecordContentRefused",
         }
     }
 
@@ -789,7 +800,8 @@ impl Envelope {
             | Self::RecordOpened { workspace_id, .. }
             | Self::WorkspaceBootstrap { workspace_id, .. }
             | Self::RecordContentWant { workspace_id, .. }
-            | Self::HostSaid { workspace_id, .. } => Some(*workspace_id),
+            | Self::HostSaid { workspace_id, .. }
+            | Self::RecordContentRefused { workspace_id, .. } => Some(*workspace_id),
             Self::Ping
             | Self::Pong
             | Self::PeerRelayHello { .. }

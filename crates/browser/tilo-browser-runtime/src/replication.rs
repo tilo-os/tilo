@@ -1028,6 +1028,10 @@ impl Joined {
                 } if route.cluster_id == self.uuid => {
                     refusals.push((route, changes, reason));
                 }
+                Event::ContentRefused {
+                    ws: workspace_id,
+                    reason,
+                } if workspace_id == self.workspace => self.content_refused(&reason),
                 Event::RecordOpened {
                     ws: workspace_id,
                     route: Some(route),
@@ -1173,6 +1177,20 @@ impl Joined {
         true
     }
 
+    /// The host did not pass on content this page shared: say so over every desktop the page
+    /// shows, with when to try again, as the host said it.
+    fn content_refused(&self, reason: &str) {
+        warn(&format!(
+            "the workspace did not pass on shared content: {reason}"
+        ));
+        let plain = tilo_relay_protocol::refusal::plain_reason(reason);
+        for mounted in self.mounts.values() {
+            if let Some((handle, _)) = &mounted.attachment.desktop {
+                handle.acknowledge(plain.to_string());
+            }
+        }
+    }
+
     /// Withdraw what the host refused of `route` from the open record that
     /// sent it, which tells its app, and move the record's replication
     /// frontier back to what it keeps. The raw `reason` is for the log; the
@@ -1209,14 +1227,14 @@ impl Joined {
                 }) else {
                     continue;
                 };
-                match store.withdraw_refused(&checkout.id, &refused, plain) {
+                match store.withdraw_refused(&checkout.id, &refused, &plain) {
                     Ok(withdrawn) => {
                         if let Some(heads) = withdrawn {
                             // What the person just did is taken back: say so
                             // over the desktop, whatever the app shows, so a
                             // change the workspace refused never looks kept.
                             if let Some((handle, _)) = &mounted.attachment.desktop {
-                                handle.acknowledge(refused_change(&route.app_id, plain));
+                                handle.acknowledge(refused_change(&route.app_id, &plain));
                             }
                             if let Some(replica) = mounted
                                 .records
@@ -1816,6 +1834,7 @@ pub(crate) fn takes(event: &Event) -> bool {
             | Event::Landed { .. }
             | Event::RecordContent { .. }
             | Event::Refused { .. }
+            | Event::ContentRefused { .. }
             | Event::RecordOpened { .. }
     )
 }

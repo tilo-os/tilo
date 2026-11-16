@@ -369,6 +369,22 @@ impl Task {
         else {
             return;
         };
+        // A host that was not ready for the write takes it a moment later: it stays in custody
+        // and goes again after a wait, a few times, before anyone is told.
+        if let Err(reason) = &outcome
+            && tilo_relay_protocol::refusal::retry_helps(reason)
+        {
+            let tries = self.not_ready.entry(id).or_default();
+            if let Some(wait) = tilo_relay_protocol::refusal::RETRY_NOT_READY_MS.get(*tries) {
+                *tries = tries.saturating_add(1);
+                tracing::debug!(%reason, wait_ms = wait, "the host was not ready for a write; it goes again");
+                if let Some(sending) = self.sending.get_mut(&workspace) {
+                    sending.send_again_at(id, tilo_clock::unix_now_ms().saturating_add(*wait));
+                }
+                return;
+            }
+        }
+        self.not_ready.remove(&id);
         // What the refused write would have brought, as its envelope claims it: read before the
         // entry leaves custody, so whoever holds the record withdraws exactly those changes.
         let withdrawn = match &outcome {
