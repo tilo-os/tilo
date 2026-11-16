@@ -280,6 +280,8 @@ done
 # in the visitor's tab, and a script's error there reads as a stopped arrival.
 for entry in / /app/ /sign-in; do
   while read -r reference; do
+    # A link to a directory (the site's own home, ./ from /sign-in) is its index page.
+    [[ $reference == */ ]] && reference+=index.html
     [[ -f "$root/srv/tilo-web/${reference#./}" || -f "$root/srv/tilo-web/${reference#../}" ]] \
       || fail "$entry references $reference, which the image does not serve"
   done < <(grep -oE '(src|href)="\.{1,2}/[^"]*"' <<<"$(get "$entry")" | sed -n 's|.*="\([^"]*\)"|\1|p')
