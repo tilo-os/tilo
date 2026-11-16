@@ -230,6 +230,7 @@ async fn own_key_runs_unasked_only_while_let() {
     let mut questions = MemberQuestions {
         host: &host,
         root: &ada,
+        device: None,
     };
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
@@ -440,6 +441,7 @@ async fn branch_runs_unasked_and_goes_on_apart() {
     let mut questions = MemberQuestions {
         host: &host,
         root: &ada,
+        device: None,
     };
     let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
         tokio::time::sleep(Duration::from_millis(50))
