@@ -1101,6 +1101,9 @@ fn a_cover_for_a_floating_window_shows_on_a_display_away_from_the_origin() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
     let output = OutputConfig::new("HEADLESS-1", 640, 480).at(640, 0);
     compositor.add_output(&output).expect("output");
+    // The layout starts at its top left corner, so a display away from it has one beside it.
+    let left = OutputConfig::new("HEADLESS-2", 640, 480);
+    compositor.add_output(&left).expect("output");
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((640, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
     compositor.add_host(Rc::new(RefCell::new(square.below())));
