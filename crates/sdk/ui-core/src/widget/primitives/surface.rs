@@ -333,6 +333,12 @@ impl Surface {
 }
 
 impl Widget for Surface {
+    /// The surface it raises under what it holds.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("section");
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -542,6 +548,12 @@ impl DensityRegion {
 }
 
 impl Widget for DensityRegion {
+    /// What it holds, at its density.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

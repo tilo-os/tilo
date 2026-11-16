@@ -336,6 +336,19 @@ pub struct Face {
     pub spread: bool,
 }
 
+/// The ground a widget's element is filled with, under its words and its children: a card's, a
+/// banner's, a badge's. Colours are straight sRGB, 0–255.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Ground {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    /// Its hairline edge, drawn inside the fill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edge: Option<[u8; 4]>,
+    /// Its corners, logical pixels.
+    pub radius: f64,
+}
+
 /// An icon: Lucide-style outlines in a 24 × 24 box, as SVG path data.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Glyph {
@@ -357,6 +370,17 @@ pub struct Glyph {
 pub fn rgba8(color: vello::peniko::Color) -> [u8; 4] {
     let rgba = color.to_rgba8();
     [rgba.r, rgba.g, rgba.b, rgba.a]
+}
+
+/// `src` as an `<img>`'s: the address itself when a page can load it (a URL, a path, a `data:`
+/// URI), and `None` for a name only the host resolves, whose picture shows as its paint.
+#[must_use]
+pub fn web_picture(src: &str) -> Option<&str> {
+    const SCHEMES: [&str; 5] = ["data:", "blob:", "http://", "https://", "//"];
+    let src = src.trim();
+    (!src.is_empty()
+        && (SCHEMES.iter().any(|scheme| src.starts_with(scheme)) || src.starts_with('/')))
+    .then_some(src)
 }
 
 /// Where a document's text is in its box, logical pixels: the edge a paragraph's text starts at
@@ -661,6 +685,13 @@ pub struct Composed {
     pub scroll: Option<[f64; 3]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantics: Option<crate::a11y::AccessNode>,
+    /// The ground its element is filled with, under its words and children.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ground: Option<Ground>,
+    /// Attributes its element carries beyond what its role gives it: an `<img>`'s `src` and
+    /// `alt`, a `<time>`'s `datetime`, a `<progress>`'s value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attrs: Vec<(&'static str, String)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<Own>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -693,6 +724,8 @@ impl Composed {
             layout: None,
             scroll: None,
             semantics: None,
+            ground: None,
+            attrs: Vec::new(),
             own: None,
             focusable: false,
             flows: false,
@@ -703,8 +736,20 @@ impl Composed {
 }
 
 impl Composed {
-    /// The part shows as a picture of the widget's paint within its rect, fetched again when `version`
-    /// changes: for what is genuinely drawn (a face's ring, a battery gauge, a brand mark).
+    /// A part of it keyed `key` under its path, standing at `rect` in the window: a widget that
+    /// lays out and paints its own content composes it from parts of its own.
+    pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
+        let path = format!("{}#{key}", self.path);
+        let index = self.children.len();
+        self.children.push(Composed::new(
+            path,
+            widget,
+            [rect.x0, rect.y0, rect.width(), rect.height()],
+        ));
+        &mut self.children[index]
+    }
+
+    /// The part shows as a picture of the widget's paint within its rect.
     pub fn painted(&mut self, version: u64) {
         use std::hash::{Hash, Hasher};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -766,7 +811,7 @@ pub struct HtmlCx<'a> {
     pub(crate) compose_children: &'a mut dyn FnMut() -> (Vec<Composed>, bool),
 }
 
-impl HtmlCx<'_> {
+impl<'a> HtmlCx<'a> {
     /// The widget is a `tag` element (`button`, `li`, `section`, `dialog`).
     pub fn element(&mut self, tag: &'static str) {
         self.composed.tag = Some(tag);
@@ -797,14 +842,32 @@ impl HtmlCx<'_> {
     /// One of the widget parts, which it lays out and paints itself rather than holding as a widget of
     /// it (a bar's controls): keyed `key` under the widget's path, standing at `rect` in the window.
     pub fn part(&mut self, key: &str, widget: &str, rect: vello::kurbo::Rect) -> &mut Composed {
-        let path = format!("{}#{key}", self.composed.path);
-        let index = self.composed.children.len();
-        self.composed.children.push(Composed::new(
-            path,
-            widget,
-            [rect.x0, rect.y0, rect.width(), rect.height()],
-        ));
-        &mut self.composed.children[index]
+        self.composed.part(key, widget, rect)
+    }
+
+    /// A part of it showing `look`'s words as a `tag` element (`h3`, `dt`, `td`) standing at `rect`.
+    pub fn words(
+        &mut self,
+        key: &str,
+        tag: &'static str,
+        rect: vello::kurbo::Rect,
+        look: TextLook,
+    ) -> &mut Composed {
+        let part = self.part(key, "Text", rect);
+        part.tag = Some(tag);
+        part.own = Some(Own::Text(look));
+        part
+    }
+
+    /// The widget's element is filled with `ground`, under its words and its children.
+    pub fn ground(&mut self, ground: Ground) {
+        self.composed.ground = Some(ground);
+    }
+
+    /// Its element carries `name` `value`: an `<img>`'s `alt`, a `<time>`'s `datetime`, a
+    /// `<progress>`'s `max`.
+    pub fn attr(&mut self, name: &'static str, value: impl Into<String>) {
+        self.composed.attrs.push((name, value.into()));
     }
 
     /// The part composed last ([`Self::part`]), to say what it shows.
@@ -816,12 +879,7 @@ impl HtmlCx<'_> {
     /// widget's path: what a widget that paints its controls tells a reader of is what a page
     /// shows as buttons, while the paint keeps the look.
     pub fn controls(&mut self, key: &str, access: &crate::a11y::AccessNode) {
-        fn walk(
-            cx: &mut HtmlCx<'_>,
-            node: &crate::a11y::AccessNode,
-            key: &str,
-            index: &mut usize,
-        ) {
+        fn walk(cx: &mut HtmlCx<'_>, node: &crate::a11y::AccessNode, key: &str, index: &mut usize) {
             for child in &node.children {
                 if let Some(bounds) = child.bounds
                     && (child.state.focusable || child.action_target.is_some())
@@ -960,8 +1018,9 @@ impl HtmlCx<'_> {
     }
 
     /// The theme the window is drawn in: the typography and colours a widget sets its words in.
+    /// It outlives the composition it is read in, so a widget can hold it while it composes.
     #[must_use]
-    pub fn theme(&self) -> &crate::Theme {
+    pub fn theme(&self) -> &'a crate::Theme {
         self.theme
     }
 

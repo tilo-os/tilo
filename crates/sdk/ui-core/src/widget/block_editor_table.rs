@@ -1002,6 +1002,12 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
+    /// The grid as a table of editable cells.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("table");
+        cx.children();
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document_ref(state, path);
 

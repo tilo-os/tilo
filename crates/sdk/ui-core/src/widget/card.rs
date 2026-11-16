@@ -243,6 +243,12 @@ struct CardHeader {
 }
 
 impl Widget for CardHeader {
+    /// A card's head: its leading, title and trailing controls.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("header");
+        cx.children();
+    }
+
     retained_parts!("CardHeader");
 
     fn build_layout(
@@ -482,6 +488,12 @@ impl Card {
 }
 
 impl Widget for Card {
+    /// A card: its media, head, body and actions.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("article");
+        cx.children();
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -789,6 +801,12 @@ impl Actions {
 }
 
 impl Widget for Actions {
+    /// A card's actions.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("footer");
+        cx.children();
+    }
+
     retained_parts!("Actions");
 
     fn build_layout(
@@ -1005,6 +1023,12 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
+    /// Its cards in a grid.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {

@@ -84,14 +84,41 @@ and its shortcut; the window's search is its field and its buttons; a floating
 window is its title, its close button and the content it holds; the window
 strip's tiles, groups and their controls are their children and their glyphs;
 the history host and the framework's presentation compose their children, and
-the header a client-drawn window draws is a `<header>`. What a widget draws
-itself — a web view, a native surface mounted by the platform, an embedded
-app, a capture's canvas, a display arrangement, a split's rule — is a picture
-of that paint, with the controls it names (`HtmlCx::targets`) as real buttons
-over it: `HtmlCx::painted` takes the count a widget bumps each time it paints,
-so the page fetches a new picture when there is one. The controls' own elements are listed above. The window's bar of
-slots, which the frame hosts over a page that mounts one app, is a `<header>`
-toolbar of real buttons over its painted band.
+the header a client-drawn window draws is a `<header>`. The content widgets
+show what they are: `DataTable` (a `<table>` of `<th>` and `<td>`),
+`PropertyList` and `Facts` (a `<dl>` of terms and descriptions), `Breadcrumb`
+(a `<nav>` holding an `<ol>`), `ConversationList` and `ActivityTimeline` (a
+list of lines with their authors and times), a quote (a `<blockquote>`),
+`CodeEditor` (a `<pre><code>` to read, its own field to edit), `ProgressBar`
+(a `<progress>` with its value), `Gauge` (its name and readout as words over a
+track and fill the page lays), the `Section` family (a `<section>` with its
+heading, count and action), `EmptyState`, `Banner` (a live region), `DropZone`,
+`SearchResults`, `Card`/`MediaCard`/`StatTile`/`QuickTile` and their grids,
+`TextStack`, `Badge`, `Avatar` (an `<img>` where its address loads, its
+initials as text otherwise), `Image` (an `<img>` where its address loads),
+`Icon`, `Divider` (a `<hr>`), `Spinner` and `Skeleton` (drawn by the page's own
+CSS), `EmojiPicker`, `ReactionStrip`, `MediaTransport`'s art, lines and times,
+`PagePreview`, `PageSidebar`, the `Surfaces` components, and the containers
+that only place what they hold (`GroupRow`, `Columns`, `DragRun`,
+`GraphCanvas`, `Manual`, `DocumentView`, `DocumentViewport`, `DisclosureRow`);
+a widget that is genuinely drawn (`Chart`, `Sparkline`, `Plot`, `Map`,
+`Drawing`, `QR`, `VideoPlayer`, `ImageViewer`, `ImageCrop`, `ProgressRing`)
+shows as its picture inside an element that carries its name. What a widget
+draws itself — a web view, a native surface mounted by the platform, an
+embedded app, a capture's canvas, a display arrangement, a split's rule — is a
+picture of that paint, with the controls it names (`HtmlCx::targets`) as real
+buttons over it: `HtmlCx::painted` takes the count a widget bumps each time it
+paints, so the page fetches a new picture when there is one. The controls' own
+elements are listed above. The window's bar of slots, which the frame hosts
+over a page that mounts one app, is a `<header>` toolbar of real buttons over
+its painted band.
+
+A widget shows what it paints itself from parts of its own: `cx.words` puts a
+run of text as an element (`h3`, `dt`, `td`, `li`) standing where the widget
+sets it, `cx.attr` gives its element what only its kind carries (an `<img>`'s
+`src` and `alt`, a `<progress>`'s `value`, a `<time>`'s `datetime`), and
+`cx.ground` fills its element with the ground the widget paints under it (a
+card's, a badge's), so a page reads like the canvas in light and dark.
 
 ## How a frame reaches the page
 

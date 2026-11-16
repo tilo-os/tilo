@@ -149,6 +149,11 @@ impl DeclaredVideo {
 }
 
 impl crate::widget::Widget for DeclaredVideo {
+    /// The player itself.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        crate::widget::Widget::html(&self.player, cx);
+    }
+
     fn needs_redraw(&self) -> bool {
         self.player.needs_redraw() || self.player.needs_animation_frame()
     }

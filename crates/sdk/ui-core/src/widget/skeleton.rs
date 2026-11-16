@@ -313,6 +313,12 @@ impl Skeleton {
 }
 
 impl Widget for Skeleton {
+    /// A quiet stand-in where content is on its way: nothing to read.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.attr("aria-hidden", "true");
+    }
+
     crate::described!();
 
     fn build_layout(

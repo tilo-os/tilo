@@ -1498,6 +1498,90 @@ impl EmptyState {
 }
 
 impl Widget for EmptyState {
+    /// What the empty place says: its title, what it means, what to do and what it holds.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::TextLook;
+        let theme = cx.theme();
+        cx.element("section");
+        let m = &self.layout_style;
+        let (title, message, hint) = &self.resolved;
+        let x0 = self.rect.x0;
+        let x1 = self.rect.x1;
+        let mut y = self.rect.y0 + m.pad_y;
+        let line = |cx: &mut crate::composition::HtmlCx<'_>,
+                    key: &str,
+                    tag: &'static str,
+                    text: &str,
+                    style: &crate::text_render::TextStyle,
+                    ink: vello::peniko::Color,
+                    y: f64| {
+            let height = f64::from(style.line_height_px());
+            let look = TextLook::new(text.to_owned(), style, Some(ink));
+            cx.words(key, tag, Rect::new(x0, y, x1, y + height), look);
+            height
+        };
+        if !title.is_empty() {
+            y += line(cx, "title", "h2", title, &m.title, theme.text_primary, y) + m.gap;
+        }
+        if let Some(message) = message {
+            y += line(cx, "message", "p", message, &m.message, theme.text_dim, y) + m.gap;
+        }
+        if let Some(label) = &self.action_label {
+            let rect = if self.action_rect.width() > 0.0 {
+                self.action_rect
+            } else {
+                Rect::new(x0, y, x1, y + m.min_button)
+            };
+            let part = cx.words(
+                "action",
+                "button",
+                rect,
+                TextLook::new(label.clone(), &m.action, Some(theme.text_primary)),
+            );
+            part.semantics = Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name(label.clone()),
+            );
+        }
+        if let Some(details) = &self.details {
+            let label = crate::i18n::widget_text("empty-state-details");
+            let rect = self.details_rect;
+            let part = cx.words(
+                "details-toggle",
+                "button",
+                rect,
+                TextLook::new(label.clone(), &m.details, Some(theme.text_dim)),
+            );
+            part.semantics = Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name(label)
+                    .with_state(crate::a11y::AccessState::new().expanded(self.details_open)),
+            );
+            if self.details_open {
+                let height = f64::from(m.details.line_height_px());
+                cx.words(
+                    "details",
+                    "p",
+                    Rect::new(x0, rect.y1, x1, rect.y1 + height),
+                    TextLook::new(details.clone(), &m.details, Some(theme.text_dim)),
+                );
+            }
+        }
+        if let Some(hint) = hint {
+            let height = f64::from(m.hint.line_height_px());
+            cx.words(
+                "hint",
+                "p",
+                Rect::new(
+                    x0,
+                    self.rect.y1 - m.pad_y - height,
+                    x1,
+                    self.rect.y1 - m.pad_y,
+                ),
+                TextLook::new(hint.clone(), &m.hint, Some(theme.text_tertiary)),
+            );
+        }
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

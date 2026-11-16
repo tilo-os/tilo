@@ -1482,6 +1482,11 @@ impl crate::widget::TextFits for RichTextLine {
 }
 
 impl Widget for RichTextLine {
+    /// The line as its own field: what the person types edits it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        Widget::html(&self.inner, cx);
+    }
+
     crate::provides!(dyn crate::widget::TextFits);
 
     /// The inner field's timers (a settling squiggle, a suggestion for the

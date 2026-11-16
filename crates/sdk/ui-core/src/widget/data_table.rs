@@ -3778,6 +3778,104 @@ impl crate::widget::controls::ActionControls for DataTableCore {
 }
 
 impl Widget for DataTableCore {
+    /// A table of its columns and the rows in view: a header cell per column, a cell per value,
+    /// sorted by the column the person chose.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::arriving::Arrival;
+        use crate::composition::{Own, TextLook};
+        let theme = cx.theme();
+        cx.element("table");
+        if let Some(name) = &self.accessible_name {
+            cx.attr("aria-label", name.clone());
+        }
+        let band = self.columns_band();
+        let head_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
+        let head = cx.part("head", "DataTable", head_rect);
+        head.tag = Some("thead");
+        let head_row = head.part("row", "DataTable", head_rect);
+        head_row.tag = Some("tr");
+        let header_style = header_style(theme);
+        for (index, column) in self.columns.iter().enumerate() {
+            if self.hidden.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(column_rect) = self.col_rects.get(index).copied() else {
+                continue;
+            };
+            let cell = head_row.part(
+                &format!("th:{index}"),
+                "DataTable",
+                Rect::new(column_rect.x0, head_rect.y0, column_rect.x1, head_rect.y1),
+            );
+            cell.tag = Some("th");
+            cell.attrs.push(("scope", "col".into()));
+            if let Some(sort) = &self.sort
+                && sort.key == column.key
+            {
+                let direction = if sort.ascending {
+                    "ascending"
+                } else {
+                    "descending"
+                };
+                cell.attrs.push(("aria-sort", direction.into()));
+            }
+            cell.own = Some(Own::Text(
+                TextLook::new(
+                    column.header.clone(),
+                    &header_style,
+                    Some(theme.tokens.colors.text_dim),
+                )
+                .with_max_lines(Some(1)),
+            ));
+        }
+        let body_rect = Rect::new(band.x0, head_rect.y1, band.x1, self.rect.y1);
+        let body = cx.part("body", "DataTable", body_rect);
+        body.tag = Some("tbody");
+        let (start, end) = self.visible_row_range();
+        for index in start..end {
+            let Some(row_rect) = self.row_rect(index) else {
+                continue;
+            };
+            let row = body.part(&format!("row:{index}"), "DataTable", row_rect);
+            row.tag = Some("tr");
+            if self.selectable && self.is_row_selected(index) {
+                row.attrs.push(("aria-selected", "true".into()));
+            }
+            let Some(Arrival::Ready(data)) = self.row_state_at(index) else {
+                continue;
+            };
+            for (ci, column) in self.columns.iter().enumerate() {
+                if self.hidden.get(ci).copied().unwrap_or(false) {
+                    continue;
+                }
+                let Some(column_rect) = self.col_rects.get(ci).copied() else {
+                    continue;
+                };
+                let cell = row.part(
+                    &format!("td:{ci}"),
+                    "DataTable",
+                    Rect::new(column_rect.x0, row_rect.y0, column_rect.x1, row_rect.y1),
+                );
+                cell.tag = Some("td");
+                let value = column
+                    .text
+                    .as_ref()
+                    .and_then(|text| text(data))
+                    .unwrap_or_else(|| column.absent.clone());
+                let ink = if value == column.absent {
+                    theme.tokens.colors.text_tertiary
+                } else {
+                    theme.tokens.colors.text_primary
+                };
+                let style = cell_style(theme, column.kind);
+                cell.own = Some(Own::Text(
+                    TextLook::new(value, &style, Some(ink))
+                        .with_max_lines(Some(u32::try_from(column.max_lines).unwrap_or(u32::MAX))),
+                ));
+            }
+        }
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -4833,6 +4931,11 @@ impl Widget for DataTableCore {
 
 /// The table's widget is its core's: a `DataTable<Row>` names its rows' type, and nothing else.
 impl<Row: 'static> Widget for DataTable<Row> {
+    /// The table's cells as elements: what its core composes.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        Widget::html(&self.core, cx);
+    }
+
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         self.core.provide(request);
     }

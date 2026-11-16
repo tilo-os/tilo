@@ -85,6 +85,39 @@ test('a widget keeps its element by path, and an unchanged frame writes nothing'
   assert.equal(presenter.stats.writes, writes, 'nothing written again');
 });
 
+test('a ground fills its element under the words, and an image carries its source and alt', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  show(presenter, widget('Card[0]', [0, 0, 200, 120], {tag: 'article', ground: {fill: [250, 250, 252, 255], edge: [0, 0, 0, 20], radius: 8}, children: [
+    widget('Card[0]/Image[0]', [8, 8, 40, 40], {tag: 'img', attrs: [['src', 'https://example.test/a.png'], ['alt', 'Ada']]}),
+  ]}));
+  const card = byPath(layer, 'Card[0]');
+  assert.match(card.style.cssText, /background:rgba\(250,250,252,1\.000\)/);
+  assert.match(card.style.cssText, /box-shadow:inset 0 0 0 1px rgba\(0,0,0,0\.078\)/);
+  assert.match(card.style.cssText, /border-radius:8px/);
+  const image = byPath(layer, 'Card[0]/Image[0]');
+  assert.equal(image.localName, 'img');
+  assert.equal(image.getAttribute('src'), 'https://example.test/a.png');
+  assert.equal(image.getAttribute('alt'), 'Ada');
+  // A source it no longer shows comes off the element.
+  show(presenter, widget('Card[0]', [0, 0, 200, 120], {tag: 'article', children: [
+    widget('Card[0]/Image[0]', [8, 8, 40, 40], {tag: 'img', attrs: [['alt', 'Ada']]}),
+  ]}));
+  assert.equal(byPath(layer, 'Card[0]/Image[0]').getAttribute('src'), null);
+});
+
+test('a notice is a live status region, read out as it arrives', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  show(presenter, widget('Banner[0]', [0, 0, 300, 40], {tag: 'aside', semantics: {role: 'Group', name: 'Could not save', live: 'polite', state: {}}, children: [
+    widget('Banner[0]/Text[0]', [8, 8, 200, 20], {tag: 'p', own: {kind: 'text', text: 'Try again', size: 13, line_height: 1.4, weight: 400, italic: false, color: null, align: 'start', max_lines: null, mono: false}}),
+  ]}));
+  const notice = byPath(layer, 'Banner[0]');
+  assert.equal(notice.getAttribute('role'), 'status');
+  assert.equal(notice.getAttribute('aria-live'), 'polite');
+  assert.equal(byPath(layer, 'Banner[0]/Text[0]').textContent, 'Try again');
+});
+
 test('a widget that places its children itself has them placed at their rectangles', () => {
   const layer = new Node('div');
   const presenter = createViewPresenter(layer);

@@ -3906,6 +3906,12 @@ impl GroupRow {
 }
 
 impl Widget for GroupRow {
+    /// The groups of windows, each where the row puts it.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::collaboration::presences::CollaborationTopology,

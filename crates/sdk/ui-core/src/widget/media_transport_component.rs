@@ -184,6 +184,12 @@ impl Described for DeclaredTransport {
 }
 
 impl crate::widget::Widget for DeclaredTransport {
+    /// The band's own controls, each where it puts them.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

@@ -638,6 +638,68 @@ impl BannerBody {
 }
 
 impl Widget for BannerBody {
+    /// Its icon, source, title and message as a page lays them out, on the well it stands on.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Ground, TextLook, rgba8};
+        let theme = cx.theme();
+        let well = well(theme, self.notice.kind);
+        cx.element("div");
+        cx.ground(Ground {
+            fill: Some(rgba8(well)),
+            edge: Some(rgba8(crate::surface::edge_on(well))),
+            radius: f64::from(theme.tokens.radii.control),
+        });
+        let content = self.content();
+        // Its words stand where the banner's own geometry measures them.
+        let width = self.rect.width();
+        let g = crate::text_render::with_layout_renderer(theme, |text| {
+            self.geometry(text, theme, width)
+        });
+        let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        let on_well = theme.on_ground(well);
+        let text_width = f64::from(g.text_width);
+        let mut y = g.text.y + dy;
+        if let Some(source) = content.source_line() {
+            let look = TextLook::new(
+                source.to_owned(),
+                &caption_style(theme),
+                Some(on_well.text_dim),
+            );
+            cx.words(
+                "source",
+                "p",
+                Rect::new(g.text.x, y, g.text.x + text_width, y + g.source_h),
+                look,
+            );
+            y += g.source_h;
+        }
+        let look = TextLook::new(
+            content.title.to_owned(),
+            &title_style(theme),
+            Some(on_well.text_primary),
+        );
+        cx.words(
+            "title",
+            "p",
+            Rect::new(g.text.x, y, g.text.x + text_width, y + g.title_h),
+            look,
+        );
+        y += g.title_h;
+        if let Some(message) = content.message.as_deref() {
+            let look = TextLook::new(
+                message.to_owned(),
+                &caption_style(theme),
+                Some(on_well.text_dim),
+            );
+            cx.words(
+                "message",
+                "p",
+                Rect::new(g.text.x, y, g.text.x + text_width, self.rect.y1 - dy),
+                look,
+            );
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1220,6 +1282,12 @@ fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
 }
 
 impl Widget for Banner {
+    /// A notice beside the page: its kind, words and actions.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("aside");
+        cx.children();
+    }
+
     crate::described!();
 
     crate::provides!(

@@ -703,6 +703,16 @@ impl ChartStyle {
 
 impl Widget for Chart {
     crate::described!();
+
+    /// Its lines and grid: a picture, named by its title.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("figure");
+        if !self.title.is_empty() {
+            cx.attr("aria-label", self.title.clone());
+        }
+        cx.picture();
+    }
+
     crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(
@@ -899,6 +909,12 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
+    /// Its line: a picture, named by what it traces.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("span");
+        cx.picture();
+    }
+
     crate::described!();
 
     fn build_layout(

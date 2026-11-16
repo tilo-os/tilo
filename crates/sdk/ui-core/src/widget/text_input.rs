@@ -4183,7 +4183,7 @@ impl TextInput {
         self.secret && !self.reveal.revealed()
     }
 
-    fn display_text(&self) -> String {
+    pub(crate) fn display_text(&self) -> String {
         if self.masked() {
             "•".repeat(self.text.chars().count())
         } else {

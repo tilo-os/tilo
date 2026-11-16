@@ -214,6 +214,12 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     }
     if (scroller) css += 'overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;';
     else if (node.clip) css += 'overflow:clip;';
+    if (node.ground) {
+      const {fill, edge, radius} = node.ground;
+      if (fill) css += `background:${rgba(fill)};`;
+      if (edge) css += `box-shadow:inset 0 0 0 1px ${rgba(edge)};`;
+      if (radius) css += `border-radius:${radius}px;`;
+    }
     if (node.own?.kind === 'text') css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own);
     else if (node.own?.kind === 'face') css += faceCss(node.own);
     else if (node.own?.kind === 'control') css += 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
@@ -222,7 +228,17 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     // What it is, for assistive technology and for the page's own find,
     // selection and focus.
     const semantics = node.semantics;
-    write(element, '@role', role && ARIA_ROLES[role.name] && element.localName !== ARIA_ROLES[role.name] ? ARIA_ROLES[role.name] : null);
+    const namedRole = role && ARIA_ROLES[role.name] && element.localName !== ARIA_ROLES[role.name]
+      ? ARIA_ROLES[role.name]
+      : null;
+    // A notice is a status (or an alert when it must interrupt), even where
+    // its widget is otherwise a plain group.
+    const liveRole = semantics?.live ? (semantics.live === 'assertive' ? 'alert' : 'status') : null;
+    const ariaRole = liveRole && (!namedRole || namedRole === 'group') ? liveRole : namedRole;
+    write(element, '@role', ariaRole);
+    // A notice is read out as it arrives, without moving the keyboard.
+    write(element, '@aria-live', semantics?.live ? String(semantics.live).toLowerCase() : null);
+    write(element, '@aria-busy', semantics?.state?.busy ? 'true' : null);
     const visibleText = node.own?.kind === 'text' || node.own?.kind === 'field' || node.own?.kind === 'blocks' || Boolean(node.own?.label);
     write(element, '@aria-label', !visibleText && semantics?.name ? semantics.name : null);
     write(element, '@aria-selected', semantics?.state?.selected ? 'true' : null);
@@ -241,13 +257,19 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(element, '@aria-modal', role?.name === 'Dialog' && semantics?.state?.modal ? 'true' : null);
     write(element, '@aria-disabled', semantics?.state?.disabled ? 'true' : null);
     write(element, '@data-widget', node.widget || null);
-    // A notice is read out as it arrives, without moving the keyboard.
-    write(element, '@aria-live', semantics?.live ? String(semantics.live).toLowerCase() : null);
     if (element.localName === 'button') write(element, '@type', 'button');
     if (element.localName === 'button') write(element, '@tabindex', '-1');
     // A control's own element carries its role (a box, a range, a chooser's
     // list): the wrapper around it is no control of its own.
     if (node.own?.kind === 'control') write(element, '@role', null);
+    // What only its own kind of element carries (an <img>'s source, a <progress>'s value).
+    const attrs = new Set();
+    for (const [name, value] of node.attrs ?? []) {
+      attrs.add(name);
+      write(element, `@${name}`, value);
+    }
+    for (const name of element.tiloAttrs ?? []) if (!attrs.has(name)) write(element, `@${name}`, null);
+    element.tiloAttrs = attrs;
 
     const own = node.own;
     const children = [];
@@ -822,6 +844,15 @@ export const VIEW_CSS = `
 .tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
+.tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}
+.tilo-view dl,.tilo-view dd{margin:0;}
+.tilo-view progress{accent-color:var(--tilo-accent,#2f6fed);}
+.tilo-view [data-widget=Spinner]{box-sizing:border-box;border-radius:50%;border:2px solid color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 28%,transparent);border-top-color:var(--tilo-text-dim,#6e6e73);animation:tilo-spin .8s linear infinite;}
+.tilo-view [data-widget=Skeleton]{background:var(--tilo-raised,rgba(127,127,127,.1));border-radius:6px;overflow:hidden;position:relative;}
+.tilo-view [data-widget=Skeleton]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 10%,transparent),transparent);transform:translateX(-100%);animation:tilo-shimmer 1.6s ease-in-out infinite;}
+@keyframes tilo-spin{to{transform:rotate(1turn);}}
+@keyframes tilo-shimmer{to{transform:translateX(100%);}}
+@media (prefers-reduced-motion:reduce){.tilo-view [data-widget=Spinner],.tilo-view [data-widget=Skeleton]::after{animation:none;}}
 .tilo-doc .tilo-block{margin:0;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;position:relative;}
 .tilo-doc li.tilo-block{list-style:none;padding-left:calc(var(--tilo-list,28px) + var(--tilo-indent,0) * var(--tilo-step,28px));}
 .tilo-doc li.tilo-bullet::before{content:"";position:absolute;left:calc(var(--tilo-list,28px) / 2 - 2.5px + var(--tilo-indent,0) * var(--tilo-step,28px));top:calc(0.5lh - 2.5px);width:5px;height:5px;border-radius:50%;background:var(--tilo-text-dim,#6e6e73);}

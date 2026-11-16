@@ -2055,6 +2055,9 @@ pub use remount::Remount;
 mod reach;
 pub(crate) use reach::find;
 pub use reach::find_mut;
+#[cfg(test)]
+#[path = "html_content_tests.rs"]
+mod html_content_tests;
 #[cfg(debug_assertions)]
 mod paint_pass;
 #[cfg(test)]
