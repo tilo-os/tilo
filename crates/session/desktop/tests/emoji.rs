@@ -10,7 +10,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::support::draw_chrome;
+use crate::support::hold;
 use crate::support::layout_tree;
+use crate::support::type_text;
+use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
@@ -18,10 +22,9 @@ use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::emoji_catalogue::{self, RecentsStore};
 use ui::headless::FrameHarness;
-use ui::kurbo::{Affine, Rect};
-use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::{DrawChild, Widget};
-use winit::event::{Modifiers, WindowEvent};
+use ui::kurbo::Rect;
+use ui::synthetic_input::{key_press, named_key};
+use ui::widget::Widget;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// The emoji recents where the session keeps them: in memory, as the test's own list.
@@ -69,38 +72,11 @@ fn chrome_with_picker(
     (frame, handle, link)
 }
 
-fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
-    frame.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(mods)));
-}
-
 /// Super+., the emoji picker's chord.
 fn press_emoji_shortcut(frame: &mut FrameHarness) {
     hold(frame, ModifiersState::SUPER);
     frame.send_host_event(&key_press(Key::Character(".".into()), None));
     hold(frame, ModifiersState::empty());
-}
-
-fn type_text(frame: &mut FrameHarness, text: &str) {
-    for character in text.chars() {
-        frame.send_host_event(&char_key(&character.to_string()));
-    }
-}
-
-/// Run `visit` on the chrome the frame mounts, as the session's chrome layer holds it.
-fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
-    let mut chrome = frame.root_mut::<DesktopChrome>();
-    visit(&mut chrome)
-}
-
-/// Draw one frame of the chrome, as the session's chrome layer does.
-fn draw_chrome(frame: &mut FrameHarness) {
-    let theme = ui::Theme::dark();
-    let mut text = ui::TextRenderer::default();
-    let presence = ui::presence::PresenceCtx::default();
-    let mut scene = ui::vello::Scene::new();
-    with_chrome(frame, |chrome| {
-        chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-    });
 }
 
 /// Super+. opens the card at the caret of the field the person types into;

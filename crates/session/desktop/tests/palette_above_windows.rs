@@ -10,14 +10,13 @@
 use std::rc::Rc;
 
 use crate::support::layout_tree;
+use crate::support::send_chord;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{Placement, WidgetHost};
-use winit::event::{Modifiers, WindowEvent};
-use winit::keyboard::{Key, ModifiersState};
 
 const SIZE: (u32, u32) = (1280, 800);
 
@@ -48,23 +47,6 @@ fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
     )
     .with_keyboard(Rc::new(move || keyboard.search_open()));
     (host, handle, shell)
-}
-
-/// The search chord, as a person presses it.
-fn send_chord(host: &mut WidgetHost) {
-    host.host_mut()
-        .send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(
-            ModifiersState::SUPER,
-        )));
-    host.host_mut()
-        .send_host_event(&ui::synthetic_input::key_press(
-            Key::Character("k".into()),
-            None,
-        ));
-    host.host_mut()
-        .send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(
-            ModifiersState::empty(),
-        )));
 }
 
 #[test]

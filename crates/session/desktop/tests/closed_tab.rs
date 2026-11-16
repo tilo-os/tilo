@@ -7,47 +7,17 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use std::rc::Rc;
 
-use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
-use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
-use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
+use crate::support::group;
+use crate::support::hold;
+use crate::support::in_front;
+use crate::support::press;
+use crate::support::shell_and_chrome;
+use crate::support::window;
+use crate::support::windows_of;
+use tilo_desktop_model::{Layout, Strip, StripId, WindowGroup, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::LayoutEffect;
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
-use ui::headless::FrameHarness;
-use ui::synthetic_input::key_press;
-use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
-fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
-    let active_tab = tabs[0].id;
-    WindowGroup {
-        id,
-        tabs,
-        active_tab,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    }
-}
 
 fn layout_tree(groups: Vec<WindowGroup>) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
@@ -65,57 +35,6 @@ fn layout_tree(groups: Vec<WindowGroup>) -> Layout {
         .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), 3);
     tree
-}
-
-/// The shell with `tree` on it and the chrome that carries the desktop's chords over it: the shell
-/// and the chrome are the two layers the session hosts, both driving the one desktop.
-fn shell_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle) {
-    let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
-    let mut shell = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
-    shell.relayout();
-    let chrome = DesktopChrome::new(
-        handle.clone(),
-        "g".into(),
-        Rc::new(PermissiveRules::new(handle.clone())),
-        TopBarChrome::from_tree(tree),
-        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
-        false,
-    );
-    let mut frame = FrameHarness::for_root(
-        ui::state::State::new(),
-        chrome,
-        (1280, 800),
-        ui::Theme::dark(),
-    );
-    frame.relayout();
-    (shell, frame, handle)
-}
-
-fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
-    frame.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(mods)));
-}
-
-fn press(frame: &mut FrameHarness, key: Key) {
-    frame.send_host_event(&key_press(key, None));
-}
-
-/// The windows of group `group` , in the order the strip shows them.
-fn windows_of(handle: &DesktopHandle, group: &str) -> Vec<String> {
-    handle
-        .snapshot("g", vec![])
-        .entries
-        .into_iter()
-        .filter(|entry| entry.route.group == group)
-        .map(|entry| entry.route.tab)
-        .collect()
-}
-
-/// What the shell has in front: the active window of the active strip.
-fn in_front(handle: &DesktopHandle) -> Option<u64> {
-    handle
-        .snapshot("g", vec![])
-        .active
-        .and_then(|route| route.tab.parse().ok())
 }
 
 /// A window closed from its ✕ comes back where it was when the person asks for it back: at its old

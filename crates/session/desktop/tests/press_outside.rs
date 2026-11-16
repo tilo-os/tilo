@@ -8,6 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use crate::support::layout_tree;
+use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
@@ -110,11 +111,6 @@ fn the_workspace_name_typed_in_the_bar_holds_the_keyboard() {
         Target::Window,
         "Escape gives the keyboard back"
     );
-}
-
-fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
-    let mut chrome = frame.root_mut::<DesktopChrome>();
-    visit(&mut chrome)
 }
 
 /// A press on the shell, far from both menus.

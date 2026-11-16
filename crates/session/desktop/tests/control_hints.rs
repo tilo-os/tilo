@@ -12,6 +12,7 @@
 )]
 use std::rc::Rc;
 
+use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
@@ -202,12 +203,6 @@ fn nothing_is_taught_while_the_person_may_not_learn() {
             assert!(!chrome.hints().is_showing(), "{why}: no hint begins");
         });
     }
-}
-
-/// Run `visit` on the chrome the frame mounts.
-fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
-    let mut chrome = frame.root_mut::<DesktopChrome>();
-    visit(&mut chrome)
 }
 
 /// A strip of `windows` windows with the window `group` lifted as a card over the shell, at `dx`
