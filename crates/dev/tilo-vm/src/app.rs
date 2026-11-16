@@ -752,7 +752,20 @@ impl App {
                     bootc: self.probe_bootc(vm, &endpoint),
                 });
             }
-            Err(error) => return Err(key_refusal(vm, adapter.as_ref(), &endpoint, error)),
+            Err(error) => {
+                // What answers at the recorded address is not the device: a device away from
+                // this network leaves its address to whoever takes it, and the peer route is
+                // how it is driven meanwhile.
+                if let (Some(route), CliError::Unreachable { detail, .. }) =
+                    (vm.entry.peer.clone(), &error)
+                    && vm.entry.hypervisor == hypervisor::DEVICE
+                    && std::env::var_os("TILO_VM_SSH").is_none()
+                    && crate::reach::refused(detail)
+                {
+                    return self.connect_peer(vm, &route, detail);
+                }
+                return Err(key_refusal(vm, adapter.as_ref(), &endpoint, error));
+            }
         };
         for issue in &remote.hello.issues {
             self.warnings.push(format!(

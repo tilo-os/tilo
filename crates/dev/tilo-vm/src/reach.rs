@@ -295,6 +295,12 @@ pub fn lost(detail: &str) -> bool {
     .any(|sign| detail.contains(sign))
 }
 
+/// Whether `detail` says nothing serves at the address: what a machine that took a device's
+/// recorded address answers with while the device is away.
+pub fn refused(detail: &str) -> bool {
+    detail.to_ascii_lowercase().contains("connection refused")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Probe {
     There,
