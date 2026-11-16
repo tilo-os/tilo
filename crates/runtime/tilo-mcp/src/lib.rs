@@ -9,7 +9,6 @@ pub mod lines;
 pub mod session_door;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
-pub mod windows;
 
 pub use images::MediaReader;
 use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime, take_images};
@@ -120,9 +119,6 @@ pub struct McpServer<H> {
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
-    /// The records this session's calls made or changed since the door that
-    /// shows its agent last took them ([`McpServer::take_changed`]).
-    changed: std::sync::Mutex<Vec<ActedRecord>>,
     /// The record each of this session's changes still running is changing,
     /// by invocation id: `tilo_status` answers its link once it finished.
     changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -672,7 +668,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             devices: None,
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
-            changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
             undoable: std::sync::Mutex::default(),

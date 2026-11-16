@@ -1,29 +1,23 @@
-//! An agent's view on the person's layout.
+//! A view placed on a workspace's layout by someone other than the person
+//! arranging it: an agent's window, or a window a collaborator's open asks for.
 //!
-//! No action is performed out of sight: when an agent makes or changes a
-//! record that no window on the workspace's shared desktop shows, it adds a
-//! tab for that record to the desktop, right after the group showing the
-//! record it worked in before (the view its task already occupies), on
-//! whichever strip holds that. The window is the person's the agent acts
-//! for, and says which run of the agent opened it. Every page of the
-//! workspace draws it from the synced desktop as it draws its own tabs,
-//! mounting the app over the record locally: nothing is streamed. A record
-//! already on the layout is left where the people put it. Records are named as
-//! every page notes its windows' (the record's wire spelling, the empty one
-//! for an app's primary record) and told apart by their app as well, so a
-//! person's own window of an app's primary record is the window that shows
-//! it, not a reason to open a second. A workspace nobody
-//! has opened a layout in yet gets one, as the first page in would make it,
-//! holding the agent's window.
+//! The view becomes a tab of the layout the device holds, beside the group
+//! showing the record it works in already, and the change travels to every
+//! device as any change of the layout does. A device that holds no layout
+//! places nothing: the layout is started only by a page that shows it. A record
+//! a window already shows is left where the people put it. Records are named as
+//! every page notes its windows' (the record's wire spelling, the empty one for
+//! an app's primary record) and told apart by their app as well.
 
 use automerge::AutoCommit;
-use tilo_desktop_model::commands::{
+
+use crate::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
-use tilo_desktop_model::ownership::{OpenedBy, SharedDesktop};
-use tilo_desktop_model::{IdMinter, Layout, TileContent, Workspace, WorkspaceId, shared_record};
+use crate::ownership::{OpenedBy, SharedDesktop};
+use crate::{IdMinter, TileContent, shared_record};
 
-pub(crate) struct View<'a> {
+pub struct View<'a> {
     pub app_id: &'a str,
     pub title: &'a str,
     /// The record the view shows, in the wire spelling pages note their
@@ -36,25 +30,17 @@ pub(crate) struct View<'a> {
 
 /// Who opens a view: the person whose window it is, and the agent run that
 /// opened it for them.
-pub(crate) struct Opener<'a> {
+pub struct Opener<'a> {
     pub person: &'a str,
     pub run: Option<OpenedBy>,
 }
 
-/// The change that puts `view` on the shared `desktop` of `workspace` (its
-/// id and, to start a desktop there, its name), opened by `opener`; `None`
-/// when a tab already shows the record, or the workspace has no shared
-/// desktop and no name to start one under.
-pub(crate) fn place_view(
-    desktop: &AutoCommit,
-    (workspace, name): (&str, Option<&str>),
-    opener: &Opener<'_>,
-    view: &View<'_>,
-) -> Option<Vec<u8>> {
-    let mut doc = desktop.clone();
-    let held = shared_record::read(&doc, None);
-    let started = held.is_none();
-    let mut desktop = held.or_else(|| fresh(workspace, name?))?;
+/// The change that puts `view` on `layout`, opened by `opener`; `None` when a
+/// tab already shows the record, or `layout` holds no layout.
+#[must_use]
+pub fn place_view(layout: &AutoCommit, opener: &Opener<'_>, view: &View<'_>) -> Option<Vec<u8>> {
+    let mut doc = layout.clone();
+    let mut desktop = shared_record::read(&doc, None)?;
     if shown_at(&desktop, view.app_id, view.record).is_some()
         || (view.record.is_empty() && opening(&desktop, view.app_id))
     {
@@ -72,12 +58,6 @@ pub(crate) fn place_view(
     }
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
-    if started {
-        // Started in the shape every page keeps its layout in, so a page that joins the workspace
-        // after this takes it up as its own: a layout of another shape is one the page's reader
-        // never shows.
-        tilo_desktop_model::desktop_doc::seed(&mut doc, &desktop.tree);
-    }
     shared_record::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
@@ -109,23 +89,6 @@ fn opening(desktop: &SharedDesktop, app: &str) -> bool {
             matches!(&tab.tile, TileContent::LocalApp { app_id, .. } if app_id == app)
                 && !desktop.records.iter().any(|(noted, _)| *noted == tab.id)
         })
-    })
-}
-
-/// The desktop the first page in `workspace` makes: the workspace itself, by its id, under
-/// `name`.
-/// The strip the first window opens on is made with it ("Main"), so a page
-/// that wrote its own before this reached it folds into the same one.
-fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
-    let identity = WorkspaceId::parse(workspace)?;
-    let layout = Workspace::new(identity, name);
-    Some(SharedDesktop {
-        tree: Layout {
-            active: layout.id(),
-            workspaces: vec![layout],
-            ..Layout::default()
-        },
-        ..SharedDesktop::default()
     })
 }
 
@@ -183,30 +146,16 @@ fn salt_of(author: &str) -> u16 {
         hash = hash.wrapping_mul(0x0100_0193);
     }
     let folded = (hash >> 16) ^ (hash & 0xffff);
-    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(1))
-}
-
-/// What publishes `change`, a change of the workspace's layout: the change alone where the
-/// workspace `holds` a layout, the whole layout where it holds none yet, since a record starts whole.
-pub(crate) fn layout_mutation(holds: bool, change: Vec<u8>) -> collab_types::DocumentMutation {
-    if holds {
-        return collab_types::DocumentMutation::Incremental(change);
-    }
-    let mut layout = AutoCommit::new();
-    if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut layout, &change) {
-        tracing::warn!(%error, "agent: a new layout did not take its first view");
-    }
-    collab_types::DocumentMutation::Snapshot(layout.save())
+    crate::ids::device_salt(u16::try_from(folded).unwrap_or(1))
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use crate::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
 
-    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const PERSON: &str = "ada";
 
     fn opener() -> Opener<'static> {
@@ -240,7 +189,7 @@ mod tests {
             id,
             active_tab: tab.id,
             tabs: vec![tab],
-            width: tilo_desktop_model::width::WindowWidth::Normal,
+            width: crate::width::WindowWidth::Normal,
             maximized: false,
             focus_history: Vec::new(),
         }
@@ -263,9 +212,9 @@ mod tests {
             },
         ];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::Layout {
+            tree: crate::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::Layout::default()
+                ..crate::Layout::default()
             },
             records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
             authors: std::collections::BTreeMap::new(),
@@ -298,8 +247,7 @@ mod tests {
             record: "files-record",
             beside: Some(("so.tilo.notes", "notes-record")),
         };
-        let change = place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view)
-            .expect("a tab is added");
+        let change = place_view(&merged(&changes), &opener(), &view).expect("a tab is added");
         changes.push(change);
         let desktop = read(&changes);
         let task = &desktop.tree.workspaces[0].strips[1];
@@ -324,7 +272,7 @@ mod tests {
             "the person's strip is untouched"
         );
         assert!(
-            place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view).is_none(),
+            place_view(&merged(&changes), &opener(), &view).is_none(),
             "a record already on the layout stays where it is"
         );
     }
@@ -342,9 +290,9 @@ mod tests {
             window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
         }];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::Layout {
+            tree: crate::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::Layout::default()
+                ..crate::Layout::default()
             },
             records: vec![(21, String::new())],
             authors: std::collections::BTreeMap::new(),
@@ -360,7 +308,7 @@ mod tests {
             beside: None,
         };
         assert!(
-            place_view(&doc, (WORKSPACE, None), &opener(), &notes).is_none(),
+            place_view(&doc, &opener(), &notes).is_none(),
             "the person's Notes window shows the note"
         );
         let chat = View {
@@ -369,7 +317,7 @@ mod tests {
             record: "",
             beside: Some(("so.tilo.notes", "")),
         };
-        let change = place_view(&doc, (WORKSPACE, None), &opener(), &chat)
+        let change = place_view(&doc, &opener(), &chat)
             .expect("another app's primary record opens its own window");
         let desktop = read(&[doc.save(), change]);
         let groups = &desktop.tree.workspaces[0].strips[0].window_groups;
@@ -388,9 +336,9 @@ mod tests {
             window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
         }];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::Layout {
+            tree: crate::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::Layout::default()
+                ..crate::Layout::default()
             },
             records: Vec::new(),
             authors: std::collections::BTreeMap::new(),
@@ -405,120 +353,27 @@ mod tests {
             record: "",
             beside: None,
         };
-        assert!(place_view(&doc, (WORKSPACE, None), &opener(), &notes).is_none());
+        assert!(place_view(&doc, &opener(), &notes).is_none());
         let page = View {
             record: "a-page-record",
             ..notes
         };
         assert!(
-            place_view(&doc, (WORKSPACE, None), &opener(), &page).is_some(),
+            place_view(&doc, &opener(), &page).is_some(),
             "a record of its own still gets its window"
         );
     }
 
+    /// A device that holds no layout of the workspace starts none: the view is placed by a device
+    /// that holds it, so it lands beside the people's own windows.
     #[test]
-    fn a_workspace_without_a_shared_desktop_gets_nothing() {
+    fn a_device_without_the_layout_starts_none() {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
             record: "files-record",
             beside: None,
         };
-        assert!(place_view(&AutoCommit::new(), (WORKSPACE, None), &opener(), &view).is_none());
-    }
-
-    #[test]
-    fn a_workspace_nobody_opened_a_layout_in_gets_one_holding_the_view_as_pages_keep_it() {
-        let view = View {
-            app_id: "so.tilo.files",
-            title: "Files",
-            record: "files-record",
-            beside: None,
-        };
-        let change = place_view(
-            &AutoCommit::new(),
-            (WORKSPACE, Some("Visa")),
-            &opener(),
-            &view,
-        )
-        .expect("a layout is started");
-        assert!(
-            tilo_desktop_model::desktop_doc::holds(&merged(std::slice::from_ref(&change))),
-            "in the shape a page keeps its layout in, which the page reads"
-        );
-        let desktop = read(&[change]);
-        let workspace = &desktop.tree.workspaces[0];
-        assert_eq!(workspace.name, "Visa");
-        assert_eq!(
-            workspace.id(),
-            WorkspaceId::parse(WORKSPACE).unwrap(),
-            "the workspace by its own id"
-        );
-        let tab = workspace.strips[0].window_groups[0].tabs[0].id;
-        assert_eq!(desktop.records, vec![(tab, "files-record".to_owned())]);
-        assert_eq!(desktop.authors.get(&tab).map(String::as_str), Some(PERSON));
-        assert_eq!(desktop.opened_by.get(&tab), opener().run.as_ref());
-    }
-
-    /// The desktop an agent starts in a workspace that had none is a record written entry by
-    /// entry; a page's first write makes it the layout's own document. Someone else's page doing
-    /// that, without moving anything, attributes nothing: the workspace reads the desktop that
-    /// page saw in the shape it had then.
-    #[test]
-    fn another_persons_page_takes_up_the_desktop_an_agent_started() {
-        let form = View {
-            app_id: "so.tilo.pdf-viewer",
-            title: "PDF",
-            record: "uuid:form",
-            beside: None,
-        };
-        let first = place_view(
-            &AutoCommit::new(),
-            (WORKSPACE, Some("Visa")),
-            &opener(),
-            &form,
-        )
-        .expect("a layout is started");
-        let letter = View {
-            app_id: "so.tilo.docs",
-            title: "Docs",
-            record: "uuid:letter",
-            beside: Some(("so.tilo.pdf-viewer", "uuid:form")),
-        };
-        let second = place_view(
-            &merged(std::slice::from_ref(&first)),
-            (WORKSPACE, None),
-            &opener(),
-            &letter,
-        )
-        .expect("the second view opens beside the first");
-        let mut doc = merged(&[first, second]);
-        assert!(!tilo_desktop_model::desktop_doc::holds(&doc));
-        let held = shared_record::read(&doc, None).expect("a desktop");
-        let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::random());
-        assert!(tilo_desktop_model::desktop_doc::write_shared(
-            &mut doc,
-            &held.tree,
-            &held.records,
-            &held.authors,
-        ));
-        shared_record::commit_change(&mut doc, "rosa", 1, None);
-        assert!(tilo_desktop_model::desktop_doc::holds(&doc));
-        let seen = shared_record::read(&doc, Some(&before)).expect("the desktop rosa saw");
-        assert_eq!(seen.authors, held.authors, "read in the shape it had then");
-        let allows = |_: &tilo_desktop_model::ownership::Touched| false;
-        assert_eq!(
-            shared_record::guard::judge(
-                &doc,
-                &before,
-                &shared_record::guard::Writer {
-                    person: "rosa",
-                    members: None,
-                    allows: &allows,
-                },
-            ),
-            Ok(()),
-        );
+        assert!(place_view(&AutoCommit::new(), &opener(), &view).is_none());
     }
 }

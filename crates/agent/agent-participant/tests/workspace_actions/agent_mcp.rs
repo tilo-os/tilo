@@ -71,11 +71,6 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    // The records it works in open as windows on the workspace's layout, as
-    // `tilo mcp` opens them; the host that executes its run is what shows it
-    // there, doing what it does.
-    let windows =
-        tilo_mcp::windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
         .with_agent_run("run-1", "Claude Code");
@@ -113,22 +108,14 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                            "params": {"name": "tilo_do",
                                       "arguments": {"path": "sheets#new-sheet",
                                                     "args": {"name": "Budget"}}}});
-    let ran = ask(&server, new_sheet.clone()).await;
+    let ran = ask(&server, new_sheet).await;
     assert_eq!(ran["result"]["isError"], false, "{ran}");
-    // The call names the record it worked in, which opens as its window.
+    // The call names the record it worked in, which it opened as its window.
     let acted = server
         .acted()
         .expect("the call names the record it worked in");
     assert_eq!(acted.app, SHEETS);
     assert_eq!(acted.record, sheets.record);
-    // The workbook it changed opens on the layout.
-    let changed = server.take_changed();
-    assert_eq!(
-        changed,
-        std::slice::from_ref(&acted),
-        "the call changed the workbook"
-    );
-    windows.changed(changed, server.run_of(&new_sheet)).await;
     // And it writes in the document the other device made.
     let (wrote, failed) = tool(
         &server,
@@ -269,15 +256,15 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     );
 
     // Another change in the same workbook opens no second window of it.
-    windows
-        .changed(
-            vec![tilo_mcp::ActedRecord {
-                app: SHEETS.into(),
-                record: sheets.record.clone(),
-            }],
-            server.run_of(&new_sheet),
-        )
-        .await;
+    let again = ask(
+        &server,
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+               "params": {"name": "tilo_do",
+                          "arguments": {"path": "sheets#new-sheet",
+                                        "args": {"name": "Spending"}}}}),
+    )
+    .await;
+    assert_eq!(again["result"]["isError"], false, "{again}");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     assert_eq!(
         layout_windows(&mut browser, &sheets.record),
@@ -326,6 +313,117 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         assert!(Instant::now() < deadline, "the agent never left");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// An agent on the person's computer opens Notes and makes a note: the Notes window reaches the
+/// person's layout as a collaborator's open puts it there, named as the agent's run's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_an_agent_opens_reaches_the_persons_layout() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    browser.put_layout();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(root.verifying_key().to_bytes());
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-1", "Claude Code");
+
+    agent_opens_notes(&server, &mut browser).await;
+}
+
+/// The same on a host someone else runs (a Lounge's), which is no member of the person's
+/// workspace, with Notes running already: the agent's Notes window reaches the person's layout
+/// all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
+    let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let host = enrol(&operator, "lounge", DeviceCapabilities::member());
+    let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &guest,
+        "Claude Code on laptop",
+        DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    let hosted = start(&operator, &host, state.path()).await;
+    let workspace = hosted
+        .relay
+        .workspaces()
+        .unwrap()
+        .create("Grace's workspace")
+        .await
+        .unwrap();
+    let cluster = workspace.workspace.clone();
+    for device in [&page_device, &computer] {
+        super::resource_support::admit_person(
+            &hosted,
+            &host,
+            &cluster,
+            device,
+            tilo_peer_state::join::Role::Editor,
+        )
+        .await;
+    }
+    let mut browser =
+        super::resource_support::open_admitted_peer(&hosted, &page_device, &host, &cluster).await;
+    // Notes runs already, with no window on the layout: the agent's open shows it.
+    browser.create("so.tilo.notes");
+    browser.put_layout();
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let agent =
+        super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let person = hex::encode(guest.verifying_key().to_bytes());
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, cluster, person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-guest", "Claude Code");
+    agent_opens_notes(&server, &mut browser).await;
+}
+
+/// The agent behind `server` opens Notes and makes a note; `browser`'s layout gets one Notes
+/// window, named as the agent's run's.
+pub(super) async fn agent_opens_notes(server: &McpServer<SessionActions>, browser: &mut Browser) {
+    let (opened, failed) = tool(server, "tilo_do", json!({"path": "notes#open"})).await;
+    assert!(!failed, "{opened}");
+    let (wrote, failed) = tool(
+        server,
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": "Hello from the agent"}}),
+    )
+    .await;
+    assert!(!failed, "{wrote}");
+    let notes = server
+        .acted()
+        .expect("the call names the record it wrote in");
+    assert_eq!(notes.app, "so.tilo.notes");
+
+    let deadline = tilo_test_env::hang_deadline();
+    while layout_windows(browser, &notes.record) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the Notes window the agent opened never reached the person's layout ({opened}; {wrote})"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        layout_windows(browser, &notes.record),
+        1,
+        "one Notes window"
+    );
 }
 
 /// The runs the browser holds of the workspace's Terminal sessions.

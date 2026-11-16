@@ -531,8 +531,8 @@ impl Page {
 
 /// An agent's later task edits the record people have open as live as its
 /// first one did, and a session that joins afterwards replays both edits
-/// once each. A task that only reads opens nothing; the first edit starts the
-/// workspace's layout, under the workspace's name, holding the record's window.
+/// once each. A task that only reads opens nothing; the first edit puts the
+/// record's window on the layout the person's page wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -543,10 +543,10 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let hosted = start(&root, &host, state.path()).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    browser.put_layout();
 
     // The person opens a workbook before any agent exists, and it is in the
     // workspace (sealed and durable on the host) before the agent arrives.
-    // Nobody has opened a layout in the workspace yet.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
@@ -584,7 +584,10 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         })
         .await;
     assert!(
-        browser.layout().is_none(),
+        browser.layout().is_some_and(|desktop| !desktop
+            .records
+            .iter()
+            .any(|(_, record)| *record == page.route.record)),
         "a task that only read opened nothing"
     );
 
@@ -656,8 +659,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // The workbook the agent worked in is open on the workspace's layout, once,
-    // as a window of the person's that the agent's run opened, on the layout the
-    // agent started under the workspace's name.
+    // as a window of the person's that the agent's run opened.
     let person = hex::encode(root.verifying_key().to_bytes());
     loop {
         let desktop = reloaded.layout();
@@ -669,7 +671,6 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             .collect();
         if let (Some(desktop), [tab]) = (&desktop, windows.as_slice()) {
             assert_eq!(desktop.authors.get(tab), Some(&person), "{desktop:?}");
-            assert_eq!(desktop.tree.workspaces[0].name, "Workspace", "{desktop:?}");
             let run = desktop.opened_by.get(tab);
             assert!(
                 run.is_some_and(|run| !run.run.is_empty() && !run.label.is_empty()),

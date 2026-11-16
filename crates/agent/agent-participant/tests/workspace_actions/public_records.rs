@@ -548,23 +548,14 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let windows = std::sync::Arc::new(tilo_mcp::windows::AgentWindows::new(
-        actions.clone(),
-        person.clone(),
-        workspace.clone(),
-    ));
     let server = McpServer::new(actions, workspace.clone(), person)
         .with_surface(Surface::Agent)
         .with_agent_run("run-9", "Claude Code");
-    // One call as `tilo mcp` serves it: answered, then its records shown on
-    // the layout beside the calls that follow.
+    // One call as `tilo mcp` serves it.
     let call = async |name: &str, arguments: Value| {
         let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                              "params": {"name": name, "arguments": arguments}});
-        let answer = server.handle(request.clone()).await.expect("answered");
-        let (changed, run) = (server.take_changed(), server.run_of(&request));
-        let windows = std::sync::Arc::clone(&windows);
-        tokio::spawn(async move { windows.changed(changed, run).await });
+        let answer = server.handle(request).await.expect("answered");
         let text = answer["result"]["content"]
             .as_array()
             .into_iter()
@@ -644,9 +635,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
 
 /// A visitor's page writes its layout after the host's action service joined the public workspace,
 /// which sends a record only to a device that opened it. Their agent then opens their Notes: the
-/// window lands on the layout the page wrote, beside its strip, in the shape the page reads. The
-/// service once never asked for the layout, started one of its own beside the page's, and the
-/// page, holding its own, never showed the agent's window.
+/// window lands on the layout the page wrote, beside its strip, in the shape the page reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joined() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
@@ -699,7 +688,7 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions.clone(), workspace.clone(), person.clone())
+    let server = McpServer::new(actions, workspace.clone(), person)
         .with_surface(Surface::Agent)
         .with_agent_run("run-3", "Claude Code");
     // The service joins the workspace to answer the agent's first look.
@@ -711,42 +700,17 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     browser.put_layout();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
-    let windows = tilo_mcp::windows::AgentWindows::new(actions, person, workspace.clone());
-    windows
-        .changed(
-            vec![tilo_mcp::ActedRecord {
-                app: NOTES.into(),
-                record: notes_record.clone(),
-            }],
-            None,
-        )
-        .await;
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if let Some(layout) = browser.layout()
-            && layout
-                .records
-                .iter()
-                .any(|(tab, record)| *record == notes_record && layout.tree.tab(*tab).is_some())
-        {
-            let strips: Vec<u64> = layout
-                .tree
-                .workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .map(|strip| strip.id.0)
-                .collect();
-            assert!(
-                strips.contains(&10),
-                "on the layout the page wrote, its strip kept: {strips:?}"
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the agent's Notes never reached the page's layout: {:?}",
-            browser.layout()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    super::agent_mcp::agent_opens_notes(&server, &mut browser).await;
+    let layout = browser.layout().expect("the page's layout");
+    let strips: Vec<u64> = layout
+        .tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .map(|strip| strip.id.0)
+        .collect();
+    assert!(
+        strips.contains(&10),
+        "on the layout the page wrote, its strip kept: {strips:?}"
+    );
 }

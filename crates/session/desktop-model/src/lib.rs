@@ -28,6 +28,7 @@ pub mod ownership;
 pub mod partition;
 pub mod person_view;
 pub mod personal;
+pub mod place;
 pub mod present;
 pub mod projection;
 pub mod receipt;

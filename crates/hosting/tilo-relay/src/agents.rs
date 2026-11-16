@@ -163,11 +163,6 @@ impl AgentHostLink for RelayAgentLink {
         });
     }
 
-    fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
-        self.runtime
-            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
-    }
-
     fn witness(&self, delegation: &Delegation) -> Option<Witness> {
         Some(Arc::new(RelayWitness {
             certification: self.certification.clone(),
@@ -781,12 +776,6 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
 
     fn host_device(&self) -> HostDevice {
         self.host_device.clone()
-    }
-
-    fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
-        self.host_device
-            .runtime
-            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
     }
 
     fn admits(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {

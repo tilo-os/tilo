@@ -77,14 +77,6 @@ pub(super) fn step_links(steps: &[Value]) -> Vec<Value> {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// The records this session's calls made or changed since this was last
-    /// asked, each once, in the order first changed: what the door that shows
-    /// its agent opens in front of the workspace's people. A read is none.
-    #[must_use]
-    pub fn take_changed(&self) -> Vec<crate::ActedRecord> {
-        std::mem::take(&mut *self.changed.lock_recover())
-    }
-
     /// `tilo_link`: the link to the resource `args.path` names, or, when the
     /// resource offers none of its own, to the record it is in.
     pub(super) async fn agent_link(
@@ -199,14 +191,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The link a record that a call just changed answers beside its result,
-    /// noting the record as changed ([`McpServer::take_changed`]): `None`
+    /// once its window is shown on the person's layout ([`Self::show`]): `None`
     /// when the call changed no record or no link could be made, which never
     /// fails the call that did its work. Only a record the workspace
     /// serves by its provider (`record:<app>:<record>`) is one: a window of a
     /// person's desktop is not a record a link names.
     pub(super) async fn changed_link(&self, provider: &str) -> Option<String> {
         tilo_actions::remote::record_parts(provider)?;
-        self.note_shown(provider, "");
+        self.show(provider, "").await;
         match self.record_link(provider, serde_json::Map::new()).await {
             Ok(url) => Some(url),
             Err(error) => {
@@ -216,36 +208,76 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// Keep the record `provider` names for the door that shows its agent to open in front of the
-    /// workspace's people ([`McpServer::take_changed`]), as a record it changed is: what an agent
-    /// opens or asks to see is shown to the person too. A provider that is no record (a window of
-    /// a device) names the app `app_id`'s own record of the workspace; an empty `app_id` then
-    /// names nothing.
-    pub(super) fn note_shown(&self, provider: &str, app_id: &str) {
-        let shown = match tilo_actions::remote::record_parts(provider) {
-            Some((app, record)) => crate::ActedRecord {
-                app: app.to_owned(),
-                record: record.to_owned(),
-            },
-            None if !app_id.is_empty() => crate::ActedRecord {
-                app: app_id.to_owned(),
-                record: String::new(),
-            },
+    /// Show the record `provider` names as a window on the person's layout, as a collaborator's
+    /// open does: its app's `open` on it, asked of the host as a step of this call's run. The host
+    /// leaves a record a window already shows where the people put it. A provider that is no
+    /// record (a window of a device) names the app `app_id`'s own record; an empty `app_id` then
+    /// names nothing. Whether it showed is no matter to the call: a record the host cannot show is
+    /// still what the agent changed.
+    pub(super) async fn show(&self, provider: &str, app_id: &str) {
+        use tilo_actions::remote::{
+            APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
+            ReceiptStatus, application_action_target, application_record_target,
+        };
+        /// Longest a call waits for the host to show the window before it answers.
+        const SHOWING: std::time::Duration = std::time::Duration::from_secs(5);
+        let (app, record) = match tilo_actions::remote::record_parts(provider) {
+            Some((app, record)) => (app, record),
+            None if !app_id.is_empty() => (app_id, ""),
             None => return,
         };
-        let mut held = self.changed.lock_recover();
-        if !held.contains(&shown) {
-            held.push(shown);
-        }
+        let resource = format!("{APPLICATION_RESOURCE_PREFIX}{app}");
+        let target = if record.is_empty() {
+            application_action_target(&self.workspace, app, resource, APPLICATION_OPEN_ACTION)
+        } else {
+            application_record_target(
+                &self.workspace,
+                app,
+                record,
+                resource,
+                APPLICATION_OPEN_ACTION,
+            )
+        };
+        let invocation = tilo_actions::InvocationId::new();
+        let request = InvokeRequest {
+            invocation,
+            target,
+            argument: InvokeArgument::None,
+            // The run it is a step of names the window; showing it is no step of the run's
+            // own to take back.
+            context: self.context().map(|context| tilo_actions::ActionContext {
+                group: context.group,
+                ..tilo_actions::ActionContext::default()
+            }),
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let shown = match self.host().invoke(&self.caller(), request).await {
+            Some(Ok(receipt)) if matches!(receipt.status, ReceiptStatus::Accepted) => {
+                self.settled(invocation, SHOWING).await
+            }
+            Some(Ok(receipt)) => Ok(json!(format!("{:?}", receipt.status))),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("the host did not answer".to_owned()),
+        };
+        tracing::debug!(?shown, provider, app, "mcp: a window shown on the layout");
     }
 
-    /// "Show this window" (`action`, answered `value`) shows it to the person: its record opens on
-    /// their shell when no window there shows it, and the window comes into view where the agent
-    /// works ([`Self::note_shown`]).
-    pub(super) fn note_activated(&self, action: &str, value: &Value, resolved: &super::Resolved) {
+    /// "Show this window" (`descriptor`, answered `value`) shows it to the person: its record opens
+    /// on their layout when no window there shows it ([`Self::show`]).
+    pub(super) async fn show_activated(
+        &self,
+        descriptor: &ActionDescriptor,
+        value: &Value,
+        resolved: &super::Resolved,
+    ) {
+        let action = descriptor.address.action.as_str();
         let failed = value.pointer("/update/state").and_then(Value::as_str) == Some("failed");
         if action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION && !failed {
-            self.note_shown(&resolved.provider, &resolved.app_id);
+            self.show(&resolved.provider, &resolved.app_id).await;
         }
     }
 

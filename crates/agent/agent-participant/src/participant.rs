@@ -192,10 +192,6 @@ pub struct ParticipantConfig {
     pub host_cert: DeviceCert,
     /// The workspace uuid.
     pub workspace: String,
-    /// What the workspace is called, which a layout the agent starts there is
-    /// named after, as the first page in names its own; `None` when the host
-    /// does not know it, and the agent starts no layout.
-    pub workspace_name: Option<String>,
     /// The workspace's content store: content the agent's operations name is
     /// read from it, and content its apps store is kept in it.
     pub content: tilo_content::ContentStore,
@@ -236,8 +232,6 @@ pub struct AgentParticipant {
     events: Events,
     workspace: String,
     workspace_id: WorkspaceId,
-    /// What the workspace is called ([`ParticipantConfig::workspace_name`]).
-    workspace_name: Option<String>,
     catalogue: AppCatalogue,
     /// The planner, on a thread of its own.
     planning: planning::Planning,
@@ -435,7 +429,6 @@ impl AgentParticipant {
             events,
             workspace: config.workspace,
             workspace_id,
-            workspace_name: config.workspace_name,
             catalogue,
             planning,
             checks_work,
@@ -2209,8 +2202,8 @@ impl AgentParticipant {
     /// Put the view of the record at `route`, which the agent made or
     /// changed, on the workspace's shared desktop when no tab shows it, beside
     /// the view the agent worked in last, so the people see what it did
-    /// ([`crate::layout`]). A workspace with no layout yet gets one, under its
-    /// name.
+    /// ([`tilo_desktop_model::place`]). An agent that holds no layout of the
+    /// workspace places nothing.
     fn show_on_layout(&self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.workspace);
         // Pages note each window's record on the layout in its wire spelling (empty for an app's
@@ -2237,7 +2230,7 @@ impl AgentParticipant {
             .catalogue
             .get(&route.app_id)
             .map_or(route.app_id.as_str(), |definition| definition.title());
-        let view = crate::layout::View {
+        let view = tilo_desktop_model::place::View {
             app_id: &route.app_id,
             title,
             record: &record,
@@ -2249,7 +2242,7 @@ impl AgentParticipant {
         // was this agent's task that opened it, and what it was asked.
         let delegation = &self.identity.delegation;
         let person = hex::encode(delegation.user_public_key);
-        let opener = crate::layout::Opener {
+        let opener = tilo_desktop_model::place::Opener {
             person: &person,
             run: Some(tilo_desktop_model::ownership::OpenedBy {
                 run: self.running.as_ref().map_or_else(
@@ -2264,20 +2257,18 @@ impl AgentParticipant {
                     .unwrap_or_default(),
             }),
         };
-        let name = self.workspace_name.as_deref();
         let place = |doc: &automerge::AutoCommit| {
-            crate::layout::place_view(doc, (&self.workspace, name), &opener, &view)
+            tilo_desktop_model::place::place_view(doc, &opener, &view)
         };
-        let held = self.unopened.desktop();
-        let (change, holds) = match (&held, self.apps.get(&desktop)) {
-            (Some(doc), _) => (place(doc), true),
-            (None, Some(app)) => (app.read(place).flatten(), true),
-            (None, None) => (place(&automerge::AutoCommit::new()), false),
+        let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
+            (Some(doc), _) => place(&doc),
+            (None, Some(app)) => app.read(place).flatten(),
+            (None, None) => None,
         };
         let Some(change) = change else {
             return;
         };
-        let mutation = crate::layout::layout_mutation(holds, change);
+        let mutation = collab_types::DocumentMutation::Incremental(change);
         if let Err(error) = self.peer.write(desktop.clone(), &mutation) {
             tracing::warn!(%error, "agent: its view did not reach the layout");
             return;

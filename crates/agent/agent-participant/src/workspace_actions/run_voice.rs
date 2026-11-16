@@ -297,9 +297,12 @@ impl super::Worker {
         request: &InvokeRequest,
         (phase, left_at): (&InteractionPhase, Option<&ActorPlace>),
     ) {
-        // A link changes nothing and moves no one: the people watching are not
-        // told the run asked for one.
-        if request.target.address.action == tilo_actions::remote::SHARE_LINK_ACTION {
+        // A link changes nothing and moves no one, and a window shown on the
+        // layout shows what the run did already: the people watching are not
+        // told the run asked for either.
+        if request.target.address.action == tilo_actions::remote::SHARE_LINK_ACTION
+            || tilo_actions::remote::application_provider(&request.target.provider).is_some()
+        {
             return;
         }
         let args = serde_json::Value::Object(invoke_arguments(&request.argument));

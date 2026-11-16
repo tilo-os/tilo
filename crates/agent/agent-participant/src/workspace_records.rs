@@ -15,16 +15,12 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::engine::Engine;
 use ui::search::index_publication::IndexEntry;
 
-/// The route of a workspace's shared browser desktop (`tilo-browser-runtime`'s
-/// replication): its `desktop` value names each tab's record.
-const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
-
+/// The route of a workspace's layout: its `desktop` value names each tab's record.
 pub(crate) fn desktop_route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
-        app_id: DESKTOP_APP.to_owned(),
+        app_id: tilo_desktop_model::ownership::DESKTOP_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: DESKTOP_RECORD.to_owned(),
+        record: tilo_desktop_model::ownership::DESKTOP_RECORD.to_owned(),
     }
 }
 

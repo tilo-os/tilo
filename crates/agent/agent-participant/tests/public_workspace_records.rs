@@ -264,7 +264,6 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: workspace.clone(),
-            workspace_name: None,
             content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {

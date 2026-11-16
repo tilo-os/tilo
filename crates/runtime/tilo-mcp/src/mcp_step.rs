@@ -128,18 +128,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Some((step, label))
     }
 
-    /// The run the tool call `request` was a step of, by the name history shows its changes
-    /// under: the title its `_meta` run names, else this session's own run. What a window the
-    /// call opened says it was opened in.
-    #[must_use]
-    pub fn run_of(&self, request: &Value) -> Option<tilo_actions::WorkGroup> {
-        let mut run = self.agent_run()?;
-        if let Ok(Some(declared)) = Self::step_run(request.pointer("/params/_meta")) {
-            declared.onto(&mut run);
-        }
-        Some(run)
-    }
-
     /// The run a tool call joins, when its `_meta["so.tilo.mcp"].run` names
     /// one: its id, and the name the changes of the call are attributed to,
     /// as history shows them (empty when it names none). `None` for a call

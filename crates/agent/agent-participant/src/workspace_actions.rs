@@ -2516,7 +2516,7 @@ impl Worker {
     /// window on the workspace's shared desktop: what the device an agent acts through asks for
     /// each record the agent makes or changes (`tilo mcp`, the API server), so every member sees
     /// it open as they see a colleague's window, without anyone's view moving to it
-    /// ([`crate::layout`]). The window is the person's the caller acts for — the host's own, or a
+    /// ([`tilo_desktop_model::place`]). The window is the person's the caller acts for — the host's own, or a
     /// member of the workspace — and names the agent run that opened it. A record a window
     /// already shows is left where the people put it.
     #[allow(
@@ -2584,41 +2584,40 @@ impl Worker {
                 reason: format!("this workspace has no {app} record {}", route.record),
             }));
         }
-        let name = self
-            .shared
-            .link
-            .get()
-            .and_then(|link| link.workspace_name(workspace_id));
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        let view = crate::layout::View {
+        // A host that holds no layout of the workspace starts none: the people's pages place
+        // their windows on the layout they hold.
+        let Some(held) = workspace
+            .records
+            .as_ref()
+            .and_then(WorkspaceRecords::desktop)
+        else {
+            return Err(Outcome::Rejected(ActionHostError::Refused {
+                reason: "this host holds no layout of the workspace".to_owned(),
+            }));
+        };
+        let view = tilo_desktop_model::place::View {
             app_id: app,
             title: &title,
             record: &route.record,
             beside: None,
         };
-        let held = workspace
-            .records
-            .as_ref()
-            .and_then(WorkspaceRecords::desktop);
-        let opener = crate::layout::Opener {
+        let opener = tilo_desktop_model::place::Opener {
             person: &person,
             run,
         };
-        let empty = automerge::AutoCommit::new();
-        let Some(change) = crate::layout::place_view(
-            held.as_ref().unwrap_or(&empty),
-            (named, name.as_deref()),
-            &opener,
-            &view,
-        ) else {
+        let Some(change) = tilo_desktop_model::place::place_view(&held, &opener, &view) else {
             return Ok(ActionOutput::default());
         };
-        let mutation = crate::layout::layout_mutation(held.is_some(), change);
-        self.commit(workspace_id, &layout, &mutation)
-            .map_err(|reason| commit_failed(reason, true))?;
+        self.commit(
+            workspace_id,
+            &layout,
+            &DocumentMutation::Incremental(change),
+        )
+        .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
     }
 

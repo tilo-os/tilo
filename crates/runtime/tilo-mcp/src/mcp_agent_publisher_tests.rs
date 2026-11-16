@@ -125,11 +125,13 @@ impl ActionHost for Workspace {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
-        let known = Self::rows(&request.target.provider).iter().any(|row| {
-            row.action
-                .as_ref()
-                .is_some_and(|a| a.address == request.target.address)
-        });
+        // A window shown on the person's layout is the host's own action.
+        let known = tilo_actions::remote::application_provider(&request.target.provider).is_some()
+            || Self::rows(&request.target.provider).iter().any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|a| a.address == request.target.address)
+            });
         if !known {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
@@ -263,24 +265,34 @@ async fn a_window_named_by_its_provider_is_the_one_that_answers() {
 }
 
 /// The person sees what their agent opens: `open` of an app that runs already, and "Show this
-/// window" on one of its windows, each ask for the app's window on the person's shell (the host
-/// leaves one already there where it is, and the page brings it into view). A read shows nothing.
+/// window" on one of its windows, each ask the host for the app's window on the person's layout
+/// (the host leaves one already there where it is). A read shows nothing.
 #[tokio::test]
-async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_shell() {
+async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_layout() {
     let workspace = Workspace::default();
     let server = agent(&workspace);
-    let browser = || {
-        vec![crate::ActedRecord {
-            app: BROWSER.into(),
-            record: String::new(),
-        }]
+    let shown = || {
+        workspace
+            .invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    && request.target.address.resource
+                        == format!(
+                            "{}{BROWSER}",
+                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                        )
+            })
+            .count()
     };
     let (text, failed) = tool(&server, "tilo_do", json!({"path": "browser#open"})).await;
     assert!(
         !failed && text.starts_with("ok: browser is running"),
         "{text}"
     );
-    assert_eq!(server.take_changed(), browser(), "open shows the app");
+    assert_eq!(shown(), 1, "open shows the app");
     let (text, failed) = tool(
         &server,
         "tilo_do",
@@ -288,11 +300,7 @@ async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_shell() {
     )
     .await;
     assert!(!failed, "{text}");
-    assert_eq!(
-        server.take_changed(),
-        browser(),
-        "showing a window shows it"
-    );
+    assert_eq!(shown(), 2, "showing a window shows it");
     let (text, failed) = tool(
         &server,
         "tilo_do",
@@ -300,5 +308,5 @@ async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_shell() {
     )
     .await;
     assert!(!failed, "{text}");
-    assert!(server.take_changed().is_empty(), "a read shows nothing");
+    assert_eq!(shown(), 2, "a read shows nothing");
 }

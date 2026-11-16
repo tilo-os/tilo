@@ -820,8 +820,6 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         codex.workspace,
         host.cert.device_public_key,
     );
-    let windows =
-        tilo_mcp::windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
     let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_run("run-codex", "Codex");
@@ -833,7 +831,6 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         serde_json::json!({"path": "notes#new-note", "args": {"title": "Seen once"}}),
     )
     .await;
-    windows.changed(server.take_changed(), None).await;
 
     let spoken_by = hex::encode(host.cert.device_public_key);
     let computer_publisher = hex::encode(computer.cert.device_public_key);

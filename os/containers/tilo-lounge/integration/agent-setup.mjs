@@ -56,6 +56,14 @@ const finish = async (code, message) => {
   // must not keep the run from saying why it failed.
   if (message) console.error(`FAIL: ${message}`);
   if (message) console.error(`the machine as it failed: ${machine().text}`);
+  // What the computer's peer (`tilo mcp --hold`) said, which serves the agents' calls.
+  if (message) {
+    try {
+      const dir = join(computer, 'state', 'tilo', 'device');
+      report.peer = readdirSync(dir).filter(name => /^session-.*\.log$/.test(name))
+        .map(name => readFileSync(join(dir, name), 'utf8').slice(-4000)).join('\n');
+    } catch (error) { report.peer = `not read: ${error.message}`; }
+  }
   // And what each tab said, before anything asks a tab: a run past its limit
   // is stopped, and a stopped run says nothing it had not said yet.
   if (message) {
@@ -157,6 +165,8 @@ const env = {
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
   CLAUDECODE: '1',
+  // The computer's peer logs each window it shows on the person's layout.
+  RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
 // Run one `tilo …` as the agent does: its words, as the agent reads them.
 const tilo = (args, {input} = {}) => new Promise(resolve => {

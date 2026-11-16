@@ -182,8 +182,6 @@ pub(crate) struct Connection<E> {
 struct Served {
     session: Arc<Session>,
     server: McpServer<SessionActions>,
-    /// The windows of the records the agent works in.
-    windows: Arc<tilo_mcp::windows::AgentWindows>,
 }
 
 impl<E: Enter> Connection<E> {
@@ -220,22 +218,10 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
         .ok_or(crate::login::LOGIN_DAMAGED)?;
     let actions = session.device.actions(workspace_id);
     let person = hex::encode(user);
-    // The records the agent works in open as windows on the workspace's
-    // shell; the host that executes its run shows it there, doing what it
-    // does.
-    let windows = Arc::new(tilo_mcp::windows::AgentWindows::new(
-        actions.clone(),
-        person.clone(),
-        device.workspace.clone(),
-    ));
     let server = McpServer::new(actions, device.workspace.clone(), person)
         .with_surface(Surface::Agent)
         .with_agent_run(run, device.agent.clone());
-    Ok(Served {
-        session,
-        server,
-        windows,
-    })
+    Ok(Served { session, server })
 }
 
 /// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
@@ -349,12 +335,9 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
         }
     });
     let answer = match &served {
-        Ok(served) => served.server.handle(request.clone()).await,
+        Ok(served) => served.server.handle(request).await,
         Err(problem) => unreachable_answer(&request, problem),
     }?;
-    if let Ok(served) = served {
-        show(&served, &request);
-    }
     Some(answer.to_string())
 }
 
@@ -474,19 +457,6 @@ fn unreachable_answer(request: &Value, problem: &str) -> Option<Value> {
         }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-}
-
-/// Open the record the tool call `request` worked in as a window where the
-/// agent works: the host that executes the run shows what it did.
-fn show(served: &Arc<Served>, request: &Value) {
-    if request.get("method").and_then(Value::as_str) != Some("tools/call") {
-        return;
-    }
-    // Each record the call made or changed opens where the agent works, as
-    // a step of the run the call was.
-    let windows = Arc::clone(&served.windows);
-    let (changed, run) = (served.server.take_changed(), served.server.run_of(request));
-    tokio::spawn(async move { windows.changed(changed, run).await });
 }
 
 #[cfg(test)]

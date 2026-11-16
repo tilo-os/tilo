@@ -20,8 +20,7 @@
 //! own runs ("Claude Code #2"), which History groups the run's actions under,
 //! and which the workspace's host shows present, doing what it does, while
 //! the session lives: the host is the run's one voice, so the server says
-//! nothing of it itself, and opens the records the run works in as windows
-//! (`tilo_mcp::windows`, as `tilo mcp` does).
+//! nothing of it itself.
 
 pub mod members;
 
@@ -71,8 +70,6 @@ impl Reply {
 /// there, and the agent present in it.
 struct Served {
     server: McpServer<SessionActions>,
-    /// The windows of the records the run works in.
-    windows: Arc<tilo_mcp::windows::AgentWindows>,
 }
 
 /// A run in a workspace one of the person's devices hosts, entered at that
@@ -278,17 +275,10 @@ impl Session {
         let id = self.relay.enter(&self.connection, workspace).await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
-        // The records the run works in open as windows on the workspace's
-        // shell; the host that executes the run shows it there.
-        let windows = Arc::new(tilo_mcp::windows::AgentWindows::new(
-            actions.clone(),
-            self.person.clone(),
-            workspace.to_owned(),
-        ));
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
             .with_agent_run(&self.run, self.label.clone());
-        let run = Arc::new(Served { server, windows });
+        let run = Arc::new(Served { server });
         *entered = Some(Arc::clone(&run));
         drop(entered);
         Ok(run)
@@ -335,17 +325,9 @@ impl Session {
             }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
-        let call = (request.get("method").and_then(Value::as_str) == Some("tools/call"))
-            .then(|| request.clone());
-        let Some(answer) = Box::pin(run.server.handle(request)).await else {
-            return Reply::accepted();
-        };
-        if let Some(call) = call {
-            let (changed, step) = (run.server.take_changed(), run.server.run_of(&call));
-            let windows = Arc::clone(&run.windows);
-            tokio::spawn(async move { windows.changed(changed, step).await });
-        }
-        Reply::one(answer)
+        Box::pin(run.server.handle(request))
+            .await
+            .map_or_else(Reply::accepted, Reply::one)
     }
 
     /// The run in `workspace` when one of the person's devices hosts it, as

@@ -51,7 +51,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     pub(super) async fn running(&self, resolved: &super::Resolved, action: &str) -> Done {
         let app_id = resolved.app_id.as_str();
         if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
-            self.note_shown(&resolved.provider, app_id);
+            self.show(&resolved.provider, app_id).await;
         }
         let value = json!({"update": {"state": "succeeded", "output": {}}});
         let reply = self.opened_reply(app_id, &value).await;

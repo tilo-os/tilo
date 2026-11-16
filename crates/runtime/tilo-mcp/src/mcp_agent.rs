@@ -2694,7 +2694,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
-        self.note_activated(&descriptor.address.action, &value, &resolved);
+        self.show_activated(&descriptor, &value, &resolved).await;
         Ok(Done::invoked(value, named_at, descriptor, &resolved))
     }
 
