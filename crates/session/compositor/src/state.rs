@@ -1775,8 +1775,8 @@ impl State {
         if self.locked() || self.focused_window().is_some_and(|info| info.id == id) {
             return;
         }
-        // A panel over the windows that holds the keyboard keeps it while it shows: the window
-        // gets it back when the panel is hidden.
+        // A panel over the windows that holds the keyboard keeps it while it shows, also while it
+        // waits for its first frame there: the window gets it back when the panel is hidden.
         if self
             .keyboard_focus()
             .is_some_and(|focus| self.layers.shows_surface(&focus))

@@ -225,11 +225,12 @@ impl Layers {
         self.index_of(surface).is_some()
     }
 
-    /// Whether `surface` is (part of) a layer surface the session shows now.
+    /// Whether `surface` is (part of) a layer surface the session shows now, drawn yet or still
+    /// settling into the frame its showing waits for.
     pub(crate) fn shows_surface(&self, surface: &WlSurface) -> bool {
         self.index_of(surface)
             .and_then(|index| self.surfaces.get(index))
-            .is_some_and(|placed| self.visible(placed))
+            .is_some_and(|placed| self.shows(placed))
     }
 
     /// The layer surfaces on `output` that `want` takes, bottom first.

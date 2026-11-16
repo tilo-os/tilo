@@ -297,6 +297,40 @@ tilo_test_env::scenario! {
         assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
     }
 
+    phase a_panel_shown_while_its_frame_settles_keeps_the_keyboard_from_the_policys_window;
+    // A panel the session places is shown before its app draws the frame the showing waits for,
+    // and takes the keyboard then: the window the policy focuses does not take it back meanwhile,
+    // so a menu that closes when it loses the keyboard stays up.
+    {
+        use wayland_protocols_wlr::layer_shell::v1::client::{
+            zwlr_layer_shell_v1::Layer, zwlr_layer_surface_v1::Anchor,
+            zwlr_layer_surface_v1::KeyboardInteractivity,
+        };
+        let policy = Steered::default();
+        let focus = Rc::clone(&policy.focus);
+        let mut compositor = headless(Box::new(policy));
+        let mut window = mapped_client(&mut compositor, "notes", (100, 100), [255, 0, 0, 255]);
+        *focus.borrow_mut() = compositor.focused_window().map(|info| info.id);
+        let mut menu = TestClient::connect_trusted(&mut compositor);
+        pump(&mut compositor, &mut [&mut menu], |_, clients| {
+            clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
+        });
+        menu.layer_surface(Layer::Overlay, Anchor::all(), (0, 0), 0, KeyboardInteractivity::OnDemand);
+        pump(&mut compositor, &mut [&mut menu], |_, clients| clients[0].seen.layer_size.is_some());
+        menu.show(640, 480, [255, 255, 0, 255]);
+        compositor.show_layer("test", false);
+        pump(&mut compositor, &mut [&mut window, &mut menu], |_, _| true);
+        compositor.place_layer_in("test", Some((0, 0, 640, 480)), false);
+        compositor.show_layer("test", true);
+        assert!(compositor.lend_layer_keyboard("test"));
+        for _ in 0..3 {
+            compositor.draw_frame().expect("a frame");
+            pump(&mut compositor, &mut [&mut window, &mut menu], |_, _| true);
+        }
+        assert!(menu.seen.keyboard_focused, "the panel keeps the keyboard it was lent");
+        assert!(!window.seen.keyboard_focused);
+    }
+
     phase the_policy_moves_focus_and_closes_windows_through_its_own_controls;
     {
         let policy = Steered::default();
