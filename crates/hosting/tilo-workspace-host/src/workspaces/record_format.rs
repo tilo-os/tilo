@@ -22,8 +22,24 @@ pub(super) const FORMAT: Format = Format {
     name: "governed workspace record",
     version: RECORD_VERSION,
     oldest: 4,
-    steps: &[],
+    steps: &[without_name],
 };
+
+/// Version 4 to 5: the record keeps no name of its own. The workspace's name
+/// is its governance's, which the record's peer state holds and which version
+/// 4 kept a copy of beside it; the copy goes, and every byte after it stays.
+fn without_name(mut bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let read = |error: postcard::Error| format!("a version 4 record: {error}");
+    let (_version, rest) = postcard::take_from_bytes::<u32>(&bytes).map_err(read)?;
+    let (workspace, rest) = postcard::take_from_bytes::<String>(rest).map_err(read)?;
+    let (workspace_id, rest) = postcard::take_from_bytes::<WorkspaceId>(rest).map_err(read)?;
+    let (_name, rest) = postcard::take_from_bytes::<String>(rest).map_err(read)?;
+    let named = bytes.len().saturating_sub(rest.len());
+    let head = postcard::to_stdvec(&(5_u32, workspace, workspace_id))
+        .map_err(|error| error.to_string())?;
+    bytes.splice(..named, head);
+    Ok(bytes)
+}
 
 /// The record as it is written: the publications and join receipts not in the
 /// files beside it yet, and how many those hold.
@@ -32,7 +48,6 @@ pub(super) struct StoredRecord {
     pub(super) version: u32,
     pub(super) workspace: String,
     pub(super) workspace_id: WorkspaceId,
-    pub(super) name: String,
     pub(super) authority: DeviceCert,
     pub(super) peer: Vec<super::peer_parts::PeerPart>,
     pub(super) generation: u64,
@@ -55,7 +70,6 @@ pub(super) struct StoredRecordRef<'a> {
     pub(super) version: u32,
     pub(super) workspace: &'a str,
     pub(super) workspace_id: WorkspaceId,
-    pub(super) name: &'a str,
     pub(super) authority: &'a DeviceCert,
     pub(super) peer: &'a [super::peer_parts::PeerPart],
     pub(super) generation: u64,

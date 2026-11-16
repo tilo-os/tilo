@@ -159,7 +159,7 @@ impl Workspaces {
     pub async fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
         let identity = self.workspace_identity(workspace).await?;
         let governed = self.inner.workspaces.lock().await.get(&identity)?.clone();
-        let name = governed.lock().await.record.name.clone();
+        let name = governed.lock().await.name();
         Some(name)
     }
 

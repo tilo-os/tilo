@@ -149,9 +149,10 @@ use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
 /// The record's version this build writes, and the one it reads: version 4
-/// keeps the publications and the join receipts in files beside the record
-/// (see [`record_format`]).
-const RECORD_VERSION: u32 = 4;
+/// keeps the publications and the join receipts in files beside the record,
+/// and version 5 no name of its own, the governance's being the one (see
+/// [`record_format`]).
+const RECORD_VERSION: u32 = 5;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the relay retains brings them back.
@@ -196,7 +197,6 @@ struct WorkspaceRecord {
     version: u32,
     workspace: String,
     workspace_id: WorkspaceId,
-    name: String,
     authority: DeviceCert,
     peer: Vec<peer_parts::PeerPart>,
     generation: u64,
@@ -235,7 +235,6 @@ impl WorkspaceRecord {
             version: RECORD_VERSION,
             workspace: stored.workspace,
             workspace_id: stored.workspace_id,
-            name: stored.name,
             authority: stored.authority,
             peer: stored.peer,
             generation: stored.generation,
@@ -400,7 +399,6 @@ impl GovernedWorkspace {
             workspace_id: WorkspaceId::parse(&workspace)
                 .ok_or_else(|| "a workspace is named by its id".to_string())?,
             workspace: workspace.clone(),
-            name: name.to_owned(),
             authority: authority.clone(),
             peer: parts.stage(&peer)?,
             generation: 1,
@@ -555,7 +553,6 @@ impl GovernedWorkspace {
             version: RECORD_VERSION,
             workspace: &self.record.workspace,
             workspace_id: self.record.workspace_id,
-            name: &self.record.name,
             authority: &self.record.authority,
             peer: &self.record.peer,
             generation: self.record.generation,
@@ -750,18 +747,14 @@ impl GovernedWorkspace {
         Ok(generation)
     }
 
-    /// Take the name the workspace's governance records as the record's, so a
-    /// listing names the workspace as every member's device does. Whether the
-    /// record changed.
-    fn adopt_governance_name(&mut self) -> bool {
-        let Some(name) = self.peer().governance().workspace_name() else {
-            return false;
-        };
-        if self.record.name == name {
-            return false;
-        }
-        self.record.name = name;
-        true
+    /// The workspace's name: the one its governance records, which its
+    /// founding wrote and every rename writes, wherever the rename was made.
+    /// Every listing and every member's device reads this one name.
+    fn name(&self) -> String {
+        self.peer()
+            .governance()
+            .workspace_name()
+            .unwrap_or_default()
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -776,7 +769,7 @@ impl GovernedWorkspace {
         WorkspaceSummary {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
-            name: self.record.name.clone(),
+            name: self.name(),
             generation: self.record.generation,
             members: list.members,
             devices: list.devices,
@@ -790,7 +783,7 @@ impl GovernedWorkspace {
         WorkspaceListing {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
-            name: self.record.name.clone(),
+            name: self.name(),
             generation: self.record.generation,
             role: None,
             labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
@@ -1542,9 +1535,7 @@ impl Workspaces {
         name: &str,
     ) -> Result<WorkspaceSummary, String> {
         let name = valid_name(name)?;
-        if governed.record.name == name
-            && governed.peer().governance().workspace_name().as_deref() == Some(name)
-        {
+        if governed.peer().governance().workspace_name().as_deref() == Some(name) {
             return Ok(governed.summary());
         }
         let now = tilo_clock::wall();
@@ -1553,12 +1544,8 @@ impl Workspaces {
         candidate
             .governance_mut()
             .author_workspace_name(name, key, now)?;
-        let prior = std::mem::replace(&mut governed.record.name, name.to_owned());
         let collaboration = governed.collaboration().clone();
-        if let Err(error) = governed.commit(candidate, key, now, |_, _| Ok(collaboration)) {
-            governed.record.name = prior;
-            return Err(error);
-        }
+        governed.commit(candidate, key, now, |_, _| Ok(collaboration))?;
         Ok(governed.summary())
     }
 
@@ -2745,15 +2732,6 @@ impl Workspaces {
     /// published again by the next settle.
     async fn settle(&self, workspace: &mut GovernedWorkspace) -> Result<(), String> {
         let host = &self.inner.host;
-        // The workspace's name is its governance's: a name another device of a
-        // member wrote is the workspace's name here too, so its list and every
-        // listing answer what every member's device reads. Kept in the record,
-        // which a listing answers from where the governance names nothing.
-        if workspace.adopt_governance_name()
-            && let Err(error) = workspace.persist()
-        {
-            tracing::warn!(workspace = %workspace.workspace(), %error, "the workspace's name from its governance was not kept");
-        }
         // A page's device certificate lasts an hour: the row it left goes with
         // it, so a workspace many people visit keeps no row per visit.
         if self.forget_expired_devices(workspace)? {

@@ -1099,7 +1099,7 @@ impl Workspaces {
         Ok(JoinReply::Invitation {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
-            name: workspace.record.name.clone(),
+            name: workspace.name(),
             role: join.grant().role,
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
@@ -1264,7 +1264,7 @@ impl Workspaces {
         Ok(JoinReply::Admitted {
             workspace: workspace.workspace().to_owned(),
             workspace_id: workspace.workspace_id(),
-            name: workspace.record.name.clone(),
+            name: workspace.name(),
             role: match role {
                 collab_types::role::Role::Moderator => Role::Moderator,
                 collab_types::role::Role::Commenter => Role::Commenter,
@@ -1425,7 +1425,7 @@ impl Workspaces {
                         JoinReply::Admitted {
                             workspace: workspace.workspace().to_owned(),
                             workspace_id: workspace.workspace_id(),
-                            name: workspace.record.name.clone(),
+                            name: workspace.name(),
                             role,
                         }
                     });

@@ -696,7 +696,7 @@ fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
     renamed.device_label = "workspace host".into();
     sign_device_cert(&mut renamed, &root).unwrap();
     let restored = GovernedWorkspace::open(created.path.clone(), &renamed, None).unwrap();
-    assert_eq!(restored.record.name, "Team");
+    assert_eq!(restored.name(), "Team");
 
     let mut granted_more = renamed.clone();
     granted_more.capabilities = DeviceCapabilities::primary();
@@ -1312,6 +1312,12 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
         renamed.generation > before,
         "the rename is a governance change"
     );
+    // Every reader of the name on the host reads the governance's one name.
+    let listed = workspaces.list().await;
+    let listed = listed.iter().find(|s| s.workspace == created.workspace);
+    assert_eq!(listed.unwrap().name, "Plaza", "the host's list");
+    let hosted = workspaces.workspace_name(created.workspace_id).await;
+    assert_eq!(hosted.as_deref(), Some("Plaza"), "a hosted window's");
     let again = workspaces
         .rename(&created.workspace, "Plaza")
         .await

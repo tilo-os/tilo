@@ -1009,7 +1009,7 @@ impl Workspaces {
                         now,
                     )
                 })
-                .map(|verb| verb.row(GOVERNANCE, &resource, &workspace.record.name))
+                .map(|verb| verb.row(GOVERNANCE, &resource, &workspace.name()))
                 .collect();
             offer.add(GOVERNANCE, workspace.workspace(), rows);
         }
