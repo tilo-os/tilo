@@ -8,9 +8,17 @@ use std::os::fd::AsFd as _;
 const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 use std::time::Duration;
 
-use tilo_compositor::{Compositor, OutputConfig, WindowPolicy};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::Instant;
+
+use tilo_compositor::{Compositor, InputEvent, OutputConfig, WindowPolicy};
+use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
+use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
+    wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_data_device,
+    wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager, wl_data_offer,
+    wl_data_offer::WlDataOffer, wl_data_source, wl_data_source::WlDataSource, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_region::WlRegion, wl_registry,
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
     wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
@@ -60,6 +68,10 @@ use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_v3,
     zwp_text_input_v3::{ContentHint, ContentPurpose, ZwpTextInputV3},
 };
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::{self, Mode as XdgMode, ZxdgToplevelDecorationV1},
+};
 use wayland_protocols::xdg::dialog::v1::client::{
     xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1,
 };
@@ -70,6 +82,12 @@ use wayland_protocols::xdg::shell::client::{
 use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_manager_v1, xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1,
     xdg_toplevel_icon_v1::XdgToplevelIconV1,
+};
+use wayland_protocols_misc::server_decoration::client::{
+    org_kde_kwin_server_decoration::{self as kde_decoration, Mode as KdeMode},
+    org_kde_kwin_server_decoration_manager::{
+        self as kde_manager, Mode as KdeDefaultMode, OrgKdeKwinServerDecorationManager,
+    },
 };
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2::{self, ZwpInputMethodKeyboardGrabV2},
@@ -82,6 +100,13 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
     zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
+    zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
+};
+use x11rb::connection::Connection as _;
+use x11rb::protocol::xproto::Window;
+use x11rb::rust_connection::RustConnection;
 
 #[derive(Default)]
 #[allow(
@@ -184,7 +209,40 @@ pub struct Seen {
     pub color_manager_done: bool,
     /// Whether an image description the client asked for is ready.
     pub color_description_ready: bool,
+    pub data_manager: Option<WlDataDeviceManager>,
+    pub data_device: Option<WlDataDevice>,
+    /// The serial of the last button press on the window.
+    pub pressed: Option<u32>,
+    /// The serial of the last touch down on the window.
+    pub touched: Option<u32>,
+    /// The formats of the latest offer.
+    pub offered: Vec<String>,
+    /// A drag entered the window with this offer.
+    pub entered: Option<WlDataOffer>,
+    pub dropped: bool,
+    /// What this client's data source serves when asked.
+    pub payload: Vec<u8>,
+    /// The formats the compositor asked this client's data source for.
+    pub sent: Vec<String>,
+    /// How this client's drag ended: `action move`, `performed`, `finished`, `cancelled`.
+    pub source_events: Vec<String>,
+    pub decoration_manager: Option<ZxdgDecorationManagerV1>,
+    pub kde_manager: Option<OrgKdeKwinServerDecorationManager>,
+    /// Every mode the compositor configured through `xdg-decoration` , in order.
+    pub xdg_modes: Vec<XdgMode>,
+    /// The KDE manager's `default_mode` : what it tells a client that asks for nothing.
+    pub kde_default: Option<KdeDefaultMode>,
+    /// Every mode the compositor stated through the KDE protocol, in order.
+    pub kde_modes: Vec<KdeMode>,
+    pub layer_shell: Option<ZwlrLayerShellV1>,
+    /// The size the compositor gave the layer surface.
+    pub layer_size: Option<(u32, u32)>,
+    /// Where the pointer is on the surface it is over, in that surface's coordinates.
+    pub pointer_at: Option<(f64, f64)>,
 }
+
+/// What a window drop takes, as a file manager does.
+pub const URI_LIST: &str = "text/uri-list";
 
 /// One client with one toplevel of a solid colour.
 pub struct TestClient {
@@ -236,7 +294,9 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    pub fn open_window(&mut self, app_id: &str) {
+    /// Create a surface and its toplevel without committing it, so a test can ask for things the
+    /// first configure answers.
+    pub fn create_window(&mut self, app_id: &str) {
         let qh = self.queue.handle();
         let surface = self
             .seen
@@ -252,9 +312,95 @@ impl TestClient {
             .get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg.get_toplevel(&qh, ());
         toplevel.set_app_id(app_id.into());
-        surface.commit();
         self.surface = Some(surface);
         self.toplevel = Some(toplevel);
+    }
+
+    pub fn open_window(&mut self, app_id: &str) {
+        self.create_window(app_id);
+        self.commit();
+    }
+
+    pub fn commit(&self) {
+        self.surface.as_ref().expect("surface").commit();
+    }
+
+    /// Ask for the frame to be drawn by the client, which is the request the desktop refuses.
+    pub fn ask_for_client_side(&self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .decoration_manager
+            .as_ref()
+            .expect("zxdg_decoration_manager_v1 is not advertised");
+        let toplevel = self.toplevel.as_ref().expect("toplevel");
+        manager
+            .get_toplevel_decoration(toplevel, &qh, ())
+            .set_mode(XdgMode::ClientSide);
+    }
+
+    /// Create a KDE decoration for the window, stating no preference on it.
+    pub fn decorate_kde(&self) -> kde_decoration::OrgKdeKwinServerDecoration {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .kde_manager
+            .as_ref()
+            .expect("org_kde_kwin_server_decoration_manager is not advertised");
+        manager.create(self.surface.as_ref().expect("surface"), &qh, ())
+    }
+
+    /// Bind this client's data device, through which it copies, pastes and drags.
+    pub fn own_data_device(&mut self) {
+        let qh = self.queue.handle();
+        let manager = self
+            .seen
+            .data_manager
+            .as_ref()
+            .expect("wl_data_device_manager");
+        let seat = self.seen.seat.as_ref().expect("wl_seat");
+        self.seen.data_device = Some(manager.get_data_device(seat, &qh, ()));
+    }
+
+    /// A data source offering `formats`, serving `payload` for each.
+    pub fn data_source(&mut self, formats: &[&str], payload: &[u8]) -> WlDataSource {
+        let qh = self.queue.handle();
+        let source = self
+            .seen
+            .data_manager
+            .as_ref()
+            .expect("wl_data_device_manager")
+            .create_data_source(&qh, ());
+        for mime in formats {
+            source.offer((*mime).into());
+        }
+        self.seen.payload = payload.to_vec();
+        source
+    }
+
+    /// Drag `formats` out of the window from the press or touch with `serial`, serving `payload`
+    /// for each and showing `icon` under the pointer.
+    pub fn start_drag(
+        &mut self,
+        formats: &[&str],
+        payload: &[u8],
+        action: DndAction,
+        serial: u32,
+        icon: Option<&WlSurface>,
+    ) -> WlDataSource {
+        let source = self.data_source(formats, payload);
+        source.set_actions(action);
+        self.seen
+            .data_device
+            .as_ref()
+            .expect("a data device")
+            .start_drag(
+                Some(&source),
+                self.surface.as_ref().expect("surface"),
+                icon,
+                serial,
+            );
+        source
     }
 
     /// Ask the compositor to keep the screen on while this window shows: what a video player does.
@@ -285,13 +431,49 @@ impl TestClient {
     /// Attach a buffer of `format` holding the bytes of `pixel` in every pixel, and commit it with
     /// a frame callback.
     pub fn show_pixels(&self, width: i32, height: i32, format: wl_shm::Format, pixel: &[u8]) {
+        self.show_rows(width, height, 1, format, |_| pixel);
+    }
+
+    /// Attach a buffer of `size` logical pixels at `scale` , its top half `top` and its bottom half
+    /// `bottom` (RGBA), and commit it with a frame callback.
+    pub fn show_bands(&self, size: (i32, i32), scale: i32, top: [u8; 4], bottom: [u8; 4]) {
+        // ARGB8888 is B, G, R, A in memory.
+        let argb = |rgba: [u8; 4]| [rgba[2], rgba[1], rgba[0], rgba[3]];
+        let (top, bottom) = (argb(top), argb(bottom));
+        let height = size.1 * scale;
+        self.show_rows(
+            size.0 * scale,
+            height,
+            scale,
+            wl_shm::Format::Argb8888,
+            |y| {
+                if y < height / 2 { &top } else { &bottom }
+            },
+        );
+    }
+
+    /// Attach a buffer whose row `y` repeats the pixel `row(y)` gives, at `scale`, and commit it
+    /// with a frame callback.
+    fn show_rows<'a>(
+        &self,
+        width: i32,
+        height: i32,
+        scale: i32,
+        format: wl_shm::Format,
+        row: impl Fn(i32) -> &'a [u8],
+    ) {
         let qh = self.queue.handle();
-        let stride = width * i32::try_from(pixel.len()).unwrap();
-        let len = usize::try_from(stride * height).unwrap();
+        let pixel_len = row(0).len();
+        let stride = width * i32::try_from(pixel_len).unwrap();
         let fd = rustix::fs::memfd_create("tilo-compositor-test", rustix::fs::MemfdFlags::CLOEXEC)
             .unwrap();
         let mut file = std::fs::File::from(fd);
-        file.write_all(&pixel.repeat(len / pixel.len())).unwrap();
+        for y in 0..height {
+            file.write_all(&row(y).repeat(usize::try_from(width).unwrap()))
+                .unwrap();
+        }
+        let surface = self.surface.as_ref().expect("surface");
+        surface.set_buffer_scale(scale);
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
             stride * height,
@@ -299,12 +481,39 @@ impl TestClient {
             (),
         );
         let buffer = pool.create_buffer(0, width, height, stride, format, &qh, ());
-        let surface = self.surface.as_ref().expect("surface");
         surface.attach(Some(&buffer), 0, 0);
         surface.damage_buffer(0, 0, width, height);
         surface.frame(&qh, ());
         surface.commit();
         pool.destroy();
+    }
+
+    /// Ask for a layer surface on `layer` : `size` (0 for the whole output along an axis), anchored
+    /// to `anchor` , keeping `exclusive` pixels of the edge it hangs from.
+    pub fn layer_surface(
+        &mut self,
+        layer: zwlr_layer_shell_v1::Layer,
+        anchor: zwlr_layer_surface_v1::Anchor,
+        size: (u32, u32),
+        exclusive: i32,
+        keyboard: zwlr_layer_surface_v1::KeyboardInteractivity,
+    ) -> (WlSurface, ZwlrLayerSurfaceV1) {
+        let qh = self.queue.handle();
+        let surface = self
+            .seen
+            .compositor
+            .as_ref()
+            .expect("wl_compositor")
+            .create_surface(&qh, ());
+        let shell = self.seen.layer_shell.as_ref().expect("zwlr_layer_shell_v1");
+        let layer_surface = shell.get_layer_surface(&surface, None, layer, "test".into(), &qh, ());
+        layer_surface.set_anchor(anchor);
+        layer_surface.set_size(size.0, size.1);
+        layer_surface.set_exclusive_zone(exclusive);
+        layer_surface.set_keyboard_interactivity(keyboard);
+        surface.commit();
+        self.surface = Some(surface.clone());
+        (surface, layer_surface)
     }
 
     pub fn icon_buffer(&self, edge: i32, rgba: [u8; 4]) -> WlBuffer {
@@ -582,6 +791,120 @@ pub fn shown(compositor: &mut Compositor, x: u32, y: u32) -> Option<[u8; 4]> {
     frame.pixel(x, y)
 }
 
+pub fn input(compositor: &mut Compositor, event: InputEvent) {
+    compositor.input(event).expect("input");
+}
+
+#[derive(Default)]
+pub struct DropLog {
+    pub offered: Vec<Vec<String>>,
+    pub left: u32,
+    pub dropped: Vec<(String, Vec<u8>)>,
+    pub buttons: Vec<(u32, bool)>,
+    pub drag_ended: Option<bool>,
+}
+
+/// A hosted surface at (500, 20, 100, 100) that takes file lists, as a surface app does.
+pub struct DropZone {
+    pixels: Vec<u8>,
+    log: Rc<RefCell<DropLog>>,
+}
+
+impl DropZone {
+    const RECT: (f64, f64, f64, f64) = (500.0, 20.0, 100.0, 100.0);
+
+    pub fn new(log: Rc<RefCell<DropLog>>) -> Self {
+        Self {
+            pixels: [0, 255, 0, 255].repeat(100 * 100),
+            log,
+        }
+    }
+}
+
+impl SurfaceHost for DropZone {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
+            location: (500, 20),
+            size: (100, 100),
+            frame: HostFrame::from_pixels((100, 100), self.pixels.clone()),
+        }]
+    }
+
+    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        let (rx, ry, w, h) = Self::RECT;
+        x >= rx && y >= ry && x < rx + w && y < ry + h
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, button: u32, pressed: bool) {
+        self.log.borrow_mut().buttons.push((button, pressed));
+    }
+
+    fn drop_offered(&mut self, mimes: &[String], _x: f64, _y: f64) -> Option<String> {
+        self.log.borrow_mut().offered.push(mimes.to_vec());
+        mimes.iter().find(|mime| *mime == URI_LIST).cloned()
+    }
+
+    fn drop_left(&mut self) {
+        self.log.borrow_mut().left += 1;
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        self.log.borrow_mut().dropped.push((mime.to_owned(), data));
+    }
+
+    fn drag_ended(&mut self, dropped: bool) {
+        self.log.borrow_mut().drag_ended = Some(dropped);
+    }
+}
+
+/// An X11 client on `display` : Xwayland answers the connection's setup only after it has
+/// roundtripped with the compositor, so the client waits in a thread while the compositor
+/// dispatches here.
+pub fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(x11rb::connect(Some(&format!(":{display}"))));
+    });
+    let started = Instant::now();
+    loop {
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        if let Ok(connected) = receiver.try_recv() {
+            let (x11, screen) = connected.expect("X11 connection");
+            let root = x11.setup().roots[screen].root;
+            return (x11, root);
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "Xwayland never answered the X11 client"
+        );
+    }
+}
+
+/// Let compositor and one client talk until `done` holds.
+pub fn pump_one(
+    compositor: &mut Compositor,
+    client: &mut TestClient,
+    mut done: impl FnMut(&Compositor, &TestClient) -> bool,
+) {
+    pump(compositor, &mut [client], |compositor, clients| {
+        done(compositor, clients[0])
+    });
+}
+
+/// Let compositor and a client exchange a few rounds.
+pub fn settle(compositor: &mut Compositor, client: &mut TestClient) {
+    let mut rounds = 0;
+    pump_one(compositor, client, |_, _| {
+        rounds += 1;
+        rounds >= 5
+    });
+}
+
 /// Let compositor and clients talk until `done` holds.
 pub fn pump(
     compositor: &mut Compositor,
@@ -644,7 +967,7 @@ pub fn mapped_client_without_touch(
 
 /// Put `client` 's window up: a surface of `size` in `rgba` , mapped as `app_id` once the
 /// compositor has it.
-fn map(
+pub fn map(
     mut client: TestClient,
     compositor: &mut Compositor,
     app_id: &str,
@@ -722,6 +1045,18 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "zwp_idle_inhibit_manager_v1" => {
                     seen.idle_inhibit = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zwlr_layer_shell_v1" => {
+                    seen.layer_shell = Some(registry.bind(name, 1, qh, ()));
+                }
+                "zxdg_decoration_manager_v1" => {
+                    seen.decoration_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "org_kde_kwin_server_decoration_manager" => {
+                    seen.kde_manager = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wl_data_device_manager" => {
+                    seen.data_manager = Some(registry.bind(name, version.min(3), qh, ()));
                 }
                 "wp_color_manager_v1" => {
                     seen.color_manager = Some(registry.bind(name, version.min(1), qh, ()));
@@ -843,14 +1178,26 @@ impl Dispatch<WlPointer, ()> for Seen {
             } => {
                 seen.pointer_inside = true;
                 seen.pointer_entered_at = Some((surface_x, surface_y));
+                seen.pointer_at = Some((surface_x, surface_y));
             }
             wl_pointer::Event::Leave { .. } => seen.pointer_inside = false,
             wl_pointer::Event::Motion {
                 surface_x,
                 surface_y,
                 ..
-            } => seen.pointer_positions.push((surface_x, surface_y)),
-            wl_pointer::Event::Button { button, state, .. } => {
+            } => {
+                seen.pointer_positions.push((surface_x, surface_y));
+                seen.pointer_at = Some((surface_x, surface_y));
+            }
+            wl_pointer::Event::Button {
+                serial,
+                button,
+                state,
+                ..
+            } => {
+                if state == WEnum::Value(wl_pointer::ButtonState::Pressed) {
+                    seen.pressed = Some(serial);
+                }
                 seen.buttons.push((
                     button,
                     state == WEnum::Value(wl_pointer::ButtonState::Pressed),
@@ -871,7 +1218,10 @@ impl Dispatch<WlTouch, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_touch::Event::Down { id, x, y, .. } => {
+            wl_touch::Event::Down {
+                serial, id, x, y, ..
+            } => {
+                seen.touched = Some(serial);
                 seen.touches.push(format!("down {id} {x} {y}"));
             }
             wl_touch::Event::Motion { id, x, y, .. } => {
@@ -1274,6 +1624,155 @@ impl Dispatch<WlShm, ()> for Seen {
     }
 }
 
+impl Dispatch<WlDataDevice, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlDataDevice,
+        event: wl_data_device::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::DataOffer { .. } => seen.offered.clear(),
+            wl_data_device::Event::Enter {
+                serial,
+                id: Some(offer),
+                ..
+            } => {
+                offer.accept(serial, Some(URI_LIST.into()));
+                offer.set_actions(DndAction::Copy, DndAction::Copy);
+                seen.entered = Some(offer);
+            }
+            wl_data_device::Event::Drop => seen.dropped = true,
+            _ => {}
+        }
+    }
+
+    event_created_child!(Seen, WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<WlDataOffer, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlDataOffer,
+        event: wl_data_offer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            seen.offered.push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlDataSource,
+        event: wl_data_source::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                std::fs::File::from(fd).write_all(&seen.payload).unwrap();
+                seen.sent.push(mime_type);
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                seen.source_events.push(format!("action {dnd_action:?}"));
+            }
+            wl_data_source::Event::DndDropPerformed => seen.source_events.push("performed".into()),
+            wl_data_source::Event::DndFinished => seen.source_events.push("finished".into()),
+            wl_data_source::Event::Cancelled => seen.source_events.push("cancelled".into()),
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore WlDataDeviceManager);
+
+impl Dispatch<ZxdgToplevelDecorationV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            seen.xdg_modes.push(mode);
+        }
+    }
+}
+
+impl Dispatch<OrgKdeKwinServerDecorationManager, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &OrgKdeKwinServerDecorationManager,
+        event: kde_manager::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let kde_manager::Event::DefaultMode {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            seen.kde_default = Some(mode);
+        }
+    }
+}
+
+impl Dispatch<kde_decoration::OrgKdeKwinServerDecoration, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &kde_decoration::OrgKdeKwinServerDecoration,
+        event: kde_decoration::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let kde_decoration::Event::Mode {
+            mode: WEnum::Value(mode),
+        } = event
+        {
+            seen.kde_modes.push(mode);
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZxdgDecorationManagerV1);
+delegate_noop!(Seen: ignore ZwlrLayerShellV1);
+
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        surface: &ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_layer_surface_v1::Event::Configure {
+            serial,
+            width,
+            height,
+        } = event
+        {
+            surface.ack_configure(serial);
+            seen.layer_size = Some((width, height));
+        }
+    }
+}
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);

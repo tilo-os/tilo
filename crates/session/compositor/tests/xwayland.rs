@@ -26,6 +26,8 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+use crate::harness::x11_client;
+
 /// A compositor with one output and Xwayland, and an X11 client on it.
 struct Session {
     compositor: Compositor,
@@ -400,31 +402,6 @@ impl Session {
         panic!(
             "the compositor never got there: {:?}",
             self.compositor.windows()
-        );
-    }
-}
-
-/// An X11 client on `display` : Xwayland answers the connection's setup only after it has
-/// roundtripped with the compositor, so the client waits in a thread while the compositor
-/// dispatches here.
-fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(x11rb::connect(Some(&format!(":{display}"))));
-    });
-    let started = Instant::now();
-    loop {
-        compositor
-            .dispatch(Duration::from_millis(2))
-            .expect("dispatch");
-        if let Ok(connected) = receiver.try_recv() {
-            let (x11, screen) = connected.expect("X11 connection");
-            let root = x11.setup().roots[screen].root;
-            return (x11, root);
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(20),
-            "Xwayland never answered the X11 client"
         );
     }
 }

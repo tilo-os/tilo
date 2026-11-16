@@ -16,264 +16,37 @@ use std::cell::RefCell;
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::rc::Rc;
-use std::time::Duration;
 
-use tilo_compositor::{Compositor, InputEvent, OutputConfig, StackPolicy};
-use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
+use tilo_compositor::{Compositor, InputEvent, StackPolicy};
 use wayland_client::protocol::wl_data_device_manager::DndAction;
-use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_data_device, wl_data_device::WlDataDevice,
-    wl_data_device_manager::WlDataDeviceManager, wl_data_offer, wl_data_offer::WlDataOffer,
-    wl_data_source, wl_data_source::WlDataSource, wl_pointer, wl_pointer::WlPointer, wl_registry,
-    wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
-};
-use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
-};
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base,
-    xdg_wm_base::XdgWmBase,
+use wayland_client::protocol::wl_shm;
+
+use crate::harness::{
+    DropLog, DropZone, TestClient, URI_LIST, headless, input, map, pump_one as pump, settle,
 };
 
 const BTN_LEFT: u32 = 0x110;
-const URI_LIST: &str = "text/uri-list";
 /// Two files, one with an escaped space, as file managers drag them.
 const FILES: &[u8] = b"file:///home/someone/a%20b.txt\r\nfile:///home/someone/c.png\r\n";
 
-#[derive(Default)]
-struct Seen {
-    compositor: Option<WlCompositor>,
-    shm: Option<WlShm>,
-    wm_base: Option<XdgWmBase>,
-    seat: Option<WlSeat>,
-    pointer: Option<WlPointer>,
-    touch: Option<WlTouch>,
-    /// The serial of the last touch down on the window.
-    touched: Option<u32>,
-    data_manager: Option<WlDataDeviceManager>,
-    configured: bool,
-    /// The serial of the last button press on the window.
-    pressed: Option<u32>,
-    /// The formats of the latest offer.
-    offered: Vec<String>,
-    /// A drag entered the window with this offer.
-    entered: Option<WlDataOffer>,
-    dropped: bool,
-    /// What our data source was asked for.
-    sent: Vec<String>,
-    /// What our data source serves.
-    payload: Vec<u8>,
-    /// How our data source's drag ended: `action move`, `performed`,
-    /// `finished`, `cancelled`.
-    source_events: Vec<String>,
-}
-
-struct TestClient {
-    connection: Connection,
-    queue: EventQueue<Seen>,
-    seen: Seen,
-    surface: Option<WlSurface>,
-    data_device: Option<WlDataDevice>,
-}
-
-impl TestClient {
-    fn connect(compositor: &mut Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
-        let connection = Connection::from_socket(socket).expect("connection");
-        let queue = connection.new_event_queue();
-        connection.display().get_registry(&queue.handle(), ());
-        Self {
-            connection,
-            queue,
-            seen: Seen::default(),
-            surface: None,
-            data_device: None,
-        }
-    }
-
-    fn exchange(&mut self) {
-        self.connection.flush().expect("flush");
-        if let Some(guard) = self.connection.prepare_read() {
-            let _ = guard.read();
-        }
-        self.queue
-            .dispatch_pending(&mut self.seen)
-            .expect("dispatch");
-        self.connection.flush().expect("flush");
-    }
-
-    /// Map a 200x100 window (centred: 220,190) and bind a data device.
-    fn open_window(&mut self) {
-        let qh = self.queue.handle();
-        let surface = self
-            .seen
-            .compositor
-            .as_ref()
-            .unwrap()
-            .create_surface(&qh, ());
-        let xdg = self
-            .seen
-            .wm_base
-            .as_ref()
-            .unwrap()
-            .get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("files".into());
-        surface.commit();
-        self.surface = Some(surface);
-        self.data_device = Some(self.seen.data_manager.as_ref().unwrap().get_data_device(
-            self.seen.seat.as_ref().unwrap(),
-            &qh,
-            (),
-        ));
-    }
-
-    fn show(&self) {
-        let qh = self.queue.handle();
-        let (width, height) = (200, 100);
-        let fd =
-            rustix::fs::memfd_create("tilo-dnd-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
-        let mut file = std::fs::File::from(fd);
-        file.write_all(&[0, 0, 255, 255].repeat(width * height))
-            .unwrap();
-        let (w, h) = (
-            i32::try_from(width).unwrap(),
-            i32::try_from(height).unwrap(),
-        );
-        let pool = self
-            .seen
-            .shm
-            .as_ref()
-            .unwrap()
-            .create_pool(file.as_fd(), w * h * 4, &qh, ());
-        let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &qh, ());
-        let surface = self.surface.as_ref().unwrap();
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, w, h);
-        surface.commit();
-        pool.destroy();
-    }
-}
-
-fn pump(
-    compositor: &mut Compositor,
-    client: &mut TestClient,
-    mut done: impl FnMut(&Compositor, &TestClient) -> bool,
-) {
-    for _ in 0..500 {
-        client.exchange();
-        compositor
-            .dispatch(Duration::from_millis(2))
-            .expect("dispatch");
-        client.exchange();
-        if done(compositor, client) {
-            return;
-        }
-    }
-    panic!("condition not reached");
-}
-
-/// Let compositor and client exchange a few rounds.
-fn settle(compositor: &mut Compositor, client: &mut TestClient) {
-    let mut rounds = 0;
-    pump(compositor, client, |_, _| {
-        rounds += 1;
-        rounds >= 5
-    });
-}
-
 fn setup(log: &Rc<RefCell<DropLog>>) -> (Compositor, TestClient) {
-    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
-        .expect("output");
+    let mut compositor = headless(Box::new(StackPolicy));
     compositor.add_host(Rc::new(RefCell::new(DropZone::new(Rc::clone(log)))));
     let mut client = TestClient::connect(&mut compositor);
     pump(&mut compositor, &mut client, |_, client| {
-        client.seen.wm_base.is_some()
-            && client.seen.seat.is_some()
-            && client.seen.data_manager.is_some()
+        client.seen.data_manager.is_some() && client.seen.seat.is_some()
     });
-    client.open_window();
-    pump(&mut compositor, &mut client, |_, client| {
-        client.seen.configured
-    });
-    client.show();
-    pump(&mut compositor, &mut client, |compositor, _| {
-        compositor.windows().len() == 1
-    });
+    // Its data device comes before its window, as a toolkit binds it when it starts.
+    client.own_data_device();
+    let client = map(
+        client,
+        &mut compositor,
+        "files",
+        (200, 100),
+        [255, 0, 0, 255],
+    );
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
     (compositor, client)
-}
-
-fn input(compositor: &mut Compositor, event: InputEvent) {
-    compositor.input(event).expect("input");
-}
-
-#[derive(Default)]
-struct DropLog {
-    offered: Vec<Vec<String>>,
-    left: u32,
-    dropped: Vec<(String, Vec<u8>)>,
-    buttons: Vec<(u32, bool)>,
-    drag_ended: Option<bool>,
-}
-
-/// A hosted surface at (500, 20, 100, 100) that takes file lists.
-struct DropZone {
-    pixels: Vec<u8>,
-    log: Rc<RefCell<DropLog>>,
-}
-
-impl DropZone {
-    const RECT: (f64, f64, f64, f64) = (500.0, 20.0, 100.0, 100.0);
-
-    fn new(log: Rc<RefCell<DropLog>>) -> Self {
-        Self {
-            pixels: [0, 255, 0, 255].repeat(100 * 100),
-            log,
-        }
-    }
-}
-
-impl SurfaceHost for DropZone {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
-            pose: tilo_session_core::surface::LayerPose::SETTLED,
-            location: (500, 20),
-            size: (100, 100),
-            frame: HostFrame::from_pixels((100, 100), self.pixels.clone()),
-        }]
-    }
-
-    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        let (rx, ry, w, h) = Self::RECT;
-        x >= rx && y >= ry && x < rx + w && y < ry + h
-    }
-
-    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
-
-    fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.log.borrow_mut().buttons.push((button, pressed));
-    }
-
-    fn drop_offered(&mut self, mimes: &[String], _x: f64, _y: f64) -> Option<String> {
-        self.log.borrow_mut().offered.push(mimes.to_vec());
-        mimes.iter().find(|mime| *mime == URI_LIST).cloned()
-    }
-
-    fn drop_left(&mut self) {
-        self.log.borrow_mut().left += 1;
-    }
-
-    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
-        self.log.borrow_mut().dropped.push((mime.to_owned(), data));
-    }
-
-    fn drag_ended(&mut self, dropped: bool) {
-        self.log.borrow_mut().drag_ended = Some(dropped);
-    }
 }
 
 #[test]
@@ -297,22 +70,12 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
     });
 
     // The window starts a drag of two files from its press.
-    let qh = client.queue.handle();
-    let source = client
-        .seen
-        .data_manager
-        .as_ref()
-        .unwrap()
-        .create_data_source(&qh, ());
-    source.offer(URI_LIST.into());
-    source.offer("text/plain;charset=utf-8".into());
-    source.set_actions(DndAction::Move);
-    client.seen.payload = FILES.to_vec();
-    client.data_device.as_ref().unwrap().start_drag(
-        Some(&source),
-        client.surface.as_ref().unwrap(),
-        None,
+    let _source = client.start_drag(
+        &[URI_LIST, "text/plain;charset=utf-8"],
+        FILES,
+        DndAction::Move,
         client.seen.pressed.unwrap(),
+        None,
     );
     settle(&mut compositor, &mut client);
 
@@ -433,28 +196,6 @@ fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
     settle(&mut compositor, &mut client);
 }
 
-/// Start a drag of `FILES` from the window, from the press or touch with
-/// `serial`, showing `icon`.
-fn drag_files(client: &mut TestClient, serial: u32, icon: Option<&WlSurface>) -> WlDataSource {
-    let qh = client.queue.handle();
-    let source = client
-        .seen
-        .data_manager
-        .as_ref()
-        .unwrap()
-        .create_data_source(&qh, ());
-    source.offer(URI_LIST.into());
-    source.set_actions(DndAction::Copy);
-    client.seen.payload = FILES.to_vec();
-    client.data_device.as_ref().unwrap().start_drag(
-        Some(&source),
-        client.surface.as_ref().unwrap(),
-        icon,
-        serial,
-    );
-    source
-}
-
 #[test]
 fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
     let log = Rc::new(RefCell::new(DropLog::default()));
@@ -493,7 +234,7 @@ fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
         .create_pool(file.as_fd(), 400, &qh, ());
     let buffer = pool.create_buffer(0, 10, 10, 40, wl_shm::Format::Argb8888, &qh, ());
     let serial = client.seen.pressed.unwrap();
-    let _source = drag_files(&mut client, serial, Some(&icon));
+    let _source = client.start_drag(&[URI_LIST], FILES, DndAction::Copy, serial, Some(&icon));
     icon.attach(Some(&buffer), 0, 0);
     icon.offset(-5, -5);
     icon.damage_buffer(0, 0, 10, 10);
@@ -551,7 +292,7 @@ fn files_dragged_out_of_a_window_with_a_finger_drop_on_a_hosted_surface() {
         client.seen.touched.is_some()
     });
     let serial = client.seen.touched.unwrap();
-    let _source = drag_files(&mut client, serial, None);
+    let _source = client.start_drag(&[URI_LIST], FILES, DndAction::Copy, serial, None);
     settle(&mut compositor, &mut client);
 
     input(
@@ -617,204 +358,6 @@ fn a_hosted_surface_drags_files_with_the_finger_holding_it() {
     );
 }
 
-impl Dispatch<WlRegistry, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        registry: &WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
-                "wl_compositor" => {
-                    seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
-                "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
-                "wl_data_device_manager" => {
-                    seen.data_manager = Some(registry.bind(name, version.min(3), qh, ()));
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgWmBase, ()> for Seen {
-    fn event(
-        _: &mut Self,
-        base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<XdgSurface, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        surface: &XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            seen.configured = true;
-        }
-    }
-}
-
-impl Dispatch<WlSeat, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        seat: &WlSeat,
-        event: wl_seat::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_seat::Event::Capabilities {
-            capabilities: WEnum::Value(capabilities),
-        } = event
-        {
-            if capabilities.contains(wl_seat::Capability::Pointer) && seen.pointer.is_none() {
-                seen.pointer = Some(seat.get_pointer(qh, ()));
-            }
-            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
-                seen.touch = Some(seat.get_touch(qh, ()));
-            }
-        }
-    }
-}
-
-impl Dispatch<WlPointer, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlPointer,
-        event: wl_pointer::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_pointer::Event::Button {
-            serial,
-            state: WEnum::Value(wl_pointer::ButtonState::Pressed),
-            ..
-        } = event
-        {
-            seen.pressed = Some(serial);
-        }
-    }
-}
-
-impl Dispatch<WlTouch, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlTouch,
-        event: wl_touch::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_touch::Event::Down { serial, .. } = event {
-            seen.touched = Some(serial);
-        }
-    }
-}
-
-impl Dispatch<WlDataDevice, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlDataDevice,
-        event: wl_data_device::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_data_device::Event::DataOffer { .. } => seen.offered.clear(),
-            wl_data_device::Event::Enter {
-                serial,
-                id: Some(offer),
-                ..
-            } => {
-                offer.accept(serial, Some(URI_LIST.into()));
-                offer.set_actions(DndAction::Copy, DndAction::Copy);
-                seen.entered = Some(offer);
-            }
-            wl_data_device::Event::Drop => seen.dropped = true,
-            _ => {}
-        }
-    }
-
-    event_created_child!(Seen, WlDataDevice, [
-        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
-    ]);
-}
-
-impl Dispatch<WlDataOffer, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlDataOffer,
-        event: wl_data_offer::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            seen.offered.push(mime_type);
-        }
-    }
-}
-
-impl Dispatch<WlDataSource, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &WlDataSource,
-        event: wl_data_source::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_data_source::Event::Send { mime_type, fd } => {
-                std::fs::File::from(fd).write_all(&seen.payload).unwrap();
-                seen.sent.push(mime_type);
-            }
-            wl_data_source::Event::Action { dnd_action } => {
-                seen.source_events.push(format!("action {dnd_action:?}"));
-            }
-            wl_data_source::Event::DndDropPerformed => seen.source_events.push("performed".into()),
-            wl_data_source::Event::DndFinished => seen.source_events.push("finished".into()),
-            wl_data_source::Event::Cancelled => seen.source_events.push("cancelled".into()),
-            _ => {}
-        }
-    }
-}
-
-delegate_noop!(Seen: ignore WlCompositor);
-delegate_noop!(Seen: ignore WlShm);
-delegate_noop!(Seen: ignore WlShmPool);
-delegate_noop!(Seen: ignore WlBuffer);
-delegate_noop!(Seen: ignore WlSurface);
-delegate_noop!(Seen: ignore XdgToplevel);
-delegate_noop!(Seen: ignore WlDataDeviceManager);
-
 /// Words dragged out of a window, as an editor drags a selection.
 const WORDS: &[u8] = b"carried across";
 const TEXT: &str = "text/plain;charset=utf-8";
@@ -843,22 +386,7 @@ tilo_test_env::scenario! {
         pump(&mut compositor, &mut client, |_, client| {
             client.seen.pressed.is_some()
         });
-        let qh = client.queue.handle();
-        let source = client
-            .seen
-            .data_manager
-            .as_ref()
-            .unwrap()
-            .create_data_source(&qh, ());
-        source.offer(TEXT.into());
-        source.set_actions(DndAction::Copy);
-        client.seen.payload = WORDS.to_vec();
-        client.data_device.as_ref().unwrap().start_drag(
-            Some(&source),
-            client.surface.as_ref().unwrap(),
-            None,
-            client.seen.pressed.unwrap(),
-        );
+        let _source = client.start_drag(&[TEXT], WORDS, DndAction::Copy, client.seen.pressed.unwrap(), None);
         settle(&mut compositor, &mut client);
         input(
             &mut compositor,
