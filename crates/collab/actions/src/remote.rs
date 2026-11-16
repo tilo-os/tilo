@@ -71,6 +71,7 @@ mod wait;
 mod window_actions;
 mod within;
 pub mod workspace_activity;
+pub mod workspace_runs;
 
 pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
