@@ -389,7 +389,7 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "workspace",
             ParamType::Text,
-            "The workspace it is, when one of yours moves here (a UUID). A new workspace when omitted.",
+            "One of your workspaces, or one you were invited into, to enter (a UUID); with a `name`, the id a new workspace is made under, so a retried create answers the one it made. An id that names none of these is refused.",
         ),
         ActionParam::optional(
             "labels",
@@ -793,9 +793,11 @@ impl Workspaces {
             .collect()
     }
 
-    /// Make another workspace of `device`'s person's own, already permitted
-    /// to, and invite the person into it: the one they have when the ask
-    /// names none, the one `workspace` names when it is one of theirs.
+    /// The workspace of `device`'s person's own it asks for, already permitted
+    /// to, with an invitation into it: the first they made when the ask names
+    /// none (made now if they have none), one of theirs or one they were
+    /// invited into by its id, or another made for a `name`. Every other id is
+    /// refused: the host never answers a workspace the ask did not name.
     async fn create_own_invoke(
         &self,
         device: &DeviceCert,
@@ -868,21 +870,17 @@ impl Workspaces {
             return self
                 .invite_own_person(summary, person, role, request_id, expiry(now, seconds))
                 .await;
+        } else if name.is_none() && moving.is_some() {
+            // A workspace that is not theirs: another's, or one this host has
+            // never made. The host makes a person's own workspace under an id
+            // of its own choosing, so an id it does not know is never theirs,
+            // and it is never read as some other workspace they have.
+            return Err(refused(&NOT_YOUR_OWN));
         } else if name.is_none()
             && let Some(first) = mine.first()
-            && match moving {
-                None => true,
-                // A name no workspace here has: one a browser picked for the person's own before
-                // it knew they had one (a new browser, or one that forgot the site), which their
-                // agent's setup code names too. Both mean "my workspace".
-                Some(named) => self.workspace(named).await.is_err(),
-            }
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(first).await.map_err(|error| refused(&error))?
-        } else if name.is_none() && moving.is_some() && !mine.is_empty() {
-            // Another's workspace this host keeps, asked for as one of theirs.
-            return Err(refused(&NOT_YOUR_OWN));
         } else if !makes {
             return Err(refused(&NOT_YOUR_OWN));
         } else if !self.let_in(&person, now).await {

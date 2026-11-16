@@ -372,12 +372,12 @@ impl Device {
         Ok((made.workspace, invitation))
     }
 
-    /// Have this device in the person's own workspace on the host: the host makes it the first time, or answers the one the person has (another
-    /// for each `name` they give; the one called `workspace`, a UUID, when it says, made under that name
-    /// for a person who has none yet), and this very device redeems the invitation into it, so the
-    /// key this session holds is the one that opens it next. One the person did not name is named
-    /// in `language`, the one they read. A workspace `entered` says this device is
-    /// in already is not redeemed again. `shown_as` is the name its members see.
+    /// Have this device in the person's own workspace on the host: the host makes it the first
+    /// time, under an id it chooses, and answers the same one to every later ask (another for each
+    /// `name` they give). This very device redeems the invitation into it, so the key this session
+    /// holds is the one that opens it next. One the person did not name is named in `language`, the
+    /// one they read. A workspace `entered` says this device is in already is not redeemed again.
+    /// `shown_as` is the name its members see.
     ///
     /// # Errors
     /// The host did not answer or refused (typed, as it said), or the workspace did not admit this
@@ -386,16 +386,12 @@ impl Device {
         &self,
         language: &str,
         name: Option<&str>,
-        workspace: Option<&str>,
         shown_as: &str,
         entered: impl FnOnce(&str) -> bool,
     ) -> Result<WorkspaceListing, HostRefusal> {
         let mut arguments = Map::new();
         if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
             arguments.insert("name".to_owned(), Value::String(name.to_owned()));
-        }
-        if let Some(workspace) = workspace {
-            arguments.insert("workspace".to_owned(), Value::String(workspace.to_owned()));
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert("language".to_owned(), Value::String(language.to_owned()));

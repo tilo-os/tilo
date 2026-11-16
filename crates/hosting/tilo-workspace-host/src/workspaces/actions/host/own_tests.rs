@@ -1776,14 +1776,13 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     relay.shutdown().await;
 }
 
-/// A browser names the person's own workspace before the host made it, so the
-/// agent it sets up is handed the same name. A browser that forgot the site (or
-/// one that never had it), signed in as a person who has a workspace already,
-/// names a fresh one: that is their workspace, the first they made, not a
-/// refusal and not a second one. A workspace the host keeps for someone else is
-/// still not theirs.
+/// A browser asks for the person's own workspace by no id: the host makes it
+/// once, under an id of its own, and answers that one to every later ask, from
+/// a browser that forgot the site as from the person's agent. An id the host
+/// never made is refused, never read as the workspace the person has: with a
+/// workspace per customer, a wrong id must fail, not land in another one.
 #[tokio::test]
-async fn a_new_browsers_name_for_their_own_workspace_answers_the_one_they_have() {
+async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -1796,34 +1795,48 @@ async fn a_new_browsers_name_for_their_own_workspace_answers_the_one_they_have()
     let_in(workspaces, &home, person).await;
 
     let first = tab_of(&root, "Firefox on Linux");
-    let named = uuid::Uuid::new_v4().to_string();
-    let created = create_own(&host, &first, json!({"workspace": named}))
-        .await
-        .unwrap();
-    assert_eq!(
-        created.workspace.workspace, named,
-        "made under the name the page chose"
-    );
-    join(workspaces, &created, &first).await;
+    let made = create_own(&host, &first, json!({})).await.unwrap();
+    join(workspaces, &made, &first).await;
+    let own = made.workspace.workspace;
 
     let later = tab_of(&root, "Firefox on Linux");
-    let fresh = uuid::Uuid::new_v4().to_string();
-    let entered = create_own(&host, &later, json!({"workspace": fresh}))
-        .await
-        .unwrap();
-    assert_eq!(
-        entered.workspace.workspace, named,
-        "the workspace they have"
+    let entered = create_own(&host, &later, json!({})).await.unwrap();
+    assert_eq!(entered.workspace.workspace, own, "the workspace they have");
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{refused:?}"
     );
     assert_eq!(
         workspaces.own_workspaces_of(&person),
-        std::slice::from_ref(&named),
+        std::slice::from_ref(&own),
         "and no second one"
     );
 
-    let other = SigningKey::from_bytes(&rand::random());
-    let_in(workspaces, &home, other.verifying_key().to_bytes()).await;
-    let theirs = create_own(&host, &tab_of(&other, "Chrome"), json!({}))
+    // A person with no workspace yet is refused an id the host never made too:
+    // the host makes theirs under an id of its own.
+    let newcomer = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, newcomer.verifying_key().to_bytes()).await;
+    let refused = create_own(
+        &host,
+        &tab_of(&newcomer, "Chrome"),
+        json!({"workspace": uuid::Uuid::new_v4().to_string()}),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{refused:?}"
+    );
+    assert!(
+        workspaces
+            .own_workspaces_of(&newcomer.verifying_key().to_bytes())
+            .is_empty()
+    );
+
+    // Another person's workspace is not theirs either.
+    let theirs = create_own(&host, &tab_of(&newcomer, "Chrome"), json!({}))
         .await
         .unwrap()
         .workspace

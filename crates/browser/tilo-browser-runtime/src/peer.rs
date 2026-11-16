@@ -2760,8 +2760,8 @@ impl WasmPeer {
     }
 
     /// Have this page's device in the person's own workspace on the host, asked on the session it
-    /// holds there: made the first time, answered again after, another for each `name`, the one
-    /// called `workspace` (a UUID) when it is named ([`Device::enter_own_workspace`]). This very device
+    /// holds there: made the first time, under an id the host chooses, answered again after, another
+    /// for each `name` ([`Device::enter_own_workspace`]). This very device
     /// redeems the invitation on that session, shown to the workspace's people as `shownAs`,
     /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
     /// `{workspace, workspace_id, name, generation}` JSON.
@@ -2775,7 +2775,6 @@ impl WasmPeer {
     pub async fn enter_own_workspace(
         &self,
         name: Option<String>,
-        workspace: Option<String>,
         shown_as: String,
         entered: Function,
     ) -> Result<String, JsValue> {
@@ -2784,7 +2783,6 @@ impl WasmPeer {
             .enter_own_workspace(
                 &ui::i18n::I18nManager::window_locale(),
                 name.as_deref(),
-                workspace.as_deref(),
                 &shown_as,
                 |id| {
                     entered

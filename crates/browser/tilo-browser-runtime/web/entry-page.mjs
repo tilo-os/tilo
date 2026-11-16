@@ -2186,15 +2186,28 @@ function offerFirstRun({page, identityActions, runtime}) {
     return;
   }
   offerFirstRunCodes({origin: peer.origin, identity, runtime, link: page.link});
-  // The workspace the codes named: made now if the agent did not make it
-  // first. A host that keeps none sets agents up in this workspace instead.
-  hostedOwnMade ??= ensureOwnWorkspace(page).then(own => (hostedOwn = own), error => {
+  // The workspace the codes name, so leaving the screen opens it.
+  void askOwnWorkspace(peer);
+}
+
+/**
+ * The person's own workspace on the host of `peer`, asked for once
+ * (`ensureOwnWorkspace`): `{id, name, origin}`, or null where the host keeps
+ * none (agents are set up in `setUpIn`, the workspace this page is in) or did
+ * not answer, in which case the next ask asks again.
+ */
+function askOwnWorkspace(peer) {
+  hostedOwnMade ??= ensureOwnWorkspace(peer).then(own => (hostedOwn = own), error => {
     if (error?.code === 'unknown_action') {
       console.info('first run: this host keeps no workspaces of people\'s own;', error?.message);
       setUpIn = peer.workspace;
-    } else console.warn('first run: your own workspace', error);
+    } else {
+      console.warn('first run: your own workspace', error);
+      hostedOwnMade = null;
+    }
     return null;
   });
+  return hostedOwnMade;
 }
 
 /** Whether the first screen has its login codes offered. */
@@ -2220,11 +2233,11 @@ const LET_IN_MS = 30_000;
  * whether a kept code is this person's, on this host.
  *
  * The code names a pairing link to this tab, into the person's own
- * workspace on that host. A first visit has none yet, so the link names the
- * one this tab chose (`namedOwnWorkspace`): whichever comes first, the
- * agent's `tilo login` or this page once let in, has the host make it under
- * that name. The tab approves the agent's device through the host's
- * published address, and gives the person a stand-in there.
+ * workspace on that host, as the host answers it once this tab is let in
+ * (`askOwnWorkspace`): made then on a first visit, under an id the host
+ * chooses, so the link names a workspace the host knows. The tab approves the
+ * agent's device through the host's published address, and gives the person
+ * a stand-in there.
  */
 function agentSetupCodes({origin, identity, runtime, link}) {
   const host = new URL(origin).origin;
@@ -2253,8 +2266,7 @@ function agentSetupCodes({origin, identity, runtime, link}) {
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
   const makeCode = async () => {
     const agents = await agentActions();
-    const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey),
-      watch: false});
+    const pairing = await agents.connectAgent({workspace: await setupWorkspace(), watch: false});
     const made = watched(await codes.create(pairing.link), agents);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
       invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
@@ -2336,22 +2348,18 @@ async function signInAs({user, invite}, {origin, workspace}, link) {
   globalThis.location.reload();
 }
 
-/** Where this browser keeps the person's own workspace it named before it existed. */
-const NAMED_OWN = 'tilo-own-workspace-named';
 /**
- * The person's own workspace on the host at `origin`, as this browser names
- * it before the host made it (a UUID, chosen once and kept); `null` without
- * storage to keep it in only when `create` is false.
+ * The workspace an agent set up from this tab goes into: the person's own on
+ * the host this tab is let into, as the host answers it, or the one this tab
+ * is in where the host keeps none. Waits for the tab to be let in.
  */
-function namedOwnWorkspace(origin, user, {create = true, store = globalThis.localStorage} = {}) {
-  const key = `${NAMED_OWN}:${new URL(origin).origin}:${user}`;
-  try {
-    const kept = store?.getItem(key);
-    if (kept || !create) return kept ?? null;
-  } catch { if (!create) return null; }
-  const named = globalThis.crypto.randomUUID();
-  try { store?.setItem(key, named); } catch { /* Named again on the next visit: nothing was made under it yet. */ }
-  return named;
+async function setupWorkspace() {
+  const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
+  if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
+  const own = await askOwnWorkspace(peer);
+  const workspace = own?.id ?? setUpIn;
+  if (!workspace) throw Object.assign(new Error('your workspace could not be made; try again'), {code: 'no-workspace'});
+  return workspace;
 }
 
 /** The person's own workspace on the home host, once the first screen had
@@ -2386,7 +2394,7 @@ async function openOwnAfterSignIn({page, status}) {
   for (let attempt = 1; ; attempt++) {
     let own;
     try {
-      own = await ensureOwnWorkspace(page);
+      own = await ensureOwnWorkspace(page.peer);
     } catch (error) {
       console.warn('signed in: opening your workspace', error);
       const transient = error?.code === 'unanswered' || error?.code === 'rate_limited';
@@ -2403,21 +2411,16 @@ async function openOwnAfterSignIn({page, status}) {
 }
 /** The workspace switcher's choice of the person's own hosted workspace. */
 /**
- * The person's own workspace on the host of the page's peer, with this
- * page's device in it (the shared device entry makes or finds it and redeems
- * its invitation), remembered among the workspaces this browser entered so
- * the switcher offers it and opening it reconnects. Resolves to `{id, name,
- * origin}`.
+ * The person's own workspace on the host of `peer`, with this page's device
+ * in it (the shared device entry makes or finds it and redeems its
+ * invitation), remembered among the workspaces this browser entered so the
+ * switcher offers it and opening it reconnects. The ask names no workspace:
+ * the host answers the person's own, made under an id of its choosing the
+ * first time. Resolves to `{id, name, origin}`.
  */
-async function ensureOwnWorkspace(page, store = globalThis.localStorage) {
-  const peer = page.peer;
+async function ensureOwnWorkspace(peer, store = globalThis.localStorage) {
   const origin = new URL(peer.origin).origin;
-  const named = namedOwnWorkspace(origin, peer.userPublicKey, {store});
   const own = await peer.enterOwnWorkspace({
-    // The one this browser names here if it named none yet, for an agent to
-    // be handed the same one: a page that let the host pick a name would give
-    // its agent a workspace the host does not know.
-    workspace: named,
     entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.workspace === id),
   });
   const name = own.name || null;

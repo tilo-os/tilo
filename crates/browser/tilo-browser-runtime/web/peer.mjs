@@ -1114,14 +1114,13 @@ async function connect({
     pairing: () => peer.pairing(),
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
-     * time, answered again after, another for each `name`; the one called
-     * `workspace` (a UUID) when named, made under that name for a person who has
-     * none yet. `entered(id)` says this browser is in that workspace already,
+     * time under an id the host chooses, answered again after, another for
+     * each `name`. `entered(id)` says this browser is in that workspace already,
      * so it is not redeemed again. Resolves to the workspace's listing
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
-    enterOwnWorkspace: async ({name = null, workspace = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(name, workspace, fitDisplayName(displayName || label), entered)),
+    enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
+      await peer.enterOwnWorkspace(name, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
