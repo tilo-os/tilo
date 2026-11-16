@@ -31,6 +31,11 @@ pub struct SharedSelection {
     /// text's lines, else the text block holding it.
     #[serde(skip)]
     pub bounds: Option<vello::kurbo::Rect>,
+    /// The glyph the selected item shows where it is listed, when the app knows one,
+    /// so a subject chip leads with the same mark as the row it names; `None` for the
+    /// app's own glyph.
+    #[serde(skip)]
+    pub icon: Option<crate::icons::Icon>,
 }
 
 impl SharedSelection {
@@ -76,6 +81,13 @@ impl SharedSelection {
     #[must_use]
     pub fn in_kind(mut self, kind: impl Into<String>) -> Self {
         self.resource_kind = Some(kind.into());
+        self
+    }
+
+    /// This selection leading with `icon`, the glyph its item shows where it is listed.
+    #[must_use]
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 

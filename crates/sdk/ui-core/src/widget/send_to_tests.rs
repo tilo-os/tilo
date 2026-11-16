@@ -330,6 +330,18 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_subject_chip_leads_with_its_items_own_glyph;
+    {
+        let file = SharedSelection::of_items([("row-1", "Budget for Friday.txt")])
+            .in_kind("files.folder")
+            .with_icon(crate::icons::Icon::FileText);
+        assert_eq!(
+            subject_glyph(&file),
+            crate::icons::Icon::FileText,
+            "a listed file's chip shows the file, not the Files window it sits in"
+        );
+    }
+
     phase the_message_wraps_and_the_box_makes_way_for_it;
     // The message wraps at the box's width and the box grows to fit it: a
     // sentence longer than the field is read whole, in lines, never run past the

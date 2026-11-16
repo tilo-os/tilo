@@ -5517,6 +5517,11 @@ tilo_test_env::scenario! {
             selection.resource_kind.as_deref(),
             Some(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND)
         );
+        assert_eq!(
+            selection.icon,
+            Some(ui::icons::Icon::FileText),
+            "its chip leads with the glyph the rows show, not the Files window"
+        );
     }
 
     phase a_name_clash_asks_once_and_each_answer_does_what_it_says;

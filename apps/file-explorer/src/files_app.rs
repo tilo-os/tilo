@@ -7763,14 +7763,23 @@ impl FilesState {
         if picked.is_empty() {
             return None;
         }
-        Some(
-            ui::shared_selection::SharedSelection::of_items(
-                picked
-                    .iter()
-                    .map(|entry| (Self::entry_resource_id(entry), entry.name.as_str())),
-            )
-            .in_kind(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND),
+        // Its chip leads with the glyph the rows show, when they all show one.
+        let mut icons = picked
+            .iter()
+            .map(|entry| crate::views::file_view::entry_icon(entry));
+        let icon = icons
+            .next()
+            .filter(|first| icons.all(|icon| icon == *first));
+        let mut selection = ui::shared_selection::SharedSelection::of_items(
+            picked
+                .iter()
+                .map(|entry| (Self::entry_resource_id(entry), entry.name.as_str())),
         )
+        .in_kind(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND);
+        if let Some(icon) = icon {
+            selection = selection.with_icon(icon);
+        }
+        Some(selection)
     }
 }
 

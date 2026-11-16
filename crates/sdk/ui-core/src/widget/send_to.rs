@@ -1373,9 +1373,9 @@ impl SendToBox {
             );
         }
 
-        // The subjects: what the message is about, each led by the glyph of the
-        // app that holds it, and the button that adds what the person has
-        // selected now.
+        // The subjects: what the message is about, each led by the glyph it
+        // shows where it is listed, and the button that adds what the person
+        // has selected now.
         for (index, chip) in self.layout.subjects.iter().enumerate() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1821,17 +1821,19 @@ pub(crate) fn subject_label(subject: &SharedSelection) -> String {
         .unwrap_or_default()
 }
 
-/// The glyph a subject chip leads with: the app whose surface holds the
-/// resource the subject names.
+/// The glyph a subject chip leads with: the item's own where the app names one,
+/// else the app whose surface holds the resource the subject names.
 #[must_use]
 fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
-    subject
-        .resource_kind
-        .as_deref()
-        .and_then(|kind| kind.split('.').next())
-        .map_or(crate::icons::Icon::AppWindow, |app| {
-            crate::icons::app_glyph(app, None)
-        })
+    subject.icon.unwrap_or_else(|| {
+        subject
+            .resource_kind
+            .as_deref()
+            .and_then(|kind| kind.split('.').next())
+            .map_or(crate::icons::Icon::AppWindow, |app| {
+                crate::icons::app_glyph(app, None)
+            })
+    })
 }
 
 /// The mark a recipient leads with, on its chip and its row, so what it is

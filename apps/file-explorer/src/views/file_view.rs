@@ -701,20 +701,25 @@ pub(super) fn paint_file_visual(
         }
     }
     let glyph = Rect::from_center_size(rect.center(), (visual.glyph_px, visual.glyph_px));
-    let icon = if crate::applications::is_app(&entry.path) {
-        Icon::AppWindow
-    } else {
-        icon_for_path(&entry.path, entry.is_dir)
-    };
     draw_icon(
         scene,
         transform,
         glyph,
-        icon,
+        entry_icon(entry),
         visual.glyph_color,
         LUCIDE_DEFAULT_STROKE_PX * visual.scale.max(1.0),
     );
     glyph
+}
+
+/// The glyph an entry leads with wherever it is listed, so a subject chip and
+/// a row name the file the same way.
+pub(crate) fn entry_icon(entry: &Entry) -> Icon {
+    if crate::applications::is_app(&entry.path) {
+        Icon::AppWindow
+    } else {
+        icon_for_path(&entry.path, entry.is_dir)
+    }
 }
 
 fn paint_entry_artwork(
