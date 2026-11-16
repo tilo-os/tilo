@@ -76,6 +76,8 @@ pub struct AppOutput {
     /// reads it.
     file: Option<Mutex<std::fs::File>>,
     stderr_tail: Mutex<VecDeque<String>>,
+    /// The threads reading the app's two pipes, joined by [`Self::finish`].
+    readers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     relayed: AtomicU64,
     dropped: AtomicU64,
 }
@@ -89,6 +91,7 @@ impl AppOutput {
             app,
             file: file.map(Mutex::new),
             stderr_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
+            readers: Mutex::new(Vec::new()),
             relayed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
         }
@@ -97,7 +100,7 @@ impl AppOutput {
     /// Read `stdout` on a thread of its own, relaying each line as it comes.
     pub fn relay_stdout(self: &Arc<Self>, stdout: impl std::io::Read + Send + 'static) {
         let output = Arc::clone(self);
-        Self::on_thread(&self.app, "stdout", move || {
+        self.on_thread("stdout", move || {
             output.read(stdout, "stdout", None);
         });
     }
@@ -106,26 +109,38 @@ impl AppOutput {
     /// keeping the last of them for the launch's end.
     pub fn relay_stderr(self: &Arc<Self>, stderr: impl std::io::Read + Send + 'static) {
         let output = Arc::clone(self);
-        Self::on_thread(&self.app, "stderr", move || {
+        self.on_thread("stderr", move || {
             let file = output.file.as_ref();
             output.read(stderr, "stderr", file);
         });
     }
 
-    fn on_thread(app: &str, stream: &str, read: impl FnOnce() + Send + 'static) {
-        if let Err(error) = std::thread::Builder::new()
-            .name(format!("app-{stream}-{}", app.replace('.', "-")))
-            .spawn(read)
-        {
-            // Without a reader the app fills the pipe and blocks on its next
-            // write, so this must be said loudly, not passed over.
-            tracing::warn!(
-                target: TARGET,
-                app,
-                stream,
-                %error,
-                "an app's output is read by no one: it blocks when the pipe fills"
-            );
+    /// Wait until both streams are read to their end: the app's pipes close
+    /// with it, and the tail is what it said only once they are drained.
+    pub fn finish(&self) {
+        let readers = std::mem::take(&mut *self.readers.lock_recover());
+        for reader in readers {
+            let _ = reader.join();
+        }
+    }
+
+    fn on_thread(&self, stream: &str, read: impl FnOnce() + Send + 'static) {
+        let spawned = std::thread::Builder::new()
+            .name(format!("app-{stream}-{}", self.app.replace('.', "-")))
+            .spawn(read);
+        match spawned {
+            Ok(reader) => self.readers.lock_recover().push(reader),
+            Err(error) => {
+                // Without a reader the app fills the pipe and blocks on its next
+                // write, so this must be said loudly, not passed over.
+                tracing::warn!(
+                    target: TARGET,
+                    app = %self.app,
+                    stream,
+                    %error,
+                    "an app's output is read by no one: it blocks when the pipe fills"
+                );
+            }
         }
     }
 

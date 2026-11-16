@@ -354,9 +354,9 @@ impl Spawner {
             .spawn(move || {
                 let end = ended(child, &ends);
                 // What the app said before it ended, which the session keeps
-                // for the report it makes of a launch that never opened: its
-                // readers finish as the pipes close, which they have by the
-                // time the child is reaped.
+                // for the report it makes of a launch that never opened: both
+                // pipes are read to their end first, so the tail is all of it.
+                output.finish();
                 let said = output.tail();
                 running(&still_running).remove(&id);
                 // A session that has stopped listening is going away; its
