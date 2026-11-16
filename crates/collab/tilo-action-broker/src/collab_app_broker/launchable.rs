@@ -513,9 +513,27 @@ mod tests {
             actions: vec![
                 action("new-window", tilo_actions::ConfirmationPolicy::None),
                 action("empty-trash", tilo_actions::ConfirmationPolicy::Confirm),
+                open_link(),
             ],
             live: true,
         }
+    }
+
+    /// The `open-link` every framework app publishes: a view, taking the link to show.
+    fn open_link() -> PublishedAction {
+        let mut open = action(
+            tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            tilo_actions::ConfirmationPolicy::None,
+        );
+        open.operation_kind = tilo_actions::OperationKind::View;
+        open.contract.kind = tilo_actions::ActionKind::Read;
+        open.contract.risk = tilo_actions::RiskLevel::None;
+        open.params = vec![tilo_actions::ActionParam::required_owned(
+            tilo_actions::remote::OPEN_LINK_PARAM,
+            tilo_actions::ParamType::Text,
+            "The link to show",
+        )];
+        open
     }
 
     /// `surface(7, workspace)` for the record `record`.
@@ -707,7 +725,7 @@ mod tests {
                     .iter()
                     .map(|action| action.action.as_str())
                     .collect::<Vec<_>>(),
-                ["new-window", "empty-trash", "rename"],
+                ["new-window", "empty-trash", "open-link", "rename"],
                 "no action needs to opt in to being reachable while its app is closed"
             );
         }
@@ -2174,6 +2192,14 @@ mod tests {
                 offer("new-window", OfferKind::Undoable, false),
                 offer("empty-trash", OfferKind::Undoable, true),
                 offer("never-published", OfferKind::Read, false),
+                tilo_app_package::manifest::OfferedAction {
+                    operation: tilo_app_package::manifest::OfferOperation::View,
+                    ..offer(
+                        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                        OfferKind::Read,
+                        false,
+                    )
+                },
             ],
         }]);
         let (state, _bridge) = AppBrokerState::test_state(
@@ -2260,6 +2286,44 @@ mod tests {
                 offered_rows(&state, &owner, "never-published").is_empty(),
                 "a running app offers only what it publishes"
             );
+        }
+
+        phase a_link_reaches_a_closed_app_through_its_offered_open_link;
+        // A link for an app that is not running starts it through the `open-link` its manifest
+        // offers, and the app is handed the link the caller named: the manifest's offer takes no
+        // parameters, and the running app's own action is what admits the link.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            );
+            invoke_with(
+                &state,
+                &owner,
+                &target.provider,
+                &target.address,
+                InvokeArgument::Json(tilo_actions::remote::open_link_arguments("files:/notes/a.md")),
+                None,
+            )
+            .expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP], "the app was started");
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the link reached the app");
+            assert_eq!(delivered.action, tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION);
+            let argument: serde_json::Value = serde_json::from_str(
+                delivered
+                    .argument
+                    .as_deref()
+                    .and_then(|slot| slot.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+                    .expect("the link rides along as the action's arguments"),
+            )
+            .expect("JSON arguments");
+            assert_eq!(argument["link"], "files:/notes/a.md");
         }
 
         phase a_retained_action_supersedes_the_manifest_offer;
