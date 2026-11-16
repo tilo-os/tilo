@@ -302,41 +302,19 @@ impl DesktopChrome {
     }
 
     /// Carry the window in front into the strip above (`steps < 0`) or below, landing last there,
-    /// as its menu's row for that strip does; focus follows it. Below the last strip is a new one,
-    /// made as the strip switcher's New strip makes it, for a window that shares its strip.
+    /// as its menu's row for that strip does; focus follows it.
     fn move_focused_group_to_strip(&self, steps: isize) {
-        let route = self.focused_route();
-        let tab = route
-            .as_ref()
-            .and_then(|route| route.tab.parse::<u64>().ok());
-        let (next, shares_its_strip) = route.map_or((None, false), |route| {
+        let row = self.focused_route().and_then(|route| {
             self.handle.read(|tree| {
-                let strips = tree.active_workspace().map_or(&[][..], |w| &w.strips[..]);
+                let strips = &tree.active_workspace()?.strips;
                 let at = strips
                     .iter()
-                    .position(|strip| strip.id.0.to_string() == route.strip);
-                let next = at
-                    .and_then(|at| strips.get(at.checked_add_signed(steps)?))
-                    .map(|strip| strip.id);
-                let shares = at
-                    .and_then(|at| strips.get(at))
-                    .is_some_and(|strip| strip.window_groups.len() > 1);
-                (next, shares)
+                    .position(|strip| strip.id.0.to_string() == route.strip)?;
+                let strip = strips.get(at.checked_add_signed(steps)?)?;
+                Some(window_menu::move_to_strip_id(strip.id))
             })
         });
-        let target = next.or_else(|| {
-            (steps > 0 && shares_its_strip)
-                .then(|| self.add_strip(String::new()))
-                .flatten()
-        });
-        let moved = tab.zip(target).is_some_and(|(tab, strip)| {
-            self.handle
-                .choose_window_menu(tab, &window_menu::move_to_strip_id(strip), None)
-                .is_ok()
-        });
-        if !moved {
-            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
-        }
+        self.move_focused_group_to(row);
     }
 
     /// Show the window in front on the display `steps` on, as its menu's row for that display does.

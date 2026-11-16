@@ -157,7 +157,7 @@ fn the_shell_choices_survive_the_session_ending() {
     let _person = person_dir();
     // This device's own state, holding its workspaces: the identity is minted in its home, so its
     // engine opens and the canvas is the workspace's layout.
-    let state = crate::common::device_state();
+    let state = crate::common::seated_state();
     let (note, stood, before) = {
         let root = crate::common::private_home();
         let mut session = session(root.path(), &state);

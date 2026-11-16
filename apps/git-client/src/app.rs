@@ -726,13 +726,6 @@ impl Widget for GitClientApp {
             .perform_semantic_action(target, action, state, path)
     }
 
-    fn needs_idle_sync(&self) -> bool {
-        // A repository operation answers on its worker: the sync that reads the answer also
-        // changes what the window shows (the transfer's label goes), so it is not at rest
-        // until it has.
-        self.state.borrow().remote_job.is_some()
-    }
-
     fn needs_animation_frame(&self) -> bool {
         self.state.borrow().needs_animation_frame()
     }

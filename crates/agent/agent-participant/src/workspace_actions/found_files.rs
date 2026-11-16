@@ -10,7 +10,7 @@
 //! ([`fs_protocol::tree::document_file`]).
 
 use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree};
+use fs_protocol::tree::{FILES_APP, ROOT_ID, TREE_KIND, Tree};
 use tilo_actions::remote::Found;
 use tilo_relay_protocol::WorkspaceId;
 
@@ -88,15 +88,19 @@ fn files_of(
     tree: &Tree,
     mut words: impl FnMut(&str, &fs_protocol::tree::TreeEntry) -> Option<String>,
 ) -> Vec<File> {
-    fs_protocol::tree::live_files(tree)
-        .into_iter()
-        .filter(|file| file.node.kind == FileNodeKind::File)
-        .map(|file| File {
-            path: file.path,
-            name: file.name,
-            words: words(file.id, file.node),
-        })
-        .collect()
+    let mut files = Vec::new();
+    for (id, node) in &tree.nodes {
+        if node.kind != FileNodeKind::File || !reaches_root(tree, id) {
+            continue;
+        }
+        files.push(File {
+            path: path_of(tree, id),
+            name: String::from_utf8_lossy(node.name.as_bytes()).into_owned(),
+            words: words(id, node),
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files
 }
 
 /// The files `needle` (folded) finds: those whose name or path says it, then those whose words
@@ -123,6 +127,40 @@ fn ranked(files: Vec<File>, needle: &str, most: usize) -> Vec<Found> {
             provider: None,
         })
         .collect()
+}
+
+/// Whether `id` hangs under the tree's root: a node moved to the trash, or under a folder that
+/// was, is no file of the folder.
+fn reaches_root(tree: &Tree, id: &str) -> bool {
+    let mut at = id;
+    for _ in 0..tree.nodes.len().saturating_add(1) {
+        if at == ROOT_ID {
+            return true;
+        }
+        match tree.node(at).and_then(|node| node.parent.as_deref()) {
+            Some(parent) if parent != at => at = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Where `id` is in the folder, as `legal/contract.txt`.
+fn path_of(tree: &Tree, id: &str) -> String {
+    let mut names: Vec<String> = Vec::new();
+    let mut at = id;
+    while at != ROOT_ID {
+        let Some(node) = tree.node(at) else {
+            break;
+        };
+        names.push(String::from_utf8_lossy(node.name.as_bytes()).into_owned());
+        match node.parent.as_deref() {
+            Some(parent) if parent != at => at = parent,
+            _ => break,
+        }
+    }
+    names.reverse();
+    names.join("/")
 }
 
 #[cfg(test)]

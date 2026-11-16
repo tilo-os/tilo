@@ -305,13 +305,13 @@ fn a_workspace_or_app_name_that_leaves_the_store_keeps_no_content() {
             "{escaping:?} names no store of this device's"
         );
     }
-    // And the put API refuses the same names rather than opening an upload it could never finish.
+    // And the put door refuses the same names rather than opening an upload it could never finish.
     assert!(plane.puts().begin("../outside").is_err());
     assert!(!Path::new(&state.path().join("tilo").join("record-content")).exists());
 }
 
 #[test]
-fn what_an_app_uploaded_through_the_put_api_outlives_the_session() {
+fn what_an_app_uploaded_through_the_put_door_outlives_the_session() {
     let state = tempfile::tempdir().expect("a session's state");
     let first = b"the first half".as_slice();
     let rest = b" of it".as_slice();

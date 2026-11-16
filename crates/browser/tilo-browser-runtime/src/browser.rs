@@ -677,38 +677,27 @@ impl Desktop {
     /// the desktop's chrome: it opens each app and its window does the
     /// action once it is up ([`session_asks`]).
     fn ask_app_actions(&self) {
-        for asked in self.shared.take_app_actions() {
-            self.invoke_as_person(&tilo_desktop_search::InvokeTarget::action(
-                asked.app_id,
-                self.workspace.as_str(),
-                asked.resource,
-                asked.action,
-            ));
-        }
-    }
-
-    /// Ask the session to run `action` as this person, and draw the frame that shows what it did.
-    /// A refused action is the session's to report.
-    fn invoke_as_person(&self, action: &tilo_desktop_search::InvokeTarget) {
         use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
-        let argument = if action.arguments.is_empty() {
-            InvokeArgument::None
-        } else {
-            InvokeArgument::Json(action.arguments.clone())
-        };
-        let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: action.remote(),
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-        };
-        drop(self.session.invoke(&self.caller(), request));
-        self.shared.wake();
+        for asked in self.shared.take_app_actions() {
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::application_action_target(
+                    &self.workspace,
+                    &asked.app_id,
+                    asked.resource,
+                    asked.action,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            };
+            // A refused action is the session's to report.
+            drop(self.session.invoke(&self.caller(), request));
+        }
     }
 
     /// Tell this person, in a banner that retires to the notification

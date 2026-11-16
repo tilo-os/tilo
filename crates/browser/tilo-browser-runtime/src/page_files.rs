@@ -8,9 +8,7 @@
 //! content of each file it names. What arrives is read for its words — a text
 //! file as it is, a PDF's pages through the engine that draws them, fetched
 //! the first time a PDF arrives ([`PDF_WORDS`]) — so a search finds a file by
-//! what it says. Which files a tree has, and where each is, is the tree's own
-//! to say ([`fs_protocol::tree::live_files`]), as it is for every host that
-//! reads one.
+//! what it says.
 //!
 //! Reading is lazy and cheap: the page calls [`WorkspaceFiles::refresh`] as it
 //! draws, which walks the tree again only when the record moved and reads only
@@ -19,7 +17,7 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree};
+use fs_protocol::tree::{FILES_APP, ROOT_ID, TREE_KIND, Tree};
 use tilo_desktop_search::Held;
 use tilo_desktop_search::providers::tree::{TreeFile, TreeFiles};
 use ui::automerge::{AutoCommit, ChangeHash};
@@ -124,17 +122,14 @@ impl WorkspaceFiles {
             }
             self.source.set_files(files_of(&tree));
         }
-        for file in fs_protocol::tree::live_files(&tree) {
-            if file.node.kind != fs_protocol::files::FileNodeKind::File {
-                continue;
-            }
-            let Some(hash) = file.node.hash.as_ref() else {
+        for node in tree.nodes.values() {
+            let Some(hash) = node.hash.as_ref() else {
                 continue;
             };
             if read.read.contains(hash) {
                 continue;
             }
-            if file.node.size > MAX_READ_BYTES {
+            if node.size > MAX_READ_BYTES {
                 read.read.push(hash.clone());
                 continue;
             }
@@ -192,17 +187,40 @@ impl WorkspaceFiles {
 
 /// The files of `tree`, each with the path it is at.
 fn files_of(tree: &Tree) -> Vec<TreeFile> {
-    fs_protocol::tree::live_files(tree)
-        .into_iter()
-        .map(|file| TreeFile {
-            id: file.id.to_owned(),
-            name: file.name,
-            path: file.path,
-            hash: file.node.hash.clone(),
-            folder: file.node.kind == fs_protocol::files::FileNodeKind::Directory,
-            size: file.node.size,
-        })
-        .collect()
+    let mut files = Vec::with_capacity(tree.nodes.len());
+    for (id, node) in &tree.nodes {
+        if tree.trashed(id) {
+            continue;
+        }
+        files.push(TreeFile {
+            id: id.clone(),
+            name: String::from_utf8_lossy(node.name.as_bytes()).into_owned(),
+            path: path_of(tree, id),
+            hash: node.hash.clone(),
+            folder: node.kind == fs_protocol::files::FileNodeKind::Directory,
+            size: node.size,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files
+}
+
+/// Where `id` is in `tree`, as `docs/plan.md`.
+fn path_of(tree: &Tree, id: &str) -> String {
+    let mut names: Vec<String> = Vec::new();
+    let mut at = id.to_owned();
+    while at != ROOT_ID {
+        let Some(node) = tree.node(&at) else {
+            break;
+        };
+        names.push(String::from_utf8_lossy(node.name.as_bytes()).into_owned());
+        match node.parent.clone() {
+            Some(parent) if parent != at => at = parent,
+            _ => break,
+        }
+    }
+    names.reverse();
+    names.join("/")
 }
 
 /// What reading a file's content for its words came to.

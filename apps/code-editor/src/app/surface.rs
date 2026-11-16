@@ -2,6 +2,8 @@
 //! answers, the rows it publishes beside the project's files, and the view
 //! state a screenshot scenario stages.
 
+use std::path::PathBuf;
+
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 use ui::widget::toast::ToastKind;
@@ -18,7 +20,6 @@ const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 impl CodeApp {
     pub(super) fn follow(&mut self, cx: &ui::framework::ViewCx<Project>) {
         self.set_highlight_waker(cx.waker());
-        self.shows = cx.window_shows();
         self.attach_framework(
             cx.dispatcher(),
             cx.mode().is_live(),
@@ -59,10 +60,7 @@ impl CodeApp {
         }
     }
 
-    fn answer_text_read(
-        effect: &CodeEditorEffect,
-        cx: &EffectCx<Project, Self>,
-    ) -> Option<EffectAnswer> {
+    fn answer_text_read(effect: &CodeEditorEffect, cx: &EffectCx<Project>) -> Option<EffectAnswer> {
         let answer = || match effect {
             CodeEditorEffect::ReadText {
                 file,
@@ -81,7 +79,7 @@ impl CodeApp {
     pub(super) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<Project, Self>,
+        cx: &mut EffectCx<Project>,
     ) -> EffectAnswer {
         if let Some(answer) = Self::answer_text_read(&effect, cx) {
             return answer;
@@ -126,13 +124,14 @@ impl CodeApp {
                         .session
                         .buffer_of(node)
                         .is_some_and(|buffer| buffer.path.is_some());
-                if !has_destination {
-                    return self.choose_save_as(node, cx);
+                if has_destination {
+                    self.pending_save = Some((
+                        node,
+                        path.map(ui::tilo_resource::AbsolutePath::into_path_buf),
+                    ));
+                } else {
+                    self.request_save_as(node);
                 }
-                self.pending_save = Some((
-                    node,
-                    path.map(ui::tilo_resource::AbsolutePath::into_path_buf),
-                ));
                 self.file_reply = Some(cx.reply());
                 return Ok(Effected::Pending);
             }
@@ -159,7 +158,7 @@ impl CodeApp {
     fn answer_reveal(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<Project, Self>,
+        cx: &mut EffectCx<Project>,
     ) -> EffectAnswer {
         let CodeEditorEffect::Reveal {
             file,
@@ -229,30 +228,28 @@ impl CodeApp {
         Ok(())
     }
 
-    fn answer_command(
-        &mut self,
-        command: Command,
-        cx: &mut EffectCx<Project, Self>,
-    ) -> EffectAnswer {
+    fn answer_command(&mut self, command: Command, cx: &mut EffectCx<Project>) -> EffectAnswer {
         if command == Command::NextTheme {
             return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
         }
         match command {
             Command::OpenFolder | Command::OpenFile | Command::SaveAs => {
                 self.ensure_no_file_effect()?;
-                ui::window_toolbar::notify(None);
                 match command {
-                    Command::OpenFolder => Ok(self.choose_folder(cx)),
-                    Command::OpenFile => Ok(self.choose_file(cx)),
+                    Command::OpenFolder => self.request_open_folder(),
+                    Command::OpenFile => self.request_open_file(),
                     _ => {
                         let node = self
                             .session
                             .active_buffer()
                             .map(|buffer| buffer.node)
                             .ok_or_else(|| "no file is open".to_string())?;
-                        self.choose_save_as(node, cx)
+                        self.request_save_as(node);
                     }
                 }
+                ui::window_toolbar::notify(None);
+                self.file_reply = Some(cx.reply());
+                Ok(Effected::Pending)
             }
             Command::Save => self.answer_effect(
                 CodeEditorEffect::Save {
@@ -280,10 +277,33 @@ impl CodeApp {
     }
 
     fn ensure_no_file_effect(&self) -> Result<(), String> {
-        if self.file_reply.is_some() || self.choosing() {
+        if self.file_reply.is_some() || self.portal.is_some() {
             return Err("another file operation is already running".into());
         }
         Ok(())
+    }
+
+    pub(super) fn save_to(
+        &mut self,
+        doc: &AutoCommit,
+        node: TreeId,
+        target: Option<PathBuf>,
+        then: super::file_workflow::AfterSave,
+    ) {
+        if let Some(path) = target {
+            let name = path.file_name().map_or_else(
+                || "untitled".to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            self.session.project.set_file_path(node, &path, &name);
+            if let Some(buffer) = self.session.buffer_of_mut(node) {
+                buffer.path = Some(path);
+                buffer.name = name;
+                buffer.stamp = None;
+            }
+            self.invalidate_search_projection();
+        }
+        self.save_buffer_then(doc, node, true, then);
     }
 
     fn effect_statuses(&self) -> Vec<EffectStatus> {
@@ -292,7 +312,7 @@ impl CodeApp {
             "code_editor.os_appearance",
             "Appearance is controlled by the OS; choose a theme in Theme Studio",
         )];
-        if self.file_reply.is_some() || self.choosing() {
+        if self.file_reply.is_some() || self.portal.is_some() {
             const CODE: &str = "code_editor.busy";
             const REASON: &str = "Another file operation is still running";
             statuses.extend([
@@ -369,14 +389,6 @@ impl CodeApp {
             let file = self.session.project.get(buffer.node)?;
             Some((file.resource_id.clone(), buffer.path.is_some()))
         });
-        if let (Some(shows), Some(path)) = (
-            &self.shows,
-            self.session
-                .active_buffer()
-                .and_then(|buffer| buffer.path.as_deref()),
-        ) {
-            shows.show(path);
-        }
         let statuses = self.effect_statuses();
         let mut store = self.store.borrow_mut();
         let shown = &mut store.shown;

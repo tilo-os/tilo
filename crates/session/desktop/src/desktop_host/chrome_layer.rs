@@ -5,7 +5,7 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
+use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
@@ -22,7 +22,7 @@ mod shortcut_actions;
 #[cfg(test)]
 mod tests;
 
-use super::{PlainOverview, column, fill, grow, wake_deadline};
+use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
 use crate::about::AboutSheet;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
@@ -873,12 +873,6 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
-            // The window covering the display shows no bar of its own: a secondary press on the
-            // desktop's bar over it opens that window's menu where the person pressed.
-            ChromeIntent::CoveringWindowMenu { at: (x, y) } => {
-                self.handle
-                    .ask_covering_window_menu(Point::new(f64::from(x), f64::from(y)));
-            }
             ChromeIntent::ToggleWorkspaceMenu { at } => {
                 // The press that took it down is still being delivered, and the bar answers it: the
                 // same press does not raise it again. A secondary press elsewhere asks for the menu
@@ -1072,11 +1066,13 @@ impl DesktopChrome {
     }
 
     /// Add a strip named `name` to the active workspace, kept as this person's, and go there.
-    /// The strip, when it was made.
-    fn add_strip(&self, name: String) -> Option<StripId> {
-        let strip = self.command(&DesktopCommand::CreateStrip { name })?;
+    /// Whether it was made.
+    fn add_strip(&self, name: String) -> bool {
+        let Some(strip) = self.command(&DesktopCommand::CreateStrip { name }) else {
+            return false;
+        };
         self.rules.made_strip(strip);
-        Some(strip)
+        true
     }
 
     fn rename_workspace(&self, name: String) {
@@ -1240,9 +1236,7 @@ impl DesktopChrome {
 
     /// Close the window `tab` here, as the close on its own bar does.
     fn close_window(&self, tab: TabId) {
-        self.dispatch(LayoutEffect::CloseTab {
-            tab: tab.to_string(),
-        });
+        close_tab(&self.handle, tab);
     }
 
     /// The workspace `key` names: its id, or its name.
@@ -1540,26 +1534,6 @@ impl DesktopChrome {
         }
     }
 
-    /// The pointer over the confirmation's button ("Undo"), drawn over the windows: hovering lights
-    /// it, and a press that begins on it is its own. Whether the event was the button's.
-    fn acknowledgement_takes(&mut self, event: &WindowEvent) -> bool {
-        match event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } => {
-                self.acknowledgement.pointer_at(self.cursor);
-                false
-            }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => self.cursor.is_some_and(|at| {
-                self.acknowledgement
-                    .press(at, *state == ElementState::Pressed)
-            }),
-            _ => false,
-        }
-    }
-
     /// Step strips by `steps` , saying so when the person steps past an end.
     fn step_strip(&self, steps: isize) {
         if !self.go_to_strip(|current| current.checked_add_signed(steps)) {
@@ -1703,7 +1677,7 @@ impl DesktopChrome {
                 self.step_strip(isize::try_from(steps).unwrap_or_default());
                 false
             }
-            StripNavigation::Strip(StripCommand::Create(name)) => self.add_strip(name).is_none(),
+            StripNavigation::Strip(StripCommand::Create(name)) => !self.add_strip(name),
             StripNavigation::Strip(StripCommand::Rename(strip, name)) => self
                 .edit_workspace(&DesktopCommand::RenameStrip {
                     strip: strip.0,
@@ -2025,7 +1999,7 @@ impl DesktopChrome {
                 // A strip made here keeps no name until the person gives it one: the shell names it
                 // by its place, in the language of whoever reads it.
                 let name = name.clone().unwrap_or_default();
-                if self.add_strip(name).is_none() {
+                if !self.add_strip(name) {
                     return Err(crate::i18n::t("strip-switcher-refused"));
                 }
                 return Ok(true);
@@ -2489,10 +2463,6 @@ impl Widget for DesktopChrome {
         }
         if self.switcher.is_up() {
             return self.walk_the_pointer(event, ctx);
-        }
-        if self.acknowledgement_takes(event) {
-            *ctx.handled = true;
-            return;
         }
         self.hints.heard(event, ui::time::now());
         if self.search_takes(event, ctx, *search) {

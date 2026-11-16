@@ -536,8 +536,4 @@ fn an_item_labelled_by_its_id_is_said_as_unnamed() {
         None
     );
     assert_eq!(item_label(&named("x", "  ")), None);
-    // A name that only shares letters with its id is a name: a channel's "chat" and a theme's
-    // "Ember".
-    assert_eq!(item_label(&named("c_chat", "chat")), Some("chat"));
-    assert_eq!(item_label(&named("ember", "Ember")), Some("Ember"));
 }

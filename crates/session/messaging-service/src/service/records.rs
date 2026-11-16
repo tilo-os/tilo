@@ -13,7 +13,7 @@ use tilo_messaging_protocol::routing::{LinkState, LiveBinding};
 use tilo_messaging_protocol::signal_broker::{Authorization, SignalAuthority};
 
 use super::identity::{Credential, Identity, service_name};
-use crate::session::{Call, Reply, SessionLink};
+use crate::door::{Call, DoorLink, Reply};
 
 const DEADLINE: Duration = Duration::from_secs(2);
 
@@ -28,7 +28,7 @@ pub(crate) struct CurrentAuthority {
     identity: Identity,
     credential: Credential,
     scope: String,
-    session: SessionLink,
+    door: DoorLink,
 }
 
 impl CurrentAuthority {
@@ -38,7 +38,7 @@ impl CurrentAuthority {
         identity: &Identity,
         credential: &Credential,
         scope: &str,
-        session: SessionLink,
+        door: DoorLink,
     ) -> Result<Self, SendError> {
         identity.check()?;
         credential.check()?;
@@ -54,7 +54,7 @@ impl CurrentAuthority {
             identity: identity.clone(),
             credential: credential.clone(),
             scope: scope.into(),
-            session,
+            door,
         })
     }
 
@@ -64,7 +64,7 @@ impl CurrentAuthority {
         let Some(Reply::Person {
             accounts,
             directory,
-        }) = self.session.call_blocking(Call::Person, DEADLINE)
+        }) = self.door.call_blocking(Call::Person, DEADLINE)
         else {
             return Err(SendError::Unavailable);
         };

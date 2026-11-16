@@ -40,7 +40,7 @@ const UNAVAILABLE: &str = "Selected website session unavailable";
 const BROWSER: &str = "so.tilo.browser";
 const MAX_STORE: u64 = 2 * 1024 * 1024;
 
-/// The person's account custody, as the apps it serves reach it on the action API.
+/// The person's account custody, as the apps it serves reach it on the action door.
 pub(crate) struct ServiceSessions {
     engine: Arc<Engine>,
 }

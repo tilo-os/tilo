@@ -3,7 +3,7 @@
 //! as a [`Press`] in the toolkit's names; the device's own keys (levels, media, power, Print) and
 //! the apps' shortcuts arrive already read by that host ([`Press::device`], [`Press::app_shortcut`]).
 //! A press that is a chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`]) or a
-//! device key becomes an invocation of a published action, run through the same API every other
+//! device key becomes an invocation of a published action, run through the same door every other
 //! caller uses; nothing here performs anything itself.
 
 #![cfg_attr(
@@ -113,7 +113,7 @@ impl Invocation {
     }
 }
 
-/// Invocations waiting for the session's API.
+/// Invocations waiting for the session's door.
 pub type Invocations = Rc<RefCell<Vec<Invocation>>>;
 
 /// Chords pressed that run a saved shortcut's keyboard trigger, waiting for the automation host to
@@ -355,7 +355,7 @@ impl WalkKeys {
     }
 
     /// Move the walk as `press` asks, on `handle`'s session itself: what a host without the session's
-    /// API does with the walk's keys. Whether the press was the walk's.
+    /// door does with the walk's keys. Whether the press was the walk's.
     pub(crate) fn walk(&self, press: &Press, handle: &tilo_desktop_surface::DesktopHandle) -> bool {
         let Some(key) = self.key(press) else {
             return false;

@@ -11,8 +11,8 @@ const SELLING: &str = r#"{"sells":{"host":"Tilo Cloud",
 
 #[test]
 fn a_device_sells_nothing() {
-    let api = HostAccountApi::of(Source::Device("ada-laptop".into()));
-    let account = api.read();
+    let door = HostAccountDoor::of(Source::Device("ada-laptop".into()));
+    let account = door.read();
     assert_eq!(
         account,
         HostAccount::sells_nothing("ada-laptop", HostKind::Device)
@@ -25,17 +25,17 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
     let dir = tempfile::tempdir().unwrap();
     let plans = dir.path().join("plans.json");
     std::fs::write(&plans, SELLING).unwrap();
-    let api = HostAccountApi::of(Source::Hosted(HostedAccount {
+    let door = HostAccountDoor::of(Source::Hosted(HostedAccount {
         account: "acct-1".into(),
         plans: plans.clone(),
         ledger: None,
         socket: None,
         name: "unused".into(),
     }));
-    let mut changes = api.changes.subscribe();
+    let mut changes = door.changes.subscribe();
     // phase: no card on file
     {
-        let account = api.read();
+        let account = door.read();
         assert_eq!(account.host, "Tilo Cloud");
         assert_eq!(
             account.manage_billing.as_deref(),
@@ -61,7 +61,7 @@ fn a_hosts_answer_follows_its_plans_file_as_a_card_is_added() {
             })
             .expect("the change is told in time")
             .unwrap();
-        let account = api.read();
+        let account = door.read();
         assert_eq!(account.plan().map(|plan| plan.name.as_str()), Some("Pro"));
         assert!(account.standing.unwrap().entitled(Entitlement::LinuxVms));
     }

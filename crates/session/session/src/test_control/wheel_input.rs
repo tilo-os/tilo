@@ -1,4 +1,4 @@
-//! The mouse wheel, as the control API hands it in: turned at a point, by pixels or by notches,
+//! The mouse wheel, as the control door hands it in: turned at a point, by pixels or by notches,
 //! with the modifiers held while it turns (Ctrl and a wheel zoom a canvas).
 
 use std::cell::RefCell;

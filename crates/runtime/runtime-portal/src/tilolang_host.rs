@@ -1,6 +1,6 @@
-//! The tilolang host's socket: where the session hands a host each app instance it
+//! The tilolang host's door: where the session hands a host each app instance it
 //! runs. The host has no app identity of its own — it runs one process per
-//! workspace and author, and everything an instance is arrives over this socket,
+//! workspace and author, and everything an instance is arrives over this door,
 //! from the session that launched it.
 
 use std::io;
@@ -11,7 +11,7 @@ use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
 
-pub const SOCKET_FD_ENV: &str = "TILO_SVC_TILOLANG_HOST_FD";
+pub const DOOR_FD_ENV: &str = "TILO_SVC_TILOLANG_HOST_FD";
 
 pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 
@@ -59,12 +59,12 @@ pub struct AppBuild {
 
 pub const TASK_VERB: &[u8] = b"task";
 
-/// The verb the host says on its socket when an instance ended (its window closed, or it never
+/// The verb the host says on its door when an instance ended (its window closed, or it never
 /// opened): the window's instance, in decimal. The session stops a host once its last instance
 /// ended; the host names no app.
 pub const ENDED_VERB: &[u8] = b"ended";
 
-/// The verb the host says on its socket last, as it exits: why, in words its supervisor logs and
+/// The verb the host says on its door last, as it exits: why, in words its supervisor logs and
 /// shows. A host gone without saying it ended unheard (killed, or crashed).
 pub const EXITING_VERB: &[u8] = b"exiting";
 
@@ -75,7 +75,7 @@ pub enum FromHost {
     Exiting(String),
 }
 
-/// The largest message on the socket: a standing holds the workspace's policy as one app sees it,
+/// The largest message on the door: a standing holds the workspace's policy as one app sees it,
 /// which the session bounds at 64 KiB.
 pub const MAX_MESSAGE: usize = 80 * 1024;
 
@@ -125,7 +125,7 @@ pub struct InstanceRequest {
     pub reveal: Option<String>,
     /// The tilolang apps installed here, by id, each with the id its records are kept under: a
     /// package the app uses that is one of them is another app, whose records the instance reads
-    /// from that app's own record and whose changes it asks of that app's socket. A package it uses
+    /// from that app's own record and whose changes it asks of that app's door. A package it uses
     /// that is not installed as an app keeps its records in the app's own.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub installed: std::collections::BTreeMap<String, String>,
@@ -163,7 +163,7 @@ pub struct TaskRequest {
     pub changed_at_record: std::collections::BTreeSet<String>,
 }
 
-/// The descriptors a task arrives with, in the order the socket carries them.
+/// The descriptors a task arrives with, in the order the door carries them.
 #[derive(Debug)]
 pub struct TaskFds {
     pub program: Descriptor,
@@ -379,7 +379,7 @@ impl App {
     }
 }
 
-/// The descriptors one instance arrives with, in the order the socket carries
+/// The descriptors one instance arrives with, in the order the door carries
 /// them: at most a session's PTY master, its private lease and, when
 /// negotiated, its editor capability.
 #[derive(Debug)]
@@ -404,14 +404,14 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
 }
 
 #[must_use]
-pub fn take_socket() -> Option<Descriptor> {
+pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let raw = std::env::var(SOCKET_FD_ENV).ok()?;
+        let raw = std::env::var(DOOR_FD_ENV).ok()?;
         let Ok(fd) = raw.parse::<i32>() else {
             eprintln!(
-                "tilo-portal: the session's socket descriptor {raw:?} is not a number; this host has no socket"
+                "tilo-portal: the session's door descriptor {raw:?} is not a number; this host has no door"
             );
             return None;
         };
@@ -419,24 +419,24 @@ pub fn take_socket() -> Option<Descriptor> {
             return None;
         }
         // SAFETY: the session handed this descriptor to the process for the
-        // socket alone, and the flag above lets it be owned exactly once.
+        // door alone, and the flag above lets it be owned exactly once.
         Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) })
     }
     #[cfg(not(target_os = "linux"))]
     None
 }
 
-/// Say `message` on `socket` under `verb`, with the descriptors `fds`.
+/// Say `message` on `door` under `verb`, with the descriptors `fds`.
 ///
 /// # Errors
-/// The socket's error, a message that does not encode or is over the socket's limit, or
+/// The socket's error, a message that does not encode or is over the door's limit, or
 /// [`io::ErrorKind::Unsupported`] off Linux.
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
 )]
 fn say(
-    socket: &Descriptor,
+    door: &Descriptor,
     verb: &[u8],
     message: &impl Serialize,
     fds: &[&Descriptor],
@@ -449,58 +449,58 @@ fn say(
     {
         use std::os::fd::AsFd as _;
         let fds: Vec<_> = fds.iter().map(|fd| fd.as_fd()).collect();
-        crate::message::send(socket.as_fd(), &[verb, &encoded], &fds)
+        crate::door::send(door.as_fd(), &[verb, &encoded], &fds)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (socket, verb, fds);
+        let _ = (door, verb, fds);
         Err(unsupported())
     }
 }
 
-/// Hand the host behind `socket` the instance `request` with its descriptors ([`say`]).
+/// Hand the host behind `door` the instance `request` with its descriptors ([`say`]).
 pub fn send_instance(
-    socket: &Descriptor,
+    door: &Descriptor,
     request: &InstanceRequest,
     fds: &InstanceFds,
 ) -> io::Result<()> {
     let mut handed = vec![&fds.broker, &fds.identity, &fds.module, &fds.window];
     handed.extend(&fds.origin);
-    say(socket, INSTANCE_VERB, request, &handed)
+    say(door, INSTANCE_VERB, request, &handed)
 }
 
-/// Say on the host behind `socket` that the person's formats or language changed: the clock and the
+/// Say on the host behind `door` that the person's formats or language changed: the clock and the
 /// date style their instances write in a sentence, and the language their windows read in, from
 /// now on ([`say`]).
-pub fn send_locale(socket: &Descriptor, locale: &Locale) -> io::Result<()> {
-    say(socket, LOCALE_VERB, locale, &[])
+pub fn send_locale(door: &Descriptor, locale: &Locale) -> io::Result<()> {
+    say(door, LOCALE_VERB, locale, &[])
 }
 
-/// Say on the host behind `socket` what the person may now do in one app: its instances of the app
+/// Say on the host behind `door` what the person may now do in one app: its instances of the app
 /// offer and refuse by it from now on ([`say`]).
-pub fn send_standing(socket: &Descriptor, standing: &AppStanding) -> io::Result<()> {
-    say(socket, STANDING_VERB, standing, &[])
+pub fn send_standing(door: &Descriptor, standing: &AppStanding) -> io::Result<()> {
+    say(door, STANDING_VERB, standing, &[])
 }
 
-/// Hand the host behind `socket` a later build of an app it runs, its module in the sealed memfd
+/// Hand the host behind `door` a later build of an app it runs, its module in the sealed memfd
 /// `module` ([`say`]).
-pub fn send_build(socket: &Descriptor, build: &AppBuild, module: &Descriptor) -> io::Result<()> {
-    say(socket, BUILD_VERB, build, &[module])
+pub fn send_build(door: &Descriptor, build: &AppBuild, module: &Descriptor) -> io::Result<()> {
+    say(door, BUILD_VERB, build, &[module])
 }
 
-/// Hand the host behind `socket` the task `request`: its program connection and the apps its
+/// Hand the host behind `door` the task `request`: its program connection and the apps its
 /// programs are compiled against ([`say`]).
-pub fn send_task(socket: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io::Result<()> {
-    say(socket, TASK_VERB, request, &[&fds.program, &fds.apps])
+pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io::Result<()> {
+    say(door, TASK_VERB, request, &[&fds.program, &fds.apps])
 }
 
-/// The next instance or task on `socket`, with its descriptors; `None` at end of
+/// The next instance or task on `door`, with its descriptors; `None` at end of
 /// file, when the session closed its end.
 ///
 /// # Errors
 /// The socket's error; a message that is neither, or does not carry exactly
 /// its descriptors.
-pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
+pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
@@ -511,14 +511,12 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
                 .saturating_add(INSTANCE_VERB.len())
                 .saturating_add(1)
         ];
-        let Some((length, fds)) = crate::message::receive(socket.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        let [verb, request] = crate::message::decode(message)[..] else {
-            return Err(invalid(
-                "the socket carried something other than an instance",
-            ));
+        let [verb, request] = crate::door::decode(message)[..] else {
+            return Err(invalid("the door carried something other than an instance"));
         };
         if verb == TASK_VERB {
             let request: TaskRequest = serde_json::from_slice(request)
@@ -526,7 +524,7 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
             let [program, apps] = <[Descriptor; 2]>::try_from(fds)
                 .map_err(|_| invalid("a task without its two connections"))?;
             if request.apps_len > MAX_MODULE {
-                return Err(invalid("apps over the socket's limit"));
+                return Err(invalid("apps over the door's limit"));
             }
             return Ok(Some(Handed::Task(request, TaskFds { program, apps })));
         }
@@ -552,14 +550,12 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
             let [module] = <[Descriptor; 1]>::try_from(fds)
                 .map_err(|_| invalid("a build without its module"))?;
             if build.module_len > MAX_MODULE {
-                return Err(invalid("a module over the socket's limit"));
+                return Err(invalid("a module over the door's limit"));
             }
             return Ok(Some(Handed::Build(build, module)));
         }
         if verb != INSTANCE_VERB {
-            return Err(invalid(
-                "the socket carried something other than an instance",
-            ));
+            return Err(invalid("the door carried something other than an instance"));
         }
         let request: InstanceRequest = serde_json::from_slice(request)
             .map_err(|_| invalid("an instance request that does not decode"))?;
@@ -574,7 +570,7 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
             return Err(invalid("an instance with more connections than it has"));
         }
         if request.module_len > MAX_MODULE {
-            return Err(invalid("a module over the socket's limit"));
+            return Err(invalid("a module over the door's limit"));
         }
         Ok(Some(Handed::Instance(
             Box::new(request),
@@ -589,30 +585,30 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = socket;
+        let _ = door;
         Err(unsupported())
     }
 }
 
-pub fn send_ended(socket: &Descriptor, instance: u64) -> io::Result<()> {
+pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let instance = instance.to_string();
-        crate::message::send(socket.as_fd(), &[ENDED_VERB, instance.as_bytes()], &[])
+        crate::door::send(door.as_fd(), &[ENDED_VERB, instance.as_bytes()], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (socket, instance);
+        let _ = (door, instance);
         Err(unsupported())
     }
 }
 
-/// Say on the host's end of `socket`, last, why the host exits.
+/// Say on the host's end of `door`, last, why the host exits.
 ///
 /// # Errors
 /// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
-pub fn send_exiting(socket: &Descriptor, reason: &str) -> io::Result<()> {
+pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
@@ -622,26 +618,26 @@ pub fn send_exiting(socket: &Descriptor, reason: &str) -> io::Result<()> {
             .find(|end| reason.is_char_boundary(*end))
             .unwrap_or(0);
         let reason = reason.get(..end).unwrap_or_default().replace('\0', " ");
-        crate::message::send(socket.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
+        crate::door::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (socket, reason);
+        let _ = (door, reason);
         Err(unsupported())
     }
 }
 
-pub fn receive_from_host(socket: &Descriptor) -> io::Result<Option<FromHost>> {
+pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = vec![0_u8; MAX_MESSAGE];
-        let Some((length, _fds)) = crate::message::receive(socket.as_fd(), &mut buffer)? else {
+        let Some((length, _fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        match crate::message::decode(message)[..] {
+        match crate::door::decode(message)[..] {
             [verb, instance] if verb == ENDED_VERB => std::str::from_utf8(instance)
                 .ok()
                 .and_then(|instance| instance.parse().ok())
@@ -657,7 +653,7 @@ pub fn receive_from_host(socket: &Descriptor) -> io::Result<Option<FromHost>> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = socket;
+        let _ = door;
         Err(unsupported())
     }
 }
@@ -667,9 +663,9 @@ pub fn receive_from_host(socket: &Descriptor) -> io::Result<Option<FromHost>> {
 mod tests {
     use super::*;
 
-    /// The next instance on `socket`: an instance or the socket's end, nothing else.
-    fn receive_instance(socket: &Descriptor) -> Option<(InstanceRequest, InstanceFds)> {
-        let handed = receive(socket).unwrap()?;
+    /// The next instance on `door`: an instance or the door's end, nothing else.
+    fn receive_instance(door: &Descriptor) -> Option<(InstanceRequest, InstanceFds)> {
+        let handed = receive(door).unwrap()?;
         assert!(
             matches!(handed, Handed::Instance(..)),
             "an instance arrives as one: {handed:?}"
@@ -690,9 +686,9 @@ mod tests {
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
-        fn messages_across_the_tilolang_host_socket;
+        fn messages_across_the_tilolang_host_door;
 
-        phase an_instance_crosses_the_socket_with_its_four_connections;
+        phase an_instance_crosses_the_door_with_its_four_connections;
         {
             let (shell, host) = pair().unwrap();
             let request = InstanceRequest {
@@ -743,11 +739,11 @@ mod tests {
             drop(shell);
             assert!(
                 receive_instance(&host).is_none(),
-                "closed socket ends"
+                "closed door ends"
             );
         }
 
-        phase the_persons_formats_cross_the_socket_between_instances;
+        phase the_persons_formats_cross_the_door_between_instances;
         {
             let (shell, host) = pair().unwrap();
             let locale = Locale {
@@ -769,7 +765,7 @@ mod tests {
             );
         }
 
-        phase what_the_person_may_do_in_an_app_crosses_the_socket_whole;
+        phase what_the_person_may_do_in_an_app_crosses_the_door_whole;
         {
             let (shell, host) = pair().unwrap();
             // A workspace of many members: the policy is far over a page.
@@ -798,7 +794,7 @@ mod tests {
             );
         }
 
-        phase an_ended_instance_crosses_the_socket_back;
+        phase an_ended_instance_crosses_the_door_back;
         {
             let (shell, host) = pair().unwrap();
             send_ended(&host, 42).unwrap();
@@ -806,11 +802,11 @@ mod tests {
                 receive_from_host(&shell).unwrap(),
                 Some(FromHost::Ended(42))
             );
-            send_exiting(&host, "the session closed its socket and no instance runs").unwrap();
+            send_exiting(&host, "the session closed its door and no instance runs").unwrap();
             assert_eq!(
                 receive_from_host(&shell).unwrap(),
                 Some(FromHost::Exiting(
-                    "the session closed its socket and no instance runs".into()
+                    "the session closed its door and no instance runs".into()
                 ))
             );
             drop(host);
@@ -823,17 +819,17 @@ mod tests {
             let (shell, host) = pair().unwrap();
             let request = br#"{"app":"a","workspace":"r","instance":1,"person":"p","module_len":1}"#;
             let one = connection();
-            crate::message::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
+            crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
             assert!(receive(&host).is_err());
-            crate::message::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
+            crate::door::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
             assert!(receive(&host).is_err());
         }
 
-        phase a_task_crosses_the_socket_with_its_program_connection_and_apps;
+        phase a_task_crosses_the_door_with_its_program_connection_and_apps;
         {
             let (shell, host) = pair().unwrap();
             let request = TaskRequest {
-                task: "socket:1".into(),
+                task: "door:1".into(),
                 workspace: "7a110d00-0000-4000-8000-000000000001".into(),
                 person: Some("ada".into()),
                 apps_len: 3,

@@ -148,7 +148,7 @@ enum Cmd {
         #[arg(long, conflicts_with = "service")]
         tilolang_hosted: bool,
         /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
-        /// session runs for an app whose types hold an outside service's resources, with the socket its
+        /// session runs for an app whose types hold an outside service's resources, with the door its
         /// instances attach over (`RunOptions::tilolang_connector`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_hosted", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
@@ -231,7 +231,7 @@ enum Cmd {
     },
     /// Run a tilolang host: the launch kind that runs one author's tilolang apps in one workspace as
     /// instances, in a sandbox holding only the verified tilolang runtime and the Tilo runtime it runs
-    /// on, its storage and its socket (`launcher::run::tilolang_host`).
+    /// on, its storage and its door (`launcher::run::tilolang_host`).
     #[command(name = "tilolang-host", hide = true)]
     TilolangHost {
         /// The tilolang runtime, `tilolang/<version>`.
@@ -423,18 +423,18 @@ fn dispatch_command(
     }
 }
 
-/// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
+/// Run the tilolang host the session started, on the door it handed over at descriptor 3.
 fn tilolang_host(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
-    use launcher::run::tilolang_host::{HostLaunch, SOCKET_CHILD_FD, run_tilolang_host};
-    // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
-    let socket =
-        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(SOCKET_CHILD_FD) };
+    use launcher::run::tilolang_host::{DOOR_CHILD_FD, HostLaunch, run_tilolang_host};
+    // SAFETY: the session hands the door at this descriptor and nothing else owns it in this process.
+    let door =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(DOOR_CHILD_FD) };
     let launch = HostLaunch {
         runtime,
         app_runtime,
         storage,
     };
-    match run_tilolang_host(&launch, socket, &launcher::run::RunOptions::default()) {
+    match run_tilolang_host(&launch, door, &launcher::run::RunOptions::default()) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("tilo-launcher: the tilolang host did not start: {error}");

@@ -1,7 +1,7 @@
 //! `tilo-identity`: this account's Tilo identity from a shell, for headless
 //! devices, SSH sessions and agents.
 //!
-//! It is another socket to the steps onboarding, Settings and the shell's
+//! It is another door to the steps onboarding, Settings and the shell's
 //! `identity.*` actions take, never a second implementation: `create` mints
 //! through [`provisioning::ensure_collaboration_identity`](tilo_identity_host::provisioning::ensure_collaboration_identity) and writes the
 //! backup onboarding writes; `pair` runs `tilo-enroll pair-device` as
@@ -871,16 +871,14 @@ mod unix {
 
     impl Session {
         fn connect() -> anyhow::Result<Self> {
-            use tilo_control::client::{Desktop, sockets_from_env};
-            Desktop::connect(&sockets_from_env())
-                .map(Self)
-                .map_err(|_| {
-                    guided(
-                        "the Tilo session is not running here",
-                        "start the Tilo session here (`tilo-board-headless-session@$USER` on a \
+            use tilo_control::client::{Desktop, doors_from_env};
+            Desktop::connect(&doors_from_env()).map(Self).map_err(|_| {
+                guided(
+                    "the Tilo session is not running here",
+                    "start the Tilo session here (`tilo-board-headless-session@$USER` on a \
                      board), then run this again",
-                    )
-                })
+                )
+            })
         }
 
         /// Run the session's action `id` with `args`; its output.

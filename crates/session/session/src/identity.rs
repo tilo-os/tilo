@@ -167,7 +167,7 @@ pub(crate) fn rename_to(name: &str) -> Result<(), String> {
 /// Put a host offer to the person: one about who they are ([`HostAction::is_personal`], their name
 /// and key here or another of their devices) is asked from their own avatar in the top bar, where
 /// it waits until they answer it or put it off; every other offer is a banner over the windows.
-/// This is the session's one API for such an offer, as a page's is `desktop_offer_host_action` in
+/// This is the session's one door for such an offer, as a page's is `desktop_offer_host_action` in
 /// a browser. The session has no question of its own about the person to ask through it yet: what
 /// it knows of them is settled by setup before the session opens ([`crate::setup`]), so an ask about
 /// them arrives from what the session hosts rather than from the session itself.

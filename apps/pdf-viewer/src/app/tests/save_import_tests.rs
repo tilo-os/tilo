@@ -197,21 +197,21 @@ impl ui::host::FilePicker for KeptSaves {
 #[test]
 #[serial(pdfium)]
 fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
+    let Some((mut app, mut st)) = open_laid_out_sample() else {
+        return;
+    };
+    let name = app.suggested_save_name();
     let written = std::sync::Arc::new(std::sync::Mutex::new(None));
     let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(KeptSaves(
         std::sync::Arc::clone(&written),
     )));
-    let _host = ui::host::enter(&services);
-    let mut reader = launched(std::path::Path::new(SAMPLE_PDF));
-    reader
-        .effect(&PdfEffect::SaveAs)
-        .expect("the copy is saved");
-    let (name, note) = reader
-        .with_surface::<PdfApp, _>(|app| {
-            let note = app.status_note.as_deref().unwrap_or_default().to_owned();
-            (app.suggested_save_name(), note)
-        })
-        .expect("the reader");
+    ui::host::scoped(&services, || {
+        app.request_save_via_portal();
+    });
+    settle_until(&mut app, &mut st, |app| {
+        app.portal_save_rx.is_none() && app.pending_save.is_none() && app.save_write_rx.is_none()
+    });
+    let note = app.status_note.as_deref().unwrap_or_default().to_owned();
     let bytes = written
         .lock()
         .unwrap()

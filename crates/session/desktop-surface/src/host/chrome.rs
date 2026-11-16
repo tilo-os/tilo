@@ -354,12 +354,6 @@ pub enum ChromeIntent {
     ToggleWorkspaceMenu {
         at: Option<(i32, i32)>,
     },
-    /// Open the menu of the window covering the display, standing `at` the place a secondary press
-    /// on the bar over it named: a window that owns its display shows no bar of its own, so the
-    /// desktop's bar, reached for over it, is where its menu is.
-    CoveringWindowMenu {
-        at: (i32, i32),
-    },
     /// Open or close the card behind the person's own avatar, under
     /// [`crate::topbar::TopBarChrome::own_avatar_rect`].
     ToggleProfile,

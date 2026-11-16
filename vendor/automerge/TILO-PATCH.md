@@ -547,22 +547,3 @@ changes without reading the object again. The marked spots are
 `TILO(object-history)` in `automerge.rs` and `change_graph.rs`. Pinned by
 Notes' `metadata_reads_the_open_note_alone`.
 
-# Tilo patch: load a document a number of ops at a time
-
-A page has one thread to draw, answer input and load records on. Once a
-record's change hashes are known (a page verifies them in a worker), what is
-left of loading it is building the op set's indexes from its ops
-(`reconstruct_known`): about half of a load, over a second on a page for a
-company's tracker, in one call. `Automerge::load_in_slices(bytes, hashes)`
-takes exactly one document chunk and the hashes a verified load of those
-bytes listed, and `LoadInSlices::step(ops)` indexes that many more ops, so
-the caller can stop between frames. `reconstruct_known` is now the same
-`KnownLoad` stepped once over every op; a step that resumes re-reads the op
-before it to tell whether the index flushes, so the indexes, change graph
-and saved bytes are the ones a single load builds. `LoadInSlices::finish`
-returns the document, and `AutoCommit::from_document` wraps it as
-`load_with_options` would. Bytes that are not one document chunk, or hashes
-that do not fit them, answer `None` and load as before. The marked spots are
-`TILO(load-in-slices)` in `automerge.rs`, `autocommit.rs` and
-`storage/document.rs`. Pinned by
-`crates/doc/tilo-automerge/tests/load_in_slices.rs`.

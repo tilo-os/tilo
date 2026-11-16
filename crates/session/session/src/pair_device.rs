@@ -231,7 +231,7 @@ impl crate::Shared {
             .directory_store
             .listing(&workspace)
             .and_then(|listed| listed.entry_url)
-            .map(|place| place.origin().ascii_serialization());
+            .map(|door| door.origin().ascii_serialization());
         let (site, origin) =
             place_of(crate::platform::directory::community_site(), keeper).ok_or(NoLink::Nearby)?;
         Ok(Place {
@@ -338,18 +338,18 @@ mod tests {
         {
             let community = url::Url::parse(SITE).ok();
             assert_eq!(
-                place_of(community.clone(), Some("https://site.example".to_owned())),
-                Some((SITE.to_owned(), "https://site.example".to_owned()))
+                place_of(community.clone(), Some("https://door.example".to_owned())),
+                Some((SITE.to_owned(), "https://door.example".to_owned()))
             );
             assert_eq!(
                 place_of(community, None),
                 Some((SITE.to_owned(), "https://tilo.coffee".to_owned()))
             );
             assert_eq!(
-                place_of(None, Some("https://site.example".to_owned())),
+                place_of(None, Some("https://door.example".to_owned())),
                 Some((
-                    "https://site.example/".to_owned(),
-                    "https://site.example".to_owned()
+                    "https://door.example/".to_owned(),
+                    "https://door.example".to_owned()
                 ))
             );
             assert_eq!(place_of(None, None), None);

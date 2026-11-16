@@ -1,6 +1,6 @@
 //! The session puts up what draws the shell's window menu slot: the view the
 //! person bound to it, a tilolang package run here or a program of its own,
-//! and serves what that view asks through the session's API.
+//! and serves what that view asks through the session's door.
 
 use tilo_actions::ActionAddress;
 
@@ -192,7 +192,7 @@ impl Session {
     }
 
     /// A press away from what a slot's tilolang view drew closes the slot, as a press outside a
-    /// menu does, and what else the view asked runs through the session's API.
+    /// menu does, and what else the view asked runs through the session's door.
     pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
         /// The one slot a person can bind a view to today.
         const VIEW: &str = crate::shell::state::WINDOW_MENU_SLOT;
@@ -200,7 +200,7 @@ impl Session {
             return Ok(());
         };
         if self.slot_views.take_pressed_outside(VIEW) {
-            // The slot's own verb, through the same API the view's presses go through.
+            // The slot's own verb, through the same door the view's presses go through.
             if let Err(error) = self.invoke(&state.id, "close", &serde_json::Map::new()) {
                 tracing::warn!(%error, "a press outside the slot's view did not close it");
             }

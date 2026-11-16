@@ -302,11 +302,11 @@ impl super::flow::Provider for Sms {
         let scope = format!("sms:{}", identity.owner.account);
         service.publish(
             identity,
-            crate::session::Publication {
+            crate::door::Publication {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
-                kind: crate::session::PublicationKind::Sms {
+                kind: crate::door::PublicationKind::Sms {
                     scope: scope.clone(),
                 },
             },

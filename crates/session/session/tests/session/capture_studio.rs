@@ -453,12 +453,25 @@ const AHEAD: Duration = Duration::from_secs(60);
 /// Step `session` one frame, `advance` after the frame before it, at the test's own clock.
 #[track_caller]
 fn frame(session: &mut Session, advance: Duration) {
-    let at = FRAMES.with(|frames| {
+    tilo_clock::testing::with_monotonic_time(next_frame(advance), || {
+        session.step(Duration::from_millis(2)).expect("step");
+    });
+}
+
+/// The test's clock `advance` after the frame before it.
+fn next_frame(advance: Duration) -> std::time::Instant {
+    FRAMES.with(|frames| {
         let at = frames.get().unwrap_or_else(|| tilo_clock::now() + AHEAD) + advance;
         frames.set(Some(at));
         at
-    });
-    tilo_clock::testing::with_monotonic_time(at, || {
+    })
+}
+
+/// Hand `event` to the session as the person makes it, and step a frame, both at the test's clock:
+/// a key pressed after the studio came up is pressed after it.
+fn input(session: &mut Session, event: InputEvent) {
+    tilo_clock::testing::with_monotonic_time(next_frame(Duration::from_millis(1)), || {
+        session.compositor().input(event).expect("the input");
         session.step(Duration::from_millis(2)).expect("step");
     });
 }
@@ -477,11 +490,7 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -
 /// Press or release `keycode` on the session's keyboard, as the person does, a frame of the test's
 /// clock for it.
 fn key(session: &mut Session, keycode: u32, pressed: bool) {
-    session
-        .compositor()
-        .input(InputEvent::Key { keycode, pressed })
-        .expect("the key");
-    frame(session, Duration::from_millis(1));
+    input(session, InputEvent::Key { keycode, pressed });
 }
 
 /// Press and release `keycode`, as the person does.
@@ -577,8 +586,7 @@ fn draw(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
             pressed: false,
         },
     ] {
-        session.compositor().input(event).unwrap();
-        frame(session, Duration::from_millis(1));
+        input(session, event);
     }
 }
 

@@ -136,7 +136,7 @@ pub(crate) struct Accessibility {
     /// The surfaces the shell's own screen stands in for: they draw nothing while it draws, so they
     /// read as nothing too, and the screen's parts are the windows a client finds.
     aside: Vec<Shared>,
-    /// The adapters by the place of the surface they publish on the plane.
+    /// The adapters by the place of the surface they publish in the door.
     windows: BTreeMap<usize, Exported>,
 }
 
@@ -156,7 +156,7 @@ impl Accessibility {
 
     /// Answer what assistive clients asked, publish every surface offering now whose tree moved,
     /// and mark the window holding the keyboard focused.
-    pub(crate) fn step(&mut self, surfaces: &Surfaces) {
+    pub(crate) fn step(&mut self, doors: &Surfaces) {
         let asked = {
             let mut asked = Vec::new();
             while let Ok(request) = self.requests.try_recv() {
@@ -165,9 +165,9 @@ impl Accessibility {
             asked
         };
         for request in asked {
-            self.answer(surfaces, request);
+            self.answer(doors, request);
         }
-        let offering: Vec<(usize, Shared)> = surfaces
+        let offering: Vec<(usize, Shared)> = doors
             .offering()
             .into_iter()
             .filter(|(_, surface)| !self.aside.iter().any(|aside| Rc::ptr_eq(aside, surface)))
@@ -183,7 +183,7 @@ impl Accessibility {
     }
 
     /// Carry out one request against the live surfaces.
-    fn answer(&mut self, surfaces: &Surfaces, request: Request) {
+    fn answer(&mut self, doors: &Surfaces, request: Request) {
         match request {
             Request::Tree(place) => {
                 if let Some(window) = self.windows.get_mut(&place) {
@@ -196,7 +196,7 @@ impl Accessibility {
                 else {
                     return;
                 };
-                Self::perform(surfaces, place, request.target_node, &action);
+                Self::perform(doors, place, request.target_node, &action);
                 if let Some(window) = self.windows.get_mut(&place) {
                     // What the action changed is published this pass, whatever the surface says of
                     // its revision.
@@ -215,20 +215,20 @@ impl Accessibility {
     /// Perform `action` on `target` of the surface at `place` , on the loop that owns it: the one
     /// road a client's request takes. Answers whether the surface took it.
     pub(crate) fn perform(
-        surfaces: &Surfaces,
+        doors: &Surfaces,
         place: usize,
         target: ui::accesskit::NodeId,
         action: &ui::a11y::Action,
     ) -> bool {
-        surfaces
+        doors
             .surface(place)
             .is_some_and(|surface| surface.borrow_mut().a11y_action(target, action))
     }
 
     /// The window the surface at `place` shows now, as an assistive client reads it: the name its
     /// window carries, and its tree. `None` while it shows nothing to read.
-    pub(crate) fn window_at(surfaces: &Surfaces, place: usize) -> Option<(String, TreeUpdate)> {
-        Self::window_of(&surfaces.surface(place)?)
+    pub(crate) fn window_at(doors: &Surfaces, place: usize) -> Option<(String, TreeUpdate)> {
+        Self::window_of(&doors.surface(place)?)
     }
 
     /// [`Self::window_at`] of a surface the caller already holds.
@@ -253,7 +253,7 @@ impl Accessibility {
             if let Some(window) = self.windows.get_mut(&place) {
                 window.focus(hosts_keyboard);
             }
-            // A surface with no name is no window of its own: a surface over services or commands
+            // A surface with no name is no window of its own: a door over services or commands
             // publishes actions, nothing to read.
             if surface.borrow().a11y_name().is_none() {
                 continue;
@@ -394,14 +394,14 @@ mod tests {
         // What the shell's own screen stands in for draws nothing, so it reads as nothing: a client
         // finds the window that draws, not the one behind it.
         {
-            let mut surfaces = Surfaces::default();
+            let mut doors = Surfaces::default();
             let drawn = face("Drawn", false);
             let stood_aside = face("Stood aside", true);
-            surfaces.add(Rc::clone(&drawn));
-            surfaces.add(Rc::clone(&stood_aside));
+            doors.add(Rc::clone(&drawn));
+            doors.add(Rc::clone(&stood_aside));
             let mut export = export(vec![Rc::clone(&stood_aside)]);
 
-            export.step(&surfaces);
+            export.step(&doors);
 
             assert!(
                 export.windows.contains_key(&0),
@@ -417,12 +417,12 @@ mod tests {
         // The topmost surface that would take the keys is the window a screen reader reads as focused,
         // as the compositor routes a key to it.
         {
-            let mut surfaces = Surfaces::default();
-            surfaces.add(face("Shell", false));
-            surfaces.add(face("Question", true));
+            let mut doors = Surfaces::default();
+            doors.add(face("Shell", false));
+            doors.add(face("Question", true));
             let mut export = export(Vec::new());
 
-            export.step(&surfaces);
+            export.step(&doors);
 
             assert!(
                 export.windows.get(&1).is_some_and(|window| window.focused),

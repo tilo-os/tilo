@@ -26,7 +26,8 @@ use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
 use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+    ContentsChannel, ContentsOutcome, DestinationOutcome, FileFilter, PickRequest, PortalChannel,
+    PortalOutcome,
 };
 
 use ui::chrome::SelectionState;
@@ -482,8 +483,9 @@ pub struct PdfApp {
     status_note: Transient<String>,
     note_action: Option<(String, note_action::NoteAction)>,
     region_copy: ui::CopyWatch,
-    /// The bytes of a saved copy the save worker handed back, for the place the person chose.
-    exported: Option<Vec<u8>>,
+    portal_save_rx: Option<ui::portal::DestinationChannel>,
+    save_destination: Option<ui::portal::SaveDestination>,
+    save_write_rx: Option<(String, ui::portal::SaveChannel)>,
     portal_action: Option<ui::framework::EffectReply>,
 
     last_mouse: Point,
@@ -884,7 +886,9 @@ impl PdfApp {
             status_note: Transient::new(),
             note_action: None,
             region_copy: ui::CopyWatch::default(),
-            exported: None,
+            portal_save_rx: None,
+            save_destination: None,
+            save_write_rx: None,
             portal_action: None,
             last_mouse: Point::ZERO,
             drag: None,
@@ -2159,6 +2163,25 @@ impl PdfApp {
         format!("{stem}-annotated.pdf")
     }
 
+    /// Ask the host portal for a save location (HIG §5 — never an in-app
+    /// picker). A second request while one is in flight is ignored.
+    fn request_save_via_portal(&mut self) {
+        if !self.raster_active() {
+            self.status_note.show(crate::t("pdf-note-save-no-document"));
+            self.dirty = true;
+            return;
+        }
+        if self.portal_save_rx.is_some()
+            || self.pending_save.is_some()
+            || self.save_write_rx.is_some()
+        {
+            return;
+        }
+        self.portal_save_rx =
+            Some(pdf_save_request(&self.suggested_save_name()).send_save_destination());
+        self.dirty = true;
+    }
+
     fn finish_portal_action(&mut self, success: bool, error: Option<String>) {
         let Some(reply) = self.portal_action.take() else {
             return;
@@ -2181,7 +2204,9 @@ impl PdfApp {
         self.portal_action = None;
         self.portal_rx = None;
         self.portal_contents_rx = None;
-        self.exported = None;
+        self.portal_save_rx = None;
+        self.save_destination = None;
+        self.save_write_rx = None;
         if let Some((_, outcome)) = self.pending_reopen.take() {
             outcome.withdraw();
         }
@@ -2198,73 +2223,84 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// Ask where to save a copy of the PDF with its markup, then write it there: the save worker
-    /// writes a place with a path itself and hands back the bytes for one without. The window goes
-    /// on showing the PDF it opened.
-    pub(crate) fn save_as_effect(
-        &mut self,
-        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use ui::framework::Effected;
-        if self.portal_action.is_some() || self.pending_save.is_some() {
-            return Err("another PDF save is already in progress".into());
-        }
-        if !self.raster_active() {
-            self.status_note.show(crate::t("pdf-note-save-no-document"));
-            self.dirty = true;
-            return Err("no PDF is open".into());
-        }
-        let request = pdf_save_request(&self.suggested_save_name());
-        Ok(cx.choose_destination(request, |app: &mut Self, place, cx| {
-            let place = place.ok_or("file selection cancelled")?;
-            let path = place.location().map(Path::to_path_buf);
-            let deliver = path.is_none();
-            let path = ensure_pdf_extension(
-                path.unwrap_or_else(|| Path::new("picked").join(place.name())),
-            );
-            if !app.submit_save(&path, deliver) {
-                return Err("PDF could not be saved".into());
+    fn drain_portal_save(&mut self) {
+        let Some(rx) = self.portal_save_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_save_rx = None;
+                match outcome {
+                    DestinationOutcome::Chosen(destination) if destination.location().is_some() => {
+                        let path = ensure_pdf_extension(
+                            destination
+                                .location()
+                                .map(Path::to_path_buf)
+                                .unwrap_or_default(),
+                        );
+                        let success = self.save_annotated_to(&path);
+                        if self.pending_save.is_none() {
+                            self.finish_portal_action(
+                                success,
+                                (!success).then(|| "PDF could not be saved".into()),
+                            );
+                        }
+                    }
+                    DestinationOutcome::Chosen(destination) => {
+                        let path =
+                            ensure_pdf_extension(Path::new("picked").join(destination.name()));
+                        let success = self.submit_save(&path, true);
+                        if success {
+                            self.save_destination = Some(destination);
+                        } else {
+                            self.finish_portal_action(false, Some("PDF could not be saved".into()));
+                        }
+                    }
+                    DestinationOutcome::Cancelled => self.finish_portal_action(false, None),
+                    DestinationOutcome::Failed(reason) => {
+                        tracing::warn!(%reason, "the save picker failed");
+                        self.status_note
+                            .show(crate::t("pdf-note-save-picker-failed"));
+                        self.dirty = true;
+                        self.finish_portal_action(false, Some(reason));
+                    }
+                }
             }
-            app.portal_action = Some(cx.reply_then(move |app: &mut Self, _, cx| {
-                let Some(bytes) = app.exported.take() else {
-                    return Ok(Effected::done());
-                };
-                let name = place.name().to_owned();
-                Ok(
-                    cx.write_destination(&place, bytes, move |app: &mut Self, written, _| {
-                        app.wrote_copy(&name, written)
-                    }),
-                )
-            }));
-            Ok(Effected::Pending)
-        }))
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_save_rx = None;
+            }
+        }
     }
 
-    fn wrote_copy(
-        &mut self,
-        name: &str,
-        written: Result<(), String>,
-    ) -> ui::framework::EffectAnswer {
-        self.dirty = true;
-        match written {
-            Ok(()) => {
-                self.status_note.show(saved_note(name));
+    fn drain_save_write(&mut self) {
+        let Some((_, rx)) = self.save_write_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::SaveOutcome::Failed("the save went away".into())
+            }
+        };
+        let Some((name, _)) = self.save_write_rx.take() else {
+            return;
+        };
+        match outcome {
+            ui::portal::SaveOutcome::Saved => {
+                self.status_note.show(saved_note(&name));
                 self.pages_dirty = false;
-                Ok(ui::framework::Effected::done())
+                self.finish_portal_action(true, None);
             }
-            Err(reason) => {
+            ui::portal::SaveOutcome::Cancelled => self.finish_portal_action(false, None),
+            ui::portal::SaveOutcome::Failed(reason) => {
                 tracing::warn!(%reason, "writing the saved PDF failed");
-                self.show_failure(save_failed_note(name), note_action::NoteAction::Save);
-                Err(reason)
+                self.show_failure(save_failed_note(&name), note_action::NoteAction::Save);
+                self.finish_portal_action(false, Some(reason));
             }
         }
-    }
-
-    /// Save a copy through the effect, as the bar's Save does: the person chooses where.
-    pub(super) fn ask_save(&self) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect(&PdfEffect::SaveAs);
-        }
+        self.dirty = true;
     }
 
     fn save_annotated_to(&mut self, path: &std::path::Path) -> bool {
@@ -3827,13 +3863,21 @@ impl PdfApp {
                     if self.pending_save.as_ref() == Some(&request) =>
                 {
                     self.pending_save = None;
-                    self.exported = Some(bytes);
-                    self.finish_portal_action(true, None);
+                    match self.save_destination.take() {
+                        Some(destination) => {
+                            let name = destination.name().to_owned();
+                            self.save_write_rx = Some((name, destination.write(bytes)));
+                        }
+                        None => {
+                            self.finish_portal_action(false, Some("the save was withdrawn".into()));
+                        }
+                    }
                     self.dirty = true;
                 }
                 RasterEvent::SaveFailed { request, error }
                     if self.pending_save.as_ref() == Some(&request) =>
                 {
+                    self.save_destination = None;
                     self.pending_save = None;
                     tracing::warn!(%error, "saving the PDF failed");
                     self.show_failure(
@@ -3970,7 +4014,8 @@ impl Widget for PdfApp {
             || self.pending_open.is_some()
             || self.pending_reopen.is_some()
             || self.pending_document_open.is_some()
-            || self.pending_save.is_some();
+            || self.pending_save.is_some()
+            || self.save_write_rx.is_some();
         if self.status_note.keep_while(working) | self.status_note.expire() {
             self.dirty = true;
         }
@@ -4003,6 +4048,8 @@ impl Widget for PdfApp {
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
         self.drain_portal_contents();
+        self.drain_portal_save();
+        self.drain_save_write();
         self.drain_portal_import();
 
         if self.has_document {
@@ -4853,8 +4900,7 @@ impl PdfApp {
                 self.select_all();
             }
             PdfEffect::OpenPdf { .. }
-            | PdfEffect::SaveAs
-            | PdfEffect::SaveTo { .. }
+            | PdfEffect::SaveAs { .. }
             | PdfEffect::SelectText { .. }
             | PdfEffect::CopySelection
             | PdfEffect::ReadText { .. }
@@ -4882,7 +4928,7 @@ impl PdfApp {
     pub(crate) fn open_effect(
         &mut self,
         path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
+        cx: &mut ui::framework::EffectCx<crate::PdfMarkup>,
     ) -> ui::framework::EffectAnswer {
         if self.portal_action.is_some()
             || self.pending_open.is_some()
@@ -4897,7 +4943,7 @@ impl PdfApp {
         if tilo_paths::available(tilo_paths::Feature::NativePaths) {
             let ask = self.ask_here();
             return Ok(
-                cx.choose_path(pdf_open_request(), move |_, chosen, cx| match chosen {
+                cx.choose_path(pdf_open_request(), move |(), chosen, cx| match chosen {
                     Some(path) => ask.open(path, cx),
                     None => Err("file selection cancelled".into()),
                 }),
@@ -5053,7 +5099,7 @@ impl PdfApp {
             return Err("another PDF save is already in progress".into());
         }
         match effect {
-            PdfEffect::SaveTo { path: file } => {
+            PdfEffect::SaveAs { path: Some(file) } => {
                 let file = ensure_pdf_extension(file.to_path_buf());
                 if !self.save_annotated_to(&file) {
                     return Err("PDF could not be saved".into());
@@ -5066,6 +5112,12 @@ impl PdfApp {
                 self.request_open_via_portal();
                 if self.portal_contents_rx.is_none() {
                     return Err("PDF picker could not be started".into());
+                }
+            }
+            PdfEffect::SaveAs { path: None } => {
+                self.request_save_via_portal();
+                if self.portal_save_rx.is_none() {
+                    return Err("PDF save picker could not be started".into());
                 }
             }
             _ => return Ok(Effected::done()),

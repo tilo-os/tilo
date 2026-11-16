@@ -825,7 +825,7 @@ fn run_parsed(
     // launch's own window is made early, below, so the app answers the API
     // first.
     if opens_native_window(&args) {
-        crate::window_channel::announce();
+        crate::window_door::announce();
     }
     // A process started with no window makes none until the shell asks for
     // one: nothing is drawn, so nothing is prepared to draw.
@@ -898,7 +898,7 @@ fn run_parsed(
     };
     #[cfg(any(windows, target_os = "linux"))]
     let app = Box::new((*app).with_startup_renderer(renderer.take()));
-    let mut open = |pending| crate::window_channel::open_window(spec, &args, pending);
+    let mut open = |pending| crate::window_door::open_window(spec, &args, pending);
     let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
     (*app).run_windows(|_| {}, Some(open));
     Ok(())

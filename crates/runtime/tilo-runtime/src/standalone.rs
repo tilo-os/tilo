@@ -97,7 +97,7 @@ pub struct Standalone {
     _personal: PeerPersonal,
     /// The store open to the person's other devices for as long as this
     /// runtime runs, and the workspaces' store answered on the same router.
-    _personal_links: tilo_action_broker::personal::Links,
+    _personal_door: tilo_action_broker::personal::Door,
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
@@ -273,7 +273,7 @@ impl Standalone {
             _files: files,
             _media: media,
             _personal: personal.sync.store(),
-            _personal_links: personal.links,
+            _personal_door: personal.door,
             _personal_router: personal.router,
             _lock: lock,
         })
@@ -383,7 +383,7 @@ fn broker_services(
         .joined
         .offer_plane()
         .and_then(|(plane, endpoint, runtime)| {
-            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&record_content))
+            crate::offload::offer_door(plane, endpoint, runtime, Arc::clone(&record_content))
         });
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
@@ -547,7 +547,7 @@ impl RuntimeServices for Standalone {
     }
 }
 
-/// The broker's action links as one more local caller, standing for no app
+/// The broker's action door as one more local caller, standing for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
 pub struct RuntimeActionHost {
@@ -589,7 +589,7 @@ impl AdmittedRuntimeSession {
         let now = match self.policy_time.now_ns() {
             Ok(now) => now,
             Err(error) => {
-                tracing::warn!(%error, "the action links cannot read the policy clock");
+                tracing::warn!(%error, "the action door cannot read the policy clock");
                 return Err(Refusal::Unavailable {
                     reason: "the policy clock is unavailable".into(),
                 });
@@ -632,7 +632,7 @@ impl AdmittedRuntimeSession {
                 .and_then(|()| {
                     result.unwrap_or_else(|| {
                         Err(ActionHostError::Unavailable {
-                            reason: "action links closed".into(),
+                            reason: "action door closed".into(),
                         })
                     })
                 });
@@ -769,7 +769,7 @@ impl ActionHost for RuntimeActionHost {
             {
                 return session.host.query(caller, query);
             }
-            // Existing general catalogue/builtin APIs retain the exact
+            // Existing general catalogue/builtin doors retain the exact
             // authenticated run. They make no SDK original-custody claim.
             let answer = self.broker.state().action_query(&session.acting(), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
@@ -993,7 +993,7 @@ struct PersonalServing<'a> {
 /// The person's own store, and what serves it to their other devices.
 struct PersonalParts {
     sync: PersonalSync,
-    links: tilo_action_broker::personal::Links,
+    door: tilo_action_broker::personal::Door,
     /// The endpoint's accept loop, answering the person's store to their
     /// other devices.
     router: iroh::protocol::Router,
@@ -1051,7 +1051,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         }
         router.spawn()
     };
-    let links = tilo_action_broker::personal::Links::serve(
+    let door = tilo_action_broker::personal::Door::serve(
         runtime,
         joined.endpoint(),
         sync.clone(),
@@ -1060,11 +1060,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         channels,
         fanout,
     );
-    Ok(PersonalParts {
-        sync,
-        links,
-        router,
-    })
+    Ok(PersonalParts { sync, door, router })
 }
 
 /// The MCP servers of the person's other devices, dialed from `joined`'s

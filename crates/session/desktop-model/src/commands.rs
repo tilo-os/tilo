@@ -626,7 +626,7 @@ fn remove(workspace: &mut Workspace, at: TabIndex, leaving: Leaving) -> Result<T
     // remembered here, so it can be reopened, whatever closed it. A window
     // only moving keeps nothing to undo.
     if leaving == Leaving::Closed {
-        workspace.note_close(strip, group, tab, None);
+        workspace.note_close(strip, group, tab);
     }
     let groups = &mut strip_at_mut(workspace, strip)?.window_groups;
     let window = groups.get_mut(group).ok_or("group was removed")?;

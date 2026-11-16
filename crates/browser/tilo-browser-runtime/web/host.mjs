@@ -2,7 +2,6 @@ import {createMediaPump} from './voice-controls.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
-import {createRecordVerifier} from './record-verify.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
 import {UPLOAD_ACTIONS,UPLOAD_FOLDER,chooseFiles,dropRoute,droppedEntries,walkDropped} from './upload-files.mjs';
@@ -79,18 +78,12 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 // init takes that, once. A page without it, or whose compile failed, has
 // init fetch and compile the module itself, as a retry after a failure does.
 let startModule=globalThis.__tiloStartModule;
-/** The compiled module, kept for the record worker's own instance. */
-let compiledModule;
 const ready=retryableMemo(async()=>{
   const early=startModule;startModule=undefined;
   const module=early&&await early.catch(()=>null);
-  compiledModule=module||undefined;
   mark('compiled');
   return init(module?{module_or_path:module}:undefined);
 });
-// Large records' changes are verified in a worker, not on this thread
-// (record-verify.mjs); the runtime hands them over through this.
-globalThis.__tiloVerifyRecord=createRecordVerifier({module:()=>compiledModule});
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
 // So do the fonts a mount waits for: fetched beside the module, not after the page joined.

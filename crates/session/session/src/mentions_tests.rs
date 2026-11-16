@@ -251,8 +251,7 @@ tilo_test_env::scenario! {
             Place {
                 app: NOTES.into(),
                 record: NOTE.into(),
-                resource: "notes.notebook".into(),
-                anchor: "notes.notebook/pages/p1".into(),
+                resource: "notes.notebook/pages/p1".into(),
             }
         );
         assert_eq!(Place::from_activation(&place.activation()), Some(place));
@@ -518,8 +517,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
         Place {
             app: CHAT.into(),
             record: chat_route,
-            resource: "chat.workspace".into(),
-            anchor: "chat.workspace/messages/m1".into(),
+            resource: "chat.workspace/messages/m1".into(),
         }
     );
 }
@@ -738,7 +736,7 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         .place
         .clone()
         .expect("it opens what it names");
-    assert_eq!(place.anchor, "tasks.tracker/issues/i9", "{up:?}");
+    assert_eq!(place.resource, "tasks.tracker/issues/i9", "{up:?}");
     drop(up);
 
     // After a restart the record is followed from where it was looked at last.

@@ -26,7 +26,6 @@
 //! A wasm build has no processes: there [`Isolate`] pre-checks and applies in the
 //! page, to a copy that replaces the document on success.
 
-pub mod away;
 mod engine;
 #[cfg(target_os = "linux")]
 mod pool;
@@ -92,10 +91,6 @@ pub enum Rejected {
     TimedOut,
     #[error("automerge worker unavailable: {0}")]
     Unavailable(String),
-    /// The bytes are being verified away from this thread ([`away`]): asked
-    /// again once that finishes, they load at once.
-    #[error("automerge input is being verified")]
-    Verifying,
 }
 
 impl Rejected {
@@ -176,7 +171,7 @@ impl Isolate {
         #[cfg(target_os = "linux")]
         return self.pool.load(bytes);
         #[cfg(not(target_os = "linux"))]
-        return in_page::load(bytes);
+        return engine::load(bytes);
     }
 }
 
@@ -203,82 +198,27 @@ pub fn change_hashes(incoming: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
     engine::change_hashes(incoming)
 }
 
-/// Outside Linux there are no worker processes, so none of their bounds
-/// apply: input that passes [`precheck`] is decoded in this process with no
-/// heap ceiling, deadline or sandbox, and a decoder panic or hang is the
-/// caller's. Only the copy-then-replace keeps a refused input from changing
-/// `doc`. A large document whose changes a host verified away from this
-/// thread ([`away`]) loads with the hashes that verification computed.
-#[cfg_attr(
-    target_os = "linux",
-    allow(
-        dead_code,
-        reason = "Linux applies in worker processes; tests run this"
-    )
-)]
+/// Outside Linux there are no workers yet, so none of their bounds apply:
+/// input that passes [`precheck`] is decoded in this process with no heap
+/// ceiling, deadline or sandbox, and a decoder panic or hang is the caller's.
+/// Only the copy-then-replace keeps a refused input from changing `doc`.
+#[cfg(not(target_os = "linux"))]
 mod in_page {
-    use super::{Applied, AutoCommit, Dependencies, Rejected, away, engine};
+    use super::{Applied, AutoCommit, Dependencies, Rejected, engine};
 
     /// Apply to a copy that replaces `doc` only on success.
-    ///
-    /// A whole document into a blank one is the document a reader on this
-    /// thread already loaded from the same bytes, when one did
-    /// (`tilo_automerge::shared`): a page reads a record's bytes several
-    /// times as it opens it, and loads them once.
     pub(super) fn apply(
         doc: &mut AutoCommit,
         incoming: &[u8],
         dependencies: Dependencies,
     ) -> Result<Applied, Rejected> {
-        let whole = engine::is_blank(doc) && engine::single_document(incoming);
-        if whole && let Some(held) = tilo_automerge::shared::held(incoming) {
-            let actor = doc.get_actor().clone();
-            *doc = held.with_actor(actor);
-            return Ok(Applied::Changed(!doc.get_heads().is_empty()));
-        }
         let mut candidate = doc.clone();
-        let applied = match whole.then(|| away::hashes_for(incoming)).transpose()? {
-            Some(Some(hashes)) => {
-                engine::apply_validated(&mut candidate, incoming, dependencies, &hashes)?
-            }
-            _ => engine::apply(&mut candidate, incoming, dependencies)?,
-        };
+        let applied = engine::apply(&mut candidate, incoming, dependencies)?;
         if applied != Applied::MissingDependencies {
-            if whole {
-                tilo_automerge::shared::hold(incoming, &candidate);
-            }
             *doc = candidate;
         }
         Ok(applied)
     }
-
-    /// Load `bytes` as a complete document.
-    pub(super) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
-        if let Some(held) = tilo_automerge::shared::held(bytes) {
-            return Ok(held);
-        }
-        let doc = match away::hashes_for(bytes)? {
-            Some(hashes) => engine::load_validated(bytes, &hashes),
-            None => engine::load(bytes),
-        }?;
-        if engine::single_document(bytes) {
-            tilo_automerge::shared::hold(bytes, &doc);
-        }
-        Ok(doc)
-    }
-}
-
-/// The hash of every change of the document `bytes` hold, in the order the
-/// document lists them, after [`load`] would have taken them: every change
-/// rebuilt and hashed, the stored heads checked against them. What a host's
-/// verifier ([`away::Verifier`]) computes away from the caller's thread.
-///
-/// # Errors
-/// A [`Rejected`] reason; [`Rejected::Malformed`] for anything but exactly
-/// one document chunk.
-pub fn verified_hashes(bytes: &[u8]) -> Result<Vec<automerge::ChangeHash>, Rejected> {
-    precheck::check(bytes, Isolate::shared().limits())?;
-    engine::verified_hashes(bytes)
 }
 
 /// Serve as an Automerge worker when this process was started as one,
@@ -336,6 +276,3 @@ pub fn serve_test_worker() {
 
 #[cfg(test)]
 test_worker!();
-
-#[cfg(test)]
-mod away_tests;

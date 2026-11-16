@@ -27,8 +27,6 @@ mod diff_walks_what_differs;
 mod idle_sync;
 #[path = "known_hashes.rs"]
 mod known_hashes;
-#[path = "load_in_slices.rs"]
-mod load_in_slices;
 #[path = "map_apply.rs"]
 mod map_apply;
 #[path = "object_history.rs"]

@@ -53,27 +53,6 @@ impl DesktopHandle {
     pub fn take_tab_menus(&self) -> Vec<(TabId, ui::kurbo::Point)> {
         std::mem::take(&mut self.shared.borrow_mut().menus)
     }
-
-    /// Ask for the menu of the window covering the display the person works on, standing `at` a
-    /// place on the shell, as a secondary click on its bar would. False when no window covers it.
-    pub fn ask_covering_window_menu(&self, at: ui::kurbo::Point) -> bool {
-        let mut shared = self.shared.borrow_mut();
-        let tab = shared.tree.fullscreen_group().and_then(|group| {
-            shared
-                .tree
-                .active_workspace()?
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .find(|held| held.id == group)
-                .map(|held| held.active_tab)
-        });
-        let Some(tab) = tab else {
-            return false;
-        };
-        shared.menus.push((tab, at));
-        true
-    }
 }
 
 /// The tabs whose bar asked for its menu and where it was pressed, in the row's window order.
@@ -1049,7 +1028,7 @@ fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op:
         .unwrap_or_default();
     let mut last = None;
     for tab in tabs {
-        match shared.close(tab) {
+        match shared.tree.close_tab(tab) {
             Some(removed) => last = Some(removed),
             None => break,
         }

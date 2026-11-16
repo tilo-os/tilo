@@ -1,6 +1,6 @@
 //! What this session serves the network actor beside its own planes.
 //!
-//! The actor is the transport, and what some of its APIs ask is the
+//! The actor is the transport, and what some of its doors ask is the
 //! session's business: another of the person's devices asking for its
 //! disk-unlock half, an agent's question for its person on a workspace host,
 //! a collaborator's device at another peer protocol version. Each is served
@@ -45,7 +45,7 @@ impl VersionMismatch {
 /// Install the session's services for the actor started from now on: the person's other devices'
 /// disk unlock ([`unlock`]), the questions their agents ask ([`approvers`]), and the word that a
 /// collaborator's device is at another protocol version.
-/// A session that is no certified device of the person's offers no API: it has no key to answer
+/// A session that is no certified device of the person's offers no door: it has no key to answer
 /// as.
 pub(crate) fn install(
     link: Option<&Arc<crate::platform::fabric::SessionFabric>>,

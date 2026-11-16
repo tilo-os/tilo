@@ -277,11 +277,11 @@ impl super::flow::Provider for Whatsapp {
         }
         service.publish(
             identity,
-            crate::session::Publication {
+            crate::door::Publication {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
-                kind: crate::session::PublicationKind::Whatsapp { jid },
+                kind: crate::door::PublicationKind::Whatsapp { jid },
             },
         )?;
         account.gate().credential.check()

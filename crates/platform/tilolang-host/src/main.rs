@@ -18,7 +18,7 @@ use std::os::fd::AsFd as _;
 use std::sync::{Arc, OnceLock};
 
 use runtime_portal::tilolang_host::{
-    Descriptor, Handed, STORAGE_ENV, receive, send_ended, send_exiting, take_socket,
+    Descriptor, Handed, STORAGE_ENV, receive, send_ended, send_exiting, take_door,
 };
 use tilolang_host::TilolangHost;
 use tilolang_host::stop::Stop;
@@ -35,7 +35,7 @@ fn main() -> std::process::ExitCode {
         ))
         .with_writer(std::io::stderr)
         .init();
-    let Some(api) = take_socket() else {
+    let Some(api) = take_door() else {
         // No api to say it on: the session's log of the host's stderr is all there is.
         eprintln!("tilolang-host: exiting: no api: the session starts the tilolang host");
         return std::process::ExitCode::from(2);

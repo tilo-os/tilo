@@ -1,4 +1,4 @@
-//! A `find` over the MCP server never holds the desktop's loop.
+//! A door's `find` over the MCP server never holds the desktop's loop.
 //!
 //! An outside client (an MCP `tilo_find` call) asks the session to search while its sources are
 //! slow. The session carries the ask out on the loop's pass, so it must not wait for a source
@@ -138,7 +138,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
 /// old code answered the ask with a blocking `recv()` on the search's channel, so exactly one pass
 /// here would have lasted [`SLOW_FOR`]; the test fails that, naming the freeze.
 #[test]
-fn a_find_answers_while_the_loop_keeps_running() {
+fn a_door_find_answers_while_the_loop_keeps_running() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let started = Arc::new(AtomicBool::new(false));
@@ -150,7 +150,7 @@ fn a_find_answers_while_the_loop_keeps_running() {
     };
     let (mut session, mut repl) = session(root.path(), &slow, &started);
 
-    // The ask goes out on the find's own thread; the test drives the loop, as `Session::run`
+    // The ask goes out on the door's own thread; the test drives the loop, as `Session::run`
     // does. The answer is read after the source has ended, so what is measured is the passes the
     // loop ran while the find was in flight.
     let asked = Instant::now();

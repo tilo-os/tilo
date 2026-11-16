@@ -205,9 +205,9 @@ pub enum UserEvent {
     /// The system bars, cutout or soft keyboard now cover a different part of the window.
     #[cfg(feature = "native")]
     SafeAreaChanged,
-    /// The shell opens one more window of the app in this process ([`crate::window_channel`]).
+    /// The shell opens one more window of the app in this process ([`crate::window_door`]).
     #[cfg(feature = "native")]
-    OpenWindow(crate::window_channel::PendingWindow),
+    OpenWindow(crate::window_door::PendingWindow),
 }
 
 #[cfg(feature = "native")]

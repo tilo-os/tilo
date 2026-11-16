@@ -279,19 +279,13 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             let on_the_handle = || {
                 // The control itself, when every side of it is content: a window's
                 // drag bar has the window under it, so the card stands on the bar
-                // it teaches rather than somewhere else on screen. It is the pill a
-                // bar holds, centred on the handle and inside the handle's height, so
-                // it covers neither the window's body under the handle nor what is
-                // above it; a handle too short for it shows no hint.
+                // it teaches rather than somewhere else on screen.
+                let at = spot.at?;
+                let (w, h) = size;
                 let spare = look.area.inset(-AREA_MARGIN);
-                let at = spot.at?.intersect(spare);
-                let (w, h) = card::size(&contents, text, theme, true);
-                if h > at.height() || w > spare.width() {
-                    return None;
-                }
-                let x = (at.center().x - w / 2.0).clamp(spare.x0, spare.x1 - w);
-                let y = at.center().y - h / 2.0;
-                Some((Rect::new(x, y, x + w, y + h), None, true))
+                let x = (at.center().x - w / 2.0).clamp(spare.x0, (spare.x1 - w).max(spare.x0));
+                let y = (at.center().y - h / 2.0).clamp(spare.y0, (spare.y1 - h).max(spare.y0));
+                Some((Rect::new(x, y, x + w, y + h), None, in_bar))
             };
             let placement = beside.or_else(on_the_handle).or_else(|| {
                 let band = spot.bar?;
@@ -891,10 +885,6 @@ mod place_tests {
             "{card:?} is not on the handle {bar:?}"
         );
         assert!(spare_holds(area, card), "{card:?} inside the desk {area:?}");
-        assert!(
-            card.y0 >= bar.y0 && card.y1 <= bar.y1,
-            "{card:?} covers neither the body under the handle {bar:?} nor what is above it"
-        );
     }
 
     fn spare_holds(area: Rect, card: Rect) -> bool {

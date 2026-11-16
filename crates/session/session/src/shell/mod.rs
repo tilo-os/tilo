@@ -1,6 +1,6 @@
 //! The shell on the native session: the tilolang shell package (`apps/tl/shell`) shown by a
 //! [`ShellPart`] per display — the whole screen under the windows, which stand in its wells — kept
-//! in step with the session's shell (`crate::shell`) and asking the session's API for what the
+//! in step with the session's shell (`crate::shell`) and asking the session's door for what the
 //! person presses.
 
 use std::cell::RefCell;
@@ -145,12 +145,12 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
-    /// The shell over every output of `compositor` , published on `surfaces` . The screen's views
+    /// The shell over every output of `compositor` , published on `doors` . The screen's views
     /// report their wells to `wells` , the handle the window policy places every window by
     /// ([`crate::platform::surfaces::WellPolicy`]).
     pub(crate) fn mount(
         compositor: &mut Compositor,
-        surfaces: &mut Surfaces,
+        doors: &mut Surfaces,
         lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
         theme: ui::Theme,
@@ -191,7 +191,7 @@ impl Shell {
             theme,
         };
         shell.person = shell.lists.person.clone();
-        shell.follow_outputs(compositor, surfaces);
+        shell.follow_outputs(compositor, doors);
         // The styles every installed package offers, before the first frame draws the
         // switch: a shell that starts already knows what its person may pick (shell.md §6).
         shell.refresh_styles();
@@ -210,10 +210,10 @@ impl Shell {
     /// Make a part for each output `compositor` shows that has none, stand each part on its
     /// output's rectangle, and stand the parts of outputs it no longer shows nowhere: one part per
     /// display, following a display plugged in, moved or taken away. A part whose display went
-    /// keeps its place with the compositor and the API, drawing and offering nothing, and stands
+    /// keeps its place with the compositor and the door, drawing and offering nothing, and stands
     /// again when that display comes back, so unplugging and replugging makes no new part. Cheap
     /// when nothing changed, which is what every frame runs.
-    fn follow_outputs(&mut self, compositor: &mut Compositor, surfaces: &mut Surfaces) {
+    fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Surfaces) {
         let outputs = displays::placed(&compositor.outputs());
         for (name, part) in &self.parts {
             if !outputs.iter().any(|shown| &shown.connector == name) {
@@ -236,7 +236,7 @@ impl Shell {
             }
             self.mount_part(
                 compositor,
-                surfaces,
+                doors,
                 &output.connector,
                 output.part_rect(),
                 output.scale,
@@ -246,11 +246,11 @@ impl Shell {
     }
 
     /// Make the shell's part on `output` (its connector name and logical rectangle), sharing the
-    /// shell's record with every other part, and hand it to `compositor` and its surfaces.
+    /// shell's record with every other part, and hand it to `compositor` and its doors.
     fn mount_part(
         &mut self,
         compositor: &mut Compositor,
-        surfaces: &mut Surfaces,
+        doors: &mut Surfaces,
         output: &str,
         rect: (i32, i32, u32, u32),
         scale: f64,
@@ -285,9 +285,9 @@ impl Shell {
         );
         let part = Rc::new(RefCell::new(part));
         compositor.add_host(part.clone());
-        // Each display's part is its own surface on the API: what the person, a script or an agent
+        // Each display's part is its own surface on the door: what the person, a script or an agent
         // drives the shell through, and what reads its labels.
-        surfaces.add(Rc::clone(&part) as tilo_session_core::surfaces::Shared);
+        doors.add(Rc::clone(&part) as tilo_session_core::surfaces::Shared);
         self.parts.push((output.to_owned(), part));
     }
 
@@ -334,8 +334,8 @@ impl Shell {
     /// Follow the displays as they come and go, and a window taking one for itself: a part is made
     /// or dropped per output, and a part on a display a fullscreen window owns steps aside. Cheap
     /// when nothing changed, which is what every frame runs.
-    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, surfaces: &mut Surfaces) {
-        self.follow_outputs(compositor, surfaces);
+    pub(crate) fn follow_displays(&mut self, compositor: &mut Compositor, doors: &mut Surfaces) {
+        self.follow_outputs(compositor, doors);
     }
 
     /// The outputs' bounding box `(x, y, w, h)` , as a screen-edge reading names them: every output
@@ -439,7 +439,7 @@ impl Shell {
             self.link.publish_packages(packages);
             // The verbs of the apps the shell's runtime does not load — Chat's channel and its
             // `send`, which the session's own service answers — so a place's view sends its
-            // action to the app publishing it, as it sends any package's to that package's API.
+            // action to the app publishing it, as it sends any package's to that package's door.
             self.link
                 .publish_published_actions(tilolang_tilo::published::from_resources(
                     &resources,
@@ -693,7 +693,7 @@ impl Shell {
             .collect()
     }
 
-    /// Whether the shell asked something of the API the session has not run yet.
+    /// Whether the shell asked something of the door the session has not run yet.
     pub(crate) fn has_asks(&self) -> bool {
         self.link.has_asks()
     }
@@ -853,7 +853,7 @@ impl Shell {
     pub(crate) fn share_records(
         &self,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-        surfaces: &crate::mcp_server::SessionServices,
+        doors: &crate::mcp_server::SessionDoors,
     ) {
         let Some(compiled) = self.package() else {
             return;
@@ -865,18 +865,18 @@ impl Shell {
             records: &records,
         });
         match taken {
-            Ok(()) => surfaces.keep_records_of(&compiled.meta.app),
+            Ok(()) => doors.keep_records_of(&compiled.meta.app),
             Err(error) => tracing::error!(%error, "the shell's records are not published"),
         }
     }
 
-    /// Run what the shell asked through `invoke` (the session's API).
-    /// The shell's calls (`session.close_place(place: 3)`) reach the API as any caller's do, a
+    /// Run what the shell asked through `invoke` (the session's door).
+    /// The shell's calls (`session.close_place(place: 3)`) reach the door as any caller's do, a
     /// list as a list and a map as an object; each is read here as the type the action itself
     /// declares for it: a workspace's key is text even when it was given as digits, and a flag
     /// the shell's runtime keeps as a number is a flag.
     /// `types` answers with the declared type of `(resource, action)` 's argument `name` , when the
-    /// API publishes it.
+    /// door publishes it.
     pub(crate) fn serve(
         &self,
         types: impl Fn(&str, &str, &str) -> Option<tilo_actions::params::ParamType>,
@@ -950,7 +950,7 @@ impl Shell {
     }
 
     /// What the shell refused since the session started, in its words: every display's, and what
-    /// the API refused of what it asked.
+    /// the door refused of what it asked.
     pub(crate) fn refusals(&self) -> Vec<String> {
         self.parts
             .iter()
@@ -1130,7 +1130,7 @@ fn pictured(handle: &tilo_desktop_surface::DesktopHandle, key: &str) -> Option<u
 
 /// `value` as the type the action declares for it: a number given for a text is its digits, and a
 /// flag the shell's runtime keeps as an integer (`1`, `0`) is true or false. Anything else is sent
-/// as given, and the API refuses by name what it does not take.
+/// as given, and the door refuses by name what it does not take.
 fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
     use tilo_actions::params::ParamType;
     match (ty, value) {
@@ -1162,7 +1162,7 @@ pub(crate) fn under(shell: bool, host: impl SurfaceHost + 'static) -> Rc<RefCell
 /// each action of the chrome's that opens one opens the shell's view of it on `surfaces` — the
 /// overview, the notifications, the quick settings and the workspaces — while the chrome's own
 /// draws nothing. Every other action is the chrome's.
-pub(crate) fn chrome_surface<T: tilo_session_core::surfaces::Published + 'static>(
+pub(crate) fn chrome_door<T: tilo_session_core::surfaces::Published + 'static>(
     shell: bool,
     chrome: &Rc<RefCell<T>>,
     surfaces: crate::device_lists::Surfaces,
@@ -1179,20 +1179,23 @@ pub(crate) fn chrome_surface<T: tilo_session_core::surfaces::Published + 'static
 /// launcher (on what the person asked for, when a query comes with it), as the desktop's own search
 /// draws nothing under the shell; a search with a query still runs, its rows published for the
 /// palette and the agents.
-pub(crate) fn lists_surface<T: tilo_session_core::surfaces::Published + 'static>(
+pub(crate) fn lists_door<T: tilo_session_core::surfaces::Published + 'static>(
     shell: bool,
     lists: T,
     surfaces: crate::device_lists::Surfaces,
 ) -> tilo_session_core::surfaces::Shared {
     let lists: tilo_session_core::surfaces::Shared = Rc::new(RefCell::new(lists));
     if shell {
-        Rc::new(RefCell::new(ShellLists { lists, surfaces }))
+        Rc::new(RefCell::new(ShellDoor {
+            door: lists,
+            surfaces,
+        }))
     } else {
         lists
     }
 }
 
-/// The chrome's surface on the shell ([`chrome_surface`]).
+/// The chrome's door on the shell ([`chrome_door`]).
 struct ShellChrome {
     chrome: tilo_session_core::surfaces::Shared,
     surfaces: crate::device_lists::Surfaces,
@@ -1339,15 +1342,15 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
     }
 }
 
-/// The shell's lists on the shell ([`lists_surface`]).
-struct ShellLists {
-    lists: tilo_session_core::surfaces::Shared,
+/// The shell's door on the shell ([`lists_door`]).
+struct ShellDoor {
+    door: tilo_session_core::surfaces::Shared,
     surfaces: crate::device_lists::Surfaces,
 }
 
-impl tilo_session_core::surfaces::Published for ShellLists {
+impl tilo_session_core::surfaces::Published for ShellDoor {
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.lists.borrow_mut().resources()
+        self.door.borrow_mut().resources()
     }
 
     fn invoke(
@@ -1363,7 +1366,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 // The shell runs its search as it always does, so its rows are published on its
                 // search resource for the palette and the agents; the shell's launcher is what
                 // draws, and it opens on what was asked for.
-                let started = self.lists.borrow_mut().invoke(address, arguments, look)?;
+                let started = self.door.borrow_mut().invoke(address, arguments, look)?;
                 self.surfaces.overlays.search(query);
                 return Ok(started);
             }
@@ -1373,7 +1376,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 tilo_actions::ActionOutput::default(),
             ));
         }
-        // The platform search API (a window's search control, its toolbar's magnifier, Ctrl+K)
+        // The platform search door (a window's search control, its toolbar's magnifier, Ctrl+K)
         // asks for the shell's search under the shell too: the shell draws that search, so the
         // request opens the launcher, and its query runs the shell's search as the shell's own
         // `search` verb does, its rows published for whoever reads them.
@@ -1385,7 +1388,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                 Some(query) => {
                     let asked =
                         Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
-                    self.lists.borrow_mut().invoke(
+                    self.door.borrow_mut().invoke(
                         &ActionAddress::new(tilo_desktop::verbs::SHELL_RESOURCE, "search"),
                         &asked,
                         look,
@@ -1403,7 +1406,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
             }
             return Ok(started);
         }
-        self.lists.borrow_mut().invoke(address, arguments, look)
+        self.door.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -1419,33 +1422,33 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         {
             return self.invoke(address, arguments, look);
         }
-        self.lists
+        self.door
             .borrow_mut()
             .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        self.lists.borrow_mut().accessible_labels()
+        self.door.borrow_mut().accessible_labels()
     }
 
     fn revision(&self) -> Option<u64> {
-        self.lists.borrow().revision()
+        self.door.borrow().revision()
     }
 
     fn offered(&self) -> bool {
-        self.lists.borrow().offered()
+        self.door.borrow().offered()
     }
 
     fn exclusive(&self) -> bool {
-        self.lists.borrow().exclusive()
+        self.door.borrow().exclusive()
     }
 
     fn serves_while_locked(&self) -> bool {
-        self.lists.borrow().serves_while_locked()
+        self.door.borrow().serves_while_locked()
     }
 
     fn locked_resources(&mut self) -> Vec<tilo_actions::ResourceSpec> {
-        self.lists.borrow_mut().locked_resources()
+        self.door.borrow_mut().locked_resources()
     }
 }
 
@@ -1548,7 +1551,7 @@ impl crate::Session {
         }
     }
 
-    /// Hand the shell the shell when it changed, and run what it asked through the API, as any
+    /// Hand the shell the shell when it changed, and run what it asked through the door, as any
     /// caller of the action protocol does.
     pub(crate) fn follow_shell(&mut self) -> Result<(), crate::Error> {
         self.publish_edges();

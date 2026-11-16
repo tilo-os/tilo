@@ -229,7 +229,7 @@ struct Feeding {
 /// Mount the capture studio over the desktop, and hand back the session's end of it.
 pub(crate) fn mount(
     compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
+    doors: &mut Surfaces,
     options: &Options,
     nearby: Option<&Arc<NearbyTransfer>>,
     io: Rc<CaptureIo>,
@@ -250,7 +250,7 @@ pub(crate) fn mount(
             let state = sheet.state().clone();
             let sheet = sheet.layer();
             compositor.add_host(sheet.clone());
-            surfaces.add(sheet);
+            doors.add(sheet);
             Some(CaptureStudio {
                 state,
                 directory: options.pictures.clone().unwrap_or_else(screenshots),
@@ -1641,13 +1641,13 @@ mod tests {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 1280, 800))
             .expect("a display");
-        let mut surfaces = Surfaces::default();
+        let mut doors = Surfaces::default();
         let (io, worker_notes) = CaptureIo::new(options.wake.handle());
         let (said, notes) = channel();
         let board = Arc::new(runtime_collab::LiveActivities::default());
         let studio = mount(
             &mut compositor,
-            &mut surfaces,
+            &mut doors,
             &options,
             None,
             io,

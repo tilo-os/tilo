@@ -2,7 +2,7 @@
 //! desktop.
 //!
 //! A controller is one more way to ask for things the session already does,
-//! so what it asks for leaves by the APIs a keyboard's presses already use:
+//! so what it asks for leaves by the doors a keyboard's presses already use:
 //! a direction, activate or back is the key it stands for, routed by the
 //! compositor exactly as a physical key, and every command is the published
 //! shortcut of the same name ([`Invocation::shortcut`]). The direction,

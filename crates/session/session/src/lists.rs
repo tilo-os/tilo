@@ -36,13 +36,13 @@ pub struct AppLists {
     /// Every app that opens a kind of file or link here, and which kinds: what workspace settings
     /// offer as default openers.
     pub candidates: Vec<desktop_policy::AppCandidate>,
-    /// What each installed app declared it may do on the action API under its own identity, by
+    /// What each installed app declared it may do on the action door under its own identity, by
     /// package id: the ceiling the broker admits an app's query and invoke against, never a grant.
     pub declared: BTreeMap<String, tilo_broker_core::access::AppActionAccess>,
     /// The resource kinds each installed app declares its records hold, by package id: what it
     /// may reach in its own node.
     pub resource_kinds: BTreeMap<String, Vec<String>>,
-    /// The apps a service can ask this session to open, as the action API lists them: each app's
+    /// The apps a service can ask this session to open, as the action door lists them: each app's
     /// name, the actions its signed manifest offers while it is not running, and the capabilities a
     /// grant is decided on. What decides the reach the device's settings app has of the settings
     /// document.
@@ -59,7 +59,7 @@ impl AppLists {
     /// is here or blocked. Reads the disk only, never the network.
     #[allow(
         clippy::too_many_lines,
-        reason = "one read of every list the search and the action API share"
+        reason = "one read of every list the search and the action door share"
     )]
     #[must_use]
     pub fn read() -> Self {
@@ -408,7 +408,7 @@ fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::h
         .collect()
 }
 
-/// Each app's declared reach of the action API, from its signed manifest: the ceiling the broker
+/// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
 /// admits its calls against.
 /// The resource kinds each installed app declares, by package id.
 fn resource_kinds(

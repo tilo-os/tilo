@@ -11,7 +11,7 @@ use tilo_desktop_model::Layout;
 use super::{Context, Gate, Scope, Session, Slot};
 
 /// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
-/// it is, and the owner's API sees it too — except while the screen is locked, where it learns
+/// it is, and the owner's door sees it too — except while the screen is locked, where it learns
 /// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
 /// text in them.
 pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {

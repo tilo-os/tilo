@@ -356,7 +356,7 @@ impl State {
     /// for it.
     pub(crate) fn handle_ime_key(&mut self, keycode: u32, pressed: bool) {
         self.text_input.reinjected = true;
-        self.route_input(InputEvent::Key { keycode, pressed }, Instant::now());
+        self.route_input(InputEvent::Key { keycode, pressed }, tilo_clock::now());
         self.text_input.reinjected = false;
     }
 

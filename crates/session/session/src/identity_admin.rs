@@ -10,7 +10,7 @@
 //! workspace's identity and root-signing a revocation; and removing a home
 //! server, whose relay administration signs with the root key too.
 //!
-//! Who may take a step is decided at the API, before it reaches this engine:
+//! Who may take a step is decided at the door, before it reaches this engine:
 //! only a person who administers the workspace's identity, and every change
 //! but delivering pending home-server removals needs explicit confirmation.
 
@@ -119,7 +119,7 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every caller. Every step is this device's own
+/// What `step` may do and answers, the same through every door. Every step is this device's own
 /// identity store. Changing the store is privileged and asked first. Delivering the home-server
 /// removals still pending signs nothing new — each was signed when it was confirmed — so it asks
 /// nothing.
@@ -242,7 +242,7 @@ static SESSION: LazyLock<IdentityAdmin> =
     LazyLock::new(|| IdentityAdmin::with_runner(Arc::new(run_bounded)));
 
 impl IdentityAdmin {
-    /// This session's identity administration, which every API shares.
+    /// This session's identity administration, which every door shares.
     pub(crate) fn session() -> &'static Self {
         &SESSION
     }
@@ -252,7 +252,7 @@ impl IdentityAdmin {
         Self { runner }
     }
 
-    /// Start `step` with `args`, which the API bound to [`params`] after
+    /// Start `step` with `args`, which the door bound to [`params`] after
     /// it decided the caller administers `identity`, the identity the
     /// caller's workspace selected, in `store`. `announce` tells the people's
     /// hosts of a revocation this device's root signs, which is how the key
@@ -617,7 +617,7 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
         })
 }
 
-/// The broker's API to identity administration: how Settings lists and
+/// The broker's door to identity administration: how Settings lists and
 /// changes the person's identities and devices, as the person using it,
 /// without the identity store entering its sandbox.
 ///

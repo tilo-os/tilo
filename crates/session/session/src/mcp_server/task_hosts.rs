@@ -1,4 +1,4 @@
-//! Where the session's API starts a connection's task host, and the apps that host compiles a
+//! Where the session's door starts a connection's task host, and the apps that host compiles a
 //! task's programs against.
 
 use std::io;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tilo_lock::MutexRecover as _;
 
-use super::{ApiAsk, SessionServices, WAIT};
+use super::{ApiAsk, SessionDoors, WAIT};
 
 /// Every installed app a task's programs may name, besides the packages the session runs itself
 /// (`kept`): each tilolang app's own package, verified as a launch verifies it, which declares
@@ -59,24 +59,24 @@ fn installed_apps(
     (apps, records_under)
 }
 
-/// Where the session's API starts a connection's task host: a thread of the session's own running
+/// Where the session's door starts a connection's task host: a thread of the session's own running
 /// the task's tilolang host (`tilolang_host::task`) over the program connection. The host holds no
 /// authority: it decides nothing and writes no record, and everything its programs read or change
-/// comes back over the connection to the API, which does it as the program's author, through the
+/// comes back over the connection to the door, which does it as the program's author, through the
 /// same gate as every other call.
 pub(crate) struct TaskHosts {
     /// The person the connection was admitted for: `me` in its programs.
     pub(super) person: std::sync::Mutex<Option<String>>,
-    /// What a connection asks the session's own APIs, for the records the packages it runs itself
+    /// What a connection asks the session's own doors, for the records the packages it runs itself
     /// keep: its task host names the modules they are read by, before it starts, on the loop's
     /// pass.
-    session: Arc<SessionServices>,
+    session: Arc<SessionDoors>,
 }
 
 impl TaskHosts {
     /// The hosts of the task connections `person` asks about, whose programs run as `person`,
     /// reading the session's own records through `session`.
-    pub(crate) fn new(person: &str, session: Arc<SessionServices>) -> Self {
+    pub(crate) fn new(person: &str, session: Arc<SessionDoors>) -> Self {
         Self {
             person: std::sync::Mutex::new(Some(person.to_owned())),
             session,
@@ -86,7 +86,7 @@ impl TaskHosts {
 
 impl tilo_mcp::TaskHosts for TaskHosts {
     fn start(&self, workspace: &str, task: &str) -> io::Result<std::os::fd::OwnedFd> {
-        let (server_end, host_end) = UnixStream::pair()?;
+        let (door_end, host_end) = UnixStream::pair()?;
         // The person's own connection into the same session: the lines they type run there,
         // where the `let`s the agent's programs bound are.
         let (_person_ours, person_host) = UnixStream::pair()?;
@@ -126,11 +126,11 @@ impl tilo_mcp::TaskHosts for TaskHosts {
                         return;
                     }
                 };
-                // Every line the server or the person sends is answered; the host ends when the server
+                // Every line the door or the person sends is answered; the host ends when the door
                 // closes the connection, with the client that started it.
                 while task.serve_all() {}
                 tracing::debug!(task = request.task, "MCP server: a task's host ended");
             })?;
-        Ok(server_end.into())
+        Ok(door_end.into())
     }
 }

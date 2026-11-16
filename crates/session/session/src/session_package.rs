@@ -3,8 +3,8 @@
 //! `use so.tilo.session as session` , then `session.overview()` or `session.focus(window: w)` . The
 //! device's resources and the shell are `so.tilo.device` 's ([`crate::shell::device_surfaces`]),
 //! never described here too. The description is the native apps' (`surface.toml`, read by
-//! `tilolang_tilo::catalogue` ), generated here from the very resources the session's API
-//! publishes, and a test holds the committed file to it, so it never drifts from what the API
+//! `tilolang_tilo::catalogue` ), generated here from the very resources the session's door
+//! publishes, and a test holds the committed file to it, so it never drifts from what the door
 //! takes.
 //! Each resource the session publishes under one address says it (`id`): a call of one of its
 //! actions is sent there. A kind the session publishes one resource of per thing (a window, an

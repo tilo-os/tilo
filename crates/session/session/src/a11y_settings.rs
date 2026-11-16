@@ -341,7 +341,7 @@ mod tests {
             // Automatic: not on a desktop typed on by a keyboard and a pointer.
             assert!(!keyboard_runs(OnScreenKeyboard::Auto, entry(false, false)));
             // And on one that can be touched, field or no field: the tap into a field finds a keyboard
-            // already serving this device.
+            // already serving the seat.
             let touchable = TextEntry {
                 touch_available: true,
                 ..entry(false, false)

@@ -131,9 +131,9 @@ struct Inner {
     /// The workspaces this device holds, once the session opened them.
     #[cfg(target_os = "linux")]
     engine: RefCell<Option<Arc<crate::engine::Engine>>>,
-    /// The session's action API, once its apps run here.
+    /// The session's action door, once its apps run here.
     #[cfg(target_os = "linux")]
-    api: RefCell<Option<Arc<dyn crate::task_undo::UndoApi>>>,
+    door: RefCell<Option<Arc<dyn crate::task_undo::UndoDoor>>>,
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
     content: RefCell<Option<Arc<crate::content::Plane>>>,
@@ -272,7 +272,7 @@ impl Activity {
             #[cfg(target_os = "linux")]
             engine: RefCell::default(),
             #[cfg(target_os = "linux")]
-            api: RefCell::default(),
+            door: RefCell::default(),
             #[cfg(target_os = "linux")]
             content: RefCell::default(),
             #[cfg(target_os = "linux")]
@@ -360,17 +360,17 @@ impl Activity {
 
     /// Undo an agent's run in the records it changed, as the person at the screen.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_api(&self, api: Arc<dyn crate::task_undo::UndoApi>) {
-        *self.0.api.borrow_mut() = Some(api);
+    pub(crate) fn attach_door(&self, door: Arc<dyn crate::task_undo::UndoDoor>) {
+        *self.0.door.borrow_mut() = Some(door);
     }
 
     /// Take back the work of the run `run` in `workspace`, as the person at the screen: each
-    /// document `steps` names is asked through the session's action API, on a thread of its own, as the
+    /// document `steps` names is asked through the session's door, on a thread of its own, as the
     /// history's own Undo run asks. Answers whether it started; what came of it is in the
     /// documents, which a person reads there.
     ///
     /// # Errors
-    /// The session serves no action API to ask, so nothing was undone.
+    /// The session serves no door to ask, so nothing was undone.
     #[cfg(target_os = "linux")]
     pub(crate) fn undo_run(
         &self,
@@ -378,7 +378,7 @@ impl Activity {
         run: &str,
         steps: Vec<(String, String)>,
     ) -> Result<(), String> {
-        let Some(api) = self.0.api.borrow().as_ref().map(Arc::clone) else {
+        let Some(door) = self.0.door.borrow().as_ref().map(Arc::clone) else {
             return Err(tilo_desktop_surface::i18n::t(
                 "activity-undo-task-unavailable",
             ));
@@ -386,7 +386,7 @@ impl Activity {
         let woken = Arc::clone(&self.0.woken);
         let wake = self.0.wake.clone();
         self.0.undos.start(
-            api,
+            door,
             self.0.person.clone(),
             workspace.to_owned(),
             uuid::Uuid::new_v4(),
@@ -936,7 +936,7 @@ impl ActivityHost for Host {
         // Undone by each changed document's own history, as the person at the screen.
         #[cfg(target_os = "linux")]
         {
-            let Some(api) = self.0.api.borrow().as_ref().map(Arc::clone) else {
+            let Some(door) = self.0.door.borrow().as_ref().map(Arc::clone) else {
                 return Err(tilo_desktop_surface::i18n::t(
                     "activity-undo-task-unavailable",
                 ));
@@ -944,7 +944,7 @@ impl ActivityHost for Host {
             let woken = Arc::clone(&self.0.woken);
             let wake = self.0.wake.clone();
             self.0.undos.start(
-                api,
+                door,
                 self.0.person.clone(),
                 undo.workspace,
                 undo.invocation,

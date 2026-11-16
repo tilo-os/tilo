@@ -369,8 +369,7 @@ tilo_test_env::scenario! {
         let place = Place {
             app: "so.tilo.notes".into(),
             record: "tab:00000000000000a1".into(),
-            resource: "notes.notebook".into(),
-            anchor: "notes.notebook/pages/p1".into(),
+            resource: "notes.notebook/pages/p1".into(),
         };
         role.show(
             &Notice::opens(

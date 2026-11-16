@@ -3,11 +3,11 @@
 //!
 //! `tilo open`, `tilo action …`, `tilo do`, the standalone `action` and
 //! `app open` are all this module, over the one control protocol
-//! ([`crate::client`]). Each request goes through the first socket that serves
+//! ([`crate::client`]). Each request goes through the first door that serves
 //! this process: the device admin's socket at their own login, or the
 //! session's MCP server from inside an app such as Terminal, which acts with
 //! that app's workspace scope. Nothing here picks authority; the desktop
-//! decides what each socket may do.
+//! decides what each door may do.
 //!
 //! Actions are named for people: the slug of their title
 //! (`new-terminal-window`), made unique within a listing by the place they
@@ -17,7 +17,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::client::{ControlSocket, Desktop, Unreachable};
+use crate::client::{Desktop, Door, Unreachable};
 
 /// How long an invocation is waited for before its answer: the desktop
 /// holds the reply until the action settles or this runs out.
@@ -562,7 +562,7 @@ pub fn unreachable_sentence(why: &Unreachable) -> String {
     match why {
         Unreachable::NoDesktop => "This needs a Tilo desktop session.".into(),
         Unreachable::Refused {
-            socket: ControlSocket::Agent(_),
+            door: Door::Agent(_),
             ..
         } => "The desktop didn't let this terminal use its actions.".into(),
         Unreachable::Refused { .. } => {
@@ -604,13 +604,13 @@ fn report(failure: &Failure, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
     1
 }
 
-fn connect(sockets: &[ControlSocket]) -> Result<Desktop, Failure> {
-    Desktop::connect(sockets).map_err(Failure::Unreachable)
+fn connect(doors: &[Door]) -> Result<Desktop, Failure> {
+    Desktop::connect(doors).map_err(Failure::Unreachable)
 }
 
 /// `tilo actions [filter]`: what this desktop can do, grouped by kind.
-pub fn list(sockets: &[ControlSocket], filter: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let result = connect(sockets).and_then(|mut desktop| listing(&mut desktop, filter.trim(), &[]));
+pub fn list(doors: &[Door], filter: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
+    let result = connect(doors).and_then(|mut desktop| listing(&mut desktop, filter.trim(), &[]));
     let listing = match result {
         Ok(listing) => listing,
         Err(failure) => return report(&failure, spelling, io),
@@ -720,8 +720,8 @@ fn find(desktop: &mut Desktop, name: &str, spelling: &Spelling) -> Result<Action
 }
 
 /// `tilo action show NAME`: what an action does, where, and what it takes.
-pub fn show(sockets: &[ControlSocket], name: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
-    let result = connect(sockets).and_then(|mut desktop| find(&mut desktop, name, spelling));
+pub fn show(doors: &[Door], name: &str, spelling: &Spelling, io: &mut Io<'_>) -> u8 {
+    let result = connect(doors).and_then(|mut desktop| find(&mut desktop, name, spelling));
     let action = match result {
         Ok(action) => action,
         Err(failure) => return report(&failure, spelling, io),
@@ -800,13 +800,13 @@ fn example_args(action: &Action) -> String {
 
 /// `tilo do NAME [args]`: run one action, waiting for how it went.
 pub fn run(
-    sockets: &[ControlSocket],
+    doors: &[Door],
     name: &str,
     words: &[String],
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let mut desktop = match connect(sockets) {
+    let mut desktop = match connect(doors) {
         Ok(desktop) => desktop,
         Err(failure) => return report(&failure, spelling, io),
     };
@@ -837,13 +837,13 @@ pub fn run(
 /// names it: a verb `tilo` spells itself (`tilo workspace branch`), which needs no listing to
 /// find. Prints what it answers, as [`run`] does.
 pub fn run_address(
-    sockets: &[ControlSocket],
+    doors: &[Door],
     (provider, id, title): (&str, &str, &str),
     args: &serde_json::Value,
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let mut desktop = match connect(sockets) {
+    let mut desktop = match connect(doors) {
         Ok(desktop) => desktop,
         Err(failure) => return report(&failure, spelling, io),
     };
@@ -1016,14 +1016,14 @@ const OPEN_WITH_PREFIX: &str = "open-with:";
 /// name, getting it first when this device does not have it yet, exactly
 /// as search and Enter do; with files or links, open those in it.
 pub fn open(
-    sockets: &[ControlSocket],
+    doors: &[Door],
     app: &str,
     items: &[String],
     cwd: &Path,
     spelling: &Spelling,
     io: &mut Io<'_>,
 ) -> u8 {
-    let mut desktop = match connect(sockets) {
+    let mut desktop = match connect(doors) {
         Ok(desktop) => desktop,
         Err(failure) => return report(&failure, spelling, io),
     };
@@ -1074,8 +1074,8 @@ pub fn open(
 /// Names that complete `prefix` after `tilo do`: the desktop's own ranking
 /// of the titles it holds, so a word inside a title completes too.
 #[must_use]
-pub fn complete_actions(sockets: &[ControlSocket], prefix: &str) -> Vec<String> {
-    let Ok(mut desktop) = Desktop::connect(sockets) else {
+pub fn complete_actions(doors: &[Door], prefix: &str) -> Vec<String> {
+    let Ok(mut desktop) = Desktop::connect(doors) else {
         return Vec::new();
     };
     let query = slug(prefix).replace('-', " ");
@@ -1087,8 +1087,8 @@ pub fn complete_actions(sockets: &[ControlSocket], prefix: &str) -> Vec<String> 
 
 /// App names that complete `prefix` after `tilo open`.
 #[must_use]
-pub fn complete_apps(sockets: &[ControlSocket], prefix: &str) -> Vec<String> {
-    let Ok(mut desktop) = Desktop::connect(sockets) else {
+pub fn complete_apps(doors: &[Door], prefix: &str) -> Vec<String> {
+    let Ok(mut desktop) = Desktop::connect(doors) else {
         return Vec::new();
     };
     let query = slug(prefix).replace('-', " ");

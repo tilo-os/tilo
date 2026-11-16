@@ -11,14 +11,14 @@
 //! makes.
 //!
 //! The compositor starts the service with the session and answers what only
-//! it holds over the service's standard input and output ([`session`]). The
-//! service stops when that session closes.
+//! it holds over the service's standard input and output ([`door`]). The
+//! service stops when that door closes.
 
 pub use tilo_messaging::service::{
     MESSAGES_APP, PASSWORDS_APP, SERVICE, SERVICE_FD_ENV, client, link, wire,
 };
 
-pub mod session;
+pub mod door;
 
 #[cfg(feature = "service")]
 pub mod service;

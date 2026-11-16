@@ -1,16 +1,16 @@
 //! The room at the MCP server: how many connections it serves at once, counted as one whichever
 //! way a connection came in, and what the connection past them is told.
 //!
-//! A connection takes a [`Place`] before the API serves it and gives it back when it ends. A
-//! program of this login, and one inside an environment, takes it as the API accepts it. A
+//! A connection takes a [`Place`] before the door serves it and gives it back when it ends. A
+//! program of this login, and one inside an environment, takes it as the door accepts it. A
 //! connection from another of the person's devices takes it as it arrives, on its endpoint's
 //! thread, before the session's pass serves it ([`crate::device_mcp`]): it waits for that pass
-//! in the place it will be served in, so no more of them wait than the API serves, and one
-//! there is no place for is refused in the answer that would have said the API opened.
+//! in the place it will be served in, so no more of them wait than the door serves, and one
+//! there is no place for is refused in the answer that would have said the door opened.
 //!
 //! Who connects is decided first. A program of another account, one inside a sandbox, one
-//! outside the environment whose API it reached and a device that is not the person's are
-//! refused as that, whether or not the API has room: only a connection the API would serve is
+//! outside the environment whose door it reached and a device that is not the person's are
+//! refused as that, whether or not the door has room: only a connection the door would serve is
 //! told that it is full.
 //!
 //! Sixteen, and not more, for what a connection costs the session. Each one keeps two threads
@@ -37,7 +37,7 @@ pub(super) const NO_ROOM: &str = "the MCP server is serving 16 connections, as m
      closed";
 const _: () = assert!(MAX_CONNECTIONS == 16, "NO_ROOM names the bound");
 
-/// The API's places: one count for this login's programs, its environments' and the person's
+/// The door's places: one count for this login's programs, its environments' and the person's
 /// other devices.
 #[derive(Clone, Default)]
 pub(crate) struct Room {
@@ -59,7 +59,7 @@ impl Room {
     }
 }
 
-/// One connection's place at the API, given back when it is dropped: when the connection
+/// One connection's place at the door, given back when it is dropped: when the connection
 /// ended, or was never served.
 pub(crate) struct Place {
     taken: Arc<AtomicUsize>,
@@ -75,7 +75,7 @@ impl Drop for Place {
 mod tests {
     use super::*;
 
-    /// The API's accept loops and the endpoint that hears the person's other devices take
+    /// The door's accept loops and the endpoint that hears the person's other devices take
     /// places from threads of their own: however many ask at once, each place is held once, and
     /// one given back is there for the next.
     #[test]
@@ -89,7 +89,7 @@ mod tests {
         drop(tell);
         // Every thread has asked once the last of them let go of its sender.
         let mut held: Vec<Place> = took.iter().flatten().collect();
-        assert_eq!(held.len(), MAX_CONNECTIONS, "as many as the server serves");
+        assert_eq!(held.len(), MAX_CONNECTIONS, "as many as the door serves");
         assert!(room.take().is_none(), "and no more");
         drop(held.pop());
         let next = room.take();

@@ -11,7 +11,7 @@
 //! One connector runs per app, origin and workspace. It starts the first time something needs
 //! it and stays up when that goes, so what the service says while nothing shows the app waits
 //! in it. Each reader attaches over a connection of its own: one end is handed to the reader,
-//! the other to the connector over the socket it took with its launch
+//! the other to the connector over the door it took with its launch
 //! ([`runtime_portal::origin_connector`]).
 //!
 //! Nothing here is per app: which origins an app has is its manifest's, and what a connector
@@ -30,9 +30,9 @@ use runtime_portal::origin_connector;
 /// Which connector: the app, its origin and the workspace.
 pub type Key = (String, String, String);
 
-/// A running connector: the session's end of its socket.
+/// A running connector: the session's end of its door.
 struct Running {
-    socket: OwnedFd,
+    door: OwnedFd,
     /// How the connector's process is ended when the session ends.
     child: Child,
 }
@@ -77,9 +77,9 @@ impl ConnectorHost {
         let Some(mut running) = stopped else {
             return false;
         };
-        // The socket goes first: the connector's loop ends on it, and the child is then ended
+        // The door goes first: the connector's loop ends on it, and the child is then ended
         // rather than left to see a closed socket as a refused service.
-        drop(running.socket);
+        drop(running.door);
         let _ = running.child.kill();
         reap(running.child);
         tracing::info!(app, origin, workspace, "an origin connector stopped");
@@ -92,7 +92,7 @@ impl ConnectorHost {
     /// it is called only when a connector has to start.
     ///
     /// # Errors
-    /// The connection cannot be made, the connector cannot be started, or its socket is closed
+    /// The connection cannot be made, the connector cannot be started, or its door is closed
     /// and it cannot be started again.
     pub fn connection(
         &self,
@@ -106,34 +106,28 @@ impl ConnectorHost {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
         let mut running = self.running.lock_recover();
         if let Some(connector) = running.get(&key) {
-            match origin_connector::send_attachment(&connector.socket, &theirs) {
+            match origin_connector::send_attachment(&connector.door, &theirs) {
                 Ok(()) => return Ok(instance),
                 Err(error) => {
-                    tracing::info!(%error, app, origin, "an origin connector's socket is closed");
+                    tracing::info!(%error, app, origin, "an origin connector's door is closed");
                     running.remove(&key);
                 }
             }
         }
-        let (ours, socket) = origin_connector::pair()
-            .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
+        let (ours, door) = origin_connector::pair()
+            .map_err(|error| format!("no door for {app}'s {origin} connector: {error}"))?;
         let planned = plan(origin)?;
-        let child = Self::start(&planned, &socket)?;
+        let child = Self::start(&planned, &door)?;
         origin_connector::send_attachment(&ours, &theirs)
             .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
-        running.insert(
-            key,
-            Running {
-                socket: ours,
-                child,
-            },
-        );
+        running.insert(key, Running { door: ours, child });
         drop(running);
         Ok(instance)
     }
 
-    /// Start the connector `planned` ran, releasing the socket `socket` to it through the launcher's
+    /// Start the connector `planned` ran, releasing the door `door` to it through the launcher's
     /// registration gate, and following it on a thread of its own.
-    fn start(planned: &Planned, socket: &OwnedFd) -> Result<Child, String> {
+    fn start(planned: &Planned, door: &OwnedFd) -> Result<Child, String> {
         tilo_app_launch::name_surface(planned);
         let mut command = Command::new(&planned.program);
         command
@@ -163,9 +157,9 @@ impl ConnectorHost {
         if let Some(stderr) = child.stderr.take() {
             output.relay_stderr(stderr);
         }
-        // The connector's socket reaches it as a window's does: the launcher hands it into the
+        // The connector's door reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
-        gate.release_with_window_channel(socket.as_fd())
+        gate.release_with_window_door(door.as_fd())
             .map_err(|error| format!("{}'s connector was not released: {error}", planned.app))?;
         tracing::info!(app = %planned.app, argv = %planned.describe(), "an origin connector started");
         Ok(child)

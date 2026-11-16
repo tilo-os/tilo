@@ -859,7 +859,7 @@ impl State {
 
     /// Route one input event to the hosted surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
-        self.handle_input_at(event, Instant::now());
+        self.handle_input_at(event, tilo_clock::now());
     }
 
     /// The same, for an event whose device says when it began: a key pressed before a surface
@@ -898,7 +898,7 @@ impl State {
             tracing::debug!(refusal, "remote input refused");
             return;
         }
-        self.route_input(event, now);
+        self.route_input(event, tilo_clock::now());
     }
 
     pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant) {

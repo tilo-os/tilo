@@ -707,6 +707,41 @@ fn save_asks_the_chooser_with_a_bare_name() {
         );
         assert!(suggested.ends_with("-edited.png"), "got {suggested}");
     }
+
+    eprintln!("phase save_without_a_path_asks_the_chooser_and_writes_where_it_answers");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, _) = staged(dir.path(), 320, 240);
+        let mut hz = Harness::new(1000.0, 700.0);
+        hz.app().state().open_path(&path);
+        hz.frame_until_shown();
+        let shown = hz.app().state().edited_pixels().expect("rendered").clone();
+
+        let chosen = dir.path().join("chosen.png");
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
+        let _host = ui::host::enter(&services);
+        assert!(
+            hz.app().state().save_with_chooser(),
+            "nothing was offered to save"
+        );
+        let requests = recorder.pick_requests();
+        assert_eq!(requests.len(), 1, "Save asks the chooser once");
+        assert_eq!(requests[0].suggested_name(), Some("harbour-edited.png"));
+        tilo_test_env::wait_until("the chooser's save to finish", || {
+            hz.frame();
+            !hz.app().state().is_saving()
+        });
+        let back = pixels::decode(&std::fs::read(&chosen).unwrap()).expect("a PNG");
+        assert_eq!(
+            back.bytes, shown.bytes,
+            "the saved pixels differ from the shown ones"
+        );
+        assert!(
+            !std::path::Path::new("harbour-edited.png").exists(),
+            "Save wrote into the working directory"
+        );
+    }
 }
 
 tilo_test_env::scenario! {

@@ -3,7 +3,7 @@
 //!
 //! The session's own server serves only programs outside every sandbox, so the
 //! supervisor asks the session for a server bound to this environment
-//! ([`runtime_portal::environment_socket`]), binds it into the guest at
+//! ([`runtime_portal::environment_door`]), binds it into the guest at
 //! [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
 //! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The server belongs to the lease: it closes
 //! when the session ends. Outside a Tilo login, or when the session refuses, the guest
@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use runtime_portal::environment_socket::{Lease, Request, open};
+use runtime_portal::environment_door::{Lease, Request, open};
 use tilo_environment::Environment;
 
 use crate::store::Store;

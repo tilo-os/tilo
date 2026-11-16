@@ -126,6 +126,7 @@ impl Photos {
             });
         }
         self.drain_picker();
+        self.drain_save_chooser();
         self.drain_directory_import();
         self.refresh();
         let revision = Some(self.presented_revision);

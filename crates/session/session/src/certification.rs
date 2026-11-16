@@ -1097,7 +1097,7 @@ mod tests {
         (laptop, other, first, second)
     }
 
-    /// The certificate proposed for a phone, as the pairing API proposes it.
+    /// The certificate proposed for a phone, as the pairing door proposes it.
     fn proposed(person: [u8; 32]) -> (DeviceCert, [u8; 32]) {
         let candidate = tilo_identity_host::device_admin::Candidate {
             device_node_id: hex::encode([0x51; 32]),

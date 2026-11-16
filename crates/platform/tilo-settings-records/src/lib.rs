@@ -4,9 +4,9 @@
 //! A profile keeps its documents in `<root>/records/`. One process holds them at
 //! a time ([`Records::try_hold`]); the others read the same files, notice the
 //! holder's saves ([`Records::revision`], [`Records::watch`]) and hand it their
-//! writes through its socket ([`Records::open_socket`], [`Records::send`]). A
+//! writes through its door ([`Records::open_door`], [`Records::knock`]). A
 //! target without files, locks or local sockets (a browser page) reads nothing,
-//! holds what it opens and serves no socket.
+//! holds what it opens and has no door.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ pub const RECORDS_DIR: &str = "records";
 /// holder exits.
 #[cfg(not(target_arch = "wasm32"))]
 pub const LOCK_FILE: &str = "settings.lock";
-const SOCKET_FILE: &str = "settings.sock";
+const DOOR_FILE: &str = "settings.sock";
 /// The number of the save the documents stand at: written once both documents
 /// are written, so a follower looking while a save is under way reads the save
 /// before it, whole.
@@ -52,7 +52,7 @@ pub struct Watch {
     _watch: tilo_files::native::ChangeWatch,
 }
 
-pub struct Socket {
+pub struct Door {
     socket: PathBuf,
     closed: Arc<AtomicBool>,
 }
@@ -70,12 +70,12 @@ impl Records {
         &self.dir
     }
 
-    /// The holder's lock and socket, held while the process holds the profile,
+    /// The holder's lock and door, held while the process holds the profile,
     /// never part of the documents it keeps.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn runtime_files(&self) -> [PathBuf; 2] {
-        [self.dir.join(LOCK_FILE), self.dir.join(SOCKET_FILE)]
+        [self.dir.join(LOCK_FILE), self.dir.join(DOOR_FILE)]
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -163,53 +163,53 @@ impl Records {
         }
     }
 
-    /// Open the holder's socket: each request another process sends is answered
-    /// with what `answer` makes of it, on a thread of its own. However
-    /// deep the profile lives, its socket opens.
+    /// Open the holder's door: each request another process sends is answered
+    /// with what `answer` makes of it, on a thread of the door's own. However
+    /// deep the profile lives, its door opens.
     ///
     /// # Errors
-    /// The socket cannot be opened (`Unsupported` on a target without one), so no
+    /// The door cannot be opened (`Unsupported` on a target without one), so no
     /// other process can hand this one its writes.
-    pub fn open_socket(
+    pub fn open_door(
         &self,
         answer: impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
-    ) -> std::io::Result<Socket> {
-        socket::open(&self.dir.join(SOCKET_FILE), Box::new(answer))
+    ) -> std::io::Result<Door> {
+        door::open(&self.dir.join(DOOR_FILE), Box::new(answer))
     }
 
-    /// Send `request` through the holder's socket and read its answer.
+    /// Send `request` through the holder's door and read its answer.
     ///
     /// # Errors
-    /// No holder answers: `NotFound` where it never opened a socket,
+    /// No holder answers: `NotFound` where it never opened a door,
     /// `Unsupported` on a target without one, else what the socket said.
-    pub fn send(&self, request: &[u8]) -> std::io::Result<Vec<u8>> {
-        socket::send(&self.dir.join(SOCKET_FILE), request)
+    pub fn knock(&self, request: &[u8]) -> std::io::Result<Vec<u8>> {
+        door::knock(&self.dir.join(DOOR_FILE), request)
     }
 }
 
-impl Drop for Socket {
+impl Drop for Door {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::Release);
-        socket::close(&self.socket);
+        door::close(&self.socket);
     }
 }
 
 type Answer = Box<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 
 #[cfg(unix)]
-mod socket {
+mod door {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{Answer, Socket};
+    use super::{Answer, Door};
 
     const MAX_MESSAGE: u64 = 4 * 1024 * 1024;
 
-    pub(super) fn open(socket: &Path, answer: Answer) -> std::io::Result<Socket> {
-        // The socket of a holder that ended without closing it.
+    pub(super) fn open(socket: &Path, answer: Answer) -> std::io::Result<Door> {
+        // The door of a holder that ended without closing it.
         match std::fs::remove_file(socket) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
             _ => {}
@@ -217,7 +217,7 @@ mod socket {
         let listener = tilo_files::native::socket::bind(socket)?;
         let closed = Arc::new(AtomicBool::new(false));
         let watching = Arc::clone(&closed);
-        tilo_rt::spawn_thread("tilo-settings-socket", move || {
+        tilo_rt::spawn_thread("tilo-settings-door", move || {
             for stream in listener.incoming() {
                 if watching.load(Ordering::Acquire) {
                     return;
@@ -227,7 +227,7 @@ mod socket {
                 }
             }
         })?;
-        Ok(Socket {
+        Ok(Door {
             socket: socket.to_path_buf(),
             closed,
         })
@@ -246,7 +246,7 @@ mod socket {
         let _ = (&*stream).write_all(&reply);
     }
 
-    pub(super) fn send(socket: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
+    pub(super) fn knock(socket: &Path, request: &[u8]) -> std::io::Result<Vec<u8>> {
         let stream = tilo_files::native::socket::connect(socket)?;
         let mut body = request.to_vec();
         body.push(b'\n');
@@ -256,7 +256,7 @@ mod socket {
         if line.pop() != Some(b'\n') {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "the holder closed the socket without an answer",
+                "the holder closed the door without an answer",
             ));
         }
         Ok(line)
@@ -269,22 +269,22 @@ mod socket {
 }
 
 #[cfg(not(unix))]
-mod socket {
+mod door {
     use std::path::Path;
 
-    use super::{Answer, Socket};
+    use super::{Answer, Door};
 
-    pub(super) fn open(_socket: &Path, _answer: Answer) -> std::io::Result<Socket> {
+    pub(super) fn open(_socket: &Path, _answer: Answer) -> std::io::Result<Door> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "no socket to another process's settings here",
+            "no door to another process's settings here",
         ))
     }
 
-    pub(super) fn send(_socket: &Path, _request: &[u8]) -> std::io::Result<Vec<u8>> {
+    pub(super) fn knock(_socket: &Path, _request: &[u8]) -> std::io::Result<Vec<u8>> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "no socket to another process's settings here",
+            "no door to another process's settings here",
         ))
     }
 
@@ -317,31 +317,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_socket_answers_a_request_and_closes_when_dropped() {
+    fn the_door_answers_a_knock_and_closes_when_dropped() {
         let root = tempfile::tempdir().unwrap();
-        socket_answers_and_closes(&Records::of(root.path()));
+        door_answers_and_closes(&Records::of(root.path()));
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_profile_deeper_than_a_socket_path_still_has_a_socket() {
+    fn a_profile_deeper_than_a_socket_path_still_has_a_door() {
         let root = tempfile::tempdir().unwrap();
         let records = Records::of(&root.path().join("a".repeat(60)).join("b".repeat(60)));
-        let [_, socket] = records.runtime_files();
-        assert!(socket.as_os_str().len() > 108, "{}", socket.display());
-        socket_answers_and_closes(&records);
+        let [_, door] = records.runtime_files();
+        assert!(door.as_os_str().len() > 108, "{}", door.display());
+        door_answers_and_closes(&records);
     }
 
     #[cfg(unix)]
-    fn socket_answers_and_closes(records: &Records) {
+    fn door_answers_and_closes(records: &Records) {
         std::fs::create_dir_all(records.dir()).unwrap();
-        let socket = records
-            .open_socket(|request| [b"seen ", request].concat())
+        let door = records
+            .open_door(|request| [b"seen ", request].concat())
             .unwrap();
-        assert_eq!(records.send(b"hello").unwrap(), b"seen hello");
-        drop(socket);
+        assert_eq!(records.knock(b"hello").unwrap(), b"seen hello");
+        drop(door);
         assert_eq!(
-            records.send(b"again").unwrap_err().kind(),
+            records.knock(b"again").unwrap_err().kind(),
             std::io::ErrorKind::NotFound
         );
     }

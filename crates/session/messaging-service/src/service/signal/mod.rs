@@ -533,11 +533,11 @@ impl super::flow::Provider for Signal {
         let scope = linked.scope();
         service.publish(
             identity,
-            crate::session::Publication {
+            crate::door::Publication {
                 account: identity.owner.account.clone(),
                 name: name.into(),
                 generation: identity.owner.linking_generation,
-                kind: crate::session::PublicationKind::Signal { aci: aci.clone() },
+                kind: crate::door::PublicationKind::Signal { aci: aci.clone() },
             },
         )?;
         let account = service.account(identity, credential, &scope, Account::new)?;

@@ -28,13 +28,13 @@ pub(crate) fn answered(started: Started) -> ResourceOperationStart {
     }
 }
 
-/// The system services' published side, on the action plane like every hosted surface: one action
-/// host for all of them.
-struct ServiceSurface {
+/// The system services' published side, behind the session's door like every hosted surface: one
+/// action host for all of them.
+struct ServiceDoor {
     services: Rc<RefCell<Services>>,
 }
 
-/// A surface app reaches the desktop's actions exactly as a person's palette does: through the plane
+/// A surface app reaches the desktop's actions exactly as a person's palette does: through the door
 /// over every surface it hosts.
 impl surfaces::ActionApi for tilo_session_core::surfaces::Surfaces {
     fn resources(&mut self) -> Vec<ResourceSpec> {
@@ -55,13 +55,13 @@ impl surfaces::ActionApi for tilo_session_core::surfaces::Surfaces {
     }
 }
 
-impl Published for ServiceSurface {
+impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         self.services.borrow().resources()
     }
 
     /// The lock screen asks the session through here while it is locked, so the services stay
-    /// off the plane; only the lock's own resource is offered then.
+    /// behind the door; only the lock's own resource is offered then.
     fn serves_while_locked(&self) -> bool {
         true
     }
@@ -140,7 +140,7 @@ pub(crate) struct Collaboration<'a> {
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
     /// The records' content in search's index, read from the records.
     pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
-    /// The programs agents write in this session's tasks, run by it.
+    /// The programs agents write in this session's tasks, run by its door.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions, offered to a turn's agent as the broker's steps.
     pub session_actions: Option<std::sync::Arc<crate::session_actions::SessionActions>>,
@@ -338,7 +338,7 @@ pub(crate) fn start_action_plane(
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             journal_root: options.state.as_deref().map(plane::journal_root),
-            // What each installed app declares it may do on the action API,
+            // What each installed app declares it may do on the action door,
             // read by search's own worker off the session's thread.
             lists: options.lists.clone(),
             // Files' waits for the drive and app lists to change, which the tools service answers.
@@ -354,8 +354,8 @@ pub(crate) fn start_action_plane(
             fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
-    // The store's link is answered by this session's own endpoint, in `sync` : this session takes
-    // it from there, once the broker is up to hand what a sibling writes to the apps that have the
+    // The store's link is answered by this session's own endpoint, in `sync` : the door takes it
+    // from there, once the broker is up to hand what a sibling writes to the apps that have the
     // record open.
     let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
         (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
@@ -469,9 +469,9 @@ fn offload_route(
     actions.offload_route(std::sync::Arc::clone(content))
 }
 
-/// The services, published on the plane.
+/// The services, published on the door.
 pub(crate) fn mount_services(
-    surfaces: &mut Surfaces,
+    doors: &mut Surfaces,
     started: Vec<Box<dyn Service>>,
 ) -> Rc<RefCell<Services>> {
     let mut services = Services::default();
@@ -479,7 +479,7 @@ pub(crate) fn mount_services(
         services.add(service);
     }
     let services = Rc::new(RefCell::new(services));
-    surfaces.add(Rc::new(RefCell::new(ServiceSurface {
+    doors.add(Rc::new(RefCell::new(ServiceDoor {
         services: Rc::clone(&services),
     })));
     services

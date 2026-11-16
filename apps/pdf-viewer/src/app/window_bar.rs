@@ -99,7 +99,7 @@ impl PdfApp {
                 bar.entry(
                     Icon::Download.name(),
                     crate::t("pdf-bar-save"),
-                    PdfEffect::SaveAs,
+                    PdfEffect::SaveAs { path: None },
                 )
                 .enabled(self.raster_active())
                 .in_menu(),
@@ -163,7 +163,7 @@ impl PdfApp {
             PdfEffect::OpenPdf { path: None } if !self.opening() => {
                 self.request_open_via_portal();
             }
-            PdfEffect::SaveAs => self.ask_save(),
+            PdfEffect::SaveAs { path: None } => self.request_save_via_portal(),
             _ => {}
         }
     }

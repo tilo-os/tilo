@@ -138,24 +138,24 @@ pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail::engin
 pub const CONNECTOR_ORIGIN_ENV: &str = runtime_portal::origin_connector::ORIGIN_ENV;
 
 /// Run the connector for `origin` this process was started as (`TILO_TILOLANG_CONNECTOR`), on
-/// the socket the launcher handed it, for the settings' accounts, until the session closes the
-/// socket.
+/// the door the launcher handed it, for the settings' accounts, until the session closes the
+/// door.
 #[cfg(feature = "engine")]
 pub fn run_connector(origin: &str) -> Result<(), String> {
     if origin != "imap" {
         return Err(format!("there is no connector for the origin `{origin}`"));
     }
-    let socket = runtime_portal::origin_connector::take_socket()
-        .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
+    let door = runtime_portal::origin_connector::take_door()
+        .ok_or_else(|| "the launcher handed the connector no door".to_owned())?;
     let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&socket) {
+        match runtime_portal::origin_connector::receive_attachment(&door) {
             Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
             Ok(None) => {
-                tracing::info!("the session closed the mail connector's socket");
+                tracing::info!("the session closed the mail connector's door");
                 None
             }
             Err(error) => {
-                tracing::error!(%error, "the mail connector's socket failed: it takes no more instances");
+                tracing::error!(%error, "the mail connector's door failed: it takes no more instances");
                 None
             }
         }

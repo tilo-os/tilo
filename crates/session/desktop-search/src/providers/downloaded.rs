@@ -18,8 +18,8 @@
 
 use std::collections::BTreeMap;
 
-use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApp, DownloadedKind};
+use tilo_actions::{ActionAddress, ActionDescriptor};
 use ui::icons::Icon;
 use ui::search::FieldWeight;
 use ui::search::system::ResourceKind;
@@ -156,6 +156,7 @@ fn app_row(
         }
     } else {
         let resource = wire::app(&app.desktop_id);
+        let address = ActionAddress::new(resource.as_str(), wire::LOCATE);
         let descriptor = locate.get(resource.as_str()).cloned().map(|mut action| {
             // The row names the app whose file the person is looking for,
             // not the action alone: several may say that at once.
@@ -166,8 +167,12 @@ fn app_row(
             action
         });
         Target::Invoke(Box::new(InvokeTarget {
+            app: DESKTOP_APP.into(),
+            workspace: workspace.to_owned(),
+            address,
+            arguments: serde_json::Map::new(),
             descriptor,
-            ..InvokeTarget::action(DESKTOP_APP, workspace, &resource, wire::LOCATE)
+            place: crate::model::LaunchPlace::Focus,
         }))
     };
     let field = vec![
@@ -207,17 +212,23 @@ fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, Field
         serde_json::Value::String(app.desktop_id.clone()),
     );
     let uninstall = Target::Invoke(Box::new(InvokeTarget {
+        app: DESKTOP_APP.into(),
+        workspace: workspace.to_owned(),
+        address: ActionAddress::new(APPS_RESOURCE, ASK_UNINSTALL),
         arguments: ask,
-        ..InvokeTarget::action(DESKTOP_APP, workspace, APPS_RESOURCE, ASK_UNINSTALL)
+        descriptor: None,
+        place: crate::model::LaunchPlace::Focus,
     }));
     // Taking it off the apps moves nothing and asks nothing, so its row is
     // the registry's own action.
-    let remove = Target::Invoke(Box::new(InvokeTarget::action(
-        DESKTOP_APP,
-        workspace,
-        wire::app(&app.desktop_id),
-        wire::REMOVE,
-    )));
+    let remove = Target::Invoke(Box::new(InvokeTarget {
+        app: DESKTOP_APP.into(),
+        workspace: workspace.to_owned(),
+        address: ActionAddress::new(wire::app(&app.desktop_id), wire::REMOVE),
+        arguments: serde_json::Map::new(),
+        descriptor: None,
+        place: crate::model::LaunchPlace::Focus,
+    }));
     [
         action_row(
             app,
@@ -310,8 +321,12 @@ fn offer_row(workspace: &str, offer: &wire::DownloadedOffer) -> (Vec<(String, Fi
         score: 0,
         icon: None,
         target: Target::Invoke(Box::new(InvokeTarget {
+            app: DESKTOP_APP.into(),
+            workspace: workspace.to_owned(),
+            address: ActionAddress::new(wire::RESOURCE, wire::ADD),
             arguments,
-            ..InvokeTarget::action(DESKTOP_APP, workspace, wire::RESOURCE, wire::ADD)
+            descriptor: None,
+            place: crate::model::LaunchPlace::Focus,
         })),
     };
     (field, hit)
@@ -353,7 +368,6 @@ impl Source for Downloaded {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::ActionAddress;
 
     fn reading() -> wire::DownloadedApps {
         wire::DownloadedApps {

@@ -96,14 +96,14 @@ impl Plane {
         Arc::clone(&self.route)
     }
 
-    /// The store an app uploads content into through the content put API,
+    /// The store an app uploads content into through the content put door,
     /// addressed by the hash its record then references.
     pub(crate) fn puts(&self) -> Arc<dyn ContentStoreServices> {
         Arc::new(Puts(Arc::clone(&self.shelf)))
     }
 
     /// Keep `bytes` as content of `workspace`, under the same store the
-    /// content put API serves its apps: what the session itself makes of a
+    /// content put door serves its apps: what the session itself makes of a
     /// workspace — the picture a window it does not run shows — is read by
     /// the same addresses as what the workspace's apps store.
     ///
@@ -588,7 +588,7 @@ fn component(value: &str) -> bool {
         && !value.bytes().all(|byte| byte == b'.')
 }
 
-/// The content put API's store: bytes an app uploads into its workspace,
+/// The content put door's store: bytes an app uploads into its workspace,
 /// kept beside the content its records reference.
 struct Puts(Arc<Shelf>);
 

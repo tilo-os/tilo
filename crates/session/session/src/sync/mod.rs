@@ -17,7 +17,7 @@ pub use tilo_session_client::{
 pub mod layout;
 
 /// How long coming into a workspace may take: redeeming an invitation asks its host three times,
-/// each exchange with its own bound, and entering through an API asks the API's host on a session
+/// each exchange with its own bound, and entering through a door asks the door's host on a session
 /// and then takes the workspace's state by the membership exchange.
 pub(crate) const REDEEM_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -36,7 +36,7 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
         .saturating_add(SETTLE_WITHIN.as_secs()),
 );
 
-/// A workspace this session is joining: the way this device comes into it (the workspace's API,
+/// A workspace this session is joining: the way this device comes into it (the workspace's door,
 /// or an invitation that admits it), and the workspace on the shell made for it, which is where what
 /// the workspace holds arrives.
 #[cfg(target_os = "linux")]
@@ -44,10 +44,10 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 pub struct Enrolling {
     /// The workspace joined.
     pub workspace_id: tilo_desktop_model::WorkspaceId,
-    /// How this device comes in: through the workspace's API, entered on a session with the
-    /// API's host, or with an invitation verified for this person before it got here.
+    /// How this device comes in: through the workspace's door, entered on a session with the
+    /// door's host, or with an invitation verified for this person before it got here.
     pub way: tilo_workspace_directory::Way,
-    /// How the workspace's people see the person: the name an API entry gives it.
+    /// How the workspace's people see the person: the name a door entry gives it.
     pub name: String,
     /// Renewing this device's certificate before it is presented, when this device joined a
     /// person's identity: the ask the session's pass may already have under way, waited for rather

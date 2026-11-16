@@ -745,7 +745,7 @@ fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged
 }
 
 /// A layout of places as a person meets it, from one build of the shell and one window of the
-/// shell at 1280×800: each window's bar keeps one button, each place shows its app, and its strips
+/// shell at 1280×800: each window's bar keeps one door, each place shows its app, and its strips
 /// stand as windows. No part changes the window: each reads its widgets, and the second the
 /// places the layout's own record holds.
 #[test]
@@ -890,7 +890,7 @@ fn a_place_the_shell_has_shows_its_app(staged: &stage::Staged, packages: &Rc<sta
 }
 
 /// One bar, one "…": the window's decorations in their floating pill, the app's own controls in
-/// its header row, and one button between them for what does not fit. `staged` is the layout of
+/// its header row, and one door between them for what does not fit. `staged` is the layout of
 /// places.
 fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
@@ -904,22 +904,22 @@ fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
             window.x1,
             window.y0 + 56.0_f64.min(window.height()),
         );
-        // A button: an overflow button, or a menu button, drawn in the bar.
-        let buttons: Vec<&dyn Widget> = ["OverflowButton", "MenuButton"]
+        // A door: an overflow button, or a menu button, drawn in the bar.
+        let doors: Vec<&dyn Widget> = ["OverflowDoor", "MenuButton"]
             .iter()
             .flat_map(|name| named(frame, name))
-            .filter(|button| {
-                let rect = button.get_rect();
+            .filter(|door| {
+                let rect = door.get_rect();
                 rect.width() > 0.0 && rect.center().y >= band.y0 && rect.center().y <= band.y1
             })
             .collect();
         assert!(
-            buttons.len() <= 1,
-            "the window at {window:?} shows {} buttons in its one bar: {:?}",
-            buttons.len(),
-            buttons
+            doors.len() <= 1,
+            "the window at {window:?} shows {} doors in its one bar: {:?}",
+            doors.len(),
+            doors
                 .iter()
-                .map(|button| (button.name(), button.get_rect()))
+                .map(|door| (door.name(), door.get_rect()))
                 .collect::<Vec<_>>()
         );
     }
@@ -1251,7 +1251,7 @@ fn desktop_read_out(staged: &mut stage::Staged, size: (u32, u32)) -> Vec<(bool, 
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never every
-    // action as a button of its own, and one button to what does not fit in one row.
+    // action as a button of its own, and one door to what does not fit in one row.
     tilo_ui_host::i18n::ensure();
     let packages = tasks_packages();
     for size in [(1280, 800), (390, 844)] {
@@ -1998,7 +1998,7 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         );
         assert!(
             !control.menu,
-            "what the window is for never hides behind the row's button: {control:?}"
+            "what the window is for never hides behind the row's door: {control:?}"
         );
         assert!(
             control.rect[2] > 0.0 && control.rect[3] > 0.0,

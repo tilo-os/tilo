@@ -37,7 +37,7 @@ fn session() -> Session {
 fn options(state: Option<std::path::PathBuf>) -> Options {
     Options {
         person: ADA.to_owned(),
-        state: Some(state.unwrap_or_else(crate::common::device_state)),
+        state: Some(state.unwrap_or_else(crate::common::seated_state)),
         collab: false,
         ..Options::default()
     }
@@ -342,7 +342,7 @@ fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    let state = crate::common::seated_state();
     let (window, strip) = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -463,7 +463,7 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    let state = crate::common::seated_state();
     let mut here = session_in(Some(state.clone()));
     step(&mut here);
     let window = open_window(&mut here, "org.example.Notes");
@@ -509,7 +509,7 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    let state = crate::common::seated_state();
     let place = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -558,7 +558,7 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    let state = crate::common::seated_state();
     let (window, place) = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);

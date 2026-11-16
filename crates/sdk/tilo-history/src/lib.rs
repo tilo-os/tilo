@@ -308,10 +308,8 @@ pub fn message_keys(app: &str, what: &Did) -> Vec<String> {
 /// sentence says the item unnamed instead of printing the id.
 pub fn item_label(item: &tilo_actions::ActionItem) -> Option<&str> {
     let label = item.label.trim();
-    let id = item.id.trim();
-    // A name that happens to sit inside the id ("chat" in "c_chat") is still a name: only the
-    // id itself, its last segment, or a UUID is what a record with no title falls back to.
-    let repeats_id = id == label || id.rsplit(['/', ':']).next() == Some(label) || is_uuid(label);
+    let id = item.id.trim().to_ascii_lowercase();
+    let repeats_id = id.ends_with(&label.to_ascii_lowercase()) || is_uuid(label);
     (!label.is_empty() && !repeats_id).then_some(label)
 }
 

@@ -1,6 +1,5 @@
 //! A passing acknowledgement: "Link copied", said once in a small pill near the bottom of the surface,
-//! then gone. One that can be taken back ("Notes closed") carries the one button that does it, and
-//! stays long enough to reach it.
+//! then gone.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -12,7 +11,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, TaffyTreeExt as _, Widget};
+use crate::widget::{TaffyTreeExt as _, Widget};
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Position, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -20,38 +19,14 @@ use vello::peniko::{BlendMode, Fill};
 
 pub const ACKNOWLEDGEMENT_HOLD: Duration = Duration::from_millis(1_500);
 
-/// How long a pill with a button stays: long enough to read it and reach the button.
-pub const ACKNOWLEDGEMENT_ACTION_HOLD: Duration = Duration::from_millis(6_000);
-
 fn motion_for(reduce_motion: bool) -> crate::tokens::EffectiveMotion {
     crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), reduce_motion)
-}
-
-/// How a pill is drawn: its opacity, and whether the pointer is over its button or pressing it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Look {
-    pub alpha: f32,
-    pub hovered: bool,
-    pub pressed: bool,
-}
-
-impl Look {
-    /// A pill at `alpha` , its button at rest.
-    #[must_use]
-    pub fn at(alpha: f32) -> Self {
-        Self {
-            alpha,
-            ..Self::default()
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Acknowledgement {
     text: String,
     raised_at: Instant,
-    /// The label of the button that takes the action back, when it can be.
-    action: Option<String>,
 }
 
 impl Acknowledgement {
@@ -59,36 +34,15 @@ impl Acknowledgement {
         Self {
             text: text.into(),
             raised_at,
-            action: None,
         }
-    }
-
-    /// The pill offers a button labelled `label` .
-    #[must_use]
-    pub fn with_action(mut self, label: impl Into<String>) -> Self {
-        self.action = Some(label.into());
-        self
     }
 
     pub fn text(&self) -> &str {
         &self.text
     }
 
-    /// The label of its button, when it has one.
-    pub fn action(&self) -> Option<&str> {
-        self.action.as_deref()
-    }
-
-    fn hold(&self) -> Duration {
-        if self.action.is_some() {
-            ACKNOWLEDGEMENT_ACTION_HOLD
-        } else {
-            ACKNOWLEDGEMENT_HOLD
-        }
-    }
-
     pub fn is_live(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.raised_at) < self.hold()
+        now.saturating_duration_since(self.raised_at) < ACKNOWLEDGEMENT_HOLD
     }
 
     /// Its opacity at `now`: whole until the fade, then down to nothing.
@@ -113,18 +67,18 @@ impl Acknowledgement {
     }
 
     fn span(&self) -> (Instant, Instant) {
-        (self.raised_at, self.raised_at + self.hold())
+        (self.raised_at, self.raised_at + ACKNOWLEDGEMENT_HOLD)
     }
 
     /// When the host must next draw without input: the fade's start, or
     /// the moment it goes.
     pub fn next_wake_at(&self, now: Instant, reduce_motion: bool) -> Option<Instant> {
-        let gone = self.raised_at + self.hold();
         let fade_from = crate::motion::Transient::exit_starts(
             crate::motion::Transient::CONFIRMATION,
-            gone,
+            self.raised_at + ACKNOWLEDGEMENT_HOLD,
             motion_for(reduce_motion),
         );
+        let gone = self.raised_at + ACKNOWLEDGEMENT_HOLD;
         if !reduce_motion && now < fade_from {
             Some(fade_from)
         } else if now < gone {
@@ -134,15 +88,12 @@ impl Acknowledgement {
         }
     }
 
-    fn rect_in(
-        viewport: Rect,
-        content_width: f64,
-        height: f64,
-        pad: (f64, f64),
-        theme: &Theme,
-    ) -> Rect {
+    fn rect_in(viewport: Rect, text_width: f64, text_height: f64, theme: &Theme) -> Rect {
+        let pad_x = f64::from(theme.tokens.spacing.s4);
+        let pad_y = f64::from(theme.tokens.spacing.s2);
         let inset = f64::from(theme.tokens.spacing.s8);
-        let width = (content_width + pad.0 + pad.1).min((viewport.width() - 2.0 * inset).max(0.0));
+        let width = (text_width + 2.0 * pad_x).min((viewport.width() - 2.0 * inset).max(0.0));
+        let height = text_height + 2.0 * pad_y;
         let center_x = viewport.center().x;
         let y1 = viewport.y1 - inset;
         Rect::new(
@@ -153,7 +104,6 @@ impl Acknowledgement {
         )
     }
 
-    /// Draw the pill in `viewport` as `look` says; where its button stands, when it has one.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -161,47 +111,22 @@ impl Acknowledgement {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         viewport: Rect,
-        look: Look,
-    ) -> Option<Rect> {
-        let Look {
-            alpha,
-            hovered,
-            pressed,
-        } = look;
+        alpha: f32,
+    ) {
         if alpha <= 0.0 || self.text.is_empty() {
-            return None;
+            return;
         }
         let style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
         let inset = f64::from(theme.tokens.spacing.s8);
         let pad_x = f64::from(theme.tokens.spacing.s4);
-        let pad_y = f64::from(theme.tokens.spacing.s2);
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         let gap = f64::from(theme.tokens.spacing.s2);
-        let button = self.action.as_deref().map(|label| {
-            let face = ButtonFace::new(Rect::ZERO, label)
-                .role(ButtonRole::Primary)
-                .control_size(ControlSize::Small);
-            (
-                label,
-                face.intrinsic_width(text_renderer, theme),
-                ButtonFace::height(ControlSize::Small, theme),
-            )
-        });
-        // A button stands in the pill's end, as far from its edges as from its top and bottom.
-        let button_inset = f64::from(theme.tokens.spacing.s1);
-        let (button_width, button_height) = button.map_or((0.0, 0.0), |(_, w, h)| (w, h));
-        let trailing = if button.is_some() {
-            pad_x + button_width + button_inset
-        } else {
-            pad_x
-        };
-        let max_text = (viewport.width() - 2.0 * inset - pad_x - trailing - icon - gap).max(0.0);
+        let max_text = (viewport.width() - 2.0 * (inset + pad_x) - icon - gap).max(0.0);
         let (text_width, text_height) = text_renderer.measure_style(&self.text, None, &style);
         let text_width = f64::from(text_width).min(max_text);
         let text_height = f64::from(text_height);
         let content_width = icon + gap + text_width;
-        let height = (text_height.max(icon) + 2.0 * pad_y).max(button_height + 2.0 * button_inset);
-        let rect = Self::rect_in(viewport, content_width, height, (pad_x, trailing), theme);
+        let rect = Self::rect_in(viewport, content_width, text_height.max(icon), theme);
         let radius = rect.height() / 2.0;
         let faded = alpha < 0.999;
         if faded {
@@ -230,7 +155,7 @@ impl Acknowledgement {
         );
         crate::surface::floating_edge(scene, transform, rect, radius, theme);
         let ink = colors.on_surface(colors.surfaces.overlay).ink;
-        let x0 = rect.x0 + pad_x;
+        let x0 = rect.center().x - content_width / 2.0;
         let center_y = rect.center().y;
         crate::icons::draw_icon(
             scene,
@@ -254,26 +179,9 @@ impl Acknowledgement {
             max_width,
             &style,
         );
-        let button = button.map(|(label, width, height)| {
-            let x1 = rect.x1 - button_inset - (radius - height / 2.0 - button_inset).max(0.0);
-            let at = Rect::new(
-                x1 - width,
-                center_y - height / 2.0,
-                x1,
-                center_y + height / 2.0,
-            );
-            let face = ButtonFace::new(at, label)
-                .role(ButtonRole::Primary)
-                .control_size(ControlSize::Small)
-                .hovered(hovered)
-                .pressed(pressed);
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            at
-        });
         if faded {
             scene.pop_layer();
         }
-        button
     }
 
     pub fn accessibility(&self) -> AccessNode {
@@ -283,63 +191,16 @@ impl Acknowledgement {
     }
 }
 
-/// What a pill's button does.
-type Run = Rc<dyn Fn()>;
-
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Acknowledger {
     current: Rc<RefCell<Option<Acknowledgement>>>,
-    /// What the current pill's button does, when it has one.
-    run: Rc<RefCell<Option<Run>>>,
     raised: Rc<Cell<u64>>,
-}
-
-impl std::fmt::Debug for Acknowledger {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Acknowledger")
-            .field("current", &self.current)
-            .field("raised", &self.raised)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Acknowledger {
     pub fn say(&self, text: impl Into<String>) {
-        self.raise(Acknowledgement::new(text, crate::time::now()), None);
-    }
-
-    /// Say `text` with a button labelled `label` that runs `run` : what the person just did, and
-    /// the one press that takes it back.
-    pub fn say_with_action(
-        &self,
-        text: impl Into<String>,
-        label: impl Into<String>,
-        run: impl Fn() + 'static,
-    ) {
-        self.raise(
-            Acknowledgement::new(text, crate::time::now()).with_action(label),
-            Some(Rc::new(run)),
-        );
-    }
-
-    fn raise(&self, said: Acknowledgement, run: Option<Run>) {
-        *self.current.borrow_mut() = Some(said);
-        *self.run.borrow_mut() = run;
+        *self.current.borrow_mut() = Some(Acknowledgement::new(text, crate::time::now()));
         self.raised.set(self.raised.get().wrapping_add(1));
-    }
-
-    /// Press the current pill's button: the pill goes and what it offered runs. Whether there was
-    /// one to press.
-    pub fn press_action(&self) -> bool {
-        let live = self.current(crate::time::now()).is_some();
-        let run = self.run.borrow_mut().take();
-        let Some(run) = run.filter(|_| live) else {
-            return false;
-        };
-        *self.current.borrow_mut() = None;
-        self.raised.set(self.raised.get().wrapping_add(1));
-        run();
-        true
     }
 
     pub fn current(&self, now: Instant) -> Option<Acknowledgement> {
@@ -355,13 +216,8 @@ impl Acknowledger {
 pub struct AcknowledgementLayer {
     acknowledger: Acknowledger,
     rect: Rect,
-    drawn: Cell<Option<(u64, bool, bool, bool)>>,
+    drawn: Cell<Option<(u64, bool)>>,
     reduce_motion: bool,
-    /// Where the pill's button was last drawn.
-    button: Cell<Option<Rect>>,
-    /// The pointer is over the button, and a press began on it.
-    hovered: bool,
-    pressed: bool,
 }
 
 impl AcknowledgementLayer {
@@ -371,9 +227,6 @@ impl AcknowledgementLayer {
             rect: Rect::ZERO,
             drawn: Cell::new(None),
             reduce_motion: false,
-            button: Cell::new(None),
-            hovered: false,
-            pressed: false,
         }
     }
 
@@ -389,36 +242,6 @@ impl AcknowledgementLayer {
 
     fn showing(&self, now: Instant) -> bool {
         self.acknowledger.current(now).is_some()
-    }
-
-    /// The pointer moved to `at` (logical, in the surface the layer draws on), or left it. Whether
-    /// it is over the pill's button.
-    pub fn pointer_at(&mut self, at: Option<Point>) -> bool {
-        self.hovered = at.is_some_and(|at| self.button_at(at));
-        if !self.hovered {
-            self.pressed = false;
-        }
-        self.hovered
-    }
-
-    /// The primary button went down (`down`) or up at `at` . Whether the pill's button takes it: a
-    /// press that begins on the button is the button's, and its release there presses it.
-    pub fn press(&mut self, at: Point, down: bool) -> bool {
-        let on = self.button_at(at);
-        if down {
-            self.pressed = on;
-            return on;
-        }
-        let pressed = std::mem::take(&mut self.pressed);
-        if pressed && on {
-            self.acknowledger.press_action();
-        }
-        pressed
-    }
-
-    fn button_at(&self, at: Point) -> bool {
-        self.acknowledger.current(crate::time::now()).is_some()
-            && self.button.get().is_some_and(|button| button.contains(at))
     }
 }
 
@@ -469,39 +292,17 @@ impl Widget for AcknowledgementLayer {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
         let current = self.acknowledger.current(now);
-        let button = current.as_ref().and_then(|ack| {
+        if let Some(ack) = &current {
             let alpha = ack.alpha_at(now, theme.reduce_motion);
-            ack.draw(
-                scene,
-                transform,
-                text,
-                theme,
-                self.rect,
-                Look {
-                    alpha,
-                    hovered: self.hovered,
-                    pressed: self.pressed,
-                },
-            )
-        });
-        self.button.set(button);
-        self.drawn.set(Some((
-            self.acknowledger.raised.get(),
-            current.is_some(),
-            self.hovered,
-            self.pressed,
-        )));
+            ack.draw(scene, transform, text, theme, self.rect, alpha);
+        }
+        self.drawn
+            .set(Some((self.acknowledger.raised.get(), current.is_some())));
     }
 
     fn needs_redraw(&self) -> bool {
         let now = crate::time::now();
-        self.drawn.get()
-            != Some((
-                self.acknowledger.raised.get(),
-                self.showing(now),
-                self.hovered,
-                self.pressed,
-            ))
+        self.drawn.get() != Some((self.acknowledger.raised.get(), self.showing(now)))
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -518,22 +319,11 @@ impl Widget for AcknowledgementLayer {
             .and_then(|ack| ack.next_wake_at(now, self.reduce_motion))
     }
 
-    /// The words, and the button that takes the action back where it is drawn: a reader presses it
-    /// as the pointer does.
     fn accessibility(&self) -> Option<AccessNode> {
-        let now = crate::time::now();
-        let Some(ack) = self.acknowledger.current(now) else {
-            return Some(Acknowledgement::new("", now).accessibility());
-        };
-        let button = ack.action().zip(self.button.get()).map(|(label, rect)| {
-            AccessNode::new(Role::Button)
-                .with_name(label)
-                .with_bounds(rect)
-        });
-        Some(
-            ack.accessibility()
-                .with_children(button.into_iter().collect()),
-        )
+        Some(self.acknowledger.current(crate::time::now()).map_or_else(
+            || Acknowledgement::new("", crate::time::now()).accessibility(),
+            |ack| ack.accessibility(),
+        ))
     }
 }
 

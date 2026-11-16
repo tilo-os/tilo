@@ -9,7 +9,7 @@ use launcher::owned_service::ServiceCancellation;
 use tilo_messaging::SendError;
 
 use super::identity::Identity;
-use crate::session::{Call, Reply, SessionLink};
+use crate::door::{Call, DoorLink, Reply};
 
 const SIGNAL_HOSTS: &[&str] = &[
     "chat.signal.org",
@@ -32,11 +32,11 @@ fn hosts(original: &Identity) -> Result<&'static [&'static str], SendError> {
     }
 }
 
-/// What a provider start asks consent with: its cancellation and the session.
+/// What a provider start asks consent with: its cancellation and the door.
 #[derive(Clone)]
 pub(crate) struct Policy {
     pub cancellation: ServiceCancellation,
-    pub session: SessionLink,
+    pub door: DoorLink,
 }
 
 /// The person's consent for one start, alive while its owner is.
@@ -78,7 +78,7 @@ pub(crate) fn request(original: Identity, policy: &Policy) -> Result<Arc<Consent
     consent.check()?;
     let hosts = hosts(&consent.original)?;
     let key = format!("messages-network-{}", uuid::Uuid::new_v4());
-    let mut answer = policy.session.call(Call::Consent {
+    let mut answer = policy.door.call(Call::Consent {
         key: key.clone(),
         hosts: hosts.iter().map(|host| (*host).into()).collect(),
     });
@@ -102,7 +102,7 @@ pub(crate) fn request(original: Identity, policy: &Policy) -> Result<Arc<Consent
         std::thread::sleep(Duration::from_millis(100));
     };
     if let Err(error) = outcome {
-        drop(policy.session.call(Call::ConsentWithdrawn { key }));
+        drop(policy.door.call(Call::ConsentWithdrawn { key }));
         return Err(error);
     }
     consent.check()?;

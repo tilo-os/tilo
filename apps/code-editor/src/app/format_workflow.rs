@@ -115,11 +115,8 @@ impl CodeApp {
             AfterFormat::Save => {
                 self.save_buffer(doc, node, false);
             }
-            AfterFormat::SaveEffect(Some(path)) => {
-                self.save_as(doc, node, path, super::file_workflow::AfterSave::Effect);
-            }
-            AfterFormat::SaveEffect(None) => {
-                self.save_buffer_then(doc, node, true, super::file_workflow::AfterSave::Effect);
+            AfterFormat::SaveEffect(target) => {
+                self.save_to(doc, node, target, super::file_workflow::AfterSave::Effect);
             }
         }
     }

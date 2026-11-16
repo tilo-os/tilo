@@ -19,7 +19,7 @@ sources = [
     "crates/sdk/ui-core/src/window_share.rs",
     "crates/sdk/ui-core/src/widget/toast.rs",
     "crates/sdk/ui-core/src/widget/find_bar.rs",
-    "crates/sdk/ui-core/src/window_channel.rs",
+    "crates/sdk/ui-core/src/window_door.rs",
     "crates/sdk/ui-core/src/search/request.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",

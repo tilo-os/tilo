@@ -1,8 +1,7 @@
 use super::{
-    AutoCommit, CodeApp, CodeEditorEffect, Conflict, ConflictChoice, EditorDoc, Project, Session,
+    AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
     TreeId, disk, source_filter,
 };
-use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::widget::toast::ToastKind;
 
 pub(crate) enum AfterSave {
@@ -126,7 +125,7 @@ impl CodeApp {
         let Some(path) = self.session.buffer_of(node).and_then(|b| b.path.clone()) else {
             // No file yet: a scratch buffer needs a destination first, which
             // only the user (through the picker) can choose.
-            self.ask_where_to_save(node);
+            self.request_save_as(node);
             return false;
         };
         let text = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
@@ -325,121 +324,125 @@ impl CodeApp {
         }
     }
 
-    /// Ask the host desktop for a folder to open as the project: under app-state confinement the chooser
-    /// is the only way out of the editor's one writable directory, and it is where the sandbox's
-    /// file-access grant is made.
-    pub(super) fn choose_folder(
-        &self,
-        cx: &mut EffectCx<crate::project::Project, Self>,
-    ) -> Effected {
-        let request = ui::portal::PickRequest::writable_directory("Open a project folder", "Open")
-            .thread_name("code-portal-folder");
-        self.choose(cx, request, |app, path| app.open_project_dir(&path))
+    /// Ask the host desktop for a folder to open as the project, through the XDG `FileChooser` portal:
+    /// under app-state confinement it is the only way out of the editor's one writable directory, and it
+    /// is where the sandbox's file-access grant is made.
+    pub(super) fn request_open_folder(&mut self) {
+        self.portal_intent = Some(PortalIntent::OpenFolder);
+        self.portal = Some(
+            ui::portal::PickRequest::writable_directory("Open a project folder", "Open")
+                .thread_name("code-portal-folder")
+                .send(),
+        );
     }
 
-    pub(super) fn choose_file(&self, cx: &mut EffectCx<crate::project::Project, Self>) -> Effected {
-        let request = ui::portal::PickRequest::open("Open a file", "Open")
-            .thread_name("code-portal-file")
-            .filter(source_filter())
-            .all_files();
-        self.choose(cx, request, |app, path| app.open_disk_file(&path))
+    pub(super) fn request_open_file(&mut self) {
+        self.portal_intent = Some(PortalIntent::OpenFile);
+        self.portal = Some(
+            ui::portal::PickRequest::open("Open a file", "Open")
+                .thread_name("code-portal-file")
+                .filter(source_filter())
+                .all_files()
+                .send(),
+        );
     }
 
-    /// Ask where `node` is saved, then save it there: the buffer is that file from then on.
-    pub(super) fn choose_save_as(
-        &self,
-        node: TreeId,
-        cx: &mut EffectCx<crate::project::Project, Self>,
-    ) -> EffectAnswer {
+    pub(super) fn request_save_as(&mut self, node: TreeId) {
         let suggested = self
             .session
             .buffer_of(node)
-            .ok_or("no file is open")?
-            .name
-            .clone();
-        let request = ui::portal::PickRequest::save("Save file as", "Save", &suggested)
-            .thread_name("code-portal-save")
-            .filter(source_filter())
-            .all_files();
-        Ok(self.choose(cx, request, move |app, path| {
-            app.pending_save = Some((node, Some(path)));
-            None
-        }))
+            .map_or_else(|| "untitled.txt".to_string(), |b| b.name.clone());
+        self.portal_intent = Some(PortalIntent::SaveAs(node));
+        self.portal = Some(
+            ui::portal::PickRequest::save("Save file as", "Save", &suggested)
+                .thread_name("code-portal-save")
+                .filter(source_filter())
+                .all_files()
+                .send(),
+        );
     }
 
-    /// Ask for a place to save `node`, as Save As does, when it has none yet.
-    pub(super) fn ask_where_to_save(&mut self, node: TreeId) {
-        if self
-            .session
-            .active_buffer()
-            .is_none_or(|buffer| buffer.node != node)
-        {
-            self.show_node(node);
-        }
-        self.run_effect(&CodeEditorEffect::SaveAs);
-    }
-
-    /// Run `effect` as a person asking for it does, so a chooser it opens answers through the effect.
-    pub(super) fn run_effect(&self, effect: &CodeEditorEffect) {
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.effect(effect);
-        }
-    }
-
-    /// Whether a file chooser is open.
-    pub(super) fn choosing(&self) -> bool {
-        std::rc::Rc::strong_count(&self.choosing) > 1
-    }
-
-    /// Open the host's chooser for `request`, then do what `chosen` does with the path: its answer, or
-    /// `None` when it answers later through [`Self::finish_file_effect`].
-    fn choose(
-        &self,
-        cx: &mut EffectCx<crate::project::Project, Self>,
-        request: ui::portal::PickRequest,
-        chosen: impl FnOnce(&mut Self, std::path::PathBuf) -> Option<Result<(), String>> + 'static,
-    ) -> Effected {
-        let choosing = std::rc::Rc::clone(&self.choosing);
-        cx.choose_path(request, move |app, path, cx| {
-            drop(choosing);
-            let path = path.ok_or("file selection cancelled")?;
-            if let Some(answer) = chosen(app, path) {
-                return answer.map(|()| Effected::done());
-            }
-            app.file_reply = Some(cx.reply());
-            Ok(Effected::Pending)
-        })
-    }
-
-    /// Write `node`'s text to `path` and make that its file. The buffer keeps its file and conflict
-    /// stamp until the new file exists: a failed Save As must not redirect Save or Reload away from the
-    /// file the person was editing.
-    pub(super) fn save_as(
-        &mut self,
-        doc: &AutoCommit,
-        node: TreeId,
-        path: std::path::PathBuf,
-        then: AfterSave,
-    ) {
-        let text = self
-            .session
-            .buffer_of(node)
-            .and_then(|_| EditorDoc::read_buffer_key(doc, &self.buffer_key(node)));
-        let Some(text) = text else {
-            then.failed(self);
+    pub(super) fn poll_portal(&mut self, doc: &AutoCommit) {
+        let Some(rx) = self.portal.as_ref() else {
             return;
         };
-        self.on_disk(
-            "code-save-file-as",
-            move || {
-                let saved = disk::save(&path, &text, None);
-                (path, text, saved)
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal = None;
+                self.portal_intent = None;
+                self.finish_file_effect(Err("file picker disconnected".into()));
+                return;
+            }
+        };
+        self.portal = None;
+        let intent = self.portal_intent.take();
+        self.apply_portal_outcome(doc, intent, outcome);
+    }
+
+    pub(crate) fn apply_portal_outcome(
+        &mut self,
+        doc: &AutoCommit,
+        intent: Option<PortalIntent>,
+        outcome: ui::portal::PortalOutcome,
+    ) {
+        use ui::portal::PortalOutcome;
+        let path = match outcome {
+            PortalOutcome::Opened(p) => p,
+            PortalOutcome::Cancelled => {
+                self.finish_file_effect(Err("file selection cancelled".into()));
+                return;
+            }
+            PortalOutcome::Failed(reason) => {
+                let doing = match intent {
+                    Some(PortalIntent::OpenFolder) => "Couldn't open a folder",
+                    Some(PortalIntent::OpenFile) => "Couldn't open a file",
+                    Some(PortalIntent::SaveAs(_)) => "Couldn't save the file",
+                    None => "Couldn't choose a file",
+                };
+                Self::note(format!("{doing}. {reason}"), ToastKind::Error);
+                self.finish_file_effect(Err(reason));
+                return;
+            }
+        };
+        let result = match intent {
+            Some(PortalIntent::OpenFolder) => match self.open_project_dir(&path) {
+                Some(answer) => answer,
+                None => return,
             },
-            move |app, (path, text, saved)| match app.saved_as(node, &path, text, saved) {
-                Ok(()) => then.landed(app, node),
-                Err(_) => then.failed(app),
+            Some(PortalIntent::OpenFile) => match self.open_disk_file(&path) {
+                Some(answer) => answer,
+                None => return,
             },
-        );
+            Some(PortalIntent::SaveAs(node)) => {
+                if self.session.buffer_of(node).is_none() {
+                    self.finish_file_effect(Err("the buffer is no longer open".into()));
+                    return;
+                }
+                let Some(text) = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)) else {
+                    self.finish_file_effect(Err("the buffer text is unavailable".into()));
+                    return;
+                };
+                // Keep the original destination and conflict stamp until the
+                // new file exists. A failed Save As must not redirect Save or
+                // Reload away from the file the person was editing.
+                let answer = self.on_disk_answering(
+                    "code-save-file-as",
+                    move || {
+                        let saved = disk::save(&path, &text, None);
+                        (path, text, saved)
+                    },
+                    move |app, (path, text, saved)| app.saved_as(node, &path, text, saved),
+                );
+                match answer {
+                    Some(answer) => answer,
+                    None => return,
+                }
+            }
+            None => Ok(()),
+        };
+        self.finish_file_effect(result);
     }
 
     fn saved_as(

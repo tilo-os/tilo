@@ -392,7 +392,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {
@@ -3316,7 +3317,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {
@@ -3455,7 +3457,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       }
     ]
@@ -4194,7 +4197,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {

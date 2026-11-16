@@ -22,8 +22,8 @@ pub const STORAGE_MOUNT: &str = "/run/tilolang-host/storage";
 /// The zone database and the device's zone, which the host's clock reads the person's day by.
 pub const ZONE_PATHS: [&str; 2] = ["/usr/share/zoneinfo", "/etc/localtime"];
 
-/// The descriptor the host finds its socket at.
-pub const SOCKET_CHILD_FD: RawFd = 3;
+/// The descriptor the host finds its door at.
+pub const DOOR_CHILD_FD: RawFd = 3;
 
 /// The seccomp filters' descriptors in the sandbox's setup.
 const CLONE3_COMPAT_FD: RawFd = crate::services::CLONE3_COMPAT_SECCOMP_CHILD_FD;
@@ -69,8 +69,8 @@ pub fn bwrap_argv(
     for (name, value) in [
         ("PATH", crate::sandbox::SANDBOX_PATH.to_owned()),
         (
-            runtime_portal::tilolang_host::SOCKET_FD_ENV,
-            SOCKET_CHILD_FD.to_string(),
+            runtime_portal::tilolang_host::DOOR_FD_ENV,
+            DOOR_CHILD_FD.to_string(),
         ),
         (
             runtime_portal::tilolang_host::STORAGE_ENV,
@@ -103,7 +103,7 @@ pub fn bwrap_argv(
         STORAGE_MOUNT.to_owned(),
     ]);
     // Landlock inside the namespace, through the launcher's own binary: read and execute the runtime,
-    // write the storage, no TCP; every descriptor but the socket closed.
+    // write the storage, no TCP; every descriptor but the door closed.
     argv.extend([
         "--ro-bind".to_owned(),
         shim.display().to_string(),
@@ -122,7 +122,7 @@ pub fn bwrap_argv(
         STORAGE_MOUNT.to_owned(),
         "--net-restricted".to_owned(),
         "--keep-fd".to_owned(),
-        SOCKET_CHILD_FD.to_string(),
+        DOOR_CHILD_FD.to_string(),
         "--".to_owned(),
         runtime_mount.join(BIN).display().to_string(),
     ]);
@@ -189,10 +189,10 @@ pub fn is_tilolang(runtime: &str) -> bool {
         .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
 }
 
-/// Start the tilolang host `launch` on `socket` and wait for it to end.
+/// Start the tilolang host `launch` on its door `door` and wait for it to end.
 pub fn run_tilolang_host(
     launch: &HostLaunch,
-    socket: OwnedFd,
+    door: OwnedFd,
     opts: &RunOptions,
 ) -> Result<std::process::ExitStatus, RunError> {
     let (found, searched) = find_runtime_bundle(&launch.runtime, opts)?;
@@ -254,7 +254,7 @@ pub fn run_tilolang_host(
         .env_clear()
         .stdin(std::process::Stdio::null());
     let placed = [
-        (socket.as_raw_fd(), SOCKET_CHILD_FD),
+        (door.as_raw_fd(), DOOR_CHILD_FD),
         (clone3.as_raw_fd(), CLONE3_COMPAT_FD),
         (baseline.as_raw_fd(), BASELINE_FD),
     ];
@@ -280,7 +280,7 @@ pub fn run_tilolang_host(
         });
     }
     let status = command.status()?;
-    drop((socket, clone3, baseline));
+    drop((door, clone3, baseline));
     Ok(status)
 }
 
@@ -327,8 +327,8 @@ mod tests {
             assert!(!on_gone_tilolang.runs_here());
         }
 
-        phase a_tilolang_host_holds_its_runtime_its_storage_and_its_socket_only;
-        // The host holds the runtime read-only, its storage, its socket, and nothing an app would: no
+        phase a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only;
+        // The host holds the runtime read-only, its storage, its door, and nothing an app would: no
         // display, no bus, no service, no network, no home, no app storage.
         {
             let mut zone = tilo_test_env::ScopedEnv::new();
@@ -387,12 +387,12 @@ mod tests {
                 "the zone the person chose for the session: {env:?}"
             );
             assert!(env.contains(&(
-                runtime_portal::tilolang_host::SOCKET_FD_ENV.to_owned(),
+                runtime_portal::tilolang_host::DOOR_FD_ENV.to_owned(),
                 "3".to_owned()
             )));
             assert!(
                 !env.iter().any(|(name, _)| name.starts_with("TILO_SVC_")
-                    && name != runtime_portal::tilolang_host::SOCKET_FD_ENV
+                    && name != runtime_portal::tilolang_host::DOOR_FD_ENV
                     || name == "WAYLAND_DISPLAY"
                     || name == "TILO_WORKSPACE_ID"),
                 "no service, display or app identity: {env:?}"
@@ -409,7 +409,7 @@ mod tests {
                     .map(|w| w[1].clone())
                     .collect::<Vec<_>>(),
                 ["3"],
-                "only the socket is kept"
+                "only the door is kept"
             );
             assert_eq!(
                 rest.windows(2)

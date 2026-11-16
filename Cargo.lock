@@ -17950,7 +17950,6 @@ dependencies = [
 name = "tilo-automerge-isolate"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "flate2",
  "hex",
  "libc",
@@ -18134,7 +18133,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-content",
  "tilo-content-types",

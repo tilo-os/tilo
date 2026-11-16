@@ -1,7 +1,7 @@
 //! Where an agent's task programs run on this host.
 //!
 //! An agent writes tilolang programs in its session; the session runs each as one step of it, and
-//! every call the program makes is done as that agent, through the session's own API. The program
+//! every call the program makes is done as that agent, through the session's own door. The program
 //! itself runs in the session's host — a process of its own on a Linux
 //! desktop, a module of the page on the web — so a role names this seam and never a process, a
 //! socket or an engine.
@@ -14,8 +14,8 @@ use tilo_broker_core::steps::HostStepOutcome;
 pub struct ProgramRequest<'a> {
     /// The workspace the session works in.
     pub workspace: &'a str,
-    /// The session's own API: it admits every call the program makes.
-    pub host: std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
+    /// The session's own door: it admits every call the program makes.
+    pub door: std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>,
     /// The agent whose program it is, by its id without the `agent:` prefix.
     pub agent: &'a str,
     /// The person the agent acts for, when one delegated it: `me` in the program.

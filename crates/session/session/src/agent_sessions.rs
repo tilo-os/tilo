@@ -62,7 +62,7 @@ struct Connection {
     /// The environment's server it came in by: none for the session's own. It ends with that
     /// environment.
     environment: Option<Entered>,
-    /// The other device of the person's it came from, as the remote relay verified it: none for a
+    /// The other device of the person's it came from, as the remote door verified it: none for a
     /// program of this login.
     origin: Option<tilo_actions::InvokerDevice>,
     /// What the person allowed it for every later step like one it asked about.
@@ -367,7 +367,7 @@ impl AgentSessions {
             connection
                 .environment
                 .as_ref()
-                .is_some_and(|entered| entered.socket == environment)
+                .is_some_and(|entered| entered.door == environment)
         })
     }
 
@@ -548,7 +548,7 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Entered {
     /// The server's number among those this session opened: what its sessions are stopped by.
-    pub(crate) socket: u64,
+    pub(crate) door: u64,
     /// The environment's id on this device, `<workspace>/<record>`.
     pub(crate) id: String,
     /// What the person calls the environment.
@@ -638,7 +638,7 @@ pub(crate) struct Agent {
     pub unseen: i64,
     /// Whether the person may stop it here.
     pub stoppable: bool,
-    /// The other device of the person's it works from, as the relay that let it in verified: its
+    /// The other device of the person's it works from, as the door that let it in verified: its
     /// key in hex. Empty for a program of this device.
     pub device: String,
     /// What that device is called, as its certificate labels it.
@@ -786,7 +786,7 @@ mod tests {
     fn a_session_from_an_environment_is_listed_with_that_environment_beside_its_name() {
         let sessions = AgentSessions::new();
         let entered = Entered {
-            socket: 7,
+            door: 7,
             id: "w1/Dev.Box".to_owned(),
             name: "Dev box".to_owned(),
         };

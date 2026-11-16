@@ -29,16 +29,16 @@ enum Source {
     Device(String),
 }
 
-/// The broker's API to the person's account with this host.
-pub(crate) struct HostAccountApi {
+/// The broker's door to the person's account with this host.
+pub(crate) struct HostAccountDoor {
     source: Source,
     changes: tokio::sync::watch::Sender<u64>,
     /// Held while the session runs: it moves `changes`.
     watch: Mutex<Option<tilo_files::native::ChangeWatch>>,
 }
 
-impl HostAccountApi {
-    /// The API of this session's host, as its environment names it.
+impl HostAccountDoor {
+    /// The door of this session's host, as its environment names it.
     pub(crate) fn session() -> Arc<Self> {
         let source = match HostedAccount::from_env() {
             Some(hosted) => Source::Hosted(hosted),
@@ -48,23 +48,23 @@ impl HostAccountApi {
     }
 
     fn of(source: Source) -> Arc<Self> {
-        let api = Arc::new(Self {
+        let door = Arc::new(Self {
             source,
             changes: tokio::sync::watch::channel(0).0,
             watch: Mutex::new(None),
         });
-        if let Source::Hosted(hosted) = &api.source {
-            let changes = api.changes.clone();
+        if let Source::Hosted(hosted) = &door.source {
+            let changes = door.changes.clone();
             match hosted.watch(move || {
                 changes.send_modify(|revision| *revision = revision.wrapping_add(1));
             }) {
-                Ok(watch) => *api.watch.lock_recover() = Some(watch),
+                Ok(watch) => *door.watch.lock_recover() = Some(watch),
                 Err(error) => {
                     tracing::warn!(%error, "host account: the plans file is not followed");
                 }
             }
         }
-        api
+        door
     }
 
     /// The account as the host knows it now.
@@ -114,7 +114,7 @@ fn answer(account: &HostAccount) -> serde_json::Value {
     serde_json::to_value(account).unwrap_or_default()
 }
 
-impl HostStepServices for HostAccountApi {
+impl HostStepServices for HostAccountDoor {
     fn provider(&self) -> &'static str {
         wire::PROVIDER
     }

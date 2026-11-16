@@ -190,14 +190,10 @@ impl crate::browser::Desktop {
             };
             self.requests
                 .borrow_mut()
-                .push(crate::shell::HostRequest::ShowInApp(
-                    tilo_session_core::notice::Place {
-                        app,
-                        resource: target.id.clone(),
-                        anchor: target.id.clone(),
-                        ..Default::default()
-                    },
-                ));
+                .push(crate::shell::HostRequest::ShowInApp {
+                    app,
+                    resource: target.id.clone(),
+                });
         }
         self.activity.serve_following();
         let described = self.handle.read(|tree| self.activity.describe(tree));

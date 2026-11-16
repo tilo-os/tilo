@@ -5,7 +5,7 @@
 //! `{"err": {"code": .., "message": ..}}`.
 //! The development test-control socket (`--test-control PATH` or
 //! `$TILO_TEST_CONTROL`, development builds only) answers every op below,
-//! including injected input, screenshots and fixtures. The owner's own socket,
+//! including injected input, screenshots and fixtures. The owner's own door,
 //! `admin-control.sock`, admits only programs of the account whose desktop this
 //! is, in its own namespaces, and serves only the action model, the state it shows
 //! and the session's diagnostics ([`Op::owner_serves`]).
@@ -65,7 +65,7 @@ pub const ADMIN_ENV: &str = "TILO_ADMIN_CONTROL";
 pub const OPENED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
 /// The owner's control socket's file name in a headless session's directory: a headless session
-/// serves no device, so it never takes the device's own `admin-control.sock` , which a login's session
+/// serves no seat, so it never takes the seat's own `admin-control.sock` , which a login's session
 /// binds.
 pub const HEADLESS_OWNER_CONTROL_SOCKET_FILE: &str = "headless-owner-control.sock";
 
@@ -104,12 +104,12 @@ fn path_in(
     })
 }
 
-/// Where the owner's control socket opens: the path named on the command line, else this device's
+/// Where the owner's control socket opens: the path named on the command line, else the seat's
 /// `admin-control.sock` in `$XDG_RUNTIME_DIR/tilo-session` for a session that owns the machine,
 /// else `headless-owner-control.sock` there for a headless one, whose machine this is but whose
 /// seat it is not. `None` for a session that owns no machine and named no path.
 ///
-/// A path the socket is served at is not yet the account's right to be served: the device's own
+/// A path the door is served at is not yet the account's right to be served: the seat's own
 /// socket is the device's, and [`owner_decision`] decides whether this session is the account
 /// that owns the device.
 #[must_use]
@@ -139,7 +139,7 @@ fn admin_path_in(
     tilo_paths::login::session_dir(runtime_dir).map(|directory| directory.join(file))
 }
 
-/// Why a session serves no owner's socket.
+/// Why a session serves no owner's door.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NotServed {
     /// The account does not administer the machine: it is not a member of `wheel` .
@@ -164,7 +164,7 @@ impl std::fmt::Display for NotServed {
     }
 }
 
-/// Whether this session serves the owner's socket, from the two facts that make its account the
+/// Whether this session serves the owner's door, from the two facts that make its account the
 /// device's own: a member of the machine's administrator group (`wheel`, which the image's
 /// `sudo` and polkit rules both name), whose identity is the one that claimed the device at
 /// its first login. A session in another desktop's window, whose machine this is not, serves
@@ -189,7 +189,7 @@ pub fn owner_decision(
 
 /// What the session is, for the answers that read it: the published side every hosted surface's
 /// actions go through, the layout, what stands over it, the workspaces this computer holds, whether
-/// the person locked the screen, whether the lock screen's own frame is on it, and the agents admitted
+/// the person locked the screen, whether the lock screen's own frame is on it, and the agents seated
 /// at the person's API.
 #[derive(Clone, Copy)]
 pub(crate) struct Session<'a> {
@@ -201,7 +201,7 @@ pub(crate) struct Session<'a> {
     /// either way.
     pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) engine: Option<&'a Engine>,
-    /// The agents the person admitted at its socket, as the session's bar shows them.
+    /// The agents the person admitted at its door, as the session's bar shows them.
     pub(crate) agent_sessions: &'a std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// Who is here, as the collaboration plane says it: this session's membership of each
     /// workspace, when it takes part in one.
@@ -239,7 +239,7 @@ pub(crate) struct Control {
     /// Accepting connections for as long as the session serves them: dropped, they stop.
     _sockets: Vec<Socket>,
     /// What every connection asks the actions and the change signal through.
-    shared: Arc<Shared>,
+    door: Arc<Door>,
     asked: Receiver<Asked>,
     /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to press
     /// and release to reach the mask it names.
@@ -267,21 +267,21 @@ struct Socket {
 enum Gate {
     /// The developer's own socket: whoever the developer started it for.
     Dev,
-    /// The owner's socket: this account's own programs, and only theirs.
+    /// The owner's door: this account's own programs, and only theirs.
     Owner,
     /// A program inside an app this session started: it acts in that app's workspace, with the
     /// app's own permissions, never the owner's.
     App,
 }
 
-/// The workspace a connection of the app socket acts in, and the app it acts as.
+/// The workspace a connection of the app door acts in, and the app it acts as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Scope {
     app: String,
     workspace: String,
 }
 
-/// What a connection is: the socket it came in on, and, at the app socket, the app and workspace it
+/// What a connection is: the socket it came in on, and, at the app door, the app and workspace it
 /// was admitted for.
 #[derive(Clone)]
 struct Context {
@@ -299,7 +299,7 @@ impl Context {
 /// One op of the control protocol, as a request's `op` names it.
 ///
 /// [`Op::ALL`] is every op the protocol answers. The development socket answers all of them;
-/// the owner's socket serves the semantic half only ([`Op::owner_serves`], [`served`]).
+/// the owner's door serves the semantic half only ([`Op::owner_serves`], [`served`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Op {
     ActionsCancel,
@@ -446,7 +446,7 @@ impl Op {
         }
     }
 
-    /// Whether the owner's socket serves it: the action model and the state it shows, which is what a
+    /// Whether the owner's door serves it: the action model and the state it shows, which is what a
     /// person's own scripts drive their desktop through. Synthetic input, screenshots of the
     /// person's screen, the hosted surfaces' controls, the fixtures and the test identity are
     /// nobody's but a development session's.
@@ -520,7 +520,7 @@ fn not_this_api(gate: Gate, op: Op) -> Json {
     refusal(
         "not_permitted",
         &format!(
-            "this control socket serves the action model, the state it shows and the \
+            "this control door serves the action model, the state it shows and the \
              session's own diagnostics (`actions_cancel`, `actions_enumerate`, \
              `actions_invoke`, `actions_status`, `process_memory`, `profile_start`, \
              `profile_status`, `profile_stop`, `state_dump`, `watch` and `windows`), not \
@@ -551,7 +551,7 @@ fn unsupported(ctx: &Context, request: &Json) -> Json {
 
 /// What a connection asks on: the loop's queue and its wake, and the actions and change signal it
 /// may read without the loop.
-pub(crate) struct Shared {
+pub(crate) struct Door {
     asks: Mutex<Sender<Asked>>,
     wake: Wake,
     actions: Arc<Actions>,
@@ -560,7 +560,7 @@ pub(crate) struct Shared {
 
 impl Control {
     /// The sockets `options` name, opened. The actions and the change signal exist whether or not
-    /// one does: the app socket answers the programs it admits through them too.
+    /// one does: the app door answers the programs it admits through them too.
     pub(crate) fn open(options: &crate::Options, host: Arc<mcp_server::Host>) -> Self {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
@@ -572,7 +572,7 @@ impl Control {
             next: AtomicU64::new(1),
             locked: AtomicBool::new(false),
         });
-        let shared = Arc::new(Shared {
+        let door = Arc::new(Door {
             asks: Mutex::new(asks),
             wake: options.wake.handle(),
             actions,
@@ -586,7 +586,7 @@ impl Control {
             let Some(path) = path else {
                 continue;
             };
-            match Socket::open(path, gate, Arc::clone(&shared)) {
+            match Socket::open(path, gate, Arc::clone(&door)) {
                 Ok(socket) => {
                     tracing::info!(path = %path.display(), "control: serving a socket");
                     sockets.push(socket);
@@ -598,7 +598,7 @@ impl Control {
         }
         Self {
             _sockets: sockets,
-            shared,
+            door,
             asked,
             held: RefCell::new(BTreeSet::new()),
             fingers_down: std::cell::Cell::new(None),
@@ -608,9 +608,9 @@ impl Control {
         }
     }
 
-    /// What a program inside an app this session started is served with.
-    pub(crate) fn shared(&self) -> Arc<Shared> {
-        Arc::clone(&self.shared)
+    /// The door a program inside an app this session started is served at.
+    pub(crate) fn door(&self) -> Arc<Door> {
+        Arc::clone(&self.door)
     }
 
     /// What a tool handed the session's input since the last pass, answered where a device's input
@@ -618,13 +618,11 @@ impl Control {
     /// as the same input from a device does. Everything else asked waits for the frame
     /// ([`Self::serve`]), where it reads the session the frame shows.
     pub(crate) fn serve_input(&self, compositor: &mut Compositor, session: &Session<'_>) {
-        self.shared
-            .actions
-            .set_workspace(session.handle.read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id().to_string())
-            }));
-        self.shared.actions.set_locked(session.locked);
+        self.door.actions.set_workspace(session.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }));
+        self.door.actions.set_locked(session.locked);
         self.take();
         let mut waiting = self.waiting.borrow_mut();
         let mut later = Vec::new();
@@ -660,13 +658,11 @@ impl Control {
     /// Take the connections waiting, publish the session its watchers read, and answer what was asked
     /// of the loop since the last pass.
     pub(crate) fn serve(&self, compositor: &mut Compositor, session: &Session<'_>) {
-        self.shared
-            .actions
-            .set_workspace(session.handle.read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id().to_string())
-            }));
-        self.shared.actions.set_locked(session.locked);
+        self.door.actions.set_workspace(session.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }));
+        self.door.actions.set_locked(session.locked);
         self.take();
         let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
         for Asked {
@@ -725,14 +721,14 @@ impl Socket {
     /// accepted on a thread of the socket's own as they arrive, each read on a thread of its own:
     /// what a program asks of the actions is answered there, never after a pass of the loop, and
     /// what it asks of the loop wakes the loop itself.
-    fn open(path: &Path, gate: Gate, shared: Arc<Shared>) -> io::Result<Self> {
+    fn open(path: &Path, gate: Gate, door: Arc<Door>) -> io::Result<Self> {
         let listener = mcp_server::bind_private(path)?;
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopped);
         let at = path.to_path_buf();
         std::thread::Builder::new()
             .name("tilo-control-accept".into())
-            .spawn(move || accept(&listener, &at, gate, &shared, &stop))?;
+            .spawn(move || accept(&listener, &at, gate, &door, &stop))?;
         Ok(Self {
             path: path.to_path_buf(),
             stopped,
@@ -745,7 +741,7 @@ fn accept(
     listener: &UnixListener,
     path: &Path,
     gate: Gate,
-    shared: &Arc<Shared>,
+    door: &Arc<Door>,
     stopped: &AtomicBool,
 ) {
     for stream in listener.incoming() {
@@ -767,11 +763,11 @@ fn accept(
             refuse_owner(stream, &refusal);
             continue;
         }
-        let shared = Arc::clone(shared);
+        let door = Arc::clone(door);
         let ctx = Context::at(gate);
         let spawned = std::thread::Builder::new()
             .name("tilo-control".into())
-            .spawn(move || serve_connection(stream, &ctx, &shared, None));
+            .spawn(move || serve_connection(stream, &ctx, &door, None));
         if let Err(error) = spawned {
             tracing::warn!(%error, "control: a connection could not be served");
         }
@@ -801,7 +797,7 @@ impl Drop for Control {
     }
 }
 
-/// Tell a connection of the owner's socket it is not this desktop's owner, in the control protocol's
+/// Tell a connection of the owner's door it is not this desktop's owner, in the control protocol's
 /// own framing, then let it go.
 fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
     let message = match refusal {
@@ -830,19 +826,19 @@ fn refuse_owner(mut stream: UnixStream, refusal: &PeerRefusal) {
 
 /// Serve one connection of a program inside an app this session started: the control protocol,
 /// as that app, in the workspace the session started it into. `first` is the line the agent
-/// socket already read.
+/// door already read.
 pub(crate) fn serve_app(
     stream: UnixStream,
     first: String,
     app: String,
     workspace: String,
-    shared: &Shared,
+    door: &Door,
 ) {
     let ctx = Context {
         gate: Gate::App,
         scope: Some(Arc::new(Scope { app, workspace })),
     };
-    serve_connection(stream, &ctx, shared, Some(first));
+    serve_connection(stream, &ctx, door, Some(first));
 }
 
 /// A connection's writer: shared with the thread that streams the session's state, so a state line and
@@ -852,7 +848,7 @@ type Writer = Arc<Mutex<UnixStream>>;
 /// Read `stream` 's requests one line at a time, answer each, and write its answer, until the
 /// client closes it or the session ends. `gate` is the socket it came in on: an op that socket does
 /// not serve is refused here, before it reaches anything ([`served`]).
-fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: Option<String>) {
+fn serve_connection(stream: UnixStream, ctx: &Context, door: &Door, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
         tracing::warn!(%error, "control: a connection cannot block");
         return;
@@ -862,7 +858,7 @@ fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: O
     };
     let writer: Writer = Arc::new(Mutex::new(writer));
     let mut watching: Option<Watching> = None;
-    // The app socket reads a client's first line to know what it asks before it hands the connection
+    // The app door reads a client's first line to know what it asks before it hands the connection
     // over.
     let reader: Box<dyn io::BufRead + Send> = match first {
         Some(first) => Box::new(BufReader::new(io::Read::chain(
@@ -883,11 +879,11 @@ fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: O
             Ok(request) => match Op::of(&request) {
                 None => unsupported(ctx, &request),
                 Some(op) if !served(ctx.gate, op) => not_this_api(ctx.gate, op),
-                Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, shared) {
+                Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, door) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
                     // unanswered.
-                    None => match ask_loop(op, &request, ctx, shared) {
+                    None => match ask_loop(op, &request, ctx, door) {
                         Some(answer) => answer,
                         None => return,
                     },
@@ -899,15 +895,14 @@ fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: O
         }
     }
     if let Some(watching) = watching.take() {
-        watching.stop(&shared.changes);
+        watching.stop(&door.changes);
     }
 }
 
 /// Hand `request` to the loop and wait for its answer; `None` when the session ended.
-fn ask_loop(op: Op, request: &Json, ctx: &Context, shared: &Shared) -> Option<Json> {
+fn ask_loop(op: Op, request: &Json, ctx: &Context, door: &Door) -> Option<Json> {
     let (answer, answered) = channel();
-    shared
-        .asks
+    door.asks
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .send(Asked {
@@ -917,7 +912,7 @@ fn ask_loop(op: Op, request: &Json, ctx: &Context, shared: &Shared) -> Option<Js
             answer,
         })
         .ok()?;
-    (shared.wake)();
+    (door.wake)();
     answered.recv().ok()
 }
 
@@ -942,8 +937,8 @@ impl Watching {
 /// Stream the session's state to `writer` until it stops watching, off the change signal the loop
 /// publishes on: nothing here polls, and a change wakes the wait. What the connection may see of it
 /// is what it is sent ([`shown`]).
-fn stream_state(writer: &Writer, ctx: &Context, shared: &Shared) -> Watching {
-    let changes = Arc::clone(&shared.changes);
+fn stream_state(writer: &Writer, ctx: &Context, door: &Door) -> Watching {
+    let changes = Arc::clone(&door.changes);
     // Read before attaching: the state attached for is published after this.
     let mut seen = changes.generation();
     changes.attach();
@@ -982,21 +977,21 @@ fn asked_here(
     writer: &Writer,
     watching: &mut Option<Watching>,
     ctx: &Context,
-    shared: &Shared,
+    door: &Door,
 ) -> Option<Json> {
     Some(match op {
-        Op::ActionsEnumerate => actions_enumerate(request, &shared.actions, &shared.changes, ctx),
-        Op::ActionsInvoke => actions_invoke(request, &shared.actions, ctx),
-        Op::ActionsStatus => actions_status(request, &shared.actions, ctx),
-        Op::ActionsCancel => actions_cancel(request, &shared.actions, ctx),
-        Op::Watch => watch(request, writer, watching, ctx, shared),
-        Op::RecordRead => record_read(request, &shared.actions, ctx),
+        Op::ActionsEnumerate => actions_enumerate(request, &door.actions, &door.changes, ctx),
+        Op::ActionsInvoke => actions_invoke(request, &door.actions, ctx),
+        Op::ActionsStatus => actions_status(request, &door.actions, ctx),
+        Op::ActionsCancel => actions_cancel(request, &door.actions, ctx),
+        Op::Watch => watch(request, writer, watching, ctx, door),
+        Op::RecordRead => record_read(request, &door.actions, ctx),
         _ => return None,
     })
 }
 
 /// The answer to `record_read`: the records `records` of `app` in `workspace` (the one in front
-/// when unnamed), read through the record shared as this person reads them, once they differ from
+/// when unnamed), read through the record door as this person reads them, once they differ from
 /// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: as every reader of a
 /// record is answered ([`tilo_actions::remote::RecordReadings::readable`]). Each record is watched
 /// before it is read, so a reader holding a copy is woken by the next write to any of them.
@@ -1055,7 +1050,7 @@ fn watch(
     writer: &Writer,
     watching: &mut Option<Watching>,
     ctx: &Context,
-    shared: &Shared,
+    door: &Door,
 ) -> Json {
     let wanted = request
         .get("watching")
@@ -1063,12 +1058,12 @@ fn watch(
         .unwrap_or(true);
     if !wanted {
         if let Some(watching) = watching.take() {
-            watching.stop(&shared.changes);
+            watching.stop(&door.changes);
         }
         return json!({"ok": {}});
     }
     if watching.is_none() {
-        *watching = Some(stream_state(writer, ctx, shared));
+        *watching = Some(stream_state(writer, ctx, door));
     }
     json!({"ok": {}})
 }
@@ -1401,7 +1396,7 @@ fn asked_of_keys(
 
 /// The actions the control sockets invoke, and how they are asked as.
 struct Actions {
-    /// The broker, with the session's own APIs beside it ([`crate::mcp_server::Host`]).
+    /// The broker, with the session's own doors beside it ([`crate::mcp_server::Host`]).
     host: Arc<mcp_server::Host>,
     /// The person's own caller, made once and cloned: the broker remembers an invocation under the
     /// caller that admitted it, so a status or a cancel reads it back as the same caller.
@@ -1411,7 +1406,7 @@ struct Actions {
     /// The number a tool was answered with, and the invocation it names.
     ledger: Mutex<BTreeMap<u64, InvocationId>>,
     next: AtomicU64,
-    /// Whether the screen is locked, as the loop last read it: the owner's socket invokes nothing
+    /// Whether the screen is locked, as the loop last read it: the owner's door invokes nothing
     /// there.
     locked: AtomicBool,
 }
@@ -1587,7 +1582,7 @@ fn listing_settled(page: &CataloguePage, after: Option<&str>, paging: bool, wait
     !waits || paging || page.exhausted || !page.next_cursor.is_empty()
 }
 
-/// One page of what the caller is offered, as the broker and the session's own APIs answer it.
+/// One page of what the caller is offered, as the broker and the session's own doors answer it.
 fn catalogue_page(
     request: &Json,
     actions: &Actions,
@@ -1884,7 +1879,7 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
 }
 
 /// The answer to `actions_invoke` : the receipt, by a number the tools follow it with. The owner's
-/// shared invokes nothing while the screen is locked: what a person's own scripts run is what the
+/// door invokes nothing while the screen is locked: what a person's own scripts run is what the
 /// person at the device could run, and a locked desktop runs nothing. `confirmed` stands for the
 /// person's own answer to an action that asks first, as pressing Allow in its prompt does.
 fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
@@ -1904,7 +1899,7 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         return refusal(
             "unsupported",
             "this desktop runs an action here; sending one to another device is not served at \
-             this shared",
+             this door",
         );
     }
     // Which workspace the action is asked in is the session's answer, not a copy of it: a request
@@ -1954,11 +1949,11 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         wait_ms: None,
         appearance: None,
     };
-    // The person at this device's own actions are theirs; a program inside an app acts as that app, and the
+    // The person's own actions are the seat's; a program inside an app acts as that app, and the
     // broker's per-action permissions decide for it.
     let started = match ctx.scope {
         Some(_) => actions.host.invoke(&caller, invoke),
-        None => actions.host.invoke_as_local_person(&caller, invoke),
+        None => actions.host.invoke_at_seat(&caller, invoke),
     };
     let receipt = match started.wait_timeout(HOST_WAIT) {
         Ok(Some(Ok(receipt))) => receipt,
@@ -2130,7 +2125,7 @@ fn legacy_target(provider: &str, id: &str, workspace: &str) -> Result<RemoteActi
 /// A host's refusal as the tools read it: the codes they know, and what they mean here.
 fn action_refusal(error: &ActionHostError) -> Json {
     let code = match error {
-        // This shared's own refusal is `not_permitted` , which a tool reads as the socket not serving
+        // This door's own refusal is `not_permitted` , which a tool reads as the socket not serving
         // it at all; an action the person may not run is another answer.
         ActionHostError::NotPermitted => "not_allowed",
         ActionHostError::StaleRevision => "stale_cursor",
@@ -2545,7 +2540,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_control_socket_opens_where_its_build_and_its_device_allow;
+        fn the_control_socket_opens_where_its_build_and_its_seat_allow;
 
         phase only_a_development_build_opens_the_socket_it_is_named;
         {
@@ -2590,7 +2585,7 @@ mod tests {
             assert_eq!(path_in(true, None, Some(OsString::new()), None), None);
         }
 
-        phase the_owners_api_is_the_seats_own_and_a_headless_session_keeps_its_own;
+        phase the_owners_door_is_the_seats_own_and_a_headless_session_keeps_its_own;
         {
             let runtime = Some(OsString::from("/run/user/1000"));
             assert_eq!(
@@ -2605,7 +2600,7 @@ mod tests {
                     "/run/user/1000/tilo-session/headless-owner-control.sock"
                 ))
             );
-            // A session in another desktop's window owns no machine, and serves no owner's shared.
+            // A session in another desktop's window owns no machine, and serves no owner's door.
             assert_eq!(admin_path_in(false, false, None, runtime.clone()), None);
             // A path a developer named is theirs, and tells where it is.
             assert_eq!(
@@ -2622,11 +2617,11 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_owner_api_shows_the_owner_what_the_shell_shows_and_no_more;
+        fn the_owner_door_shows_the_owner_what_the_shell_shows_and_no_more;
 
-        phase the_owner_api_serves_the_action_model_and_the_state_it_shows;
+        phase the_owner_door_serves_the_action_model_and_the_state_it_shows;
         {
-            // Every op of the protocol, and the shared that serves it: the owner's shared is for a person's
+            // Every op of the protocol, and the door that serves it: the owner's door is for a person's
             // own scripts, which drive the desktop through the model it publishes and read the state it
             // shows — never through the pointer, the keyboard or a picture of the screen.
             let owner = [
@@ -2650,7 +2645,7 @@ mod tests {
                 assert_eq!(
                     served(Gate::Owner, op),
                     served_there,
-                    "the owner's shared and {op:?}"
+                    "the owner's door and {op:?}"
                 );
                 assert_eq!(
                     Op::of(&json!({"op": op.name()})),
@@ -2738,7 +2733,7 @@ mod tests {
             assert_eq!(closed[0]["rect"], Json::Null);
         }
 
-        phase a_locked_shell_shows_the_owner_api_nothing_the_lock_hides;
+        phase a_locked_shell_shows_the_owner_door_nothing_the_lock_hides;
         {
             let dump = |locked: bool| {
                 json!({"state": {
@@ -2753,7 +2748,7 @@ mod tests {
                     "sharing": {"sharing": [{"tab": "7", "workspace": "workspace-1", "viewers": []}]},
                 }})
             };
-            // Unlocked, the owner's shared sees the session as the development socket does.
+            // Unlocked, the owner's door sees the session as the development socket does.
             assert_eq!(
                 owner_shown(Gate::Owner, dump(false)),
                 dump(false),
@@ -2790,7 +2785,7 @@ mod tests {
             );
         }
 
-        phase the_owner_api_is_the_account_that_owns_the_device;
+        phase the_owner_door_is_the_account_that_owns_the_device;
         {
             assert_eq!(owner_decision(true, Ok(true)), Ok(()));
             assert_eq!(

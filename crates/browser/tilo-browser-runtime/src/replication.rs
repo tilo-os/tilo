@@ -152,10 +152,6 @@ pub(crate) struct Joined {
     /// The heads each record stood at when the workspace last delivered it, as the page read it:
     /// where a reader of the page's records starts to ask what changed since.
     read_heads: HashMap<(String, String), Vec<[u8; 32]>>,
-    /// Records whose read waits for the page's record worker to verify them
-    /// (`crate::record_verify`), and how many verifications had finished
-    /// then: once more have, they are read again.
-    verifying: (BTreeSet<DocumentRoute>, u64),
     /// Changes this page made to the workspace: to its records, sent, and to its
     /// desktop's windows (opened, closed, moved), not the desktop it joined.
     authored: u64,
@@ -243,7 +239,6 @@ pub(crate) fn open(
         local_value: None,
         delivered: HashMap::new(),
         read_heads: HashMap::new(),
-        verifying: (BTreeSet::new(), 0),
         authored: 0,
         moderates: Arc::default(),
         invitable: Arc::default(),
@@ -260,8 +255,6 @@ pub(crate) fn open(
         content: ContentWants::default(),
         changes: changes(),
     };
-    // The large records it reads are verified in the page's record worker.
-    crate::record_verify::install();
     JOINED.with_borrow_mut(|replicas| replicas.insert(id, Rc::new(RefCell::new(joined))));
     pump(id);
     Ok(())
@@ -610,15 +603,6 @@ pub(crate) fn pump(id: u32) {
         notify();
     }
     publish(id);
-}
-
-/// The page's record worker finished a verification: every replica reads the
-/// records that waited for it.
-pub(crate) fn verified() {
-    let ids: Vec<u32> = JOINED.with_borrow(|replicas| replicas.keys().copied().collect());
-    for id in ids {
-        pump(id);
-    }
 }
 
 /// Send what attached mounts changed since the last call.
@@ -1079,17 +1063,17 @@ impl Joined {
         for route in settled {
             self.settle(&route, &mut woken);
         }
-        // A record verified since its read waited for that lands again.
-        if self.verifying.1 != tilo_automerge_isolate::away::verified() {
-            landed.append(&mut self.verifying.0);
-        }
         for route in read_order(landed) {
             // A record kept for whoever opens it is read as what changed since the store took
             // it last: a record that lands a write at a time (a sealed chat's history, written
             // by many) would otherwise be read, loaded and saved whole once per write.
-            let Some(read) = self.read_landed(&route) else {
-                continue;
-            };
+            let kept = self.kept_heads(&route);
+            let read = self.peer.engine().record_update(
+                &route.cluster_id,
+                &route.app_id,
+                &route.record,
+                kept.as_deref(),
+            );
             // What reaches a record is news only once the workspace replayed what it held, and
             // only once this page holds the record: the first that reaches it (a record the
             // workspace sends when a window opens it) is what the workspace already held.
@@ -1128,28 +1112,6 @@ impl Joined {
             self.workspace_answered(&route, answer, &mut woken);
         }
         self.wakes(woken, content_arrived)
-    }
-
-    /// What the replica holds of `route` now, as a record that landed is read: only what
-    /// changed since the store took it last, where it keeps the record. `None` while the
-    /// record waits for the page's record worker to verify it (`crate::record_verify`): the
-    /// records that are ready show meanwhile, and this one lands again once it is verified.
-    fn read_landed(&mut self, route: &DocumentRoute) -> Option<Result<RecordReading, String>> {
-        let kept = self.kept_heads(route);
-        let read = tilo_automerge_isolate::away::deferring(|| {
-            self.peer.engine().record_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.record,
-                kept.as_deref(),
-            )
-        });
-        if read.is_err() && tilo_automerge_isolate::away::verifying() {
-            self.verifying.1 = tilo_automerge_isolate::away::verified();
-            self.verifying.0.insert(route.clone());
-            return None;
-        }
-        Some(read)
     }
 
     /// What wakes the mounts in `woken`, each marked changed, and every

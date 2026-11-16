@@ -29,10 +29,6 @@ required-features = ["android"]
 
 # Input→display latency on an owned 27-note notebook; see its header.
 [[example]]
-name = "notes-scale"
-path = "examples/notes-scale.rs"
-
-[[example]]
 name = "notes-latency"
 path = "examples/notes-latency.rs"
 

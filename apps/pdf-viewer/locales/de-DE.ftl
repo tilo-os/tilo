@@ -69,6 +69,7 @@ pdf-note-save-waiting-pages = Die Seiten werden noch angeordnet. Speichere gleic
 pdf-note-saving = Eine Kopie mit deinen Markierungen wird als { $name } gespeichert …
 pdf-note-saved = Eine Kopie mit deinen Markierungen wurde als { $name } gespeichert.
 pdf-note-save-failed = { $name } wurde nicht gespeichert. Wähle einen anderen Ordner oder Namen.
+pdf-note-save-picker-failed = Das Speicherfenster konnte nicht geöffnet werden. Versuche das Speichern erneut.
 
 pdf-note-import-no-document = Öffne zuerst ein PDF und importiere dann Seiten hinein.
 pdf-note-import-busy = Seiten werden bereits importiert. Importiere mehr, sobald sie da sind.
@@ -299,7 +300,6 @@ pdf-viewer-effects-select-text = Text auswählen
 pdf-viewer-effects-select-all = Alles auswählen
 pdf-viewer-effects-copy-selection = Auswahl kopieren
 pdf-viewer-effects-insert-pages = Seiten einfügen
-pdf-viewer-effects-save-to = PDF mit Markierungen in eine Datei speichern
 pdf-document = PDF
 pdf-document-record-reading-position = Leseposition merken
 pdf-document-start-page-plan = Seitenplan beginnen

@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_desktop_search::InvokeTarget;
+use tilo_actions::remote::{ActionHost as _, InvokeArgument, InvokeRequest};
 use tilo_session::mentions::Mentions;
-use tilo_session::platform::notice::Place;
+use tilo_session::platform::notice::{Place, open_target};
 use tilo_session::platform::records::{Changed, Changes, Records, Since};
 use ui::automerge::AutoCommit;
 
@@ -103,30 +103,58 @@ impl Desktop {
     /// showing the item the mention is in.
     fn open_chosen_mentions(&self) {
         for place in self.mentions.borrow().take_chosen() {
-            self.open(&place);
+            self.open(open_target(&self.workspace, &place));
         }
     }
 
     /// Show, as this person, what the desktop asked to see in an app's window
-    /// ([`crate::shell::HostRequest::ShowInApp`]): through the session, which opens the window and
-    /// shows it there, as a notice's place.
+    /// ([`crate::shell::HostRequest::ShowInApp`]): the app's `open` of the resource, through the
+    /// session, which opens the window and shows it there.
     fn show_asked_in_apps(&self) {
         let mut asked = Vec::new();
         self.requests.borrow_mut().retain(|request| match request {
-            crate::shell::HostRequest::ShowInApp(place) => {
-                asked.push(place.clone());
+            crate::shell::HostRequest::ShowInApp { app, resource } => {
+                asked.push((app.clone(), resource.clone()));
                 false
             }
             _ => true,
         });
-        for place in asked {
-            self.open(&place);
+        for (app, resource) in asked {
+            let place = Place {
+                app,
+                record: String::new(),
+                resource,
+            };
+            self.open(open_target(&self.workspace, &place));
         }
     }
 
-    /// Ask the session to open `place` as this person, as a search hit opens what it found.
-    fn open(&self, place: &Place) {
-        self.invoke_as_person(&InvokeTarget::place(self.workspace.as_str(), place));
+    /// Ask the session to open `target` as this person, and draw the frame that shows what it
+    /// opened. A refused open is the session's to report.
+    fn open(&self, target: tilo_actions::remote::RemoteActionTarget) {
+        // An app's `open` shows the item its anchor names: the resource the
+        // desktop asked for is that anchor (a Settings page, say), as the
+        // shell's own open passes it.
+        let argument = if target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+            && !target.address.resource.is_empty()
+        {
+            tilo_session_core::notice::open_arguments(&target.address.resource)
+        } else {
+            InvokeArgument::None
+        };
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target,
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        drop(self.session.invoke(&self.caller(), request));
+        self.shared.wake();
     }
 }
 

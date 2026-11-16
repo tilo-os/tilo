@@ -147,7 +147,7 @@ pub(crate) struct Shared {
     pub(crate) sends: crate::send_to::Sends,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
-    pub(crate) table: crate::services::Served,
+    pub(crate) table: crate::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     #[cfg(target_os = "linux")]
     pub(crate) window_shares: Rc<RefCell<crate::window_share::WindowShares>>,
@@ -434,7 +434,7 @@ pub(crate) struct Shared {
     /// What a connection of any API asks of the session's published side: answered
     /// on the loop's pass, the only place that may touch them.
     #[cfg(target_os = "linux")]
-    pub(crate) session_services: std::sync::Arc<crate::mcp_server::SessionServices>,
+    pub(crate) session_doors: std::sync::Arc<crate::mcp_server::SessionDoors>,
     /// The MCP server toward the person's other devices.
     #[cfg(target_os = "linux")]
     pub(crate) device_agents: std::sync::Arc<crate::device_mcp::DeviceAgents>,
@@ -602,17 +602,17 @@ pub struct Session {
     /// the action protocol.
     #[cfg(target_os = "linux")]
     pub(crate) content: std::sync::Arc<crate::content::Plane>,
-    /// The control socket `tilo-control` drives this session over: the
+    /// The control door `tilo-control` drives this session over: the
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.
     #[cfg(target_os = "linux")]
     pub(crate) control: crate::test_control::Control,
-    /// The liveness socket beside the development control socket: whether the
+    /// The liveness door beside the development control socket: whether the
     /// loop still turns, and where its threads are when it does not. Kept for
-    /// as long as the session runs: dropping it takes the socket down.
+    /// as long as the session runs: dropping it takes the door down.
     #[allow(
         dead_code,
-        reason = "held for the session's life: dropping it takes the socket down"
+        reason = "held for the session's life: dropping it takes the door down"
     )]
     #[cfg(target_os = "linux")]
     pub(crate) liveness: Option<tilo_liveness::Server>,

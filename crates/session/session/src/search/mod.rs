@@ -32,7 +32,8 @@ mod host;
 use tilo_actions::ApiError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_open_target,
+    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
+    application_open_target,
 };
 use tilo_desktop_search::preferences;
 use tilo_desktop_search::providers::PublishedActions;
@@ -307,7 +308,7 @@ pub struct SessionSearch {
     ask: crate::search_ask::Shared,
     /// What wakes the session's loop as an answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
-    /// The sources' threads for a find with no frame of the toolkit's own: an API's `find` runs
+    /// The sources' threads for a find with no frame of the toolkit's own: a door's `find` runs
     /// on the loop's thread and must never wait for a source, so its search asks these and the
     /// answers come on a later pass.
     workers: tilo_desktop_search::SearchWorkers,
@@ -315,7 +316,7 @@ pub struct SessionSearch {
     pending: RefCell<Vec<PendingFind>>,
 }
 
-/// A find an API asked, as it stands between passes: the search's stream, the sources it was
+/// A find a door asked, as it stands between passes: the search's stream, the sources it was
 /// made from (which outlive the stream's own borrow of them), and where the answer goes.
 struct PendingFind {
     stream: tilo_desktop_search::SearchStream,
@@ -337,9 +338,9 @@ struct PendingFind {
 
 /// Who a find was asked for, and so what its hits become when they are in.
 pub(crate) enum FindAnswer {
-    /// A API's find: the resources the hits name, as a caller who addresses them reads them,
+    /// A door's find: the resources the hits name, as a caller who addresses them reads them,
     /// under what a place can show ([`found_all`]).
-    Api {
+    Door {
         done: FoundSearch,
         /// What a place can show, read at the ask where the layout is: `'static` by holding
         /// the catalogue itself, not a borrow of it.
@@ -350,12 +351,12 @@ pub(crate) enum FindAnswer {
     Canvas(tilo_session_core::layout::FindDone),
 }
 
-/// Answer `answer` with the hits a search has: an API's find as the resources they name, the
+/// Answer `answer` with the hits a search has: a door's find as the resources they name, the
 /// canvas's as the hits themselves. `needle` is what was typed, which [`found_all`] ranks the
 /// lead by.
 fn finish(answer: FindAnswer, needle: &str, hits: &[tilo_desktop_search::Hit]) {
     match answer {
-        FindAnswer::Api { done, shows } => {
+        FindAnswer::Door { done, shows } => {
             let shows = &*shows;
             done.complete(found_all(needle, hits.to_vec(), shows));
         }
@@ -417,7 +418,7 @@ impl SessionSearch {
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
-        // The sources of an API's `find` answer on their own threads, and the wake asks the loop
+        // The sources of a door's `find` answer on their own threads, and the wake asks the loop
         // for the pass that takes them up: the same wake the session's services use.
         let workers = match &wake {
             Some(wake) => tilo_desktop_search::SearchWorkers::waking(Arc::clone(wake)),
@@ -732,7 +733,7 @@ impl SessionSearch {
         groups.into_iter().flat_map(|group| group.results).collect()
     }
 
-    /// What [`Self::find_in`] answers, asked by the session's own API on the loop's thread: the
+    /// What [`Self::find_in`] answers, asked by the session's own door on the loop's thread: the
     /// sources are handed to their workers and the search stays pending (`shows` names what a
     /// place can show, read here where the layout is), and `done` hears what it found on a
     /// later pass ([`Self::poll_finds`]), as its answers land.
@@ -749,7 +750,7 @@ impl SessionSearch {
         within: std::time::Duration,
         done: FoundSearch,
     ) {
-        self.find_off_loop(needle, workspace, within, FindAnswer::Api { done, shows });
+        self.find_off_loop(needle, workspace, within, FindAnswer::Door { done, shows });
     }
 
     /// Text typed on the canvas, asked of the same search off the pass that places it: the hits
@@ -876,7 +877,7 @@ impl SessionSearch {
         if needle.trim().is_empty() {
             return None;
         }
-        // The session's own published actions, from its API: the apps' and the seeded records'
+        // The session's own published actions, from its door: the apps' and the seeded records'
         // alike, which is where an app's search action and its types are (the palette's `own`).
         let own = self.own.borrow();
         let types = self.own_types.borrow();
@@ -1179,7 +1180,15 @@ impl SessionSearch {
                 "only an app's action answers what it did".into(),
             ));
         };
-        self.with_apps(|apps| apps.invoke_answered(invoke.remote(), invoke.arguments, answered))
+        self.with_apps(|apps| {
+            let target = application_action_target(
+                &invoke.workspace,
+                &invoke.app,
+                invoke.address.resource.as_str(),
+                invoke.address.action.as_str(),
+            );
+            apps.invoke_answered(target, invoke.arguments, answered)
+        })
     }
 
     /// Carry out the rows the person chose in `handle`'s palette since the last call, naming the
@@ -1221,7 +1230,12 @@ impl SessionSearch {
             }
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => own(&invoke),
             Target::Invoke(invoke) => self.with_apps(|apps| {
-                let target = invoke.remote();
+                let target = application_action_target(
+                    &invoke.workspace,
+                    &invoke.app,
+                    invoke.address.resource.as_str(),
+                    invoke.address.action.as_str(),
+                );
                 if invoke.place != LaunchPlace::Beside {
                     return apps.invoke(target, invoke.arguments);
                 }
@@ -1243,15 +1257,15 @@ impl SessionSearch {
                 // A record this workspace holds opens as a link to it does: its app's `open` on
                 // the record, which brings the window on it forward or opens its app there.
                 if let Some((app, record)) = tilo_desktop_search::launched_record(&app) {
-                    let open = InvokeTarget::place(
-                        workspace,
-                        &crate::platform::notice::Place {
-                            app: app.to_owned(),
-                            record: record.to_owned(),
-                            ..Default::default()
-                        },
+                    let place = crate::platform::notice::Place {
+                        app: app.to_owned(),
+                        record: record.to_owned(),
+                        resource: String::new(),
+                    };
+                    return apps.invoke(
+                        crate::platform::notice::open_target(workspace, &place),
+                        serde_json::Map::new(),
                     );
-                    return apps.invoke(open.remote(), open.arguments);
                 }
                 match host_apps::launched(&app) {
                     // The machine's own app places its window itself.
@@ -1535,7 +1549,7 @@ impl ResourceSearch for SearchThrough {
     }
 }
 
-/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own APIs
+/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own doors
 /// are asked: the session's search is not `Send` , and every call of it runs on the loop's pass.
 pub(crate) struct SearchThrough(
     std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,
@@ -2020,15 +2034,14 @@ mod tests {
             search
                 .perform_checked("here", hit.target, &mut |_| Ok(()))
                 .expect("the record opens");
-            let link = InvokeTarget::place(
+            let link = crate::platform::notice::open_target(
                 "here",
                 &crate::platform::notice::Place {
                     app: PDF.into(),
                     record: FORM.into(),
-                    ..Default::default()
+                    resource: String::new(),
                 },
-            )
-            .remote();
+            );
             assert_eq!(
                 opened.borrow().as_slice(),
                 [(link.provider, link.address.action)],

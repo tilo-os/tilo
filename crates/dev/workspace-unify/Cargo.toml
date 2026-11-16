@@ -1635,7 +1635,6 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
-"app-fleet" = { path = "../../../crates/packaging/app-fleet", default-features = false, features = [] }
 "app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "ar_archive_writer-0_5_3" = { package = "ar_archive_writer", version = "^0.5.3", default-features = false, features = [] }
 "arc-swap-1_9_2" = { package = "arc-swap", version = "^1.9.2", default-features = false, features = [] }

@@ -263,10 +263,8 @@ fn one_display() -> Session {
     )
 }
 
-/// What a mouse's buttons and the keys these tests press send.
+/// What a mouse's left button and the Super key send.
 const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
-const KEY_ESCAPE: u32 = 1;
 const KEY_LEFT_META: u32 = 125;
 
 fn motion(session: &mut Session, x: f64, y: f64) {
@@ -420,8 +418,7 @@ fn a_window_covering_its_display_takes_the_bars_room() {
 
 /// Over a window covering its display, the bar stays away until it is reached for: the top edge, a
 /// key, and leaving full screen again, with a press in the band staying the window's while the bar
-/// is away. Reached for, the bar stands in for the window's own bar: a secondary press there opens
-/// the window's menu.
+/// is away.
 #[test]
 fn the_bar_comes_back_over_a_window_covering_its_display() {
     let _settled = ui::motion::testing::settled();
@@ -514,29 +511,6 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
         "the press on the bar did not send it away"
     );
     assert_eq!(rect_of(&mut session, app), whole);
-
-    // The window shows no bar of its own, so a secondary press on the bar over it opens the
-    // window's menu, with its way out, rather than the workspace menu.
-    let menu = |session: &Session| session.read(tilo_session::shell::state::WINDOW_MENU);
-    assert!(menu(&session).is_some_and(|menu| menu["tab"].is_null()));
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_RIGHT,
-                pressed,
-            })
-            .expect("pointer button");
-    }
-    let rows = until(&mut session, &mut client, |session| {
-        let menu = menu(session)?;
-        menu["tab"].is_string().then(|| menu["rows"].to_string())
-    })
-    .expect("the press opens the covering window's menu");
-    assert!(rows.contains("Exit full screen"), "its own menu: {rows}");
-    assert!(client.seen.buttons.is_empty(), "the window never saw it");
-    key(&mut session, KEY_ESCAPE, true);
-    key(&mut session, KEY_ESCAPE, false);
 
     // Leaving full screen docks the bar again and forgets the reveal.
     set_fullscreen(&mut client, false);

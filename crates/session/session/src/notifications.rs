@@ -74,7 +74,7 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
 /// of its own would draw a second one and take its presses.
 pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
-    surfaces: &mut tilo_session_core::surfaces::Surfaces,
+    doors: &mut tilo_session_core::surfaces::Surfaces,
     notices: &DesktopNotifications,
     (shell, overlays): (
         &tilo_desktop_surface::DesktopHandle,
@@ -101,7 +101,7 @@ pub(crate) fn mount_banners(
                 stack,
             )));
             compositor.add_host(surface.clone());
-            surfaces.add(surface);
+            doors.add(surface);
             notices.show_banners_elsewhere();
         }
         Err(error) => tracing::warn!(%error, "notification banners not mounted"),

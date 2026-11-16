@@ -13,18 +13,18 @@ The session binary is `tilo-session` (`crates/session/session`); its scenarios a
 
 ## What a session publishes
 
-A session binds its Wayland socket, its service sockets and its files under `$XDG_RUNTIME_DIR/tilo-session/`:
+A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_DIR/tilo-session/`:
 
 | Path | Written by | Read by |
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
-| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --api` |
+| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
 | `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |
 
-`wayland-display` and `workspace-id` belong to the session the login's programs reach: a second session in the same runtime directory (a nested one beside a live desktop) publishes neither, and is reached through the socket name it printed on stdout. The display file, the workspace file and the sockets go when the session does.
+`wayland-display` and `workspace-id` belong to the session the login's programs reach: a second session in the same runtime directory (a nested one beside a live desktop) publishes neither, and is reached through the socket name it printed on stdout. The display file, the workspace file and the doors go when the session does.
 
 The session prints what it bound, so a harness reads the answer rather than guessing a path:
 
@@ -89,9 +89,9 @@ For semantic actions on an existing owner's headless session, start
 first-login, device-owner, administrator-group, lock and caller checks apply, and
 no development control variable is needed. The endpoint is
 `$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock`, separate from the
-device's `admin-control.sock`; an existing live listener is never replaced.
+real seat's `admin-control.sock`; an existing live listener is never replaced.
 
-That socket serves the semantic half of the protocol only — `actions list`,
+That door serves the semantic half of the protocol only — `actions list`,
 `actions invoke`, `actions status`, `state-dump`, `windows`, `record-read`, the
 profile ops — and never synthetic input, snapshots or the test identity.
 
@@ -202,7 +202,7 @@ echo '{"op":"actions_enumerate","query":"notes"}' | nc -U "$TILO_TEST_CONTROL"
 echo '{"op":"actions_status","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
 echo '{"op":"actions_cancel","id":"INVOCATION_ID"}' | nc -U "$TILO_TEST_CONTROL"
 
-# Records an app publishes, read through the record API as this person reads
+# Records an app publishes, read through the record door as this person reads
 # them, answered once they differ from `after` (the `revision` an earlier answer
 # gave) or `wait_ms` passes:
 echo '{"op":"record_read","app":"notes","records":["notebook"]}' | nc -U "$TILO_TEST_CONTROL"
@@ -250,7 +250,7 @@ A hosted window's composition moves a control — an app's "new note" stands in 
 
 - the record kind it acts on, then the operation, in the app's own ids, joined by `\x1f` (`U+001F`): `tl.so.tilo.lang.notes.Notebook\x1fqymo5lg2` for a notebook's `new_note` (`qymo5lg2` is the id `apps/tl/notes/app.ids` gives that declaration), or `mavvhka7\x1folsyp3aw` for a note's `body` field;
 - in the accessibility tree, as the node's author id (`AccessNode::action`, AT-SPI's `accessible id`), and in `list_targets`, as `identity`;
-- `click_named` takes that `identity` instead of a `name`, and presses the control wherever the window draws it; an invocation that names the same kind and operation at the app's action API runs the same action, so a tool that read a control can also call what it does.
+- `click_named` takes that `identity` instead of a `name`, and presses the control wherever the window draws it; an invocation that names the same kind and operation at the app's door runs the same action, so a tool that read a control can also call what it does.
 
 Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; `scripts/headless-examples/tilolang-e2e.py` builds them with `doing(app, type, action)`, naming the app holding the records when the action is another app's (`doing("today", "Tasks", "morning_cleanup", on="tasks")`).
 
@@ -341,7 +341,7 @@ scripts/agent-loop/session.py usage canvas --calls
 scripts/agent-loop/session.py stop canvas
 ```
 
-The agent's only way in is the ordinary one: `tilo-runtime-mcp` over the app's published actions, and the app's window as a person uses it. Everything lives under `target/agent-loop/APP` (state, logs) and a private directory in `$XDG_RUNTIME_DIR`; the real home, settings, identity and workspaces are never read or written.
+The agent's only door is the ordinary one: `tilo-runtime-mcp` over the app's published actions, and the app's window as a person uses it. Everything lives under `target/agent-loop/APP` (state, logs) and a private directory in `$XDG_RUNTIME_DIR`; the real home, settings, identity and workspaces are never read or written.
 
 ## Per-app screenshots and drives
 
@@ -375,7 +375,7 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 {"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
 ```
 
-`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/sdk/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the door refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/sdk/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`ui::headless`) mounts a component in one `FrameHarness`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the harness, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -550,7 +550,7 @@ Every build, release included, also runs the main-loop watchdog (`crates/session
 | What the session publishes | `crates/session/compositor/src/lib.rs` (`listen`), `crates/session/session/src/published_workspace.rs`, `crates/session/session/src/env.rs` |
 | `TILO_TEST_CONTROL` protocol | `crates/session/session/src/test_control.rs` |
 | `tilo-control` | `crates/session/control-cli/` |
-| Liveness socket and watchdog | `crates/session/liveness/src/` |
+| Liveness door and watchdog | `crates/session/liveness/src/` |
 | Headless backend | `crates/session/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/session/frame-metrics/src/lib.rs` |
 | Memory report | `crates/session/compositor/src/memory_report.rs` |

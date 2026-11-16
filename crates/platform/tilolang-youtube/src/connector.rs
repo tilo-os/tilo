@@ -19,22 +19,22 @@ use crate::wire::{self, Ask, FromConnector};
 pub const ORIGIN: &str = "youtube";
 
 /// Run the YouTube connector this process was started as (`TILO_TILOLANG_CONNECTOR=youtube`),
-/// on the socket the launcher handed it, until the session closes the socket: every instance that
+/// on the door the launcher handed it, until the session closes the door: every instance that
 /// attaches has its questions answered by `service`.
 pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
-    let socket = runtime_portal::origin_connector::take_socket()
-        .ok_or_else(|| "the launcher handed the YouTube connector no socket".to_owned())?;
+    let door = runtime_portal::origin_connector::take_door()
+        .ok_or_else(|| "the launcher handed the YouTube connector no door".to_owned())?;
     let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&socket) {
+        match runtime_portal::origin_connector::receive_attachment(&door) {
             Ok(Some(connection)) => Some(UnixStream::from(connection)),
             Ok(None) => {
-                tracing::info!("the session closed the YouTube connector's socket");
+                tracing::info!("the session closed the YouTube connector's door");
                 None
             }
             Err(error) => {
                 tracing::error!(
                     %error,
-                    "the YouTube connector's socket failed: it takes no more instances"
+                    "the YouTube connector's door failed: it takes no more instances"
                 );
                 None
             }
@@ -44,7 +44,7 @@ pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
     Ok(())
 }
 
-/// Run the connector over `service` until `attachments` ends (the session closed its socket):
+/// Run the connector over `service` until `attachments` ends (the session closed its door):
 /// every instance that attaches has its questions answered.
 pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = UnixStream>) {
     for stream in attachments {
@@ -56,7 +56,7 @@ pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = UnixS
             tracing::error!(%error, "an instance could not attach to the YouTube connector");
         }
     }
-    tracing::info!("the session closed the YouTube connector's socket");
+    tracing::info!("the session closed the YouTube connector's door");
 }
 
 /// Answer each question the instance at `stream` asks, in the order it asks them, until it goes.

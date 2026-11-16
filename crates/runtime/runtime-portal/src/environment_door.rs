@@ -4,15 +4,15 @@
 //! The session's MCP server (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`)
 //! serves only programs in the session's own namespaces, so nothing inside a
 //! confined environment reaches it. When `ush` opens an environment it asks
-//! the session, on that socket, for a socket of the environment's own: one
+//! the session, on that door, for a door of the environment's own: one
 //! [`Request`] line. The session binds a fresh socket for the environment and
 //! answers with its path ([`Reply::Opened`]); `ush` binds that socket into the
 //! environment alone, at [`tilo_paths::login::GUEST_AGENT_SOCKET`].
 //!
-//! The connection the request was made on is the socket's lease: the socket lives
+//! The connection the request was made on is the door's lease: the door lives
 //! while it is open, and the session removes it when the connection closes,
 //! which it does when the environment ends or `ush` does. A program the
-//! session serves on the socket is the environment's, working in the
+//! session serves on the door is the environment's, working in the
 //! environment's workspace; only a descendant of the process holding the lease
 //! is served there.
 
@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub const OP: &str = "environment-socket";
+pub const OP: &str = "environment-door";
 
 const MAX_LINE: u64 = 16 * 1024;
 
@@ -81,7 +81,7 @@ pub enum Reply {
         path: PathBuf,
         workspace: String,
     },
-    /// No socket, and why.
+    /// No door, and why.
     Refused {
         reason: String,
     },
@@ -115,12 +115,12 @@ impl Lease {
     }
 }
 
-/// Ask the session whose MCP server is `socket` for `request`'s socket.
+/// Ask the session whose MCP server is `door` for `request`'s door.
 ///
 /// # Errors
-/// The socket does not answer, refuses, or answers something else.
-pub fn open(socket: &Path, request: &Request) -> io::Result<Lease> {
-    let mut stream = tilo_files::native::socket::connect(socket)?;
+/// The door does not answer, refuses, or answers something else.
+pub fn open(door: &Path, request: &Request) -> io::Result<Lease> {
+    let mut stream = tilo_files::native::socket::connect(door)?;
     stream.set_read_timeout(Some(ANSWER_WITHIN))?;
     stream.set_write_timeout(Some(ANSWER_WITHIN))?;
     let mut line = serde_json::to_vec(request).map_err(io::Error::other)?;
@@ -133,7 +133,7 @@ pub fn open(socket: &Path, request: &Request) -> io::Result<Lease> {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "the session answered no environment socket: {}",
+                "the session answered no environment door: {}",
                 String::from_utf8_lossy(&answer).trim()
             ),
         )
@@ -156,7 +156,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn the_environment_socket;
+        fn the_environment_door;
 
         phase a_request_reads_back_and_only_names_an_environment_a_record_key_may;
         {
@@ -190,12 +190,12 @@ mod tests {
             assert_eq!(Request::of(b"{\"jsonrpc\":\"2.0\"}"), None);
         }
 
-        phase a_lease_holds_the_socket_the_session_answered_until_it_is_dropped;
+        phase a_lease_holds_the_door_the_session_answered_until_it_is_dropped;
         {
             use std::io::Read as _;
             let directory = tempfile::tempdir().unwrap();
-            let socket = directory.path().join("agent.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let door = directory.path().join("agent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
             let session = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 let mut line = Vec::new();
@@ -207,7 +207,7 @@ mod tests {
                 (&stream)
                     .write_all(
                         &Reply::Opened {
-                            path: "/run/agent.sock".into(),
+                            path: "/run/door.sock".into(),
                             workspace: "w1".into(),
                         }
                         .line(),
@@ -218,8 +218,8 @@ mod tests {
                 (&stream).read_to_end(&mut rest).unwrap();
                 rest
             });
-            let lease = open(&socket, &Request::new("dev", "Development", None)).unwrap();
-            assert_eq!(lease.path(), Path::new("/run/agent.sock"));
+            let lease = open(&door, &Request::new("dev", "Development", None)).unwrap();
+            assert_eq!(lease.path(), Path::new("/run/door.sock"));
             assert_eq!(lease.workspace(), "w1");
             drop(lease);
             assert!(session.join().unwrap().is_empty(), "the lease only closes");
@@ -228,8 +228,8 @@ mod tests {
         phase a_refusal_is_the_reason_the_session_gave;
         {
             let directory = tempfile::tempdir().unwrap();
-            let socket = directory.path().join("agent.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let door = directory.path().join("agent.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&door).unwrap();
             let session = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 let mut line = Vec::new();
@@ -245,7 +245,7 @@ mod tests {
                     )
                     .unwrap();
             });
-            let error = open(&socket, &Request::new("dev", "Development", None)).unwrap_err();
+            let error = open(&door, &Request::new("dev", "Development", None)).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert_eq!(error.to_string(), "no workspace");
             session.join().unwrap();

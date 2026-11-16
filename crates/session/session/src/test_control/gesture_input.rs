@@ -1,4 +1,4 @@
-//! The seat's touchpad gestures, as the control API hands them in: what a touchpad would report
+//! The seat's touchpad gestures, as the control door hands them in: what a touchpad would report
 //! for a swipe or a pinch, and the fingers a held swipe leaves on the pad.
 
 use serde_json::{Value as Json, json};
@@ -36,7 +36,7 @@ const DEFAULT_GESTURE_STEPS: u32 = 10;
 const MAX_GESTURE_STEPS: u32 = 288;
 
 /// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the control
-/// API refuses rather than delivering where a person's hand could not reach.
+/// door refuses rather than delivering where a person's hand could not reach.
 fn client_gesture(fingers: u32) -> Json {
     refusal(
         "client_gesture",

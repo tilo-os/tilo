@@ -12,8 +12,8 @@
 
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::{
-    CLOSED_TABS_PER_WORKSPACE, Display, Layout, Strip, StripId, Tab, TabId, TileContent,
-    WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    CLOSED_TABS_PER_WORKSPACE, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
+    WindowWidth, Workspace, WorkspaceId,
 };
 
 fn app(tab: TabId, title: &str, app: &str) -> Tab {
@@ -116,18 +116,6 @@ fn groups(tree: &Layout, strip_id: StripId) -> Vec<u64> {
         .find(|strip| strip.id == strip_id)
         .map(|strip| strip.window_groups.iter().map(|group| group.id).collect())
         .unwrap_or_default()
-}
-
-fn display(id: u32, monitor: &str, x: f64) -> Display {
-    Display {
-        id,
-        monitor: monitor.into(),
-        x,
-        y: 0.0,
-        width: 1280.0,
-        height: 800.0,
-        primary: false,
-    }
 }
 
 fn closes(tree: &Layout) -> usize {
@@ -351,37 +339,4 @@ tilo_test_env::scenario! {
             "there is no closed window to reopen"
         );
     }
-}
-
-/// A window closed on one display comes back on that display, though the person went on working on
-/// the other: the reopen puts it back where it was and the person with it.
-#[test]
-fn a_window_reopens_on_the_display_it_closed_on() {
-    let mut tree = layout();
-    let displays = [display(0, "LEFT", 0.0), display(1, "RIGHT", 1280.0)];
-    tree.outputs.reconcile(&tree.workspaces, &displays);
-    tree.outputs.set_focused(0);
-    assert!(tree.outputs.place_unhomed(&tree.workspaces));
-    assert!(tree.outputs.move_group(&tree.workspaces, 21, 1));
-    assert_eq!(tree.outputs.display_of(21), Some(1));
-
-    tree.close_tab(40).unwrap();
-    // The displays are reconciled as every pass does, which forgets the group that closed, and the
-    // person works on the other display.
-    tree.outputs.reconcile(&tree.workspaces, &displays);
-    tree.outputs.set_focused(0);
-
-    let reopened = tree.reopen_closed(WorkspaceId::from_u128(1)).unwrap();
-    assert_eq!(reopened.group, 21);
-    tree.outputs.place_unhomed(&tree.workspaces);
-    assert_eq!(
-        tree.outputs.display_of(21),
-        Some(1),
-        "back on the display it closed on"
-    );
-    assert_eq!(
-        tree.outputs.focused_display(),
-        Some(1),
-        "and the person is there with it"
-    );
 }

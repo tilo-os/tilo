@@ -275,8 +275,7 @@ impl TopBarChrome {
 
     /// A secondary press on the bar that no control of its own took: the workspace menu, standing
     /// where the person pressed — the same menu the workspace name opens, offering the shell's own
-    /// commands there. Over a window covering its display the bar stands where that window's own
-    /// bar would, which it no longer shows, so the press opens the window's menu instead.
+    /// commands there.
     pub(super) fn handle_secondary_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::MouseInput {
             state: winit::event::ElementState::Pressed,
@@ -292,26 +291,10 @@ impl TopBarChrome {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
-        let at = crate::desktop_host::place(point);
-        *handled = chrome.intent(if self.over_covering_window(&chrome.bars()) {
-            ChromeIntent::CoveringWindowMenu { at }
-        } else {
-            ChromeIntent::ToggleWorkspaceMenu { at: Some(at) }
+        *handled = chrome.intent(ChromeIntent::ToggleWorkspaceMenu {
+            at: Some(crate::desktop_host::place(point)),
         });
         *handled
-    }
-
-    /// Whether this bar stands over a window covering its display: the full bar on the display in
-    /// use (the shell's one bar when it needs no placing), or a compact bar on its own display.
-    fn over_covering_window(&self, placement: &super::Placement) -> bool {
-        let key = self.display().or_else(|| {
-            placement
-                .bars
-                .iter()
-                .find(|place| place.full)
-                .map(|place| place.display)
-        });
-        placement.fullscreen.contains(&key)
     }
 
     /// Keyboard focus is shown; focus a click gave the bar is not.

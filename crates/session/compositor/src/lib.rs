@@ -2038,7 +2038,7 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) and flush what it sent. Route one input event
     /// (see [`InputEvent`]) through the person's assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
-        self.input_at(event, Instant::now())
+        self.input_at(event, tilo_clock::now())
     }
 
     /// The same, for an event whose device says when it began: a key pressed before a sheet
@@ -2361,7 +2361,7 @@ impl Compositor {
             };
             let time = self.data.state.now_ms();
             // Typed by the shell, not pressed by the person: each key begins now.
-            let at = Instant::now();
+            let at = tilo_clock::now();
             for modifier in &stroke.modifiers {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
                 self.data.state.key(modifier.key, true, serial, time, at);

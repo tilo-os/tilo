@@ -14,7 +14,7 @@ impl Shared {
     /// cannot read its own tree while it opens search.
     pub(crate) fn observe(&self) {
         // Who is here changes faster than what is published: people and
-        // calls come and go between two API revisions, so the empty
+        // calls come and go between two door revisions, so the empty
         // palette's first group is not read with them. Reading it costs more
         // than the rest of this pass and a drag runs sixty of them, so it is
         // read when presence moved — everyone's face, the call they are in,
@@ -28,7 +28,7 @@ impl Shared {
             self.here_seen.set(people);
             self.search.set_here(self.here_now());
         }
-        // The workspaces as this frame shows them, before the API revision decides whether the
+        // The workspaces as this frame shows them, before the door revision decides whether the
         // rest is worth reading again: a record held by another workspace is offered under that
         // workspace's name.
         self.search.set_workspaces(self.handle.read(|tree| {

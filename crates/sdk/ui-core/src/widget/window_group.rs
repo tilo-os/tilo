@@ -149,6 +149,7 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
+    fullscreen_bar: fullscreen_bar::FullscreenBar,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -183,6 +184,7 @@ pub struct WindowGroup {
     pending_snap: bool,
     pub search_active: bool,
     pub focused: bool,
+    chrome_motion: crate::tokens::EffectiveMotion,
     top_overlay_inset: f64,
     /// A maximized window moves down while the shell's bar shows over its
     /// top edge, so its own bar is never under the shell's: where the
@@ -219,7 +221,7 @@ pub struct WindowGroup {
     bar_offer_dirty: bool,
     built_active: Option<u64>,
     node: Option<NodeId>,
-    laid_shape: Option<(bool, u64)>,
+    laid_shape: Option<(bool, bool, u64)>,
     child_styles: Vec<(NodeId, Style)>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
@@ -356,6 +358,7 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
             edge_lit_drawn: false,
@@ -368,6 +371,7 @@ impl WindowGroup {
             pending_snap: false,
             search_active: false,
             focused: false,
+            chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
             top_slide_from: 0.0,
             top_slide_since: None,
@@ -413,7 +417,7 @@ impl WindowGroup {
     /// The window shows its bar: its own band above the content, or the row its app draws at its
     /// top ([`crate::widget::window_header::content_bar`]). One bar per window, never two.
     fn shows_its_bar(&self) -> bool {
-        !self.external_navigation && !self.fullscreen_presentation
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
     }
 
     fn navigation_bar_visible(&self) -> bool {
@@ -424,6 +428,9 @@ impl WindowGroup {
         if self.fullscreen_presentation != fullscreen {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
+            if !fullscreen {
+                self.fullscreen_bar = fullscreen_bar::FullscreenBar::default();
+            }
         }
     }
 
@@ -704,24 +711,6 @@ impl WindowGroup {
     #[cfg(test)]
     pub(crate) fn top_overlay_inset(&self) -> f64 {
         self.top_overlay_inset
-    }
-
-    fn draw_bar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.bar.set_resize(self.resize());
-        self.bar
-            .set_group_focused(self.focused || self.search_active);
-        self.bar.set_popup_area(self.rect);
-        self.bar.draw_child(scene, transform, tr, theme, presence);
-        self.search.set_ground(self.bar.ground_color(theme));
-        self.search
-            .draw_child(scene, transform, tr, theme, presence);
     }
 
     fn top_slide_now(&self) -> f64 {
@@ -1273,8 +1262,12 @@ impl WindowGroup {
         self.node
     }
 
-    fn layout_shape(&self) -> (bool, u64) {
-        (self.navigation_bar_visible(), self.bar.active_id())
+    fn layout_shape(&self) -> (bool, bool, u64) {
+        (
+            self.navigation_bar_visible(),
+            self.bar_over_content(),
+            self.bar.active_id(),
+        )
     }
 
     /// The window's own node style. `flex_grow: 0` keeps a group at its
@@ -1331,6 +1324,8 @@ impl WindowGroup {
         self.close_duration = window_close_time();
         self.set_reduce_motion(theme.reduce_motion);
         self.rest_layout_owed = false;
+        self.chrome_motion = theme.motion();
+        self.fullscreen_bar.laid_out = self.bar_over_content();
     }
 
     /// Carry out the window's changes in its retained nodes, for the row
@@ -2904,6 +2899,7 @@ impl Widget for WindowGroup {
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
+        self.lay_bar_over_content(taffy, bar_node);
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
             if *id != active_id {
@@ -3035,7 +3031,8 @@ impl Widget for WindowGroup {
                 );
             }
         }
-        if self.navigation_bar_visible() {
+        let bar_over = self.bar_over_content();
+        if self.navigation_bar_visible() && !bar_over {
             self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
@@ -3095,6 +3092,7 @@ impl Widget for WindowGroup {
         }
         self.draw_held_furniture(scene, transform, tr, theme, presence);
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
             self.draw_bar_tips(scene, transform, tr, theme, presence);
         }
@@ -3221,6 +3219,7 @@ impl Widget for WindowGroup {
     }
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
+        self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = StructureChange::None;
@@ -3395,6 +3394,7 @@ impl Widget for WindowGroup {
         });
         tab_fade
             || size_label_fading
+            || self.fullscreen_bar_fading()
             || top_slide
             || close_in_flight
             || group_close_in_flight
@@ -5379,6 +5379,8 @@ mod tests {
     }
 }
 
+#[path = "window_group_fullscreen_bar.rs"]
+mod fullscreen_bar;
 #[path = "window_group_search.rs"]
 mod search;
 

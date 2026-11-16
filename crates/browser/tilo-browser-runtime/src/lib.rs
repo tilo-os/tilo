@@ -130,8 +130,6 @@ mod clipboard;
 mod console_log;
 #[cfg(target_arch = "wasm32")]
 mod crash;
-#[cfg(target_arch = "wasm32")]
-mod record_verify;
 // The record each window shows on the workspace's shared shell: its tests run
 // on the host too.
 #[cfg(any(target_arch = "wasm32", test))]

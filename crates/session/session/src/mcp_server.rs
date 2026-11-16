@@ -60,14 +60,14 @@ use crate::plane::LayoutAuthority;
 use crate::platform::steps::SessionSteps as _;
 use tilo_action_policy::AgentSessionId;
 
-// The records a connection reads and changes, which the server answers for.
+// The records a connection reads and changes, which the door answers for.
 mod records;
 pub(crate) use records::ServiceRecords;
 
-/// The kind of question the server asks the person.
+/// The kind of question the door asks the person.
 pub(crate) const KIND: &str = "session.mcp-server";
 
-/// Names the server when it is not this device's; honoured by developer builds only.
+/// Names the door when it is not the real seat's; honoured by developer builds only.
 pub(crate) const ENV: &str = "TILO_MCP_SERVER";
 
 /// How often a waiting connection looks for the person's answer and for its client.
@@ -76,7 +76,7 @@ const ASK_EVERY: Duration = Duration::from_millis(50);
 /// Where "Always allow" answers are kept, under the session's state directory.
 const BINDINGS_FILE: &str = "mcp-server-bindings.json";
 
-/// Where this session's server goes: this device's well-known path, or the absolute path a developer
+/// Where this session's door goes: the seat's own well-known path, or the absolute path a developer
 /// named in `TILO_MCP_SERVER` . `None` when there is no runtime directory to put it in.
 #[must_use]
 pub fn path() -> Option<PathBuf> {
@@ -121,7 +121,7 @@ struct Facts {
     /// The other device of the person's it connected from, over iroh ([`crate::device_mcp`]);
     /// `None` for a program of this login.
     origin: Option<tilo_mcp::devices::Origin>,
-    /// The socket of this login it came in by: the session's own, or an environment's.
+    /// The door of this login it came in by: the session's own, or an environment's.
     entrance: Origin,
 }
 
@@ -156,7 +156,7 @@ impl Facts {
     }
 
     /// The remembered identity of this client: the environment it works in (none on the session's
-    /// own socket), the executable the kernel names and the name it gives. `None` without an
+    /// own door), the executable the kernel names and the name it gives. `None` without an
     /// executable, and such a client is asked about every time.
     fn key(&self) -> Option<BindingKey> {
         if let Some(origin) = &self.origin {
@@ -225,7 +225,7 @@ struct Waiting {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 struct BindingKey {
     /// The confined environment a program of this login works in, by its id
-    /// (`<workspace>/<record>`); absent for the session's own socket.
+    /// (`<workspace>/<record>`); absent for the session's own door.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     environment: Option<String>,
     exe: PathBuf,
@@ -332,12 +332,12 @@ fn read_bindings(path: &Path) -> (HashMap<BindingKey, String>, Lost) {
     (answers, lost)
 }
 
-/// The server's listener, bound and ready, before the session serves it.
+/// The door's listener, bound and ready, before the session serves it.
 pub(crate) struct Mounted {
-    server: Loop,
+    door: Loop,
 }
 
-/// The session's side of the server: it asks the person, admits the agent they answered, and serves
+/// The session's side of the door: it asks the person, admits the agent they answered, and serves
 /// what it listened for. It runs on the loop's own pass, the only place that may touch the shell.
 pub(crate) struct Loop {
     questions: Option<Questions>,
@@ -361,7 +361,7 @@ pub(crate) struct Loop {
     /// The shell the broker decides against, kept by the same loop: an admission made here reaches
     /// the broker now, not on its next pass.
     shell: Option<Arc<LayoutAuthority>>,
-    /// The places connections are served in: as many as the server serves at once.
+    /// The places connections are served in: as many as the door serves at once.
     room: Room,
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
     /// has to wake it.
@@ -371,17 +371,17 @@ pub(crate) struct Loop {
     admits: Vec<PathBuf>,
     /// The clients the person let act as them for this session.
     person_session: std::collections::HashSet<BindingKey>,
-    /// What the connections ask of the session's own services, answered on the loop's pass.
-    services: Arc<SessionServices>,
-    /// The control protocol's socket, which a program inside an app this session started is served
+    /// What the connections ask of the session's own doors, answered on the loop's pass.
+    doors: Arc<SessionDoors>,
+    /// The control protocol's door, which a program inside an app this session started is served
     /// at, as that app.
-    control: Arc<crate::test_control::Shared>,
+    control: Arc<crate::test_control::Door>,
     sessions: Arc<AgentSessions>,
     /// What the person's other devices connect with, and how this one reaches theirs
     /// ([`crate::device_mcp`]).
     device_agents: Option<Arc<DeviceAgents>>,
-    /// The sockets of the confined environments open now, and the instance each agent reached.
-    environments: environments::Sockets,
+    /// The doors of the confined environments open now, and the instance each agent reached.
+    environments: environments::Doors,
     /// The agent key the person started the session with, when they did.
     agent_key: Option<agent_key::AgentKey>,
 }
@@ -391,13 +391,13 @@ pub(crate) struct Loop {
 struct Serving {
     broker: Option<Arc<AppBrokerState>>,
     device_agents: Option<Arc<DeviceAgents>>,
-    services: Arc<SessionServices>,
+    doors: Arc<SessionDoors>,
     requests: Sender<Request>,
     launches: Arc<Launches>,
     wake: Wake,
-    control: Arc<crate::test_control::Shared>,
+    control: Arc<crate::test_control::Door>,
     sessions: Arc<AgentSessions>,
-    /// The places connections are served in: as many as the server serves at once.
+    /// The places connections are served in: as many as the door serves at once.
     room: Room,
     environments: environments::Opener,
 }
@@ -424,26 +424,26 @@ impl Serving {
 }
 
 impl Mounted {
-    /// Serve what the server listened for from `broker` , whose decisions read `shell` : an admission
+    /// Serve what the door listened for from `broker` , whose decisions read `shell` : an admission
     /// on `shell` is what lets the client act.
     pub(crate) fn serve(
         mut self,
         broker: Option<Arc<AppBrokerState>>,
         shell: Option<Arc<LayoutAuthority>>,
     ) -> Loop {
-        self.server.broker = broker;
-        self.server.shell = shell;
-        self.server
+        self.door.broker = broker;
+        self.door.shell = shell;
+        self.door
     }
 }
 
-/// The server `options` name, bound and asking `questions` ; `None` , saying why, when it does not
+/// The door `options` name, bound and asking `questions` ; `None` , saying why, when it does not
 /// open.
 pub(crate) fn mount_named(
     options: &crate::Options,
     questions: Option<Questions>,
-    services: Arc<SessionServices>,
-    control: Arc<crate::test_control::Shared>,
+    doors: Arc<SessionDoors>,
+    control: Arc<crate::test_control::Door>,
     sessions: Arc<AgentSessions>,
 ) -> Option<Mounted> {
     let path = options.mcp_server.as_deref()?;
@@ -455,7 +455,7 @@ pub(crate) fn mount_named(
         state: options.state.as_deref(),
         admits: &options.admit_repl,
         agent_key: options.agent_key.as_deref(),
-        services,
+        doors,
         control,
         sessions,
     }) {
@@ -467,9 +467,9 @@ pub(crate) fn mount_named(
     }
 }
 
-/// What the server binds with: where it listens, whose questions its clients are admitted by, the
+/// What the door binds with: where it listens, whose questions its clients are admitted by, the
 /// apps this session started, where "Always allow" is kept, the programs named to admit, the
-/// session's own services, the workspace governance it holds, and the control socket a program inside an
+/// session's own doors, the workspace governance it holds, and the control door a program inside an
 /// app drives.
 pub(crate) struct Mounting<'a> {
     path: &'a Path,
@@ -480,8 +480,8 @@ pub(crate) struct Mounting<'a> {
     admits: &'a [PathBuf],
     /// The file holding the agent key the person started the session with.
     agent_key: Option<&'a Path>,
-    services: Arc<SessionServices>,
-    control: Arc<crate::test_control::Shared>,
+    doors: Arc<SessionDoors>,
+    control: Arc<crate::test_control::Door>,
     sessions: Arc<AgentSessions>,
 }
 
@@ -500,17 +500,17 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         state,
         admits,
         agent_key,
-        services,
+        doors,
         control,
         sessions,
     } = mounting;
     let agent_key = agent_key.and_then(agent_key::AgentKey::kept);
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
-    let environments = environments::Sockets::new(
+    let environments = environments::Doors::new(
         path.parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(tilo_paths::login::ENVIRONMENTS_DIR),
+            .join(tilo_paths::login::ENVIRONMENT_DOORS_DIR),
     );
     let bindings_path = state.map(|directory| directory.join(BINDINGS_FILE));
     let (always, lost) = bindings_path
@@ -528,7 +528,7 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
             }
         })
         .collect();
-    let server = Loop {
+    let door = Loop {
         questions,
         listener,
         watch: None,
@@ -551,14 +551,14 @@ pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
         waker: Waker::noop().clone(),
         admits,
         person_session: std::collections::HashSet::new(),
-        services,
+        doors,
         control,
         sessions,
         device_agents: None,
         environments,
         agent_key,
     };
-    Ok(Mounted { server })
+    Ok(Mounted { door })
 }
 
 impl Shared {
@@ -566,11 +566,11 @@ impl Shared {
     /// agent they let work here is asked about again, and they are told why rather than losing the
     /// answer in silence.
     pub(crate) fn tell_agent_bindings_lost(&self) {
-        let mut server = self.mcp_server.borrow_mut();
-        let Some(server) = server.as_mut() else {
+        let mut door = self.mcp_server.borrow_mut();
+        let Some(door) = door.as_mut() else {
             return;
         };
-        for agent in server.lost.drain(..) {
+        for agent in door.lost.drain(..) {
             self.notifications
                 .borrow()
                 .tell(&crate::notices::agent_bindings_notice(agent.as_deref()));
@@ -634,12 +634,12 @@ impl Loop {
                 let from = match peer_decision(&peer) {
                     Ok(()) => From::Login(pid),
                     // The login's confined shell runtime runs in a mount namespace systemd made
-                    // for it: it is let in to ask for its environments' sockets, and for nothing
+                    // for it: it is let in to ask for its environments' doors, and for nothing
                     // else (`serve_connection`).
                     Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => From::ShellRuntime(pid),
                     Err(refusal) => return Err(refusal),
                 };
-                // Only a program the server would serve is told that it is full.
+                // Only a program the door would serve is told that it is full.
                 let place = self.room.take().ok_or(PeerRefusal::Busy)?;
                 Ok((place, from))
             });
@@ -676,12 +676,12 @@ impl Loop {
         self.serving().serve(place, stream, from);
     }
 
-    /// What serving a connection of this server takes.
+    /// What serving a connection of this door takes.
     fn serving(&self) -> Serving {
         Serving {
             broker: self.broker.clone(),
             device_agents: self.device_agents.clone(),
-            services: Arc::clone(&self.services),
+            doors: Arc::clone(&self.doors),
             requests: self.requests.clone(),
             launches: Arc::clone(&self.launches),
             wake: Arc::clone(&self.wake),
@@ -1191,9 +1191,9 @@ pub(crate) enum PeerRefusal {
     Sandboxed,
     /// This session serves no agents: it has no actions published yet.
     Unavailable,
-    /// As many connections as the server serves at once are being served ([`room`]).
+    /// As many connections as the door serves at once are being served ([`room`]).
     Busy,
-    /// A connection to an environment's socket from a process outside that environment.
+    /// A connection to an environment's door from a process outside that environment.
     OutsideEnvironment,
 }
 
@@ -1208,7 +1208,7 @@ impl PeerRefusal {
             Self::Unavailable => "this desktop isn't serving its actions yet; try again shortly",
             Self::Busy => room::NO_ROOM,
             Self::OutsideEnvironment => {
-                "this server serves only programs inside the environment it belongs to"
+                "this door serves only programs inside the environment it belongs to"
             }
         }
     }
@@ -1290,7 +1290,7 @@ fn shell_runtime_at(runtime: &Path, exe: &str, cgroups: &str, uid: u32) -> bool 
     use std::os::unix::fs::MetadataExt as _;
     let same_file = match (std::fs::metadata(exe), std::fs::metadata(runtime)) {
         (Ok(exe), Ok(runtime)) => exe.dev() == runtime.dev() && exe.ino() == runtime.ino(),
-        // A process that cannot be read is not one this server knows.
+        // A process that cannot be read is not one this door knows.
         _ => false,
     };
     // The unified hierarchy's line (`0::/path`): the unit in this account's service manager,
@@ -1317,7 +1317,7 @@ fn shares_security_namespaces(pid: u32) -> bool {
         let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{space}"));
         match (ours, theirs) {
             (Ok(ours), Ok(theirs)) => ours.dev() == theirs.dev() && ours.ino() == theirs.ino(),
-            // A process that cannot be read is not one this server knows.
+            // A process that cannot be read is not one this door knows.
             _ => false,
         }
     };
@@ -1373,7 +1373,7 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
     }
 }
 
-/// What a connection asks of the session's own services: answered on the loop's pass, the only place
+/// What a connection asks of the session's own doors: answered on the loop's pass, the only place
 /// that may touch them.
 enum ApiAsk {
     /// What the session's one search finds by `needle`: the same search the
@@ -1415,7 +1415,7 @@ enum ApiAsk {
     /// ([`task_hosts`] adds every installed app).
     Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
     /// Run the change `change` of a record a service keeps for a package the session runs itself,
-    /// as `actor` , on the pass: its answer as the services give it, or `None` when no service keeps
+    /// as `actor` , on the pass: its answer as the door gives it, or `None` when no service keeps
     /// that app's record.
     Change {
         actor: tilo_action_policy::Acting,
@@ -1424,13 +1424,13 @@ enum ApiAsk {
     },
 }
 
-/// The seam between the server's connections and the session's own services.
-pub(crate) struct SessionServices {
+/// The seam between the door's connections and the session's own doors.
+pub(crate) struct SessionDoors {
     asks: std::sync::Mutex<Vec<ApiAsk>>,
     wake: Wake,
     /// Who sits here: the person a program typed in a conversation runs as.
     person: String,
-    /// The session's own actions, which it hands to a connection's services as they are read on
+    /// The session's own actions, which it hands to a connection's door as they are read on
     /// its pass: `None` on a session that serves no broker and lists them itself.
     actions: std::sync::OnceLock<Arc<crate::session_actions::SessionActions>>,
     /// The workspace each of the shell's windows stands in, by its tab, as of the loop's last
@@ -1470,13 +1470,13 @@ fn unanswered() -> ActionHostError {
     }
 }
 
-/// How long a service's `find` waits for its sources before answering with the rows that came: a
+/// How long a door's `find` waits for its sources before answering with the rows that came: a
 /// source reading a disk, a mailbox or a service off the loop has its own time, and the find is
 /// answered with what is in rather than the loop or the caller waiting longer than this. The
 /// answer says in its log which source did not (a called tool reads the rows, not the log).
 const FIND_WITHIN: Duration = Duration::from_secs(10);
 
-impl crate::platform::steps::SessionSteps for SessionServices {
+impl crate::platform::steps::SessionSteps for SessionDoors {
     /// Run the session's own action `address` as `actor` with `slot` (its
     /// arguments in the slot form the broker carries), as a step of an agent's
     /// turn the broker already decided: answered on the loop's pass, which is
@@ -1503,7 +1503,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
     }
 }
 
-impl SessionServices {
+impl SessionDoors {
     /// Who sits here: the person a program typed in a conversation, or one an agent writes in its
     /// task, runs as.
     pub(crate) fn person(&self) -> &str {
@@ -1511,7 +1511,7 @@ impl SessionServices {
     }
 
     /// The seam `wake` wakes the loop on, shared by every connection that asks the session's own
-    /// services, for the person sitting here.
+    /// doors, for the person sitting here.
     pub(crate) fn new(wake: Wake, person: &str) -> Self {
         Self {
             asks: std::sync::Mutex::new(Vec::new()),
@@ -1630,7 +1630,7 @@ impl SessionServices {
         })
     }
 
-    /// The session's own actions these services hand a connection, once the session has them.
+    /// The session's own actions this door hands a connection, once the session has them.
     pub(crate) fn keep_actions(&self, actions: Arc<crate::session_actions::SessionActions>) {
         let _ = self.actions.set(actions);
     }
@@ -1705,7 +1705,7 @@ impl SessionServices {
                 } => match arguments_of(slot.as_deref()) {
                     // A step a service publishes runs there, on the record the service keeps —
                     // Chat's `record-work` on a turn's summons is the session's Chat service's,
-                    // not the layout's. Every other step is the session's own services': the
+                    // not the layout's. Every other step is the session's own doors': the
                     // layout, the windows and the notices. Any resource a service publishes,
                     // at any depth: a note in a notebook the session keeps is the service's as
                     // its notebook is.
@@ -1761,17 +1761,17 @@ type Answered =
 /// How many answered session steps a connection remembers.
 const ANSWERED_KEPT: usize = 256;
 
-/// The broker as an admitted client's API: every call passes the gate as the agent or person
+/// The broker as an admitted client's door: every call passes the gate as the agent or person
 /// and workspace the connection was admitted for, and the session's own actions are among what
 /// the same broker publishes.
 #[derive(Clone)]
 pub(crate) struct Host {
     /// The session's broker, once it starts one. Without it (a session in a window of another
-    /// desktop) the session's own services are all it offers.
+    /// desktop) the session's own doors are all it offers.
     state: Option<Arc<AppBrokerState>>,
     /// What a connection asks the session on its pass: the one search, the records a package
     /// the session runs itself keeps, and the person's own steps on its actions.
-    session: Arc<SessionServices>,
+    session: Arc<SessionDoors>,
     /// What the person's own steps answered, by invocation, for a later look.
     answered: Arc<std::sync::Mutex<Answered>>,
     /// The session's own actions, when this session serves them: a desktop with no broker
@@ -1961,8 +1961,8 @@ fn certify(
 }
 
 impl Host {
-    /// The API over `state` , with `session` beside it.
-    pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionServices>) -> Self {
+    /// The door over `state` , with `session` beside it.
+    pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionDoors>) -> Self {
         Self {
             state,
             session,
@@ -1991,13 +1991,13 @@ impl Host {
         self
     }
 
-    /// The same API, as the agent session `agent`.
+    /// The same door, as the agent session `agent`.
     fn with_agent(mut self, agent: Option<AgentConnection>) -> Self {
         self.agent = agent;
         self
     }
 
-    /// The same API, listing and answering the session's own actions from `actions` when this
+    /// The same door, listing and answering the session's own actions from `actions` when this
     /// desktop runs no broker.
     pub(crate) fn with_session_actions(
         mut self,
@@ -2007,17 +2007,17 @@ impl Host {
         self
     }
 
-    /// An invocation the person at this device made through this device's own control sockets: the
-    /// same as [`ActionHost::invoke`], except that the broker keeps the device's certificate custody for it
+    /// An invocation the person at this seat made through the seat's own control doors: the same as
+    /// [`ActionHost::invoke`], except that the broker keeps the seat's certificate custody for it
     /// ([`AppBrokerState::action_invoke_local_person`]), as it does for the palette's actions, so
     /// what the person may do here is what the person may do anywhere.
-    /// Only this device's own control sockets call it — the owner's socket, whose peer is the account
+    /// Only the seat's own control sockets call it — the owner's door, whose peer is the account
     /// whose desktop this is ([`crate::test_control::owner_decision`]), and the development
-    /// test-control socket, which drives it as the person at this device. An agent, or a person over
-    /// a network, MCP or app connection, invokes as itself through [`ActionHost::invoke`], and the
+    /// test-control socket, which drives the seat as the person. An agent, or a person over a
+    /// network, MCP or app connection, invokes as itself through [`ActionHost::invoke`], and the
     /// broker's per-action and per-role permissions decide; the broker refuses custody to anything
-    /// but the person at this device.
-    pub(crate) fn invoke_as_local_person(
+    /// but a person at the native seat.
+    pub(crate) fn invoke_at_seat(
         &self,
         caller: &Caller,
         request: InvokeRequest,
@@ -2025,13 +2025,12 @@ impl Host {
         self.invoke_within(caller, request, true)
     }
 
-    /// The broker's answer to `request` for `caller` , as the person at this device or as the caller
-    /// itself.
+    /// The broker's answer to `request` for `caller` , at the seat or as the caller itself.
     fn invoke_within(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-        as_local_person: bool,
+        at_seat: bool,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
@@ -2039,7 +2038,7 @@ impl Host {
         if let Some(reason) = self.session.awaited_reason(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
-        // This device's own sockets, and a desktop with no broker at all, reach the session's own
+        // The seat's own doors, and a desktop with no broker at all, reach the session's own
         // actions on the loop: the broker is the gate for a caller on another's word, and the
         // person at this seat is nobody's delegate.
         let own = request.target.provider == wire_provider();
@@ -2078,7 +2077,7 @@ impl Host {
             return agent.invoke(caller, request);
         }
         match &self.state {
-            Some(state) if as_local_person => state.action_invoke_local_person(caller, &request),
+            Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
             Some(state) => state.action_invoke(caller, None, None, &request),
             None => Pending::ready(Err(ActionHostError::Unavailable {
                 reason: "this desktop's apps are not running here".to_owned(),
@@ -2086,7 +2085,7 @@ impl Host {
         }
     }
 
-    /// Whether the step `request` names reads what it acts on, as the session's own services
+    /// Whether the step `request` names reads what it acts on, as the session's own door
     /// describes it. A read changes nothing, so it needs neither a turn nor a durable admission.
     fn reads(&self, request: &InvokeRequest) -> bool {
         let rows = match &self.session_actions {
@@ -2112,7 +2111,7 @@ impl Host {
         self.invoke_step_at(actor, request, caller.turn())
     }
 
-    /// The session's own actions as rows, as the kind of publisher its own services are, for a
+    /// The session's own actions as rows, as the kind of publisher its own door is, for a
     /// desktop that runs no broker.
     fn session_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
         let rows = match &self.session_actions {
@@ -2130,8 +2129,8 @@ impl Host {
             .collect()
     }
 
-    /// A person's own step: handed to the loop, which is where the session's own services are,
-    /// and answered as the services answer an invocation.
+    /// A person's own step: handed to the loop, which is where the session's own doors are,
+    /// and answered as the door answers an invocation.
     fn invoke_person_step(
         &self,
         caller: &Caller,
@@ -2226,7 +2225,7 @@ impl ActionHost for Host {
             Some(state) => state.action_query(caller, &query),
             // A desktop that runs no broker (a session in a window of another, a test with no
             // action plane) still publishes its own actions: they are read on the loop and
-            // held here, so the services list them itself.
+            // held here, so the door lists them itself.
             None => Pending::ready(Ok(CataloguePage::from_rows(
                 String::new(),
                 self.session_rows(),
@@ -2240,14 +2239,14 @@ impl ActionHost for Host {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        // A person typing at a REPL is the person at this device: their own step is carried out on the loop's
+        // A person typing at a REPL is the seat: their own step is carried out on the loop's
         // pass, where the layout and the windows are, as their own input is — never
         // through the broker, which decides for an actor on another's word but has no
         // certificate for the person alone. An agent's step is the turn's, and the broker
         // decides it exactly as it decides the agent's app action in that turn.
         // An admitted connection invokes as itself: the broker decides by its per-action and
-        // per-role permissions. Device custody belongs to this device's own control sockets alone
-        // ([`Host::invoke_as_local_person`]), and the person's own steps on the session go to the loop
+        // per-role permissions. Seat custody belongs to the seat's own control doors alone
+        // ([`Host::invoke_at_seat`]), and the person's own steps on the session go to the loop
         // wherever they come from ([`Host::invoke_within`]).
         self.invoke_within(caller, request, false)
     }
@@ -2318,7 +2317,7 @@ impl ActionHost for Host {
     }
 
     /// The session's one search, the one the palette and text typed on the canvas run: what an
-    /// agent's `find` answers with, asked on the loop's pass as the session's own services are.
+    /// agent's `find` answers with, asked on the loop's pass as the session's own doors are.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         let session = Arc::clone(&self.session);
         Some(Arc::new(crate::search::SearchThrough::new(Arc::new(
@@ -2382,7 +2381,7 @@ fn session_packages(
         .collect()
 }
 
-/// A client the server accepted: its socket, and where it came from.
+/// A client the door accepted: its socket, and where it came from.
 struct Opened {
     stream: UnixStream,
     from: From,
@@ -2390,20 +2389,20 @@ struct Opened {
 
 /// Where a connection came from.
 enum From {
-    /// A program of this login, by the pid that opened it: how the server knows whether it is a
+    /// A program of this login, by the pid that opened it: how the door knows whether it is a
     /// program inside an app.
     Login(u32),
     /// A program inside a confined environment of this login, by its pid, at that environment's
-    /// own socket ([`environments`]).
+    /// own door ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
     Device(Box<tilo_mcp::devices::Origin>),
     /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
-    /// asks for its environments' sockets, and is served nothing else.
+    /// asks for its environments' doors, and is served nothing else.
     ShellRuntime(u32),
 }
 
-/// A client that left before asking needs no answer: the server lets it go
+/// A client that left before asking needs no answer: the door lets it go
 /// without one.
 fn left_before_asking(error: &std::io::Error) {
     tilo_failure::ignored!(
@@ -2419,7 +2418,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     let Serving {
         broker,
         device_agents,
-        services: session,
+        doors: session,
         requests,
         launches,
         wake,
@@ -2467,8 +2466,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
             return;
         }
     };
-    let Some(stream) =
-        environments::answer_socket_requests(stream, &first, pid, &entrance, serving)
+    let Some(stream) = environments::answer_door_requests(stream, &first, pid, &entrance, serving)
     else {
         return;
     };
@@ -2522,28 +2520,28 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     );
 }
 
-/// The login's shell runtime, by `pid`: it asks, in `first`, for an environment's socket, and is
+/// The login's shell runtime, by `pid`: it asks, in `first`, for an environment's door, and is
 /// served nothing else.
 fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
-    if let Some(request) = runtime_portal::environment_socket::Request::of(first) {
+    if let Some(request) = runtime_portal::environment_door::Request::of(first) {
         environments::open(stream, request, pid, serving.clone());
     } else {
         tracing::info!(
             pid,
-            "MCP server: the shell runtime asked for something other than an environment's socket"
+            "MCP server: the shell runtime asked for something other than an environment's door"
         );
         refuse(stream, &PeerRefusal::Sandboxed);
     }
 }
 
-/// Ask the person about one connection whose first line, `first` , opened the MCP server, and serve
+/// Ask the person about one connection whose first line, `first` , opened the MCP door, and serve
 /// it as whom they admit it as, through `broker` .
 fn serve_admitted(
     stream: UnixStream,
     first: Vec<u8>,
     facts: Facts,
     (broker, device_agents): (Arc<AppBrokerState>, Option<Arc<DeviceAgents>>),
-    session: &Arc<SessionServices>,
+    session: &Arc<SessionDoors>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));

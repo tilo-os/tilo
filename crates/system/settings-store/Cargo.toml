@@ -36,7 +36,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # The system locale that stands in when the person has chosen no language.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 # Where the documents live: their files, the holder's lock, the follower's
-# watch and the holder's socket.
+# watch and the holder's door.
 tilo-settings-records = { version = "0.1.0", path = "../../platform/tilo-settings-records" }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }

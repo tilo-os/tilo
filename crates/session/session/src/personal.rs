@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use tilo_action_broker::collab_broker::FanoutState;
-use tilo_action_broker::personal::{self, Links, Person};
+use tilo_action_broker::personal::{self, Door, Person};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_network_actor::HostIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
@@ -23,7 +23,7 @@ use tilo_peer_state::{PeerPersonal, PersonalSync};
 use crate::options::Options;
 use crate::sync::SiblingDials;
 
-/// This session's links to the person's own store: the store itself, opened on the identity this
+/// This session's door to the person's own store: the store itself, opened on the identity this
 /// device acts as, and where it is kept.
 pub(crate) struct Personal {
     sync: PersonalSync,
@@ -73,7 +73,7 @@ impl Personal {
     /// `dials` opens the other lane to the same devices: the session between two of the person's
     /// sessions is where they tell each other what they hold — their workspaces and their hosts — so
     /// one adopts what the other keeps. Without it a device keeps only what it was there to make.
-    /// The session must answer [`Self::protocol`] on `endpoint` for as long as the links: it is what
+    /// The session must answer [`Self::protocol`] on `endpoint` for as long as the door: it is what
     /// a sibling dials.
     pub(crate) fn serve(
         &self,
@@ -82,15 +82,15 @@ impl Personal {
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
         dials: Option<SiblingDials>,
-    ) -> Links {
+    ) -> Door {
         // An identity is filed under its root's hex, in the profile and in the fleet of the
         // person's devices alike.
         let person = Person::of(hex::encode(self.root), self.root);
         // The devices the store holds once their fleet is in, before anything is spawned: what the
-        // sibling dials start from, so its own admission cannot come after the first pass
+        // sibling dials start from, so the door's own admission cannot come after the first pass
         // read an empty store.
         let held = personal::admit_fleet(&self.sync, &person);
-        let links = Links::serve(
+        let door = Door::serve(
             runtime,
             endpoint,
             self.sync.clone(),
@@ -102,7 +102,7 @@ impl Personal {
         if let Some(dials) = dials {
             runtime.spawn(keep_siblings(self.sync.clone(), dials, held));
         }
-        links
+        door
     }
 }
 

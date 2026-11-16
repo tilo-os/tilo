@@ -12,7 +12,7 @@
 //! An approval names a device this session discovered, with the relay service it announced: a
 //! caller cannot admit a key it merely names. Rejecting forgets the candidate and stops waiting on
 //! its approval; the helper's own LAN window bounds the privileged child.
-//! Who may pair is decided by the API the step arrives through, before it reaches this engine:
+//! Who may pair is decided by the door the step arrives through, before it reaches this engine:
 //! only someone who administers the workspace's identity, and approval needs explicit confirmation.
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 /// What a step answers: its result, or why it did not happen.
 pub(crate) type Answer = Result<serde_json::Value, String>;
 
-/// The resource every API offers the steps on, and its actions.
+/// The resource every door offers the steps on, and its actions.
 pub(crate) use tilo_actions::remote::device_pairing::{
     ANSWER, APPROVE, ASKING, DISCOVER, REJECT, RESOURCE,
 };
@@ -114,7 +114,7 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every caller. Approval admits a device to the
+/// What `step` may do and answers, the same through every door. Approval admits a device to the
 /// person's identity through an administrator's authentication: privileged, and asked first.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
@@ -266,7 +266,7 @@ static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
 });
 
 impl Pairing {
-    /// This session's pairing: what every API shares, so a device one API discovered is approved
+    /// This session's pairing: what every door shares, so a device one door discovered is approved
     /// or rejected through another.
     pub(crate) fn session() -> &'static Self {
         &SESSION
@@ -418,7 +418,7 @@ impl Pairing {
         Ok(answer)
     }
 
-    /// Start `step` with `args` , which the API bound to [`params`] after it decided the caller
+    /// Start `step` with `args` , which the door bound to [`params`] after it decided the caller
     /// may pair.
     pub(crate) fn start(
         &self,
@@ -630,7 +630,7 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
         .map_err(|error| format!("could not start pairing: {error}"))
 }
 
-/// The broker's API to pairing: how Settings pairs a device, as the person using it, without
+/// The broker's door to pairing: how Settings pairs a device, as the person using it, without
 /// starting any process itself.
 pub(crate) struct BrokerApi {
     pub(crate) layout: std::sync::Arc<crate::plane::LayoutAuthority>,

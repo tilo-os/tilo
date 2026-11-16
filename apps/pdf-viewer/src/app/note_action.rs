@@ -38,7 +38,7 @@ impl PdfApp {
         self.status_note.dismiss();
         self.note_action = None;
         match action {
-            NoteAction::Save => self.ask_save(),
+            NoteAction::Save => self.request_save_via_portal(),
             NoteAction::Import => self.request_import_via_portal(),
         }
         self.dirty = true;

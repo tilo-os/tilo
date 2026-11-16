@@ -741,7 +741,7 @@ struct ShareOutbox {
 }
 
 /// Every window's share, by window. A process shows several windows
-/// ([`crate::window_channel`]), each with its own page, its own connection to the session and
+/// ([`crate::window_door`]), each with its own page, its own connection to the session and
 /// its own watchers: what one of them is asked for, and what it hands over, is never
 /// another's. The functions below act on the window whose events run
 /// ([`crate::window_toolbar::current_window`]); `None` is a process that runs its one

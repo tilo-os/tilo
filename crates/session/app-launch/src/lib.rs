@@ -37,7 +37,7 @@
 //! by what it can see, and gives memory back from the background ones first.
 
 pub mod authority;
-pub mod channels;
+pub mod doors;
 pub mod downloaded;
 pub mod env;
 /// What a resource of a kind this crate publishes from outside a document is
@@ -63,7 +63,7 @@ pub mod tilolang_hosts;
 pub mod workspace;
 
 pub use authority::Authority;
-pub use channels::{Channels, Connects, HeldChannel, HostedWindow, Opens, Routed, StartAlone};
+pub use doors::{Connects, Doors, HeldDoor, HostedWindow, Opens, Routed, StartAlone};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};

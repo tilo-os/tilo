@@ -176,9 +176,16 @@ impl Photos {
             PhotosEffect::Copy => {
                 self.copy_to_clipboard();
             }
-            PhotosEffect::Save { path: Some(path) } => {
-                if self.shown_photo_in(library).is_some() {
-                    self.save_to(&path);
+            PhotosEffect::Save { path } => {
+                if let Some(open) = self.shown_photo_in(library) {
+                    match path {
+                        Some(path) => {
+                            self.save_to(&path);
+                        }
+                        None => {
+                            self.choose_save_destination(&open.image, None);
+                        }
+                    }
                 }
             }
             PhotosEffect::ExportEditedContent { .. } => {
@@ -272,9 +279,7 @@ impl Photos {
             }
             Hit::Share => self.share_open_photo(),
             Hit::Save => {
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.effect(&PhotosEffect::Save { path: None });
-                }
+                let _ = self.perform_effect(PhotosEffect::Save { path: None }, &self.presented());
             }
             Hit::Select => {
                 if self.selection_mode {
@@ -466,12 +471,8 @@ impl Photos {
     pub(crate) fn effect(
         &mut self,
         effect: PhotosEffect,
-        cx: &mut EffectCx<PhotoLibrary, super::PhotosApp>,
+        cx: &mut EffectCx<PhotoLibrary>,
     ) -> EffectAnswer {
-        let state = cx.live().get();
-        if effect == (PhotosEffect::Save { path: None }) {
-            return self.save_edited(&state, cx);
-        }
         let job = PhotosEffect::declarations()
             .iter()
             .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
@@ -480,6 +481,7 @@ impl Photos {
             let reply = cx.reply();
             self.register_reply(invocation, reply);
         }
+        let state = cx.live().get();
         match self.answer_effect(effect, invocation, &state) {
             Ok(Some(output)) if job => {
                 self.settle_now(invocation, Ok(output));
@@ -691,10 +693,14 @@ impl Photos {
                 return Ok(None);
             }
             PhotosEffect::Save { path } => {
-                self.shown_photo_in(library)
+                let open = self
+                    .shown_photo_in(library)
                     .ok_or_else(|| "no photograph is open".to_string())?;
                 let Some(path) = path else {
-                    return Err("saving without a path asks where through the effect".into());
+                    if !self.choose_save_destination(&open.image, Some(invocation)) {
+                        return Err(tr("photos-save-failed"));
+                    }
+                    return Ok(None);
                 };
                 if !self.save_to(&path) {
                     return Err(tr("photos-save-failed"));
@@ -818,6 +824,13 @@ impl Photos {
         {
             self.pending_resource_open = None;
         }
+        if self
+            .save_chooser
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == Some(invocation))
+        {
+            self.save_chooser = None;
+        }
         if self.resource_invocation == Some(invocation) {
             self.picker = None;
             self.contents_picker = None;
@@ -829,6 +842,51 @@ impl Photos {
                 import.pending.clear();
             }
             self.resource_invocation = None;
+        }
+    }
+
+    pub(super) fn drain_save_chooser(&mut self) {
+        let Some((rx, invocation)) = self.save_chooser.as_ref() else {
+            return;
+        };
+        let invocation = *invocation;
+        let outcome = match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::SaveOutcome::Failed(tr("photos-picker-failed"))
+            }
+        };
+        self.save_chooser = None;
+        let update = match outcome {
+            ui::portal::SaveOutcome::Saved => {
+                self.notice = Some(tr("photos-saved-edited"));
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                })
+            }
+            ui::portal::SaveOutcome::Cancelled => {
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some(tr("photos-save-cancelled")),
+                })
+            }
+            ui::portal::SaveOutcome::Failed(message) => {
+                self.notice = Some(format!("{}: {message}", tr("photos-save-failed")));
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "photos.save_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                })
+            }
+        };
+        if let Some(update) = update {
+            self.settle(update);
         }
     }
 }

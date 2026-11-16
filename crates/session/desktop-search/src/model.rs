@@ -10,9 +10,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use tilo_actions::remote::{
-    RemoteActionTarget, application_action_target, application_record_target,
-};
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionSpec, ResourceId};
 
 use ui::search::system::{self, KindGroup, ResourceKind};
@@ -274,8 +271,6 @@ pub struct InvokeTarget {
     /// window of its own beside the app's, as the person asked by the
     /// modifier they held.
     pub place: LaunchPlace,
-    /// The app's record the action is of, by route: empty for its own record of the workspace.
-    pub record: String,
 }
 
 impl InvokeTarget {
@@ -309,33 +304,6 @@ impl InvokeTarget {
             arguments: serde_json::Map::new(),
             descriptor: None,
             place: LaunchPlace::Focus,
-            record: String::new(),
-        }
-    }
-
-    /// Where choosing `place` in `workspace` lands: the `open` of its resource on its record, told
-    /// its anchor, as a search hit opens. A place naming no item opens the record as a whole.
-    #[must_use]
-    pub fn place(workspace: impl Into<String>, place: &ui::mentions::Place) -> Self {
-        let open = if place.anchor.is_empty() {
-            Self::action(&place.app, workspace, &place.resource, OPEN_ACTION)
-        } else {
-            Self::open(&place.app, workspace, &place.resource, &place.anchor)
-        };
-        Self {
-            record: place.record.clone(),
-            ..open
-        }
-    }
-
-    /// The action host's address of this action: the app in its workspace, on its record.
-    #[must_use]
-    pub fn remote(&self) -> RemoteActionTarget {
-        let (resource, action) = (self.address.resource.as_str(), self.address.action.as_str());
-        if self.record.is_empty() {
-            application_action_target(&self.workspace, &self.app, resource, action)
-        } else {
-            application_record_target(&self.workspace, &self.app, &self.record, resource, action)
         }
     }
 

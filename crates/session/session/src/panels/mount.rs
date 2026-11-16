@@ -21,7 +21,7 @@ use tilo_session_core::surfaces::Surfaces;
 /// keyboard, and while it is up the only surface offering actions.
 pub(crate) fn mount_setup(
     compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
+    doors: &mut Surfaces,
     surface: Option<BeforeShell>,
     person: &str,
     scale: f64,
@@ -31,7 +31,7 @@ pub(crate) fn mount_setup(
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter)));
         compositor.add_host(setup.clone());
-        surfaces.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
+        doors.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
         setup
     })
 }
@@ -72,7 +72,7 @@ pub(crate) type Shortcuts = Rc<RefCell<ui::shortcut_table::ShortcutConfig>>;
 
 pub(crate) fn mount_controls(
     compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
+    doors: &mut Surfaces,
     shortcuts: Shortcuts,
     portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     guide: Rc<GuideState>,
@@ -91,7 +91,7 @@ pub(crate) fn mount_controls(
     let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(places), band)));
     compositor.add_host(readout.clone());
     let shared: tilo_session_core::surfaces::Shared = readout.clone();
-    surfaces.add(shared);
+    doors.add(shared);
     let commands = Rc::new(RefCell::new(Vec::new()));
     // The controls are a service of the session's, mounted beside the other services so an app
     // reads and invokes them as it does each of those: what the loop keeps of their state is read
@@ -130,7 +130,7 @@ pub(crate) fn mount_controls(
 /// a layer of ours would draw a second card over it.
 pub(crate) fn mount_activities(
     compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
+    doors: &mut Surfaces,
     reader: &Rc<crate::chrome::Activities>,
     cards: &crate::cards::Cards,
     (banners, readout): (Reserved, Reserved),
@@ -160,7 +160,7 @@ pub(crate) fn mount_activities(
                 options.scale,
             )));
             compositor.add_host(surface.clone());
-            surfaces.add(surface);
+            doors.add(surface);
             Some(link)
         }
         Err(error) => {

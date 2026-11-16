@@ -1156,28 +1156,6 @@ fn timeline_days_parse_within_bounds() {
 }
 
 #[test]
-fn save_without_a_path_writes_a_copy_where_the_chooser_answers() {
-    use ui::framework::testing::TestApp;
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("harbour.png");
-    let image = crate::shots_pattern(32, 24);
-    std::fs::write(&path, crate::pixels::encode_png(&image).unwrap()).unwrap();
-    let (services, recorder) = ui::host::HostServices::recording();
-    let _host = ui::host::enter(&services);
-    let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
-    let chosen = directory.path().join("chosen.png");
-    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
-    app.effect(&crate::actions::PhotosEffect::Save { path: None })
-        .unwrap();
-    let requests = recorder.pick_requests();
-    assert_eq!(requests.len(), 1, "Save asks the chooser once");
-    assert_eq!(requests[0].suggested_name(), Some("harbour-edited.png"));
-    let back = crate::pixels::decode(&std::fs::read(&chosen).unwrap()).expect("a PNG");
-    assert_eq!(back.bytes, image.bytes, "the copy holds the shown pixels");
-}
-
-#[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::ActionInvoker;

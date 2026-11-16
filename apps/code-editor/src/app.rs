@@ -41,7 +41,6 @@ use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk, SyncText};
-use crate::effects::CodeEditorEffect;
 use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
@@ -220,10 +219,8 @@ pub struct CodeApp {
     settings: Option<ui::framework::Setting<crate::settings::CodeSettings>>,
     laid_out: (bool, PanelTab),
     structure_dirty: bool,
-    /// Held by a file chooser while it is open: another file operation waits for it.
-    choosing: std::rc::Rc<()>,
-    /// The file the window shows: the active buffer's.
-    shows: Option<ui::application_view::WindowShows>,
+    portal: Option<ui::portal::PortalChannel>,
+    portal_intent: Option<PortalIntent>,
     file_reply: Option<ui::framework::EffectReply>,
     disk_work: disk_work::DiskWork,
     staleness_looking: bool,
@@ -250,6 +247,13 @@ pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut ui::widget::Edits<'
 #[derive(Clone, Debug)]
 struct Staging {
     scenario: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortalIntent {
+    OpenFolder,
+    OpenFile,
+    SaveAs(TreeId),
 }
 
 /// A save refused because the file moved on underneath us.
@@ -480,8 +484,8 @@ impl CodeApp {
             search_projection_local_generation: Some(0),
             #[cfg(test)]
             search_refresh_stats: SearchRefreshStats::default(),
-            choosing: std::rc::Rc::default(),
-            shows: None,
+            portal: None,
+            portal_intent: None,
             live: false,
             settings: None,
             laid_out: (false, PanelTab::Problems),
@@ -1264,9 +1268,7 @@ impl CodeApp {
                 self.invalidate_search_projection();
                 self.explorer.show(&self.session.project);
             }
-            ExplorerEvent::OpenFolder => {
-                self.run_effect(&CodeEditorEffect::OpenFolder { path: None });
-            }
+            ExplorerEvent::OpenFolder => self.request_open_folder(),
         }
     }
 
@@ -1314,7 +1316,7 @@ impl CodeApp {
                         file_workflow::AfterSave::Close(prompt.then_open),
                     );
                 } else {
-                    self.ask_where_to_save(prompt.node);
+                    self.request_save_as(prompt.node);
                 }
             }
             CloseChoice::Discard => self.close_node(prompt.node, prompt.then_open),
@@ -1347,8 +1349,8 @@ impl CodeApp {
                     Err(error) => Self::note_create_failed(&name, &error),
                 }
             }
-            Command::OpenFolder => self.run_effect(&CodeEditorEffect::OpenFolder { path: None }),
-            Command::OpenFile => self.run_effect(&CodeEditorEffect::OpenFile { path: None }),
+            Command::OpenFolder => self.request_open_folder(),
+            Command::OpenFile => self.request_open_file(),
             Command::Save => {
                 if let Some(node) = self.session.active_buffer().map(|b| b.node)
                     && let Some(after) =
@@ -1364,7 +1366,11 @@ impl CodeApp {
                     Self::note(CATALOG.t("code-editor-no-formatter"), ToastKind::Error);
                 }
             }
-            Command::SaveAs => self.run_effect(&CodeEditorEffect::SaveAs),
+            Command::SaveAs => {
+                if let Some(node) = self.session.active_buffer().map(|b| b.node) {
+                    self.request_save_as(node);
+                }
+            }
             Command::SaveAll => {
                 let snapshot = doc.clone();
                 self.save_all(&snapshot);
@@ -2020,6 +2026,9 @@ impl Widget for CodeApp {
                 self.open_node(node);
             }
         }
+        // The file picker's answer arrives off a channel a worker fills, drained once a frame: the UI never
+        // waits on D-Bus.
+        self.poll_portal(state);
         self.poll_search();
         self.record_disk_entries();
         self.ensure_buffers(state);
@@ -2262,7 +2271,7 @@ impl Widget for CodeApp {
         }
 
         if self.editor.take_empty_action() {
-            self.run_effect(&CodeEditorEffect::OpenFile { path: None });
+            self.request_open_file();
         }
 
         self.drain_child_events();
@@ -2387,6 +2396,7 @@ impl Widget for CodeApp {
         self.panel.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
+            || self.portal.is_some()
             || self.lsp_status.is_working()
     }
 
