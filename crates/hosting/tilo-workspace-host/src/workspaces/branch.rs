@@ -66,6 +66,17 @@ pub trait BranchContent: Send + Sync {
         branch: &str,
         records: &[((String, String), Vec<u8>)],
     ) -> Result<(), String>;
+
+    /// Let go of what was copied into `branch`, a branch that did not take
+    /// everything and is discarded: nothing of it is kept.
+    ///
+    /// # Errors
+    ///
+    /// What was copied stays, named with why.
+    fn discard(&self, branch: &str) -> Result<(), String> {
+        let _ = branch;
+        Ok(())
+    }
 }
 
 impl Workspaces {
@@ -137,13 +148,37 @@ mod copy {
             name: &str,
             person: [u8; 32],
         ) -> Result<WorkspaceSummary, NotMade> {
+            // What an earlier ask under this identity left unfinished (a fill
+            // a stop cut short, or a discard that did not end) was never
+            // anyone's: it goes before the branch is made again.
+            if self.unfinished_branch(branch) {
+                self.discard_unfinished(branch)
+                    .await
+                    .map_err(NotMade::of("the new workspace"))?;
+            }
             let forked = self.forked(source, branch).await?;
-            let summary = self
-                .create_workspace(name, Some(branch))
+            // Marked before anything of it is made, and unmarked only once it
+            // is its person's: until then a host that stops opens none of it.
+            self.begin_branch(branch)
                 .await
                 .map_err(NotMade::of("the new workspace"))?;
-            match self.fill(source, branch, forked, person).await {
-                Ok(()) => {
+            let made = match self.create_workspace(name, Some(branch)).await {
+                Ok(summary) => self
+                    .fill(source, branch, forked, person)
+                    .await
+                    .map(|()| summary),
+                Err(why) => Err(NotMade::of("the new workspace")(why)),
+            };
+            let made = match made {
+                Ok(summary) => self
+                    .finish_branch(branch)
+                    .await
+                    .map(|()| summary)
+                    .map_err(NotMade::of("its ownership")),
+                Err(not_made) => Err(not_made),
+            };
+            match made {
+                Ok(summary) => {
                     tracing::info!(%source, %branch, "a workspace was branched");
                     let _ = self.inner.branches.send(Branched {
                         source: source.to_owned(),
@@ -153,9 +188,12 @@ mod copy {
                     Ok(summary)
                 }
                 Err(why) => {
-                    tracing::warn!(%source, %branch, part = %why.part, why = %why.why, "a branch did not take everything; it is deleted again");
-                    if let Err(error) = self.delete(branch).await {
-                        tracing::error!(%branch, %error, "a branch that did not take everything stays");
+                    tracing::warn!(%source, %branch, part = %why.part, why = %why.why, "a branch did not take everything; it is discarded");
+                    // Never answered to anyone, so discarded rather than
+                    // deleted: the same ask makes it again once it can. What a
+                    // discard leaves, the next ask under this identity takes.
+                    if let Err(error) = self.discard_unfinished(branch).await {
+                        tracing::error!(%branch, %error, "a branch that did not take everything is not discarded yet");
                     }
                     Err(why)
                 }

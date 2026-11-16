@@ -169,6 +169,105 @@ mod branching {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_branch_whose_machine_did_not_come_is_made_again_under_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let workspaces = relay.workspaces();
+        let source = source(workspaces).await;
+        let refusing = machines(workspaces, Err("no room".into()), Ok(()));
+        assert!(
+            workspaces
+                .branch_own(&source, BRANCH, "Task", PERSON)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            asked(&refusing),
+            [
+                (format!("branch {source} into {BRANCH}"), true),
+                (format!("delete {BRANCH}"), true),
+            ],
+            "its machine went first, while the branch was there"
+        );
+        let id = tilo_relay_protocol::WorkspaceId::parse(BRANCH).unwrap();
+        assert!(!workspaces.deleted(id), "discarded, not deleted");
+        assert!(
+            !workspaces.unfinished_branch(BRANCH),
+            "nothing of it is left"
+        );
+
+        // Asked again under the same identity, once a machine can come, it is made.
+        let noted = machines(workspaces, Ok(true), Ok(()));
+        workspaces
+            .branch_own(&source, BRANCH, "Task", PERSON)
+            .await
+            .map_err(|not| not.refusal())
+            .unwrap();
+        assert_eq!(
+            asked(&noted),
+            [(format!("branch {source} into {BRANCH}"), true)]
+        );
+        assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
+        assert!(!workspaces.unfinished_branch(BRANCH));
+        relay.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_branch_a_stop_cut_short_opens_as_nothing_and_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let workspaces = relay.workspaces();
+        let source = source(workspaces).await;
+        // A fill the host stopped in: the branch made and even recorded as the
+        // person's, its marker not yet gone.
+        workspaces.begin_branch(BRANCH).await.unwrap();
+        workspaces
+            .create_workspace("Task", Some(BRANCH))
+            .await
+            .unwrap();
+        workspaces.own().unwrap().record(&PERSON, BRANCH).unwrap();
+        relay.shutdown().await;
+
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let workspaces = relay.workspaces();
+        workspaces
+            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap();
+        assert!(
+            workspaces.summary(BRANCH).await.is_err(),
+            "the host governs none of it"
+        );
+        assert!(
+            !workspaces
+                .list()
+                .await
+                .iter()
+                .any(|one| one.workspace == BRANCH),
+            "nor lists it"
+        );
+        assert!(workspaces.unfinished_branch(BRANCH));
+        let noted = machines(workspaces, Ok(true), Ok(()));
+        workspaces
+            .branch_own(&source, BRANCH, "Task", PERSON)
+            .await
+            .map_err(|not| not.refusal())
+            .unwrap();
+        assert_eq!(
+            asked(&noted),
+            [
+                (format!("delete {BRANCH}"), false),
+                (format!("branch {source} into {BRANCH}"), true),
+            ],
+            "what the stop left of its machine went before the branch was made again"
+        );
+        assert!(workspaces.own().unwrap().is_of(&PERSON, BRANCH));
+        assert!(workspaces.summary(BRANCH).await.is_ok());
+        relay.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_host_that_runs_no_machines_branches_as_before() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
@@ -220,6 +319,35 @@ async fn a_workspace_is_deleted_after_its_machine_and_stays_when_that_fails() {
         "its machine went first, while the workspace was still there for its host to hold"
     );
     assert!(workspaces.summary(&gone).await.is_err());
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_its_owner_deleted_stays_refused_under_its_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces();
+    let made = workspaces.create("Gone").await.unwrap();
+    workspaces.delete(&made.workspace).await.unwrap();
+    assert!(workspaces.deleted(made.workspace_id));
+    let again = workspaces
+        .create_workspace("Gone", Some(&made.workspace))
+        .await
+        .unwrap_err();
+    assert!(again.contains("deleted here"), "{again}");
+    relay.shutdown().await;
+
+    // Also after the host opens again.
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces();
+    assert!(workspaces.deleted(made.workspace_id));
+    assert!(
+        workspaces
+            .create_workspace("Gone", Some(&made.workspace))
+            .await
+            .is_err()
+    );
     relay.shutdown().await;
 }
 

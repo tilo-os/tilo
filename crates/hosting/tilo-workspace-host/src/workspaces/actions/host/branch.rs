@@ -84,7 +84,8 @@ impl Workspaces {
         }
         // A retry waits for the try it repeats, and answers the branch it made.
         let making = own.making(branch.clone()).await;
-        let summary = if own.is_of(&person, &branch) {
+        // One a stop cut short is not made, however far it came.
+        let summary = if own.is_of(&person, &branch) && !self.unfinished_branch(&branch) {
             self.summary(&branch)
                 .await
                 .map_err(|error| refused(&error))?

@@ -74,6 +74,10 @@ impl crate::workspaces::BranchContent for StoresBranches {
         );
         Ok(())
     }
+
+    fn discard(&self, branch: &str) -> Result<(), String> {
+        self.0.remove(branch)
+    }
 }
 
 /// The Files tree among `records`, read; `None` when the branch took none, or

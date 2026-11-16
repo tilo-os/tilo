@@ -19,6 +19,13 @@
 //! A marker beside where its record was is written first and stays
 //! (`<workspace>.deleted`): a host stopped halfway finishes deleting it when it
 //! opens again, and the workspace is never made again under its identity.
+//!
+//! A branch that did not take everything was never anyone's: nobody was
+//! answered its identity, so it is discarded rather than deleted
+//! ([`Workspaces::discard_unfinished`]). Its marker (`<workspace>.branching`)
+//! is written before it is made and goes only once it is its person's: a host
+//! that stops before then opens none of it again, and the same branch can be
+//! asked for again under the same identity.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -28,10 +35,15 @@ use tilo_relay_protocol::refusal::WORKSPACE_DELETED;
 
 use super::Workspaces;
 use tilo_lock::MutexRecover as _;
+#[cfg(feature = "agents")]
+use tilo_lock::RwLockRecover as _;
 use tilo_relay_protocol::WorkspaceId;
 
 /// The extension of the marker of a workspace this host deleted.
 pub(super) const DELETED: &str = "deleted";
+/// The extension of the marker of a branch being made here, until it is its
+/// person's.
+const BRANCHING: &str = "branching";
 
 impl Workspaces {
     /// Delete `workspace`, with everything this host keeps of it: final.
@@ -205,6 +217,15 @@ pub(super) fn passed_over(
             }
             true
         }
+        // A branch a stop cut short was never anyone's: none of it opens, and
+        // its marker stays for the next ask under its identity, which discards
+        // what else it left ([`Workspaces::discard_unfinished`]).
+        Some("workspace") if path.with_extension(BRANCHING).exists() => {
+            if let Some(workspace) = stem {
+                remove_files(dir, workspace);
+            }
+            true
+        }
         Some("workspace") => false,
         _ => true,
     }
@@ -224,7 +245,7 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
                 .and_then(|name| name.to_str())
                 .and_then(|name| name.split_once('.'))
                 .is_some_and(|(stem, what)| {
-                    stem == workspace && what != DELETED && what != "workspace"
+                    stem == workspace && what != DELETED && what != BRANCHING && what != "workspace"
                 })
         });
     let mut paths: Vec<_> = beside.collect();
@@ -252,5 +273,139 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
         {
             tracing::warn!(path = %path.display(), %error, "a deleted workspace's file stays");
         }
+    }
+}
+
+impl Workspaces {
+    /// The marker of `branch`, a branch's identity (a UUID), beside where its
+    /// record is.
+    fn branching_marker(&self, branch: &str) -> std::path::PathBuf {
+        self.inner.dir.join(branch).with_extension(BRANCHING)
+    }
+
+    /// Whether `branch` is a branch this host began and never finished: never
+    /// answered to anyone, so it may be discarded and made again.
+    pub(super) fn unfinished_branch(&self, branch: &str) -> bool {
+        tilo_relay_protocol::WorkspaceId::parse(branch).is_some()
+            && self.branching_marker(branch).exists()
+    }
+
+    #[cfg(feature = "agents")]
+    /// Mark `branch` as a branch being made, durably, before anything of it is:
+    /// only an identity nothing here holds, so a marker never stands beside a
+    /// workspace made otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Something here holds `branch` already, or the marker could not be written.
+    pub(super) async fn begin_branch(&self, branch: &str) -> Result<(), String> {
+        let record = self.inner.dir.join(branch);
+        let held = self.inner.workspaces.lock().await.contains_key(branch)
+            || ["workspace", DELETED, super::RELEASED]
+                .iter()
+                .any(|extension| record.with_extension(extension).exists());
+        if held || tilo_relay_protocol::WorkspaceId::parse(branch).is_none() {
+            return Err("this host has that workspace already".to_owned());
+        }
+        let marker = self.branching_marker(branch);
+        tokio::task::spawn_blocking(move || synced(&marker))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    #[cfg(feature = "agents")]
+    /// `branch` is its person's: its marker goes, durably, before anyone is
+    /// answered it.
+    ///
+    /// # Errors
+    ///
+    /// The marker could not be removed: the branch is not finished.
+    pub(super) async fn finish_branch(&self, branch: &str) -> Result<(), String> {
+        let marker = self.branching_marker(branch);
+        tokio::task::spawn_blocking(move || {
+            std::fs::remove_file(&marker).map_err(|error| error.to_string())?;
+            sync_parent(&marker)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    #[cfg(feature = "agents")]
+    /// Discard `branch`, a branch this host began and never finished
+    /// ([`Self::unfinished_branch`]): nobody was answered its identity, so,
+    /// unlike a deleted workspace, nothing marks it gone and it can be made
+    /// again under the same identity. Its machine goes first, as any
+    /// workspace's does; then what this host holds and keeps of it, the
+    /// content its records named, and its marker last, so a host stopped
+    /// halfway discards the rest on the next ask. Refused for any other
+    /// workspace: a workspace that was ever answered is deleted, never this.
+    ///
+    /// # Errors
+    ///
+    /// `branch` is not an unfinished branch, or its machine or files stay.
+    pub(super) async fn discard_unfinished(&self, branch: &str) -> Result<(), String> {
+        let workspace_id = tilo_relay_protocol::WorkspaceId::parse(branch)
+            .filter(|_| self.unfinished_branch(branch))
+            .ok_or("that is no branch being made here")?;
+        self.delete_machine(branch).await?;
+        let governed = self.inner.workspaces.lock().await.get(branch).cloned();
+        if let Some(governed) = governed {
+            let governed = governed.lock().await;
+            self.inner.workspaces.lock().await.remove(branch);
+            self.inner.host.access.forget_workspace(workspace_id);
+            // Served no more, and not refused as deleted: it can come again.
+            self.inner.direct.release(workspace_id);
+            self.inner
+                .host
+                .access
+                .replace(
+                    workspace_id,
+                    true,
+                    GovernedAccess {
+                        member_devices: Vec::new(),
+                        member_user_roots: Vec::new(),
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
+            drop(governed);
+        }
+        self.forget_deleted(branch, workspace_id).await;
+        let content = self.inner.branch_content.read_recover().clone();
+        if let Some(content) = content {
+            let branch = branch.to_owned();
+            tokio::task::spawn_blocking(move || content.discard(&branch))
+                .await
+                .map_err(|error| error.to_string())??;
+        }
+        let marker = self.branching_marker(branch);
+        tokio::task::spawn_blocking(move || {
+            std::fs::remove_file(&marker).map_err(|error| error.to_string())?;
+            sync_parent(&marker)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        tracing::info!(%branch, "a branch that did not take everything was discarded");
+        Ok(())
+    }
+}
+
+#[cfg(feature = "agents")]
+/// Write the empty file `path` and its directory's entry for it to disk.
+fn synced(path: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|error| error.to_string())?;
+    file.sync_all().map_err(|error| error.to_string())?;
+    sync_parent(path)
+}
+
+#[cfg(feature = "agents")]
+/// Write `path`'s directory to disk: a file made or removed in it stays so.
+fn sync_parent(path: &Path) -> Result<(), String> {
+    match path.parent() {
+        Some(dir) => std::fs::File::open(dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| error.to_string()),
+        None => Ok(()),
     }
 }
