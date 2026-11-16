@@ -29,6 +29,12 @@ use crate::common::{CANVAS, on_screen, until};
 
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
+/// The Spaces style's map, as assistive technology names it: its places stand as their own views
+/// there, so its map is the style's own and not the framed style's canvas ([`CANVAS`]).
+const SPACES: &str = "Spaces";
+/// The desktop style's map, as assistive technology names it: its frames float over the shell,
+/// so its map is neither style's canvas.
+const DESKTOP: &str = "Desktop";
 /// What the notification centre draws when nothing waits in it: its own empty state, which no
 /// other surface of the shell shows.
 const NOTHING_TO_CATCH_UP_ON: &str = "Nothing to catch up on";
@@ -86,12 +92,15 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
         );
     }
     match preset {
-        "Frames" | "Spaces" => until(session, "the canvas", |session| {
+        "Frames" => until(session, "the canvas", |session| {
             on_screen(session, CANVAS).is_some()
+        }),
+        "Spaces" => until(session, "the spaces", |session| {
+            on_screen(session, SPACES).is_some()
         }),
         "Desktop" => until(session, "the desktop", |session| preset_menu_gone(session)),
         _ => until(session, "the strips", |session| {
-            on_screen(session, CANVAS).is_none()
+            on_screen(session, CANVAS).is_none() && on_screen(session, SPACES).is_none()
         }),
     }
 }
@@ -625,4 +634,35 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
             |session| crate::common::shell_here(session) == "none",
         );
     }
+
+    // The desktop style, the switch's fourth row: its own bar is the traditional one, and its
+    // bell opens the same centre over the frames.
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
+    );
+    assert!(!failed, "the shell shows the desktop style: {answer}");
+    until(&mut session, "the desktop style", |session| {
+        preset_menu_gone(session) && on_screen(session, DESKTOP).is_some()
+    });
+    crate::common::press(&mut session, BELL);
+    until(
+        &mut session,
+        "the notification centre in the desktop style",
+        |session| on_screen(session, NOTHING_TO_CATCH_UP_ON).is_some(),
+    );
+    assert_eq!(
+        crate::common::shell_here(&session),
+        "centre",
+        "the bell opens the notifications on the desktop style"
+    );
+    // And the one surface at a time rule holds there too.
+    crate::common::press(&mut session, BELL);
+    until(
+        &mut session,
+        "the shell at rest on the desktop style",
+        |session| crate::common::shell_here(session) == "none",
+    );
 }
