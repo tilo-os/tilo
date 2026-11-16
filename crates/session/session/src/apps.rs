@@ -311,6 +311,20 @@ impl Apps {
         awaited(workspace)
     }
 
+    /// Refuse a launch of one of `workspace`'s apps while this device waits for its host to take it
+    /// in: nothing of the app would take part there, so whoever asked hears why at once.
+    fn admitted(&self, workspace: &str) -> Result<(), DoorError> {
+        let Some(reason) = self.awaited(workspace) else {
+            return Ok(());
+        };
+        tracing::warn!(
+            %workspace,
+            %reason,
+            "a launch was refused: this device is not admitted there yet"
+        );
+        Err(DoorError::Failed(reason))
+    }
+
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
         self.state.borrow_mut().launches = Some(launches);
     }
@@ -1035,6 +1049,7 @@ impl Apps {
         instance: Option<u64>,
         place: Option<&LaunchPlace>,
     ) -> Result<bool, DoorError> {
+        self.admitted(&workspace.id)?;
         match self.starting(launch, workspace, instance, place) {
             Beginning::Raised => Ok(false),
             Beginning::Start { new_window } => {
@@ -1550,6 +1565,7 @@ impl Apps {
         instance: Option<u64>,
         reveal: Option<&str>,
     ) -> Result<bool, DoorError> {
+        self.admitted(&workspace.id)?;
         self.start_launched_window(launch, workspace, new_window, instance, reveal)
     }
 
@@ -1852,10 +1868,7 @@ impl Apps {
         // An app of a workspace this device is not admitted to yet would take part in nothing
         // there, and would not join once the host admits the device: it is not started, and
         // whoever asked is told why at once.
-        if let Some(reason) = self.awaited(workspace) {
-            tracing::warn!(app = %planned.app, %workspace, %reason, "a launch was refused: this device is not admitted there yet");
-            return Err(DoorError::Failed(reason));
-        }
+        self.admitted(workspace)?;
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
         let windowless = planned.env.contains_key(ui::window_door::WINDOWLESS_ENV);
