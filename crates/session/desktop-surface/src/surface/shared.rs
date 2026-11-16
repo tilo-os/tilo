@@ -17,6 +17,20 @@ impl Shared {
         self.wake.wake();
     }
 
+    /// Say that the window `tab` showed was closed, with the Undo that reopens it.
+    pub(super) fn said_closed(&self, tab: &tilo_desktop_model::Tab) {
+        let reopen = Rc::clone(&self.reopen);
+        self.acknowledger.say_with_action(
+            crate::i18n::t_args(
+                "shell-window-closed",
+                &[("window", super::tile_content::window_name(tab).into())],
+            ),
+            crate::i18n::t("shell-window-closed-undo"),
+            move || reopen(),
+        );
+        self.wake.wake();
+    }
+
     /// What the person sees changed, or did not.
     pub(super) fn present(&mut self, presentation: Presentation) {
         if self.presentation != presentation {
@@ -84,6 +98,7 @@ impl Shared {
             unresponsive_revision: 0,
             liveness: Vec::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
+            reopen: Rc::new(|| {}),
             notifications: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
             peers: Rc::new(RefCell::new(super::peer_view::PeerSurfaces::default())),

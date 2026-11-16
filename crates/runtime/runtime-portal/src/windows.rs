@@ -120,6 +120,20 @@ pub fn send_open(channel: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> i
     }
 }
 
+/// Close `channel` for good, both ways: whatever the other end sends from now on fails at once
+/// instead of waiting unread in a process that no longer opens windows.
+pub fn close_channel(channel: &Descriptor) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(rustix::net::shutdown(channel, rustix::net::Shutdown::Both)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = channel;
+        Err(unsupported())
+    }
+}
+
 pub fn send_serves(channel: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {

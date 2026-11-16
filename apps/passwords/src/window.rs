@@ -580,7 +580,14 @@ impl ui::widget::Decorator for PasswordsWindow {
         let now = ui::time::now();
         if let Some(ack) = self.acknowledger.current(now) {
             let alpha = ack.alpha_at(now, theme.reduce_motion);
-            ack.draw(scene, transform, text, theme, self.last_window, alpha);
+            ack.draw(
+                scene,
+                transform,
+                text,
+                theme,
+                self.last_window,
+                ui::widget::acknowledgement::Look::at(alpha),
+            );
         }
     }
 

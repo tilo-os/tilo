@@ -1035,6 +1035,7 @@ fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op:
     }
     match last {
         Some(removed) => {
+            shared.said_closed(&removed.tab);
             ops.push(super::row_op::RowOp::Close {
                 strip: removed.strip,
                 group: removed.group,

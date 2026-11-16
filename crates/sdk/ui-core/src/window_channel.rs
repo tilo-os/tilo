@@ -339,6 +339,7 @@ mod transport {
         channel: Descriptor,
         open: impl Fn(PendingWindow) -> bool + Send + 'static,
     ) -> std::io::Result<()> {
+        *served() = channel.try_clone().ok();
         let open = Arc::new(Mutex::new(open));
         let reopen: Reopen = Arc::new(move |pending| match open.lock() {
             Ok(open) => open(pending),
@@ -377,6 +378,27 @@ mod transport {
             }
         })
         .map(drop)
+    }
+
+    /// The API being served, kept to close it when the loop that builds windows ends.
+    static SERVED: Mutex<Option<Descriptor>> = Mutex::new(None);
+
+    fn served() -> std::sync::MutexGuard<'static, Option<Descriptor>> {
+        SERVED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take no more windows: the loop that builds them is ending, and what the process does
+    /// before it exits (saving, letting its renderer go) can take seconds. A window the shell
+    /// asks for from now on is refused at once, so the shell starts it in a process of its own,
+    /// rather than handing it to this one, which would drop it.
+    pub fn stop_serving() {
+        if let Some(channel) = served().take()
+            && let Err(error) = runtime_portal::windows::close_channel(&channel)
+        {
+            tracing::warn!(%error, "the window API stayed open as the loop ended");
+        }
     }
 
     thread_local! {

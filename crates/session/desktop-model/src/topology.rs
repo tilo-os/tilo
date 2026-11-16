@@ -445,10 +445,17 @@ impl Layout {
                         })
                 })
             })?;
-        if leaving == Leaving::Closed
-            && let Some(workspace) = self.workspaces.get_mut(ws_idx)
-        {
-            workspace.note_close(strip_idx, group_idx, tab_idx);
+        if leaving == Leaving::Closed {
+            let display = self
+                .workspaces
+                .get(ws_idx)
+                .and_then(|workspace| workspace.strips.get(strip_idx))
+                .and_then(|strip| strip.window_groups.get(group_idx))
+                .and_then(|group| self.outputs.home_of(group.id))
+                .map(str::to_owned);
+            if let Some(workspace) = self.workspaces.get_mut(ws_idx) {
+                workspace.note_close(strip_idx, group_idx, tab_idx, display);
+            }
         }
         let strip = self.workspaces.get_mut(ws_idx)?.strips.get_mut(strip_idx)?;
         let strip_id = strip.id;

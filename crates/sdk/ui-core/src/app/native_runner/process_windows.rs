@@ -92,6 +92,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             .position(|handler| handler.closing.get())
         {
             if self.windows.len() == 1 {
+                crate::window_channel::stop_serving();
                 event_loop.exit();
                 return;
             }

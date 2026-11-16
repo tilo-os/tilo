@@ -290,16 +290,6 @@ fn the_chords_move_tabs_windows_and_strips() {
         "and back the other way"
     );
 
-    // Nowhere to go keeps the window where it is, and the shell says so rather than passing the
-    // chord on.
-    let shown = in_front_group(&handle);
-    press_chord(&mut shell, &mut frame, ShortcutAction::MoveGroupToNextStrip);
-    assert_eq!(
-        in_front_group(&handle),
-        shown,
-        "the one strip was already the last"
-    );
-
     // A share of the strip, narrower and wider again.
     let normal = width_in_front(&handle).expect("a window in front");
     press_chord(&mut shell, &mut frame, ShortcutAction::ResizeNarrower);
@@ -307,6 +297,26 @@ fn the_chords_move_tabs_windows_and_strips() {
     assert!(narrower < normal, "{narrower} is narrower than {normal}");
     press_chord(&mut shell, &mut frame, ShortcutAction::ResizeWider);
     assert_eq!(width_in_front(&handle), Some(normal), "and wider again");
+
+    // Below the last strip a window that shares its strip gets a new strip of its own, and the
+    // person goes with it.
+    let (group, first) = in_front_group(&handle).expect("a window in front");
+    press_chord(&mut shell, &mut frame, ShortcutAction::MoveGroupToNextStrip);
+    let strips = handle.read(|tree| tree.workspaces[0].strips.len());
+    assert_eq!(strips, 2, "a strip was made below the last one");
+    let (moved, below) = in_front_group(&handle).expect("the window is still in front");
+    assert_eq!(moved, group, "the same window");
+    assert_ne!(below, first, "in the new strip");
+    assert_eq!(groups_of_shown_strip(&handle), [group], "alone there");
+
+    // Alone in the last strip it has nowhere to go: no other strip is made.
+    press_chord(&mut shell, &mut frame, ShortcutAction::MoveGroupToNextStrip);
+    assert_eq!(in_front_group(&handle), Some((group, below)));
+    assert_eq!(
+        handle.read(|tree| tree.workspaces[0].strips.len()),
+        2,
+        "no empty strip is left behind"
+    );
 }
 
 /// The fixed chords find their commands: the window in front closes, another window of its app
