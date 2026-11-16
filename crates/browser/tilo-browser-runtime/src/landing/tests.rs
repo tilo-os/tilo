@@ -20,7 +20,7 @@ use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
-use super::{Landed, answered, keep};
+use super::{Landed, answered, keep, someone_elses};
 
 const WORKSPACE: &str = "workspace-a";
 
@@ -156,5 +156,30 @@ fn a_record_with_changes_is_kept_for_whoever_opens_it() {
         keep(&memory, &key, AutoCommit::new().save(), &[]).unwrap(),
         Landed::Kept(doc.get_heads()),
         "an empty landing leaves what the page holds"
+    );
+}
+
+/// Another member's own record lands on every page of the workspace, sealed
+/// for their devices: a page leaves it unread rather than asking for what its
+/// person may not read, and still reads its own person's.
+#[test]
+fn a_page_leaves_another_members_own_record_unread() {
+    let ada = "ad".repeat(32);
+    let bo = "b0".repeat(32);
+    let theirs = format!("member:{bo}:mail.mailbox");
+    let own = format!("member:{ada}:mail.mailbox");
+    assert!(someone_elses(&theirs, [ada.as_str()].into_iter()));
+    assert!(!someone_elses(&own, [ada.as_str()].into_iter()));
+    assert!(!someone_elses(
+        &own,
+        [bo.as_str(), ada.as_str()].into_iter()
+    ));
+    assert!(
+        !someone_elses("mail.mailbox", [ada.as_str()].into_iter()),
+        "the workspace's records are read as before"
+    );
+    assert!(
+        !someone_elses(&theirs, std::iter::empty()),
+        "a page that shows nobody yet cannot tell whose it is"
     );
 }

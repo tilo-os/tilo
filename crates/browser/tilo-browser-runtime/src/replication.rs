@@ -1052,10 +1052,7 @@ impl Joined {
         for route in settled {
             self.settle(&route, &mut woken);
         }
-        // Records first: a desktop naming a new tab's record finds it.
-        let mut landed: Vec<DocumentRoute> = landed.into_iter().collect();
-        landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
-        for route in landed {
+        for route in self.to_read(landed) {
             // A record kept for whoever opens it is read as what changed since the store took
             // it last: a record that lands a write at a time (a sealed chat's history, written
             // by many) would otherwise be read, loaded and saved whole once per write.
@@ -1259,6 +1256,29 @@ impl Joined {
                 }
             }
         }
+    }
+
+    /// The records that landed, in the order they are read: records first, so a desktop naming a
+    /// new tab's record finds it, and without another member's own records.
+    fn to_read(&self, landed: BTreeSet<DocumentRoute>) -> Vec<DocumentRoute> {
+        let mut landed: Vec<DocumentRoute> = landed
+            .into_iter()
+            .filter(|route| !self.someone_elses(&route.record))
+            .collect();
+        landed.compact_sort_by_key(|route| route.app_id == DESKTOP_APP);
+        landed
+    }
+
+    /// Whether `record` is another member's own record, sealed for their
+    /// devices and refused to this page's reader: it is left unread
+    /// ([`crate::landing::someone_elses`]).
+    fn someone_elses(&self, record: &str) -> bool {
+        crate::landing::someone_elses(
+            record,
+            self.mounts
+                .values()
+                .map(|mounted| mounted.attachment.author.as_str()),
+        )
     }
 
     /// The host retains nothing of `route`, a record this page opened or

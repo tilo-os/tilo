@@ -103,5 +103,21 @@ pub(crate) fn answered(stores: &[RecordStore], app: &str, record: &str) -> bool 
     answered
 }
 
+/// Whether `record` is a member's own record of someone other than every
+/// person in `here` (the people this page's windows show): theirs alone, which
+/// the host refuses this page's reader, so the page leaves it unread. `false`
+/// while the page shows nobody, when it cannot tell whose it is.
+pub(crate) fn someone_elses<'a>(record: &str, mut here: impl Iterator<Item = &'a str>) -> bool {
+    let Some((person, _)) = ui::permissions::policy::member_record(record) else {
+        return false;
+    };
+    let mut anyone = false;
+    let shown = here.any(|author| {
+        anyone = true;
+        author == person
+    });
+    anyone && !shown
+}
+
 #[cfg(test)]
 mod tests;
