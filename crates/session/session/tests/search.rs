@@ -2033,6 +2033,24 @@ fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second
     assert_eq!(sends[1], second, "the second is the last carried out");
 }
 
+/// Step the session until `done`, naming the wait that ran out: a test of one gesture says which
+/// step of it the shell did not answer.
+fn stepped(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
+    let started = std::time::Instant::now();
+    loop {
+        if done(session) {
+            return;
+        }
+        assert!(started.elapsed() < tilo_test_env::hang_bound(), "{what}");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+}
+
+/// The search open, as the shell publishes it.
+fn search_showing(session: &Session) -> bool {
+    find(&session.resources(), SEARCH_RESOURCE).is_some()
+}
+
 /// An app's own row leads a record its window shows, for the app's name: a person who types
 /// "sheets" gets Sheets, and the workbook the sheet window holds comes after it.
 #[test]
@@ -2044,7 +2062,8 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
     session.step(Duration::from_millis(1)).unwrap();
     // The workbook the Sheets window shows, as its app's index of this workspace names it.
     let here = workspace_in_front(&session);
-    let workbook = ui::record::RecordId::parse("sheets:1").expect("a record id");
+    let workbook = ui::record::RecordId::parse("uuid:6d1c1f36-0000-4000-8000-0000000000ab")
+        .expect("a record id");
     let directory = app_state::workspace_index_directory(home.data(), "so.tilo.sheets", &here)
         .expect("an index directory");
     std::fs::create_dir_all(&directory).expect("the index's directory");
@@ -2068,5 +2087,34 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
         labels.first().map(String::as_str),
         Some("Sheets"),
         "the app's row leads for its own name: {labels:?}"
+    );
+}
+
+/// The search chord opens the search with a window in front: the press is the desk's wherever it
+/// is pressed, never the window's under it, and it is the window's keyboard the chord crosses.
+#[test]
+fn the_search_chord_opens_the_search_with_a_window_in_front() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_installing(Rc::new(Host::default()), &[("so.tilo.notes", "Notes")]);
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    invoke(
+        &mut session,
+        &launchpad_card_id("notes"),
+        "launchpad",
+        serde_json::json!({}),
+    );
+    stepped(&mut session, "the window opens on the shell", |session| {
+        shell_apps(session).iter().any(|app| app == "so.tilo.notes")
+    });
+
+    chord(&mut session);
+    stepped(
+        &mut session,
+        "the chord opens the search with a window in front",
+        search_showing,
     );
 }
