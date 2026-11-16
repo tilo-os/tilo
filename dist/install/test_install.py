@@ -86,8 +86,10 @@ class Install(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(run(self.installed).stdout, b"tilo 0.0.0\n")
         self.assertEqual(self.installed.stat().st_mode & 0o777, 0o755)
-        self.assertIn("Add", done.stderr, "says how to reach it when its directory is not on PATH")
+        self.assertIn(str(self.installed), done.stderr, "names it by its full path off PATH")
         self.assertIn("tilo login", done.stderr, "says what comes next")
+        self.assertIn("Set up with your agent", done.stderr, "says where the code comes from")
+        self.assertNotIn("agent connect", done.stderr, "login adds Tilo's tools to the agent itself")
         self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilo"], "no leftovers")
 
     def test_plain_http_only_from_this_computer(self):

@@ -116,10 +116,10 @@ KEY
   say "Installed tilo to $dir/tilo."
   case ":${PATH:-}:" in
     *":$dir:"*) tilo=tilo ;;
-    *) tilo=$dir/tilo; say "Add $dir to your PATH to run it as tilo; until then, run $tilo." ;;
+    *) tilo=$dir/tilo; say "That folder isn't on your PATH yet, so this uses the full path." ;;
   esac
   if [ "$#" -eq 0 ]; then
-    say "Next: $tilo login <code from your Tilo tab>, then $tilo agent connect claude (or codex)."
+    say "Next: $tilo login CODE, with CODE from Tilo (choose \"Set up with your agent\")."
     return
   fi
   rm -rf "$work"
