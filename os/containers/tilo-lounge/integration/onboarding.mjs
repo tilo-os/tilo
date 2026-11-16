@@ -657,6 +657,63 @@ try {
   mark('a second tab of the person entered their own workspace, and the first stayed in');
   console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
 
+  // -- 3b. the same person on a browser new to the site signs in with their agent
+  // The invite-only entry turns this browser away to its wait list; "Sign in
+  // with your agent" shows a sign-in prompt with its code, and the computer
+  // `tilo login` set up above claims it, which takes the tab in as the person.
+  const returning = await visit('returning');
+  await arrive(returning, {expected: 'refused'});
+  await until(returning.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the wait list for a browser new to the site', stepLimit(6));
+  await pressId(returning.tab, 'arrival-sign-in-agent');
+  const signInShown = `(() => {
+    const screen = document.getElementById('first-run');
+    const prompt = document.getElementById('first-run-prompt')?.textContent ?? '';
+    return document.documentElement.dataset.firstRun === 'waiting' && screen?.dataset.mode === 'sign-in'
+      && getComputedStyle(screen).display !== 'none' && /login [2-9A-Z]{3}-[2-9A-Z]{4}/.test(prompt)
+      && screen.getBoundingClientRect().height > 0 && prompt;
+  })()`;
+  const signInScreen = `JSON.stringify((() => {
+    const screen = document.getElementById('first-run');
+    const style = screen && getComputedStyle(screen);
+    const main = document.querySelector('#first-run .fr-main');
+    return {firstRun: document.documentElement.dataset.firstRun ?? null, hold: document.documentElement.dataset.firstRunHold ?? null,
+      screen: screen ? {...screen.dataset} : null, display: style?.display, opacity: style?.opacity, visibility: style?.visibility,
+      zIndex: style?.zIndex, height: screen?.getBoundingClientRect().height ?? null,
+      main: main ? {display: getComputedStyle(main).display, visibility: getComputedStyle(main).visibility, height: main.getBoundingClientRect().height} : null,
+      heading: document.getElementById('first-run-heading')?.textContent ?? null,
+      prompt: document.getElementById('first-run-prompt')?.textContent ?? null,
+      offerNote: document.getElementById('first-run-offer-note')?.textContent ?? null,
+      signInNote: document.getElementById('first-run-sign-in-note')?.textContent ?? null,
+      problem: document.getElementById('first-run-problem')?.textContent ?? null,
+      top: (() => { const at = document.elementFromPoint(innerWidth / 2, innerHeight / 3); return at ? at.tagName + '#' + at.id + '.' + at.className : null; })()};
+  })())`;
+  let signInPrompt = '';
+  for (const deadline = Date.now() + stepLimit(6); !(signInPrompt = await returning.tab.evaluate(signInShown).catch(() => ''));) {
+    if (Date.now() > deadline) {
+      await dump(returning.tab, '5-sign-in-with-agent');
+      await fail(`"Sign in with your agent" showed no sign-in prompt: ${await returning.tab.evaluate(signInScreen).catch(error => error.message)}`);
+    }
+    await sleep(250);
+  }
+  report.signInPrompt = signInPrompt;
+  await dump(returning.tab, '5-sign-in-with-agent');
+  const signIn = commandOf(signInPrompt);
+  if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${signInPrompt}`);
+  const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
+  report.signInLogin = claimed;
+  if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
+  for (const deadline = Date.now() + stepLimit(OWN_WORKSPACE_STEPS); !await ownWorkspace(returning.tab).catch(() => '');) {
+    if (Date.now() > deadline) await fail(`the signed-in tab is titled ${await ownProgress(returning.tab)}, not after the person's own workspace`);
+    await sleep(250);
+  }
+  const signedIn = await person(returning.tab);
+  report.signedIn = signedIn;
+  if (signedIn.user !== report.landed.user) await fail(`the agent signed in ${signedIn.user}, not ${report.landed.user}`);
+  await dump(returning.tab, '5-signed-in-with-agent');
+  await returning.browser.close().catch(() => {});
+  mark('a browser new to the site signed the person in with their agent');
+  console.log(`ok: "Sign in with your agent" showed its code, and the person's computer signed the tab in to ${signedIn.title}`);
+
   // -- 4. a passkey brings the same person back to that workspace ------------
   // Kept from the person's own desktop, as "Keep with passkey" does. A
   // passkey is made in the tab a person is looking at: the second tab opened
