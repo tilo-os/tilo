@@ -12,7 +12,7 @@ whose info string says `fragment` is a partial snippet and is not run.
 
 `check` enforces the conventions and runs nothing. `list` prints what the pages
 carry. `run` executes every block against a local Tilo: `--api` names the
-`api-on-relay` example of `tilo-agent-participant`, which serves a host with its
+`api-on-relay` example of `tilo-agent-session`, which serves a host with its
 API and runs the program with `TILO_API_URL`, `TILO_API_KEY` and `TILO_INVITEE`
 set, so an example reaches the API the way the published one reaches tilo.sh. Python runs
 from `sdk/python` with uv, TypeScript resolves `tilo-sdk` to the tree's

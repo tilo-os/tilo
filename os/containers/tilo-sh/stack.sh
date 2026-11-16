@@ -824,8 +824,8 @@ seed() {
   mkdir -p "$out"
   local seeder=${TILO_SH_SEEDER:-$repo/target/debug/examples/seed-lounge}
   if [[ ! -x $seeder ]]; then
-    say 'building the seeder (cargo.sh build -p tilo-agent-participant --example seed-lounge)'
-    (cd "$repo" && "$here/cargo.sh" build -p tilo-agent-participant --example seed-lounge >&2) \
+    say 'building the seeder (cargo.sh build -p tilo-agent-session --example seed-lounge)'
+    (cd "$repo" && "$here/cargo.sh" build -p tilo-agent-session --example seed-lounge >&2) \
       || die 'could not build the seeder; or set TILO_SH_SEEDER'
   fi
   local members

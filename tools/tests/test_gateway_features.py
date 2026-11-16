@@ -28,7 +28,7 @@ class GatewayFeaturesTests(unittest.TestCase):
         self.assertEqual(declared["default"], [])
         self.assertIn("server", declared["local-models"])
         self.assertIn("server", declared["host-backend"])
-        self.assertEqual(features.arguments(["chat", "tilo-host", "tilo-agent-participant"]), [])
+        self.assertEqual(features.arguments(["chat", "tilo-host", "tilo-agent-session"]), [])
         argv = features.arguments(["tilo-model-gateway"])
         self.assertEqual(argv[0], "--features")
         self.assertEqual(set(argv[1].split(",")),

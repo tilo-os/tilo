@@ -158,7 +158,7 @@
   "tilo-activities": {"libraries": 4906936, "tests": 117685536},
   "tilo-adblock-engine": {"libraries": 0, "tests": 2852000},
   "tilo-advisory-lock": {"libraries": 406025, "tests": 2851944},
-  "tilo-agent-participant": {"libraries": 52009181, "tests": 2373355776},
+  "tilo-agent-session": {"libraries": 52009181, "tests": 2373355776},
   "tilo-app": {"libraries": 98977792, "tests": 788518328},
   "tilo-app-cli": {"libraries": 103499282, "tests": 370469632},
   "tilo-app-host-engine": {"libraries": 0, "tests": 2851920},

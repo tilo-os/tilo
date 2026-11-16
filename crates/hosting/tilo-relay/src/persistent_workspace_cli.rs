@@ -965,7 +965,7 @@ pub(crate) async fn seed_apps(
     seeded_file: &Path,
 ) -> anyhow::Result<()> {
     let mut seeded: BTreeSet<String> = read_json(seeded_file)?;
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     let pending: Vec<&String> = apps.iter().filter(|app| !seeded.contains(*app)).collect();
     for app in pending {
         let record = tilo_relay::workspace_bots::workspace_record(&catalogue, app);
@@ -1024,7 +1024,7 @@ pub(crate) async fn settle_chat(
     {
         return Ok(());
     }
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     let record =
         tilo_relay::workspace_bots::workspace_record(&catalogue, crate::workspace_chat::CHAT_APP);
     workspaces
@@ -1333,7 +1333,7 @@ pub(crate) async fn run(
         .transpose()?
         .map(|reviewer| {
             std::sync::Arc::new(reviewer)
-                as std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>
+                as std::sync::Arc<dyn tilo_agent_session::FeedbackReviewer>
         });
     let host = host_key(&state)?;
     let host_cert = enrol(

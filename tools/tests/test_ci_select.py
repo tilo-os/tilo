@@ -1838,7 +1838,7 @@ class DependencyKindTests(unittest.TestCase):
             "agent": [("shell", "dev")],
             "tilo-session-host": [("tilo-owner-replica", "dev")],
             "tilo-relay": [("tilo-session-host", None)],
-            "tilo-agent-participant": [("tilo-session-host", None), ("agent", None)],
+            "tilo-agent-session": [("tilo-session-host", None), ("agent", None)],
             "tilo-sync-load": [("tilo-session-host", None)],
             "tilo-browser-runtime": [("tilo-session-host", None)],
             "tilo-web-desktop": [("tilo-browser-runtime", None)],

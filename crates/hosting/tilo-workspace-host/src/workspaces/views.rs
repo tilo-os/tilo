@@ -2,7 +2,7 @@
 use super::{GovernedWorkspace, StatePeer, SystemTime, Workspaces};
 use tilo_action_policy::Standing;
 use tilo_actions::remote::Caller;
-use tilo_agent_participant::workspace_actions::{ViewDocument, ViewReadPolicy};
+use tilo_agent_session::workspace_actions::{ViewDocument, ViewReadPolicy};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 

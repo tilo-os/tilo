@@ -75,7 +75,7 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # `python3 -I tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
-# local-model-service runtime-bundle store tilo-agent-participant tilo-app-cli
+# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli
 # tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core tilo-vmd
 # tilolang-cli tilolang-tilo ush windows-vm
 
@@ -102,7 +102,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "canvas", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-participant",
+    "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-ui", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -146,7 +146,7 @@ unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
     "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
-    "tilo-agent-participant", "tilo-app-cli", "tilo-environment", "tilo-liveness",
+    "tilo-agent-session", "tilo-app-cli", "tilo-environment", "tilo-liveness",
     "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -157,7 +157,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
 # the package, and a shard names none. So is the capability probe a run of a package
 # .config/nextest-capabilities.toml names runs first.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-participant = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
+starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has
@@ -224,7 +224,7 @@ packages = [
     "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
-    "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",
+    "tilo-agent-session", "tilo-app", "tilo-bluez", "tilo-browser-compute",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
@@ -260,7 +260,7 @@ trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
-    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -296,7 +296,7 @@ trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -318,7 +318,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
-    "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
+    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -885,13 +885,13 @@ requires = ["arch=x86_64"]
 # The developer docs' code examples, run the way a reader runs them: every block of an example
 # is a whole program that reaches the API with TILO_API_URL and TILO_API_KEY (tools/docs/
 # doc_examples.py). The host that serves them is the api-on-relay example of
-# tilo-agent-participant, and sh examples run the tilo command, so both are built here and
+# tilo-agent-session, and sh examples run the tilo command, so both are built here and
 # handed to the check that runs the examples in the SDKs' image, with the font catalog this
 # build sets text from: the binaries name it beside themselves.
 [[check]]
 name = "docs-examples-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-participant --example api-on-relay\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-relay\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\ncp -a \"$CARGO_TARGET_DIR/debug/font-catalogs\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/docs-examples\"\ncargo build --locked -p tilo-agent-session --example api-on-relay\ncargo build --locked -p tilo-cli --bin tilo\ncp \"$CARGO_TARGET_DIR/debug/examples/api-on-relay\" \"$CARGO_TARGET_DIR/debug/tilo\" \"$CARGO_TARGET_DIR/docs-examples/\"\ncp -a \"$CARGO_TARGET_DIR/debug/font-catalogs\" \"$CARGO_TARGET_DIR/docs-examples/\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/docs-examples/**"]
 
@@ -1392,13 +1392,13 @@ on = ["dispatch"]
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-participant)\n    run -p tilo-agent-participant --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-participant --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
+run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_TEST_NTFS_FIXTURES=0\nany() { local e=\"\" t; for t; do e=\"${e:+$e | }test($t)\"; done; printf '%s' \"$e\"; }\nrun() { bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail \"$@\"; }\ncase {part} in\n  relay)\n    run -p tilo-relay --lib -E \"$(any workspace_access compute_content host_authority)\"\n    run -p tilo-relay --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: federation_cross_user_reject:: cross_user_workspace_host:: compute_content:: remote_action_routing::)\"\n    ;;\n  relay-agents)\n    run -p tilo-relay --features agents --test it -E \"$(any tenant_isolation:: governed_workspaces:: governed_workspace_access:: workspace_admission:: auth_reject:: compute_content:: persistent_workspace::)\"\n    run -p tilo-relay --features agents --bin tilo-relay -E \"test(persistent_workspace_cli::tests::a_fresh_workspace_seeds_its_apps_and_keeps_them)\"\n    ;;\n  agent-session)\n    run -p tilo-agent-session --test it -E \"$(any worker_isolation::)\"\n    run -p tilo-agent-session --test it -E \"$(any workspace_actions::governed_agent::)\"\n    ;;\nesac\n"
 env = { RUST_BACKTRACE = "1" }
 timeout_secs = 5400
 on = ["dispatch"]
 heavy = true
 [check.matrix]
-part = ["relay", "relay-agents", "agent-participant"]
+part = ["relay", "relay-agents", "agent-session"]
 
 [[check]]
 name = "visual-baselines"
@@ -2552,7 +2552,7 @@ arch = ["x86_64", "aarch64"]
 # browser peer and the agent participant, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
 # runs the same tests in the pinned builder (`test/tilo-session-client`,
-# `test-x86_64/tilo-agent-participant`), so what this adds is the canary: it gates a release's
+# `test-x86_64/tilo-agent-session`), so what this adds is the canary: it gates a release's
 # signature and publication, runs when dispatched and on main's newest head when t has room
 # (bisected to the commit that broke it), and main's development tags go without it.
 [[check]]

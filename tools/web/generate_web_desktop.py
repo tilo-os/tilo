@@ -28,7 +28,7 @@ host build links this same list and has no screen. A platform crate that
 compiles a backend to nothing on the web is not a reason to leave it on: a
 native host without a screen links it for real.
 
-It also links the same apps into crates/agent/agent-participant (the
+It also links the same apps into crates/agent/agent-session (the
 dependency block in its Cargo.toml and src/web_apps.rs), so an agent in a
 browser session can open exactly the apps the page can mount.
 
@@ -47,7 +47,7 @@ import tomllib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BUNDLE = REPO / "crates/browser/tilo-web-desktop"
-AGENTS = REPO / "crates/agent/agent-participant"
+AGENTS = REPO / "crates/agent/agent-session"
 DEFAULT_PLATFORMS = ("linux", "macos", "web")
 BEGIN = "# generated apps: begin (tools/web/generate_web_desktop.py)"
 END = "# generated apps: end"
@@ -267,7 +267,7 @@ def outputs(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], list[str]]:
         )
     ]
     bundle = repo / "crates/browser/tilo-web-desktop"
-    agents = repo / "crates/agent/agent-participant"
+    agents = repo / "crates/agent/agent-session"
     block = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
     manifests = {}
     for crate in (bundle, agents):

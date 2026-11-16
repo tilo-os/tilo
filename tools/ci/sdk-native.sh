@@ -38,7 +38,7 @@ build() {
   cd "$root"
   cargo build --locked -p tilo-sdk-python-native -p tilo-sdk-node-native
   cargo build --locked -p tilo-automerge-isolate --bin tilo-automerge-worker
-  cargo build --locked -p tilo-agent-participant --example api-on-relay
+  cargo build --locked -p tilo-agent-session --example api-on-relay
   local target=${CARGO_TARGET_DIR:-$root/target}
   rm -rf "$out"
   mkdir -p "$out/python/tilo" "$out/typescript"

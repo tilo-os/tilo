@@ -132,7 +132,7 @@ handed_bin() { handed "NEXTEST_BIN_EXE_$1" -x an executable; }
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where an archive of
 # test binaries runs away from the build directory.
-if tests tilo-agent-participant; then
+if tests tilo-agent-session; then
     path=$(handed_bin tilo-video-render)
     if [[ -n $path ]]; then
         export TILO_VIDEO_RENDER=$path

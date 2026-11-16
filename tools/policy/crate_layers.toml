@@ -88,11 +88,11 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the relay embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
 
   [[rule.allow]]
-  package = "tilo-agent-participant"
+  package = "tilo-agent-session"
   why = "a participant opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 
   [[rule.allow]]
-  package = "tilo-agent-participant"
+  package = "tilo-agent-session"
   why = "an agent's participant names the engine's document-frame route — the address a frame names its place in a workspace's document by — and its join vocabulary; it holds no engine state and writes only through the actions it publishes"
 
   [[rule.allow]]

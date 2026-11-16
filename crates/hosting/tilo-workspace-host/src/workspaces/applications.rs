@@ -9,7 +9,7 @@
 use super::authority::WorkspaceOp;
 use super::{CollaborationError, Workspaces, system_time};
 use crate::host_authority::HostOperation;
-use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
+use tilo_agent_session::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
 /// The app's id, when it has a record `record`: the primary only
@@ -506,7 +506,7 @@ impl Workspaces {
                 app,
                 workspace,
                 &hex::encode(governor.user_public_key),
-                &tilo_agent_participant::ReplicaActor::Owner,
+                &tilo_agent_session::ReplicaActor::Owner,
                 seed,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;

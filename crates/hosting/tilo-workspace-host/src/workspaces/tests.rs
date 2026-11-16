@@ -548,7 +548,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     let relay = test_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Seeded default record").await.unwrap();
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     // An app whose windows each show a resource of their own: one that keeps
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
@@ -591,7 +591,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         .create("Native authoring rollover")
         .await
         .unwrap();
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     workspaces
         .prepare_application(&created.workspace, &cert, &catalogue, "so.tilo.chat", "")
         .await
@@ -928,7 +928,7 @@ async fn applications_are_prepared_for_the_current_owner_only() {
     let relay = test_host(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Private app authoring").await.unwrap();
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     Box::pin(assert_canonical_chat_preparation(
         workspaces,
         &created.workspace,
@@ -977,7 +977,7 @@ async fn assert_canonical_chat_preparation(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    catalogue: &tilo_agent_participant::AppCatalogue,
+    catalogue: &tilo_agent_session::AppCatalogue,
 ) {
     assert!(
         workspaces
@@ -1136,7 +1136,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
         .create("Native governor authoring")
         .await
         .unwrap();
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     assert_unprepared_authoring_refused(workspaces, &created.workspace, &cert, &catalogue).await;
     workspaces
         .prepare_application(&created.workspace, &cert, &catalogue, "so.tilo.chat", "")
@@ -1261,7 +1261,7 @@ async fn assert_unprepared_authoring_refused(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    catalogue: &tilo_agent_participant::AppCatalogue,
+    catalogue: &tilo_agent_session::AppCatalogue,
 ) {
     for app in ["so.tilo.chat", "so.tilo.unregistered"] {
         assert!(

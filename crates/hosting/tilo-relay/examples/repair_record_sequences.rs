@@ -139,7 +139,7 @@ fn main() -> ExitCode {
         return ExitCode::from(code);
     }
     // So do the confined workers the host runs apps in.
-    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+    if let Some(code) = tilo_agent_session::worker::dispatch_early() {
         return ExitCode::from(code);
     }
     let _ = tracing_subscriber::fmt()
@@ -1114,7 +1114,7 @@ fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 #[cfg(test)]
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 #[cfg(test)]
 mod tests {
@@ -1167,7 +1167,7 @@ mod tests {
         workspace: &str,
         (key, cert): (&SigningKey, &DeviceCert),
     ) {
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let catalogue = tilo_agent_session::AppCatalogue::native();
         workspaces
             .prepare_application(workspace, cert, &catalogue, CHAT, "")
             .await
@@ -1287,7 +1287,7 @@ mod tests {
     async fn a_record_that_holds_a_sequence_twice_is_repaired_with_every_message() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let _ = tilo_agent_participant::AppCatalogue::native();
+        let _ = tilo_agent_session::AppCatalogue::native();
         // The device's channel keys outlive the host, as its channel service
         // keeps them across a restart.
         let keys = std::sync::Arc::new(TestGroupKeys::default());
@@ -1391,13 +1391,13 @@ mod tests {
     async fn a_record_waiting_on_a_change_it_never_got_reads_whole_once_repaired() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let _ = tilo_agent_participant::AppCatalogue::native();
+        let _ = tilo_agent_session::AppCatalogue::native();
         let keys = std::sync::Arc::new(TestGroupKeys::default());
         let relay =
             test_host_holding(scratch.path(), &key, &cert, std::sync::Arc::clone(&keys)).await;
         let workspaces = relay.workspaces().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let catalogue = tilo_agent_session::AppCatalogue::native();
         workspaces
             .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
             .await

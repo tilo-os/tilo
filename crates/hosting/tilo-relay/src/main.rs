@@ -40,7 +40,7 @@ use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 // The tests in this binary open records, which an app worker serves: libtest
 // owns `main`, so the worker is one more test here.
 #[cfg(all(test, feature = "agents"))]
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 #[cfg(feature = "agents")]
 mod persistent_moderation;
@@ -138,7 +138,7 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     }
     // So do the confined workers agents and workspace actions run apps in.
     #[cfg(feature = "agents")]
-    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+    if let Some(code) = tilo_agent_session::worker::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
     run().map(|()| std::process::ExitCode::SUCCESS)

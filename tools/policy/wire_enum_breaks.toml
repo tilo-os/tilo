@@ -84,12 +84,12 @@ enum = "ActivityView"
 reason = "the pane's own view select, encoded as a JSON name (`rename_all = kebab-case`); nothing outside the binary keeps it, so a retired view cannot be read back from stored bytes"
 
 [[break]]
-file = "crates/agent/agent-participant/src/worker/proto.rs"
+file = "crates/agent/agent-session/src/worker/proto.rs"
 enum = "Request"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any request is decoded"
 
 [[break]]
-file = "crates/agent/agent-participant/src/worker/proto.rs"
+file = "crates/agent/agent-session/src/worker/proto.rs"
 enum = "Reply"
 reason = "postcard frames between a supervisor and the app worker it starts from its own executable; the variant inserts came with PROTOCOL_VERSION bumps, and a stale worker is refused on its greeting before any reply is decoded"
 

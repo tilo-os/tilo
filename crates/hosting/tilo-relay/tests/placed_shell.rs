@@ -24,7 +24,7 @@ use tilo_actions::remote::environment_runs::{self, RunCommand, RunOutput};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
 };
-use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
+use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionPlane, NoActions};
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
 use tilo_relay_protocol::WorkSetting;

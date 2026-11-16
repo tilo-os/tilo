@@ -35,7 +35,7 @@ use serde::Deserialize;
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
 use tilo_actions::remote::{ActionHost, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_agent_participant::workspace_actions::{ShellRan, Watching};
+use tilo_agent_session::workspace_actions::{ShellRan, Watching};
 use tilo_peer_state::actions::ActionPlane;
 
 /// The placer's address (`host:port`).

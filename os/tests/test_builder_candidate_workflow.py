@@ -86,7 +86,7 @@ class BuilderCandidates(unittest.TestCase):
                     if override is not None:
                         env['CHROME'] = override
                     result = subprocess.run(['bash', str(script), 'cargo', 'nextest', 'run',
-                                             '-p', 'tilo-agent-participant', '-E', 'test(browser)'],
+                                             '-p', 'tilo-agent-session', '-E', 'test(browser)'],
                                             env=env, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     expected = (override or BROWSER
@@ -118,15 +118,15 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
         # The agent participant's browser regressions are single tests of the `host_agents`
         # module of its one test binary (`it`), so those are named.
-        self.assertEqual(participant[:2], ('tilo-agent-participant', 'it'))
+        self.assertEqual(participant[:2], ('tilo-agent-session', 'it'))
         names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
                  'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
                  'the_creator_and_a_joined_page_both_see_every_task_live')
         self.assertEqual(filterset_terms(participant[2]),
                          {('test', f'=host_agents::{name}') for name in names})
-        binary = (ROOT / 'crates/agent/agent-participant/tests/it.rs').read_text()
+        binary = (ROOT / 'crates/agent/agent-session/tests/it.rs').read_text()
         self.assertIn('#[path = "host_agents.rs"]\nmod host_agents;', binary)
-        source = (ROOT / 'crates/agent/agent-participant/tests/host_agents.rs').read_text()
+        source = (ROOT / 'crates/agent/agent-session/tests/host_agents.rs').read_text()
         for name in names:
             self.assertIn(f'async fn {name}()', source)
         # Execute the canary's own shell, intercepting only the browser itself, node and the
@@ -144,7 +144,7 @@ class BuilderCandidates(unittest.TestCase):
             (work / 'tools/ci/nextest.sh').write_text(
                 'printf "%s\\n" "$*" >> calls\n'
                 '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
-            for failure in ('none', 'tilo-session-client', 'tilo-agent-participant'):
+            for failure in ('none', 'tilo-session-client', 'tilo-agent-session'):
                 with self.subTest(failure=failure):
                     (work / 'calls').unlink(missing_ok=True)
                     result = subprocess.run(['bash', '-c', stubs + script], cwd=work,

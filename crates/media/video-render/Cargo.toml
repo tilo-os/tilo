@@ -13,7 +13,7 @@ description = "tilo-video-render: the confined process an agent's host renders a
 name = "tilo_video_render"
 path = "src/lib.rs"
 
-# The helper itself; the host's render service (tilo-agent-participant) finds
+# The helper itself; the host's render service (tilo-agent-session) finds
 # it at `$TILO_VIDEO_RENDER` or beside its own executable.
 [[bin]]
 name = "tilo-video-render"

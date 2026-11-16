@@ -11,7 +11,7 @@ use collab_types::DocumentMutation;
 use tilo_action_policy::{
     Answer, Authority, Context, Grant, Grantee, KindSet, Role, Standing, TreePath, WorkspacePolicy,
 };
-use tilo_agent_participant::{AppCatalogue, Replica, ReplicaActor, Seed};
+use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
 
 use super::*;

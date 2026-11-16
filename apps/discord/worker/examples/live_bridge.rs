@@ -41,7 +41,7 @@ use ::discord::record::{Guild, MappedKind, Ownership};
 use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_agent_participant::AppCatalogue;
+use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_net::Method;
 use tilo_relay::workspace_bots::discord::{self, DiscordLink};
@@ -66,7 +66,7 @@ fn main() -> ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return ExitCode::from(code);
     }
-    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+    if let Some(code) = tilo_agent_session::worker::dispatch_early() {
         return ExitCode::from(code);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();

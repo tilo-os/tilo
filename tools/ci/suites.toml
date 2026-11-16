@@ -599,7 +599,7 @@ suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
 reason = "launches the repository's own Chrome through tools/web/chrome.mjs to mux and play back real media; every CI image is browser-free, so it runs where a Chrome is installed"
 
 [[unrequired]]
-suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
+suite = "crates/agent/agent-session/tests/mounted_resource/accounts.test.mjs"
 reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
 
 [[group]]
@@ -1464,7 +1464,7 @@ inputs = ["crates/platform/tilo-pdf/tests/fixtures/artifacts.json", "tools/test-
 readers = ["apps/pdf-viewer/build.rs"]
 
 [[cargo]]
-package = "tilo-agent-participant"
+package = "tilo-agent-session"
 # The session tests mount apps against the controlled font fixture and share
 # the browser peer's relay test support.
 inputs = [
@@ -1475,9 +1475,9 @@ inputs = [
 # One test binary includes the fixtures every file shares, and the two
 # examples reuse the workspace-actions one.
 readers = [
-  "crates/agent/agent-participant/tests/it.rs",
-  "crates/agent/agent-participant/examples/api-on-relay.rs",
-  "crates/agent/agent-participant/examples/mounted-resource.rs",
+  "crates/agent/agent-session/tests/it.rs",
+  "crates/agent/agent-session/examples/api-on-relay.rs",
+  "crates/agent/agent-session/examples/mounted-resource.rs",
 ]
 
 [[cargo]]

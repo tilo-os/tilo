@@ -1,5 +1,5 @@
 //! Agents on this host (feature `agents`): the link between the relay and
-//! `tilo-agent-participant`'s [`AgentHost`].
+//! `tilo-agent-session`'s [`AgentHost`].
 //!
 //! [`RelayAgentLink`] is what the supervisor asks of the relay:
 //!
@@ -32,8 +32,8 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
     ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
-use tilo_agent_participant::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
-use tilo_agent_participant::{
+use tilo_agent_session::workspace_actions::{HostDevice, ShellRan, Watching, WorkspaceShell};
+use tilo_agent_session::{
     AdmissionDone, AgentHost, AgentHostLink, AppCatalogue, ApprovalDone, CatalogueFactory,
     FeedbackReviewer, HostActions, HostEndpoint, ModelChoice, SupervisorHost, Witness,
     WorkspaceActions, WorkspaceRecordsLink,
@@ -819,7 +819,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         caller: &tilo_actions::remote::Caller,
         app: &str,
         record: &str,
-    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
+    ) -> Option<tilo_agent_session::workspace_actions::ViewReadPolicy> {
         self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
@@ -831,7 +831,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         &self,
         workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
-    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
+    ) -> Option<tilo_agent_session::workspace_actions::ViewReadPolicy> {
         self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()?
@@ -844,7 +844,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         workspace: WorkspaceId,
         caller: &tilo_actions::remote::Caller,
         source: &tilo_peer_state::document_frame::DocumentRoute,
-    ) -> Result<tilo_agent_participant::workspace_actions::ViewDocument, String> {
+    ) -> Result<tilo_agent_session::workspace_actions::ViewDocument, String> {
         self.host_device.runtime.block_on(
             self.workspaces
                 .as_ref()

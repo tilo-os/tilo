@@ -217,11 +217,11 @@
       "tests": 185,
       "wall_seconds": 3.9943143989999994
     },
-    "tilo-agent-participant": {
+    "tilo-agent-session": {
       "slowest": [
         {
           "seconds": 21.673998521,
-          "test": "tilo_agent_participant$participant::unopened::tests::unmounted_record_bytes_are_bounded_by_its_document"
+          "test": "tilo_agent_session$participant::unopened::tests::unmounted_record_bytes_are_bounded_by_its_document"
         },
         {
           "seconds": 20.229052607,
@@ -229,11 +229,11 @@
         },
         {
           "seconds": 16.773512651,
-          "test": "tilo_agent_participant$participant::unopened::tests::changes_that_crash_automerge_are_decoded_only_in_the_isolate"
+          "test": "tilo_agent_session$participant::unopened::tests::changes_that_crash_automerge_are_decoded_only_in_the_isolate"
         },
         {
           "seconds": 14.869619357,
-          "test": "tilo_agent_participant$participant::unopened::tests::malformed_changes_are_refused_and_dropped"
+          "test": "tilo_agent_session$participant::unopened::tests::malformed_changes_are_refused_and_dropped"
         },
         {
           "seconds": 12.017244975,

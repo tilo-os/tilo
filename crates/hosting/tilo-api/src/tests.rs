@@ -3,7 +3,7 @@
 //! signs the challenge with a device of the person and certifies the
 //! grant's key with their root), and redeems the code with its PKCE
 //! verifier. What a grant then does in workspaces is the relay's, which
-//! `tilo-agent-participant`'s `api` test drives through the server.
+//! `tilo-agent-session`'s `api` test drives through the server.
 
 use super::*;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, SignInProof};

@@ -25,9 +25,9 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_agent_participant::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
-use tilo_agent_participant::bot::held::HeldRecords;
-use tilo_agent_participant::{AppCatalogue, ReplicaActor};
+use tilo_agent_session::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
+use tilo_agent_session::bot::held::HeldRecords;
+use tilo_agent_session::{AppCatalogue, ReplicaActor};
 use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing};
 use tilo_automation::run::{AskRequest, ConfirmationRequest, RunHooks};
@@ -498,7 +498,7 @@ impl BotRunner {
                         .map(|definition| definition.record_kind.as_str().to_owned())
                 })
                 .unwrap_or_default();
-            for (event, _) in tilo_agent_participant::bot::events_since(
+            for (event, _) in tilo_agent_session::bot::events_since(
                 &self.workspace,
                 &record,
                 &kind,

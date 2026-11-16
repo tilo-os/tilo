@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: it follows the records its members write sealed and
 # opens them with the channels' keys it holds as a participant.
 web = []
@@ -66,7 +66,7 @@ key-group = { path = "../../collab/key-group" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-relay-store = { path = "../tilo-relay-store" }
 sha2.workspace = true
-tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
+tilo-agent-session = { path = "../../agent/agent-session", optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 tilo-automation = { path = "../../collab/automation" }

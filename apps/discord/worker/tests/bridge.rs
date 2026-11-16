@@ -23,7 +23,7 @@ use discord::record::{Guild, MappedKind, Ownership, guild};
 use ed25519_dalek::SigningKey;
 use fake_discord::{CHANNEL_GENERAL, FakeDiscord, GUILD, TOKEN, User};
 use serde_json::Value;
-use tilo_agent_participant::AppCatalogue;
+use tilo_agent_session::AppCatalogue;
 use tilo_connector::{BlobAccess, ConnectorProcess, WorkerCommand};
 use tilo_relay::workspace_bots::installed::{self, BotRunner};
 use tilo_relay::workspace_bots::membership::{HostRootCertifier, keep_member};
@@ -33,7 +33,7 @@ use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
 tilo_automerge_isolate::test_worker!();
-tilo_agent_participant::app_worker!();
+tilo_agent_session::app_worker!();
 
 const APP: &str = "so.tilo.discord";
 const CHAT: &str = "so.tilo.chat";
@@ -128,7 +128,7 @@ impl Workspace {
     /// (starting the first), each changed part carried to the workspace on its
     /// own route. The ids of the messages it added.
     async fn part_as(&self, author: &str, invoke: Invoke<chat::parts::ChatPart>) -> Vec<String> {
-        use tilo_agent_participant::{Replica, ReplicaActor, Seed};
+        use tilo_agent_session::{Replica, ReplicaActor, Seed};
         use ui::collaboration::DocumentMutation;
         let chat = self
             .workspaces

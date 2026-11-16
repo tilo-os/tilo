@@ -15,7 +15,7 @@
 use tilo_action_policy::Change;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::entry::Did;
-use tilo_agent_participant::Replica;
+use tilo_agent_session::Replica;
 use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
 use tilo_resource::Resource;
 use ui::record::RecordId;

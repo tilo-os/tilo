@@ -109,8 +109,8 @@ pub const TITLE: &str = "Browser";
 /// `app.so.tilo.browser`, and the record it makes is opened by the session in
 /// the workspace's VM. This host mounts nothing of the app.
 #[must_use]
-pub fn placed_app() -> tilo_agent_participant::PlacedApp {
-    tilo_agent_participant::PlacedApp {
+pub fn placed_app() -> tilo_agent_session::PlacedApp {
+    tilo_agent_session::PlacedApp {
         app_id: APP,
         title: TITLE,
         needs: None,
@@ -122,11 +122,11 @@ pub fn placed_app() -> tilo_agent_participant::PlacedApp {
 /// app starts in the workspace's VM, in the apps session there
 /// ([`tilo_actions::remote::linux_apps`]). This host mounts nothing of it.
 #[must_use]
-pub fn placed_linux_apps() -> tilo_agent_participant::PlacedApp {
-    tilo_agent_participant::PlacedApp {
+pub fn placed_linux_apps() -> tilo_agent_session::PlacedApp {
+    tilo_agent_session::PlacedApp {
         app_id: linux_apps::APP,
         title: linux_apps::TITLE,
-        needs: Some(tilo_agent_participant::PlacedArgument {
+        needs: Some(tilo_agent_session::PlacedArgument {
             name: linux_apps::APP_ARGUMENT,
             description: "the app to open, by its desktop file's name, such as \
                           org.gnome.TextEditor",

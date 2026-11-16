@@ -808,7 +808,7 @@ async fn chat_route(
         .unwrap();
     let host_cert = info.host_cert.clone();
     let host = host_of(info);
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let catalogue = tilo_agent_session::AppCatalogue::native();
     let route = tilo_peer_state::document_frame::DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: cluster.into(),
@@ -1319,7 +1319,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
             .unwrap();
         let host_cert = info.host_cert.clone();
         let host = host_of(info);
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let catalogue = tilo_agent_session::AppCatalogue::native();
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
