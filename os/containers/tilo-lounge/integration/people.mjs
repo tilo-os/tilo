@@ -1557,7 +1557,10 @@ try {
     if (Math.sign(moved) !== (forward ? 1 : -1)) {
       failed(`two fingers sideways panned the strip against the fingers: ${JSON.stringify(report.sideways)}`);
     }
-    if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
+    const windowsAfter = (await snapshot(a.tab)).windows;
+    if (windowsAfter.join() !== windowsBefore.join()) {
+      failed(`a sideways pan changed the windows: ${JSON.stringify({before: windowsBefore, after: windowsAfter})}`);
+    }
     if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
     console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
     mark('a sideways pan over Notes');
