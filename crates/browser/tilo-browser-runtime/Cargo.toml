@@ -78,6 +78,8 @@ tilo-workspace-directory = { version = "0.1.0", path = "../../session/workspace-
 tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 serde.workspace = true
 serde_json.workspace = true
+# Large records verified in the page's worker before they load (src/record_verify.rs).
+tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate" }
 # Warnings and errors reach the console (src/console_log.rs).
 tracing.workspace = true
 vello.workspace = true

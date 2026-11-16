@@ -197,6 +197,22 @@ impl AutoCommit {
         })
     }
 
+    // TILO(load-in-slices): the document a sliced load built
+    // (vendor/automerge/TILO-PATCH.md).
+    /// An `AutoCommit` over `doc`, as [`Self::load_with_options`] makes one
+    /// over the document it loaded.
+    pub fn from_document(doc: Automerge) -> Self {
+        Self {
+            doc,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: Vec::new(),
+            diff_cache: None,
+            save_cursor: Vec::new(),
+            isolation: None,
+        }
+    }
+
     /// Erases the diff cursor created by [`Self::update_diff_cursor()`] and no
     /// longer indexes changes to the document.
     pub fn reset_diff_cursor(&mut self) {

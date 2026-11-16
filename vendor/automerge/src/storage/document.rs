@@ -373,52 +373,28 @@ impl<'a> Document<'a> {
     /// change's hash from `hashes` instead of rebuilding and hashing every
     /// change. Only the op set's indexes are built from the ops.
     fn reconstruct_known(
-        mut op_set: OpSet,
+        op_set: OpSet,
         change_cols: ChangeGraphCols,
         hashes: &[ChangeHash],
     ) -> Result<Automerge, ReconstructError> {
-        let mut index = op_set.index_builder();
-        let mut first_counter = vec![u64::MAX; op_set.actors.len()];
-        let mut note = |id: crate::types::OpId| {
-            if let Some(first) = first_counter.get_mut(id.actor()) {
-                *first = (*first).min(id.counter());
-            }
-        };
-        let mut last = None;
-        let mut ops = op_set.iter();
-        while let Some(op) = ops.try_next()? {
-            let next = Some((op.obj, op.elemid_or_key()));
-            if last != next {
-                index.flush();
-                last = next;
-            }
-            index.process_op(&op);
-            note(op.id);
-            let op_is_counter = op.is_counter();
-            for id in op.succ() {
-                index.process_succ(op_is_counter, id);
-                note(id);
-            }
+        let mut known = KnownLoad::new(op_set, change_cols, hashes.to_vec());
+        known.step(usize::MAX)?;
+        known.finish()
+    }
+
+    /// TILO(load-in-slices): [`Self::reconstruct_known`] a step at a time,
+    /// when `hashes` fit this document; `None` when they do not.
+    pub(crate) fn known_load(
+        &self,
+        text_encoding: TextEncoding,
+        hashes: Vec<ChangeHash>,
+    ) -> Result<Option<KnownLoad>, ReconstructError> {
+        let op_set = OpSet::load(self, text_encoding)?;
+        let change_cols = ChangeGraphCols::load(self)?;
+        if !change_cols.takes_known_hashes(&hashes, self.heads()) {
+            return Ok(None);
         }
-
-        let (indexes, mut mark_order_validator) = index.finish();
-        op_set.set_indexes(indexes);
-
-        let mut authors = Authors::with_actors(change_cols.len());
-        let change_graph = change_cols.finalize_known(hashes, &first_counter, &mut authors);
-
-        debug_assert!(op_set.validate_top_index());
-
-        let doc = Automerge::from_parts(op_set, change_graph, authors);
-
-        if let Some(err) = mark_order_validator.take_error() {
-            Err(ReconstructError::InvalidMarkOrderDoc {
-                doc: Box::new(doc),
-                error_message: err,
-            })
-        } else {
-            Ok(doc)
-        }
+        Ok(Some(KnownLoad::new(op_set, change_cols, hashes)))
     }
 
     pub(crate) fn reconstruct_changes(
@@ -439,6 +415,110 @@ impl<'a> Document<'a> {
             });
         }
         Ok(changes)
+    }
+}
+
+/// TILO(load-in-slices): a document with known change hashes, loaded a
+/// number of ops at a time: the op set's indexes built from its ops, then
+/// the change graph (vendor/automerge/TILO-PATCH.md).
+pub(crate) struct KnownLoad {
+    op_set: OpSet,
+    change_cols: ChangeGraphCols,
+    hashes: Vec<ChangeHash>,
+    index: crate::op_set2::op_set::IndexBuilder,
+    /// Each actor's lowest op counter seen so far.
+    first_counter: Vec<u64>,
+    /// How many ops are indexed.
+    at: usize,
+}
+
+impl KnownLoad {
+    fn new(op_set: OpSet, change_cols: ChangeGraphCols, hashes: Vec<ChangeHash>) -> Self {
+        let index = op_set.index_builder();
+        let first_counter = vec![u64::MAX; op_set.actors.len()];
+        Self {
+            op_set,
+            change_cols,
+            hashes,
+            index,
+            first_counter,
+            at: 0,
+        }
+    }
+
+    /// How many ops the document holds, and how many are indexed.
+    pub(crate) fn progress(&self) -> (usize, usize) {
+        (self.op_set.len(), self.at)
+    }
+
+    /// Index up to `ops` more ops. True once every op is.
+    pub(crate) fn step(&mut self, ops: usize) -> Result<bool, ReconstructError> {
+        let total = self.op_set.len();
+        let end = self.at.saturating_add(ops).min(total);
+        if self.at >= end {
+            return Ok(self.at >= total);
+        }
+        let first_counter = &mut self.first_counter;
+        let mut note = |id: crate::types::OpId| {
+            if let Some(first) = first_counter.get_mut(id.actor()) {
+                *first = (*first).min(id.counter());
+            }
+        };
+        // Where the last step stopped: the op before this one, whose object
+        // and key decide whether the index flushes before the next.
+        let mut ops = self.op_set.iter_range(&(self.at.saturating_sub(1)..end));
+        let mut last = None;
+        if self.at > 0 {
+            if let Some(op) = ops.try_next()? {
+                last = Some((op.obj, op.elemid_or_key()));
+            }
+        }
+        while let Some(op) = ops.try_next()? {
+            let next = Some((op.obj, op.elemid_or_key()));
+            if last != next {
+                self.index.flush();
+                last = next;
+            }
+            self.index.process_op(&op);
+            note(op.id);
+            let op_is_counter = op.is_counter();
+            for id in op.succ() {
+                self.index.process_succ(op_is_counter, id);
+                note(id);
+            }
+        }
+        self.at = end;
+        Ok(self.at >= total)
+    }
+
+    /// The document, once every op is indexed.
+    pub(crate) fn finish(self) -> Result<Automerge, ReconstructError> {
+        let Self {
+            mut op_set,
+            change_cols,
+            hashes,
+            index,
+            first_counter,
+            ..
+        } = self;
+        let (indexes, mut mark_order_validator) = index.finish();
+        op_set.set_indexes(indexes);
+
+        let mut authors = Authors::with_actors(change_cols.len());
+        let change_graph = change_cols.finalize_known(&hashes, &first_counter, &mut authors);
+
+        debug_assert!(op_set.validate_top_index());
+
+        let doc = Automerge::from_parts(op_set, change_graph, authors);
+
+        if let Some(err) = mark_order_validator.take_error() {
+            Err(ReconstructError::InvalidMarkOrderDoc {
+                doc: Box::new(doc),
+                error_message: err,
+            })
+        } else {
+            Ok(doc)
+        }
     }
 }
 

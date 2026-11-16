@@ -152,6 +152,8 @@ macro_rules! lazy_exports {
 // start module is in, and every door into a workspace waits for it
 // (`loadRuntime` of `web/host.mjs`): the entry reads and shelves a link, and
 // drops a workspace its host says is gone, only with the runtime in hand.
+// The page's record worker loads it as well, to verify records
+// (`verifiedChangeHashes`, web/record-verify-worker.mjs).
 lazy_exports!("peer":
     "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
     "redeemInvitation", "inspectInvitation", "reconnectCertificate",
@@ -165,4 +167,5 @@ lazy_exports!("peer":
     "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
     "settleFailedWorkspace", "sealedInvitationLink", "workspaceDeleted",
     "forgetDeletedWorkspace", "component_catalogue_response", "project_browser_accounts",
+    "verifiedChangeHashes",
 );
