@@ -787,12 +787,12 @@ fn a_floated_windows_cover_is_where_the_shell_draws_it() {
     let (window, cover) = covers[0];
     assert_eq!(window, 2, "the cover is of the window that floats");
     // A window an app opens floating stands as a card beside the window it
-    // opened next to: the cover is that card and what the shell draws round it.
-    let (card_width, card_height) = ui::widget::FLOAT_CARD_SIZE;
+    // opened next to: the cover is that card alone, so the windows behind show
+    // under the shadow it casts.
     assert_eq!(
-        (cover.width() > card_width, cover.height() > card_height),
-        (true, true),
-        "the whole of its bar and body and the lift it stands on, as the shell draws it: {cover:?}"
+        (cover.width(), cover.height()),
+        ui::widget::FLOAT_CARD_SIZE,
+        "the card's bar and body, as the shell draws it: {cover:?}"
     );
 }
 
