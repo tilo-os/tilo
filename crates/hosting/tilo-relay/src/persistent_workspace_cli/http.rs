@@ -3,6 +3,11 @@
 //! avatars its bots publish at `GET /avatars/<name>`, and Discord's sign-in
 //! callback at `GET /discord/callback`.
 //!
+//! The listener answers from the moment the process starts: `/mode` says
+//! `starting` (503) while the host opens its workspaces, and `up` (200) once
+//! people can get in, so a deployment tells a host that is loading from one
+//! that is gone.
+//!
 //! Plain HTTP: the ingress in front of it holds the certificate and the
 //! public address, and the health check reads the same address a person's
 //! browser was sent to.
@@ -28,8 +33,7 @@ const SOURCE_REVISION_ENV: &str = "TILO_SOURCE_REVISION";
 /// What a build without a valid revision reports.
 const UNKNOWN_REVISION: &str = "unknown";
 
-pub(super) struct Config {
-    pub listen: SocketAddr,
+pub(super) struct Serving {
     /// Where the avatars bots publish are, when the workspace publishes any.
     pub avatars: Option<PathBuf>,
     /// Signing in with Discord, when the workspace offers it.
@@ -46,7 +50,24 @@ pub(super) struct Handle {
     /// The address the listener bound: `--http 127.0.0.1:0` takes a port the
     /// kernel picks, which the workspace announces.
     pub addr: SocketAddr,
+    routes: Arc<Routes>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Handle {
+    /// The workspace serves: `/mode` answers `up`, and the other routes
+    /// answer from `serving`. A second call keeps the first.
+    pub(super) fn serve(&self, serving: Serving) {
+        let served = self.routes.serving.set(Http {
+            avatars: serving.avatars,
+            sign_in: serving.sign_in,
+            web_entry: serving.web_entry,
+            discord: serving.discord,
+        });
+        if served.is_err() {
+            tracing::warn!("the deployment routes already serve; they keep what they serve");
+        }
+    }
 }
 
 impl Drop for Handle {
@@ -57,46 +78,45 @@ impl Drop for Handle {
     }
 }
 
-/// Serve `config` until the returned [`Handle`] is dropped.
+/// Listen on `listen` until the returned [`Handle`] is dropped: `/mode`
+/// says the host is starting until [`Handle::serve`].
 ///
 /// # Errors
 /// The address cannot be bound.
-pub(super) async fn serve(config: Config) -> anyhow::Result<Handle> {
-    let listener = tokio::net::TcpListener::bind(config.listen)
+pub(super) async fn listen(listen: SocketAddr) -> anyhow::Result<Handle> {
+    let listener = tokio::net::TcpListener::bind(listen)
         .await
-        .with_context(|| {
-            format!(
-                "listen on {} for /mode, /avatars and /discord/callback",
-                config.listen
-            )
-        })?;
+        .with_context(|| format!("listen on {listen} for /mode, /avatars and /discord/callback"))?;
     let addr = listener
         .local_addr()
-        .with_context(|| format!("the address of the listener on {}", config.listen))?;
-    let http = Arc::new(Http {
+        .with_context(|| format!("the address of the listener on {listen}"))?;
+    let routes = Arc::new(Routes {
         revision: source_revision(),
-        avatars: config.avatars,
-        sign_in: config.sign_in,
-        web_entry: config.web_entry,
-        discord: config.discord,
+        serving: std::sync::OnceLock::new(),
     });
-    tracing::info!(%addr, "serving /mode, /avatars and /discord/callback");
+    tracing::info!(%addr, "answering /mode, /avatars and /discord/callback");
     Ok(Handle {
         addr,
-        tasks: vec![tokio::spawn(accept_loop(listener, http))],
+        tasks: vec![tokio::spawn(accept_loop(listener, Arc::clone(&routes)))],
+        routes,
     })
 }
 
-struct Http {
+struct Routes {
     /// The commit this binary was built from, or [`UNKNOWN_REVISION`].
     revision: String,
+    /// What the routes answer from, once the workspace serves.
+    serving: std::sync::OnceLock<Http>,
+}
+
+struct Http {
     avatars: Option<PathBuf>,
     sign_in: Option<SignIn>,
     web_entry: Option<String>,
     discord: Option<Arc<ConnectorProcess>>,
 }
 
-async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Http>) {
+async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Routes>) {
     let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
@@ -117,10 +137,19 @@ async fn accept_loop(tcp: tokio::net::TcpListener, http: Arc<Http>) {
     }
 }
 
-async fn handle<B>(http: &Http, request: Request<B>) -> Response<Full<Bytes>> {
+async fn handle<B>(routes: &Routes, request: Request<B>) -> Response<Full<Bytes>> {
     if request.method() != Method::GET {
         return error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
+    let Some(http) = routes.serving.get() else {
+        // Still opening its workspaces: not ready for people, but alive.
+        let mut starting = json(&serde_json::json!({
+            "relay": "starting",
+            "revision": routes.revision,
+        }));
+        *starting.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+        return starting;
+    };
     let wants_a_page = request
         .headers()
         .get(header::ACCEPT)
@@ -131,10 +160,9 @@ async fn handle<B>(http: &Http, request: Request<B>) -> Response<Full<Bytes>> {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     match parts.as_slice() {
         ["mode"] => json(&serde_json::json!({
-            // Whether the relay serves: this listener runs in its process, so
-            // it answers at all only while the relay started and is serving.
+            // The relay serves: its workspaces are open and people get in.
             "relay": "up",
-            "revision": http.revision,
+            "revision": routes.revision,
         })),
         ["avatars", name] => avatar(http, name).await,
         ["discord", "callback"] => http.callback(&query).await,
@@ -340,14 +368,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_get_is_answered() {
-        let http = Http {
+    async fn mode_says_starting_until_the_workspace_serves_and_only_get_is_answered() {
+        let http = Routes {
             revision: UNKNOWN_REVISION.to_owned(),
-            avatars: None,
-            sign_in: None,
-            web_entry: None,
-            discord: None,
+            serving: std::sync::OnceLock::new(),
         };
+        let mode = || {
+            Request::builder()
+                .uri("/mode")
+                .body(Full::new(Bytes::new()))
+                .unwrap()
+        };
+        let response = handle(&http, mode()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            format!("{{\"relay\":\"starting\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
+        );
+        assert!(
+            http.serving
+                .set(Http {
+                    avatars: None,
+                    sign_in: None,
+                    web_entry: None,
+                    discord: None,
+                })
+                .is_ok()
+        );
         for method in [Method::POST, Method::PUT, Method::HEAD] {
             let request = Request::builder()
                 .method(method.clone())

@@ -365,13 +365,31 @@ wait_for() { # WHAT URL SECONDS [CURL ARGS…]
   shift 3
   local deadline=$((SECONDS + seconds))
   until curl -fsS --max-time 2 "$@" "$url" >/dev/null 2>&1; do
-    if ((SECONDS >= deadline)); then
-      # What the step that did not answer said: a bring-up that stops here
-      # says why in the same breath, not a log away.
-      local log=$state/logs/${what%% *}.log
-      [[ ! -f $log ]] || { printf -- '--- %s, its last lines:\n' "$log" >&2; tail -20 "$log" >&2; }
-      die "$what did not answer at $url within ${seconds}s; stack.sh logs ${what%% *}"
-    fi
+    ((SECONDS < deadline)) || not_answered "$what" "did not answer at $url within ${seconds}s"
+    sleep 0.5
+  done
+}
+
+not_answered() { # WHAT WHY
+  # What the step that did not answer said: a bring-up that stops here says
+  # why in the same breath, not a log away.
+  local what=$1 log=$state/logs/${1%% *}.log
+  [[ ! -f $log ]] || { printf -- '--- %s, its last lines:\n' "$log" >&2; tail -20 "$log" >&2; }
+  die "$what $2; stack.sh logs ${what%% *}"
+}
+
+# The relay answers /mode from its start: "starting" while it opens every
+# workspace its state holds (a minute, for one that holds a repository's
+# files, as the image's does), then "up" once people get in. It is waited for
+# while it says it is starting and runs; one that stopped, or that does not
+# answer at all, fails at once.
+wait_relay_up() {
+  local what='relay (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
+  local said deadline=$((SECONDS + 30))
+  until said=$(curl -sS --max-time 2 "$url" 2>/dev/null) && [[ $said == *'"relay":"up"'* ]]; do
+    running relay || not_answered "$what" 'stopped before it served'
+    [[ $said == *'"relay":"starting"'* ]] || ((SECONDS < deadline)) \
+      || not_answered "$what" "did not answer at $url within 30s"
     sleep 0.5
   done
 }
@@ -1403,9 +1421,7 @@ start_native_discord() {
 # which step and where to read why, instead of hanging on the whole check's
 # timeout.
 wait_relay() {
-  # A relay opens every workspace its state holds before it answers: one whose
-  # workspaces hold a repository's files takes a minute, as the image's does.
-  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
+  wait_relay_up
   wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 30
 }
 
@@ -1700,7 +1716,7 @@ up_images() {
     -v "$state/trust-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z" \
     --env "TILO_SOURCE_REVISION=local-$commit" \
     "${relay_args[@]}" "$lounge"
-  wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
+  wait_relay_up
   wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60
   local workspace
   workspace=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'

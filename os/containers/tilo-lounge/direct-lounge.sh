@@ -74,14 +74,18 @@ run_lounge() {
   lounge_pids+=("$lounge_pid")
 }
 
-# Wait for the Lounge run_lounge started to answer its readiness probe, as
-# the deployment's probe asks it. A first start seeds its apps' records, which
-# is the longest thing it does; LOUNGE_READY_SECONDS bounds it (default 120).
+# Wait for the Lounge run_lounge started to serve, as the deployment's probe
+# asks it. Its probe answers from its start: "starting" while it seeds and
+# opens its workspaces, then "up". It is waited for while it says it is
+# starting and runs; one that does not answer within LOUNGE_ANSWER_SECONDS
+# (default 30) fails.
 await_lounge() {
-  local deadline=$((SECONDS + ${LOUNGE_READY_SECONDS:-120}))
-  until curl -fsS --max-time 2 "http://127.0.0.1:$lounge_http_port/mode" >/dev/null 2>&1; do
+  local said deadline=$((SECONDS + ${LOUNGE_ANSWER_SECONDS:-30}))
+  until said=$(curl -sS --max-time 2 "http://127.0.0.1:$lounge_http_port/mode" 2>/dev/null) \
+    && [[ $said == *'"relay":"up"'* ]]; do
     kill -0 "$lounge_pid" 2>/dev/null || lounge_fail 'the Lounge stopped before it was Ready'
-    ((SECONDS < deadline)) || lounge_fail "the Lounge was not Ready in ${LOUNGE_READY_SECONDS:-120}s"
+    [[ $said == *'"relay":"starting"'* ]] || ((SECONDS < deadline)) \
+      || lounge_fail "the Lounge did not answer its probe in ${LOUNGE_ANSWER_SECONDS:-30}s"
     sleep 0.1
   done
 }

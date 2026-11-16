@@ -1294,6 +1294,13 @@ pub(crate) async fn run(
         .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
     let state = args.state.clone();
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
+    // The deployment's own routes answer from the start: its health check says
+    // the host is starting while it opens its workspaces, which can take a
+    // minute, and that it serves once people can get in.
+    let management = match persistent.http {
+        Some(listen) => Some(http::listen(listen).await?),
+        None => None,
+    };
     let listen = args.web.web.context("a workspace needs --web")?;
     let mut operator = operator_lines()?;
     let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
@@ -1594,24 +1601,17 @@ pub(crate) async fn run(
                 relay_origin: args.web.public_origin.clone(),
             },
         };
-        // The deployment's own routes: its health check and the addresses other
-        // services are configured with. Started once the workspace serves, so a health
-        // check that answers means people can get in, and announced at the address
-        // it bound so a deployment can reach a port it let the kernel pick.
-        let management = match persistent.http {
-            Some(listen) => Some(
-                http::serve(http::Config {
-                    listen,
-                    avatars: persistent.public_avatars.clone(),
-                    sign_in,
-                    web_entry: args.web.web_entry.clone(),
-                    discord: discord.clone(),
-                })
-                .await?,
-            ),
-            None => None,
-        };
+        // The deployment's own routes serve once the workspace does, so a
+        // health check that answers `up` means people can get in, and the
+        // address they bound is announced then, so a deployment can reach a
+        // port it let the kernel pick.
         if let Some(management) = &management {
+            management.serve(http::Serving {
+                avatars: persistent.public_avatars.clone(),
+                sign_in,
+                web_entry: args.web.web_entry.clone(),
+                discord: discord.clone(),
+            });
             println!(
                 "{}",
                 OperatorEvent::DeploymentRoutes {
