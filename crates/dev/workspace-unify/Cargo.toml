@@ -544,7 +544,7 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", path = "../../../vendor/iroh-blobs", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
@@ -2007,7 +2007,7 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", path = "../../../vendor/iroh-blobs", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
@@ -3151,7 +3151,7 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", path = "../../../vendor/iroh-blobs", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
@@ -4636,7 +4636,7 @@ doc = false
 "iri-string-0_7_10" = { package = "iri-string", version = "^0.7.10", default-features = false, features = ["alloc", "default", "std"] }
 "iroh-1_0_3" = { package = "iroh", path = "../../../vendor/iroh", default-features = false, features = ["default", "fast-apple-datapath", "metrics", "portmapper", "tls-ring"] }
 "iroh-base-1_0_3" = { package = "iroh-base", version = "^1.0.3", default-features = false, features = ["default", "key", "relay"] }
-"iroh-blobs-0_103_1" = { package = "iroh-blobs", version = "^0.103.1", default-features = false, features = ["fs-store", "hide-proto-docs"] }
+"iroh-blobs-0_103_1" = { package = "iroh-blobs", path = "../../../vendor/iroh-blobs", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
