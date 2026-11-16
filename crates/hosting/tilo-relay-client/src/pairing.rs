@@ -245,6 +245,7 @@ pub(crate) async fn member_approval(
 /// [`member_approval`], signed by `signer`: the person's root when `device`
 /// is `None`, else the device `device` certifies, which signs only what a
 /// device may ([`MemberApproval::device`]).
+#[cfg(feature = "dial")]
 pub(crate) async fn member_approval_as(
     signer: &dyn DeviceSigner,
     device: Option<&tilo_user_identity::DeviceCert>,
