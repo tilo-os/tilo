@@ -92,6 +92,9 @@ enum Purpose {
     /// to whoever polls with that secret ([`keys`]); without one, the page
     /// the person returns to shows it once.
     Key { name: String, poll: Option<String> },
+    /// The person signing this browser in to their grants page: no grant is
+    /// asked for, so they can see and revoke what they gave out.
+    GrantsPage,
 }
 
 /// The grant the person is asked to certify.
@@ -134,10 +137,11 @@ impl GrantAsk {
 struct Pending {
     purpose: Purpose,
     challenge: [u8; 32],
-    /// The key made for the grant, waiting for the person's certificate.
-    key: ed25519_dalek::SigningKey,
-    /// What the person is asked to approve.
-    grant: GrantAsk,
+    /// The key made for the grant, waiting for the person's certificate;
+    /// `None` when the sign-in asks for no grant (their own grants page).
+    key: Option<ed25519_dalek::SigningKey>,
+    /// What the person is asked to approve; `None` when nothing.
+    grant: Option<GrantAsk>,
     expires_ms: u64,
     /// Where the person's Tilo answers it.
     location: String,
@@ -445,7 +449,16 @@ impl Server {
             }
             (_, path) => match resource_of(path) {
                 Some(pinned) => self.mcp(method, pinned.as_deref(), headers, body).await,
-                None => text(StatusCode::NOT_FOUND, "not found"),
+                None => html(
+                    StatusCode::NOT_FOUND,
+                    &pages::message_action(
+                        "There's nothing here",
+                        "This address doesn't lead to anything. Check it, or start from your \
+                         connected agents.",
+                        "Your connected agents",
+                        "/grants",
+                    ),
+                ),
             },
         }
     }
@@ -481,6 +494,7 @@ impl Server {
     }
 
     fn authorize(&self, query: &str) -> Reply {
+        let retry = format!("{}?{query}", oauth::AUTHORIZE_PATH);
         let query = oauth::form(query.as_bytes()).unwrap_or_default();
         let client = query.get("client_id").and_then(|id| self.store.client(id));
         let request = match oauth::authorize_request(&query, client.as_ref(), &self.config.issuer) {
@@ -520,7 +534,7 @@ impl Server {
             store::secret(24),
             GrantKey::generate(),
         ) else {
-            return no_randomness();
+            return busy(&retry);
         };
         let client_name = client.map(|client| client.name).unwrap_or_default();
         match self.begin(
@@ -531,7 +545,10 @@ impl Server {
             now,
         ) {
             Ok(location) => redirect(&location),
-            Err(why) => text(StatusCode::SERVICE_UNAVAILABLE, why),
+            Err(why) => {
+                tracing::warn!(why, "the API could not start a sign-in");
+                busy(&retry)
+            }
         }
     }
 
@@ -563,14 +580,97 @@ impl Server {
             Pending {
                 purpose,
                 challenge,
-                key,
-                grant,
+                key: Some(key),
+                grant: Some(grant),
                 expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
                 location: location.clone(),
             },
         );
         drop(pending);
         Ok(location)
+    }
+
+    /// Where the person's Tilo signs this browser in to its grants page: a
+    /// sign-in asking for no grant. `client` is the name the link must carry
+    /// for who asks; the card asks nothing of the grant, because there is
+    /// none.
+    fn page_sign_in_url(&self, pending: &str, challenge: &[u8; 32]) -> String {
+        let mut url = self.sign_in_entry.clone();
+        url.query_pairs_mut()
+            .append_pair("audience", &self.config.issuer)
+            .append_pair("challenge", &hex::encode(challenge))
+            .append_pair("return", &format!("{}/sign-in", self.config.issuer))
+            .append_pair("pending", pending)
+            .append_pair("client", "Tilo API");
+        url.into()
+    }
+
+    /// Start a sign-in for the person's grants page, where they come back
+    /// signed in. Answers where their Tilo answers it.
+    ///
+    /// # Errors
+    /// No challenge can be minted, or too many sign-ins are in progress.
+    fn begin_page_sign_in(&self, now: u64) -> Result<String, &'static str> {
+        let mut challenge = [0u8; 32];
+        let (Ok(()), Ok(id)) = (getrandom::fill(&mut challenge), store::secret(24)) else {
+            return Err("no randomness is available; try again shortly");
+        };
+        let location = self.page_sign_in_url(&id, &challenge);
+        let mut waiting = lock(&self.pending);
+        waiting.retain(|_, pending| pending.expires_ms > now);
+        if waiting.len() >= MAX_PENDING {
+            return Err("too many sign-ins in progress");
+        }
+        waiting.insert(
+            id,
+            Pending {
+                purpose: Purpose::GrantsPage,
+                challenge,
+                key: None,
+                grant: None,
+                expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
+                location: location.clone(),
+            },
+        );
+        drop(waiting);
+        Ok(location)
+    }
+
+    /// A fresh sign-in for what `pending` was for: the action of a page that
+    /// says the person's answer did not come through.
+    ///
+    /// # Errors
+    /// No challenge can be minted, or too many sign-ins are in progress.
+    fn restart(&self, pending: &Pending) -> Result<String, &'static str> {
+        let now = now_ms();
+        match (&pending.purpose, pending.grant) {
+            (Purpose::Agent(request), Some(grant)) => {
+                let mut challenge = [0u8; 32];
+                let (Ok(()), Ok(id), Ok(key)) = (
+                    getrandom::fill(&mut challenge),
+                    store::secret(24),
+                    GrantKey::generate(),
+                ) else {
+                    return Err("no randomness is available; try again shortly");
+                };
+                let client = self
+                    .store
+                    .client(&request.client_id)
+                    .map(|client| client.name)
+                    .unwrap_or_default();
+                self.begin(
+                    Purpose::Agent(request.clone()),
+                    &client,
+                    grant,
+                    (id, challenge, key),
+                    now,
+                )
+            }
+            (Purpose::Key { name, poll }, Some(grant)) => self
+                .key_sign_in(name.clone(), grant, poll.clone())
+                .map(|(_, location)| location),
+            _ => self.begin_page_sign_in(now),
+        }
     }
 
     /// Where the person's Tilo answers the authorization `ask`.
@@ -617,7 +717,10 @@ impl Server {
         }) else {
             return html(
                 StatusCode::BAD_REQUEST,
-                &pages::message("Sign-in expired", "Start connecting the agent again."),
+                &pages::message(
+                    "This sign-in expired",
+                    "It only works for a few minutes. Close this tab and connect your agent again.",
+                ),
             );
         };
         let request = match &pending.purpose {
@@ -625,6 +728,7 @@ impl Server {
             Purpose::Key { name, poll } => {
                 return self.key_signed_in(&pending, name, poll.as_deref(), &form, now);
             }
+            Purpose::GrantsPage => return self.page_signed_in(&pending, &form, now),
         };
         let back = |params: &[(&str, &str)]| {
             let mut params = params.to_vec();
@@ -642,14 +746,11 @@ impl Server {
             form.get("grant")
                 .and_then(|cert| sign_in::decode_cert(cert)),
         ) else {
-            return html(
-                StatusCode::BAD_REQUEST,
-                &pages::message("Sign-in failed", "The sign-in was incomplete."),
-            );
+            return self.unconfirmed(&pending, "the answer carried no proof and certificate");
         };
         let key = match self.check_answer(&pending, &proof, cert, now) {
             Ok(key) => key,
-            Err(reply) => return *reply,
+            Err(why) => return self.unconfirmed(&pending, &why),
         };
         let Some(client) = self.store.client(&request.client_id) else {
             return back(&[("error", "unauthorized_client")]);
@@ -674,57 +775,117 @@ impl Server {
     }
 
     /// Check the person's Tilo's answer to `pending`: the sign-in proof, and
-    /// the certificate it gave the grant's key. The grant's key, or the page
-    /// that says why not.
+    /// the certificate it gave the grant's key. The grant's key, or why not,
+    /// in words for the log.
     fn check_answer(
         &self,
         pending: &Pending,
         proof: &tilo_user_identity::SignInProof,
         cert: tilo_user_identity::DeviceCert,
         now: u64,
-    ) -> Result<GrantKey, Box<Reply>> {
+    ) -> Result<GrantKey, String> {
         let now_ns = now.saturating_mul(1_000_000);
-        let refused = |why: &str| {
-            tracing::info!(reason = why, "sign-in refused");
-            Box::new(html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Sign-in refused", why),
-            ))
-        };
-        // The proof: whose it is, for this server and this challenge. The
-        // grant's own certificate, which the person's root signed, is checked
-        // against their revocations by the relay at every handshake.
-        if let Err(error) = sign_in::verify(
-            proof,
-            &self.config.issuer,
-            &pending.challenge,
-            &tilo_user_identity::RevocationList::new(),
-            now_ns,
-        ) {
-            return Err(refused(&error.to_string()));
-        }
+        self.check_proof(pending, proof, now)?;
         if cert.user_public_key != proof.cert.user_public_key {
-            return Err(refused(
-                "the grant was certified by someone else than who signed in",
-            ));
+            return Err("the grant was certified by someone else than who signed in".into());
         }
-        let outlasts = match (pending.grant.expires_ms, cert.expires_at_ns) {
+        let (Some(key), Some(grant)) = (&pending.key, pending.grant) else {
+            return Err("the sign-in asked for no grant".into());
+        };
+        let outlasts = match (grant.expires_ms, cert.expires_at_ns) {
             (Some(asked), Some(expiry)) => expiry > asked.saturating_mul(1_000_000),
             (Some(_), None) => true,
             (None, _) => false,
         };
         if outlasts {
-            return Err(refused("the grant was certified for longer than was asked"));
+            return Err("the grant was certified for longer than was asked".into());
         }
         GrantKey::new(
-            pending.key.clone(),
+            key.clone(),
             cert,
-            pending.grant.scope,
-            pending.grant.server_key,
-            pending.grant.browser_pages,
+            grant.scope,
+            grant.server_key,
+            grant.browser_pages,
             now_ns,
         )
-        .map_err(|error| refused(&error.to_string()))
+        .map_err(|error| error.to_string())
+    }
+
+    /// Check `proof` answers `pending`'s challenge for this server: the
+    /// person it is, hex, or why not. The grant's own certificate, which the
+    /// person's root signed, is checked against their revocations by the
+    /// relay at every handshake.
+    fn check_proof(
+        &self,
+        pending: &Pending,
+        proof: &tilo_user_identity::SignInProof,
+        now: u64,
+    ) -> Result<String, String> {
+        sign_in::verify(
+            proof,
+            &self.config.issuer,
+            &pending.challenge,
+            &tilo_user_identity::RevocationList::new(),
+            now.saturating_mul(1_000_000),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// The page saying Tilo could not confirm it was you, with one way on: a
+    /// fresh sign-in for the same thing. The reason stays in the log.
+    fn unconfirmed(&self, pending: &Pending, why: &str) -> Reply {
+        tracing::info!(reason = why, "a sign-in was not answered");
+        match self.restart(pending) {
+            Ok(location) => html(
+                StatusCode::FORBIDDEN,
+                &pages::message_action(
+                    "Tilo couldn't confirm it was you",
+                    "Something went wrong between your Tilo and this server.",
+                    "Try again",
+                    &location,
+                ),
+            ),
+            Err(_) => html(
+                StatusCode::FORBIDDEN,
+                &pages::message(
+                    "Tilo couldn't confirm it was you",
+                    "Close this tab and connect your agent again.",
+                ),
+            ),
+        }
+    }
+
+    /// The person's Tilo answered the sign-in for the grants page: sign this
+    /// browser in and back to the page.
+    fn page_signed_in(&self, pending: &Pending, form: &HashMap<String, String>, now: u64) -> Reply {
+        if form.get("decision").map(String::as_str) == Some("deny") {
+            return html(
+                StatusCode::OK,
+                &pages::message_action(
+                    "Not signed in",
+                    "Tilo did not sign this browser in.",
+                    "Try again",
+                    "/grants",
+                ),
+            );
+        }
+        let Some(proof) = form
+            .get("proof")
+            .and_then(|proof| sign_in::decode_proof(proof))
+        else {
+            return self.unconfirmed(pending, "the answer carried no proof");
+        };
+        let person = match self.check_proof(pending, &proof, now) {
+            Ok(person) => person,
+            Err(why) => return self.unconfirmed(pending, &why),
+        };
+        let mut response = redirect("/grants");
+        if let Ok(cookie) = self.browsers.sign_in(person, now)
+            && let Ok(value) = HeaderValue::from_str(&sign_in::set_cookie(&cookie))
+        {
+            response.headers_mut().insert(header::SET_COOKIE, value);
+        }
+        response
     }
 
     fn token(&self, body: &[u8]) -> Reply {
@@ -813,18 +974,21 @@ impl Server {
     }
 
     fn grants_page(&self, headers: &hyper::HeaderMap) -> Reply {
-        let Some(person) = self.browsers.person(headers, now_ms()) else {
-            return html(
-                StatusCode::UNAUTHORIZED,
-                &pages::message(
-                    "Sign in first",
-                    "Connect an agent to sign in, then manage it here.",
-                ),
-            );
+        let now = now_ms();
+        let Some(person) = self.browsers.person(headers, now) else {
+            // Not signed in, or the sign-in expired: through the person's
+            // own Tilo, and back here signed in.
+            return match self.begin_page_sign_in(now) {
+                Ok(location) => redirect(&location),
+                Err(why) => {
+                    tracing::warn!(why, "the API could not start a sign-in");
+                    busy("/grants")
+                }
+            };
         };
         let grants = self.store.grants_of(&person);
         let Ok(csrf) = self.page_token(headers) else {
-            return no_randomness();
+            return busy("/grants");
         };
         html(StatusCode::OK, &pages::grants(&grants, &csrf))
     }
@@ -868,22 +1032,30 @@ impl Server {
         headers: &hyper::HeaderMap,
         body: &[u8],
     ) -> Reply {
+        // Both a sign-in that expired and a form the server no longer knows
+        // (its page tokens live in memory) end at the grants page, signed in
+        // again, where the person clicks Revoke once more.
         let Some(person) = self.browsers.person(headers, now_ms()) else {
-            return html(
-                StatusCode::UNAUTHORIZED,
-                &pages::message("Sign in first", "Your sign-in expired."),
-            );
+            return redirect("/grants");
         };
         let form = oauth::form(body).unwrap_or_default();
         if !self.posted_from_grants_page(headers, &form) {
-            return html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Not allowed", "This did not come from your grants page."),
-            );
+            return redirect("/grants");
         }
         match self.revoke_grant(&person, grant).await {
             Ok(_) => redirect("/grants"),
-            Err(_) => text(StatusCode::SERVICE_UNAVAILABLE, "revocation is unavailable"),
+            Err(error) => {
+                tracing::warn!(%error, "a grant could not be revoked");
+                html(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &pages::message_action(
+                        "That didn't go through",
+                        "Tilo couldn't reach what keeps your grants. Try again.",
+                        "Try again",
+                        "/grants",
+                    ),
+                )
+            }
         }
     }
 
@@ -1417,12 +1589,14 @@ fn html(status: StatusCode, page: &str) -> Reply {
     response
 }
 
-/// The answer when the system's random source fails, so no secret, cookie
-/// or challenge can be minted.
-fn no_randomness() -> Reply {
-    text(
+/// Tilo could not start a sign-in now (its random source failed, or too many
+/// are in progress): one page saying so, whose link is the way back to
+/// `retry`.
+pub(crate) fn busy(retry: &str) -> Reply {
+    tracing::error!(retry, "the API could not start a sign-in");
+    html(
         StatusCode::SERVICE_UNAVAILABLE,
-        "no randomness is available; try again shortly",
+        &pages::message_action("Tilo is busy", "Try again in a minute.", "Try again", retry),
     )
 }
 

@@ -257,13 +257,16 @@ pub fn authorize_request<S: BuildHasher>(
     client: Option<&Client>,
     issuer: &str,
 ) -> Result<AuthorizeRequest, AuthorizeError> {
-    let client = client.ok_or(AuthorizeError::Untrusted("This app is not registered."))?;
+    let client = client.ok_or(AuthorizeError::Untrusted(
+        "Tilo no longer knows this app. Remove Tilo from your agent's connectors, then add it again.",
+    ))?;
     let redirect_uri = match (query.get("redirect_uri"), client.redirect_uris.as_slice()) {
         (Some(uri), _) if redirect_registered(client, uri) => uri.clone(),
         (None, [only]) => only.clone(),
         _ => {
             return Err(AuthorizeError::Untrusted(
-                "This app asked to return somewhere it did not register.",
+                "This app asked to return to a page Tilo does not allow. Remove Tilo from your \
+                 agent's connectors, then add it again.",
             ));
         }
     };

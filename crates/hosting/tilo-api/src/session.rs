@@ -146,7 +146,7 @@ impl CallError {
     fn unanswered() -> Self {
         Self {
             code: "unavailable",
-            message: "the workspace answered nothing".into(),
+            message: "your workspace didn't answer; try again in a minute".into(),
             retry_after_ms: None,
         }
     }
@@ -414,11 +414,13 @@ impl Session {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         if let Some(workspace) = self.pinned().map(str::to_owned) {
             let reply = self.serve(&workspace, request.clone()).await;
-            let answer = reply
-                .messages
-                .into_iter()
-                .last()
-                .ok_or_else(|| error(&id, -32000, "the workspace answered nothing"))?;
+            let answer = reply.messages.into_iter().last().ok_or_else(|| {
+                error(
+                    &id,
+                    -32000,
+                    "your workspace didn't answer; try again in a minute",
+                )
+            })?;
             if answer.get("error").is_some() {
                 return Err(answer);
             }
@@ -651,7 +653,7 @@ impl Session {
         let message = reply
             .messages
             .last()
-            .ok_or("the workspace answered nothing")?;
+            .ok_or("your workspace didn't answer; try again in a minute")?;
         if let Some(error) = message.get("error") {
             return Err(error
                 .get("message")

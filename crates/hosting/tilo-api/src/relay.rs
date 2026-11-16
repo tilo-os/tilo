@@ -72,13 +72,24 @@ pub enum RelayError {
 impl std::fmt::Display for RelayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound => f.write_str("no such workspace"),
-            Self::Refused(reason) => write!(f, "the host refused: {reason}"),
-            Self::Unavailable(reason) => write!(f, "unavailable: {reason}"),
-            Self::RateLimited { retry_after_ms } => write!(
-                f,
-                "the host takes your changes more slowly; retry in {retry_after_ms} ms"
-            ),
+            Self::NotFound => f.write_str("no such workspace of yours"),
+            // What the host refused is kept for the log: the person (or the
+            // agent relaying it) reads what they can do about it.
+            Self::Refused(reason) => {
+                tracing::info!(reason, "the relay refused a call");
+                f.write_str(tilo_relay_protocol::refusal::plain_reason(reason))
+            }
+            Self::Unavailable(reason) => {
+                tracing::debug!(reason, "the relay was not reached");
+                f.write_str("Tilo couldn't reach your workspace; try again in a minute.")
+            }
+            Self::RateLimited { retry_after_ms } => {
+                let seconds = retry_after_ms.div_ceil(1000).max(1);
+                write!(
+                    f,
+                    "Tilo is busy with your changes; try again in {seconds} s"
+                )
+            }
         }
     }
 }
@@ -140,7 +151,11 @@ impl Relay {
             .as_ref()
             .map(tilo_relay_client::Host::published)
             .ok_or_else(|| {
-                RelayError::Unavailable("the relay takes no device sessions".to_owned())
+                tracing::warn!(
+                    relay = self.name(),
+                    "the relay published no device address: no workspace can be reached through it"
+                );
+                RelayError::Unavailable("it publishes no device address".to_owned())
             })?;
         let label = key.cert().device_label.clone();
         let device = Device::over(

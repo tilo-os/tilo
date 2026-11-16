@@ -28,8 +28,8 @@
 //!   poller.
 
 use crate::{
-    Purpose, Server, constant_time_eq, html, json_reply, lock, now_ms, oauth, pages, redirect,
-    sign_in, store, text,
+    Purpose, Server, busy, constant_time_eq, html, json_reply, lock, now_ms, oauth, pages,
+    redirect, sign_in, store,
 };
 use hyper::StatusCode;
 use serde_json::{Value, json};
@@ -166,7 +166,7 @@ fn error(status: StatusCode, code: &str, message: &str, next: &str) -> crate::Re
 
 impl Server {
     /// The sign-in for a new key, ready to start.
-    fn key_sign_in(
+    pub(crate) fn key_sign_in(
         &self,
         name: String,
         grant: crate::GrantAsk,
@@ -337,18 +337,15 @@ impl Server {
         headers: &hyper::HeaderMap,
         body: &[u8],
     ) -> crate::Reply {
+        // A sign-in that expired, or a form the server no longer knows (its
+        // page tokens live in memory), goes back to the grants page, signed
+        // in again, where the person asks for the key once more.
         if self.browsers.person(headers, now_ms()).is_none() {
-            return html(
-                StatusCode::UNAUTHORIZED,
-                &pages::message("Sign in first", "Your sign-in expired."),
-            );
+            return redirect("/grants");
         }
         let form = oauth::form(body).unwrap_or_default();
         if !self.posted_from_grants_page(headers, &form) {
-            return html(
-                StatusCode::FORBIDDEN,
-                &pages::message("Not allowed", "This did not come from your grants page."),
-            );
+            return redirect("/grants");
         }
         let field = |name: &str| {
             form.get(name)
@@ -381,7 +378,7 @@ impl Server {
         };
         match self.key_sign_in(name, grant, None) {
             Ok((_, location)) => redirect(&location),
-            Err(why) => text(StatusCode::SERVICE_UNAVAILABLE, why),
+            Err(_) => busy("/grants"),
         }
     }
 
@@ -400,7 +397,12 @@ impl Server {
             }
             return html(
                 StatusCode::OK,
-                &pages::message("Key declined", "No key was made."),
+                &pages::message_action(
+                    "Key declined",
+                    "No key was made.",
+                    "Back to your connected agents",
+                    "/grants",
+                ),
             );
         }
         let (Some(proof), Some(cert)) = (
@@ -409,26 +411,27 @@ impl Server {
             form.get("grant")
                 .and_then(|cert| sign_in::decode_cert(cert)),
         ) else {
-            return html(
-                StatusCode::BAD_REQUEST,
-                &pages::message("Sign-in failed", "The sign-in was incomplete."),
-            );
+            return self.unconfirmed(pending, "the answer carried no proof and certificate");
         };
         let key = match self.check_answer(pending, &proof, cert, now) {
             Ok(key) => key,
-            Err(reply) => return *reply,
+            Err(why) => return self.unconfirmed(pending, &why),
         };
-        let device = hex::encode(proof.cert.device_public_key);
-        let created_by = format!(
-            "{} ({})",
-            proof.cert.device_label,
-            device.get(..8).unwrap_or_default()
-        );
+        // What the person reads of where they answered, never a key's bytes.
+        let created_by = proof.cert.device_label;
         let Ok((grant, token)) =
             self.store
                 .record_key(&key, name, store::GrantKind::Key, Some(created_by), now)
         else {
-            return text(StatusCode::SERVICE_UNAVAILABLE, "keys are unavailable");
+            return html(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &pages::message_action(
+                    "The key wasn't made",
+                    "Tilo couldn't save it. Try again in a minute.",
+                    "Try again",
+                    "/grants",
+                ),
+            );
         };
         let mut reply = match poll {
             Some(poll) => {

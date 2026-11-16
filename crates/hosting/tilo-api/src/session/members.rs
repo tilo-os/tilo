@@ -194,7 +194,7 @@ impl Session {
             fields.insert(
                 "next".into(),
                 json!(format!(
-                    "this server sends no mail yet: send the link to {email} yourself"
+                    "Tilo sends no email: give the person this link to send to {email}"
                 )),
             );
             fields.insert("email".into(), json!(email));

@@ -97,8 +97,12 @@ impl From<crate::relay::RelayError> for ApiError {
         match error {
             RelayError::NotFound => Self::new("not_found", "no such workspace of yours")
                 .next("GET /v1/workspaces names them"),
-            RelayError::Refused(reason) => Self::new("refused", reason),
-            RelayError::Unavailable(reason) => Self::new("unavailable", reason),
+            // The host's own wording stays in the log; the caller reads
+            // what it can do about the refusal.
+            RelayError::Refused(_) => Self::new("refused", error.to_string()),
+            RelayError::Unavailable(_) => {
+                Self::new("unavailable", error.to_string()).next("try again in a minute")
+            }
             RelayError::RateLimited { retry_after_ms } => {
                 let mut refused = Self::new("rate_limited", error.to_string());
                 refused.body.retry_after_ms = Some(retry_after_ms);

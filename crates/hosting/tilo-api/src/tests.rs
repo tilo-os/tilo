@@ -864,12 +864,12 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
         .access(&token, later)
         .expect("a server key lasts");
     assert_eq!(grant.last_used_ms, Some(later));
-    let device = hex::encode(alice.device.verifying_key().to_bytes());
-    let approved_on = format!("Laptop ({})", device.get(..8).unwrap());
-    assert_eq!(grant.created_by.as_deref(), Some(approved_on.as_str()));
+    // The device the person approved it on, by the name they know it by,
+    // never a key's bytes.
+    assert_eq!(grant.created_by.as_deref(), Some("Laptop"));
     let row = account::grant_row(&server.store.grants_of(&alice.id())[0]);
     assert_eq!(row["last_used_at_ms"], later);
-    assert_eq!(row["created_by"], approved_on.as_str());
+    assert_eq!(row["created_by"], "Laptop");
     assert!(row["expires_at_ms"].is_null());
     let page = pages::grants(&server.store.grants_of(&alice.id()), "csrf");
     assert!(
@@ -1160,4 +1160,101 @@ fn a_page_form_may_lead_to_a_local_site_under_localhost() {
             .any(|source| source == "http://*.localhost:*"),
         "{policy}"
     );
+}
+
+/// A person who opens the grants page without a session is sent to their own
+/// Tilo for a sign-in that asks for no grant, and comes back signed in.
+#[tokio::test]
+async fn the_grants_page_signs_a_person_in_through_their_own_tilo() {
+    let server = server();
+    let alice = Person::new(3);
+    let reply = server
+        .dispatch(&Method::GET, "/grants", "", &headers(&[]), b"")
+        .await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    let link = location(&reply);
+    assert!(link.starts_with(&format!("{WEB_ENTRY}/sign-in?")), "{link}");
+    let asked = query_of(&link);
+    assert_eq!(asked["audience"], ISSUER);
+    assert_eq!(asked["return"], format!("{ISSUER}/sign-in"));
+    // Signing in, and nothing more: no grant is asked for.
+    for field in ["grant_key", "grant_scope", "grant_expires", "grant_kind"] {
+        assert!(!asked.contains_key(field), "{field} in {link}");
+    }
+    let challenge: [u8; 32] = hex::decode(&asked["challenge"])
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let proof = SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, challenge).unwrap();
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("pending", &asked["pending"])
+        .append_pair("proof", &sign_in::encode_proof(&proof).unwrap())
+        .finish();
+    let reply = answer(&server, &form).await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&reply), "/grants");
+    let cookie = reply
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("the answer signs the browser in")
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let reply = server
+        .dispatch(
+            &Method::GET,
+            "/grants",
+            "",
+            &headers(&[("cookie", cookie.as_str())]),
+            b"",
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::OK);
+    let page = String::from_utf8(body(reply).await).unwrap();
+    assert!(page.contains("Connected agents"), "{page}");
+    assert!(page.contains("action=\"/grants/keys\""), "{page}");
+}
+
+/// A form the server no longer knows (its page tokens live in memory, and a
+/// restart forgets them) or one posted after the sign-in expired goes back to
+/// the grants page to ask again, never to a dead end.
+#[tokio::test]
+async fn a_form_the_server_forgot_returns_the_person_to_their_grants_page() {
+    let server = server();
+    let alice = Person::new(4);
+    let client = register(&server).await;
+    let (_, cookie) = approve(&server, &client, &alice, &format!("{ISSUER}/mcp")).await;
+    assert!(!cookie.is_empty());
+    let reply = server
+        .dispatch(
+            &Method::POST,
+            "/grants/keys",
+            "",
+            &headers(&[("cookie", cookie.as_str())]),
+            b"csrf=stale&name=Bot",
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&reply), "/grants");
+    let path = "/grants/3ee4a797-1ec0-474b-a3d0-62895d5e15af/revoke";
+    let reply = server
+        .dispatch(
+            &Method::POST,
+            path,
+            "",
+            &headers(&[("cookie", cookie.as_str())]),
+            b"csrf=stale",
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&reply), "/grants");
+    // Signed out: the page starts the sign-in again.
+    let reply = server
+        .dispatch(&Method::POST, path, "", &headers(&[]), b"csrf=stale")
+        .await;
+    assert_eq!(reply.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location(&reply), "/grants");
 }

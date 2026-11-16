@@ -159,7 +159,7 @@ pub async fn respond(server: &Arc<Server>, request: &Request<'_>) -> Reply {
         Ok((operation, params)) => answer(server, operation, params, request).await,
         Err(Unmatched::NotFound) => refusal(
             &ApiError::new("not_found", "the API has no such route")
-                .next("docs/developers/api.md lists them; docs/api/openapi.json describes them"),
+                .next("https://tilo.sh/docs/rest-api lists every route and what it takes"),
         ),
         Err(Unmatched::Method(allowed)) => {
             let mut reply = refusal(&ApiError::new(

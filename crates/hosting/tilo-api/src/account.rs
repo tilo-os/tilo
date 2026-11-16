@@ -75,8 +75,8 @@ pub(crate) fn beyond_workspace(tool: &str, arguments: &Value, structured: bool) 
             path,
             failed(
                 "not_permitted",
-                "this key reaches one workspace and no account",
-                "account paths need a key reaching all your workspaces",
+                "this key only works in one workspace",
+                "to create or list workspaces, ask the person for a key for all their workspaces",
             ),
         )
     })
@@ -122,17 +122,17 @@ pub(crate) fn refused(error: &RelayError) -> Outcome {
             "no such workspace of yours",
             "tilo_do account/workspaces#list names your workspaces",
         ),
-        RelayError::Refused(reason) => failed(
+        // The host's own reason stays in the log: the person reads what they
+        // would do about it.
+        RelayError::Refused(_) => failed(
             "refused",
-            format!("the host refused: {reason}"),
-            "the reason says what the host needs (a free workspace, payment); try again once it holds",
+            error.to_string(),
+            "ask the person whether their plan or workspace rules allow it, then try again",
         ),
-        RelayError::Unavailable(reason) => {
-            failed("unavailable", reason.clone(), "try again shortly")
-        }
+        RelayError::Unavailable(_) => failed("unavailable", error.to_string(), "try again shortly"),
         RelayError::RateLimited { retry_after_ms } => Outcome::Failed {
             code: RATE_LIMITED,
-            message: "the host takes your changes more slowly; nothing ran".to_owned(),
+            message: error.to_string(),
             next: format!("wait {retry_after_ms} ms and retry the same call"),
             retry_after_ms: Some(*retry_after_ms),
         },
@@ -683,8 +683,8 @@ impl Server {
         if grant.scope != Scope::Account {
             return failed(
                 "not_permitted",
-                "this key reaches one workspace and no account",
-                "account paths need a key reaching all your workspaces",
+                "this key only works in one workspace",
+                "to create or list workspaces, ask the person for a key for all their workspaces",
             );
         }
         let field = |name: &str| {

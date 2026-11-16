@@ -119,8 +119,8 @@ pub struct Grant {
     /// milliseconds.
     #[serde(default)]
     pub last_used_ms: Option<u64>,
-    /// The device of the person that approved the grant, as its certificate
-    /// names it, with the start of its key.
+    /// The device of the person that approved the grant, by the name its
+    /// certificate gives it.
     #[serde(default)]
     pub created_by: Option<String>,
     #[serde(default)]
