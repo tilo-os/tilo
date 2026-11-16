@@ -9,15 +9,11 @@ use accounts::{SecretId, SecretItemKind};
 
 use crate::pages::ItemActions;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Button, Element, ModelPath, NavItem, NavList, NavPane, NavSection, NavShell, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Point;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -130,7 +126,6 @@ pub struct PasswordsWindow {
     pending: Pending,
     settled_layouts: u32,
     last_window: vello::kurbo::Rect,
-    acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
 const NEW_ITEM: &str = "new-item";
@@ -264,7 +259,6 @@ impl PasswordsWindow {
             pending: Pending::default(),
             settled_layouts: 0,
             last_window: vello::kurbo::Rect::ZERO,
-            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         };
         surface.settle();
         surface
@@ -318,13 +312,6 @@ impl PasswordsWindow {
         &self.shell
     }
 
-    #[cfg(test)]
-    pub(crate) fn acknowledgement(&self) -> Option<String> {
-        self.acknowledger
-            .current(ui::time::now())
-            .map(|ack| ack.text().to_owned())
-    }
-
     /// Apply what controls asked for, then bring the window in step: the content page, the
     /// overview, its title, the front pane, the notice and the search index.
     pub(crate) fn settle(&mut self) {
@@ -356,10 +343,13 @@ impl PasswordsWindow {
             self.shell.toast(message, ToastKind::Info);
         }
         if let Some(item) = saved {
-            self.acknowledger.say(crate::CATALOG.t_args(
-                "passwords-saved-item",
-                &[("item", ui::i18n::ArgValue::Text(item))],
-            ));
+            self.shell.toast(
+                crate::CATALOG.t_args(
+                    "passwords-saved-item",
+                    &[("item", ui::i18n::ArgValue::Text(item))],
+                ),
+                ToastKind::Success,
+            );
         }
         let built = (page, self.header_in_bar);
         if self.built_page != Some(built) {
@@ -568,39 +558,6 @@ impl ui::widget::Decorator for PasswordsWindow {
         self.core.borrow_mut().window = window;
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        Widget::draw_overlay(&mut self.shell, scene, transform, text, theme, presence);
-        let now = ui::time::now();
-        if let Some(ack) = self.acknowledger.current(now) {
-            let alpha = ack.alpha_at(now, theme.reduce_motion);
-            ack.draw(
-                scene,
-                transform,
-                text,
-                theme,
-                self.last_window,
-                ui::widget::acknowledgement::Look::at(alpha),
-            );
-        }
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let mut node = Widget::accessibility(&self.shell)?;
-        node.children.extend(
-            self.acknowledger
-                .current(ui::time::now())
-                .map(|ack| ack.accessibility()),
-        );
-        Some(node)
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::Focused(false)) {
             self.core.borrow_mut().hide_revealed();
@@ -613,9 +570,7 @@ impl ui::widget::Decorator for PasswordsWindow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pending.borrow().is_some()
-            || self.acknowledger.current(ui::time::now()).is_some()
-            || Widget::needs_animation_frame(&self.shell)
+        self.pending.borrow().is_some() || Widget::needs_animation_frame(&self.shell)
     }
 
     fn needs_redraw(&self) -> bool {

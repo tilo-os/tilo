@@ -128,6 +128,8 @@ pub fn published_selection(
 
 /// The app that shows a workspace's history.
 const ACTIVITY_APP: &str = tilo_actions::remote::workspace_activity::APP_ID;
+/// The action of the Undo a close offers ([`DesktopHandle::press_notice`]).
+const REOPEN_CLOSED: &str = "shell-reopen-closed";
 
 /// Where a host's tab contents come from.
 pub trait TileSource {
@@ -333,10 +335,8 @@ struct Shared {
     /// What the person chose on a window that stopped answering, for the host to carry out
     /// ([`DesktopHandle::take_liveness_choices`]).
     liveness: Vec<(TabId, LivenessChoice)>,
-    /// Where the host confirms in passing what left nothing to see.
-    acknowledger: ui::widget::acknowledgement::Acknowledger,
-    /// What a confirmation's Undo runs after a close: the reopen Shift+Super+T makes.
-    reopen: Rc<dyn Fn()>,
+    /// What the shell says over the windows for a while ([`DesktopHandle::notice`]).
+    notice: Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>>,
     /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
@@ -363,19 +363,43 @@ pub struct DesktopHandle {
 }
 
 impl DesktopHandle {
-    /// Confirm in passing an action that left nothing to see ("Link
-    /// copied"): a short-lived pill, said politely to screen readers,
-    /// never a notification. The host asks for a redraw.
+    /// Say in passing what left nothing to see, or why nothing happened: a short-lived notice
+    /// over the windows, said politely to screen readers, never a notification.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        let shared = self.shared.borrow_mut();
-        shared.acknowledger.say(text);
-        shared.wake.wake();
+        self.shared
+            .borrow()
+            .say(ui::window_toolbar::ToolbarNotice::new(
+                text,
+                ui::widget::toast::ToastKind::Info,
+            ));
     }
 
-    /// What says the confirmations ([`Self::acknowledge`]): the host draws them over the windows.
+    /// The notice the shell says over the windows: the host draws it
+    /// ([`ui::widget::toast::NoticeLayer`]) and passes its button presses to
+    /// [`Self::press_notice`].
     #[must_use]
-    pub fn acknowledger(&self) -> ui::widget::acknowledgement::Acknowledger {
-        self.shared.borrow().acknowledger.clone()
+    pub fn notice(
+        &self,
+    ) -> Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>> {
+        Rc::clone(&self.shared.borrow().notice)
+    }
+
+    /// The person pressed the notice's button for `action`: the notice goes and the action runs.
+    /// Whether the notice up offered it.
+    pub fn press_notice(&self, action: &str) -> bool {
+        let offered = {
+            let shared = self.shared.borrow();
+            let mut notice = shared.notice.borrow_mut();
+            let offered = notice
+                .get()
+                .is_some_and(|notice| notice.actions.iter().any(|offer| offer.id == action));
+            offered && notice.dismiss()
+        };
+        if offered && action == REOPEN_CLOSED {
+            // Undo after a close reopens as Shift+Super+T does, through the same command.
+            let _ = self.dispatch(ChromeEffect::ReopenClosed);
+        }
+        offered
     }
 
     pub fn revision(&self) -> u64 {
@@ -538,7 +562,10 @@ impl DesktopHandle {
             // at once, and nothing moves.
             (Admitted::Close(ids), _) if shared.holders.contains_key(&ids.tab) => {
                 let refusal = holder_refusal(&shared.holders, ids.tab);
-                shared.acknowledger.say(refusal.clone());
+                shared.say(ui::window_toolbar::ToolbarNotice::new(
+                    refusal.clone(),
+                    ui::widget::toast::ToastKind::Info,
+                ));
                 return Err(refusal);
             }
             _ => {}
@@ -992,13 +1019,6 @@ impl DesktopSurface {
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =
             Rc::new(RefCell::new(tilo_desktop_search::LazyDesktopSearch::new()));
         let shared = Rc::new(RefCell::new(Shared::new(tree, minter, &search)));
-        // A close is undone as the person's reopen undoes it, through the same command.
-        let reopening = Rc::downgrade(&shared);
-        shared.borrow_mut().reopen = Rc::new(move || {
-            if let Some(shared) = reopening.upgrade() {
-                let _ = DesktopHandle { shared }.dispatch(ChromeEffect::ReopenClosed);
-            }
-        });
         #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
         let tiles = Box::new(peer_view::PeerTiles::new(
             tiles,

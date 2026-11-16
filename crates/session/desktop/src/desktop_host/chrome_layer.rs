@@ -60,9 +60,9 @@ pub struct DesktopChrome {
     /// The bars of the other displays, each on its own: a display besides the one in use carries
     /// the compact bar.
     compact: Vec<TopBarChrome>,
-    /// The shell's confirmations in passing ("Link copied"), over the windows on the display the
-    /// person works on.
-    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
+    /// What the shell says in passing ("Link copied", "Notes closed" with its Undo), over the
+    /// windows on the display the person works on.
+    notice: ui::widget::toast::NoticeLayer,
     /// Where the bars stood at the bar's source last reading, and the snapshot revision it was read
     /// at.
     placement: Placement,
@@ -233,9 +233,7 @@ impl DesktopChrome {
         Self {
             bar,
             compact: Vec::new(),
-            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(
-                handle.acknowledger(),
-            ),
+            notice: ui::widget::toast::NoticeLayer::new(handle.notice()),
             placement: Placement::default(),
             bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
@@ -1530,24 +1528,27 @@ impl DesktopChrome {
         }
     }
 
-    /// The pointer over the confirmation's button ("Undo"), drawn over the windows: hovering lights
+    /// The pointer over the notice's button ("Undo"), drawn over the windows: hovering lights
     /// it, and a press that begins on it is its own. Whether the event was the button's.
-    fn acknowledgement_takes(&mut self, event: &WindowEvent) -> bool {
-        match event {
+    fn notice_takes(&mut self, event: &WindowEvent) -> bool {
+        let taken = match event {
             WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } => {
-                self.acknowledgement.pointer_at(self.cursor);
+                self.notice.pointer_at(self.cursor);
                 false
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => self.cursor.is_some_and(|at| {
-                self.acknowledgement
-                    .press(at, *state == ElementState::Pressed)
-            }),
+            } => self
+                .cursor
+                .is_some_and(|at| self.notice.press(at, *state == ElementState::Pressed)),
             _ => false,
+        };
+        if let Some(action) = self.notice.take_pressed() {
+            self.handle.press_notice(&action);
         }
+        taken
     }
 
     /// Step strips by `steps` , saying so when the person steps past an end.
@@ -2358,7 +2359,7 @@ impl Widget for DesktopChrome {
         let under_bar = ui::widget::layout_rect(taffy, *overview, inner);
         let area = self.overview_area().unwrap_or(under_bar);
         self.overview.stand_in(area);
-        self.acknowledgement
+        self.notice
             .place(self.working_display().unwrap_or(self.rect));
         self.about.apply_layout(taffy, *about, inner);
         self.workspace_menu
@@ -2440,8 +2441,8 @@ impl Widget for DesktopChrome {
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
-        self.acknowledgement.place(host);
-        self.acknowledgement
+        self.notice.place(host);
+        self.notice
             .draw_child(scene, transform, text, theme, presence);
         self.switcher.draw(scene, transform, text, theme, host);
         // Over all of it, and in the way of nothing: the keys a held Super reaches take no input,
@@ -2474,7 +2475,7 @@ impl Widget for DesktopChrome {
         if self.switcher.is_up() {
             return self.walk_the_pointer(event, ctx);
         }
-        if self.acknowledgement_takes(event) {
+        if self.notice_takes(event) {
             *ctx.handled = true;
             return;
         }
@@ -2567,7 +2568,7 @@ impl Widget for DesktopChrome {
             &self.about,
             &self.workspace_menu,
             &self.search,
-            &self.acknowledgement,
+            &self.notice,
         ];
         children.extend(self.notices.iter().map(|layer| layer as &dyn Widget));
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
@@ -2663,7 +2664,7 @@ impl Widget for DesktopChrome {
             &mut self.about,
             &mut self.workspace_menu,
             &mut self.search,
-            &mut self.acknowledgement,
+            &mut self.notice,
         ];
         children.extend(
             self.notices
@@ -2724,7 +2725,7 @@ impl Widget for DesktopChrome {
             &self.overview,
             &self.about,
             &self.search,
-            &self.acknowledgement,
+            &self.notice,
         ]
         .into_iter()
         .chain(self.notices.iter().map(|layer| layer as &dyn Widget))

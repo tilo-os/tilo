@@ -1423,8 +1423,8 @@ fn a_close_says_what_closed_and_its_undo_reopens_it() {
     let (surface, handle) = one_window_shell(1);
     let mut frame = present(surface);
     let route = first_route(&handle);
-    let said = handle.acknowledger();
-    assert!(said.current(ui::time::now()).is_none());
+    let said = handle.notice();
+    assert!(said.borrow().get().is_none());
 
     handle
         .choose_window_menu(route.tab, CLOSE_WINDOW, None)
@@ -1434,22 +1434,26 @@ fn a_close_says_what_closed_and_its_undo_reopens_it() {
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.is_empty()),
         "the strip's last window closed"
     );
-    let shown = said.current(ui::time::now()).expect("the close is said");
-    assert!(shown.text().ends_with("closed"), "{:?}", shown.text());
-    assert_eq!(shown.action(), Some("Undo"));
+    let shown = said.borrow().get().cloned().expect("the close is said");
+    assert!(shown.text.ends_with("closed"), "{:?}", shown.text);
+    let undo = &shown.actions[0];
+    assert_eq!((undo.name.as_str(), undo.icon.as_str()), ("Undo", "undo-2"));
+    let (since, gone) = said.borrow().span().expect("it is up");
+    assert_eq!(
+        gone - since,
+        ui::widget::toast::ACTION_NOTICE_LIFETIME,
+        "it stays long enough to reach Undo"
+    );
 
-    assert!(said.press_action(), "Undo is there to press");
+    assert!(handle.press_notice(&undo.id), "Undo is there to press");
     settle(&mut frame);
     assert_eq!(
         handle.read(|tree| tree.workspaces[0].strips[0].window_groups.len()),
         1,
         "Undo reopens the window"
     );
-    assert!(
-        said.current(ui::time::now()).is_none(),
-        "and the confirmation goes"
-    );
-    assert!(!said.press_action(), "an Undo is pressed once");
+    assert!(said.borrow().get().is_none(), "and the notice goes");
+    assert!(!handle.press_notice(&undo.id), "an Undo is pressed once");
 }
 
 /// A window running an app that controls the desktop offers to end that,

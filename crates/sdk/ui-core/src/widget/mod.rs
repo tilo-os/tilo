@@ -2243,7 +2243,6 @@ pub use code_editor::{
 };
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
-pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{
     Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,

@@ -43,6 +43,9 @@ pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
 
 pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 
+/// How long a notice with a button ("Undo") stays: long enough to read it and reach the button.
+pub const ACTION_NOTICE_LIFETIME: Duration = Duration::from_secs(6);
+
 /// A message an app shows over its content for a while. It is one of two
 /// kinds:
 ///
@@ -70,6 +73,7 @@ pub struct Transient<T> {
 struct Shown<T> {
     value: T,
     since: crate::time::Instant,
+    lifetime: Duration,
     progress: bool,
     number: u64,
 }
@@ -144,18 +148,25 @@ impl<T> Transient<T> {
     }
 
     pub fn show(&mut self, value: T) {
-        self.put(value, false);
+        self.put(value, NOTICE_LIFETIME, false);
+    }
+
+    /// Show `value` for `lifetime` rather than [`NOTICE_LIFETIME`]: a notice with a button stays
+    /// [`ACTION_NOTICE_LIFETIME`].
+    pub fn show_for(&mut self, value: T, lifetime: Duration) {
+        self.put(value, lifetime, false);
     }
 
     pub fn show_progress(&mut self, value: T) {
-        self.put(value, true);
+        self.put(value, NOTICE_LIFETIME, true);
     }
 
-    fn put(&mut self, value: T, progress: bool) {
+    fn put(&mut self, value: T, lifetime: Duration, progress: bool) {
         self.shown = self.shown.wrapping_add(1);
         self.current = Some(Shown {
             value,
             since: crate::time::now(),
+            lifetime,
             progress,
             number: self.shown,
         });
@@ -189,7 +200,7 @@ impl<T> Transient<T> {
     pub fn get(&self) -> Option<&T> {
         self.current
             .as_ref()
-            .filter(|shown| !transient_expired(shown.since, NOTICE_LIFETIME))
+            .filter(|shown| !transient_expired(shown.since, shown.lifetime))
             .map(|shown| &shown.value)
     }
 
@@ -208,8 +219,15 @@ impl<T> Transient<T> {
 
     #[must_use]
     pub fn since(&self) -> Option<crate::time::Instant> {
+        self.span().map(|(since, _)| since)
+    }
+
+    /// When the message showing came up and when it leaves.
+    #[must_use]
+    pub fn span(&self) -> Option<(crate::time::Instant, crate::time::Instant)> {
         self.get()?;
-        self.current.as_ref().map(|shown| shown.since)
+        let shown = self.current.as_ref()?;
+        Some((shown.since, shown.since + shown.lifetime))
     }
 
     pub fn expire(&mut self) -> bool {
@@ -233,7 +251,7 @@ impl<T> Transient<T> {
             .borrow()
             .as_ref()
             .is_some_and(|(number, _)| *number == shown.number);
-        (self.get().is_some() || in_the_bar).then(|| shown.since + NOTICE_LIFETIME)
+        (self.get().is_some() || in_the_bar).then(|| shown.since + shown.lifetime)
     }
 }
 
@@ -1569,6 +1587,339 @@ fn paint_card_text(
         title_centre,
         top,
         bottom: top + block_h,
+    }
+}
+
+/// The notice a host shows over everything for a while, not in a window's bar: the shell's
+/// "Link copied", or "Notes closed" with its Undo after the window went. A small pill near the
+/// bottom of [`Self::place`]'s area; its buttons report their action's id
+/// ([`Self::take_pressed`]) to the host, which carries it out.
+#[crate::component::not_a_component(framework, "the host's notice drawn over its windows")]
+pub struct NoticeLayer {
+    notice: std::rc::Rc<std::cell::RefCell<Transient<crate::window_toolbar::ToolbarNotice>>>,
+    rect: Rect,
+    reduce_motion: bool,
+    /// Where each button was last drawn.
+    buttons: Vec<Rect>,
+    /// The button the pointer is over, and whether a press began on it.
+    hovered: Option<usize>,
+    pressed: bool,
+    taken: Option<String>,
+    drawn: std::cell::Cell<Option<(Option<crate::time::Instant>, Option<usize>, bool)>>,
+}
+
+impl NoticeLayer {
+    pub fn new(
+        notice: std::rc::Rc<std::cell::RefCell<Transient<crate::window_toolbar::ToolbarNotice>>>,
+    ) -> Self {
+        Self {
+            notice,
+            rect: Rect::ZERO,
+            reduce_motion: false,
+            buttons: Vec::new(),
+            hovered: None,
+            pressed: false,
+            taken: None,
+            drawn: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Show the pill within `area`, such as the display the person works on.
+    pub fn place(&mut self, area: Rect) {
+        self.rect = area;
+    }
+
+    fn motion(&self) -> crate::tokens::EffectiveMotion {
+        crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), self.reduce_motion)
+    }
+
+    fn button_at(&self, at: Point) -> Option<usize> {
+        self.notice.borrow().get()?;
+        self.buttons.iter().position(|button| button.contains(at))
+    }
+
+    /// The pointer moved to `at` (logical, in the surface the layer draws on), or left it.
+    pub fn pointer_at(&mut self, at: Option<Point>) {
+        self.hovered = at.and_then(|at| self.button_at(at));
+        if self.hovered.is_none() {
+            self.pressed = false;
+        }
+    }
+
+    /// The primary button went down (`down`) or up at `at`. Whether a button of the pill takes
+    /// it: a press that begins on one is its own, and its release there presses it.
+    pub fn press(&mut self, at: Point, down: bool) -> bool {
+        let on = self.button_at(at);
+        if down {
+            self.pressed = on.is_some();
+            return self.pressed;
+        }
+        let pressed = std::mem::take(&mut self.pressed);
+        if pressed && let Some(index) = on {
+            let notice = self.notice.borrow();
+            self.taken = notice
+                .get()
+                .and_then(|shown| shown.actions.get(index))
+                .map(|action| action.id.clone());
+        }
+        pressed
+    }
+
+    /// The id of the action whose button was pressed, once.
+    pub fn take_pressed(&mut self) -> Option<String> {
+        self.taken.take()
+    }
+
+    fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        notice: &crate::window_toolbar::ToolbarNotice,
+        alpha: f32,
+    ) -> Vec<Rect> {
+        let viewport = self.rect;
+        if alpha <= 0.0 || notice.text.is_empty() {
+            return Vec::new();
+        }
+        let style = theme
+            .text(TextRole::Label)
+            .with_weight(crate::text_render::TextWeight::Medium);
+        let inset = f64::from(theme.tokens.spacing.s8);
+        let pad_x = f64::from(theme.tokens.spacing.s4);
+        let pad_y = f64::from(theme.tokens.spacing.s2);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        // A button stands in the pill's end, as far from its edges as from its top and bottom.
+        let button_inset = f64::from(theme.tokens.spacing.s1);
+        let face = |at: Rect, name| {
+            ButtonFace::new(at, name)
+                .role(ButtonRole::Primary)
+                .control_size(ControlSize::Small)
+        };
+        let widths: Vec<f64> = notice
+            .actions
+            .iter()
+            .map(|action| face(Rect::ZERO, &action.name).intrinsic_width(text_renderer, theme))
+            .collect();
+        let button_height = if widths.is_empty() {
+            0.0
+        } else {
+            ButtonFace::height(ControlSize::Small, theme)
+        };
+        let trailing = pad_x + widths.iter().map(|width| width + button_inset).sum::<f64>();
+        let max_text = (viewport.width() - 2.0 * inset - pad_x - trailing - icon - gap).max(0.0);
+        let (text_width, text_height) = text_renderer.measure_style(&notice.text, None, &style);
+        let text_width = f64::from(text_width).min(max_text);
+        let text_height = f64::from(text_height);
+        let height = (text_height.max(icon) + 2.0 * pad_y).max(button_height + 2.0 * button_inset);
+        let width = (pad_x + icon + gap + text_width + trailing)
+            .min((viewport.width() - 2.0 * inset).max(0.0));
+        let center = viewport.center().x;
+        let bottom = viewport.y1 - inset;
+        let rect = Rect::new(
+            center - width / 2.0,
+            bottom - height,
+            center + width / 2.0,
+            bottom,
+        );
+        let radius = rect.height() / 2.0;
+        let faded = alpha < 0.999;
+        if faded {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &crate::widget::floating_surface::painted_bounds(rect, theme),
+            );
+        }
+        crate::surface::shadow(
+            scene,
+            transform,
+            rect,
+            radius,
+            &theme.tokens.elevation.floating,
+        );
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        crate::surface::floating_edge(scene, transform, rect, radius, theme);
+        let center_y = rect.center().y;
+        let x0 = rect.x0 + pad_x;
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(Point::new(x0 + icon / 2.0, center_y), (icon, icon)),
+            kind_icon(notice.kind),
+            kind_color(notice.kind, theme),
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let origin = Point::new(x0 + icon + gap, center_y - text_height / 2.0);
+        text_renderer.draw_style(
+            scene,
+            &notice.text,
+            colors.on_surface(colors.surfaces.overlay).ink,
+            transform.pre_translate(origin.to_vec2()),
+            Some(f32_of_f64(max_text)),
+            &style,
+        );
+        let mut x1 =
+            rect.x1 - button_inset - (radius - button_height / 2.0 - button_inset).max(0.0);
+        let mut buttons = vec![Rect::ZERO; widths.len()];
+        for (index, (action, width)) in notice.actions.iter().zip(widths).enumerate().rev() {
+            let at = Rect::new(
+                x1 - width,
+                center_y - button_height / 2.0,
+                x1,
+                center_y + button_height / 2.0,
+            );
+            let hovered = self.hovered == Some(index);
+            let face = face(at, &action.name)
+                .hovered(hovered)
+                .pressed(self.pressed && hovered);
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            buttons[index] = at;
+            x1 = at.x0 - button_inset;
+        }
+        if faded {
+            scene.pop_layer();
+        }
+        buttons
+    }
+}
+
+impl crate::widget::Widget for NoticeLayer {
+    fn name(&self) -> &'static str {
+        "Notice"
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> taffy::NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        let style = taffy::Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            },
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        tree.widget_leaf(style, map, self)
+    }
+
+    crate::rect_geometry!();
+
+    /// A status (`<output>`) showing the pill as it is painted over the windows.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("output");
+        cx.picture();
+    }
+
+    /// The layer covers the surface whatever it says: once laid out it has nothing to measure.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        self.reduce_motion = theme.reduce_motion;
+        let now = crate::time::now();
+        let shown = {
+            let notice = self.notice.borrow();
+            notice.get().cloned().zip(notice.span())
+        };
+        self.buttons = shown.map_or_else(Vec::new, |(notice, span)| {
+            let alpha = crate::motion::Transient::opacity(
+                crate::motion::Transient::CONFIRMATION,
+                span,
+                now,
+                self.motion(),
+            );
+            self.paint(scene, transform, text, theme, &notice, alpha)
+        });
+        self.drawn.set(Some((
+            self.notice.borrow().since(),
+            self.hovered,
+            self.pressed,
+        )));
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn.get() != Some((self.notice.borrow().since(), self.hovered, self.pressed))
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        let span = self.notice.borrow().span();
+        span.is_some_and(|span| {
+            crate::motion::Transient::is_moving(
+                crate::motion::Transient::CONFIRMATION,
+                span,
+                crate::time::now(),
+                self.motion(),
+            )
+        })
+    }
+
+    /// The fade's start, or the moment the notice goes.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let (_, gone) = self.notice.borrow().span()?;
+        let now = crate::time::now();
+        let fade_from = crate::motion::Transient::exit_starts(
+            crate::motion::Transient::CONFIRMATION,
+            gone,
+            self.motion(),
+        );
+        if !self.reduce_motion && now < fade_from {
+            Some(fade_from)
+        } else {
+            (now < gone).then_some(gone)
+        }
+    }
+
+    /// A polite status with the words, and each button where it is drawn: a reader presses it as
+    /// the pointer does.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let notice = self.notice.borrow();
+        let shown = notice.get();
+        let buttons = shown
+            .into_iter()
+            .flat_map(|notice| notice.actions.iter().zip(&self.buttons))
+            .map(|(action, rect)| {
+                AccessNode::new(Role::Button)
+                    .with_name(action.name.clone())
+                    .with_bounds(*rect)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Label)
+                .with_live(Politeness::Polite)
+                .with_value(shown.map(|notice| notice.text.clone()).unwrap_or_default())
+                .with_children(buttons),
+        )
     }
 }
 

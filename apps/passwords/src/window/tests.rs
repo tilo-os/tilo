@@ -497,7 +497,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         }
         request(&mut app, Request::Save);
         assert_eq!(
-            app.acknowledgement().as_deref(),
+            app.shell().toast_text(),
             Some("Saved Example account"),
             "closing the editor looks like Cancel, so the save says so"
         );
@@ -565,7 +565,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         app.core_mut()
             .set_draft(DraftField::Notes, "unsaved private note");
         request(&mut app, Request::CancelEdit);
-        assert_eq!(app.acknowledgement(), None, "nothing was saved");
+        assert_eq!(app.shell().toast_text(), None, "nothing was saved");
         let core = app.core();
         assert_eq!(core.screen, Screen::Vault);
         assert!(core.draft_password.is_empty());
@@ -749,7 +749,7 @@ tilo_test_env::scenario! {
             "the corrected field no longer shows the old complaint"
         );
         request(&mut app, Request::Save);
-        assert_eq!(app.acknowledgement().as_deref(), Some("Saved Forge"));
+        assert_eq!(app.shell().toast_text(), Some("Saved Forge"));
         let stored = app.core().model.as_ref().unwrap().items();
         assert_eq!(stored.len(), 1);
         assert!(
