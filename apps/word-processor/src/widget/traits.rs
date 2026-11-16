@@ -3,7 +3,6 @@
 //! publishes presence, and the capabilities it has as a participant.
 
 use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
-use crate::WpFormat;
 use crate::i18n::t;
 use crate::text_offsets::char_to_byte;
 use automerge::{AutoCommit, ObjId};
@@ -104,13 +103,6 @@ impl Editor {
             self.inner.bind_view_only(state, root);
         } else {
             self.inner.bind(state, root);
-        }
-        if let Some((path, reply)) = self.pending_save.take() {
-            let format = WpFormat::from_path(&path);
-            reply.finish(
-                self.try_write_to_path(state, &path, format)
-                    .map(|()| tilo_actions::ActionOutput::default()),
-            );
         }
         self.refresh_blocks(state);
         let now = ui::time::now();

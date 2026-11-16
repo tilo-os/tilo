@@ -28,6 +28,7 @@ use std::rc::{Rc, Weak};
 
 mod calls;
 mod causal;
+mod file;
 mod job;
 mod window;
 use std::sync::Arc;
@@ -42,10 +43,7 @@ use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
-use ui_core::portal::{
-    ContentsOutcome, DestinationOutcome, PickRequest, PickedContents, PortalOutcome,
-    SaveDestination, SaveOutcome,
-};
+use ui_core::portal::PickedContents;
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -494,6 +492,12 @@ pub(crate) struct EffectEnv<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
     pub(crate) wake: WakeHandle,
+    /// Where the window says which file it shows, when it has one: a document saved
+    /// somewhere new says so here.
+    pub(crate) shows: Option<ui_core::application_view::WindowShows>,
+    /// The media types of the files the app opens: a save to a file it would open is
+    /// its document, one to any other file is a copy.
+    pub(crate) opens: &'static [&'static str],
     scope: Option<std::rc::Weak<super::surface::SurfaceScope>>,
 }
 
@@ -503,6 +507,8 @@ impl<R: Resource> Clone for EffectEnv<R> {
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
             wake: self.wake.clone(),
+            shows: self.shows.clone(),
+            opens: self.opens,
             scope: self.scope.clone(),
         }
     }
@@ -1071,130 +1077,6 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             }));
         }
         Effected::Pending
-    }
-
-    /// Ask the person to choose a file with the host's chooser (`request`
-    /// is an Open request), then run `then` on the UI thread with its name
-    /// and contents, or `None` when they cancelled. Works where files have
-    /// no paths, such as a browser page. Bound reads with
-    /// [`PickRequest::max_contents_bytes`]; an oversized selection fails the
-    /// job before calling `then`. The effect must be declared `job`.
-    pub fn choose_file(
-        &mut self,
-        request: PickRequest,
-        then: impl FnOnce(&mut H, Option<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let chosen = request.send_contents();
-        self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(ContentsOutcome::Picked(files)) => {
-                then(host, files.into_iter().next().map(ChosenFile::from), cx)
-            }
-            Some(ContentsOutcome::Cancelled) => then(host, None, cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(reason),
-            None => Err(CHOOSER_GONE.into()),
-        })
-    }
-
-    /// [`Self::choose_file`] for a request that lets the person choose
-    /// several files ([`PickRequest::open_multiple`]): `then` receives every
-    /// chosen file, none when they cancelled. A request contents limit applies
-    /// to the total bytes across the entire selection.
-    pub fn choose_files(
-        &mut self,
-        request: PickRequest,
-        then: impl FnOnce(&mut H, Vec<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let chosen = request.send_contents();
-        self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(ContentsOutcome::Picked(files)) => {
-                then(host, files.into_iter().map(ChosenFile::from).collect(), cx)
-            }
-            Some(ContentsOutcome::Cancelled) => then(host, Vec::new(), cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(reason),
-            None => Err(CHOOSER_GONE.into()),
-        })
-    }
-
-    /// Ask the person to choose a file with the host's chooser and run
-    /// `then` on the UI thread with its path on this device, or `None` when
-    /// they cancelled: for a file the app reads in place rather than into
-    /// memory (a disk image, a video). Only a host whose files have paths
-    /// answers; elsewhere use [`Self::choose_file`]. The effect must be
-    /// declared `job`.
-    pub fn choose_path(
-        &mut self,
-        request: PickRequest,
-        then: impl FnOnce(&mut H, Option<std::path::PathBuf>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let chosen = request.send();
-        self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(PortalOutcome::Opened(path)) => then(host, Some(path), cx),
-            Some(PortalOutcome::Cancelled) => then(host, None, cx),
-            Some(PortalOutcome::Failed(reason)) => Err(reason),
-            None => Err(CHOOSER_GONE.into()),
-        })
-    }
-
-    /// Ask the person where to save `bytes` with the host's chooser
-    /// (`request` is a Save request suggesting a file name; a browser page
-    /// downloads them under it), then run `then` on the UI thread with
-    /// whether they were saved: `false` when the person cancelled. The
-    /// effect must be declared `job`.
-    pub fn save_file(
-        &mut self,
-        request: PickRequest,
-        bytes: Vec<u8>,
-        then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let saved = request.send_save_contents(bytes);
-        self.wait_for(saved, move |host, outcome, cx| match outcome {
-            Some(SaveOutcome::Saved) => then(host, true, cx),
-            Some(SaveOutcome::Cancelled) => then(host, false, cx),
-            Some(SaveOutcome::Failed(reason)) => Err(reason),
-            None => Err(CHOOSER_GONE.into()),
-        })
-    }
-
-    /// Ask the person where to save with the host's chooser (`request` is
-    /// a Save request suggesting a file name), then run `then` on the UI
-    /// thread with the place, or `None` when they cancelled. The place takes
-    /// bytes made after the choice, and can be kept to write there again on
-    /// every later Save without asking: a path where files have paths, the
-    /// browser's own Save dialog file on a browser page. The effect must be
-    /// declared `job`.
-    pub fn choose_destination(
-        &mut self,
-        request: PickRequest,
-        then: impl FnOnce(&mut H, Option<SaveDestination>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let chosen = request.send_save_destination();
-        self.wait_on(
-            move || chosen.try_recv(),
-            move |host, outcome, cx| match outcome {
-                Some(DestinationOutcome::Chosen(destination)) => then(host, Some(destination), cx),
-                Some(DestinationOutcome::Cancelled) => then(host, None, cx),
-                Some(DestinationOutcome::Failed(reason)) => Err(reason),
-                None => Err(CHOOSER_GONE.into()),
-            },
-        )
-    }
-
-    /// Run `then` on the UI thread once `destination` holds `bytes`: `Ok`
-    /// when they were saved, the reason when not. The effect must be
-    /// declared `job`.
-    pub fn write_destination(
-        &mut self,
-        destination: &SaveDestination,
-        bytes: Vec<u8>,
-        then: impl FnOnce(&mut H, Result<(), String>, &mut Self) -> EffectAnswer + 'static,
-    ) -> Effected {
-        let written = destination.write(bytes);
-        self.wait_for(written, move |host, outcome, cx| match outcome {
-            Some(SaveOutcome::Saved) => then(host, Ok(()), cx),
-            Some(SaveOutcome::Cancelled) => then(host, Err("the save was cancelled".into()), cx),
-            Some(SaveOutcome::Failed(reason)) => then(host, Err(reason), cx),
-            None => Err(CHOOSER_GONE.into()),
-        })
     }
 
     /// Ask the host to show what a launch naming `arguments` opens in this
@@ -2526,11 +2408,18 @@ impl<R: Resource> Clone for Effects<R> {
 
 impl<R: Resource> Effects<R> {
     /// Effects of the live app, which run.
-    pub(crate) fn live(dispatch: Dispatcher<R>, live: Live<R>) -> Self {
+    pub(crate) fn live(
+        dispatch: Dispatcher<R>,
+        live: Live<R>,
+        shows: Option<ui_core::application_view::WindowShows>,
+        opens: &'static [&'static str],
+    ) -> Self {
         let env = EffectEnv {
             dispatch,
             live,
             wake: WakeHandle::new(),
+            shows,
+            opens,
             scope: None,
         };
         Self {
@@ -2545,12 +2434,19 @@ impl<R: Resource> Effects<R> {
     /// it invokes runs, with the work it starts, as it would in a window
     /// someone uses; the views and surfaces start nothing on their own and
     /// no projection drains, so the scene stays the scenario's fixture.
-    pub(crate) fn invoked(dispatch: Dispatcher<R>, live: Live<R>) -> Self {
+    pub(crate) fn invoked(
+        dispatch: Dispatcher<R>,
+        live: Live<R>,
+        shows: Option<ui_core::application_view::WindowShows>,
+        opens: &'static [&'static str],
+    ) -> Self {
         Self {
             env: Some(EffectEnv {
                 dispatch,
                 live,
                 wake: WakeHandle::new(),
+                shows,
+                opens,
                 scope: None,
             }),
             inner: new_inner(),

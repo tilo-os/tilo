@@ -186,25 +186,33 @@ impl Store {
         let me = Rc::clone(me);
         Ok(match path {
             Some(path) => {
+                let shown = path.clone();
                 cx.thread(
                     move |_| save_presentation_to_path(&deck, &path, &content),
                     // Saving where the deck lives says nothing; only a
                     // failure is news.
-                    move |(), saved, _| me.borrow_mut().finish_save(saved.map(|()| true)),
+                    move |(), saved, cx| {
+                        if saved.is_ok() {
+                            cx.show_file(shown.as_path());
+                        }
+                        me.borrow_mut().finish_save(saved.map(|()| true))
+                    },
                 )
             }
             None => {
                 let name = format!("{}.odp", sanitize_filename(&deck.title));
-                cx.thread(
-                    move |_| crate::odp::write_odp(&deck, &content).map_err(|e| e.to_string()),
-                    move |(), bytes, cx| match bytes {
-                        Ok(bytes) => Ok(cx.save_file(
-                            save_document_request(&name),
-                            bytes,
-                            move |(), saved, _| me.borrow_mut().finish_save(Ok(saved)),
-                        )),
-                        Err(error) => me.borrow_mut().finish_save(Err(error)),
+                let writer = Rc::clone(&me);
+                cx.save_document(
+                    save_document_request(&name),
+                    move |name| {
+                        if is_pptx(std::path::Path::new(name)) {
+                            crate::pptx::write_pptx(&deck, &content)
+                        } else {
+                            crate::odp::write_odp(&deck, &content)
+                        }
+                        .map_err(|error| error.to_string())
                     },
+                    move |(), saved, _| writer.borrow_mut().finish_save(Ok(saved.is_some())),
                 )
             }
         })

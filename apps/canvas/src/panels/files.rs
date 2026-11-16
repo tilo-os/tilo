@@ -530,6 +530,9 @@ impl FileChooser {
                 if follow {
                     self.tools.file.set(Some(path.display().to_string()));
                     self.tools.kept.set(None);
+                    if let Some(shows) = &self.tools.shows {
+                        shows.show(path);
+                    }
                 } else {
                     self.say("canvas-duplicated", &[("name", Self::name_of(path).into())]);
                 }

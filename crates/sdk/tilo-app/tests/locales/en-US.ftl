@@ -275,6 +275,12 @@ test-notebook-write = Write a page
 ## crates/sdk/tilo-app/tests/render_view.rs
 test-sketch-rename = Rename the sketch
 
+## crates/sdk/tilo-app/tests/save_document.rs
+test-draft = Draft
+test-draft-write = Write the draft
+test-draft-effects-save-as = Save the document where the person chooses
+test-draft-effects-export = Save a copy of the document somewhere else
+
 ## crates/sdk/tilo-app/tests/scenarios.rs
 test-playlist = Playlist
 test-playlist-add = Add a song

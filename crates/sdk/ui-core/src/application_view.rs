@@ -50,6 +50,12 @@ pub struct WindowShows {
 }
 
 impl WindowShows {
+    /// The file or folder the window shows now, as [`Self::show`] last set it.
+    #[must_use]
+    pub fn shown(&self) -> Option<PathBuf> {
+        self.shown.borrow().as_deref().map(PathBuf::from)
+    }
+
     /// The window now shows the file or folder at `path`. Kept at once, so a session that ends
     /// without closing the window brings it back there.
     pub fn show(&self, path: &Path) {

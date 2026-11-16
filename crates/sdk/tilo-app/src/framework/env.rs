@@ -383,6 +383,15 @@ impl<R: Resource> RecordEnv<R> {
         self.run.launched.shows.clone()
     }
 
+    /// The window shows the file at `path` from now on: what it opens on again after a restart.
+    /// An app says this when its document was saved somewhere new (Save As), so a document saved
+    /// elsewhere is not reopened where it used to be.
+    pub fn show_file(&self, path: &std::path::Path) {
+        if let Some(shows) = self.window_shows() {
+            shows.show(path);
+        }
+    }
+
     /// The file whose history History shows beside the resource's, for an
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
     /// set its target to the file the window shows (the selected one) and

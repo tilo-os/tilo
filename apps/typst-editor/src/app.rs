@@ -169,6 +169,8 @@ pub struct TypstApp {
     frame: Frame,
     status: ui::widget::toast::Transient<String>,
     saves: ui::framework::Saves,
+    /// The file the window shows, kept as the file it saves to does.
+    shows: Option<ui::application_view::WindowShows>,
     save_path: Option<std::path::PathBuf>,
     compile_feedback: bool,
 
@@ -233,6 +235,7 @@ impl TypstApp {
             ),
             status: ui::widget::toast::Transient::new(),
             saves: ui::framework::Saves::default(),
+            shows: None,
             save_path: None,
             compile_feedback: false,
             rect: Rect::ZERO,
@@ -260,6 +263,7 @@ impl TypstApp {
         self.chrome.attach_actions(&cx.actions());
         self.actions = Some(cx.dispatcher());
         self.saves = cx.saves();
+        self.shows = cx.window_shows();
         self.editor.attach(cx.dispatcher());
         self.live = Some(cx.live().clone());
         #[cfg(feature = "samples")]
@@ -603,6 +607,9 @@ impl TypstApp {
                 // The file is where the document lives: saving it says
                 // nothing, and the window's save status ends a failure.
                 self.saves.saved();
+                if let Some(shows) = &self.shows {
+                    shows.show(path);
+                }
                 if let Some(id) = self.current.clone() {
                     self.saved = Some((id, file.source.clone()));
                 }

@@ -266,6 +266,8 @@ pub struct Tools {
     /// browser page's Save dialog file): every later Save writes there without
     /// asking, and only Save as asks again.
     pub kept: LocalState<Option<ui::portal::SaveDestination>>,
+    /// The file the window shows, so a Save as opens the artwork there again.
+    pub shows: Option<ui::application_view::WindowShows>,
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
     pub recents: LocalState<Rc<crate::document::ArtworkRecents>>,
@@ -422,6 +424,7 @@ impl Default for Tools {
             files: LocalState::new(None),
             file: LocalState::new(None),
             kept: LocalState::new(None),
+            shows: None,
             notice: LocalState::new(None),
             recents: LocalState::new(Rc::default()),
             device: Rc::from(""),

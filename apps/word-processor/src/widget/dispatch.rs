@@ -1169,7 +1169,7 @@ impl Editor {
                     Some(path) => self.save_now(cx, &path)?,
                     None => match self.kept.clone() {
                         Some((kept, format)) => return self.write_kept(cx, &kept, format),
-                        None => return Ok(self.choose_where_to_save(this, cx)),
+                        None => return self.choose_where_to_save(this, cx),
                     },
                 }
             }
@@ -1177,7 +1177,7 @@ impl Editor {
                 self.save_now(cx, &path)?;
             }
             WordProcessorEffect::SaveAs { path: None } => {
-                return Ok(self.choose_where_to_save(this, cx));
+                return self.choose_where_to_save(this, cx);
             }
             WordProcessorEffect::Find => {
                 ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
@@ -1344,11 +1344,17 @@ impl Editor {
         path: &std::path::Path,
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let format = WpFormat::from_path(path);
         // Only a failure is news.
-        self.try_write_to_path(&doc, path, WpFormat::from_path(path))?;
+        self.try_write_to_path(&doc, path, format)?;
+        if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
+            cx.show_file(path);
+        }
         Ok(())
     }
 
+    /// Write the document where it was kept: the place has no path here, so the window
+    /// names the file by the name it saves under.
     fn write_kept(
         &mut self,
         cx: &mut ui::framework::EffectCx<crate::framework::Document>,
@@ -1357,43 +1363,46 @@ impl Editor {
     ) -> ui::framework::EffectAnswer {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         let bytes = self.export_bytes(&doc, format)?;
-        Ok(cx.write_destination(destination, bytes, |(), written, _| {
+        Ok(cx.write_document(destination, bytes, |(), written, _| {
             written.map(|()| ui::framework::Effected::done())
         }))
     }
 
+    /// Ask where the document goes and write it there, as the format the chosen name
+    /// says. A document saved somewhere new is the file this window shows from then on.
     fn choose_where_to_save(
         &self,
         this: &std::rc::Rc<std::cell::RefCell<Self>>,
         cx: &mut ui::framework::EffectCx<crate::framework::Document>,
-    ) -> ui::framework::Effected {
+    ) -> ui::framework::EffectAnswer {
         let suggested = self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
             || "Untitled.md".to_string(),
             |f| f.to_string_lossy().into_owned(),
         );
-        if !tilo_files::available(tilo_files::Feature::NativePaths) {
-            let editor = std::rc::Rc::clone(this);
-            return cx.choose_destination(save_request(&suggested), move |(), destination, cx| {
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let writer = std::rc::Rc::clone(this);
+        let keeper = std::rc::Rc::clone(this);
+        Ok(cx.save_document(
+            save_request(&suggested),
+            move |name| {
+                let format = WpFormat::from_path(std::path::Path::new(name));
+                writer.borrow_mut().export_bytes(&doc, format)
+            },
+            move |(), destination, _| {
                 let destination =
                     destination.ok_or_else(|| "the file picker was cancelled".to_owned())?;
                 let format = WpFormat::from_path(std::path::Path::new(destination.name()));
-                let mut editor = editor.borrow_mut();
+                let mut editor = keeper.borrow_mut();
                 // An export-only format is a copy, not the document's place.
                 if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
-                    editor.kept = Some((destination.clone(), format));
+                    match destination.location() {
+                        Some(path) => editor.set_file(path.to_path_buf(), format),
+                        None => editor.kept = Some((destination, format)),
+                    }
                 }
-                editor.write_kept(cx, &destination, format)
-            });
-        }
-        let editor = std::rc::Rc::clone(this);
-        cx.choose_path(save_request(&suggested), move |(), path, cx| match path {
-            Some(path) => {
-                let mut editor = editor.borrow_mut();
-                editor.pending_save = Some((path, cx.reply()));
                 editor.lifecycle.dirty = true;
-                Ok(ui::framework::Effected::Pending)
-            }
-            None => Err("the file picker was cancelled".into()),
-        })
+                Ok(ui::framework::Effected::done())
+            },
+        ))
     }
 }

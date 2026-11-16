@@ -51,6 +51,8 @@ fn runner_on(dispatch: Dispatcher<Probe>) -> EffectRunner<Probe, (), Work> {
         dispatch,
         live: Live::new(Reader::<Probe>::read(&doc).unwrap()),
         wake: WakeHandle::detached(),
+        shows: None,
+        opens: &[],
         scope: None,
     })
 }

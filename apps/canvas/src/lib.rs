@@ -105,6 +105,7 @@ impl ResourceApp for App {
                 |(record, _)| record.state(),
             ),
             device: cx.device().unwrap_or_default().into(),
+            shows: cx.window_shows(),
             ..tools::Tools::default()
         };
         {

@@ -889,10 +889,17 @@ pub(crate) fn build_root<A: ResourceApp>(
             record.open(&storage);
         }
     }
+    let shows = run.launched.shows.clone();
     let effects = if runs_effects {
-        Some(Effects::live(dispatch.clone(), live.clone()))
+        Some(Effects::live(
+            dispatch.clone(),
+            live.clone(),
+            shows,
+            A::OPENS,
+        ))
     } else {
-        runs_invoked_effects.then(|| Effects::invoked(dispatch.clone(), live.clone()))
+        runs_invoked_effects
+            .then(|| Effects::invoked(dispatch.clone(), live.clone(), shows, A::OPENS))
     };
     let awaiting = run.workspace.clone();
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);

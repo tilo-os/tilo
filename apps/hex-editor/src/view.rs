@@ -944,11 +944,13 @@ impl Editor {
             }
             HexEffect::SaveAs { path } => {
                 self.write_to(&path)?;
+                cx.show_file(path.as_path());
                 Ok(Effected::done())
             }
             HexEffect::Save => {
                 if let Some(path) = self.path.clone() {
                     self.write_to(&path)?;
+                    cx.show_file(&path);
                     Ok(Effected::done())
                 } else {
                     self.begin_save_as(cx.reply());
