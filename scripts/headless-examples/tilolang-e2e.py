@@ -206,20 +206,20 @@ def app_word(name: str, declared: str, attribute: str | None = None, **args) -> 
 
 # --- /proc --------------------------------------------------------------------
 
-def children(pid: int) -> list[int]:
-    found = []
-    for task in Path(f"/proc/{pid}/task").glob("*"):
-        try:
-            found += [int(c) for c in (task / "children").read_text().split()]
-        except OSError:
-            pass
-    return found
-
-
 def descendants(pid: int) -> list[int]:
+    """Every process below `pid`, read off each process's parent in `/proc/*/stat`: a kernel
+    built without `/proc/PID/task/*/children` (a VM's) still has those."""
+    below: dict[int, list[int]] = {}
+    for stat in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            # The fields after the command name, which may hold spaces and parentheses.
+            fields = stat.read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        below.setdefault(int(fields[1]), []).append(int(stat.parent.name))
     out, pending = [], [pid]
     while pending:
-        for child in children(pending.pop()):
+        for child in below.get(pending.pop(), []):
             out.append(child)
             pending.append(child)
     return out
@@ -334,7 +334,11 @@ def launch_all(session: Session) -> dict:
 
 def check_processes(session: Session, session_pid: int) -> dict:
     tree = descendants(session_pid)
-    shell = next(p for p in tree if exe(p).endswith("/bin/tilo-session") and "__render-service" not in cmdline(p))
+    shell = next((p for p in tree if exe(p).endswith("/bin/tilo-session")
+                  and "__render-service" not in cmdline(p)), None)
+    if shell is None:
+        raise Failed(f"no tilo-session among the session's processes: "
+                     f"{[(p, exe(p), cmdline(p)[:2]) for p in tree]}")
     render = [p for p in tree if "__render-service" in cmdline(p)]
     shell_ns = namespaces(shell)
     out = {"shell": {"pid": shell, "vulkan": vulkan_drivers(shell)}, "apps": {}}
@@ -853,8 +857,10 @@ def menu_complete(session: Session, title: str) -> dict:
     session.click_named(complete)
     after = until(f"{title!r} completed from its menu in Tasks' history",
                   lambda: (lambda t: t if t > before else None)(history_total(session, "tasks")), 15)
-    if any(target["name"] == complete for target in session.targets()):
-        raise Failed(f"{title!r}'s menu stood open after {complete}")
+    # The desk names what the window's last frame drew: the menu is gone from the frame the
+    # window draws after the press, which a slow renderer may draw after the history grew.
+    until(f"{title!r}'s menu to close after {complete}",
+          lambda: not any(target["name"] == complete for target in session.targets()), 5)
     return {"task": title, "command": complete, "history": [before, after]}
 
 
