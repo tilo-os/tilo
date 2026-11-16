@@ -1176,7 +1176,7 @@ async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-1", "Claude Code");
+        .with_agent_session("session-1", "Claude Code");
     // Reads warm the agent's session up; what is timed below is the writes.
     let (apps, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "{apps}");

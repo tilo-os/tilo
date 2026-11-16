@@ -178,7 +178,7 @@ fn connection(host: &std::sync::Arc<Notes>, run: usize) -> McpServer<std::sync::
         "claude-code",
         "ada",
     )
-    .with_agent_run(format!("run-{run}"), "Claude Code")
+    .with_agent_session(format!("run-{run}"), "Claude Code")
 }
 
 async fn ask(

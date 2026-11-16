@@ -558,12 +558,9 @@ impl EffectsCore {
         }
     }
 
-    fn settle(&mut self, call: Call) {
-        let saved = self
-            .state
-            .with(|state| state.library.ready().cloned().unwrap_or_default());
-        let catalog = self.state.with(EffectsState::catalog);
-        let outcome: Result<Option<ActionOutput>, String> = match &call.answer {
+    /// What `call`'s answer came to, once it has one.
+    fn outcome(&mut self, call: &Call) -> Option<Result<Option<ActionOutput>, String>> {
+        Some(match &call.answer {
             Answer::Catalogue(answer) => match answer.get() {
                 Arrival::Ready(page) => {
                     self.state.update(|state| {
@@ -573,7 +570,7 @@ impl EffectsCore {
                     Ok(None)
                 }
                 Arrival::Failed(error) => Err(catalogue_refusal(&error)),
-                Arrival::Pending { .. } => return,
+                Arrival::Pending { .. } => return None,
             },
             Answer::Invocation(answer) => match answer.get() {
                 Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Ok(Some(output)),
@@ -582,8 +579,18 @@ impl EffectsCore {
                     Err(message.unwrap_or_else(|| "cancelled".to_owned()))
                 }
                 Arrival::Failed(error) => Err(error.to_string()),
-                Arrival::Ready(_) | Arrival::Pending { .. } => return,
+                Arrival::Ready(_) | Arrival::Pending { .. } => return None,
             },
+        })
+    }
+
+    fn settle(&mut self, call: Call) {
+        let saved = self
+            .state
+            .with(|state| state.library.ready().cloned().unwrap_or_default());
+        let catalog = self.state.with(EffectsState::catalog);
+        let Some(outcome) = self.outcome(&call) else {
+            return;
         };
         match (&call.purpose, &outcome) {
             (Purpose::Catalogue, Err(reason)) => self.state.update(|state| {
