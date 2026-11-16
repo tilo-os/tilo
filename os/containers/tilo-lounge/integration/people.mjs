@@ -367,11 +367,10 @@ const search = async (tab, command, query, row, opens = null) => {
     const began = performance.now();
     const tick = () => {
       const s = globalThis.tiloMount?.state?.() ?? {};
-      globalThis.__pressTrail.push([Math.round(performance.now() - began), s.phase ?? null,
+      if (globalThis.__pressTrail.length < 200) globalThis.__pressTrail.push([Math.round(performance.now() - began), s.phase ?? null,
         !!s.searchOpen, s.frames ?? null, s.desktopRevision ?? null,
         s.searchCard?.scope ?? null,
         (document.activeElement?.nodeName ?? '') + (document.hasFocus() ? '+' : '-')]);
-      if (globalThis.__pressTrail.length > 120) globalThis.__pressTrail.shift();
       if (performance.now() - began < 75000) requestAnimationFrame(tick);
     };
     tick();
@@ -410,8 +409,8 @@ const search = async (tab, command, query, row, opens = null) => {
     await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
   } catch (error) {
     const trail = await tab.evaluate('JSON.stringify(globalThis.__pressTrail ?? [])').catch(() => '[]');
-    console.error(`--- ${query}: the press and every frame after it: ${trail}`);
-    throw error;
+    const chords = await tab.evaluate('JSON.stringify(globalThis.__chordStates ?? [])').catch(() => '[]');
+    await failed(`${error.message}; the chord and every frame after it: ${chords}; ${trail}`, tab);
   }
   const scope = await openScope();
   if (scope !== 'workspace') failed(`the search for "${query}" is not the shell's (${scope})`);
