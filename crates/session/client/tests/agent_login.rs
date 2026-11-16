@@ -21,13 +21,13 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::invite::guest_certificate;
 use tilo_relay_client::login::PairingLink;
-use tilo_relay_client::login::{Door, sign_in};
+use tilo_relay_client::login::{Entry, sign_in};
 use tilo_relay_client::{CertifyError, answer_pairing, pending_pairings};
 use tilo_relay_protocol::web::API_PREFIX;
 use tilo_session_client::device::{Device, session_as_agent};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use crate::support::{door, enrol, enter as enter_as, start_workspace_host, wait_for};
+use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host, wait_for};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -35,7 +35,7 @@ fn new_key() -> SigningKey {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_person() {
-    // Alice's host keeps the Lounge; its door lets people in.
+    // Alice's host keeps the Lounge; its entry lets people in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -47,7 +47,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         .create("Lounge")
         .await
         .unwrap();
-    // Listed, so its door lets people in, as the site's entry names it.
+    // Listed, so its entry lets people in, as the site's entry names it.
     host.relay
         .workspaces()
         .unwrap()
@@ -64,7 +64,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     let https = host.https();
     let approver = tilo_relay_client::MemberApprover::new(host.iroh());
 
-    // Bob's tab holds his root and came in through the door.
+    // Bob's tab holds his root and came in through the entry.
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let tab_key = new_key();
@@ -78,7 +78,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     .unwrap();
     let tab = enter_as(
         &host,
-        door(&host, &alice, &host_device, &lounge.workspace, user).await,
+        entry_grant(&host, &alice, &host_device, &lounge.workspace, user).await,
         &tab_cert,
         &tab_key,
         &host_device.cert,
@@ -165,12 +165,12 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
     );
     assert_eq!(signed.host_cert, host_device.cert);
 
-    // It enters the Lounge as Bob, through the door as the page would, its
+    // It enters the Lounge as Bob, through the entry as the page would, its
     // session the agent's run.
-    let door = Door {
+    let entry = Entry {
         path: format!("{API_PREFIX}/directory/{}/", lounge.workspace),
     };
-    let agent = Device::enter(Some(&door), &signed, Arc::new(cli_key.clone()))
+    let agent = Device::enter(Some(&entry), &signed, Arc::new(cli_key.clone()))
         .await
         .unwrap();
     assert_eq!(agent.workspace_id(), lounge.workspace_id);

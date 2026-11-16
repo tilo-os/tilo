@@ -41,8 +41,8 @@ use tilo_user_identity::{
 use tokio::task::JoinHandle;
 
 use crate::support::{
-    door, enrol, enter, hears, in_workspace, ready, redeem, route, say, start_host, start_peer,
-    start_peer_with_store, start_workspace_host, wait_for,
+    enrol, enter, entry_grant, hears, in_workspace, ready, redeem, route, say, start_host,
+    start_peer, start_peer_with_store, start_workspace_host, wait_for,
 };
 
 fn new_key() -> SigningKey {
@@ -340,7 +340,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
         .unwrap();
         redeem(
             &host,
-            door(
+            entry_grant(
                 &host,
                 &alice,
                 &host_device,
@@ -569,8 +569,8 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
-    // Alice's host keeps a public workspace; its door lets guests in.
+async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() {
+    // Alice's host keeps a public workspace; its entry lets guests in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -584,7 +584,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
         .unwrap();
     let approver = MemberApprover::new(host.iroh());
 
-    // Bob came in through the door on his laptop, whose page holds his root.
+    // Bob came in through the entry on his laptop, whose page holds his root.
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let laptop_key = new_key();
@@ -598,7 +598,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     .unwrap();
     let laptop = enter(
         &host,
-        door(&host, &alice, &host_device, &workspace.workspace, user).await,
+        entry_grant(&host, &alice, &host_device, &workspace.workspace, user).await,
         &laptop_cert,
         &laptop_key,
         &host_device.cert,
@@ -622,10 +622,10 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
         "the host is Alice's, not Bob's"
     );
 
-    // The door lets the phone in as Bob: one member, on two devices.
+    // The entry lets the phone in as Bob: one member, on two devices.
     let phone_peer = enter(
         &host,
-        door(&host, &alice, &host_device, &workspace.workspace, user).await,
+        entry_grant(&host, &alice, &host_device, &workspace.workspace, user).await,
         &cert,
         &phone_key,
         &host_cert,

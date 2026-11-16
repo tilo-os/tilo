@@ -33,13 +33,13 @@ pub(super) async fn import(
         owners: Vec::new(),
         refused: Vec::new(),
     };
-    // The door keeps the addresses only where it takes people by invitation
+    // The entry keeps the addresses only where it takes people by invitation
     // and keeps a wait list. Where it does not, everyone is still invited, at a
     // link to hand over: nobody is dropped.
     let keeps = workspaces
-        .door_policy(workspace)
+        .entry_policy(workspace)
         .await
-        .is_some_and(|door| door.keeps_requests());
+        .is_some_and(|entry| entry.keeps_requests());
     if !keeps && !people.wait_list.is_empty() {
         imported.refused.push(
             "the workspace keeps no wait list: the addresses it kept come over as invitations only"
@@ -209,7 +209,7 @@ async fn declare_owner(
 }
 
 /// Invite `member` through the host's own invitation as `role`: at the
-/// wait-list entry their address keeps, so the door mails them the invitation,
+/// wait-list entry their address keeps, so the entry mails them the invitation,
 /// or as a link to hand over where no address is known.
 async fn invite(
     workspaces: &Workspaces,
@@ -285,7 +285,7 @@ async fn invite(
     })
 }
 
-/// The wait-list entry `contact` holds now, as the door keys it.
+/// The wait-list entry `contact` holds now, as the entry keys it.
 async fn wait_list_entry(
     workspaces: &Workspaces,
     workspace: &str,

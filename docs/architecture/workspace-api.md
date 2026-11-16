@@ -12,7 +12,7 @@ authority and no second action model.
 
 A grant is a key the API server made, certified by the person's root as an
 agent's grant (`AgentScope::AllWorkspaces` or one workspace) and kept by the
-door. An agent reaches it through OAuth today: it registers, the person
+entry. An agent reaches it through OAuth today: it registers, the person
 approves in their own Tilo, and the agent redeems a code for tokens.
 
 An API key is the same grant with the OAuth client taken out. The person
@@ -114,7 +114,7 @@ The API's own routes name them ([`api.md`](../developers/api.md)):
 `GET`/`POST /v1/workspaces`, `DELETE /v1/workspaces/<workspace>`, `GET`/`POST /v1/keys`
 and `DELETE /v1/keys/<grant>`, which `tilo account` and `tilo keys` call. Every route is
 the same call an agent makes. In a session at the
-door's root (`/mcp`) with a grant reaching all workspaces, a call that names
+entry's root (`/mcp`) with a grant reaching all workspaces, a call that names
 no `workspace` and whose path is under `account` is answered by the API server:
 
 | Path | What it is |
@@ -190,12 +190,12 @@ every handshake after.
 
 A workspace of one's own is for a person the site let in. The relay names its
 site's home workspace (`Workspaces::admit_own_through`), and makes a new
-workspace only for its own person, a member of the home workspace (its door or
+workspace only for its own person, a member of the home workspace (its entry or
 an invitation admitted them), a person an invitation into it still names, or a
 person who already keeps workspaces of their own there. Every key and agent of
 that person is the person, within its scope. Anyone else, a fresh root or any
-key it certified, is refused with the API server's own refusal (`DoorRefused`, read
-back as `HostRefusal::door`), which offers the wait list when the API server takes
+key it certified, is refused with the API server's own refusal (`EntryRefused`, read
+back as `HostRefusal::entry`), which offers the wait list when the API server takes
 people by invitation. Entering a workspace a person was invited into stays
 theirs either way, and so does keeping their workspace list once they are a
 member of any workspace there.

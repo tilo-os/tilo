@@ -1,4 +1,4 @@
-//! The door's outbox: a mail is kept until a mail service takes it, so a
+//! The entry's outbox: a mail is kept until a mail service takes it, so a
 //! restart, a failing service or a busy one delays a confirmation, an
 //! invitation or word of a removal instead of losing it.
 //!
@@ -39,7 +39,7 @@ const VERSION: u32 = 1;
 const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
 
 /// A mail older than this is not sent: a confirmation link that old is
-/// stale, and a door that was down for a day must not deliver a burst.
+/// stale, and an entry that was down for a day must not deliver a burst.
 const MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// The most mails the outbox keeps.
@@ -146,7 +146,7 @@ pub(crate) struct Outbox {
 }
 
 impl Outbox {
-    /// An outbox that keeps its mail only while the door runs.
+    /// An outbox that keeps its mail only while the entry runs.
     pub(crate) fn in_memory(mailer: Arc<dyn Mailer>, limits: Limits) -> Self {
         Self {
             dir: None,
@@ -290,14 +290,14 @@ impl Outbox {
             receipts_changed |= state.receipts.remove(&receipt_key(&contact)).is_some();
         }
         if receipts_changed && !self.save_receipts(&state.receipts) {
-            eprintln!("the door: could not clear a cancelled confirmation receipt");
+            eprintln!("the entry: could not clear a cancelled confirmation receipt");
         }
         drop(state);
         if let Some(dir) = &self.dir
             && tilo_files::native::private::sync_directory(dir).is_err()
         {
             eprintln!(
-                "the door: cancellation files could not be flushed; eligibility remains authoritative"
+                "the entry: cancellation files could not be flushed; eligibility remains authoritative"
             );
         }
     }
@@ -348,7 +348,7 @@ impl Outbox {
             }
         }
         if unreadable > 0 {
-            eprintln!("the door: set aside {unreadable} unreadable mail outbox file(s)");
+            eprintln!("the entry: set aside {unreadable} unreadable mail outbox file(s)");
         }
         items.sort_by_key(|item| item.created_ms);
         let dropped = {
@@ -368,7 +368,7 @@ impl Outbox {
         };
         if !dropped.is_empty() {
             eprintln!(
-                "the door: dropped {} queued mail(s) beyond what the outbox keeps",
+                "the entry: dropped {} queued mail(s) beyond what the outbox keeps",
                 dropped.len()
             );
             for item in &dropped {
@@ -385,11 +385,11 @@ impl Outbox {
 
     pub(crate) fn enqueue_for(&self, kind: Kind, mail: Mail, removal: Option<String>) -> bool {
         if !mail.is_sendable() {
-            eprintln!("the door: {kind} was not queued: the mail is not well formed");
+            eprintln!("the entry: {kind} was not queued: the mail is not well formed");
             return false;
         }
         if u64::try_from(mail.weight()).unwrap_or(u64::MAX) > MAX_ENTRY_BYTES {
-            eprintln!("the door: {kind} was not queued: the mail is too large");
+            eprintln!("the entry: {kind} was not queued: the mail is too large");
             return false;
         }
         let now = tilo_clock::unix_now_ms();
@@ -414,11 +414,11 @@ impl Outbox {
         if !workspace {
             drop(state);
             discard_file(&item);
-            eprintln!("the door: the door's outbox is full, so {kind} was not queued");
+            eprintln!("the entry: the entry's outbox is full, so {kind} was not queued");
             return false;
         }
         if let Err(error) = save(&item) {
-            eprintln!("the door: {kind} was not queued: {}", reason(&error));
+            eprintln!("the entry: {kind} was not queued: {}", reason(&error));
             return false;
         }
         state.bytes = state.bytes.saturating_add(item.bytes);
@@ -483,7 +483,7 @@ impl Outbox {
                     if let Some(item) = state.items.iter_mut().find(|entry| entry.id == item.id) {
                         item.next_at_ms = now_ms.saturating_add(30_000);
                         if save(item).is_err() {
-                            eprintln!("the door: could not persist eligibility backoff");
+                            eprintln!("the entry: could not persist eligibility backoff");
                         }
                     }
                 }
@@ -567,7 +567,7 @@ impl Outbox {
                             mail: item.mail.clone(),
                         });
                     } else {
-                        eprintln!("the door: an attempt was not written down; not sending");
+                        eprintln!("the entry: an attempt was not written down; not sending");
                     }
                 }
                 state.bytes = state.bytes.saturating_add(item.bytes);
@@ -577,7 +577,7 @@ impl Outbox {
             taken
         };
         if !aged.is_empty() {
-            eprintln!("the door: {} queued mail(s) aged out unsent", aged.len());
+            eprintln!("the entry: {} queued mail(s) aged out unsent", aged.len());
             for item in &aged {
                 discard_file(item);
             }
@@ -611,12 +611,12 @@ impl Outbox {
             Ok(()) => self.finish(id),
             Err(SendError::Permanent(reason)) => {
                 self.finish(id);
-                eprintln!("the door: {kind} was not mailed: {reason}");
+                eprintln!("the entry: {kind} was not mailed: {reason}");
             }
             Err(SendError::Retry { after, reason }) => {
                 if !self.retry(now_ms, id, after) {
                     self.finish(id);
-                    eprintln!("the door: {kind} was not mailed: {reason}");
+                    eprintln!("the entry: {kind} was not mailed: {reason}");
                 }
             }
         }
@@ -668,7 +668,7 @@ impl Outbox {
             && let Err(error) = tilo_files::native::private::sync_directory(dir)
         {
             eprintln!(
-                "the door: could not flush the mail outbox: {}",
+                "the entry: could not flush the mail outbox: {}",
                 reason(&error)
             );
         }
@@ -738,7 +738,7 @@ fn discard_path(path: &Path) {
         && error.kind() != std::io::ErrorKind::NotFound
     {
         eprintln!(
-            "the door: could not clear a mail outbox file: {}",
+            "the entry: could not clear a mail outbox file: {}",
             reason(&error)
         );
     }

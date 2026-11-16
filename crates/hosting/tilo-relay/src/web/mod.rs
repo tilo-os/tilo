@@ -67,8 +67,8 @@ pub struct WebConfig {
     pub fetch_proxy: Option<FetchProxySetup>,
     /// The wait list this host keeps for a workspace that takes people by
     /// invitation, when whoever runs it keeps one
-    /// ([`crate::door::WaitListDoor`]).
-    pub door: Option<Arc<crate::door::WaitListDoor>>,
+    /// ([`crate::entry::WaitListPage`]).
+    pub wait_list: Option<Arc<crate::entry::WaitListPage>>,
     /// Where the host takes WebTransport sessions, when not on the UDP port of
     /// [`Self::listen`] at the origin pages are told: a deployment whose
     /// HTTPS arrives through a proxy that carries no UDP names a way around
@@ -168,7 +168,7 @@ struct Web {
     context: WebContext,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
-    /// The workspaces this relay governs, for their directory and doors.
+    /// The workspaces this relay governs, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// Members' root envelopes, for `/envelope`.
     envelopes: envelopes::Envelopes,
@@ -182,7 +182,7 @@ struct Web {
     content_links: Arc<crate::content_links::ContentLinks>,
     /// The live plane: the one account of who is here.
     presence: Arc<plane::Authority>,
-    /// The page errors the door logs.
+    /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
     /// The sealed invitations this site keeps in place of their clerk: what a
     /// short link names, in bytes the site has no key for.
@@ -194,9 +194,9 @@ struct Web {
     login_codes: Arc<login_codes::LoginCodes>,
     /// The stand-in approvers this host keeps for people.
     stand_ins: Arc<stand_in::StandIns>,
-    /// The wait list the door keeps for a workspace taking people by
+    /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
-    door: Option<Arc<crate::door::WaitListDoor>>,
+    wait_list: Option<Arc<crate::entry::WaitListPage>>,
 }
 
 /// Where this host keeps the stand-ins it approves for people with.
@@ -447,7 +447,7 @@ impl Relay {
             site: config.site.as_deref().and_then(Site::new),
             login_codes: Arc::new(kept_login_codes(self.state_root(), public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
-            door: config.door.clone(),
+            wait_list: config.wait_list.clone(),
         });
         web.serve_stand_ins();
         web.serve_pushes(
@@ -774,7 +774,7 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<workspace>/report` or `…/errors`,
+/// A public workspace's entry (`/directory/<workspace>/report` or `…/errors`,
 /// and its wait list): JSON in, JSON out, a refusal as `{error}` the person
 /// reads. A person is let in through it on their device's session
 /// ([`tilo_relay_protocol::entering`]), not here.
@@ -782,17 +782,18 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
 )]
-async fn directory_door(
+async fn directory_entry(
     web: &Web,
     route: &str,
     bytes: &[u8],
     client: std::net::IpAddr,
 ) -> Result<Response<Body>, Response<Body>> {
     use tilo_relay_protocol::directory::{
-        DoorReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING, door_route,
+        EntryReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE, WAIT_LIST_STANDING,
+        entry_route,
     };
     let (workspace, step) =
-        door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
+        entry_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
     // A relay that governs no workspaces refuses before the request is parsed.
     let workspaces = governed_workspaces(web)?;
     // The wait list a workspace taking people by invitation keeps: an address
@@ -801,19 +802,19 @@ async fn directory_door(
         step,
         WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
     ) {
-        let Some(door) = &web.door else {
+        let Some(wait_list) = &web.wait_list else {
             return Err(refused(
                 StatusCode::NOT_FOUND,
                 "this workspace keeps no wait list",
             ));
         };
-        if door.workspace() != workspace {
+        if wait_list.workspace() != workspace {
             return Err(refused(
                 StatusCode::NOT_FOUND,
                 "this workspace keeps no wait list",
             ));
         }
-        let answered = crate::door::route(door, workspaces, client, step, bytes).await;
+        let answered = crate::entry::route(wait_list, workspaces, client, step, bytes).await;
         let mut response = json_status(answered.status, &answered.body);
         if let Some(seconds) = answered.retry_after_secs
             && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
@@ -830,7 +831,7 @@ async fn directory_door(
     };
     match step {
         "report" => {
-            let report: DoorReport = serde_json::from_slice(bytes)
+            let report: EntryReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
             workspaces
                 .report_listed(workspace, &report)
@@ -871,7 +872,7 @@ fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Response<Bo
 const ALLOWED_HEADERS: &str = "content-type, x-tilo-session";
 
 /// Whether `path` is part of the public directory: a listing anyone may read,
-/// and a door anyone may ask, from any site.
+/// and an entry anyone may ask, from any site.
 fn public_directory_route(path: &str) -> bool {
     directory_route(path).is_some()
 }
@@ -879,7 +880,7 @@ fn public_directory_route(path: &str) -> bool {
 /// The public directory's route a site names, below the listener's own paths.
 ///
 /// A relay's own routes live below [`API_PREFIX`]. A site names its directory
-/// in its `entry.json` and hangs each door off that address
+/// in its `entry.json` and hangs each entry off that address
 /// ([`tilo_relay_protocol::directory`]), so the same routes answer at the
 /// site's own paths — `/directory` and `/directory/<workspace>/report` — for a
 /// host a site's person reaches without the prefix: the ingress in front of
@@ -887,12 +888,12 @@ fn public_directory_route(path: &str) -> bool {
 fn directory_route(path: &str) -> Option<&str> {
     let route = path.strip_prefix(API_PREFIX).unwrap_or(path);
     (route == tilo_relay_protocol::directory::DIRECTORY_PATH
-        || tilo_relay_protocol::directory::door_route(route).is_some())
+        || tilo_relay_protocol::directory::entry_route(route).is_some())
     .then_some(route)
 }
 
 /// CORS for the public directory: any origin, no credentials, and the
-/// `Retry-After` a full door answers with. A page on any site reads the
+/// `Retry-After` a full entry answers with. A page on any site reads the
 /// listings and reports a workspace without going through its host.
 fn public_cors(response: &mut Response<Body>) {
     let headers = response.headers_mut();
@@ -1166,7 +1167,7 @@ async fn route(
 ) -> Result<Response<Body>, Response<Body>> {
     let path = request.uri().path().to_owned();
     // A site's own paths for the public directory — `/directory` and each
-    // door below it — reach the same routes as their versions below the
+    // entry below it — reach the same routes as their versions below the
     // prefix, so a host a site's person dials by the address its `entry.json`
     // names answers without being reached under the prefix.
     let Some(route) = path
@@ -1208,9 +1209,9 @@ async fn route(
                 workspaces: workspaces.directory(&online).await,
             }))
         }
-        _ if tilo_relay_protocol::directory::door_route(route).is_some() => {
+        _ if tilo_relay_protocol::directory::entry_route(route).is_some() => {
             let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-            directory_door(web, route, &bytes, client).await
+            directory_entry(web, route, &bytes, client).await
         }
         "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();

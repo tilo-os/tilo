@@ -410,14 +410,14 @@ pub fn signed_pre_admission_as(
     grant
 }
 
-/// One person's device joining `workspace` through its door, as a Tilo computer
-/// does: the door's invitation, the challenge it answers, then the Complete,
+/// One person's device joining `workspace` through its entry, as a Tilo computer
+/// does: the entry's invitation, the challenge it answers, then the Complete,
 /// which admits it. Answers the Complete it sent and the host's answer.
 ///
 /// # Panics
 ///
-/// The door does not admit the device.
-pub async fn door_join(
+/// The entry does not admit the device.
+pub async fn entry_join(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
@@ -428,7 +428,7 @@ pub async fn door_join(
     tilo_peer_state::join::JoinTransportResponse,
 ) {
     let role = tilo_relay_protocol::workspaces::Role::Editor;
-    door_join_as(
+    entry_join_as(
         workspaces,
         host,
         workspace,
@@ -439,15 +439,15 @@ pub async fn door_join(
     .await
 }
 
-/// One person's device joining `workspace` through its door with `role`, as a Tilo
-/// computer does: the door's invitation, the challenge it answers, then the
+/// One person's device joining `workspace` through its entry with `role`, as a Tilo
+/// computer does: the entry's invitation, the challenge it answers, then the
 /// Complete, which admits it. Answers the Complete it sent and the host's
 /// answer.
 ///
 /// # Panics
 ///
-/// The door does not admit the device.
-pub async fn door_join_as(
+/// The entry does not admit the device.
+pub async fn entry_join_as(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
@@ -498,7 +498,7 @@ pub async fn door_join_as(
     (complete, response)
 }
 
-/// `peer`'s device joins `call` in `workspace` as the workspace's voice door joins
+/// `peer`'s device joins `call` in `workspace` as the workspace's voice entry joins
 /// it, renewing `participation` when it names one; its grants come on
 /// `outbound`.
 ///
@@ -518,7 +518,7 @@ pub async fn voice_join(
         .await
 }
 
-/// `workspace`'s calls as `peer`'s device lists them through the voice door; the
+/// `workspace`'s calls as `peer`'s device lists them through the voice entry; the
 /// list's changes come on `outbound`.
 ///
 /// # Errors
@@ -533,7 +533,7 @@ pub async fn voice_calls(
     workspaces.voice_calls(workspace, peer, outbound).await
 }
 
-/// `peer`'s device ends `participation` in `call`, as the voice door ends it.
+/// `peer`'s device ends `participation` in `call`, as the voice entry ends it.
 pub fn voice_leave(
     workspaces: &Workspaces,
     peer: &tilo_relay_protocol::AuthenticatedPeer,

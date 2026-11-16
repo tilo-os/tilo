@@ -388,10 +388,10 @@ pub enum SettingsChange {
     /// Save a shortcut of the workspace, or remove the one with this id, as its
     /// saver's own device signed it ([`tilo_automation::ShortcutChange`]).
     Shortcuts(tilo_automation::ShortcutChange),
-    /// Settle the workspace's door: whether a directory lists it, whether it
+    /// Settle the workspace's entry: whether a directory lists it, whether it
     /// takes people by invitation only, and how many requests it keeps
-    /// ([`tilo_action_policy::DoorPolicy`]).
-    Door(tilo_action_policy::DoorPolicy),
+    /// ([`tilo_action_policy::EntryPolicy`]).
+    Entry(tilo_action_policy::EntryPolicy),
 }
 
 /// What a retired app-action setting named: `action` on `target_app`'s
@@ -527,7 +527,7 @@ impl WorkspaceMembershipCommand {
                 SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => {
                     Err(RETIRED_APP_AUTHORSHIP.to_owned())
                 }
-                SettingsChange::Door(door) => door
+                SettingsChange::Entry(entry) => entry
                     .clone()
                     .checked()
                     .map(drop)

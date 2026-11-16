@@ -104,7 +104,7 @@ impl GovernanceRow {
             Self::Membership => &["invitation_receipts_v1", "invitation_parts_v1"],
             Self::Sandbox => &["sandbox"],
             Self::Identities => &["peers", "peer_identities_v1"],
-            Self::Settings => &["name", "presets_v1", "door_v1"],
+            Self::Settings => &["name", "presets_v1", "entry_v1"],
             Self::Media => &[MEDIA_KEY],
             Self::Versions => &[VERSIONS_KEY],
             Self::Bots => &BOT_KEYS,

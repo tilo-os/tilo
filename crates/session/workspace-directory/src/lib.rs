@@ -1,4 +1,4 @@
-//! The public workspaces a site lists, the door each one admits people
+//! The public workspaces a site lists, the entry each one admits people
 //! through, and where a join stands: one implementation for the desktop
 //! session and for a browser page.
 //!
@@ -6,11 +6,11 @@
 //! its `entry.json`; the directory then lists every public workspace it
 //! serves with what it is, who is in it now and how lively it is
 //! ([`tilo_relay_protocol::directory`]). The directory sheet's store
-//! (`tilo_sheets::directory::Store`) reads those sites and asks their doors
+//! (`tilo_sheets::directory::Store`) reads those sites and asks their entries
 //! through this crate.
 //!
-//! Joining one enters it through its door ([`through_door`]), on the session
-//! the device opens with the door's host; a pasted invitation is verified for
+//! Joining one enters it through its entry ([`through_entry`]), on the session
+//! the device opens with the entry's host; a pasted invitation is verified for
 //! the person, and the workspace it grants is the workspace joined.
 //!
 //! Everything network-facing runs over [`tilo_net::Client`]: the desktop's
@@ -28,11 +28,11 @@ use tilo_relay_protocol::workspaces::Role;
 
 pub use client::{
     Granted, Person, SealedInvitation, Shelved, SiteEntry, SiteWorkspace, Taken, Way, client,
-    door_workspace, fetch_directory, invited_workspace, join_home, read_site, sealed_invitation,
-    shelve, site_entry, take, take_back, through_door, verify_invitation, web_origin,
+    entry_workspace, fetch_directory, invited_workspace, join_home, read_site, sealed_invitation,
+    shelve, site_entry, take, take_back, through_entry, verify_invitation, web_origin,
 };
 
-/// Why a site, its door or its shelf gave nothing to use.
+/// Why a site, its entry or its shelf gave nothing to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SiteError {
     /// What the directory sheet says, by the key of its catalogue's message
@@ -70,9 +70,9 @@ impl From<&str> for SiteError {
 pub struct Listed {
     /// What its directory says about it.
     pub entry: DirectoryEntry,
-    /// Its door, resolved; `None` for a site's home workspace that lets
-    /// people in by invitation only.
-    pub door: Option<url::Url>,
+    /// Its entry, as an address; `None` for a site's home workspace that
+    /// lets people in by invitation only.
+    pub entry_url: Option<url::Url>,
     /// The site whose own workspace it is: joining it joins that site's
     /// home.
     pub site: Option<url::Url>,
@@ -111,14 +111,14 @@ pub fn listings_of(
     page.workspaces
         .into_iter()
         .filter(|entry| !entry.name.trim().is_empty())
-        .map(|entry| Listed {
-            door: directory
-                .join(&entry.door)
+        .map(|listed| Listed {
+            entry_url: directory
+                .join(&listed.entry)
                 .ok()
-                .and_then(|door| web_origin(door.as_str()).ok()),
-            site: site.filter(|_| entry.community).cloned(),
+                .and_then(|entry| web_origin(entry.as_str()).ok()),
+            site: site.filter(|_| listed.community).cloned(),
             host: host.clone(),
-            entry,
+            entry: listed,
         })
         .collect()
 }
@@ -132,7 +132,7 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
             name: home.name.clone(),
             description: String::new(),
             default_role: Role::Editor,
-            door: home
+            entry: home
                 .admission
                 .as_ref()
                 .map(url::Url::to_string)
@@ -143,7 +143,7 @@ pub fn home_listing(site: &url::Url, home: &SiteWorkspace) -> Listed {
             last_active_ms: None,
             community: true,
         },
-        door: home.admission.clone(),
+        entry_url: home.admission.clone(),
         site: Some(site.clone()),
         host: site.host_str().unwrap_or_default().to_owned(),
     }
@@ -190,7 +190,7 @@ pub fn ordered(listings: Vec<Listed>, now_ms: u64) -> Vec<Listed> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::directory::{Face, door_path};
+    use tilo_relay_protocol::directory::{Face, entry_path};
 
     fn entry(name: &str) -> DirectoryEntry {
         let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -199,7 +199,7 @@ mod tests {
             name: name.into(),
             description: format!("All about {name}"),
             default_role: Role::Commenter,
-            door: door_path(workspace),
+            entry: entry_path(workspace),
             here: Vec::new(),
             here_count: 0,
             members: 3,
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_listings_door_is_read_against_its_directory() {
+    fn a_listings_entry_is_read_against_its_directory() {
         let page = DirectoryPage {
             workspaces: vec![entry("Coffee")],
         };
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].host, "eu1.tilo.sh");
         assert_eq!(
-            listed[0].door.as_ref().map(url::Url::as_str),
+            listed[0].entry_url.as_ref().map(url::Url::as_str),
             Some(
                 format!(
                     "https://eu1.tilo.sh/peer/v1/directory/{}/",
@@ -232,9 +232,9 @@ mod tests {
         );
         assert_eq!(listed[0].site, None, "a host's listing is no site's home");
 
-        // A door that is not a web address is no door.
+        // An entry that is not a web address is no entry.
         let mut odd = entry("Odd");
-        odd.door = "ftp://example.org/".into();
+        odd.entry = "ftp://example.org/".into();
         let listed = listings_of(
             DirectoryPage {
                 workspaces: vec![odd],
@@ -243,7 +243,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            listed.first().and_then(|listing| listing.door.clone()),
+            listed.first().and_then(|listing| listing.entry_url.clone()),
             None
         );
     }
@@ -319,7 +319,7 @@ mod tests {
         assert!(listed.entry.community);
         assert_eq!(listed.host, "tilo.sh");
         assert_eq!(listed.site, Some(site));
-        assert_eq!(listed.door, home.admission);
+        assert_eq!(listed.entry_url, home.admission);
         assert_eq!(listed.key(), "https://tilo.sh/");
     }
 

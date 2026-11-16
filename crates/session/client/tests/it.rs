@@ -52,8 +52,8 @@ mod content_answer;
 mod conversation_over_https;
 #[path = "crowded_entry.rs"]
 mod crowded_entry;
-#[path = "door_entry.rs"]
-mod door_entry;
+#[path = "entry.rs"]
+mod entry;
 #[path = "fetch_proxy.rs"]
 mod fetch_proxy;
 #[path = "first_landing.rs"]

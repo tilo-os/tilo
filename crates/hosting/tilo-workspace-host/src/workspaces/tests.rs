@@ -9,7 +9,7 @@ use tilo_relay_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    admit_view_reader, door_join, governor, governor_with, restricted_until, signed_pre_admission,
+    admit_view_reader, entry_join, governor, governor_with, restricted_until, signed_pre_admission,
     test_host, test_host_with_grants,
 };
 
@@ -1717,7 +1717,7 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
             &cert,
             PreAdmitRequest {
                 request_id: [9; 32],
-                grant: signed_pre_admission(&created.workspace, b"door"),
+                grant: signed_pre_admission(&created.workspace, b"entry"),
                 recipient_user_public_key: Some(device_cert.user_public_key),
                 inviter_name: None,
             },
@@ -1932,7 +1932,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
     let (writer, salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let writer_key = SigningKey::from_bytes(&[3; 32]);
     let (guest_key, guest) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 4).await;
+    entry_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 4).await;
     workspaces
         .pre_admit(
             &cert,
@@ -2312,7 +2312,7 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     );
 
     let (c, c_cert) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
+    entry_join(&workspaces, &cert, &workspace, (&c, &c_cert), 21).await;
     // Whatever the workspace published is retained before C's replay is read.
     workspaces
         .inner
@@ -2437,7 +2437,7 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
     let workspaces = relay.workspaces();
     let created = workspaces.create("Lounge").await.unwrap();
     let (laptop, laptop_cert) = guest_device();
-    let (complete, first) = door_join(
+    let (complete, first) = entry_join(
         workspaces,
         &cert,
         &created.workspace,
@@ -2450,7 +2450,7 @@ async fn a_join_the_host_completed_before_the_workspace_moved_on_is_finished_thr
     };
     // The answer never reached the laptop. Someone else joins meanwhile.
     let (other, other_cert) = guest_device();
-    let (_, joined) = door_join(
+    let (_, joined) = entry_join(
         workspaces,
         &cert,
         &created.workspace,
@@ -2584,7 +2584,7 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
         cert
     };
     let held = certify(1, None);
-    let (_, first) = door_join(workspaces, &cert, &created.workspace, (&laptop, &held), 21).await;
+    let (_, first) = entry_join(workspaces, &cert, &created.workspace, (&laptop, &held), 21).await;
     let JoinTransportResponse::Complete(delivered) = first else {
         panic!("the join is admitted: {first:?}");
     };
@@ -2669,7 +2669,7 @@ async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
     shape
 }
 
-/// A crowd arriving through the door costs the workspace one change each, added
+/// A crowd arriving through the entry costs the workspace one change each, added
 /// to what it publishes, not the whole workspace rebuilt, written and sent to
 /// every member once per arrival. A change that takes something back starts
 /// the workspace over at the next arrival, so a newcomer is never given what
@@ -2695,7 +2695,7 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     // it published since its last start takes nothing back.
     let mut arrivals = Vec::new();
     let (first, first_cert) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&first, &first_cert), 1).await;
+    entry_join(&workspaces, &cert, &workspace, (&first, &first_cert), 1).await;
     arrivals.push(first_cert);
     let shape = publication_shape(&workspaces, &workspace).await;
     assert!(
@@ -2705,7 +2705,7 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     let mut entries = shape.entries;
     for seed in 2..=8 {
         let (guest, guest_cert) = guest_device();
-        door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
+        entry_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
         arrivals.push(guest_cert);
         let shape = publication_shape(&workspaces, &workspace).await;
         assert!(
@@ -2722,7 +2722,7 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     let renamed = publication_shape(&workspaces, &workspace).await;
     assert!(!renamed.started_over && renamed.entries > entries);
     let (late, late_cert) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&late, &late_cert), 30).await;
+    entry_join(&workspaces, &cert, &workspace, (&late, &late_cert), 30).await;
     arrivals.push(late_cert);
     assert!(
         publication_shape(&workspaces, &workspace)
@@ -2736,7 +2736,7 @@ async fn a_crowd_joining_adds_to_the_workspace_rather_than_starting_it_over() {
     let mut started = None;
     for seed in 31..=250 {
         let (guest, guest_cert) = guest_device();
-        door_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
+        entry_join(&workspaces, &cert, &workspace, (&guest, &guest_cert), seed).await;
         arrivals.push(guest_cert);
         let shape = publication_shape(&workspaces, &workspace).await;
         if shape.started_over {
@@ -2919,7 +2919,7 @@ async fn a_workspace_names_its_own_host_to_every_member() {
 
 /// Membership as the workspace's signed log makes it, on the relay that hosts
 /// it: a new workspace holds its owner alone, a person who joins through the
-/// door is a member, one removed is gone and comes back through a new
+/// entry is a member, one removed is gone and comes back through a new
 /// invitation, and a member's copy of the workspace reaches the membership
 /// the relay holds.
 #[tokio::test]
@@ -2943,7 +2943,7 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     );
 
     let (guest_key, guest) = guest_device();
-    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 31).await;
+    entry_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 31).await;
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(live(&members, guest.user_public_key), "{members:?}");
 
@@ -2981,7 +2981,7 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(!live(&members, guest.user_public_key), "{members:?}");
 
-    door_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 33).await;
+    entry_join(&workspaces, &cert, &workspace, (&guest_key, &guest), 33).await;
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(
         live(&members, guest.user_public_key),

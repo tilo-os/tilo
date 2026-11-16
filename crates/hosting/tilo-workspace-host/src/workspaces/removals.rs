@@ -26,7 +26,7 @@ pub(super) const REMOVED_FOR_NS: u64 = 24 * 3600 * 1_000_000_000;
 /// was removed. The removals a workspace kept before the door are written in this
 /// same version 1 by [`Door::adopt`].
 pub(super) const FORMAT: Format = Format {
-    name: "workspace door",
+    name: "workspace removals",
     version: 1,
     oldest: 1,
     steps: &[],
@@ -41,16 +41,16 @@ struct Stored {
 
 /// One workspace's door state.
 #[derive(Debug, Default)]
-pub(super) struct Door {
+pub(super) struct Removals {
     removed: BTreeMap<[u8; 32], u64>,
     path: PathBuf,
 }
 
-impl Door {
+impl Removals {
     /// The door state of the workspace recorded at `workspace_path` (its `.workspace`
     /// file).
     pub(super) fn open(workspace_path: &Path) -> Result<Self, String> {
-        let path = workspace_path.with_extension("door");
+        let path = workspace_path.with_extension("removals");
         let stored = match std::fs::read(&path) {
             Ok(bytes) => {
                 let (stored, _) =
@@ -162,7 +162,7 @@ impl super::Workspaces {
             state
                 .lock()
                 .await
-                .door
+                .removals
                 .adopt(kept.clone())
                 .map_err(super::CollaborationError::new)?;
         }
@@ -181,14 +181,14 @@ mod tests {
     /// The door file this build writes: one person kept out, when they were
     /// removed. Kept so a workspace's door goes on reading the same way; a
     /// field added, removed or reordered changes these bytes.
-    const GOLDEN: &str = include_str!("../../golden/workspace-door/v1.hex");
+    const GOLDEN: &str = include_str!("../../golden/workspace-removals/v1.hex");
 
     fn golden() -> Vec<u8> {
         hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()
     }
 
     #[test]
-    fn the_door_file_kept_here_reads_and_writes_as_it_is() {
+    fn the_removals_file_kept_here_reads_and_writes_as_it_is() {
         assert_golden_bytes(
             FORMAT.name,
             &golden(),
@@ -214,30 +214,30 @@ mod tests {
     fn a_removed_person_is_refused_for_the_day_and_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut door = Door::open(&workspace).unwrap();
+        let mut removals = Removals::open(&workspace).unwrap();
         let person = [7; 32];
-        assert!(!door.refuses(person, 1_000));
-        door.remove(person, 1_000).unwrap();
-        assert!(door.refuses(person, 1_000));
-        assert!(door.refuses(person, 1_000 + REMOVED_FOR_NS - 1));
-        assert!(!door.refuses(person, 1_000 + REMOVED_FOR_NS));
+        assert!(!removals.refuses(person, 1_000));
+        removals.remove(person, 1_000).unwrap();
+        assert!(removals.refuses(person, 1_000));
+        assert!(removals.refuses(person, 1_000 + REMOVED_FOR_NS - 1));
+        assert!(!removals.refuses(person, 1_000 + REMOVED_FOR_NS));
 
-        let restored = Door::open(&workspace).unwrap();
+        let restored = Removals::open(&workspace).unwrap();
         assert!(restored.refuses(person, 1_000 + REMOVED_FOR_NS - 1));
 
-        door.clear(person).unwrap();
-        assert!(!door.refuses(person, 1_000));
-        assert!(!Door::open(&workspace).unwrap().refuses(person, 1_000));
+        removals.clear(person).unwrap();
+        assert!(!removals.refuses(person, 1_000));
+        assert!(!Removals::open(&workspace).unwrap().refuses(person, 1_000));
     }
 
     #[test]
     fn an_expired_removal_is_forgotten_when_the_next_one_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace.workspace");
-        let mut door = Door::open(&workspace).unwrap();
-        door.remove([1; 32], 1).unwrap();
-        door.remove([2; 32], 1 + REMOVED_FOR_NS).unwrap();
-        assert_eq!(door.removed.len(), 1, "{:?}", door.removed.keys());
-        assert!(door.refuses([2; 32], 1 + REMOVED_FOR_NS));
+        let mut removals = Removals::open(&workspace).unwrap();
+        removals.remove([1; 32], 1).unwrap();
+        removals.remove([2; 32], 1 + REMOVED_FOR_NS).unwrap();
+        assert_eq!(removals.removed.len(), 1, "{:?}", removals.removed.keys());
+        assert!(removals.refuses([2; 32], 1 + REMOVED_FOR_NS));
     }
 }

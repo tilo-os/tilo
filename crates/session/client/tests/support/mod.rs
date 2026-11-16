@@ -187,7 +187,7 @@ pub async fn start_host_plain(
 
 /// [`start_host_plain`], whose operator trust policy lets the people
 /// `guests` (user roots) connect. Connecting is not membership: a guest
-/// enters a workspace only through its invitation ([`door`], [`redeem`]).
+/// enters a workspace only through its invitation ([`entry_grant`], [`redeem`]).
 pub async fn start_host_admitting(
     root: &SigningKey,
     host: &Device,
@@ -325,7 +325,7 @@ pub async fn start_host_serving(
             plain_listen,
             public_origin: None,
             fetch_proxy,
-            door: None,
+            wait_list: None,
             link: None,
             site: None,
         })
@@ -402,7 +402,7 @@ pub async fn start_workspace_host_relaying(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            door: None,
+            wait_list: None,
             link: None,
             site: None,
         })
@@ -583,7 +583,7 @@ pub fn start_page(
     )
 }
 
-/// [`start_page`], its session entering a workspace through its door as it
+/// [`start_page`], its session entering a workspace through its entry as it
 /// opens, as a new visitor's page does.
 pub fn enter_page(
     host: Host,
@@ -791,10 +791,10 @@ pub async fn holds(peer: &Link, route: &DocumentRoute, doc: &AutoCommit) -> Auto
 }
 
 /// The workspace's one-time pre-admission for `person`, as the workspace service's
-/// door asks the workspace for it: the owner's grant for a token's digest,
+/// entry asks the workspace for it: the owner's grant for a token's digest,
 /// issued as an invitation only `person` redeems. Returns the invitation
 /// and the token.
-pub async fn door(
+pub async fn entry_grant(
     host: &TestHost,
     owner: &SigningKey,
     owner_host: &Device,
@@ -833,7 +833,7 @@ pub async fn door(
     (issued.signed_invitation, token.to_vec())
 }
 
-/// Redeem `door` for `cert`'s device in the host's process, as its session's entry has the
+/// Redeem `entry` for `cert`'s device in the host's process, as its session's entry has the
 /// workspace admit it once the device proved its key on the connection
 /// (`invitation_entry.rs` walks that entry itself): the workspace admits it as an editor.
 pub async fn redeem(
@@ -866,16 +866,16 @@ pub async fn redeem(
     );
 }
 
-/// Let `cert`'s device in through `door`, then start its page in the workspace.
+/// Let `cert`'s device in through `entry`, then start its page in the workspace.
 pub async fn enter(
     host: &TestHost,
-    door: (Vec<u8>, Vec<u8>),
+    entry: (Vec<u8>, Vec<u8>),
     cert: &DeviceCert,
     key: &SigningKey,
     host_cert: &DeviceCert,
     workspace_id: WorkspaceId,
 ) -> Link {
-    redeem(host, door, cert, key).await;
+    redeem(host, entry, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
     peer.send(Cmd::Join(workspace_id)).unwrap();
     in_workspace(&peer, workspace_id).await;

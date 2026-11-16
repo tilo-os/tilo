@@ -10,7 +10,7 @@
 //! root made no key here, so what it announces is dropped unread, and nobody
 //! can fill the relay's log with entries that reach nothing. Every entry the
 //! relay keeps joins its revocation log, which every handshake, session and
-//! administration door reads, so the key is refused everywhere at once — a
+//! administration entry reads, so the key is refused everywhere at once — a
 //! device of the person's, and the stand-in approver this host holds for
 //! them, which no workspace lists because a stand-in is no device. Every
 //! workspace the relay governs also writes the entries it may carry into its
@@ -112,7 +112,7 @@ impl Workspaces {
                 .write_recover()
                 .insert((*entry).clone())
                 .map_err(|error| error.to_string())?;
-            // The door holds only the host's own person's devices.
+            // The entry holds only the host's own person's devices.
             if entry.user_public_key == host.cert.user_public_key {
                 self.inner
                     .mcp_server
@@ -202,7 +202,7 @@ mod tests {
         sign_revocation_entry,
     };
 
-    use super::super::fixtures::{admit_view_reader, door_join, governor, test_host};
+    use super::super::fixtures::{admit_view_reader, entry_join, governor, test_host};
 
     fn revocation(root: &SigningKey, device: [u8; 32]) -> RevocationEntry {
         let mut entry = RevocationEntry {
@@ -440,7 +440,7 @@ mod tests {
         };
         let (phone_key, phone) = device(23, &ada);
         let (_, laptop) = device(24, &ada);
-        door_join(
+        entry_join(
             workspaces,
             &cert,
             &created.workspace,
@@ -494,7 +494,7 @@ mod tests {
         // workspace's replay, which carries the phone's hello.
         let bo = SigningKey::from_bytes(&[25; 32]);
         let (tablet_key, tablet) = device(26, &bo);
-        let (_, answer) = door_join(
+        let (_, answer) = entry_join(
             workspaces,
             &cert,
             &created.workspace,

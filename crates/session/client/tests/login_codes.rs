@@ -19,7 +19,7 @@ use tilo_relay_client::login_code;
 use tilo_relay_protocol::login_code::{Report, Step};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{door, enrol, enter as enter_as, start_workspace_host};
+use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -40,7 +40,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
         .unwrap();
     let https = host.https();
 
-    // Bob's tab holds his root and came in through the door.
+    // Bob's tab holds his root and came in through the entry.
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let tab_key = new_key();
@@ -54,7 +54,7 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     .unwrap();
     let tab = enter_as(
         &host,
-        door(&host, &alice, &host_device, &lounge.workspace, user).await,
+        entry_grant(&host, &alice, &host_device, &lounge.workspace, user).await,
         &tab_cert,
         &tab_key,
         &host_device.cert,

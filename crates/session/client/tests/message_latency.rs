@@ -42,7 +42,7 @@ const BUDGET: Duration = Duration::from_millis(500);
 const MESSAGES: usize = 20;
 
 /// Two people's pages in one workspace, each a session of a device of its own:
-/// Ada's host serves it, and Bob joins it through its door as the second person
+/// Ada's host serves it, and Bob joins it through its entry as the second person
 /// in it does.
 struct Pages {
     a: Link,
@@ -67,7 +67,7 @@ impl Pages {
         let bob = enrol(&bob_root, "bob-laptop", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
         // Bob is someone else: its operator trust policy admits him, and the
-        // workspace's governance admits him only through its own door.
+        // workspace's governance admits him only through its own entry.
         let host = start_host_admitting(
             &ada_root,
             &host_device,
@@ -87,9 +87,9 @@ impl Pages {
         a.join_placed(crate::support::WORKSPACE, "Workspace")
             .unwrap();
         crate::support::in_workspace(&a, crate::support::workspace()).await;
-        // Bob's page enters the same workspace through its door, on the
+        // Bob's page enters the same workspace through its entry, on the
         // invitation its owner issued for him.
-        let granted = crate::support::door(
+        let granted = crate::support::entry_grant(
             &host,
             &ada_root,
             &host_device,

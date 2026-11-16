@@ -461,7 +461,7 @@ struct ConnectConfig {
     #[serde(default)]
     revocations: Vec<RevocationEntry>,
     /// The workspace this device enters through its door as its session
-    /// opens ([`door_entry`]), when the host has not admitted it yet.
+    /// opens ([`entry_request`]), when the host has not admitted it yet.
     #[serde(default)]
     entering: Option<tilo_relay_protocol::entering::Entering>,
 }
@@ -804,7 +804,7 @@ pub fn reconnect_certificate(
         .ok_or_else(|| js_error("the answer has no name"))
 }
 
-/// What a page says as it enters a workspace ([`door_entry`], [`invitation_entry`]): the
+/// What a page says as it enters a workspace ([`entry_request`], [`invitation_entry`]): the
 /// certificate this device holds (`{cert, hostCert}` as the page keeps it, or as pairing certified
 /// it), the label a certificate made now carries, the name the workspace's people see, and the
 /// pre-admission's one-time token an invitation was issued under.
@@ -878,7 +878,7 @@ pub async fn invitation_entry(
 
 /// What this page's device (`custody`) enters `workspace` through its door with, on the host whose
 /// certificate is `hostCert` (JSON), through the one entry every device takes
-/// ([`tilo_session_client::device::door_entry`]): the certificate it enters under (the one it holds
+/// ([`tilo_session_client::device::entry_request`]): the certificate it enters under (the one it holds
 /// from that host where it still serves, else one the person's root `root` certifies now) and the
 /// entry the session it starts asks for as it opens. `options` is [`Accepting`] JSON. Resolves to
 /// `{certificate: {cert, hostCert}, entering}` JSON; [`WasmPeer::start`] takes both, and the host's
@@ -887,8 +887,8 @@ pub async fn invitation_entry(
 /// # Errors
 ///
 /// Rejects with an `Error` named `HostRefusal` whose `code` is `no_certificate`.
-#[wasm_bindgen(js_name = doorEntry)]
-pub async fn door_entry(
+#[wasm_bindgen(js_name = entryRequest)]
+pub async fn entry_request(
     host_cert: String,
     workspace: String,
     custody: JsValue,
@@ -910,7 +910,7 @@ pub async fn door_entry(
     } else {
         Some(PageSigner::from_js(&root)?)
     };
-    let (cert, entering) = tilo_session_client::device::door_entry(
+    let (cert, entering) = tilo_session_client::device::entry_request(
         &host_cert,
         &workspace,
         &device,

@@ -1290,7 +1290,7 @@ where
             MAX_FRAME_BYTES,
             doorway
                 .as_deref()
-                .map(|workspaces| workspaces as &dyn crate::handshake::Doorway),
+                .map(|workspaces| workspaces as &dyn crate::handshake::Admit),
             binding,
         )
         .await

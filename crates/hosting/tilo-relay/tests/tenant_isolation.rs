@@ -2,12 +2,12 @@
 //!
 //! A hosted relay governs workspaces for people who share nothing but the host:
 //! two tenants, each its own governed workspace with its own members. These
-//! tests stand the real relay up with two such workspaces and drive every door a
+//! tests stand the real relay up with two such workspaces and drive every entry a
 //! member, an agent or a compute client has, asserting that one tenant
 //! cannot read, write, enumerate, administer or invoke anything in the
 //! other's workspace, that an agent holds only what its delegation names and
 //! never governs, and that a removed member loses access at once. Each
-//! refusal is checked against the other workspace's state afterwards, so a door
+//! refusal is checked against the other workspace's state afterwards, so an entry
 //! that answered "no" but acted anyway still fails.
 //!
 //! The suite is the `tenant_isolation::` module of the relay's `it` target.
@@ -161,7 +161,7 @@ async fn redeem(device: &TestDevice, issued: &IssuedInvitation) -> Result<(), St
         .map_err(|error| error.to_string())
 }
 
-/// What a workspace's governance holds, as far as any door could change it.
+/// What a workspace's governance holds, as far as any entry could change it.
 async fn governance(workspaces: &Workspaces, host: &TestDevice, workspace: &str) -> String {
     let (generation, members) = workspaces.membership(workspace).await.unwrap();
     let pending = workspaces.pending(workspace, &host.cert).await.unwrap();
@@ -859,7 +859,7 @@ async fn an_agent_never_governs_and_reaches_no_workspace_outside_its_delegation(
     }
 
     // An agent governs nothing, not even the workspace it is delegated, and it
-    // is no host person: the one decision every door asks refuses it
+    // is no host person: the one decision every entry asks refuses it
     // removing anyone, the host's operations and either workspace's governance.
     removal_refused("the agent", &agent, &t.relay, &t.acme, t.ann.user_pk).await;
     removal_refused("the agent", &agent, &t.relay, &t.globex, t.bob.user_pk).await;

@@ -1,7 +1,7 @@
-//! A page's own uncaught errors, as its door reports them.
+//! A page's own uncaught errors, as its entry reports them.
 //!
-//! A page that came in through a host's door sends what it did not catch to
-//! `<door>errors`: one beacon, five a page load at most. The door takes each
+//! A page that came in through a host's entry sends what it did not catch to
+//! `<entry>errors`: one beacon, five a page load at most. The entry takes each
 //! report as one log line for the site's operator and keeps nothing else: no
 //! report reaches a workspace, a store or another person.
 

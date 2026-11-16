@@ -20,7 +20,7 @@ pub struct People {
     pub release: String,
     /// The workspace's name in that release.
     pub workspace: String,
-    /// The addresses left at its door: people who asked without an invitation.
+    /// The addresses left at its entry: people who asked without an invitation.
     #[serde(default)]
     pub wait_list: Vec<Waiting>,
     /// The workspace's people, its owner included.
@@ -28,13 +28,13 @@ pub struct People {
     pub members: Vec<Member>,
 }
 
-/// One address left at the door, as the release kept it.
+/// One address left at the entry, as the release kept it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Waiting {
     /// The address, as first typed.
     pub contact: String,
-    /// The language the door was read in (`en`, `de`), for the mails it gets.
+    /// The language the entry was read in (`en`, `de`), for the mails it gets.
     #[serde(default = "english")]
     pub language: String,
     /// When it was left, in nanoseconds since the Unix epoch; `0` when the
@@ -110,6 +110,6 @@ pub struct Invitation {
     pub role: String,
     /// The link that brings them in.
     pub link: String,
-    /// Whether the door mailed it to `email`.
+    /// Whether the entry mailed it to `email`.
     pub mailed: bool,
 }

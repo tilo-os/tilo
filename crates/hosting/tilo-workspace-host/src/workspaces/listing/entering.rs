@@ -1,27 +1,27 @@
 //! A device entering a workspace on its session
-//! ([`tilo_relay_protocol::entering`]): through the door, which lets the
+//! ([`tilo_relay_protocol::entering`]): through the entry, which lets the
 //! person in as its HTTP form did and issues the invitation, or with an
 //! invitation of its own; the workspace admits the device, which proved it
 //! holds its key on the session's connection, with that invitation.
 
-use tilo_relay_protocol::directory::DoorJoin;
+use tilo_relay_protocol::directory::EntryJoin;
 use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entry, Through};
 use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use crate::handshake::{Doorway, EntryFuture};
+use crate::handshake::{Admit, EntryFuture};
 use crate::workspace_access::person_device;
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
 use tilo_relay_protocol::WorkspaceId;
 
-/// A refusal of the join itself, after the door let the person in.
+/// A refusal of the join itself, after the entry let the person in.
 const fn refused(reason: String) -> EnterRefusal {
     EnterRefusal::Workspace(reason)
 }
 
-impl Doorway for Workspaces {
+impl Admit for Workspaces {
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
             let Entry {
@@ -46,27 +46,27 @@ impl Doorway for Workspaces {
             }
             // A device that is a member already — a `tilo mcp` restarted, a
             // page opened again — enters with the workspace's own admission:
-            // the door has nothing to decide for it, and an entry that asked
+            // the entry has nothing to decide for it, and an entry that asked
             // it anyway would issue an invitation into the workspace's
             // governance for someone already in, publish that to everyone
             // here and spend it, on every run.
-            if entering.through == Through::Door
+            if entering.through == Through::Entry
                 && let Some(member) = self.member_already(cert, &entering.workspace).await
             {
                 return self.with_host(&entering.workspace, member).await;
             }
             // A further device of someone the workspace has in it — a second
             // tab, a new computer of theirs — is theirs, not a newcomer's:
-            // it comes in at the part its person holds, whatever the door
+            // it comes in at the part its person holds, whatever the entry
             // says to strangers, with no invitation.
             let member_device = match entering.through {
-                Through::Door => self.member_device(cert, &entering.workspace).await,
+                Through::Entry => self.member_device(cert, &entering.workspace).await,
                 Through::Invitation { .. } => None,
             };
             let reply = match (member_device, entering.through) {
                 (Some(reply), _) => reply,
-                (None, Through::Door) => {
-                    match self.door(cert, &entering.workspace, &entering.name).await {
+                (None, Through::Entry) => {
+                    match self.entry(cert, &entering.workspace, &entering.name).await {
                         Ok((invitation, token)) => {
                             self.redeem_on_connection(
                                 Presented {
@@ -123,16 +123,16 @@ impl Doorway for Workspaces {
 }
 
 impl Workspaces {
-    /// Let `cert`'s person, named `name`, in through `workspace`'s door: the
+    /// Let `cert`'s person, named `name`, in through `workspace`'s entry: the
     /// invitation it issued them and its one-time token, or why not.
-    async fn door(
+    async fn entry(
         &self,
         cert: &DeviceCert,
         workspace: &str,
         name: &str,
     ) -> Result<(Vec<u8>, String), EnterRefusal> {
         // A key acting for someone the workspace has in it is no device of
-        // theirs: the door would hand it its person's part, and its
+        // theirs: the entry would hand it its person's part, and its
         // redemption would hold it unbounded. It comes in by the delegation
         // that bounds it.
         if !person_device(cert)
@@ -141,40 +141,40 @@ impl Workspaces {
                 .await
                 .is_some()
         {
-            return Err(EnterRefusal::Door {
+            return Err(EnterRefusal::Entry {
                 retry_after_secs: None,
-                refused: crate::workspaces::DoorRefusal::Refused(
-                    "an agent comes into a workspace its person is in by its delegation, not through the door"
+                refused: crate::workspaces::EntryRefusal::Refused(
+                    "an agent comes into a workspace its person is in by its delegation, not through the entry"
                         .to_owned(),
                 )
-                .answer_with(self.wait_list_door()),
+                .answer_with(self.wait_list_page()),
             });
         }
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(cert.user_public_key),
             display_name: kept(name, MAX_DISPLAY_NAME_CHARS),
         };
         let asking = crate::timing::start();
         let admitted = self.admit_listed(workspace, &join).await;
-        crate::timing::event("entry.door", asking, 0);
+        crate::timing::event("entry.entry", asking, 0);
         admitted
             .map(|(issued, token)| (issued.signed_invitation, token))
-            .map_err(|refusal| EnterRefusal::Door {
+            .map_err(|refusal| EnterRefusal::Entry {
                 retry_after_secs: match refusal {
-                    crate::workspaces::DoorRefusal::Full { retry_after_secs } => {
+                    crate::workspaces::EntryRefusal::Full { retry_after_secs } => {
                         Some(retry_after_secs)
                     }
                     _ => None,
                 },
-                refused: refusal.answer_with(self.wait_list_door()),
+                refused: refusal.answer_with(self.wait_list_page()),
             })
     }
 
     /// What `cert`'s device hears when it is a member of `workspace` already,
-    /// and the door keeps nobody out of it: the workspace's own admission,
+    /// and the entry keeps nobody out of it: the workspace's own admission,
     /// with the standings its changes there are decided against brought up to
     /// date first. `None` for a device the workspace does not admit, and for
-    /// one whose person the door refuses.
+    /// one whose person the entry refuses.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its standings are settled and the device's admission is read from it"
@@ -183,7 +183,7 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let governed = self.workspace(workspace).await.ok()?;
         let mut governed = governed.lock().await;
-        // The refusals the door would answer: a person banned or removed here
+        // The refusals the entry would answer: a person banned or removed here
         // does not come back in by the admission it gave them before.
         let policy = governed
             .peer()
@@ -191,7 +191,7 @@ impl Workspaces {
             .ok()?
             .policy;
         if policy.is_blocked(&hex::encode(cert.user_public_key))
-            || governed.door.refuses(cert.user_public_key, now)
+            || governed.removals.refuses(cert.user_public_key, now)
         {
             return None;
         }
@@ -238,7 +238,7 @@ impl Workspaces {
     /// follows the person, not one device key: a browser tab is a device of
     /// its own, and every further one its person opens comes in this way.
     ///
-    /// `None` when this is not for it, and the door decides as it does for
+    /// `None` when this is not for it, and the entry decides as it does for
     /// anyone: a key acting for the person rather than a device of theirs
     /// (an agent's grant), a person the workspace does not have in it, or
     /// one it banned or removed within the day.
@@ -261,7 +261,7 @@ impl Workspaces {
                 .policy;
             let person = hex::encode(cert.user_public_key);
             if policy.is_blocked(&person)
-                || governed.door.refuses(cert.user_public_key, now)
+                || governed.removals.refuses(cert.user_public_key, now)
                 || policy.active_role(&person).is_none()
             {
                 return None;
@@ -292,7 +292,7 @@ impl Workspaces {
                         person = %person,
                         device = %hex::encode(cert.device_public_key),
                         outcome = "member device admitted",
-                        "a member's further device came in through the door as theirs"
+                        "a member's further device came in through the entry as theirs"
                     );
                 }
                 Err(error) => return Some(JoinReply::Refused(error)),
@@ -421,13 +421,13 @@ mod tests {
         reason = "the relay handle a test binds is a shared handle it keeps until the test ends"
     )]
     use ed25519_dalek::SigningKey;
-    use tilo_relay_protocol::directory::{DoorJoin, Listing};
+    use tilo_relay_protocol::directory::{EntryJoin, Listing};
     use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
     use tilo_relay_protocol::workspaces::{JoinReply, Role};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
-    use crate::handshake::Doorway;
+    use crate::handshake::Admit;
     use crate::workspaces::fixtures::{governor, signed_pre_admission_as, test_host};
     use crate::workspaces::{PreAdmitRequest, Workspaces};
 
@@ -450,14 +450,14 @@ mod tests {
         cert
     }
 
-    /// `cert`'s device asks to come into `workspace` through its door, on a
+    /// `cert`'s device asks to come into `workspace` through its entry, on a
     /// session whose proof the handshake checked.
     async fn through_the_door(
         workspaces: &Workspaces,
         workspace: &str,
         cert: &DeviceCert,
     ) -> Entered {
-        Doorway::enter(
+        Admit::enter(
             workspaces,
             cert,
             Entry {
@@ -465,7 +465,7 @@ mod tests {
                     workspace: workspace.to_owned(),
                     name: "Ada".into(),
                     request_id: rand::random(),
-                    through: Through::Door,
+                    through: Through::Entry,
                 },
                 access: None,
                 proof: [0; 64],
@@ -525,7 +525,7 @@ mod tests {
 
     /// A person a workspace has in it brings in every further device their
     /// root certifies — a second tab is a device of its own — through the
-    /// door of a workspace that takes strangers by invitation only, and of
+    /// entry of a workspace that takes strangers by invitation only, and of
     /// one that is not listed at all, at the part they hold there: a
     /// Moderator stays a Moderator, never the listing's default. A stranger
     /// is still turned away from both.
@@ -592,7 +592,7 @@ mod tests {
         relay.shutdown().await;
     }
 
-    /// The door itself, asked for a person an invitation-only workspace has
+    /// The entry itself, asked for a person an invitation-only workspace has
     /// in it, lets them in as its doc says: with an invitation at the part
     /// they hold, which a further device of theirs redeems without changing
     /// it.
@@ -622,7 +622,7 @@ mod tests {
         member_at(workspaces, &owner, &workspace, &ada, Role::Moderator).await;
         let before = role_of(workspaces, &workspace, ada.verifying_key().to_bytes()).await;
 
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(ada.verifying_key().to_bytes()),
             display_name: "Ada".into(),
         };
@@ -655,7 +655,7 @@ mod tests {
     }
 
     /// A person the workspace banned, or removed, brings no new device in
-    /// through the door; nor does a key acting for a member, an agent's grant,
+    /// through the entry; nor does a key acting for a member, an agent's grant,
     /// which comes in by its delegation and never as the person.
     #[tokio::test]
     async fn a_banned_or_removed_persons_device_and_a_members_agent_stay_out() {

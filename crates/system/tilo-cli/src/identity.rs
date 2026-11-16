@@ -276,7 +276,7 @@ async fn through_door(person: &Person, site: &str) -> Result<()> {
     };
     let began = std::time::Instant::now();
     loop {
-        let (cert, entry) = device::door_entry(
+        let (cert, entry) = device::entry_request(
             &info.host_cert,
             &workspace,
             &person.device,

@@ -1,7 +1,7 @@
-//! Entering a listed workspace through its door, as every device does it: on the session itself
-//! (`device::door_entry`, which the page calls as `doorEntry`, then the session's own handshake):
-//! the door lets the person in and the workspace admits this very device, under the certificate
-//! it holds from that host or one its person's root makes now; a door that says no says why in a
+//! Entering a listed workspace through its entry, as every device does it: on the session itself
+//! (`device::entry_request`, which the page calls as `entryRequest`, then the session's own handshake):
+//! the entry lets the person in and the workspace admits this very device, under the certificate
+//! it holds from that host or one its person's root makes now; an entry that says no says why in a
 //! code of its own. Until the workspace admitted it, a stranger's connection carries the entry and
 //! nothing else.
 
@@ -24,11 +24,11 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::frame::{read_frame, read_frame_or_eof, write_frame};
 use tilo_relay_protocol::auth::{Hello, HelloAck};
 use tilo_relay_protocol::entering::{
-    ENTRY_BINDING_LABEL, EnterRefusal, Entered, Entering as DoorEntry, Entry, entry_digest,
+    ENTRY_BINDING_LABEL, EnterRefusal, Entered, Entering as EntryRequest, Entry, entry_digest,
 };
 use tilo_relay_protocol::transport::{ALPN, Envelope};
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, Held, HostRefusal, door_entry, entered};
+use tilo_session_client::device::{Entering, Held, HostRefusal, entered, entry_request};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};
@@ -49,7 +49,7 @@ fn entering<'a>(held: Option<&'a Held>, root: &'a SigningKey) -> Entering<'a> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_says_why() {
+async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_says_why() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -69,11 +69,11 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
         .unwrap();
     let host_cert = host_device.cert.clone();
 
-    // Bob's tab, with his root, enters through the door on its session: the workspace admits this
+    // Bob's tab, with his root, enters through the entry on its session: the workspace admits this
     // very key, and the session subscribes at once.
     let bob = new_key();
     let page = new_key();
-    let (cert, entry) = door_entry(&host_cert, &lounge.workspace, &page, entering(None, &bob))
+    let (cert, entry) = entry_request(&host_cert, &lounge.workspace, &page, entering(None, &bob))
         .await
         .unwrap();
     assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
@@ -110,7 +110,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
         cert: cert.clone(),
         host_cert: Some(host_cert.clone()),
     };
-    let (kept, _) = door_entry(
+    let (kept, _) = entry_request(
         &host_cert,
         &lounge.workspace,
         &page,
@@ -124,7 +124,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
     in_workspace(&member, lounge.workspace_id).await;
     member.close();
 
-    // A door that takes people by invitation says so, in its code: someone without one is told to
+    // An entry that takes people by invitation says so, in its code: someone without one is told to
     // be invited, not left to read a sentence, and the session stops.
     workspaces
         .list_invitation_only(&lounge.workspace, &host_device.cert, true)
@@ -132,7 +132,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
         .unwrap();
     let carol = new_key();
     let tab = new_key();
-    let (cert, entry) = door_entry(&host_cert, &lounge.workspace, &tab, entering(None, &carol))
+    let (cert, entry) = entry_request(&host_cert, &lounge.workspace, &tab, entering(None, &carol))
         .await
         .unwrap();
     let closed = enter_page(
@@ -224,15 +224,15 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let device = new_key();
     let cert = guest(&root, &device).await;
     let device_key = cert.device_public_key;
-    let entry = |workspace: &str| DoorEntry {
+    let entry = |workspace: &str| EntryRequest {
         workspace: workspace.to_owned(),
         name: "Stranger".to_owned(),
         request_id: rand::random(),
-        through: tilo_relay_protocol::entering::Through::Door,
+        through: tilo_relay_protocol::entering::Through::Entry,
     };
     // An entry's hello, its proof signed over `connection`'s keying material.
     let hello_on = |connection: &iroh::endpoint::Connection,
-                    entering: DoorEntry,
+                    entering: EntryRequest,
                     access: Option<collab_types::MlsAccessRequestV1>| {
         let proof = device
             .sign(&entry_digest(&binding(connection), &device_key, &entering))
@@ -264,7 +264,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         .unwrap();
     says_nothing_more(&mut recv).await;
 
-    // A stranger asking to enter a workspace with no door, with the workspace's records asked
+    // A stranger asking to enter a workspace with no entry, with the workspace's records asked
     // right behind, is told so and nothing else: what followed its hello is never read.
     let (_endpoint, connection, mut send, mut recv) = dial(&host).await;
     write_frame(
@@ -288,7 +288,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         matches!(
             answer,
             tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Entered(
-                Entered::Refused(EnterRefusal::Door { .. })
+                Entered::Refused(EnterRefusal::Entry { .. })
             ))
         ),
         "{answer:?}"
@@ -384,7 +384,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         },
     )) = answer
     else {
-        panic!("the door admits the stranger's own entry, naming its host: {answer:?}");
+        panic!("the entry admits the stranger's own entry, naming its host: {answer:?}");
     };
     assert_eq!(workspace, lounge.workspace);
     let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&address).unwrap();
@@ -415,16 +415,16 @@ fn entering_without_a_root(held: Option<&Held>) -> Entering<'_> {
     }
 }
 
-/// A device with no root at hand comes to the door under what it holds from that very host for
-/// its own key, and with anything else it is told it holds no certificate, typed, before the door
+/// A device with no root at hand comes to the entry under what it holds from that very host for
+/// its own key, and with anything else it is told it holds no certificate, typed, before the entry
 /// or any host is asked.
 #[tokio::test]
-async fn a_device_without_a_root_comes_to_the_door_only_under_what_it_holds_from_that_host() {
+async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_from_that_host() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_cert = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
     let other_host = enrol(&alice, "alice-other", DeviceCapabilities::member()).cert;
     let (bob, page, tab) = (new_key(), new_key(), new_key());
-    let (cert, _) = door_entry(&host_cert, "lounge", &page, entering(None, &bob))
+    let (cert, _) = entry_request(&host_cert, "lounge", &page, entering(None, &bob))
         .await
         .unwrap();
     let own = Held {
@@ -436,7 +436,7 @@ async fn a_device_without_a_root_comes_to_the_door_only_under_what_it_holds_from
         host_cert: Some(other_host),
     };
 
-    let (kept, entry) = door_entry(
+    let (kept, entry) = entry_request(
         &host_cert,
         "lounge",
         &page,
@@ -447,7 +447,7 @@ async fn a_device_without_a_root_comes_to_the_door_only_under_what_it_holds_from
     assert_eq!(kept, cert);
     assert_eq!(entry.workspace, "lounge");
     assert!(
-        matches!(entry.through, tilo_relay_protocol::entering::Through::Door),
+        matches!(entry.through, tilo_relay_protocol::entering::Through::Entry),
         "{entry:?}"
     );
 
@@ -457,7 +457,7 @@ async fn a_device_without_a_root_comes_to_the_door_only_under_what_it_holds_from
         ("held for another device's key", Some(&own), &tab),
     ];
     for (row, held, device) in refusals {
-        let refused = door_entry(&host_cert, "lounge", device, entering_without_a_root(held))
+        let refused = entry_request(&host_cert, "lounge", device, entering_without_a_root(held))
             .await
             .unwrap_err();
         assert_eq!(

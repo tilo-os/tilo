@@ -36,7 +36,7 @@ pub(super) struct Asked {
     pub invitee_name: Option<String>,
     pub unless_owned: bool,
     /// The wait-list entry the invitation is issued for, where the person is
-    /// an address the door kept.
+    /// an address the entry kept.
     pub wait_list_entry: Option<[u8; 32]>,
 }
 

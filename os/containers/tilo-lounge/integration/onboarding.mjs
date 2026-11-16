@@ -7,10 +7,10 @@
 //
 //   0. the person who runs the host arrives, and the operator declares them an
 //      owner through the workspace's operator socket — how a fresh
-//      invitation-only Lounge gets its first member; the door lets them in,
+//      invitation-only Lounge gets its first member; the entry lets them in,
 //      and the workspace makes them an owner once they are;
-//   1. a stranger arrives: the door's wait list, not the setup screen, and an
-//      address left on it is confirmed through the mail the door sends;
+//   1. a stranger arrives: the entry's wait list, not the setup screen, and an
+//      address left on it is confirmed through the mail the entry sends;
 //   2. the operator hands an invite link over in one press, and invites that
 //      address from the workspace's own wait list, which mails the invitation;
 //   3. the stranger follows the invitation's link and joins; a person not set
@@ -23,7 +23,7 @@
 //   6. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
 //
-// The mails are the door's own, kept by the mail sink the stack points it at:
+// The mails are the entry's own, kept by the mail sink the stack points it at:
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
@@ -49,7 +49,7 @@ if (!site || !relay || !work || !tiloBin || !ownerSocket) {
   console.error('usage: node onboarding.mjs SITE RELAY WORK TILO_BIN OWNER_SOCKET');
   process.exit(2);
 }
-// The mail sink the stack points the door at (`stack.sh mail` reads the same).
+// The mail sink the stack points the entry at (`stack.sh mail` reads the same).
 const mailDir = join(work, 'state', 'mail');
 const computer = join(work, 'computer');
 mkdirSync(mailDir, {recursive: true});
@@ -78,7 +78,7 @@ const pageText = tab => tab.evaluate(`(document.body?.innerText || '').replace(/
   .catch(() => '');
 const state = tab => tab.evaluate(`JSON.stringify({
   arrival: document.documentElement.dataset.arrival ?? null,
-  door: document.documentElement.dataset.door ?? null,
+  entry: document.documentElement.dataset.entry ?? null,
   waitList: document.documentElement.dataset.waitList ?? null,
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
@@ -336,7 +336,7 @@ const pressText = (tab, text, within = 'body') => tab.evaluate(`(() => {
 })()`);
 
 // -- the mails ---------------------------------------------------------------
-/** The mails the door sent, oldest first: what the sink kept of each. */
+/** The mails the entry sent, oldest first: what the sink kept of each. */
 const mails = () => readdirSync(mailDir).filter(name => name.endsWith('.json')).sort()
   .map(name => JSON.parse(readFileSync(join(mailDir, name), 'utf8')));
 const waitForMail = async (what, count) => {
@@ -363,9 +363,9 @@ const firstScreenShown = `(document.documentElement.dataset.firstRun !== undefin
 
 // -- tilo.sh as a person meets it --------------------------------------------
 /** A person arriving at the site, in a tab that has not been here before.
- * `expected: 'let in'` tries again while the door refuses: the door that let
+ * `expected: 'let in'` tries again while the entry refuses: the entry that let
  * the declaration in holds it, so a person declared an owner just now may meet
- * the closed door once more before it opens for them, and comes back — as the
+ * the closed entry once more before it opens for them, and comes back — as the
  * operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
   const deadline = Date.now() + stepLimit(6);
@@ -383,7 +383,7 @@ const arrive = async (page, {expected}) => {
 // -- the deployment's declaration of its people -------------------------------
 /** Declare `user` (hex) an owner of the Lounge, as the deployment does: the
  * operator asks the running workspace over its operator socket, and the
- * workspace's door lets them in and its governance makes them an owner the
+ * workspace's entry lets them in and its governance makes them an owner the
  * moment they are a member. */
 const declareOwner = async user => {
   execFileSync(
@@ -443,7 +443,7 @@ const commandOf = prompt => {
 try {
   // -- 0. the operator, declared by the deployment, is let in --------------
   // A fresh invitation-only Lounge has nobody in it: the people the operator
-  // declares are the ones its door lets in, so the person who runs it arrives
+  // declares are the ones its entry lets in, so the person who runs it arrives
   // first, and this run declares their key through the operator socket the way
   // `stack.sh owner` does.
   const operator = await visit('operator', {setupDone: true});
@@ -457,18 +457,18 @@ try {
   report.operator = {user: operatorPerson};
   await arrive(operator, {expected: 'let in'});
   await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
-    'the door letting in the person the deployment declared', stepLimit(8));
-  mark('the operator the deployment declares is let in by the closed door');
+    'the entry letting in the person the deployment declared', stepLimit(8));
+  mark('the operator the deployment declares is let in by the closed entry');
 
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});
   await arrive(stranger, {expected: 'refused'});
-  await until(stranger.tab, `document.documentElement.dataset.door === 'wait-list'`, "the door showing its wait list", stepLimit(6));
+  await until(stranger.tab, `document.documentElement.dataset.entry === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
-  await until(stranger.tab, `!${firstScreenShown}`, 'the setup screen leaving the door');
+  await until(stranger.tab, `!${firstScreenShown}`, 'the setup screen leaving the entry');
   report.waitList = await stranger.tab.evaluate(`({
-    heading: document.getElementById('arrival-door-heading')?.textContent?.trim() ?? null,
-    body: document.getElementById('arrival-door-body')?.textContent?.trim() ?? null,
+    heading: document.getElementById('arrival-entry-heading')?.textContent?.trim() ?? null,
+    body: document.getElementById('arrival-entry-body')?.textContent?.trim() ?? null,
     note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
     button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
     signIn: document.getElementById('arrival-sign-in-button')?.textContent?.trim() ?? null,
@@ -693,9 +693,9 @@ try {
   // computer that never had it: the authenticator alone remembers them.
   await stranger.tab.send('Storage.clearDataForOrigin', {origin: siteOrigin, storageTypes: 'all'});
   await arrive(stranger, {expected: 'refused'});
-  await until(stranger.tab, `document.documentElement.dataset.door === 'wait-list'`, 'the door after the browser forgot the site', stepLimit(6));
+  await until(stranger.tab, `document.documentElement.dataset.entry === 'wait-list'`, 'the entry after the browser forgot the site', stepLimit(6));
   await pressId(stranger.tab, 'arrival-sign-in-button');
-  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.door) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || '')`,
+  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.entry) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || '')`,
     'the passkey signing the person in', stepLimit(10));
   if (back !== 'in') await fail(`the passkey did not sign the person in: ${back}`);
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey`,
@@ -743,7 +743,7 @@ try {
   // -- 6. a visitor with no invitation is still out --------------------------
   const visitor = await visit('visitor', {passkey: false});
   await arrive(visitor, {expected: 'refused'});
-  await until(visitor.tab, `document.documentElement.dataset.door === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
+  await until(visitor.tab, `document.documentElement.dataset.entry === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
   const other = 'grace@example.org';
   await visitor.tab.evaluate(`(() => {
     const field = document.getElementById('arrival-wait-email');

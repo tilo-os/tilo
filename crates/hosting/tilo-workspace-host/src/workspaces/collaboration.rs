@@ -80,7 +80,7 @@ impl GovernedWorkspace {
     ) -> Result<(), String> {
         for person in removed {
             if Some(*person) != by {
-                self.door.remove(*person, now_ns)?;
+                self.removals.remove(*person, now_ns)?;
             }
         }
         Ok(())
@@ -595,7 +595,7 @@ impl Workspaces {
         workspace.commit_state(state)?;
         for person in people {
             workspace
-                .door
+                .removals
                 .clear(*person)
                 .map_err(CollaborationError::new)?;
         }
@@ -760,7 +760,7 @@ impl Workspaces {
         }
         if matches!(membership, Membership::Unban) {
             workspace
-                .door
+                .removals
                 .clear(target)
                 .map_err(CollaborationError::new)?;
         }

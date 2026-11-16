@@ -25,7 +25,7 @@ use tilo_session_client::device::{
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use crate::support::{door, enrol, enter_page, in_workspace, start_workspace_host};
+use crate::support::{enrol, enter_page, entry_grant, in_workspace, start_workspace_host};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -60,7 +60,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
 
     // The first time, the root certifies this very key, the session's first message carries the
     // invitation, and the workspace admits the device on it: the session is in.
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
+    let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (cert, entry) = invitation_entry(
         &host_cert,
         &invitation,
@@ -93,7 +93,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
         cert: cert.clone(),
         host_cert: Some(host_cert.clone()),
     };
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
+    let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (again, _) = invitation_entry(
         &host_cert,
         &invitation,
@@ -142,7 +142,8 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     // An invitation bound to someone else does not admit Bob's device: the workspace refuses on
     // the session, and the session stops.
     let carol = new_key().verifying_key().to_bytes();
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, carol).await;
+    let (invitation, token) =
+        entry_grant(&host, &alice, &host_device, &acme.workspace, carol).await;
     let tab = new_key();
     let (cert, entry) = invitation_entry(
         &host_cert,
@@ -183,7 +184,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     let key = new_key();
 
     // Bob's device is in Acme, through its session's own entry.
-    let (invitation, token) = door(&host, &alice, &host_device, &acme.workspace, user).await;
+    let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (cert, entry) = invitation_entry(
         &host_cert,
         &invitation,

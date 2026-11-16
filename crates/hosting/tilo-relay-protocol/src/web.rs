@@ -27,7 +27,7 @@
 //! same time as one of the person's devices.
 //!
 //! A person a host does not know yet comes in on their device's session
-//! ([`crate::entering`]), through a workspace's door or with an invitation,
+//! ([`crate::entering`]), through a workspace's entry or with an invitation,
 //! not on a route here. A device certifies itself, and a member's root
 //! answers their own device's request, over the host's certification ALPN
 //! (`crate::certify`).
@@ -245,7 +245,7 @@ pub const INVITATION_PATH: &str = "/invitation";
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";
 
-/// Bound, in characters, of the display name a device asks a workspace's door
+/// Bound, in characters, of the display name a device asks a workspace's entry
 /// to let its person in under.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 32;
 

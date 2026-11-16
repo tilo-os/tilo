@@ -6,8 +6,8 @@
 //! This is the deployment's own composition, not a fixture: the host is
 //! `os/containers/tilo-lounge/entrypoint.sh` given eu1's `TILO_WORKSPACES_*`
 //! (`apps/tilo-eu1/deployment.yaml`), the state volume is the operator's
-//! copy of production, and the pages go through the host's real door
-//! (`/host`, and the session the door serves) with invitations the
+//! copy of production, and the pages go through the host's real entry
+//! (`/host`, and the session the entry serves) with invitations the
 //! host itself mints. What it asks about are the records people use — Chat's
 //! and the shared desktop's — and what it checks is what a person sees: the
 //! records' keys arrive, Chat's history opens, Chat's composer is there, the
@@ -282,12 +282,12 @@ impl Lounge {
             );
         };
         let _ = sha256;
-        // The door answers on loopback as `localhost:PORT`; a page's session
+        // The entry answers on loopback as `localhost:PORT`; a page's session
         // no longer rides it, but `/host` does.
-        let door = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
+        let entry = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
         let info = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(tilo_relay_client::https::host_info(door.as_ref()))
+                .block_on(tilo_relay_client::https::host_info(entry.as_ref()))
         })
         .expect("the host's certificate");
         let host_cert = info.host_cert;
@@ -312,7 +312,7 @@ impl Lounge {
         }
     }
 
-    /// The workspace's owner as a device of theirs: what the door's
+    /// The workspace's owner as a device of theirs: what the entry's
     /// administration asks as.
     fn owner_device(&self) -> Person {
         let key = SigningKey::from_bytes(&[0x5a; 32]);
@@ -372,7 +372,7 @@ impl Lounge {
         }
     }
 
-    /// A page of `who`'s device on this host's door.
+    /// A page of `who`'s device on this host's entry.
     fn page(&self, who: &Person) -> Link {
         self.page_entering(who, None)
     }
@@ -693,13 +693,13 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     page.close();
 }
 
-/// Two pages join a persistent Lounge host through its invite door on a fresh
+/// Two pages join a persistent Lounge host through its invite entry on a fresh
 /// state volume, and the second sees where the first put its pointer.
 ///
 /// This is the deployment's own composition (`os/containers/tilo-lounge/
 /// entrypoint.sh` starting `tilo-relay workspace --persistent`), with nothing of
 /// production: the host makes its workspace and its owner root as it starts,
-/// and both people are guests the host invites through the door it serves. It
+/// and both people are guests the host invites through the entry it serves. It
 /// is the fast check of the one thing a member's page needs to see another
 /// member move: both pages join the workspace's live plane over the host's
 /// packet relay, the first says where its pointer is on that plane's presence

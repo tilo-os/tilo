@@ -24,10 +24,10 @@ const custodyOf = (calls, created) => async profile => {
 };
 
 /** A door's refusal as the shared entry reads it (`HostRefusal`, peer.mjs):
- * the door's code (`DoorRefusalCode`) and the wait it asked for. */
+ * the door's code (`EntryRefusalCode`) and the wait it asked for. */
 const doorRefusal = ({code, error = code, retryAfter}) => Object.assign(new Error(error), {name: 'HostRefusal', code, retryAfter});
 
-/** The door as the shared entry goes through it (`doorEntry`, on the session): each
+/** The door as the shared entry goes through it (`entryRequest`, on the session): each
  * join through `door` asks it once for the person, and `answers` says what it
  * answers, one per ask (`null` lets them in), the last one ever after. */
 const knocking = (calls, answers) => options => {

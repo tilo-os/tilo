@@ -38,8 +38,8 @@ pub struct HostInvitation {
     pub invitee_name: Option<String>,
     pub expires_at_ns: u64,
     /// The wait-list entry the invitation is issued for, where the person is
-    /// an address the door kept: the entry records the invitation, so the
-    /// door mails this link to it, and it leaves the list once someone joins
+    /// an address the entry kept: the entry records the invitation, so the
+    /// entry mails this link to it, and it leaves the list once someone joins
     /// with it.
     pub wait_list_entry: Option<[u8; 32]>,
 }
@@ -194,7 +194,7 @@ impl Workspaces {
 
     /// Declare the person `user` an owner of `workspace`: its governance
     /// holds them by their root as an administrator whom the workspace is kept
-    /// for, so its door lets them in even when it takes people by invitation,
+    /// for, so its entry lets them in even when it takes people by invitation,
     /// and a key of theirs lists the workspace, enters it and invites before
     /// any device of theirs has joined. `name`, when given, is how the
     /// workspace names them until they rename themselves.
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
     use crate::workspaces::listing::door_tests::walk_in_as;
     use crate::workspaces::tests::{governor, guest_device, test_host};
-    use tilo_relay_protocol::directory::{DoorJoin, Listing};
+    use tilo_relay_protocol::directory::{EntryJoin, Listing};
     use tilo_relay_protocol::workspaces::JoinReply;
 
     const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
@@ -454,7 +454,7 @@ mod tests {
     }
 
     /// Someone invited into any workspace on the host is past its home's
-    /// invite-only door: whoever invited them let them in, and the home is
+    /// invite-only entry: whoever invited them let them in, and the home is
     /// where everyone on the host is.
     #[tokio::test]
     async fn an_invitation_anywhere_on_the_host_opens_the_invite_only_home() {
@@ -489,7 +489,7 @@ mod tests {
             .await
             .unwrap();
         let (_, newcomer) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(newcomer.user_public_key),
             display_name: "Ada".into(),
         };

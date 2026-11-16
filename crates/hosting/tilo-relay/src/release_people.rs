@@ -700,7 +700,7 @@ fn hashes(hashes: &[[u8; 32]]) -> Vec<String> {
     hashes.iter().map(hex::encode).collect()
 }
 
-/// The addresses the earlier release kept at its door, as they were left.
+/// The addresses the earlier release kept at its entry, as they were left.
 fn wait_list_of(path: &Path) -> Result<Vec<Kept>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

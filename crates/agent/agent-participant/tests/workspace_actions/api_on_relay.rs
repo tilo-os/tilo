@@ -278,7 +278,7 @@ pub async fn approved_key(
         .unwrap()
         .admit_listed(
             &on_relay.lobby,
-            &tilo_relay_protocol::directory::DoorJoin {
+            &tilo_relay_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(root.verifying_key().to_bytes()),
                 display_name: device.cert.device_label.clone(),
             },

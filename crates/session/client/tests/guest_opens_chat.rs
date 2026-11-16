@@ -10,7 +10,7 @@
 //! and refused, and nothing read it again, so the chat stayed empty.
 //!
 //! The workspace here is the Lounge's shape: 300 members who came through
-//! its door, one of whom wrote the chat's 200 messages, each a write of its
+//! its entry, one of whom wrote the chat's 200 messages, each a write of its
 //! own. Each guest opens the chat's head with its entry, and every landing of
 //! the chat must read. The chat reaches the guest in the one exchange its
 //! opening starts: nothing about it waits on a timer or a retry, so it reads
@@ -34,7 +34,7 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
-use tilo_session_client::device::{Entering, door_entry};
+use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -57,7 +57,7 @@ fn env_usize(name: &str, default: usize) -> usize {
 /// The chain the chat keeps its messages in.
 const CHAT_CHAIN: &str = "messages";
 
-/// How many people come through the door at once while the crowd is made.
+/// How many people come through the entry at once while the crowd is made.
 const ARRIVING: usize = 16;
 
 /// The messages the chat holds, each written on its own as a member posts it.
@@ -69,7 +69,7 @@ const MESSAGES: usize = 200;
 /// round trip each, and many of those over the chat's writes exceed it.
 const OPENED_TO_READ: Duration = Duration::from_secs(3);
 
-/// A page of `name` entering `workspace` through its door.
+/// A page of `name` entering `workspace` through its entry.
 async fn arrive(
     host: Host,
     host_cert: &tilo_user_identity::DeviceCert,
@@ -77,7 +77,7 @@ async fn arrive(
     name: &str,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
-    let (cert, entry) = door_entry(
+    let (cert, entry) = entry_request(
         host_cert,
         workspace,
         &key,
@@ -101,9 +101,9 @@ async fn arrive(
     )
 }
 
-/// A person coming through `workspace`'s door with a device of their own,
+/// A person coming through `workspace`'s entry with a device of their own,
 /// leaving no session behind: the member the workspace made of them.
-async fn through_the_door(
+async fn through_the_entry(
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
     name: &str,
@@ -122,7 +122,7 @@ async fn through_the_door(
     let (issued, token) = workspaces
         .admit_listed(
             workspace,
-            &tilo_relay_protocol::directory::DoorJoin {
+            &tilo_relay_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(cert.user_public_key),
                 display_name: name.to_owned(),
             },
@@ -249,7 +249,7 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     };
 
     // The first member writes the chat; the rest of the crowd came through
-    // the door.
+    // the entry.
     let author = arrive(
         page_host(),
         &host_device.cert,
@@ -288,9 +288,9 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
         while arriving.len() >= ARRIVING {
             arriving.join_next().await.unwrap().unwrap();
         }
-        let (doors, workspace) = (workspaces.clone(), lounge.workspace.clone());
+        let (entries, workspace) = (workspaces.clone(), lounge.workspace.clone());
         arriving.spawn(async move {
-            through_the_door(&doors, &workspace, &format!("Member {n}")).await;
+            through_the_entry(&entries, &workspace, &format!("Member {n}")).await;
         });
     }
     while let Some(arrived) = arriving.join_next().await {

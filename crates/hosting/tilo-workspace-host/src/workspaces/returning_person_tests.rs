@@ -15,7 +15,7 @@
     reason = "a test computes when a certificate ends, in nanoseconds far from any bound"
 )]
 
-use super::fixtures::{door_join_as, governor, test_host};
+use super::fixtures::{entry_join_as, governor, test_host};
 use super::*;
 use tilo_relay_protocol::WorkspaceId;
 use tilo_relay_protocol::entering::{Entered, Entering, Entry, Through};
@@ -51,7 +51,7 @@ async fn join_on_a_tab_that_ends(
 ) -> DeviceCert {
     let now = tilo_clock::unix_now_ns();
     let (tab, tab_cert) = device_of(root, now.saturating_sub(1_000_000_000), now + 2_000_000_000);
-    door_join_as(workspaces, host, workspace, (&tab, &tab_cert), 31, role).await;
+    entry_join_as(workspaces, host, workspace, (&tab, &tab_cert), 31, role).await;
     tab_cert
 }
 
@@ -111,8 +111,8 @@ async fn assert_still_a_member_everywhere(
 }
 
 /// A browser that forgot the site opens the person's root with a passkey or a
-/// recovery key and certifies a new tab: the door lets it in as theirs, at the
-/// part they hold, not as a newcomer at the door's default.
+/// recovery key and certifies a new tab: the entry lets it in as theirs, at the
+/// part they hold, not as a newcomer at the entry's default.
 async fn a_new_tab_comes_back_at_the_part_they_hold(
     workspaces: &Workspaces,
     workspace: &str,
@@ -125,7 +125,7 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
         now.saturating_sub(1_000_000_000),
         now + 3_600_000_000_000,
     );
-    let entered = crate::handshake::Doorway::enter(
+    let entered = crate::handshake::Admit::enter(
         workspaces,
         &returned,
         Entry {
@@ -133,7 +133,7 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
                 workspace: workspace.to_owned(),
                 name: "Returning".into(),
                 request_id: rand::random(),
-                through: Through::Door,
+                through: Through::Entry,
             },
             access: None,
             proof: [0; 64],

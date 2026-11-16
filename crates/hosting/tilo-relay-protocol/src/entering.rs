@@ -1,5 +1,5 @@
 //! A device entering a workspace on the session it opens with the
-//! workspace's host, through the workspace's door or with an invitation,
+//! workspace's host, through the workspace's entry or with an invitation,
 //! rather than in requests of its own before it.
 //!
 //! The device is a stranger to the host until the workspace admits it, so its
@@ -11,7 +11,7 @@
 //! server → client:  HelloAck, then Envelope::Entered, then the session (or nothing more)
 //! ```
 //!
-//! The door lets the person in as its HTTP form did: an invitation bound to
+//! The entry lets the person in as its HTTP form did: an invitation bound to
 //! their user root and the one-time token that admits them, both kept on the
 //! host, and the workspace admits the device with that invitation as it
 //! admits every redemption. An invitation the device holds itself (a pasted
@@ -35,7 +35,7 @@
 //! key exchange, so it is unique to the connection and nobody outside it
 //! learns it: a captured proof proves nothing on any other connection, as an
 //! answer to one host challenge proved nothing under another. The host checks
-//! it against its own export before the door is asked, and then admits the
+//! it against its own export before the entry is asked, and then admits the
 //! device without a challenge of the workspace's own
 //! (`verify_connection_redemption`). An entry rides only a connection that
 //! has such a session; the host refuses it anywhere else.
@@ -57,7 +57,7 @@
 use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
-use crate::directory::DoorRefused;
+use crate::directory::EntryRefused;
 use crate::workspaces::Role;
 
 /// How many entries a host runs at once, across every connection: the same
@@ -76,7 +76,7 @@ pub const ENTRY_BINDING_LABEL: &[u8] = b"tilo/session-entry/v1";
 const ENTRY_PROOF_DOMAIN: &[u8] = b"tilo/session-entry-proof/v1\0";
 
 /// What a device that is not in the workspace yet asks for in its hello: to
-/// come into `workspace`, through its door or with an invitation.
+/// come into `workspace`, through its entry or with an invitation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entering {
     /// The workspace the device enters: its canonical UUID. An invitation's
@@ -95,9 +95,9 @@ pub struct Entering {
 /// How a device comes into a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Through {
-    /// The workspace's door, which lets the person in by the workspace's own
+    /// The workspace's entry, which lets the person in by the workspace's own
     /// rules.
-    Door,
+    Entry,
     /// An invitation the device holds: its signed bytes, and the one-time
     /// token of the owner's pre-admission it was issued under, if any.
     Invitation {
@@ -136,7 +136,7 @@ pub fn entry_digest(binding: &[u8; 32], device: &[u8; 32], entering: &Entering) 
     hasher.update(binding);
     hasher.update(device);
     let (invitation, token): (&[u8], Option<&[u8]>) = match &entering.through {
-        Through::Door => (&[], None),
+        Through::Entry => (&[], None),
         Through::Invitation { invitation, token } => (invitation, token.as_deref()),
     };
     let field = |hasher: &mut blake3::Hasher, field: &[u8]| {
@@ -146,23 +146,23 @@ pub fn entry_digest(binding: &[u8; 32], device: &[u8; 32], entering: &Entering) 
     field(&mut hasher, entering.workspace.as_bytes());
     field(&mut hasher, entering.name.as_bytes());
     hasher.update(&entering.request_id);
-    hasher.update(&[u8::from(matches!(entering.through, Through::Door))]);
+    hasher.update(&[u8::from(matches!(entering.through, Through::Entry))]);
     field(&mut hasher, invitation);
     hasher.update(&[u8::from(token.is_some())]);
     field(&mut hasher, token.unwrap_or_default());
     *hasher.finalize().as_bytes()
 }
 
-/// Why a door or its workspace did not let a device in.
+/// Why an entry or its workspace did not let a device in.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnterRefusal {
-    /// The door did not let the person in, as it typed it, with how long it
+    /// The entry did not let the person in, as it typed it, with how long it
     /// asks to wait before the next try when it asked.
-    Door {
-        refused: DoorRefused,
+    Entry {
+        refused: EntryRefused,
         retry_after_secs: Option<u64>,
     },
-    /// The door let the person in and the workspace did not admit this
+    /// The entry let the person in and the workspace did not admit this
     /// device, in its own words: a device key it knows under another
     /// certificate, an invitation already spent.
     Workspace(String),
@@ -173,7 +173,7 @@ impl EnterRefusal {
     #[must_use]
     pub fn reason(&self) -> &str {
         match self {
-            Self::Door { refused, .. } => &refused.error,
+            Self::Entry { refused, .. } => &refused.error,
             Self::Workspace(reason) => reason,
         }
     }
@@ -211,27 +211,27 @@ pub enum Entered {
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
     use super::{EnterRefusal, Entered};
-    use crate::directory::{DoorRefusalCode, DoorRefused};
+    use crate::directory::{EntryRefusalCode, EntryRefused};
 
-    /// A door's refusal reaches the device whatever it names: an empty one, and
+    /// An entry's refusal reaches the device whatever it names: an empty one, and
     /// one offering a wait list with a contact and mail, both read back as sent.
     #[test]
     fn a_door_refusal_reads_back_whatever_it_names() {
-        let plain = DoorRefused {
-            code: DoorRefusalCode::Refused,
+        let plain = EntryRefused {
+            code: EntryRefusalCode::Refused,
             error: "no".into(),
-            ..DoorRefused::default()
+            ..EntryRefused::default()
         };
-        let waiting = DoorRefused {
-            code: DoorRefusalCode::InvitationOnly,
+        let waiting = EntryRefused {
+            code: EntryRefusalCode::InvitationOnly,
             error: "by invitation".into(),
             wait_list: true,
-            contact: Some("door@example.org".into()),
+            contact: Some("entry@example.org".into()),
             mail: true,
         };
         for refused in [plain, waiting] {
             for retry_after_secs in [None, Some(30)] {
-                let step = Entered::Refused(EnterRefusal::Door {
+                let step = Entered::Refused(EnterRefusal::Entry {
                     refused: refused.clone(),
                     retry_after_secs,
                 });

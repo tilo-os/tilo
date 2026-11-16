@@ -50,7 +50,7 @@ fn start_with(
 }
 
 /// The workspace on `state`, as [`start_with`] starts it, logging `log`
-/// (`TILO_RELAY_LOG`) to `stderr`, with `envs` set for it alone: a door that
+/// (`TILO_RELAY_LOG`) to `stderr`, with `envs` set for it alone: an entry that
 /// mails a release check's test takes its sender, key and mail service from
 /// them without reaching any other test's process.
 fn spawn_workspace(
@@ -231,7 +231,7 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
 }
 
 /// A host that keeps its workspace id but none of its state starts the same
-/// workspace again: the id is the workspace's address, which its door and the
+/// workspace again: the id is the workspace's address, which its entry and the
 /// links to it name, so a host whose state was kept aside comes back under it
 /// rather than minting a new one.
 #[test]
@@ -266,7 +266,7 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
     };
     assert_eq!(
         again, id,
-        "the workspace keeps the id its door is addressed by"
+        "the workspace keeps the id its entry is addressed by"
     );
     let OperatorEvent::Online { members, .. } =
         workspace.next(|e| matches!(e, OperatorEvent::Online { .. }))
@@ -533,7 +533,7 @@ fn page(
     )
 }
 
-/// A person comes in through the workspace's door on their session, as their computer does: their
+/// A person comes in through the workspace's entry on their session, as their computer does: their
 /// device and certificate, a member now.
 fn join_through_door(
     runtime: &tokio::runtime::Runtime,
@@ -548,7 +548,7 @@ fn join_through_door(
     }
 }
 
-/// A session of `cert`'s device whose first message enters `workspace` through its door, as a
+/// A session of `cert`'s device whose first message enters `workspace` through its entry, as a
 /// person's page or computer opens one: what the workspace answered it.
 async fn enter_through_door(
     plain: std::net::SocketAddr,
@@ -582,7 +582,7 @@ async fn enter_through_door_as(
                 workspace: workspace.to_owned(),
                 name: name.to_owned(),
                 request_id,
-                through: tilo_relay_protocol::entering::Through::Door,
+                through: tilo_relay_protocol::entering::Through::Entry,
             }),
         },
         std::sync::Arc::new(device.clone()),
@@ -788,7 +788,7 @@ async fn directory_page(
     serde_json::from_slice(&body).unwrap()
 }
 
-/// The workspace's door, with no operator command: two people of their own roots
+/// The workspace's entry, with no operator command: two people of their own roots
 /// join the listed workspace at its default role, each as their own person,
 /// and the directory counts both.
 #[test]
@@ -850,7 +850,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     workspace.stop();
 }
 
-/// The workspace takes over the removals it kept before the door had them: a
+/// The workspace takes over the removals it kept before the entry had them: a
 /// person moderation removed before the upgrade stays out, and the old file
 /// goes.
 #[test]
@@ -899,7 +899,7 @@ fn the_workspace_keeps_out_a_person_it_removed_before_the_door() {
     workspace.stop();
 }
 
-/// A person who joined through the real workspace process's door subscribes, reads
+/// A person who joined through the real workspace process's entry subscribes, reads
 /// the workspace's chat with its starting channel, and has every write refused as
 /// the viewer the listing made them; the owner's root still admits none of its
 /// other devices by itself. The same workspace, listing people as its editors,
@@ -945,7 +945,7 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     workspace.stop();
 
     // The same workspace, listing people as its editors: a new person joins
-    // through the door as the others did, and their write is taken in.
+    // through the entry as the others did, and their write is taken in.
     let workspace = start_with(
         &state,
         &root_file,
@@ -981,7 +981,7 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     workspace.stop();
 }
 
-/// The first start's pages: two people who joined through the door read the
+/// The first start's pages: two people who joined through the entry read the
 /// chat and the viewer's writes are refused, and a device of a root with
 /// nobody in the workspace is not admitted.
 async fn persons_read_the_workspace_and_are_refused(
@@ -1076,7 +1076,7 @@ async fn persons_read_the_workspace_and_are_refused(
     visiting.close();
 }
 
-/// The restart's page: a person who joined through the door writes, and the
+/// The restart's page: a person who joined through the entry writes, and the
 /// workspace commits it, as the listing's role now lets them.
 async fn an_editor_page_writes_and_is_committed(
     plain: std::net::SocketAddr,
@@ -1122,7 +1122,7 @@ async fn an_editor_page_writes_and_is_committed(
 /// A workspace service stops its workspace hard (`podman rm -f`): killed after it
 /// decided things and wrote them, and killed again while it starts. Each
 /// next start opens the same workspace, settles its chat and lets a person who
-/// joins through its door read it.
+/// joins through its entry read it.
 #[test]
 fn a_persistent_workspace_reopens_after_hard_stops() {
     const CHAT: &str = "so.tilo.chat";
@@ -1330,7 +1330,7 @@ fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::
     );
 }
 
-/// A page's own error report still lands on the door and is answered as
+/// A page's own error report still lands on the entry and is answered as
 /// reports always are.
 fn answers_the_door(
     runtime: &tokio::runtime::Runtime,
@@ -1353,7 +1353,7 @@ fn answers_the_door(
 /// The workspace as its deployment runs it: no operator at all, and the plain-HTTP
 /// routes the ingress publishes — the health check, the avatars its bots
 /// publish and Discord's sign-in callback — answering beside the browser
-/// listener, whose door still logs a page's error and answers it.
+/// listener, whose entry still logs a page's error and answers it.
 #[test]
 fn the_workspace_serves_without_an_operator_and_answers_its_deployment_routes() {
     let scratch = tempfile::tempdir().unwrap();
@@ -1428,7 +1428,7 @@ fn the_workspace_serves_without_an_operator_and_answers_its_deployment_routes() 
     workspace.stop();
 }
 
-/// What the door keeps of the people it let in, in the workspace's state: the file
+/// What the entry keeps of the people it let in, in the workspace's state: the file
 /// beside the workspace's record, wherever the run laid its state out.
 fn door_admissions(state: &std::path::Path) -> std::path::PathBuf {
     let mut workspaces = vec![state.to_path_buf()];
@@ -1443,13 +1443,13 @@ fn door_admissions(state: &std::path::Path) -> std::path::PathBuf {
             }
         }
     }
-    assert_eq!(kept.len(), 1, "one workspace, one door: {kept:?}");
+    assert_eq!(kept.len(), 1, "one workspace, one entry: {kept:?}");
     kept.into_iter()
         .next()
-        .expect("the workspace keeps the door's admissions")
+        .expect("the workspace keeps the entry's admissions")
 }
 
-/// The door's record as it stands once nothing is writing it: an entry's
+/// The entry's record as it stands once nothing is writing it: an entry's
 /// admission is written as it settles, which a session's answer can run ahead
 /// of.
 fn settled_admissions(path: &std::path::Path) -> Vec<u8> {
@@ -1465,8 +1465,8 @@ fn settled_admissions(path: &std::path::Path) -> Vec<u8> {
     last
 }
 
-/// A computer that came in through the workspace's door before enters again without
-/// it: the door decides nothing for someone already in, so a returning run
+/// A computer that came in through the workspace's entry before enters again without
+/// it: the entry decides nothing for someone already in, so a returning run
 /// (a `tilo mcp` restarted, a page opened again) has no invitation put into the
 /// workspace's governance, none published to everyone there and none spent.
 #[test]
@@ -1492,7 +1492,7 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     let started = announced(&workspace);
     let (id, plain) = (started.workspace, started.plain);
     // A computer `tilo login` made a device of the person's, in through the
-    // listed workspace's door.
+    // listed workspace's entry.
     let (key, cert) = join_through_door(
         &runtime,
         plain,
@@ -1500,8 +1500,8 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
         own_device(0xc1, "Claude Code on build-box"),
         "Claude Code",
     );
-    let door = door_admissions(&state);
-    let before = settled_admissions(&door);
+    let entry = door_admissions(&state);
+    let before = settled_admissions(&entry);
     // The same computer's next `tilo mcp`: its session enters the workspace
     // again, under an entry of its own as every run makes one.
     let answered = runtime.block_on(enter_through_door_as(
@@ -1512,12 +1512,12 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
         rand::random(),
     ));
     assert!(answered.is_ok(), "{answered:?}");
-    // The door was asked for nothing: no invitation was issued for a member,
+    // The entry was asked for nothing: no invitation was issued for a member,
     // nothing of its entry published, nothing spent.
     assert_eq!(
-        settled_admissions(&door),
+        settled_admissions(&entry),
         before,
-        "a member's entry asked the door for an invitation"
+        "a member's entry asked the entry for an invitation"
     );
     workspace.stop();
 }

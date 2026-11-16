@@ -1,4 +1,4 @@
-//! Reading a site, and asking its door: the requests a directory makes, on
+//! Reading a site, and asking its entry: the requests a directory makes, on
 //! `tilo_net` so the desktop's connection pool and a page's `fetch` run the
 //! same ones.
 //!
@@ -6,13 +6,13 @@
 //! ones; the directory then lists every public workspace it serves with what
 //! it is, who is in it now and how lively it is
 //! ([`tilo_relay_protocol::directory`]). Joining one enters it through its
-//! door ([`through_door`]): the device asks its door on the session it opens
-//! with the door's host ([`tilo_relay_protocol::entering`]), as every device
-//! enters a workspace, so nothing is asked of the door here.
+//! entry ([`through_entry`]): the device asks its entry on the session it opens
+//! with the entry's host ([`tilo_relay_protocol::entering`]), as every device
+//! enters a workspace, so nothing is asked of the entry here.
 //!
 //! Every step of a join is logged at `info` under
 //! [`tilo_startup_metrics::JOIN_FLOW_TARGET`], which the session's log keeps
-//! whatever `RUST_LOG` says: the directory read, the door chosen, the host's
+//! whatever `RUST_LOG` says: the directory read, the entry chosen, the host's
 //! answer in its own words, the workspace slot made for it, and that slot
 //! taken away with why — so a join that lands nowhere says where it stopped,
 //! in the log the device keeps.
@@ -27,9 +27,9 @@ use crate::SiteError;
 
 /// How long establishing a connection to a site may take.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a site's entry, its directory or its door may take to answer.
+/// How long a site's entry, its directory or its entry may take to answer.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
-/// The largest `entry.json` read, and the largest a door may say.
+/// The largest `entry.json` read, and the largest an entry may say.
 pub const MAX_ANSWER_BYTES: usize = 64 * 1024;
 /// The largest directory read: a few hundred listings with their faces.
 pub const MAX_DIRECTORY_BYTES: usize = 1024 * 1024;
@@ -95,7 +95,7 @@ pub fn site_entry(text: &str) -> Result<url::Url, SiteError> {
     Ok(entry)
 }
 
-/// The person a join is made as: the key a door admits, and the name a
+/// The person a join is made as: the key an entry admits, and the name a
 /// workspace learns of them. The caller supplies both: the desktop's own
 /// identity here, the browser's there.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,11 +121,11 @@ pub enum Way {
     /// An invitation for this person, in its text (a pasted or sealed link),
     /// redeemed at the host it names.
     Invitation(String),
-    /// The workspace's door (its base address, `…/directory/<workspace>/`):
-    /// the device enters through it on the session it opens with the door's
-    /// host, whose origin is the door's own, and the workspace's own rules
+    /// The workspace's entry (its base address, `…/directory/<workspace>/`):
+    /// the device enters through it on the session it opens with the entry's
+    /// host, whose origin is the entry's own, and the workspace's own rules
     /// decide there whether the person is let in.
-    Door(url::Url),
+    Entry(url::Url),
 }
 
 impl Granted {
@@ -134,15 +134,15 @@ impl Granted {
     pub fn invitation(&self) -> Option<&str> {
         match &self.way {
             Way::Invitation(text) => Some(text),
-            Way::Door(_) => None,
+            Way::Entry(_) => None,
         }
     }
 
-    /// The door this device enters through, when it enters through one.
+    /// The entry this device enters through, when it enters through one.
     #[must_use]
-    pub fn door(&self) -> Option<&url::Url> {
+    pub fn entry_url(&self) -> Option<&url::Url> {
         match &self.way {
-            Way::Door(door) => Some(door),
+            Way::Entry(entry) => Some(entry),
             Way::Invitation(_) => None,
         }
     }
@@ -175,7 +175,7 @@ pub struct SiteWorkspace {
     pub entry: url::Url,
     /// What the site calls it.
     pub name: String,
-    /// The host's admission door, when it admits people without an
+    /// The host's admission entry, when it admits people without an
     /// invitation.
     pub admission: Option<url::Url>,
 }
@@ -216,9 +216,9 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, Si
     let admission = home
         .admission
         .as_deref()
-        .map(|door| {
+        .map(|path| {
             entry
-                .join(door)
+                .join(path)
                 .map_err(|_| "that is not a web address".to_owned())
         })
         .transpose()?;
@@ -279,48 +279,48 @@ pub async fn fetch_directory(
     })
 }
 
-/// The workspace `door` (its base address, `…/directory/<workspace>/`, below
+/// The workspace `entry` (its base address, `…/directory/<workspace>/`, below
 /// a host's API prefix or at a site's own path) lets people into, as its path
 /// names it.
 #[must_use]
-pub fn door_workspace(door: &url::Url) -> Option<String> {
-    let mut segments = door.path_segments()?.filter(|segment| !segment.is_empty());
+pub fn entry_workspace(entry: &url::Url) -> Option<String> {
+    let mut segments = entry.path_segments()?.filter(|segment| !segment.is_empty());
     segments.find(|segment| *segment == "directory")?;
     let workspace = segments.next()?;
     tilo_desktop_model::WorkspaceId::parse(workspace).map(|_| workspace.to_owned())
 }
 
-/// Join through `door`: the workspace its path names, entered on the session
-/// this device opens with the door's host. Nothing is asked here; the door
+/// Join through `entry`: the workspace its path names, entered on the session
+/// this device opens with the entry's host. Nothing is asked here; the entry
 /// decides on that session whether the person is let in.
 ///
 /// # Errors
-/// The door names no workspace.
-pub fn through_door(door: &url::Url) -> Result<Granted, SiteError> {
-    let workspace = door_workspace(door).ok_or_else(|| {
+/// The entry names no workspace.
+pub fn through_entry(entry: &url::Url) -> Result<Granted, SiteError> {
+    let workspace = entry_workspace(entry).ok_or_else(|| {
         said(
-            "a door names no workspace",
-            door,
+            "an entry names no workspace",
+            entry,
             "directory-error-no-workspace",
         )
     })?;
     tracing::info!(
         target: JOIN_FLOW_TARGET,
-        door = %door,
+        entry = %entry,
         workspace = %workspace,
-        "join: the workspace is entered through its door"
+        "join: the workspace is entered through its entry"
     );
     Ok(Granted {
         workspace,
-        way: Way::Door(door.clone()),
+        way: Way::Entry(entry.clone()),
     })
 }
 
 /// The home workspace of the community `site`: the name the site calls it,
-/// and the door this device enters it through. `None` when the site serves
+/// and the entry this device enters it through. `None` when the site serves
 /// no home workspace of its own, which is nothing to join.
 ///
-/// This is the door a listing's Join enters through: a community is joined
+/// This is the entry a listing's Join enters through: a community is joined
 /// as a public workspace is.
 pub async fn join_home(
     client: &Client,
@@ -329,10 +329,10 @@ pub async fn join_home(
     let Some(home) = read_site(client, site).await?.home else {
         return Ok(None);
     };
-    let Some(door) = home.admission else {
+    let Some(entry) = home.admission else {
         return Ok(None);
     };
-    let granted = through_door(&door)?;
+    let granted = through_entry(&entry)?;
     Ok(Some((home.name, granted)))
 }
 
@@ -365,7 +365,7 @@ pub struct Shelved {
 /// on `site`'s shelf until `expires_at_ns`, naming `host`, the origin it
 /// admits into: the short link a person hands over
 /// (`https://<site>/i/<handle>#<key>`) and what takes it back. The shell's
-/// sheet ([`crate::Store::shelve`]) and a door that invites for a person
+/// sheet ([`crate::Store::shelve`]) and an entry that invites for a person
 /// leave it the same way.
 ///
 /// # Errors
@@ -613,7 +613,7 @@ pub struct Taken {
 
 /// Join what the person pasted, as [`classify`] reads it: an invitation's
 /// text is redeemed where it says; a site or a workspace link is joined
-/// through the door of the workspace it names, on the site it names.
+/// through the entry of the workspace it names, on the site it names.
 pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Person) -> Taken {
     let pasted = match classify(text) {
         Ok(pasted) => pasted,
@@ -658,8 +658,8 @@ pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Perso
                         .as_ref()
                         .map_or_else(|| host_of(&entry), |home| home.name.clone());
                     let granted = match read.home.and_then(|home| home.admission) {
-                        Some(door) => {
-                            through_door(&door).and_then(|granted| match workspace {
+                        Some(entry) => {
+                            through_entry(&entry).and_then(|granted| match workspace {
                                 Some(workspace) if workspace.to_string() != granted.workspace => {
                                     Err(SiteError::Plain(
                                         "that link is for another workspace on this site: ask whoever shared it for an invitation"
@@ -670,7 +670,7 @@ pub async fn take(client: &Result<Client, SiteError>, text: &str, person: &Perso
                             })
                         }
                         None => Err(said(
-                            "a site's home workspace has no door",
+                            "a site's home workspace has no entry",
                             &entry,
                             "directory-error-no-workspace",
                         )),
@@ -715,7 +715,7 @@ enum Pasted {
     Sealed {
         link: tilo_workspace_join::sealed::SealedLink,
     },
-    /// A site, whose home workspace its door admits people to; with the workspace
+    /// A site, whose home workspace its entry admits people to; with the workspace
     /// a link named, which must be that workspace.
     Site {
         entry: url::Url,

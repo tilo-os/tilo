@@ -1075,7 +1075,7 @@ mod tests {
     use super::*;
 
     /// A host shared with the continuation [`serve`] answers through: a test holds one handle to
-    /// see what was asked, the door holds another.
+    /// see what was asked, the entry holds another.
     #[derive(Clone)]
     struct Shared(Arc<TestHost>);
 
@@ -1114,18 +1114,18 @@ mod tests {
     }
 
     /// A page asks a catalogue and an invocation as the JSON a frame carries, and reads the
-    /// answer as JSON: the door speaks the remote-action vocabulary, not one of its own.
+    /// answer as JSON: the entry speaks the remote-action vocabulary, not one of its own.
     #[tokio::test]
     async fn a_request_is_asked_and_answered_as_the_frames_json() {
         let host = Arc::new(TestHost::new());
-        let door = Shared(Arc::clone(&host));
+        let entry = Shared(Arc::clone(&host));
         let answered = ask(
-            &door,
+            &entry,
             &caller(),
             r#"{"CatalogueRequest":{"correlation":7,"query":{"max_results":8}}}"#,
         )
         .await
-        .expect("the door answers");
+        .expect("the entry answers");
         let catalogue: serde_json::Value = serde_json::from_str(&answered).expect("JSON");
         assert_eq!(catalogue["CatalogueResponse"]["correlation"], 7);
         assert!(
@@ -1139,9 +1139,9 @@ mod tests {
             "target": {"provider": "record:notes:one",
                         "address": {"resource": "notes.note:one", "action": "open"}},
         }});
-        let answered = ask(&door, &caller(), &request.to_string())
+        let answered = ask(&entry, &caller(), &request.to_string())
             .await
-            .expect("the door answers");
+            .expect("the entry answers");
         let receipt: serde_json::Value = serde_json::from_str(&answered).expect("JSON");
         assert_eq!(
             receipt["Receipt"]["invocation"],
@@ -1158,14 +1158,14 @@ mod tests {
     /// request nobody made here.
     #[tokio::test]
     async fn only_a_request_is_asked() {
-        let door = Shared(Arc::new(TestHost::new()));
+        let entry = Shared(Arc::new(TestHost::new()));
         assert!(
-            ask(&door, &caller(), "not a message").await.is_err(),
+            ask(&entry, &caller(), "not a message").await.is_err(),
             "a text that is no message is refused"
         );
         assert!(
             ask(
-                &door,
+                &entry,
                 &caller(),
                 r#"{"CatalogueResponse":{"correlation":1,"result":"Ok"}}"#
             )

@@ -1044,7 +1044,7 @@ async fn an_environment_serves_the_workspace_it_was_placed_for_and_no_other() {
 
 /// The agent reads and fills the page a visitor may read and fill without
 /// anyone being asked; the submit the same agent sends is put to the person
-/// by the relay itself — no caller-side confirmation, no door of its own.
+/// by the relay itself — no caller-side confirmation, no entry of its own.
 #[tokio::test]
 async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_person() {
     let fixture = fixture(Arc::new(Counting::default())).await;
@@ -1824,7 +1824,7 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
     let material = fixture.environments.material();
     let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
     let environment = fixture.environment_session().await;
-    // The window's device calls the workspace's door itself: not its to do.
+    // The window's device calls the workspace's entry itself: not its to do.
     environment
         .send(Envelope::RemoteAction {
             workspace_id: WS,
@@ -1851,7 +1851,7 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
     let answer = next(&environment, "environment").await;
     assert!(
         matches!(answer, Envelope::RemoteActionUndeliverable { .. }),
-        "a window's device calls no door of the workspace: {answer:?}"
+        "a window's device calls no entry of the workspace: {answer:?}"
     );
     assert!(seen.lock().unwrap().is_empty());
 }

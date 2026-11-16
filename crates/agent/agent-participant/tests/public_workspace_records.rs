@@ -40,7 +40,7 @@ use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use crate::support::{door, enrol, enter, start_workspace_host, wait_for, written};
+use crate::support::{enrol, enter, entry_grant, start_workspace_host, wait_for, written};
 
 const WRITER: &str = "so.tilo.word-processor";
 const CHAT: &str = "so.tilo.chat";
@@ -140,7 +140,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
     let member = enter(
         &host,
-        door(
+        entry_grant(
             &host,
             &owner,
             &host_device,

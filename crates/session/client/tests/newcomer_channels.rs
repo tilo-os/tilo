@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, door_entry};
+use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
 use crate::support::{
@@ -44,7 +44,7 @@ fn change(base: &mut automerge::AutoCommit, key: &str) -> DocumentMutation {
     DocumentMutation::Incremental(doc.save_incremental())
 }
 
-/// A visitor's page entering `workspace` through its door, its session
+/// A visitor's page entering `workspace` through its entry, its session
 /// opening the desktop.
 async fn visitor(
     host: &crate::support::TestHost,
@@ -55,7 +55,7 @@ async fn visitor(
     name: &str,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
-    let (cert, entry) = door_entry(
+    let (cert, entry) = entry_request(
         host_cert,
         workspace,
         &key,
@@ -172,7 +172,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     host.relay.shutdown().await;
 }
 
-/// A page that entered a workspace through its door asks for that workspace's
+/// A page that entered a workspace through its entry asks for that workspace's
 /// live plane once it holds the workspace's keys, and joins it: presence, calls
 /// and the people overlay all ride it. The page's channel state names the plane
 /// it joined, and another member hears the page's presence there — a page that

@@ -1,4 +1,4 @@
-//! A site, its directory and its door, over a real `tilo_net` connection to
+//! A site, its directory and its entry, over a real `tilo_net` connection to
 //! a local responder: what a page and the desktop both do.
 
 #![allow(
@@ -10,7 +10,7 @@
 use test_http::{Reply, Responder};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage};
 use tilo_relay_protocol::workspaces::Role;
-use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_door};
+use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_entry};
 
 /// The workspace every test in this file joins.
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -21,7 +21,7 @@ fn entry(name: &str) -> DirectoryEntry {
         name: name.to_owned(),
         description: format!("All about {name}"),
         default_role: Role::Commenter,
-        door: format!("directory/{WORKSPACE}/"),
+        entry: format!("directory/{WORKSPACE}/"),
         here: Vec::new(),
         here_count: 0,
         members: 3,
@@ -30,34 +30,34 @@ fn entry(name: &str) -> DirectoryEntry {
     }
 }
 
-/// Joining through a door asks the door nothing here (there is no client to
+/// Joining through a entry asks the entry nothing here (there is no client to
 /// ask with): the device enters the workspace its path names on the session
-/// it opens with the door's host, where the door decides. A door below a host's API prefix and one at a
+/// it opens with the entry's host, where the entry decides. A entry below a host's API prefix and one at a
 /// site's own path name the same workspace, and a path that names none is
 /// refused before anything is asked.
 #[test]
-fn a_door_join_enters_the_workspace_its_path_names_and_asks_nothing() {
-    for door in [
+fn an_entry_join_enters_the_workspace_its_path_names_and_asks_nothing() {
+    for entry in [
         format!("https://workspaces.tilo.test/peer/v1/directory/{WORKSPACE}/"),
         format!("https://tilo.test/directory/{WORKSPACE}/"),
     ] {
-        let door = url::Url::parse(&door).expect("the door's address");
-        let granted = through_door(&door).expect("a door names its workspace");
+        let entry = url::Url::parse(&entry).expect("the entry's address");
+        let granted = through_entry(&entry).expect("a entry names its workspace");
         assert_eq!(granted.workspace, WORKSPACE);
         assert_eq!(
             granted.way,
-            Way::Door(door.clone()),
-            "the device enters through the door itself, holding no invitation"
+            Way::Entry(entry.clone()),
+            "the device enters through the entry itself, holding no invitation"
         );
         assert_eq!(granted.invitation(), None);
     }
     for nameless in [
-        "https://tilo.test/door/".to_owned(),
+        "https://tilo.test/entry/".to_owned(),
         "https://tilo.test/directory/not-a-workspace/".to_owned(),
     ] {
-        let door = url::Url::parse(&nameless).expect("the door's address");
+        let entry = url::Url::parse(&nameless).expect("the entry's address");
         assert!(
-            through_door(&door).is_err(),
+            through_entry(&entry).is_err(),
             "{nameless} names no workspace to enter"
         );
     }

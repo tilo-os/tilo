@@ -1034,7 +1034,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     relay.shutdown().await;
 }
 
-/// `device`'s person asks this host to list its workspaces, as the door's
+/// `device`'s person asks this host to list its workspaces, as the entry's
 /// account path does.
 async fn listed_for(
     host: &HostWorkspaceActions,
@@ -1129,7 +1129,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     );
     sign_device_cert(&mut agent, &backend_key).unwrap();
     // A key minted for one workspace enters it with the invitation the key
-    // that minted it asks for, as the door hands it over.
+    // that minted it asks for, as the entry hands it over.
     let entering = own_as_key(&host, &backend, json!({"workspace": workspace.workspace})).await;
     join(workspaces, &entering, &agent).await;
 
@@ -1324,7 +1324,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
 }
 
 /// A host keeping workspaces of people's own, with one listed workspace its
-/// door takes people into by invitation only and keeps a wait list for: the
+/// entry takes people into by invitation only and keeps a wait list for: the
 /// setup the two checks below share. Returns the host's actions, its
 /// workspaces, the listed workspace, a stranger who left an address there,
 /// and the state directory they live in.
@@ -1346,7 +1346,7 @@ async fn gated_host() -> (
         .unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
-    // The site's home workspace: its door, or an invitation into it, is the
+    // The site's home workspace: its entry, or an invitation into it, is the
     // one way to workspaces of one's own here.
     let lounge = home_of(&workspaces).await;
     workspaces
@@ -1365,7 +1365,7 @@ async fn gated_host() -> (
         .await
         .unwrap();
     assert!(
-        workspaces.offer_wait_list(tilo_relay_protocol::directory::DoorWaitList {
+        workspaces.offer_wait_list(tilo_relay_protocol::directory::EntryWaitList {
             contact: Some("hello@tilo.example".into()),
             mail: true,
         })
@@ -1390,13 +1390,13 @@ async fn gated_host() -> (
     (host, workspaces, lounge, stranger, dir)
 }
 
-/// The owner of a workspace whose door takes people by invitation is let in
-/// through that door: nobody here may invite them, so a door that turned its
+/// The owner of a workspace whose entry takes people by invitation is let in
+/// through that entry: nobody here may invite them, so an entry that turned its
 /// own owner away would leave the workspace with nobody in it to invite
 /// anyone.
 #[tokio::test]
 async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
-    use tilo_relay_protocol::directory::DoorJoin;
+    use tilo_relay_protocol::directory::EntryJoin;
 
     let (key, owner) = governor();
     let dir = tempfile::tempdir().unwrap();
@@ -1424,37 +1424,37 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
     workspaces
         .admit_listed(
             &lounge,
-            &DoorJoin {
+            &EntryJoin {
                 user_public_key: hex::encode(owner.user_public_key),
                 display_name: "The operator".into(),
             },
         )
         .await
-        .expect("the owner is let in through their own workspace's closed door");
+        .expect("the owner is let in through their own workspace's closed entry");
 }
 
-/// The wait list gates the door: the invitation-only door lets nobody in on
+/// The wait list gates the entry: the invitation-only entry lets nobody in on
 /// the strength of an address, and says it keeps one.
 #[tokio::test]
 async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
-    use tilo_relay_protocol::directory::DoorJoin;
+    use tilo_relay_protocol::directory::EntryJoin;
 
     let (_, workspaces, lounge, stranger, _state) = gated_host().await;
     let refused = workspaces
         .admit_listed(
             &lounge,
-            &DoorJoin {
+            &EntryJoin {
                 user_public_key: hex::encode(stranger.user_public_key),
                 display_name: "Stranger".into(),
             },
         )
         .await
-        .expect_err("an invitation-only door admits nobody who left an address");
+        .expect_err("an invitation-only entry admits nobody who left an address");
     assert!(
-        matches!(refused, crate::workspaces::DoorRefusal::InvitationOnly),
+        matches!(refused, crate::workspaces::EntryRefusal::InvitationOnly),
         "{refused:?}"
     );
-    let said = refused.answer_with(workspaces.wait_list_door());
+    let said = refused.answer_with(workspaces.wait_list_page());
     assert!(
         said.wait_list && said.mail && said.contact.as_deref() == Some("hello@tilo.example"),
         "the refusal offers the wait list: {said:?}"
@@ -1469,26 +1469,26 @@ async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
     );
 }
 
-/// The wait list's refusal `result` carries: the door's own, offering the
+/// The wait list's refusal `result` carries: the entry's own, offering the
 /// wait list it keeps, as the host refuses a person it never let in.
 fn waits(result: &Result<impl std::fmt::Debug, ActionHostError>) {
-    use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+    use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
     let Err(ActionHostError::Refused { reason }) = result else {
         panic!("a person never let in is refused: {result:?}");
     };
-    let door = DoorRefused::from_reason(reason)
-        .unwrap_or_else(|| panic!("the refusal is the door's: {reason}"));
-    assert_eq!(door.code, DoorRefusalCode::InvitationOnly, "{door:?}");
+    let entry = EntryRefused::from_reason(reason)
+        .unwrap_or_else(|| panic!("the refusal is the entry's: {reason}"));
+    assert_eq!(entry.code, EntryRefusalCode::InvitationOnly, "{entry:?}");
     assert!(
-        door.wait_list && door.mail && door.contact.as_deref() == Some("hello@tilo.example"),
-        "the refusal offers the wait list: {door:?}"
+        entry.wait_list && entry.mail && entry.contact.as_deref() == Some("hello@tilo.example"),
+        "the refusal offers the wait list: {entry:?}"
     );
-    assert!(door.error.contains("wait list"), "{}", door.error);
+    assert!(entry.error.contains("wait list"), "{}", entry.error);
 }
 
-/// Anyone can make a root: a certificate it signed is no way past the door.
+/// Anyone can make a root: a certificate it signed is no way past the entry.
 /// A fresh root, a key of it and an agent's grant of it are each refused a
-/// workspace of their own with the door's refusal and its wait list, and the
+/// workspace of their own with the entry's refusal and its wait list, and the
 /// host keeps nothing for them: no workspace, no workspace list.
 #[tokio::test]
 async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
@@ -1532,8 +1532,8 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 }
 
 /// A person the site let in (the home workspace's invitation redeemed, as
-/// its door hands one) makes a second and a third workspace of their own:
-/// the wait list is at the door, never in the way of someone already in.
+/// its entry hands one) makes a second and a third workspace of their own:
+/// the wait list is at the entry, never in the way of someone already in.
 /// Their agent's grant makes one too, within its scope; a key for one
 /// workspace makes none but enters its own. The stranger who only left an
 /// address keeps nothing.
@@ -1726,7 +1726,7 @@ async fn subscribe(
 /// redeemed the invitation into their own workspace, and a tab that comes
 /// later on another key (a second tab, the same tab after its key slot was
 /// taken) is a further device of theirs. It joins their workspace as theirs,
-/// the way the door lets a member's further device in, and the first tab
+/// the way the entry lets a member's further device in, and the first tab
 /// stays in; a stranger's device is still no member.
 #[tokio::test]
 async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_stays_in() {

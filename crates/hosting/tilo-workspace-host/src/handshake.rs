@@ -44,10 +44,10 @@ static ENTERING: Semaphore = Semaphore::const_new(MAX_ENTERING);
 /// A future an entry awaits.
 pub type EntryFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
-/// Where an entering device comes in: the host's workspaces, as their door
+/// Where an entering device comes in: the host's workspaces, as their entry
 /// and join answer it.
-pub trait Doorway: Send + Sync {
-    /// Let `cert`'s person in through the door `entry` names and have the
+pub trait Admit: Send + Sync {
+    /// Let `cert`'s person in through the entry `entry` names and have the
     /// workspace admit the device, which proved it holds its key on the
     /// connection carrying the entry; and once admitted, hand the
     /// workspace's channel participants the device's request for the keys of
@@ -218,7 +218,7 @@ impl LiveIdentity {
 
     /// The session endpoint's handshake: as [`Self::authenticate`] under
     /// `trust`, or, for a hello that asks to enter a workspace, the entry
-    /// through `doorway` ([`crate::entering`]), whose proof is checked under
+    /// through `way in` ([`crate::entering`]), whose proof is checked under
     /// `binding`, the keying material this end exported from the connection
     /// carrying the stream. A stream with no such connection (`None`) takes
     /// no entry. Resolves to the peer and, for an entry, what the workspace
@@ -227,14 +227,14 @@ impl LiveIdentity {
     /// # Errors
     ///
     /// As [`Self::authenticate`]; [`HandshakeError::NotEntering`] for an entry
-    /// with no doorway or no connection to bind it to.
+    /// with no way in or no connection to bind it to.
     pub async fn authenticate_or_enter<R, W>(
         &self,
         trust: EndpointTrust<'_>,
         recv: &mut R,
         send: &mut W,
         max_frame: usize,
-        doorway: Option<&dyn Doorway>,
+        admit: Option<&dyn Admit>,
         binding: Option<[u8; 32]>,
     ) -> Result<(AuthenticatedPeer, Option<Entered>), HandshakeError>
     where
@@ -260,12 +260,12 @@ impl LiveIdentity {
                 .map(|peer| (peer, None));
         };
         hello.entering = Some(entry);
-        let (Some(doorway), Some(binding)) = (doorway, binding) else {
+        let (Some(admit), Some(binding)) = (admit, binding) else {
             return Err(HandshakeError::NotEntering);
         };
         let entered = n0_future::time::timeout(ENTERING_DEADLINE, async {
             let _entry = ENTERING.acquire().await.map_err(|_| queue_closed())?;
-            enter(self, hello, &binding, send, doorway).await
+            enter(self, hello, &binding, send, admit).await
         })
         .await
         .map_err(|_| timed_out())?;
@@ -289,14 +289,14 @@ fn timed_out() -> HandshakeError {
 
 /// One entry, after its hello: the device's certificate and its proof on
 /// this connection checked ([`auth::server_enter`]), this server's proof
-/// written at once, and the workspace's answer once the door let the person
+/// written at once, and the workspace's answer once the entry let the person
 /// in and the workspace admitted the device. Nothing after the hello is read.
 async fn enter<W>(
     identity: &LiveIdentity,
     mut hello: Hello,
     binding: &[u8; 32],
     send: &mut W,
-    doorway: &dyn Doorway,
+    admit: &dyn Admit,
 ) -> Result<(AuthenticatedPeer, Entered), HandshakeError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -331,7 +331,7 @@ where
         return Err(HandshakeError::NotEntering);
     };
     let admitting = crate::timing::start();
-    let entered = doorway.enter(&hello.cert, entry).await;
+    let entered = admit.enter(&hello.cert, entry).await;
     crate::timing::event("entry.admitted", admitting, 0);
     Ok((peer, entered))
 }
@@ -803,7 +803,7 @@ mod tests {
                     workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
                     name: "Stranger".to_owned(),
                     request_id: [2; 32],
-                    through: tilo_relay_protocol::entering::Through::Door,
+                    through: tilo_relay_protocol::entering::Through::Entry,
                 },
                 access: None,
                 proof: [0; 64],

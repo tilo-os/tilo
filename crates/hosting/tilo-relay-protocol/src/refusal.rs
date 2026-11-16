@@ -16,7 +16,7 @@ pub const WORKSPACE_DELETED: &str = "workspace deleted";
 
 /// Why a host refuses a device whose person it keeps nothing of
 /// ([`crate::transport::Envelope::NotAuthorised`]): its state was reset, or it
-/// pruned them. The person joins again through the host's door.
+/// pruned them. The person joins again through the host's entry.
 pub const NOT_ADMITTED: &str = "not a member here";
 
 /// The member change budget's refusal ([`crate::config::MemberLimitsConfig`]).

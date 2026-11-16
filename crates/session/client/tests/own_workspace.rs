@@ -26,7 +26,7 @@ use tilo_session_client::{Outbox as _, PeerConfig};
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    door, enrol, enter as enter_as, enter_page, in_workspace, start_workspace_host,
+    enrol, enter as enter_as, enter_page, entry_grant, in_workspace, start_workspace_host,
 };
 
 fn new_key() -> SigningKey {
@@ -35,7 +35,7 @@ fn new_key() -> SigningKey {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_key() {
-    // Alice's host keeps the Lounge; its door lets Bob's tab in.
+    // Alice's host keeps the Lounge; its entry lets Bob's tab in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
     let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -55,7 +55,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     .unwrap();
     let tab = enter_as(
         &host,
-        door(
+        entry_grant(
             &host,
             &alice,
             &host_device,
@@ -91,7 +91,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
             .unwrap()
     );
-    // For the people the Lounge's door let in, as Bob's tab was.
+    // For the people the Lounge's entry let in, as Bob's tab was.
     assert!(workspaces.admit_own_through(&lounge.workspace));
 
     // The first time, the host makes it, and this device redeems the invitation: the workspace
@@ -149,11 +149,11 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "the Lounge is one of the person's too: {listed:?}"
     );
 
-    // A page opening that workspace through its own door, as the workspace switcher does for one
+    // A page opening that workspace through its own entry, as the workspace switcher does for one
     // this browser never entered: a device of Bob's the host has not seen enters as his, with no
     // invitation.
     let switcher_key = new_key();
-    let (switcher_cert, switcher_entry) = tilo_session_client::device::door_entry(
+    let (switcher_cert, switcher_entry) = tilo_session_client::device::entry_request(
         &host_device.cert,
         &own.workspace,
         &switcher_key,
@@ -210,7 +210,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     .unwrap();
     let laptop_peer = enter_as(
         &host,
-        door(
+        entry_grant(
             &host,
             &alice,
             &host_device,

@@ -27,7 +27,7 @@ use tilo_relay_client::invite::guest_certificate;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use crate::native::NativeDevice;
-use crate::support::{door, enrol, enter, hears, redeem, say, start_workspace_host};
+use crate::support::{enrol, enter, entry_grant, hears, redeem, say, start_workspace_host};
 
 /// A device certificate for `root`'s page, as the person's own root signs it.
 async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
@@ -50,7 +50,7 @@ async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record() {
     // Alice runs the host her workspace lives on, and her desktop is another
-    // device of hers; Bob takes part through the workspace's door.
+    // device of hers; Bob takes part through the workspace's entry.
     let (alice_root, _) = UserIdentity::generate("Alice", 1);
     let alice_root_key = alice_root.verifying_key().to_bytes();
     let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -66,11 +66,11 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
         .await
         .unwrap();
 
-    // Bob's page, let in through the workspace's door: a browser of bob's.
+    // Bob's page, let in through the workspace's entry: a browser of bob's.
     let (bob_key, bob_cert) = page_cert(&bob_root, "Bob's page").await;
     let bob = enter(
         &host,
-        door(
+        entry_grant(
             &host,
             &alice_root,
             &host_device,
@@ -89,7 +89,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let alice = enrol(&alice_root, "alice-desktop", DeviceCapabilities::primary());
     redeem(
         &host,
-        door(
+        entry_grant(
             &host,
             &alice_root,
             &host_device,

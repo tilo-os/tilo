@@ -869,12 +869,12 @@ impl Workspaces {
         link: String,
         now: u64,
     ) -> Result<(), CollaborationError> {
-        let Some((door, mail)) = self.inner.door.mail.get() else {
-            return Err(CollaborationError::new("this door sends no mail"));
+        let Some((door, mail)) = self.inner.entry.mail.get() else {
+            return Err(CollaborationError::new("this entry sends no mail"));
         };
         if !tilo_relay_protocol::workspaces::invitation_on_door(door, &link) {
             return Err(CollaborationError::new(
-                "only an invitation on this door is mailed",
+                "only an invitation on this entry is mailed",
             ));
         }
         let governed = self.workspace(workspace).await?;
@@ -920,7 +920,7 @@ impl Workspaces {
                 .map_err(CollaborationError::new)?;
             drop(governed);
             return Err(CollaborationError::new(
-                "the door did not accept the invitation mail",
+                "the entry did not accept the invitation mail",
             ));
         }
         if accepted.is_none() {

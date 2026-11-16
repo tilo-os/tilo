@@ -43,7 +43,7 @@ its own session with the relay:
   nothing (`tilo_workspace_host::workspace_access`). Its certificate's expiry and
   its person's revocations, a minted grant's issuer included, are checked at
   every handshake.
-- A grant reaching all workspaces enters through the site's door to its home
+- A grant reaching all workspaces enters through the site's entry to its home
   workspace, as the person's page does, and asks the relay there for the
   person's own workspace (`workspace.create-own`); a minted grant's parent asks for
   its invitation, and the minted grant never enters the home workspace
@@ -64,7 +64,7 @@ The binary reads its configuration from the environment:
 |---|---|
 | `TILO_API_LISTEN` | `HOST:PORT` to listen on, plain HTTP behind a TLS-terminating proxy |
 | `TILO_API_ORIGIN` | The API server's public origin as agents reach it (`https://mcp.tilo.sh`) |
-| `TILO_API_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the door to the site's home workspace on the relay (`home.admission`) |
+| `TILO_API_WEB_ENTRY` | The origin of the person's Tilo on the web, which signs them in and certifies grants (`https://tilo.sh`); its `entry.json` names the entry to the site's home workspace on the relay (`home.admission`) |
 | `TILO_API_HOST` | The public origin of the relay the person's workspaces live on (`https://eu1.tilo.sh`) |
 | `TILO_API_STATE` | A private file for registered clients, grants (with each live grant's key) and token digests; on persistent storage, one writer |
 
@@ -75,7 +75,7 @@ What it reaches:
   certificate and iroh address).
 - **The relay's iroh endpoint** over UDP (QUIC), directly or through the
   packet relay `/peer/v1/host` names: one session per MCP session, as the
-  grant's key. The session enters the site's home workspace through its door
+  grant's key. The session enters the site's home workspace through its entry
   (the workspace `entry.json`'s `home.admission` names) in its first message,
   and each invitation it redeems is an entry on another stream of the same
   connection.

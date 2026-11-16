@@ -719,10 +719,10 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
     link.abort();
 }
 
-/// A workspace's door is its own governance, not the host's: a device settles
+/// A workspace's entry is its own governance, not the host's: a device settles
 /// it, and another device holding the same workspace — the governor of a
 /// person's own machine — reads the same listing and the same invitation-only
-/// door from the change alone.
+/// entry from the change alone.
 #[tokio::test]
 async fn the_door_a_device_settles_is_the_door_another_device_reads() {
     let directory = tempfile::tempdir().unwrap();
@@ -743,7 +743,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
         [21; 32],
         now,
     );
-    // Settling the door is changing the workspace's settings: B holds that
+    // Settling the entry is changing the workspace's settings: B holds that
     // action too, so either device may settle it.
     governor
         .allow_governance(
@@ -776,7 +776,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
 
     // A's device, the workspace's owner, lists it and takes people by
     // invitation only.
-    let door = tilo_action_policy::DoorPolicy {
+    let entry = tilo_action_policy::EntryPolicy {
         listing: Some(tilo_action_policy::ListingPolicy {
             description: "Coffee and tea".into(),
             default_role: tilo_action_policy::Role::Commenter,
@@ -790,7 +790,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_a.clone(),
-                command: WorkspaceMembershipCommand::Settings(SettingsChange::Door(door.clone())),
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Entry(entry.clone())),
             },
         },
         &key_a,
@@ -806,23 +806,23 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
             message,
             now,
         )
-        .unwrap_or_else(|error| panic!("B refuses the door A settled: {error}"));
+        .unwrap_or_else(|error| panic!("B refuses the entry A settled: {error}"));
     }
     assert_eq!(
         b.with_current(workspace, |view| Ok(view
             .peer()
             .governance()
-            .governed_door()))
+            .governed_entry()))
             .unwrap(),
-        door,
-        "B's device reads the door A settled"
+        entry,
+        "B's device reads the entry A settled"
     );
 
     // B's device settles it again, taking the listing back: A reads that too,
-    // and neither device holds a door of its own.
-    let unlisted = tilo_action_policy::DoorPolicy {
+    // and neither device holds an entry of its own.
+    let unlisted = tilo_action_policy::EntryPolicy {
         listing: None,
-        ..door
+        ..entry
     };
     b.commit_workspace_membership_command(
         OwnerCommitRequest {
@@ -830,7 +830,7 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: cert_b.clone(),
-                command: WorkspaceMembershipCommand::Settings(SettingsChange::Door(
+                command: WorkspaceMembershipCommand::Settings(SettingsChange::Entry(
                     unlisted.clone(),
                 )),
             },
@@ -847,15 +847,15 @@ async fn the_door_a_device_settles_is_the_door_another_device_reads() {
             message,
             now,
         )
-        .unwrap_or_else(|error| panic!("A refuses the door B settled: {error}"));
+        .unwrap_or_else(|error| panic!("A refuses the entry B settled: {error}"));
     }
     assert_eq!(
         a.with_current(workspace, |view| Ok(view
             .peer()
             .governance()
-            .governed_door()))
+            .governed_entry()))
             .unwrap(),
         unlisted,
-        "A's device reads the door B settled"
+        "A's device reads the entry B settled"
     );
 }

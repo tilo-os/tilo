@@ -1,7 +1,7 @@
-//! Who is asking at the door's wait list: a keyed hash of the client address
+//! Who is asking at the entry's wait list: a keyed hash of the client address
 //! (no raw address is ever kept) and the per-address windows of the wait
 //! list's acts. Taken from the workspace service's own limits, whose joins the
-//! relay's directory door answers itself.
+//! relay's directory entry answers itself.
 
 use hmac::{Hmac, KeyInit, Mac};
 use std::collections::{HashMap, VecDeque};
@@ -64,8 +64,8 @@ impl JoinRates {
         per_day: 50,
     };
 
-    /// Confirmation links opened and doors asking where an entry stands:
-    /// each page load of a door that holds a secret asks once, so 30 per 10
+    /// Confirmation links opened and entries asking where an entry stands:
+    /// each page load of an entry that holds a secret asks once, so 30 per 10
     /// minutes and 300 per day.
     pub const WAIT_LIST_LOOKUPS: Self = Self {
         per_ten_minutes: 30,

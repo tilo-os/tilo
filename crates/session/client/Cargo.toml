@@ -104,7 +104,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-sup
 web-time = { version = "1", features = ["serde"] }
 # A state directory for an engine, and a vault root for the channel state kept in it.
 tempfile.workspace = true
-# The host a test asks through the page's door, as a session's device answers it.
+# The host a test asks through the page's entry, as a session's device answers it.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # A test that must hold the wall clock of its whole process (and the
 # helper threads reading it) takes the process to itself.

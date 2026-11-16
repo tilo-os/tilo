@@ -166,12 +166,12 @@ sha2 = { workspace = true, optional = true }
 # Web Push to a person's browsers (`web_push`): P-256 agreement and signing,
 # HKDF and AES-GCM, from the crate TLS already builds.
 ring = { version = "0.17", optional = true }
-# The fetch proxy a page's apps reach the web through, and the mail the door
-# sends over HTTPS.
+# The fetch proxy a page's apps reach the web through, and the mail the entry
+# page sends over HTTPS.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }
-# The door's mail outbox awaits a send in its own future.
+# The entry's mail outbox awaits a send in its own future.
 futures = { workspace = true, optional = true }
-# The keyed hash of a visitor's address the door's wait-list windows count.
+# The keyed hash of a visitor's address the entry's wait-list windows count.
 hmac = { workspace = true, optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own

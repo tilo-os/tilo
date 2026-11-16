@@ -1,4 +1,4 @@
-//! A fresh guest entering a crowded workspace through its door, as a new
+//! A fresh guest entering a crowded workspace through its entry, as a new
 //! visitor's page enters the Lounge: the workspace has hundreds of members whose
 //! devices are in its channel group and megabytes of records. What a person
 //! waits for is the desktop: the page is in when the host admitted it, its
@@ -48,7 +48,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_session_client::MemoryPeerStore;
-use tilo_session_client::device::{Entering, door_entry};
+use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{enrol, enter_page, keyed, start_workspace_host_relaying};
@@ -448,7 +448,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         record: "desktop".into(),
     };
 
-    // The crowd: people who came through the door, each a device of their
+    // The crowd: people who came through the entry, each a device of their
     // own, a few at a time as people arrive. Each page enters as a visitor's
     // does, its entry carrying its request for the workspace's keys, writes its
     // own part of the shared desktop once it holds them, and goes away: the
@@ -509,11 +509,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         let name = format!("Member {n}");
         if n >= online {
             // Beyond those who came with a page that took the keys: people
-            // the door let in whose devices never came back.
-            let doors = workspaces.clone();
+            // the entry let in whose devices never came back.
+            let entries = workspaces.clone();
             let workspace = lounge.workspace.clone();
             arriving.spawn(async move {
-                through_the_door(&doors, &workspace, &name).await;
+                through_the_entry(&entries, &workspace, &name).await;
             });
             continue;
         }
@@ -588,11 +588,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     }
 }
 
-/// How many people come through the door at once while the crowd is seeded.
+/// How many people come through the entry at once while the crowd is seeded.
 const ARRIVING: usize = 16;
 
 /// A member of the crowd arriving with a page of their own, as a new
-/// visitor's page enters: through the door, its entry carrying its request
+/// visitor's page enters: through the entry, its entry carrying its request
 /// for the workspace's keys.
 #[derive(Clone)]
 struct Member {
@@ -607,7 +607,7 @@ impl Member {
     /// The page of `name`, in the workspace and holding the desktop's keys.
     async fn arrive(&self, name: &str) -> Link {
         let (root, key) = (new_key(), new_key());
-        let (cert, entry) = door_entry(
+        let (cert, entry) = entry_request(
             &self.host_cert,
             &self.workspace,
             &key,
@@ -634,7 +634,7 @@ impl Member {
         let waiting = Instant::now();
         while !keyed(&page, &self.desktop) {
             if let Some(tilo_session_client::Entry::Refused { .. }) = &page.status().entry {
-                panic!("the door turned {name} away: {:?}", page.status().entry);
+                panic!("the entry turned {name} away: {:?}", page.status().entry);
             }
             assert!(
                 waiting.elapsed() < Duration::from_secs(240),
@@ -667,10 +667,10 @@ impl Member {
     }
 }
 
-/// A person coming through `workspace`'s door with a device of their own, as the host's door
+/// A person coming through `workspace`'s entry with a device of their own, as the host's entry
 /// and the workspace's join take them, in process: the crowd that came before leaves no session
 /// behind it, only the members it made.
-async fn through_the_door(
+async fn through_the_entry(
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
     name: &str,
@@ -689,7 +689,7 @@ async fn through_the_door(
     let (issued, token) = workspaces
         .admit_listed(
             workspace,
-            &tilo_relay_protocol::directory::DoorJoin {
+            &tilo_relay_protocol::directory::EntryJoin {
                 user_public_key: hex::encode(cert.user_public_key),
                 display_name: name.to_owned(),
             },
@@ -712,7 +712,7 @@ async fn through_the_door(
     (key, cert)
 }
 
-/// What every guest enters: the host's door and session, and the record it
+/// What every guest enters: the host's entry and session, and the record it
 /// shows first.
 struct Place<'a> {
     https: &'a dyn tilo_relay_client::https::HttpClient,
@@ -816,7 +816,7 @@ impl Way {
                  ({allowed:?})",
                 entry.shown
             );
-            // Its site says who the host is, and the door and the admission
+            // Its site says who the host is, and the entry and the admission
             // ride the session: a fresh guest asks the host nothing over
             // HTTPS.
             assert!(
@@ -869,7 +869,7 @@ impl Way {
 const WEB_ROUND_TRIPS: f64 = 3.25;
 
 /// What the host and the page may spend on a fresh guest's entry, from its
-/// first request until its desktop shows: the session and the door (about
+/// first request until its desktop shows: the session and the entry (about
 /// 0.1 s), the workspace admitting the guest (about 60 ms for 300 members),
 /// the participants' commit that adds the guest to a channel group of 300 and
 /// carries its Welcome (about 85 ms), the replay written, and the page taking
@@ -922,7 +922,7 @@ const RELAYED_ROUND_TRIPS: f64 = 3.5;
 /// governance carries every member's certificate), its governance (about
 /// 0.19 MB, some 625 B a member: each device's row with its keys and
 /// signatures as bytes, and each receipt with the issuer's certificate and
-/// transport details its door invitation shares named once; a compressed
+/// transport details its entry invitation shares named once; a compressed
 /// base with the changes since, which a host starts
 /// over once they weigh half the base, so between one and one and a half times
 /// the base: how many changes a guest meets depends on how the crowd's
@@ -979,12 +979,12 @@ impl Entry {
     }
 }
 
-/// A new visitor's page entering `place` through its door, the `way` it
+/// A new visitor's page entering `place` through its entry, the `way` it
 /// reaches the host, over a network whose round trip is `round_trip`, until
 /// it shows the desktop.
 async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entry {
     // The page's site says who the host is, so the page asks it nothing over
-    // HTTPS: its session enters through the door as it opens.
+    // HTTPS: its session enters through the entry as it opens.
     let named = place
         .site
         .address
@@ -1055,7 +1055,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let mut marks: Vec<(&'static str, Duration)> = Vec::new();
     let root = new_key();
     let key = new_key();
-    let (cert, entry) = door_entry(
+    let (cert, entry) = entry_request(
         &place.site.host_cert,
         place.workspace,
         &key,
@@ -1098,7 +1098,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                     assert_eq!(workspace, place.workspace);
                     admitted = Some(started.elapsed());
                 }
-                Some(refused) => panic!("the door did not let the guest in: {refused:?}"),
+                Some(refused) => panic!("the entry did not let the guest in: {refused:?}"),
                 None => {}
             }
         }
@@ -1139,7 +1139,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let shown = started.elapsed();
     let (received, sent) = wire.bytes();
     marks.push(("session connected", connected.unwrap_or_default()));
-    marks.push(("door admitted the guest", admitted.unwrap_or_default()));
+    marks.push(("entry admitted the guest", admitted.unwrap_or_default()));
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
     marks.push(("desktop keyed", keyed_desktop.unwrap_or_default()));
     marks.push(("desktop record", desktop_doc.unwrap_or_default()));

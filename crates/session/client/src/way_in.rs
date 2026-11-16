@@ -1,10 +1,10 @@
 //! Which way a device takes into the workspace a link names, before anything about the link's
-//! target is read. Every way is the workspace's own door: a link grants nothing, and a failure to
+//! target is read. Every way is the workspace's own entry: a link grants nothing, and a failure to
 //! get in reads the same whether the workspace is missing or private, so a link never tells a
 //! stranger which workspaces exist.
 //!
 //! The device asks [`way_in`] with what the link carries and what it knows of the host, takes
-//! that way, and asks [`after`] when it did not get in. Taking a way (asking a door, opening an
+//! that way, and asks [`after`] when it did not get in. Taking a way (asking an entry, opening an
 //! invitation, connecting) and what the person is shown are the device's own.
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub enum Scope {
     Own,
     /// An invitation a site keeps, sealed, which names the workspace it admits into.
     Sealed,
-    /// A workspace of a host, or (no `workspace`) the workspace its door admits to.
+    /// A workspace of a host, or (no `workspace`) the workspace its entry admits to.
     Workspace {
         #[serde(default)]
         workspace: Option<String>,
@@ -57,9 +57,9 @@ pub struct Link {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Here {
-    /// The host's listed workspace has a door that admits people by itself.
+    /// The host's listed workspace has an entry that admits people by itself.
     #[serde(default)]
-    pub door: bool,
+    pub entry: bool,
     /// This device entered the workspace the link names before.
     #[serde(default)]
     pub entered: bool,
@@ -86,18 +86,18 @@ pub struct Can {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Way {
-    /// The person's own desktop, gated by its home's door where the home has one.
+    /// The person's own desktop, gated by its home's entry where the home has one.
     OwnDesktop,
     /// Open the invitation the site keeps, then [`Self::Invitation`] at the host it names.
     SealedInvitation,
     /// Inspect the invitation, have the person confirm it, and redeem it.
     Invitation,
-    /// Spend the guest ticket at the redemption door the web host names.
+    /// Spend the guest ticket at the redemption entry the web host names.
     Ticket,
     /// Pair as a new device of the person the link names, once one of their devices approves.
     Pair,
-    /// Ask the host's door, held to the workspace the link names.
-    Door,
+    /// Ask the host's entry, held to the workspace the link names.
+    Entry,
     /// Connect as the member whose account the device holds for the host.
     Member,
     /// Come back with the person's root the device holds: the host decides whether they are in.
@@ -140,8 +140,12 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
             .filter(|workspace| !workspace.is_empty()),
     };
     if workspace.is_none() {
-        // The workspace a bare entry names is the door's to say.
-        return if here.door { Way::Door } else { Way::NoAccess };
+        // The workspace a bare entry names is the entry's to say.
+        return if here.entry {
+            Way::Entry
+        } else {
+            Way::NoAccess
+        };
     }
     if link.invite {
         return Way::Invitation;
@@ -166,11 +170,11 @@ pub fn way_in(link: &Link, here: &Here) -> Way {
     }
 }
 
-/// A device without an account for the host: the door, unless it entered this workspace before
+/// A device without an account for the host: the entry, unless it entered this workspace before
 /// (the person's own, say), which it comes back to as the person first.
 fn without_account(here: &Here) -> Way {
-    if here.door && !here.entered {
-        Way::Door
+    if here.entry && !here.entered {
+        Way::Entry
     } else {
         Way::Reconnect
     }
@@ -180,7 +184,7 @@ fn without_account(here: &Here) -> Way {
 #[must_use]
 pub fn after(failed: Failed, here: &Here) -> Way {
     match failed {
-        Failed::Reconnect if here.door => Way::Door,
+        Failed::Reconnect if here.entry => Way::Entry,
         // A host's refusal, or a key that did not open, are no access alike.
         Failed::Member | Failed::Reconnect => Way::NoAccess,
     }
@@ -212,9 +216,9 @@ mod tests {
         }
     }
 
-    fn here(door: bool, entered: bool, accounts: usize) -> Here {
+    fn here(entry: bool, entered: bool, accounts: usize) -> Here {
         Here {
-            door,
+            entry,
             entered,
             accounts: Some(accounts),
             can: Can {
@@ -325,8 +329,8 @@ mod tests {
             assert_eq!(way_in(&sealed, &Here::default()), Way::SealedInvitation);
             assert_eq!(
                 way_in(&at(None), &here(true, false, 1)),
-                Way::Door,
-                "the door names the workspace"
+                Way::Entry,
+                "the entry names the workspace"
             );
             assert_eq!(
                 way_in(
@@ -337,15 +341,15 @@ mod tests {
                     &here(false, false, 1)
                 ),
                 Way::NoAccess,
-                "a bare entry has no way in but its host's door"
+                "a bare entry has no way in but its host's entry"
             );
         }
 
-        phase a_member_connects_and_anyone_else_comes_back_as_the_person_or_asks_the_door;
+        phase a_member_connects_and_anyone_else_comes_back_as_the_person_or_asks_the_entry;
         {
             let named = at(Some("r"));
             assert_eq!(way_in(&named, &here(true, false, 1)), Way::Member);
-            assert_eq!(way_in(&named, &here(true, false, 0)), Way::Door);
+            assert_eq!(way_in(&named, &here(true, false, 0)), Way::Entry);
             assert_eq!(
                 way_in(&named, &here(true, true, 0)),
                 Way::Reconnect,
@@ -354,10 +358,10 @@ mod tests {
             assert_eq!(way_in(&named, &here(false, false, 0)), Way::Reconnect);
         }
 
-        phase a_failed_way_ends_in_the_door_or_no_access;
+        phase a_failed_way_ends_in_the_entry_or_no_access;
         {
             assert_eq!(after(Failed::Member, &here(true, false, 1)), Way::NoAccess);
-            assert_eq!(after(Failed::Reconnect, &here(true, true, 0)), Way::Door);
+            assert_eq!(after(Failed::Reconnect, &here(true, true, 0)), Way::Entry);
             assert_eq!(
                 after(Failed::Reconnect, &here(false, false, 0)),
                 Way::NoAccess
@@ -370,7 +374,7 @@ mod tests {
             assert!(!as_asked(Some("r"), Some("other")));
             assert!(
                 as_asked(None, Some("other")),
-                "a bare entry goes where the door admits"
+                "a bare entry goes where the entry admits"
             );
             assert!(as_asked(Some("r"), None));
         }

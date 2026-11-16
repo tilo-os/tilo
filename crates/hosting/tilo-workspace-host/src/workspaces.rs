@@ -49,8 +49,8 @@ mod device_keys;
 mod device_plane;
 #[cfg(test)]
 mod device_plane_tests;
-mod door;
 mod follow;
+mod removals;
 pub use device_plane::HostJobs;
 pub use follow::RecordWrite;
 #[cfg(test)]
@@ -130,7 +130,7 @@ pub(crate) use actions::{GovernedPlane, HostWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use host_invitations::HostInvitation;
-pub use listing::DoorRefusal;
+pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_relay_protocol::WorkspaceId;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
@@ -267,7 +267,7 @@ struct GovernedWorkspace {
     wait_list: wait_list::WaitList,
     /// Whom moderation removed, and when: the public door keeps them out for
     /// the day.
-    door: door::Door,
+    removals: removals::Removals,
     /// Admits the governance each settle retains to the host's order, after
     /// the workspace's lock is released.
     publisher: Arc<publisher::WorkspacePublisher>,
@@ -413,7 +413,7 @@ impl GovernedWorkspace {
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
-            door: door::Door::open(&path)?,
+            removals: removals::Removals::open(&path)?,
             parts,
             publications,
             receipts,
@@ -511,7 +511,8 @@ impl GovernedWorkspace {
                 .map_err(|error| format!("admissions: {error}"))?,
             wait_list: wait_list::WaitList::open(&path)
                 .map_err(|error| format!("wait list: {error}"))?,
-            door: door::Door::open(&path).map_err(|error| format!("door: {error}"))?,
+            removals: removals::Removals::open(&path)
+                .map_err(|error| format!("removals: {error}"))?,
             record,
             peer: Replica::new(peer),
             parts,
@@ -997,7 +998,7 @@ struct WorkspacesInner {
     hosting: crate::hosted::Hosting,
     /// The door's wait list, once whoever runs the relay offers one
     /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
-    door: wait_list::DoorSettings,
+    entry: wait_list::EntrySettings,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1232,7 +1233,7 @@ impl Workspaces {
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
-                door: wait_list::DoorSettings::default(),
+                entry: wait_list::EntrySettings::default(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
@@ -1930,7 +1931,7 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = runtime_state.lock().await;
-        let public = Self::door_of(governed).is_listed();
+        let public = Self::entry_of(governed).is_listed();
         runtime.store.set_records_when_opened(public);
         // This relay's workspace authority governs the workspace: never auto-enrol,
         // even if the workspace was autobound before the authority took it.

@@ -76,7 +76,7 @@ pub struct Hello {
     /// sign.
     pub client_nonce: [u8; 32],
     /// The workspace a device the host has not admitted yet asks to enter
-    /// through its door, and the device's proof ([`crate::entering`]). Only
+    /// through its entry, and the device's proof ([`crate::entering`]). Only
     /// the host's session endpoint takes it; every other endpoint refuses a
     /// hello that carries one.
     pub entering: Option<crate::entering::Entry>,

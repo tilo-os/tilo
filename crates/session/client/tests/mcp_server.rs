@@ -29,7 +29,7 @@ use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{door, enrol, enter, in_workspace, place, start_host, start_peer, wait_for};
+use crate::support::{enrol, enter, in_workspace, place, start_host, start_peer, wait_for};
 
 fn now() -> u64 {
     tilo_clock::unix_now_ns()
@@ -243,7 +243,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     }
     // Someone else is a member of the workspace, let in by its owner.
     let person = other_root.verifying_key().to_bytes();
-    let invited = door(
+    let invited = crate::support::entry_grant(
         &host,
         &root,
         &host_device,

@@ -426,7 +426,7 @@ pub enum Cmd {
     /// on is the agent's, for this device's person, and the person's MCP server lists the run while
     /// the session lasts. The answer is the host's.
     AgentSession(String, Answer<Result<(), String>>),
-    /// Enter another workspace through its door, on a stream of its own on this session's
+    /// Enter another workspace through its entry, on a stream of its own on this session's
     /// connection: a device in a session with its host redeems an invitation this way. The answer
     /// is the host's, or why there was none.
     Enter(

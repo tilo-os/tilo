@@ -927,13 +927,13 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
 }
 
 /// A note the workspace's governor (Ada) wrote before someone new was admitted
-/// reaches the newcomer. Grace is admitted through the workspace's door after
+/// reaches the newcomer. Grace is admitted through the workspace's entry after
 /// Ada wrote the note twice; her device subscribes to the workspace as a device
 /// does, and the replay it is sent holds Ada's writes of the note, which
 /// open to the note with both versions in its history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
-    use super::super::tests::{door_join, guest_device};
+    use super::super::tests::{entry_join, guest_device};
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
     let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::member());
@@ -955,7 +955,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     );
 
     let (grace_key, grace) = guest_device();
-    door_join(&workspaces, &ada, &workspace, (&grace_key, &grace), 21).await;
+    entry_join(&workspaces, &ada, &workspace, (&grace_key, &grace), 21).await;
 
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&grace_key.to_bytes()))

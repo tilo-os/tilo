@@ -4,7 +4,7 @@
 //! A workspace's state — its people, what its apps recorded, its history — is held
 //! by the peer-state engine beside the layout ([`NativeWorkspaceOwner`]), in a file of
 //! its own under this device's state ([`FILE`]). Joining redeems the invitation its
-//! door answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
+//! entry answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
 //! and a late joiner reads the whole history, not only what is recorded from now
 //! on. The engine keeps which workspaces are on the layout ([`Shown`]), because an enrollment
 //! installs into the workspace made for it.

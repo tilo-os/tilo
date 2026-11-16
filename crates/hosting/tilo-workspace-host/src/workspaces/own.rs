@@ -101,7 +101,7 @@ pub(super) struct OwnWorkspaces {
     /// Held while a workspace is made under one name ([`Self::making`]),
     /// by that name.
     making: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
-    /// The site's home workspace: the one whose door, or an invitation into
+    /// The site's home workspace: the one whose entry, or an invitation into
     /// it, lets a person in to keep workspaces of their own here
     /// ([`Workspaces::admit_own_through`]). Until it is named, only the
     /// host's person makes one.
@@ -470,7 +470,7 @@ impl Workspaces {
     }
 
     /// Keep workspaces of their own here only for the people the site let in
-    /// through `home`, its home workspace: those its door or an invitation
+    /// through `home`, its home workspace: those its entry or an invitation
     /// admitted. Called once, after [`Self::offer_own_workspaces`] and before
     /// the host serves; `false` when this host keeps no workspaces of
     /// people's own or the home was named before.
@@ -480,7 +480,7 @@ impl Workspaces {
     }
 
     /// Whether `person` was let in to keep workspaces of their own here: the
-    /// host's person; a member of the site's home workspace, whom its door or
+    /// host's person; a member of the site's home workspace, whom its entry or
     /// an invitation admitted, or of any other workspace here, whom an
     /// invitation into it admitted; a person an invitation into it still names,
     /// who enters by it; or a person who keeps workspaces of their own here
@@ -504,54 +504,54 @@ impl Workspaces {
         self.inner.memberships.holds_any(person) || self.invited(home, *person, now).await
     }
 
-    /// Whether `home`'s door takes people by invitation only, as its governance
+    /// Whether `home`'s entry takes people by invitation only, as its governance
     /// records it.
     async fn takes_people_by_invitation(&self, home: &str) -> bool {
-        self.door_policy(home)
+        self.entry_policy(home)
             .await
-            .is_some_and(|door| door.invitation_only)
+            .is_some_and(|entry| entry.invitation_only)
     }
 
     /// What a person [`Self::let_in`] does not admit hears: the refusal of
-    /// the site's door, offering its wait list when it takes people by
+    /// the site's entry, offering its wait list when it takes people by
     /// invitation, carried as the action's refusal reason
-    /// ([`tilo_relay_protocol::directory::DoorRefused::to_reason`]).
-    pub(super) async fn not_let_in(&self) -> tilo_relay_protocol::directory::DoorRefused {
-        use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+    /// ([`tilo_relay_protocol::directory::EntryRefused::to_reason`]).
+    pub(super) async fn not_let_in(&self) -> tilo_relay_protocol::directory::EntryRefused {
+        use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
         let host = self
             .own()
             .map_or_else(String::new, |own| own.offer().host.clone());
         let home = self.own().and_then(|own| own.home.get());
         let (code, mut error) = match home {
             Some(home) if self.takes_people_by_invitation(home).await => (
-                DoorRefusalCode::InvitationOnly,
+                EntryRefusalCode::InvitationOnly,
                 format!("{host} takes people by invitation and has not let you in yet"),
             ),
             Some(_) => (
-                DoorRefusalCode::Refused,
-                format!("come into {host} through its door first"),
+                EntryRefusalCode::Refused,
+                format!("come into {host} through its entry first"),
             ),
             None => {
-                return DoorRefused {
-                    code: DoorRefusalCode::Refused,
+                return EntryRefused {
+                    code: EntryRefusalCode::Refused,
                     error: format!("{host} keeps workspaces only for the person it runs for"),
-                    ..DoorRefused::default()
+                    ..EntryRefused::default()
                 };
             }
         };
-        let door = self
-            .wait_list_door()
-            .filter(|_| code == DoorRefusalCode::InvitationOnly);
-        if door.is_some() {
+        let entry = self
+            .wait_list_page()
+            .filter(|_| code == EntryRefusalCode::InvitationOnly);
+        if entry.is_some() {
             error.push_str("; leave your address on its wait list");
         }
         error.push_str(". Your workspaces are made once you are in.");
-        DoorRefused {
+        EntryRefused {
             code,
             error,
-            ..DoorRefused::default()
+            ..EntryRefused::default()
         }
-        .with_wait_list(door)
+        .with_wait_list(entry)
     }
 
     /// Put `person` on `plan` here: how much the workspaces of their own may

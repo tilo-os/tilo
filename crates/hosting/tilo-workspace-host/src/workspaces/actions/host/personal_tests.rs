@@ -622,7 +622,7 @@ async fn a_keys_session_says_which_agent_it_runs() {
 
 /// A session of a member's device — a person this host is not the own of —
 /// says so in their record as it starts, from the session itself and not from
-/// the record's own door.
+/// the record's own entry.
 #[tokio::test]
 async fn a_members_session_marks_its_key_online_as_it_starts() {
     use std::collections::HashMap;

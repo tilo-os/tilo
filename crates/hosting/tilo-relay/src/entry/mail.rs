@@ -1,4 +1,4 @@
-//! The mail the persistent workspace's door sends about its wait list: the link
+//! The mail the persistent workspace's entry sends about its wait list: the link
 //! that confirms an address, the invitation a member sends there, and word
 //! that an address left the list.
 //!
@@ -9,7 +9,7 @@
 //! a configured file that is missing or malformed stops the service, never
 //! falling back to the built-in words. A plain-text file's first line is the
 //! subject (after an optional `Subject: `). `{{workspace}}`, `{{email}}`,
-//! `{{link}}`, `{{remove_link}}` and `{{door}}` are filled in, HTML-escaped
+//! `{{link}}`, `{{remove_link}}` and `{{entry}}` are filled in, HTML-escaped
 //! in the HTML; a layout fills `{{body}}`, and may name the language with
 //! `{{language}}`. Only those placeholders are allowed where they belong,
 //! each is filled once, and a filled value is never searched for
@@ -17,7 +17,7 @@
 //! The `mail-preview <dir>` command of `tilo-relay` writes every mail
 //! as it is sent.
 //!
-//! A [`DoorMail`] hands what it sends to the outbox it opened, which
+//! A [`EntryMail`] hands what it sends to the outbox it opened, which
 //! sends through a [`Mailer`] — [`Resend`] over its HTTPS API, or a fake in
 //! tests — with a bounded retry and one idempotency key per mail. Nothing
 //! here logs an address, a link or a secret.
@@ -37,11 +37,11 @@ use tilo_relay_protocol::operator::WaitListMailbox;
 use super::MailConfig;
 use super::outbox::{Limits, Outbox};
 
-/// The mails the door sends.
+/// The mails the entry sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The link that confirms an address left at the door.
+    /// The link that confirms an address left at the entry.
     Confirm,
     /// A member's invitation, to a confirmed address.
     Invite,
@@ -50,7 +50,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Every mail the door sends, for the checks that read each one.
+    /// Every mail the entry sends, for the checks that read each one.
     #[cfg(test)]
     pub const ALL: [Self; 3] = [Self::Confirm, Self::Invite, Self::Removed];
 
@@ -87,13 +87,13 @@ const MAX_TEMPLATE_BYTES: usize = 256 * 1024;
 /// The most a subject may be, as RFC 5322 bounds a header line.
 const MAX_SUBJECT_BYTES: usize = 998;
 
-/// The most a link the door fills in may be: an invitation carries its
+/// The most a link the entry fills in may be: an invitation carries its
 /// certificate chain ([`tilo_relay_protocol::workspaces::MAX_INVITATION_LINK`])
 /// under the web entry's prefix.
 const MAX_LINK_BYTES: usize = tilo_relay_protocol::workspaces::MAX_INVITATION_LINK + 4096;
 
 /// What a mail body may fill.
-const BODY_PLACEHOLDERS: [&str; 5] = ["workspace", "email", "link", "remove_link", "door"];
+const BODY_PLACEHOLDERS: [&str; 5] = ["workspace", "email", "link", "remove_link", "entry"];
 
 /// What a layout may fill: the body it wraps, and the language it is in.
 const LAYOUT_PLACEHOLDERS: [&str; 2] = ["body", "language"];
@@ -116,7 +116,7 @@ struct Language {
     removed: Body,
 }
 
-/// The words of every mail the door sends, in every language, checked when
+/// The words of every mail the entry sends, in every language, checked when
 /// they are loaded.
 #[derive(Clone, Debug)]
 pub struct Templates {
@@ -126,7 +126,7 @@ pub struct Templates {
 }
 
 impl Templates {
-    /// The templates built into the service, for a door that configures no
+    /// The templates built into the service, for an entry that configures no
     /// directory (`TILO_WORKSPACES_MAIL_TEMPLATES`).
     pub fn baked() -> Self {
         Self {
@@ -138,7 +138,7 @@ impl Templates {
 
     /// The templates in `dir`: `layout.html` and, for every language,
     /// `<language>/<mail>.txt` and `.html`. Every one must be there and be a
-    /// template this mail fills; a door that cannot load them sends nothing.
+    /// template this mail fills; an entry that cannot load them sends nothing.
     pub fn load(dir: &Path) -> Result<Self> {
         ensure!(
             dir.is_dir(),
@@ -324,8 +324,8 @@ pub struct Values<'a> {
     pub link: &'a str,
     /// The link that takes the address off the list.
     pub remove_link: &'a str,
-    /// The door itself.
-    pub door: &'a str,
+    /// The entry itself.
+    pub entry: &'a str,
 }
 
 impl Values<'_> {
@@ -335,7 +335,7 @@ impl Values<'_> {
             "email" => Some(self.email),
             "link" => Some(self.link),
             "remove_link" => Some(self.remove_link),
-            "door" => Some(self.door),
+            "entry" => Some(self.entry),
             _ => None,
         }
     }
@@ -372,7 +372,7 @@ pub struct Mail {
 }
 
 impl Mail {
-    /// Whether this is a mail the door may hand to a mail service: an
+    /// Whether this is a mail the entry may hand to a mail service: an
     /// address it accepts, a subject of one header line without control
     /// characters, and a body.
     pub(crate) fn is_sendable(&self) -> bool {
@@ -448,7 +448,7 @@ fn filled(template: &str, fill: &Fill<'_>, escape: fn(&str) -> String) -> String
 }
 
 /// Whether `url` is a page mail may link to: `https` with a host, or, in the
-/// local review mode (`TILO_WORKSPACES_LOCAL`) the door was started in, a plain
+/// local review mode (`TILO_WORKSPACES_LOCAL`) the entry was started in, a plain
 /// `http` address on this machine, which `TILO_WORKSPACES_WEB_ENTRY` accepts there too.
 /// Nothing that could run as another kind of URL, carry credentials or break
 /// out of the attribute.
@@ -613,28 +613,28 @@ fn transport_error(error: &tilo_net::NetError) -> SendError {
     }
 }
 
-/// The door's mail: what it fills in, and where what it sends is kept.
+/// The entry's mail: what it fills in, and where what it sends is kept.
 #[derive(Clone)]
-pub struct DoorMail {
-    /// The door's page (`TILO_WORKSPACES_WEB_ENTRY`), which the links open.
-    door: String,
+pub struct EntryMail {
+    /// The entry's page (`TILO_WORKSPACES_WEB_ENTRY`), which the links open.
+    entry: String,
     workspace: String,
     templates: Templates,
     outbox: Arc<Outbox>,
-    /// The door runs in the local review mode (`TILO_WORKSPACES_LOCAL`), where
+    /// The entry runs in the local review mode (`TILO_WORKSPACES_LOCAL`), where
     /// its page may be a plain `http` loopback address.
     local: bool,
 }
 
-impl DoorMail {
-    /// A door that keeps its mail only while the process runs, with the
-    /// built-in words: for tests. A persistent workspace's door is
+impl EntryMail {
+    /// An entry that keeps its mail only while the process runs, with the
+    /// built-in words: for tests. A persistent workspace's entry is
     /// [`Self::durable`], so a restart delays its mail rather than losing
     /// it.
     #[cfg(test)]
-    pub fn new(mailer: Arc<dyn Mailer>, door: &str, workspace: &str) -> Self {
+    pub fn new(mailer: Arc<dyn Mailer>, entry: &str, workspace: &str) -> Self {
         Self::assembled(
-            door,
+            entry,
             workspace,
             Templates::baked(),
             Outbox::in_memory(mailer, Limits::DEFAULT),
@@ -642,27 +642,27 @@ impl DoorMail {
         )
     }
 
-    /// The door of a persistent workspace: `templates` as configured or built in,
+    /// The entry of a persistent workspace: `templates` as configured or built in,
     /// and every mail kept in `dir` until it is sent, across restarts.
     pub fn durable(
         mailer: Arc<dyn Mailer>,
-        door: &str,
+        entry: &str,
         workspace: &str,
         templates: Templates,
         local: bool,
         dir: &Path,
     ) -> Result<Self> {
         ensure!(
-            door.ends_with('/') && safe_url(door, local),
-            "the door's page is an https URL ending in / (a local http loopback one in the local mode)"
+            entry.ends_with('/') && safe_url(entry, local),
+            "the entry's page is an https URL ending in / (a local http loopback one in the local mode)"
         );
         let outbox = Outbox::durable(dir, mailer, Limits::DEFAULT)
             .with_context(|| format!("open the mail outbox in {}", dir.display()))?;
-        Ok(Self::assembled(door, workspace, templates, outbox, local))
+        Ok(Self::assembled(entry, workspace, templates, outbox, local))
     }
 
     fn assembled(
-        door: &str,
+        entry: &str,
         workspace: &str,
         templates: Templates,
         outbox: Outbox,
@@ -670,7 +670,7 @@ impl DoorMail {
     ) -> Self {
         let outbox = Arc::new(outbox);
         Self {
-            door: door.to_owned(),
+            entry: entry.to_owned(),
             workspace: workspace.to_owned(),
             templates,
             outbox,
@@ -679,18 +679,18 @@ impl DoorMail {
     }
 
     fn link(&self, parameter: &str, secret: &str) -> String {
-        format!("{}?{parameter}={secret}", self.door)
+        format!("{}?{parameter}={secret}", self.entry)
     }
 
-    /// Whether `link` is an invitation on this door, which is all a member
-    /// may have the door mail.
-    pub fn on_door(&self, link: &str) -> bool {
-        tilo_relay_protocol::workspaces::invitation_on_door(&self.door, link)
+    /// Whether `link` is an invitation on this entry, which is all a member
+    /// may have the entry mail.
+    pub fn on_page(&self, link: &str) -> bool {
+        tilo_relay_protocol::workspaces::invitation_on_door(&self.entry, link)
     }
 
-    /// The door's page, which its mails' links open.
-    pub fn on_door_url(&self) -> &str {
-        &self.door
+    /// The entry's page, which its mails' links open.
+    pub fn on_page_url(&self) -> &str {
+        &self.entry
     }
 
     fn mail(&self, kind: Kind, to: &WaitListMailbox, link: &str, removal: &str) -> Option<Mail> {
@@ -700,10 +700,10 @@ impl DoorMail {
         } else {
             remove.as_str()
         };
-        // The workspace checks an invitation link, and the door's own links are
+        // The workspace checks an invitation link, and the entry's own links are
         // built from its page; this is the last look before a link is mailed
         // to someone who will click it.
-        if !safe_url(&self.door, self.local)
+        if !safe_url(&self.entry, self.local)
             || (!link.is_empty() && !safe_url(link, self.local))
             || (!remove_link.is_empty() && !safe_url(remove_link, self.local))
         {
@@ -714,7 +714,7 @@ impl DoorMail {
             email: &to.contact,
             link,
             remove_link,
-            door: &self.door,
+            entry: &self.entry,
         };
         Some(
             self.templates
@@ -781,12 +781,14 @@ impl DoorMail {
         true
     }
 
-    /// Keep `mail` (when the door built one) to be sent, and say whether it
-    /// is kept for at least one attempt. A mail the door will not build, or
+    /// Keep `mail` (when the entry built one) to be sent, and say whether it
+    /// is kept for at least one attempt. A mail the entry will not build, or
     /// an outbox with no room, is logged without the address.
     pub fn send(&self, kind: Kind, mail: Option<Mail>) -> bool {
         let Some(mail) = mail else {
-            eprintln!("the door: {kind} was not mailed: the door's links are not plain https URLs");
+            eprintln!(
+                "the entry: {kind} was not mailed: the entry's links are not plain https URLs"
+            );
             return false;
         };
         self.outbox.start();
@@ -796,14 +798,14 @@ impl DoorMail {
 
 /// Every mail in every language, with sample values, written to `dir` as
 /// `<language>-<mail>.txt` (subject first) and `.html`: the checks read every
-/// mail a door sends, which is what keeps them all fillable.
+/// mail an entry sends, which is what keeps them all fillable.
 #[cfg(test)]
 pub(crate) fn preview(dir: &Path, templates: &Templates) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let door = "https://tilo.example/";
-    let link = |name: &str| format!("{door}?{name}=0123456789abcdef");
+    let entry = "https://tilo.example/";
+    let link = |name: &str| format!("{entry}?{name}=0123456789abcdef");
     let (confirm, remove) = (link("wait-list-confirm"), link("wait-list-remove"));
-    let invite = format!("{door}#/desktop/workspace/example?invite=AAECAwQF");
+    let invite = format!("{entry}#/desktop/workspace/example?invite=AAECAwQF");
     let mut written = Vec::new();
     for language in LANGUAGES {
         for kind in Kind::ALL {
@@ -816,7 +818,7 @@ pub(crate) fn preview(dir: &Path, templates: &Templates) -> Result<Vec<PathBuf>>
                     Kind::Removed => "",
                 },
                 remove_link: &remove,
-                door,
+                entry,
             };
             let mail = templates.render(kind, language, values.email, &values);
             let stem = dir.join(format!("{language}-{}", kind.name()));
@@ -874,7 +876,7 @@ mod tests {
                 ..Limits::DEFAULT
             };
             let open = || {
-                DoorMail::assembled(
+                EntryMail::assembled(
                     "https://tilo.example/",
                     "Lounge",
                     Templates::baked(),
@@ -882,18 +884,18 @@ mod tests {
                     false,
                 )
             };
-            let door = open();
+            let entry = open();
             let to = WaitListMailbox {
                 contact: "Ada@example.org".into(),
                 language: "en".into(),
             };
-            assert!(door.send_for(
+            assert!(entry.send_for(
                 Kind::Confirm,
-                door.confirm(&to, &"ab".repeat(32), &"cd".repeat(32)),
+                entry.confirm(&to, &"ab".repeat(32), &"cd".repeat(32)),
                 &"ef".repeat(32)
             ));
-            assert!(door.confirmation_kept("ada@example.org"));
-            drop(door);
+            assert!(entry.confirmation_kept("ada@example.org"));
+            drop(entry);
             let restarted = open();
             assert!(restarted.confirmation_kept("ADA@example.org"));
             assert!(!restarted.send_for(
@@ -909,7 +911,7 @@ mod tests {
 
         phase a_mail_is_logged_without_its_address_or_links;
         {
-            let door = DoorMail::new(
+            let entry = EntryMail::new(
                 Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
@@ -918,7 +920,7 @@ mod tests {
                 contact: "ada@example.org".into(),
                 language: "de".into(),
             };
-            let mail = door.confirm(&to, "c0ffee", "beef").unwrap();
+            let mail = entry.confirm(&to, "c0ffee", "beef").unwrap();
             assert!(
                 mail.text
                     .contains("https://tilo.example/?wait-list-confirm=c0ffee")
@@ -934,28 +936,28 @@ mod tests {
 
         phase a_member_has_only_invitations_on_this_door_mailed;
         {
-            let door = DoorMail::new(
+            let entry = EntryMail::new(
                 Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
             );
-            assert!(door.on_door("https://tilo.example/?invite=AAEC"));
-            assert!(door.on_door("https://tilo.example/#/desktop/workspace/x?invite=AAEC"));
+            assert!(entry.on_page("https://tilo.example/?invite=AAEC"));
+            assert!(entry.on_page("https://tilo.example/#/desktop/workspace/x?invite=AAEC"));
             // An invitation with its certificate chain is several KiB long.
             let long = format!(
                 "https://tilo.example/#/@host/w/x?invite={}",
                 "A".repeat(6000)
             );
-            assert!(door.on_door(&long));
+            assert!(entry.on_page(&long));
             for language in LANGUAGES {
                 let to = WaitListMailbox {
                     contact: "ada@example.org".into(),
                     language: language.into(),
                 };
-                let mail = door.invite(&to, &long, &"ab".repeat(32)).unwrap();
+                let mail = entry.invite(&to, &long, &"ab".repeat(32)).unwrap();
                 assert!(mail.text.contains(&long));
                 assert!(mail.html.contains(&long));
-                assert!(door.send_for(Kind::Invite, Some(mail), &"cd".repeat(32)));
+                assert!(entry.send_for(Kind::Invite, Some(mail), &"cd".repeat(32)));
             }
             for link in [
                 "https://evil.example/?invite=AAEC",
@@ -964,7 +966,7 @@ mod tests {
                 "https://tilo.example/?invite=AA EC",
                 &format!("https://tilo.example/?invite={}", "A".repeat(20_000)),
             ] {
-                assert!(!door.on_door(link), "{link}");
+                assert!(!entry.on_page(link), "{link}");
             }
         }
 
@@ -1001,7 +1003,7 @@ mod tests {
                 assert!(!safe_url(bad, true) && !safe_url(bad, false), "{bad:?}");
             }
 
-            let door = DoorMail::new(
+            let entry = EntryMail::new(
                 Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
@@ -1011,21 +1013,21 @@ mod tests {
                 language: "en".into(),
             };
             assert!(
-                door.invite(&to, "javascript:alert(1)", "aa").is_none(),
+                entry.invite(&to, "javascript:alert(1)", "aa").is_none(),
                 "an invitation the workspace let through is never mailed"
             );
             assert!(
-                door.invite(&to, "http://tilo.example/?invite=AA", "aa")
+                entry.invite(&to, "http://tilo.example/?invite=AA", "aa")
                     .is_none()
             );
             assert!(
-                door.invite(&to, "http://localhost:8790/?invite=AA", "aa")
+                entry.invite(&to, "http://localhost:8790/?invite=AA", "aa")
                     .is_some()
             );
 
-            // A workspace's door, outside the local mode, mails no plain http link.
+            // A workspace's entry, outside the local mode, mails no plain http link.
             let dir = tempfile::tempdir().unwrap();
-            let workspace = DoorMail::durable(
+            let workspace = EntryMail::durable(
                 Arc::new(FakeMailer::default()),
                 "https://tilo.example/",
                 "Lounge",
@@ -1135,7 +1137,7 @@ mod tests {
                         email: "ada@example.org",
                         link: "https://tilo.example/?x=1",
                         remove_link: "https://tilo.example/?y=2",
-                        door: "https://tilo.example/",
+                        entry: "https://tilo.example/",
                     };
                     let mail = Templates::baked().render(kind, language, "ada@example.org", &values);
                     assert!(!mail.subject.is_empty() && !mail.subject.contains("{{"));
@@ -1166,17 +1168,17 @@ mod tests {
         phase a_value_that_spells_a_placeholder_is_never_filled_again;
         {
             let values = Values {
-                workspace: "{{link}} <{{door}}>",
+                workspace: "{{link}} <{{entry}}>",
                 email: "ada@example.org",
                 link: "https://tilo.example/?wait-list-confirm=aa",
                 remove_link: "https://tilo.example/?wait-list-remove=bb",
-                door: "https://tilo.example/",
+                entry: "https://tilo.example/",
             };
             let mail = Templates::baked().render(Kind::Confirm, "en", "ada@example.org", &values);
             // As text it stays as typed, in the HTML escaped, and neither takes
             // the link's place.
-            assert!(mail.text.contains("{{link}} <{{door}}>"));
-            assert!(mail.html.contains("{{link}} &lt;{{door}}&gt;"));
+            assert!(mail.text.contains("{{link}} <{{entry}}>"));
+            assert!(mail.html.contains("{{link}} &lt;{{entry}}&gt;"));
             assert_eq!(mail.html.matches("wait-list-confirm=aa").count(), 1);
             assert_eq!(mail.text.matches("wait-list-confirm=aa").count(), 1);
             assert!(mail.is_sendable());
@@ -1204,7 +1206,7 @@ mod tests {
                     email: "ada@example.org",
                     link: "https://tilo.example/?wait-list-confirm=aa",
                     remove_link: "https://tilo.example/?wait-list-remove=bb",
-                    door: "https://tilo.example/",
+                    entry: "https://tilo.example/",
                 },
             );
             assert!(mail.html.starts_with("<!doctype html>"));

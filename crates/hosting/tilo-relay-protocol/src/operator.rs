@@ -64,7 +64,7 @@ pub enum OperatorCommand {
     /// Stop the workspace. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
     Shutdown {},
-    /// Keep the request of someone who asked at the door of a persistent
+    /// Keep the request of someone who asked at the entry of a persistent
     /// workspace that takes people by invitation, without one: the address
     /// `contact` ([`crate::workspaces::contact_address`]) its answer goes to. The
     /// workspace keeps it on its wait list for whoever may invite. The
@@ -86,7 +86,7 @@ pub enum OperatorCommand {
         /// and expires unconfirmed. Without one the entry is listed at once.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         confirm_sha256: Option<String>,
-        /// The language the visitor read the door in (`en`, `de`), for the
+        /// The language the visitor read the entry in (`en`, `de`), for the
         /// mails the entry gets later.
         language: String,
     },
@@ -121,7 +121,7 @@ pub enum OperatorCommand {
     /// Acknowledge durable enqueue of an invitation, not provider delivery.
     InviteMailQueued { request: String, queued: bool },
     /// Declare the person with user root `user_public_key` an owner of the
-    /// workspace: its door lets them in, and its governance makes them an
+    /// workspace: its entry lets them in, and its governance makes them an
     /// administrator, now if they are a member and as soon as they join if they
     /// are not. `name`, when the operator knows it, is how the workspace names
     /// them from then on: its member list and the invitations they make say it
@@ -331,7 +331,7 @@ pub enum OperatorEvent {
         /// How many people belong to the workspace.
         #[serde(default, skip_serializing_if = "is_zero")]
         members: u32,
-        /// Every person counted in `people` (user roots, hex): the door
+        /// Every person counted in `people` (user roots, hex): the entry
         /// seats people, so a person already here is already seated, and
         /// another device of theirs coming in takes no seat a newcomer
         /// could have.
@@ -364,7 +364,7 @@ pub enum OperatorEvent {
         /// Why, for the operator's log.
         reason: String,
         /// The workspace keeps as many such requests as it takes already: the
-        /// door says so, rather than that it failed.
+        /// entry says so, rather than that it failed.
         #[serde(default, skip_serializing_if = "is_false")]
         full: bool,
     },
@@ -378,8 +378,8 @@ pub enum OperatorEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         told: Option<WaitListMailbox>,
         /// Relay-private SHA-256 of `workspaces::contact_key`, even for a pending
-        /// entry, so the door can cancel its queued mail and receipts. Never
-        /// returned by the door's public removal endpoint.
+        /// entry, so the entry can cancel its queued mail and receipts. Never
+        /// returned by the entry's public removal endpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contact_sha256: Option<String>,
     },
@@ -406,11 +406,11 @@ pub enum OperatorEvent {
         standing: WaitListStanding,
     },
     /// Someone who may invite asked the workspace to mail an invitation to a
-    /// confirmed wait-list entry: send it, from the workspace's door.
+    /// confirmed wait-list entry: send it, from the workspace's entry.
     InviteMail {
         request: String,
         to: WaitListMailbox,
-        /// The invitation's web link, on the workspace's own door.
+        /// The invitation's web link, on the workspace's own entry.
         link: String,
         /// A secret (hex) that takes the entry off the list, for the mail's
         /// removal link; the workspace keeps only its SHA-256.
@@ -446,7 +446,7 @@ impl std::fmt::Debug for WaitListMailbox {
     }
 }
 
-/// Where a request left at the door stands, for whoever left it.
+/// Where a request left at the entry stands, for whoever left it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WaitListStanding {

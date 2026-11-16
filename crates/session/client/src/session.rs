@@ -75,7 +75,7 @@ const MAX_READ_AT_ONCE: usize = 256;
 const REFUSALS_BEFORE_FAILING: u32 = 3;
 /// The host does not admit this device's person (`not-admitted`): it never
 /// knew them, forgot them (its state was reset, or it pruned them) or a workspace
-/// took them out. The page joins again where the workspace's door lets it.
+/// took them out. The page joins again where the workspace's entry lets it.
 const NOT_ADMITTED: (&str, &str) = (
     "not-admitted",
     "This workspace’s host no longer has you as a member.",
@@ -107,7 +107,7 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
-    /// The workspace this device enters through its door on its first
+    /// The workspace this device enters through its entry on its first
     /// session, when the host has not admitted it yet
     /// ([`tilo_relay_protocol::entering`]); taken once the host answered.
     pub entering: Option<tilo_relay_protocol::entering::Entering>,
@@ -375,7 +375,7 @@ enum Exit {
     Closed,
     Reconnect,
     Lost(String),
-    /// The door this session entered by refused it, as the host said: the
+    /// The entry this session entered by refused it, as the host said: the
     /// session stops until the page acts.
     Refused(&'static str, String),
     /// The session's host never proved itself: an entering session starts
@@ -1312,7 +1312,7 @@ impl Task {
             return self.entered(entered).map_or(Ok(()), Err);
         }
         // A host that keeps nothing of this person forgot them: the session
-        // stops as not admitted, and the page joins again through its door.
+        // stops as not admitted, and the page joins again through its entry.
         if let Envelope::NotAuthorised { reason, .. } = &envelope
             && reason == tilo_relay_protocol::refusal::NOT_ADMITTED
         {

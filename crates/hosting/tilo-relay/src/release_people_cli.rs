@@ -51,7 +51,7 @@ fn export(state: &std::path::Path, out: &std::path::Path) -> anyhow::Result<()> 
     // The JSON is what `import` takes, so the summary never mixes into it:
     // it goes to standard error, and an `--out -` is the JSON alone.
     eprintln!(
-        "{} kept {} addresses at its door and {} people",
+        "{} kept {} addresses at its entry and {} people",
         people.release,
         people.wait_list.len(),
         people.members.len()

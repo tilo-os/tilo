@@ -72,7 +72,7 @@ pub struct PreAdmission {
     /// It stops admitting here, at most 30 days ahead.
     pub expires_at_ns: u64,
     /// The key that signs it: the owner's user root, or, for a public
-    /// workspace's door, the device key of the host that answers it under
+    /// workspace's entry, the device key of the host that answers it under
     /// the owner's listing (`crate::directory`).
     pub owner_user_public_key: [u8; 32],
     /// The signature of that key over [`PreAdmission::digest`].
@@ -162,8 +162,8 @@ pub enum WorkspaceNotice {
         role: Role,
         at_ns: u64,
     },
-    /// Someone reported the public workspace through its door
-    /// ([`crate::directory::DoorReport`]).
+    /// Someone reported the public workspace through its entry
+    /// ([`crate::directory::EntryReport`]).
     Reported {
         /// Who reported it.
         user_public_key: [u8; 32],
@@ -228,7 +228,7 @@ pub enum WorkspacesRequest {
         /// The one person the invitation names, by their user root, when the
         /// inviter knows who they are inviting: only a device of theirs
         /// redeems it, and a workspace taking people by invitation answers
-        /// its door with it when they ask. Absent, the invitation is a link
+        /// its entry with it when they ask. Absent, the invitation is a link
         /// anyone holding it may redeem.
         #[serde(default)]
         recipient: Option<[u8; 32]>,
@@ -318,12 +318,12 @@ pub enum WorkspacesRequest {
         /// (`workspace:<id>/app:<app>/…`).
         node: String,
     },
-    /// The addresses left at `workspace`'s door, oldest first: answered with
+    /// The addresses left at `workspace`'s entry, oldest first: answered with
     /// [`WorkspacesReply::WaitList`]. Whoever may invite.
     WaitList {
         workspace: String,
     },
-    /// Take an address left at `workspace`'s door off its wait list, when it
+    /// Take an address left at `workspace`'s entry off its wait list, when it
     /// is not to be invited: answered with [`WorkspacesReply::WaitList`]. An entry
     /// invited ([`WorkspacesRequest::Invite`]'s `wait_list_entry`) leaves the
     /// list by itself once someone joins with that invitation.
@@ -424,7 +424,7 @@ pub enum WorkspacesReply {
     Notices(Vec<WorkspaceNotice>),
     /// Whether the caller may, for [`WorkspacesRequest::Permits`].
     Permits(bool),
-    /// The requests left at the door, oldest first.
+    /// The requests left at the entry, oldest first.
     WaitList(Vec<WaitListEntry>),
     /// How many grants a [`WorkspacesRequest::Share`] holds, or a
     /// [`WorkspacesRequest::Unshare`] revoked.
@@ -474,15 +474,15 @@ pub enum JoinReply {
     Refused(String),
 }
 
-// Requests left at the door. A workspace that takes people by invitation also
-// keeps the requests of people who asked at its door without one, each an
+// Requests left at the entry. A workspace that takes people by invitation also
+// keeps the requests of people who asked at its entry without one, each an
 // address to be invited at ([`WaitListEntry`]).
 
-/// The longest address a request left at the door gives ([`WaitListEntry`]):
+/// The longest address a request left at the entry gives ([`WaitListEntry`]):
 /// the longest an email address can be.
 pub const MAX_CONTACT_CHARS: usize = 254;
 
-/// `text` as the address a request left at a workspace's door keeps
+/// `text` as the address a request left at a workspace's entry keeps
 /// ([`WaitListEntry`]): an email address, trimmed and otherwise as typed,
 /// since that is how its owner writes it. One address is one request
 /// however it was typed: requests are told apart by [`contact_key`].
@@ -514,26 +514,26 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
     }
 }
 
-/// The longest invitation link a door mails: an invitation carries its
+/// The longest invitation link an entry mails: an invitation carries its
 /// signed certificate chain, a few KiB once encoded.
 pub const MAX_INVITATION_LINK: usize = 16 * 1024;
 
-/// Whether `link` is an invitation on the web entry `door` (a URL ending
+/// Whether `link` is an invitation on the web entry `entry` (a URL ending
 /// in `/`): under it, either as an `invite=` parameter or as the site's own
 /// short invitation (`i/<handle>#<key>`, the key in the fragment), no longer
 /// than [`MAX_INVITATION_LINK`] and without spaces or control characters.
 /// Only such a link is mailed to an address on a wait list for a member.
 #[must_use]
-pub fn invitation_on_door(door: &str, link: &str) -> bool {
-    door.ends_with('/')
+pub fn invitation_on_door(entry: &str, link: &str) -> bool {
+    entry.ends_with('/')
         && link.len() <= MAX_INVITATION_LINK
         && link
-            .strip_prefix(door)
+            .strip_prefix(entry)
             .is_some_and(|rest| rest.contains("invite=") || short_invitation(rest))
         && !link.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-/// Whether `rest`, a link minus its door, is the site's short invitation:
+/// Whether `rest`, a link minus its entry, is the site's short invitation:
 /// `i/<handle>#<key>`, both in the site's own alphabet and nothing else.
 fn short_invitation(rest: &str) -> bool {
     let Some((handle, key)) = rest
@@ -559,7 +559,7 @@ pub fn contact_key(address: &str) -> String {
     address.trim().to_lowercase()
 }
 
-/// The language mails to an address left at the door are in, for the
+/// The language mails to an address left at the entry are in, for the
 /// language tag its page was read in: `de` for German, otherwise `en`.
 #[must_use]
 pub fn mail_language(tag: &str) -> &'static str {
@@ -570,12 +570,12 @@ pub fn mail_language(tag: &str) -> &'static str {
     }
 }
 
-/// The bytes of the secret that takes a request left at a workspace's door off
+/// The bytes of the secret that takes a request left at a workspace's entry off
 /// its wait list again: random, handed only to whoever left it. The workspace
 /// keeps only its SHA-256.
 pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
 
-/// A request left at the door of a workspace that takes people by invitation:
+/// A request left at the entry of a workspace that takes people by invitation:
 /// someone who has no invitation, and so no identity the workspace knows yet,
 /// left an address to be invited at. Someone who may invite sends an
 /// invitation of their own there ([`WorkspacesRequest::Invite`] naming the
@@ -605,13 +605,13 @@ mod tests {
 
         phase a_mailed_invitation_is_on_the_door;
         {
-            let door = "https://tilo.example/";
+            let entry = "https://tilo.example/";
             assert!(invitation_on_door(
-                door,
+                entry,
                 "https://tilo.example/#/workspace?invite=signed-invitation"
             ));
             assert!(invitation_on_door(
-                door,
+                entry,
                 "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
             ));
             for elsewhere in [
@@ -622,7 +622,7 @@ mod tests {
                 "https://tilo.example/i/han dle#key",
                 "https://elsewhere.example/i/handle#key",
             ] {
-                assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
+                assert!(!invitation_on_door(entry, elsewhere), "{elsewhere:?}");
             }
         }
 

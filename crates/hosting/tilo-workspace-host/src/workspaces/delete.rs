@@ -137,7 +137,7 @@ impl Workspaces {
 
     /// Forget everything this host keeps of `workspace` (`workspace_id`),
     /// deleted: who owns it and what it took, who it listed, and its files. Its
-    /// door went with its governance.
+    /// entry went with its governance.
     async fn forget_deleted(&self, workspace: &str, workspace_id: WorkspaceId) {
         if let Some(own) = self.own()
             && let Err(error) = own.forget(workspace)

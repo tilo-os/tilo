@@ -140,7 +140,7 @@ pub struct PeerStatus {
     /// order people who share a name are numbered in, as the workspace's roster numbers them.
     pub workspace_joined: BTreeMap<String, BTreeMap<String, u64>>,
     /// What the host answered the entry this session asked for
-    /// (its door entry), once it did.
+    /// (its entry entry), once it did.
     pub entry: Option<Entry>,
 }
 
@@ -170,7 +170,7 @@ impl PeerStatus {
     }
 }
 
-/// The host's answer to a session's entry through a workspace's door.
+/// The host's answer to a session's entry through a workspace's entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     /// The workspace admitted this device.
@@ -184,18 +184,18 @@ pub enum Entry {
         /// What the person may do there.
         role: tilo_relay_protocol::workspaces::Role,
     },
-    /// The door or the workspace did not let it in: the door's `code`
+    /// The entry or the workspace did not let it in: the entry's `code`
     /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
-    /// `not-admitted` when the workspace refused the device the door let in;
-    /// what was said, and how long the door asked to wait before the next try.
+    /// `not-admitted` when the workspace refused the device the entry let in;
+    /// what was said, and how long the entry asked to wait before the next try.
     Refused {
         code: &'static str,
         message: String,
         retry_after_secs: Option<u64>,
-        /// The door's own refusal as it answered it: its code, and what it
+        /// The entry's own refusal as it answered it: its code, and what it
         /// says about a wait list the workspace keeps, so the page offers to
         /// leave an address there.
-        door: Option<tilo_relay_protocol::directory::DoorRefused>,
+        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
     },
 }
 

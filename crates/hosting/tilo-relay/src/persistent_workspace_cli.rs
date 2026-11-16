@@ -6,7 +6,7 @@
 //! the workspace is public anyway.
 //!
 //! Anyone who joins is their own person, with the role the workspace's
-//! listing gives them, through the same door as any public workspace
+//! listing gives them, through the same entry as any public workspace
 //! ([`Workspaces::publish`] and [`Workspaces::admit_listed`]); an unlisted
 //! one takes people by invitation.
 
@@ -31,7 +31,7 @@ use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
-use tilo_relay::door;
+use tilo_relay::entry;
 
 mod bots;
 mod discord_sign_in;
@@ -42,7 +42,7 @@ use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
-/// How often unconfirmed addresses left at the door are let go.
+/// How often unconfirmed addresses left at the entry are let go.
 const WAIT_LIST_SWEEP_SECS: u64 = 60;
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
@@ -113,7 +113,7 @@ pub struct PersistentArgs {
     #[arg(long = "iroh-listen", value_name = "ADDRESS", requires = "persistent")]
     pub iroh_listen: Option<std::net::SocketAddr>,
     /// Every host keeps workspaces of people's own (`workspace.create-own`) for
-    /// the people this workspace's door or an invitation into it let in, as
+    /// the people this workspace's entry or an invitation into it let in, as
     /// many of them as a person asks for, sharing this many gigabytes per
     /// person: 10 when the flag is not given.
     #[arg(
@@ -124,7 +124,7 @@ pub struct PersistentArgs {
     )]
     pub person_storage_gb: u64,
     /// List the workspace in the public directory with this description, so
-    /// anyone may join it through its door at `--default-role`. Asked once: the
+    /// anyone may join it through its entry at `--default-role`. Asked once: the
     /// listing is then the workspace's own setting, and a start that names none
     /// leaves it as the workspace's people settled it.
     #[arg(
@@ -142,16 +142,16 @@ pub struct PersistentArgs {
         value_parser = parse_role
     )]
     pub default_role: Option<Role>,
-    /// Take people by invitation: an unlisted workspace's door lets nobody new
+    /// Take people by invitation: an unlisted workspace's entry lets nobody new
     /// in, and members may invite someone with an invitation of their own,
     /// which they let in. Settled at every start. A listed workspace lets anyone
-    /// in through its door, so this goes with no `--listing-description`.
+    /// in through its entry, so this goes with no `--listing-description`.
     #[arg(long = "members-only", conflicts_with = "listing_description")]
     pub members_only: bool,
-    /// List the workspace, its door admitting only people invited or
-    /// pre-admitted: a member's invitation, or the one this door issued a
+    /// List the workspace, its entry admitting only people invited or
+    /// pre-admitted: a member's invitation, or the one this entry issued a
     /// person it let in. Anyone else is told the workspace is joined by
-    /// invitation instead of being handed one. Asked once: the door is then
+    /// invitation instead of being handed one. Asked once: the entry is then
     /// the workspace's own setting. Goes with --listing-description, which
     /// --members-only cannot.
     #[arg(
@@ -160,12 +160,12 @@ pub struct PersistentArgs {
         conflicts_with = "members_only"
     )]
     pub invitation_only: bool,
-    /// How many requests left at the door the workspace keeps while it takes
+    /// How many requests left at the entry the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
     /// without an invitation leaves, on the workspace's wait list for whoever
-    /// may invite until they take it off. `0`: the door keeps none. It is the
-    /// door taking people by invitation that turns them away, so it is that
-    /// door this goes with, and the workspace holds it from then on.
+    /// may invite until they take it off. `0`: the entry keeps none. It is the
+    /// entry taking people by invitation that turns them away, so it is that
+    /// entry this goes with, and the workspace holds it from then on.
     #[arg(
         long = "wait-list-max",
         value_name = "COUNT",
@@ -175,7 +175,7 @@ pub struct PersistentArgs {
     pub wait_list_max: usize,
     /// The web entry DOOR (a URL ending in `/`) the wait list's mails are
     /// sent from, which their links open: the confirmation link, and an
-    /// invitation a member asks the door to mail to a confirmed address. It
+    /// invitation a member asks the entry to mail to a confirmed address. It
     /// defaults to the workspace's own web entry; without mail configured,
     /// the list keeps addresses and mails nothing.
     #[arg(
@@ -306,12 +306,12 @@ pub(crate) struct PersistentWorkspace {
 }
 
 impl PersistentWorkspace {
-    /// The workspace's door as its governance holds it: whether a directory
+    /// The workspace's entry as its governance holds it: whether a directory
     /// lists it, whether it takes people by invitation, and how many requests
     /// it keeps.
-    async fn door(&self) -> tilo_action_policy::DoorPolicy {
+    async fn entry_policy(&self) -> tilo_action_policy::EntryPolicy {
         self.workspaces
-            .door_policy(&self.workspace)
+            .entry_policy(&self.workspace)
             .await
             .unwrap_or_default()
     }
@@ -446,7 +446,7 @@ fn input_value(text: &str) -> serde_json::Value {
 }
 
 /// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
-/// never handed out at the door.
+/// never handed out at the entry.
 fn parse_role(role: &str) -> Result<Role, String> {
     match Role::parse(role) {
         Some(role) if matches!(role, Role::Viewer | Role::Commenter | Role::Editor) => Ok(role),
@@ -581,7 +581,7 @@ async fn governed_workspace(
 }
 
 /// Whom the workspace has taken in as removed, so each removal is reported
-/// once. Whom the door keeps out is the workspace's own
+/// once. Whom the entry keeps out is the workspace's own
 /// ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
@@ -630,7 +630,7 @@ struct WaitListAsk {
     language: String,
 }
 
-/// Keep the request someone left at the door without an invitation, while
+/// Keep the request someone left at the entry without an invitation, while
 /// the workspace takes people by invitation and keeps a wait list.
 async fn answer_wait_list(context: &PersistentWorkspace, ask: WaitListAsk) -> OperatorEvent {
     let WaitListAsk {
@@ -645,8 +645,8 @@ async fn answer_wait_list(context: &PersistentWorkspace, ask: WaitListAsk) -> Op
         reason,
         full,
     };
-    let door = context.door().await;
-    if !door.keeps_requests() {
+    let policy = context.entry_policy().await;
+    if !policy.keeps_requests() {
         return refused("the workspace keeps no wait list".into(), false);
     }
     let Some(removal) = hex32(&removal_sha256) else {
@@ -674,7 +674,7 @@ async fn answer_wait_list(context: &PersistentWorkspace, ask: WaitListAsk) -> Op
             &contact,
             secrets,
             &language,
-            door.wait_list_max,
+            policy.wait_list_max,
         )
         .await
     {
@@ -917,7 +917,7 @@ async fn host_at(origin: &str) -> Result<([u8; 32], iroh_base::EndpointAddr), St
 
 /// Declare the person `key` (their user root, hex) an owner of the workspace:
 /// its governance holds them by their root as a member with every governance
-/// action, so the door lets them in even when it takes people by invitation,
+/// action, so the entry lets them in even when it takes people by invitation,
 /// and a key of theirs lists the workspace, enters it and invites before any
 /// device of theirs has joined. `name`, when the operator's declaration
 /// carries one, is how the workspace names them until they rename themselves.
@@ -1147,7 +1147,7 @@ pub(crate) async fn ensure_guest_policy(
 
 /// The grant letting the workspace's members (guests are Editors) invite
 /// someone, which a workspace taking people by invitation holds and an open one
-/// does not: anyone joins an open workspace through its door.
+/// does not: anyone joins an open workspace through its entry.
 const MEMBERS_INVITE: &str = "members-invite";
 
 /// Let the workspace's members invite people, and let in whom they invited,
@@ -1211,7 +1211,7 @@ fn settled(workspace: &str, result: anyhow::Result<()>) {
 
 /// List the workspace in the public directory as the operator configured it,
 /// and take people by invitation only if it says so. The operator's word is
-/// asked once: the listing and the door are the workspace's governance from
+/// asked once: the listing and the entry are the workspace's governance from
 /// then on, so an operator that names neither leaves them as the workspace's
 /// own people settled them, and a restart changes nothing.
 async fn settle_listing(
@@ -1391,7 +1391,7 @@ pub(crate) async fn run(
             })
             .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
         let workspace = governed_workspace(&workspaces, &shown, &id_file, &store, &root).await?;
-        // Its own workspaces are for the people this workspace's door, or an
+        // Its own workspaces are for the people this workspace's entry, or an
         // invitation into it, let in: never for anyone holding a root alone.
         workspaces.admit_own_through(&workspace);
         // The certificate this host serves the workspace with: a build renamed
@@ -1399,18 +1399,18 @@ pub(crate) async fn run(
         // the record's back (`Workspaces::serving_certificate`). Every governed
         // operation below names it, so a renamed certificate is no refusal.
         let host_cert = workspaces.serving_certificate().clone();
-        // The removals moderation made before the door had them, taken over once
+        // The removals moderation made before the entry had them, taken over once
         // and kept out for the rest of their day.
         let adopted = workspaces
             .adopt_legacy_removals(&workspace, &state.join("removals.json"))
             .await
-            .context("take over the removals the workspace kept before the door")?;
+            .context("take over the removals the workspace kept before the entry")?;
         if adopted > 0 {
             tracing::info!(%workspace, adopted, "removals taken over from the workspace's removals file");
         }
         // A setting of the operator's that the workspace's governance refuses
         // stops the start only where going on without it would let in more than
-        // the operator configured: the door, the guests' outside effects and the
+        // the operator configured: the entry, the guests' outside effects and the
         // removals above. The rest is said and settled again at the next start.
         settled(
             &workspace,
@@ -1418,7 +1418,7 @@ pub(crate) async fn run(
         );
         settle_invitation_only(&workspaces, &workspace, &host_cert, &persistent)
             .await
-            .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("settle the workspace's entry: {error}"))?;
         seed_apps(
             &workspaces,
             &workspace,
@@ -1447,7 +1447,7 @@ pub(crate) async fn run(
         )
         .await?;
         ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
-        // Members inviting, or not, never lets in anyone the door does not.
+        // Members inviting, or not, never lets in anyone the entry does not.
         settled(
             &workspace,
             settle_member_invites(&workspaces, &workspace, &host_cert, persistent.members_only).await,
@@ -1458,36 +1458,36 @@ pub(crate) async fn run(
         // that names it; a record that still reads is left as it is.
         refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
         // The wait list, when the workspace takes people by invitation and
-        // keeps one: the addresses' windows and the mail the door sends from
-        // its page (the web entry, or the door `--wait-list-mail` names). What
-        // the workspace's door keeps is its governance's, settled above.
-        let door_policy = workspaces
-            .door_policy(&workspace)
+        // keeps one: the addresses' windows and the mail the entry sends from
+        // its page (the web entry, or the entry `--wait-list-mail` names). What
+        // the workspace's entry keeps is its governance's, settled above.
+        let entry_policy = workspaces
+            .entry_policy(&workspace)
             .await
             .unwrap_or_default();
-        let settings = door::WaitListSettings::from_env(
-            door_policy.wait_list_max,
+        let settings = entry::WaitListSettings::from_env(
+            entry_policy.wait_list_max,
             persistent
                 .wait_list_mail
                 .clone()
                 .or_else(|| args.web.web_entry.clone()),
             std::env::var_os("TILO_WORKSPACES_LOCAL").is_some(),
         )
-        .context("read the door's mail settings")?;
-        let wait_list = door::WaitListDoor::open(&workspaces, &workspace, &shown, &state, &settings)
-            .context("open the door's wait list")?;
-        let door = wait_list.map(std::sync::Arc::new);
-        if let Some(door) = &door {
-            let _ = workspaces.offer_wait_list(door.offered());
+        .context("read the entry's mail settings")?;
+        let wait_list = entry::WaitListPage::open(&workspaces, &workspace, &shown, &state, &settings)
+            .context("open the entry's wait list")?;
+        let page = wait_list.map(std::sync::Arc::new);
+        if let Some(page) = &page {
+            let _ = workspaces.offer_wait_list(page.offered());
             tracing::info!(
                 workspace = %workspace,
-                max = door.max(),
-                mail = door.mails(),
-                "the door keeps a wait list"
+                max = page.max(),
+                mail = page.mails(),
+                "the entry keeps a wait list"
             );
         }
         let mut config = web_config(&args.web, listen, &state);
-        config.door.clone_from(&door);
+        config.wait_list.clone_from(&page);
         let web = hosted
             .relay
             .serve_web(config)
@@ -1622,7 +1622,7 @@ pub(crate) async fn run(
                 .to_line()
             );
         }
-        // The operator's door to the running workspace, for a deployment whose
+        // The operator's entry to the running workspace, for a deployment whose
         // workspace has no stdin: a socket the state volume carries.
         let owner_socket = match &persistent.operator_socket {
             Some(path) => {
@@ -1660,7 +1660,7 @@ pub(crate) async fn run(
             requested,
             context,
             management,
-            wait_list: door,
+            wait_list: page,
             owner_socket,
         })
     }
@@ -1686,7 +1686,7 @@ pub(crate) async fn run(
     };
     let mut invitations = wait_list
         .as_ref()
-        .and_then(|door| door.invitations(&context.workspaces));
+        .and_then(|page| page.invitations(&context.workspaces));
     let result = tokio::select! {
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = shutdown => result,
@@ -1718,9 +1718,9 @@ struct Serving {
     context: PersistentWorkspace,
     /// The deployment's own routes, which stop when dropped.
     management: Option<http::Handle>,
-    /// The wait list the door keeps, when the workspace takes people by
+    /// The wait list the entry keeps, when the workspace takes people by
     /// invitation and keeps one.
-    wait_list: Option<std::sync::Arc<door::WaitListDoor>>,
+    wait_list: Option<std::sync::Arc<entry::WaitListPage>>,
     /// The socket the operator declares owners through, when it named one.
     owner_socket: Option<tokio::net::UnixListener>,
 }
@@ -1735,10 +1735,10 @@ async fn summary(
         .map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-/// Addresses left at the door and not confirmed in time are let go, also
+/// Addresses left at the entry and not confirmed in time are let go, also
 /// while nobody touches the wait list.
 async fn expire_wait_list(context: &PersistentWorkspace) {
-    if context.door().await.wait_list_max == 0 {
+    if context.entry_policy().await.wait_list_max == 0 {
         return;
     }
     if let Err(error) = context
@@ -1796,7 +1796,7 @@ async fn accept_operator(
 
 /// What a command on the operator socket works with: the workspace's
 /// governance, its name and the host's own device. Copied for each connection,
-/// which is served on a task of its own: a command that asks the door to mail
+/// which is served on a task of its own: a command that asks the entry to mail
 /// an invitation waits on the loop that mails them, so serving it there would
 /// wait on itself.
 #[derive(Clone)]
@@ -1937,7 +1937,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
 async fn serve_operator(
     context: &PersistentWorkspace,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
-    mail: Option<&mut door::InvitationMail>,
+    mail: Option<&mut entry::InvitationMail>,
     owner_socket: Option<&tokio::net::UnixListener>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
@@ -1993,7 +1993,7 @@ async fn serve_operator(
                 | OperatorCommand::Standing { .. }))) => {
                     println!("{}", answer_wait_list_command(context, command).await.to_line());
                 }
-                // An invitation the door mailed itself is acknowledged here:
+                // An invitation the entry mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
                 Some(Ok(OperatorCommand::DeclareOwner {
@@ -2015,7 +2015,7 @@ async fn serve_operator(
                     println!("{}", OperatorContext::of(context).invite(command).await);
                 }
                 Some(Ok(command @ OperatorCommand::ImportPeople { .. })) => {
-                    // The import asks the door to mail its invitations, which
+                    // The import asks the entry to mail its invitations, which
                     // this loop does: it runs on a task of its own so it does
                     // not wait on the loop that answers it.
                     let context = OperatorContext::of(context);
@@ -2035,7 +2035,7 @@ async fn serve_operator(
                         unhold(&context.workspaces, &context.host_cert, &workspace, &host).await
                     );
                 }
-                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
+                Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its entry"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
             },
@@ -2449,7 +2449,7 @@ mod tests {
         (device, cert)
     }
 
-    /// Whether `person`'s device redeems the door's `invitation` and `token`,
+    /// Whether `person`'s device redeems the entry's `invitation` and `token`,
     /// as their page does.
     async fn walk_in(
         workspaces: &Workspaces,
@@ -2471,7 +2471,7 @@ mod tests {
         )
     }
 
-    /// An owner the operator declares gets in through a door that takes
+    /// An owner the operator declares gets in through an entry that takes
     /// people by invitation, and governs the workspace: the declaration is the
     /// workspace's own governance, so it is there before their device arrives
     /// and stays after a restart.
@@ -2509,7 +2509,7 @@ mod tests {
         .unwrap();
 
         // Nobody is in the workspace yet, so this is how its first person
-        // gets in: the door takes people by invitation, and the operator
+        // gets in: the entry takes people by invitation, and the operator
         // declares them.
         let owner = guest(31);
         let answered = declare_owner(
@@ -2520,14 +2520,14 @@ mod tests {
         )
         .await;
         assert!(answered.contains("owner_declared"), "{answered}");
-        // A stranger is turned away: the door takes people by invitation, and
+        // A stranger is turned away: the entry takes people by invitation, and
         // the declaration is what the workspace holds of the person it named.
         let (_, stranger) = guest(32);
         assert!(
             workspaces
                 .admit_listed(
                     &workspace,
-                    &tilo_relay_protocol::directory::DoorJoin {
+                    &tilo_relay_protocol::directory::EntryJoin {
                         user_public_key: hex::encode(stranger.user_public_key),
                         display_name: "Eve".into(),
                     },
@@ -2536,11 +2536,11 @@ mod tests {
                 .is_err(),
             "a stranger holds no invitation and is in no declaration"
         );
-        // In they walk, through the invitation-only door.
+        // In they walk, through the invitation-only entry.
         let (issued, token) = workspaces
             .admit_listed(
                 &workspace,
-                &tilo_relay_protocol::directory::DoorJoin {
+                &tilo_relay_protocol::directory::EntryJoin {
                     user_public_key: hex::encode(owner.1.user_public_key),
                     display_name: "Ada".into(),
                 },
@@ -2549,7 +2549,7 @@ mod tests {
             .unwrap();
         assert!(
             walk_in(&workspaces, &owner, issued.signed_invitation, &token).await,
-            "the door lets a declared person in"
+            "the entry lets a declared person in"
         );
         let members = workspaces.summary(&workspace).await.unwrap().members;
         assert!(
@@ -2566,7 +2566,7 @@ mod tests {
         relay.shutdown().await;
     }
 
-    /// Someone the listed workspace's door lets in is a member; once the
+    /// Someone the listed workspace's entry lets in is a member; once the
     /// workspace takes people by invitation, a member invites someone with an
     /// invitation of their own, which admits them by itself, while the
     /// workspace's link is no invitation at all. Once it lets anyone in again,
@@ -2583,7 +2583,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Someone who joined through the door while the workspace was listed
+        // Someone who joined through the entry while the workspace was listed
         // is a member. A listed workspace's link is its invitation: members
         // invite nobody themselves.
         workspaces
@@ -2601,7 +2601,7 @@ mod tests {
         let (issued, token) = workspaces
             .admit_listed(
                 &workspace,
-                &tilo_relay_protocol::directory::DoorJoin {
+                &tilo_relay_protocol::directory::EntryJoin {
                     user_public_key: hex::encode(member.1.user_public_key),
                     display_name: "Ada".into(),
                 },
@@ -2610,7 +2610,7 @@ mod tests {
             .unwrap();
         assert!(
             walk_in(&workspaces, &member, issued.signed_invitation, &token).await,
-            "the door lets the first person in"
+            "the entry lets the first person in"
         );
         let asked = invite(&workspaces, &workspace, &member.1).await;
         assert!(matches!(asked, WorkspacesReply::Refused(_)), "{asked:?}");
@@ -2688,7 +2688,7 @@ mod tests {
             let (issued, token) = workspaces
                 .admit_listed(
                     &workspace,
-                    &tilo_relay_protocol::directory::DoorJoin {
+                    &tilo_relay_protocol::directory::EntryJoin {
                         user_public_key: hex::encode(person.1.user_public_key),
                         display_name: "Guest".into(),
                     },

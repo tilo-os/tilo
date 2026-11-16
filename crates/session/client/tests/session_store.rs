@@ -23,7 +23,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
 use tilo_session_client::custody::PeerStore as _;
-use tilo_session_client::device::{Entering, door_entry};
+use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -33,7 +33,7 @@ fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
 }
 
-/// A device of `name` entering `workspace` through its door, its session over `store`.
+/// A device of `name` entering `workspace` through its entry, its session over `store`.
 async fn arrive(
     host: Host,
     host_cert: &tilo_user_identity::DeviceCert,
@@ -42,7 +42,7 @@ async fn arrive(
     store: Arc<MemoryPeerStore>,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
-    let (cert, entry) = door_entry(
+    let (cert, entry) = entry_request(
         host_cert,
         workspace,
         &key,

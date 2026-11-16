@@ -1,6 +1,6 @@
 //! A governed workspace's administration answers as `tilo.workspace` actions over
 //! the relay's own remote-action envelope, by the same decision as its wire
-//! doors: the owner's device invites; a member the workspace grants nothing is not
+//! entries: the owner's device invites; a member the workspace grants nothing is not
 //! offered the action. The host's own operations answer the same way as
 //! `tilo.host` actions, to the relay's own person only, and a member's own
 //! business as `tilo.member` actions.
@@ -244,7 +244,7 @@ async fn the_owner_invites_through_the_workspaces_action_and_an_editor_cannot() 
     super::members::admit(&relay, &host, &phone, &workspace.workspace).await;
 
     // Alice's laptop invites through the action: the workspace records it, as
-    // the administration door would have.
+    // the administration entry would have.
     let owner = subscribed(&relay, &laptop, workspace.workspace_id).await;
     let RemoteActionMessage::Receipt(receipt) = ask(
         &owner,

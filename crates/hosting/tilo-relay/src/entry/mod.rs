@@ -1,16 +1,16 @@
-//! The wait list of a door that takes people by invitation: the addresses
+//! The wait list of an entry that takes people by invitation: the addresses
 //! people leave there without one, the mail that confirms an address and
-//! carries an invitation to it, and the four routes a door page asks about
-//! them (`<door>wait-list`, `…/remove`, `…/confirm`, `…/standing`).
+//! carries an invitation to it, and the four routes a entry page asks about
+//! them (`<entry>wait-list`, `…/remove`, `…/confirm`, `…/standing`).
 //!
 //! The addresses themselves are the workspace's own, kept beside its record
-//! by its host (`tilo_workspace_host::workspaces::wait_list`); this is the door in
-//! front of it: the client address's windows ([`limits`]), the link the door
+//! by its host (`tilo_workspace_host::workspaces::wait_list`); this is the entry in
+//! front of it: the client address's windows ([`limits`]), the link the entry
 //! page opens, and the outbox that keeps a mail until the mail service takes
 //! it ([`outbox`], [`mail`]).
 //!
 //! It was the workspace service's, beside the relay; the relay answers it itself
-//! now, on the same routes and with the same words, so a door page of either
+//! now, on the same routes and with the same words, so a entry page of either
 //! build reads the same answers.
 
 pub(crate) mod limits;
@@ -28,9 +28,9 @@ use tilo_relay_protocol::workspaces::contact_address;
 use crate::workspaces::{WaitListSecrets, WaitListed, Workspaces};
 
 use limits::{IpHasher, JoinLimits, JoinRates};
-use mail::DoorMail;
+use mail::EntryMail;
 
-/// How the door sends mail: the sender, its Resend API key's file and where
+/// How the entry sends mail: the sender, its Resend API key's file and where
 /// mail is posted (`TILO_WORKSPACES_MAIL_FROM`, `TILO_WORKSPACES_RESEND_KEY_FILE`,
 /// `TILO_WORKSPACES_RESEND_URL`), and the directory the words are read from
 /// (`TILO_WORKSPACES_MAIL_TEMPLATES`), or `None` for the ones built in.
@@ -48,7 +48,7 @@ const RESEND_URL: &str = "https://api.resend.com/emails";
 impl MailConfig {
     /// The mail `TILO_WORKSPACES_MAIL_FROM` with `TILO_WORKSPACES_RESEND_KEY_FILE`
     /// describes, if the deployment set them: both or neither, as the workspace
-    /// service's door required.
+    /// service's entry required.
     ///
     /// # Errors
     ///
@@ -86,7 +86,7 @@ impl MailConfig {
     }
 }
 
-/// How the door's wait list is configured: what whoever runs the relay said,
+/// How the entry's wait list is configured: what whoever runs the relay said,
 /// from `--wait-list-max` and `--wait-list-mail` and the mail settings'
 /// environment.
 #[derive(Clone, Debug, Default)]
@@ -95,17 +95,17 @@ pub struct WaitListSettings {
     pub max: usize,
     /// Where someone asks to be taken off the list (`TILO_WORKSPACES_CONTACT`).
     pub contact: Option<String>,
-    /// The door's page, which its mails' links open.
+    /// The entry's page, which its mails' links open.
     pub entry: Option<String>,
-    /// How the door sends mail, when the deployment configured it.
+    /// How the entry sends mail, when the deployment configured it.
     pub mail: Option<MailConfig>,
-    /// The local review mode (`TILO_WORKSPACES_LOCAL`), where the door's page may
+    /// The local review mode (`TILO_WORKSPACES_LOCAL`), where the entry's page may
     /// be a plain `http` loopback address.
     pub local: bool,
 }
 
 impl WaitListSettings {
-    /// What the environment says, with `max`, the door's `entry` and the local
+    /// What the environment says, with `max`, the entry's `entry` and the local
     /// mode from the deployment's flags.
     ///
     /// # Errors
@@ -126,24 +126,24 @@ impl WaitListSettings {
     }
 }
 
-/// The body of `POST <door>wait-list`.
+/// The body of `POST <entry>wait-list`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WaitListRequest {
     /// The address to be invited at.
     pub email: String,
-    /// The language the visitor reads the door in (a language tag), for
+    /// The language the visitor reads the entry in (a language tag), for
     /// the mails to the address.
     #[serde(default)]
     pub language: String,
 }
 
-/// What `POST <door>wait-list` answers an address it kept.
+/// What `POST <entry>wait-list` answers an address it kept.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitListAnswer {
-    /// The address as typed, trimmed: what the door confirms. Whether it
-    /// was on the list already is not said, so the door tells nobody whose
+    /// The address as typed, trimmed: what the entry confirms. Whether it
+    /// was on the list already is not said, so the entry tells nobody whose
     /// address is.
     pub email: String,
     /// The secret (hex) that takes the entry off again (`…/remove`), for
@@ -154,7 +154,7 @@ pub struct WaitListAnswer {
     pub mail: bool,
 }
 
-/// The body of `POST <door>wait-list/remove` and `…/standing`.
+/// The body of `POST <entry>wait-list/remove` and `…/standing`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UnlistRequest {
@@ -163,7 +163,7 @@ pub struct UnlistRequest {
     pub secret: String,
 }
 
-/// The body of `POST <door>wait-list/confirm`.
+/// The body of `POST <entry>wait-list/confirm`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfirmRequest {
@@ -171,10 +171,10 @@ pub struct ConfirmRequest {
     pub token: String,
 }
 
-/// Why the door kept nothing, as its page reads the `code`.
+/// Why the entry kept nothing, as its page reads the `code`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The workspace takes anyone at its door, or keeps no wait list.
+    /// The workspace takes anyone at its entry, or keeps no wait list.
     NoWaitList,
     Invalid(&'static str),
     /// A removal secret that is not 64 hex characters.
@@ -188,7 +188,7 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The `code` the door page tells its cases apart by.
+    /// The `code` the entry page tells its cases apart by.
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
@@ -207,7 +207,7 @@ impl Refusal {
         match self {
             Self::NoWaitList => "this workspace keeps no wait list",
             Self::Invalid(message) => message,
-            Self::NotASecret => "not a secret this door handed out",
+            Self::NotASecret => "not a secret this entry handed out",
             Self::TooMany { .. } => "too many addresses from your network; try again later",
             Self::Full => "the wait list is full for now",
             Self::Unavailable => "the host is restarting; try again in a moment",
@@ -224,19 +224,19 @@ impl Refusal {
     }
 }
 
-/// The wait list one workspace's door keeps: its address windows and the
-/// mail it sends from its page (`door`, a URL ending in `/`).
-pub struct WaitListDoor {
-    /// The workspace the door lets people into.
+/// The wait list one workspace's entry keeps: its address windows and the
+/// mail it sends from its page (`entry`, a URL ending in `/`).
+pub struct WaitListPage {
+    /// The workspace the entry lets people into.
     workspace: String,
     /// How many addresses it keeps.
     max: usize,
     /// Where someone asks to be taken off the list, when the operator named
     /// it.
     contact: Option<String>,
-    /// How the door sends mail; `None`, it sends none and lists an address at
+    /// How the entry sends mail; `None`, it sends none and lists an address at
     /// once.
-    mail: Option<Arc<DoorMail>>,
+    mail: Option<Arc<EntryMail>>,
     hasher: IpHasher,
     /// Addresses left, per address hash.
     waits: std::sync::Mutex<JoinLimits>,
@@ -246,9 +246,9 @@ pub struct WaitListDoor {
     lookups: std::sync::Mutex<JoinLimits>,
 }
 
-impl std::fmt::Debug for WaitListDoor {
+impl std::fmt::Debug for WaitListPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WaitListDoor")
+        f.debug_struct("WaitListPage")
             .field("workspace", &self.workspace)
             .field("max", &self.max)
             .field("contact", &self.contact)
@@ -257,8 +257,8 @@ impl std::fmt::Debug for WaitListDoor {
     }
 }
 
-impl WaitListDoor {
-    /// The door's wait list, when the workspace takes people by invitation
+impl WaitListPage {
+    /// The entry's wait list, when the workspace takes people by invitation
     /// and keeps one (`settings.max` above zero): the addresses it keeps, the
     /// contact the operator named and the mail it sends from `settings.entry`
     /// (its outbox under `directory`), naming the workspace `name` (`mail`
@@ -279,7 +279,7 @@ impl WaitListDoor {
             return Ok(None);
         }
         let mail = match (&settings.entry, &settings.mail) {
-            (Some(door), Some(config)) => {
+            (Some(entry), Some(config)) => {
                 let templates = match &config.templates {
                     Some(dir) => mail::Templates::load(dir)?,
                     None => mail::Templates::baked(),
@@ -290,7 +290,7 @@ impl WaitListDoor {
                     workspace,
                     name,
                     mailer,
-                    door,
+                    entry,
                     templates,
                     settings.local,
                     &directory.join("mail-outbox"),
@@ -298,7 +298,7 @@ impl WaitListDoor {
             }
             (None, Some(_)) => {
                 tracing::warn!(
-                    "TILO_WORKSPACES_MAIL_FROM names a sender, but the door has no page to mail \
+                    "TILO_WORKSPACES_MAIL_FROM names a sender, but the entry has no page to mail \
                      invitations on: the wait list lists addresses at once"
                 );
                 None
@@ -313,20 +313,20 @@ impl WaitListDoor {
         )))
     }
 
-    /// The door's mail, with the outbox asking the workspace before it sends a
+    /// The entry's mail, with the outbox asking the workspace before it sends a
     /// link whose entry may be gone.
     fn mailing(
         workspaces: &Workspaces,
         workspace: &str,
         name: &str,
         mailer: Arc<dyn mail::Mailer>,
-        door: &str,
+        entry: &str,
         templates: mail::Templates,
         local: bool,
         outbox: &Path,
-    ) -> anyhow::Result<Arc<DoorMail>> {
-        let mail = Arc::new(DoorMail::durable(
-            mailer, door, name, templates, local, outbox,
+    ) -> anyhow::Result<Arc<EntryMail>> {
+        let mail = Arc::new(EntryMail::durable(
+            mailer, entry, name, templates, local, outbox,
         )?);
         mail.set_eligibility(Arc::new({
             let workspaces = workspaces.clone();
@@ -358,7 +358,7 @@ impl WaitListDoor {
         workspace: &str,
         max: usize,
         contact: Option<String>,
-        mail: Option<Arc<DoorMail>>,
+        mail: Option<Arc<EntryMail>>,
     ) -> Self {
         Self {
             workspace: workspace.to_owned(),
@@ -372,7 +372,7 @@ impl WaitListDoor {
         }
     }
 
-    /// The door's wait list as a check stands it up: `mailer` takes the mail,
+    /// The entry's wait list as a check stands it up: `mailer` takes the mail,
     /// kept only while the check runs.
     #[cfg(test)]
     pub fn with_mailer(
@@ -381,16 +381,16 @@ impl WaitListDoor {
         max: usize,
         contact: Option<&str>,
         mailer: Arc<dyn mail::Mailer>,
-        door: &str,
+        entry: &str,
     ) -> Self {
-        let mail = Arc::new(DoorMail::new(mailer, door, workspace));
+        let mail = Arc::new(EntryMail::new(mailer, entry, workspace));
         // Every entry a check leaves stands until it takes it off, so the
         // outbox sends each mail at once rather than asking first.
         mail.set_eligibility(Arc::new(|_| Box::pin(async { Some(true) })));
         Self::assembled(workspace, max, contact.map(ToOwned::to_owned), Some(mail))
     }
 
-    /// The workspace the door lets people into.
+    /// The workspace the entry lets people into.
     #[must_use]
     pub fn workspace(&self) -> &str {
         &self.workspace
@@ -402,7 +402,7 @@ impl WaitListDoor {
         self.max
     }
 
-    /// Whether the door mails the address a link that confirms it.
+    /// Whether the entry mails the address a link that confirms it.
     #[must_use]
     pub const fn mails(&self) -> bool {
         self.mail.is_some()
@@ -414,11 +414,11 @@ impl WaitListDoor {
         self.contact.as_deref()
     }
 
-    /// What the door says about its wait list beside a refusal
-    /// ([`tilo_relay_protocol::directory::DoorRefused::wait_list`]).
+    /// What the entry says about its wait list beside a refusal
+    /// ([`tilo_relay_protocol::directory::EntryRefused::wait_list`]).
     #[must_use]
-    pub fn offered(&self) -> tilo_relay_protocol::directory::DoorWaitList {
-        tilo_relay_protocol::directory::DoorWaitList {
+    pub fn offered(&self) -> tilo_relay_protocol::directory::EntryWaitList {
+        tilo_relay_protocol::directory::EntryWaitList {
             contact: self.contact.clone(),
             mail: self.mails(),
         }
@@ -429,8 +429,8 @@ impl WaitListDoor {
     #[must_use]
     pub fn invitations(&self, workspaces: &Workspaces) -> Option<InvitationMail> {
         let mail = Arc::clone(self.mail.as_ref()?);
-        let door = mail.on_door_url().to_owned();
-        let asked = workspaces.mail_wait_list(&door)?;
+        let entry = mail.on_page_url().to_owned();
+        let asked = workspaces.mail_wait_list(&entry)?;
         Some(InvitationMail { mail, asked })
     }
 
@@ -438,7 +438,7 @@ impl WaitListDoor {
         self.hasher.hash(ip)
     }
 
-    /// `POST <door>wait-list`: keep the visitor's address on the workspace's
+    /// `POST <entry>wait-list`: keep the visitor's address on the workspace's
     /// wait list, to be invited at. Each address counts against its own
     /// per-address window, so one address cannot fill the list.
     ///
@@ -472,14 +472,14 @@ impl WaitListDoor {
             .await;
         match answered {
             Ok(WaitListed::Added { mail } | WaitListed::Already { mail }) => {
-                if let (true, Some(door)) = (mail, &self.mail) {
+                if let (true, Some(entry)) = (mail, &self.mail) {
                     let to = tilo_relay_protocol::operator::WaitListMailbox {
                         contact: email.clone(),
                         language: language.to_owned(),
                     };
-                    if !door.send_for(
+                    if !entry.send_for(
                         mail::Kind::Confirm,
-                        door.confirm(&to, &hex::encode(confirm), &hex::encode(removal)),
+                        entry.confirm(&to, &hex::encode(confirm), &hex::encode(removal)),
                         &hex::encode(sha256(&removal)),
                     ) {
                         // The workspace kept the entry, but nobody can confirm
@@ -491,7 +491,7 @@ impl WaitListDoor {
                     && self
                         .mail
                         .as_ref()
-                        .is_some_and(|door| !door.confirmation_kept(&email))
+                        .is_some_and(|entry| !entry.confirmation_kept(&email))
                 {
                     return Err(Refusal::Unavailable);
                 }
@@ -511,7 +511,7 @@ impl WaitListDoor {
         }
     }
 
-    /// `POST <door>wait-list/remove`: take the entry the visitor's removal
+    /// `POST <entry>wait-list/remove`: take the entry the visitor's removal
     /// secret belongs to off the wait list. A secret no entry has is
     /// answered as one that took an entry off, so nobody learns from the
     /// answer what is listed; each network's tries are counted, so nobody
@@ -540,7 +540,7 @@ impl WaitListDoor {
                 return Err(Refusal::Unavailable);
             }
         };
-        if let Some(door) = &self.mail {
+        if let Some(entry) = &self.mail {
             // Older operators supplied only the confirmed mailbox; the
             // private digest cancels a pending entry's mail too.
             let contact_sha256 = contact.map(hex::encode).or_else(|| {
@@ -551,11 +551,11 @@ impl WaitListDoor {
                     ))
                 })
             });
-            door.cancel(&hex::encode(sha256(&secret)), contact_sha256.as_deref());
+            entry.cancel(&hex::encode(sha256(&secret)), contact_sha256.as_deref());
             if let Some(to) = told
-                && !door.send(
+                && !entry.send(
                     mail::Kind::Removed,
-                    door.removed(&tilo_relay_protocol::operator::WaitListMailbox {
+                    entry.removed(&tilo_relay_protocol::operator::WaitListMailbox {
                         contact: to.contact,
                         language: to.language,
                     }),
@@ -569,7 +569,7 @@ impl WaitListDoor {
         Ok(())
     }
 
-    /// `POST <door>wait-list/confirm`: confirm the address whose mailed link
+    /// `POST <entry>wait-list/confirm`: confirm the address whose mailed link
     /// carried `token`; whether one had it (`false`: it was taken off, or
     /// not confirmed in time).
     ///
@@ -597,8 +597,8 @@ impl WaitListDoor {
         }
     }
 
-    /// `POST <door>wait-list/standing`: where the entry the visitor's removal
-    /// secret belongs to stands, so a door opened again says so.
+    /// `POST <entry>wait-list/standing`: where the entry the visitor's removal
+    /// secret belongs to stands, so an entry opened again says so.
     ///
     /// # Errors
     ///
@@ -652,15 +652,15 @@ impl WaitListDoor {
     }
 }
 
-/// The invitations members ask the door to mail: kept in the workspace until
+/// The invitations members ask the entry to mail: kept in the workspace until
 /// whoever sends mail takes each, and mailed here.
 pub struct InvitationMail {
-    mail: Arc<DoorMail>,
+    mail: Arc<EntryMail>,
     asked: tokio::sync::mpsc::UnboundedReceiver<crate::workspaces::WaitListMail>,
 }
 
 impl InvitationMail {
-    /// Take the next invitation a member asked the door to mail, and mail
+    /// Take the next invitation a member asked the entry to mail, and mail
     /// it: `true` once the outbox keeps it.
     pub async fn mail_next(&mut self) -> bool {
         let Some(asked) = self.asked.recv().await else {
@@ -671,7 +671,7 @@ impl InvitationMail {
             contact: asked.to.contact,
             language: asked.to.language,
         };
-        let kept = if self.mail.on_door(&asked.link) {
+        let kept = if self.mail.on_page(&asked.link) {
             self.mail.send_for(
                 mail::Kind::Invite,
                 self.mail
@@ -679,7 +679,7 @@ impl InvitationMail {
                 &hex::encode(sha256(&asked.removal)),
             )
         } else {
-            tracing::warn!("an invitation to mail was not a link on this door");
+            tracing::warn!("an invitation to mail was not a link on this entry");
             false
         };
         let _ = asked.queued.send(kept);
@@ -726,11 +726,11 @@ impl From<Result<serde_json::Value, Refusal>> for Answered {
     }
 }
 
-/// The answer to one of the door's four wait-list routes: `step` is what the
+/// The answer to one of the entry's four wait-list routes: `step` is what the
 /// route asks (`wait-list`, `wait-list/remove`, `…/confirm`, `…/standing`),
 /// `body` what it sent.
 pub async fn route(
-    door: &WaitListDoor,
+    entry: &WaitListPage,
     workspaces: &Workspaces,
     ip: std::net::IpAddr,
     step: &str,
@@ -741,7 +741,7 @@ pub async fn route(
     };
     match step {
         WAIT_LIST_REMOVE => match serde_json::from_slice::<UnlistRequest>(body) {
-            Ok(asked) => door
+            Ok(asked) => entry
                 .unlist(workspaces, ip, asked)
                 .await
                 .map(|()| serde_json::json!({}))
@@ -749,7 +749,7 @@ pub async fn route(
             Err(_) => Answered::invalid("not an address to take off the list"),
         },
         WAIT_LIST_CONFIRM => match serde_json::from_slice::<ConfirmRequest>(body) {
-            Ok(asked) => door
+            Ok(asked) => entry
                 .confirm(workspaces, ip, asked)
                 .await
                 .map(|confirmed| serde_json::json!({"confirmed": confirmed}))
@@ -757,7 +757,7 @@ pub async fn route(
             Err(_) => Answered::invalid("not a confirmation"),
         },
         WAIT_LIST_STANDING => match serde_json::from_slice::<UnlistRequest>(body) {
-            Ok(asked) => door
+            Ok(asked) => entry
                 .standing(workspaces, ip, asked)
                 .await
                 .map(|standing| serde_json::json!({"standing": standing}))
@@ -765,7 +765,7 @@ pub async fn route(
             Err(_) => Answered::invalid("not a secret"),
         },
         WAIT_LIST => match serde_json::from_slice::<WaitListRequest>(body) {
-            Ok(asked) => door
+            Ok(asked) => entry
                 .wait(workspaces, ip, asked)
                 .await
                 .map(|answer| serde_json::to_value(answer).unwrap_or_default())

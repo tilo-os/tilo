@@ -89,8 +89,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     /** The shared entry through a door: the certificate the root makes now, as text, and the
      * entry the session asks for as it opens. */
-    async doorEntry(hostCert, workspace, custody, root, options) {
-      calls.doorEntry = {hostCert, workspace, root, ...JSON.parse(options)};
+    async entryRequest(hostCert, workspace, custody, root, options) {
+      calls.entryRequest = {hostCert, workspace, root, ...JSON.parse(options)};
       return `{"certificate":{"cert":${LINUX_CERT},"hostCert":${hostCert}},"entering":{"workspace":"${workspace}","name":"Ana","request_id":[${Array(32).fill(7)}],"through":"Door"}}`;
     },
     /** The platform secret store's channel vault key of a namespace. */
@@ -251,8 +251,8 @@ test('a door is entered on the session itself: its first connect asks, and the h
     fetch: async () => { throw new Error('no network in tests'); },
   });
   assert.equal(asked, 1, 'the host is asked who it is once, and nothing else over HTTPS');
-  assert.equal(runtime.calls.doorEntry.workspace, WORKSPACE);
-  assert.equal(runtime.calls.doorEntry.hostCert, `{"issued_at_ns":${NANOS}}`, 'the host certificate reaches the entry byte for byte');
+  assert.equal(runtime.calls.entryRequest.workspace, WORKSPACE);
+  assert.equal(runtime.calls.entryRequest.hostCert, `{"issued_at_ns":${NANOS}}`, 'the host certificate reaches the entry byte for byte');
   assert.equal(runtime.peer.config.entering.workspace, WORKSPACE, 'the session asks to enter as it opens');
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.equal(runtime.peer.workspace, WORKSPACE);
@@ -321,7 +321,7 @@ test('a door whose site names its host is entered with no request to the host', 
   const progress = [];
   const peer = await joinWorkspace(doorOptions(runtime, {onProgress: event => progress.push(event)}));
   assert.equal(asked, 0, 'the page asks the host nothing over HTTPS');
-  assert.equal(runtime.calls.doorEntry.hostCert, memberText(siteNamed(), 'hostCert'), 'the site\'s certificate reaches the entry byte for byte');
+  assert.equal(runtime.calls.entryRequest.hostCert, memberText(siteNamed(), 'hostCert'), 'the site\'s certificate reaches the entry byte for byte');
   assert.deepEqual(runtime.peer.config.address, JSON.parse(siteNamed()).address, 'the session dials the host where the site says');
   assert.equal(progress.at(-1).phase, 'admitted');
   await peer.dispose();

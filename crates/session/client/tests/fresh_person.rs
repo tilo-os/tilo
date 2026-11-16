@@ -21,8 +21,8 @@ use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::DeviceCapabilities;
 
 use crate::support::{
-    TestHost, door, enrol, hears, ready, redeem, refused, say, start_peer, start_workspace_host,
-    wait_for,
+    TestHost, enrol, entry_grant, hears, ready, redeem, refused, say, start_peer,
+    start_workspace_host, wait_for,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -56,7 +56,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
             &format!("{name}-browser"),
             DeviceCapabilities::member(),
         );
-        let invitation = door(
+        let invitation = entry_grant(
             &hosted,
             &alice,
             &host,

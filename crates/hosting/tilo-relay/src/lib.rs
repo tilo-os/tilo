@@ -78,7 +78,7 @@ pub mod content_links;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
 #[cfg(feature = "web")]
-pub mod door;
+pub mod entry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod files_content;
 #[cfg(not(target_arch = "wasm32"))]

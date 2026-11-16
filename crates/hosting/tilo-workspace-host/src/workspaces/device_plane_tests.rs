@@ -6,7 +6,7 @@
     reason = "the relay, its workspaces and the devices' planes are this test's subject until its last assertion"
 )]
 
-use super::fixtures::{door_join, door_join_as};
+use super::fixtures::{entry_join, entry_join_as};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
 
@@ -24,7 +24,7 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
     let workspaces = relay.workspaces();
     let created = workspaces.create("Demo").await.unwrap();
     let (member_key, member_cert) = guest_device();
-    door_join(
+    entry_join(
         workspaces,
         &cert,
         &created.workspace,
@@ -218,9 +218,9 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     let (a_key, a_cert) = guest_device();
     let (b_key, b_cert) = guest_device();
     let (c_key, c_cert) = guest_device();
-    door_join(workspaces, &cert, &created.workspace, (&a_key, &a_cert), 41).await;
-    door_join(workspaces, &cert, &created.workspace, (&b_key, &b_cert), 42).await;
-    door_join(workspaces, &cert, &created.workspace, (&c_key, &c_cert), 43).await;
+    entry_join(workspaces, &cert, &created.workspace, (&a_key, &a_cert), 41).await;
+    entry_join(workspaces, &cert, &created.workspace, (&b_key, &b_cert), 42).await;
+    entry_join(workspaces, &cert, &created.workspace, (&c_key, &c_cert), 43).await;
     let (a_endpoint, a_plane) = asking_device(&a_key).await;
     let (b_endpoint, b_plane) = asking_device(&b_key).await;
     let (c_endpoint, c_plane) = asking_device(&c_key).await;
@@ -372,7 +372,7 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
     let mut closed = Vec::new();
     for (seed, role) in [(51, Role::Editor), (52, Role::Viewer)] {
         let (device_key, device_cert) = guest_device();
-        door_join_as(
+        entry_join_as(
             workspaces,
             &cert,
             &created.workspace,
@@ -448,7 +448,7 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
     workspaces.run_jobs(serving);
 
     let (device_key, device_cert) = guest_device();
-    door_join(
+    entry_join(
         workspaces,
         &cert,
         &created.workspace,

@@ -9,7 +9,7 @@
 //!
 //! Reading the code and signing in are a computer's work: a page writes the
 //! code and never reads one. The ways into the workspace a signed-in device
-//! takes — its site's door ([`Door`]) and an invitation, both entered on the
+//! takes — its site's entry ([`Entry`]) and an invitation, both entered on the
 //! device's session ([`tilo_relay_protocol::entering`]) — are a page's as much
 //! as a computer's, so only the first part is native.
 
@@ -183,17 +183,17 @@ fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
     Ok((user_public_key, invite))
 }
 
-/// A workspace's public door, as the site names it (`entry.json`'s home
+/// A workspace's public entry, as the site names it (`entry.json`'s home
 /// `admission`): its path, which names the workspace it lets people into. A
 /// device enters through it on its session with the workspace's host
 /// ([`tilo_relay_protocol::entering`]).
-pub struct Door {
-    /// The door's path, below its origin (`…/directory/<workspace>/`).
+pub struct Entry {
+    /// The entry's path, below its origin (`…/directory/<workspace>/`).
     pub path: String,
 }
 
-impl Door {
-    /// The workspace the door lets people into, as its path names it.
+impl Entry {
+    /// The workspace the entry lets people into, as its path names it.
     #[must_use]
     pub fn workspace(&self) -> Option<String> {
         let mut segments = self.path.split('/').filter(|segment| !segment.is_empty());
@@ -202,11 +202,11 @@ impl Door {
     }
 }
 
-/// The door of the site whose `entry.json` is `entry` to the workspace it
+/// The entry of the site whose `entry.json` is `entry` to the workspace it
 /// keeps on the host at `host_origin`: its origin and path. Only HTTPS, but
-/// for a door on loopback.
+/// for an entry on loopback.
 #[must_use]
-pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
+pub fn site_entry(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
     let home = entry.get("home")?;
     let home_host = home.pointer("/host/origin")?.as_str()?;
     if home_host.trim_end_matches('/') != host_origin.trim_end_matches('/') {
@@ -222,18 +222,18 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
     Some((format!("{scheme}://{authority}"), path.to_owned()))
 }
 
-/// The door of the site at `site` to its workspace on the host at
+/// The entry of the site at `site` to its workspace on the host at
 /// `host_origin`, as its `entry.json` names it. A computer reads a site's
-/// `entry.json` through its own HTTPS client; a page's entry names its door.
+/// `entry.json` through its own HTTPS client; a page's entry names its entry.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn door_at(site: &https::Origin, host_origin: &str) -> Option<Door> {
+pub async fn entry_at(site: &https::Origin, host_origin: &str) -> Option<Entry> {
     let (status, body) = site.get("/entry.json").await.ok()?;
     if status != 200 {
         return None;
     }
     let entry: serde_json::Value = serde_json::from_slice(&body).ok()?;
-    let (_, path) = site_door(&entry, host_origin)?;
-    Some(Door { path })
+    let (_, path) = site_entry(&entry, host_origin)?;
+    Some(Entry { path })
 }
 
 /// A computer that is now one of the person's devices.

@@ -1,4 +1,4 @@
-//! A page names its workspace through its host's workspaces door, as its
+//! A page names its workspace through its host's workspaces entry, as its
 //! shell does when someone renames the workspace: the answer and every list of
 //! the workspace read the one name, which the workspace's governance keeps.
 
@@ -19,7 +19,7 @@ use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer};
 /// said.
 async fn ask(peer: &Link, request: WorkspacesRequest) -> WorkspacesReply {
     let answer = peer.ask_workspaces(request).unwrap();
-    tilo_test_env::within("the host answers its workspaces door", answer)
+    tilo_test_env::within("the host answers its workspaces entry", answer)
         .await
         .unwrap()
         .unwrap()

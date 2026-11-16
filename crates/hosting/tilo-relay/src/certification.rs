@@ -645,7 +645,7 @@ impl CertificationProtocol {
             self.member_approve(approval, unix_now_ns())
         } else {
             // Said here as well as to the page: a person who cannot approve
-            // their own device is stuck at the door, and what the page shows
+            // their own device is stuck at the entry, and what the page shows
             // them names none of this.
             tracing::warn!(
                 person = %hex::encode(approval.user_public_key),

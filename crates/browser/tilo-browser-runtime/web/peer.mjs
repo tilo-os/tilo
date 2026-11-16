@@ -1574,7 +1574,7 @@ export async function joinWorkspace(options) {
  * from an earlier entry, or `null`: read from `store`, else from the namespace
  * the profile keeps its peer in now. Whether it still serves to enter with
  * (this very key, this person, the same host, not ending soon) is the shared
- * entry's to decide (`invitationEntry`, `doorEntry`).
+ * entry's to decide (`invitationEntry`, `entryRequest`).
  */
 async function keptDeviceCertificate({runtime, profile, slot = 0, store, desktop, namespaces = globalThis.localStorage}) {
   let opened;
@@ -1604,7 +1604,7 @@ function hostUnreached(origin, snapshot) {
   return {phase: 'failed', errorCode: 'unanswered', error: `connection refused or lost before ${new URL(origin).origin} answered${why}`};
 }
 
-/** The codes a door refuses with (`DoorRefusalCode`), and its entry when not reached. */
+/** The codes a door refuses with (`EntryRefusalCode`), and its entry when not reached. */
 const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'refused', 'unanswered']);
 
 /** How long a page waits for its host's answer to the entry its session asked for: the host
@@ -1656,7 +1656,7 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
 }
 
 /** Enter `workspace` on the session itself, through its door or with an invitation (`entry`,
- * given the host's certificate as text, makes the entry: `doorEntry` or `invitationEntry` in
+ * given the host's certificate as text, makes the entry: `entryRequest` or `invitationEntry` in
  * wasm). Who the host is the page's own site says (`site-host.mjs`), else the host itself; the
  * shared entry chooses the certificate (the one this very key holds from this host, else one the
  * root makes now), and the session asks to enter as it opens: the door and the admission ride the
@@ -1740,7 +1740,7 @@ async function join({
     if (!workspace) throw new TypeError('the door names no workspace');
     return enterOnSession({
       ...common, workspace,
-      entry: hostCert => runtime.doorEntry(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),
+      entry: hostCert => runtime.entryRequest(hostCert, workspace, custodyForWasm, identity ?? undefined, accepting),
     });
   }
   return enterOnSession({

@@ -1,41 +1,41 @@
-//! The workspaces this relay lists as public workspaces, and the door that lets
+//! The workspaces this relay lists as public workspaces, and the entry that lets
 //! anyone in with the role their owner chose.
 //!
 //! Making a workspace public is one of its governance settings
 //! ([`governance::SETTINGS`]): its owner, or anyone the workspace lets change its
-//! settings, settles its door ([`tilo_action_policy::DoorPolicy`]) — a listing
+//! settings, settles its entry ([`tilo_action_policy::EntryPolicy`]) — a listing
 //! (a description and the default role), whether it takes people by invitation
 //! only, and how many requests it keeps — as one change to the workspace's
-//! settings. The door is that record, kept with the workspace's governance and
+//! settings. The entry is that record, kept with the workspace's governance and
 //! read back from it by every host serving the workspace, so a workspace listed
 //! here is listed on a person's own machine too, and a restart settles nothing
 //! anew.
 //!
-//! The relay lists its workspaces whose door carries a listing in its directory
-//! ([`Workspaces::directory`]) and answers each such workspace's door
+//! The relay lists its workspaces whose entry carries a listing in its directory
+//! ([`Workspaces::directory`]) and answers each such workspace's entry
 //! ([`Workspaces::admit_listed`]): a person who asks gets an invitation only they
 //! can redeem and the one-time token of a pre-admission at the listing's default
 //! role, so their redemption is admitted at once, as the workspace's owner
 //! decided when they settled it. The listing is that decision; no one is asked
 //! per join. The host signs each such grant with its own device key, and a
-//! redemption is admitted only under a grant the owner or this host's door
+//! redemption is admitted only under a grant the owner or this host's entry
 //! signed while the workspace is listed.
 //!
-//! Moderation is the workspace's own: a banned person is refused at the door, the
+//! Moderation is the workspace's own: a banned person is refused at the entry, the
 //! workspace's moderators remove and ban through its governance, each admission
 //! is a [`WorkspaceNotice::PreAdmitted`] the owner sees, and a report of the
-//! workspace through its door is a [`WorkspaceNotice::Reported`].
+//! workspace through its entry is a [`WorkspaceNotice::Reported`].
 
 mod entering;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest as _, Sha256};
-use tilo_action_policy::{DoorPolicy, ListingPolicy, Role, roles::governance};
+use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join_ledger::request_digest;
 use tilo_relay_protocol::directory::{
-    DirectoryEntry, DoorJoin, DoorReport, Face, Listing, MAX_FACES, door_path,
+    DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_relay_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
@@ -45,28 +45,28 @@ use super::authority::WorkspaceOp;
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
 
 /// Where a relay kept its public workspaces' listings before a workspace's
-/// door was part of its governance ([`Workspaces::adopt_listings_file`]).
+/// entry was part of its governance ([`Workspaces::adopt_listings_file`]).
 const LISTINGS_FILE: &str = "listings.json";
-/// How long a door's invitation and its token stay good: time for the
+/// How long an entry's invitation and its token stay good: time for the
 /// person's device to redeem it now, not to keep it.
 const DOOR_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
-/// How a door's admission names where the person came from, in the
+/// How an entry's admission names where the person came from, in the
 /// owner's notices.
 pub(crate) const DOOR_LABEL: &str = "the public directory";
 
-/// Why a public workspace's door turns a person away.
+/// Why a public workspace's entry turns a person away.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DoorRefusal {
+pub enum EntryRefusal {
     /// The person may not join now; `Display` says why.
     Refused(String),
     /// The workspace's people banned the person.
     Banned,
     /// The person was removed from the workspace within the day.
     Removed,
-    /// The door admits only people invited or pre-admitted, and this person
+    /// The entry admits only people invited or pre-admitted, and this person
     /// holds neither: their page asks them to be invited.
     InvitationOnly,
-    /// The door holds as many open grants as the workspace keeps: the person
+    /// The entry holds as many open grants as the workspace keeps: the person
     /// comes back in `retry_after_secs`.
     Full {
         /// How long until the earliest open grant expires, at least a second.
@@ -74,32 +74,32 @@ pub enum DoorRefusal {
     },
 }
 
-impl DoorRefusal {
+impl EntryRefusal {
     fn refused(reason: impl Into<String>) -> Self {
         Self::Refused(reason.into())
     }
 
-    /// The refusal as the door answers it, naming the wait list `door` keeps
+    /// The refusal as the entry answers it, naming the wait list `entry` keeps
     /// for a workspace taking people by invitation.
     #[must_use]
     pub fn answer_with(
         &self,
-        door: Option<&tilo_relay_protocol::directory::DoorWaitList>,
-    ) -> tilo_relay_protocol::directory::DoorRefused {
-        self.answer().with_wait_list(door)
+        entry: Option<&tilo_relay_protocol::directory::EntryWaitList>,
+    ) -> tilo_relay_protocol::directory::EntryRefused {
+        self.answer().with_wait_list(entry)
     }
 
-    /// The refusal as the door answers it.
+    /// The refusal as the entry answers it.
     #[must_use]
-    pub fn answer(&self) -> tilo_relay_protocol::directory::DoorRefused {
-        use tilo_relay_protocol::directory::DoorRefusalCode;
-        tilo_relay_protocol::directory::DoorRefused {
+    pub fn answer(&self) -> tilo_relay_protocol::directory::EntryRefused {
+        use tilo_relay_protocol::directory::EntryRefusalCode;
+        tilo_relay_protocol::directory::EntryRefused {
             code: match self {
-                Self::Refused(_) => DoorRefusalCode::Refused,
-                Self::Banned => DoorRefusalCode::Banned,
-                Self::Removed => DoorRefusalCode::Removed,
-                Self::InvitationOnly => DoorRefusalCode::InvitationOnly,
-                Self::Full { .. } => DoorRefusalCode::Full,
+                Self::Refused(_) => EntryRefusalCode::Refused,
+                Self::Banned => EntryRefusalCode::Banned,
+                Self::Removed => EntryRefusalCode::Removed,
+                Self::InvitationOnly => EntryRefusalCode::InvitationOnly,
+                Self::Full { .. } => EntryRefusalCode::Full,
             },
             error: self.to_string(),
             ..Default::default()
@@ -107,7 +107,7 @@ impl DoorRefusal {
     }
 }
 
-impl std::fmt::Display for DoorRefusal {
+impl std::fmt::Display for EntryRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(reason) => f.write_str(reason),
@@ -122,15 +122,15 @@ impl std::fmt::Display for DoorRefusal {
     }
 }
 
-impl std::error::Error for DoorRefusal {}
+impl std::error::Error for EntryRefusal {}
 
 /// What this host knows of its workspaces beyond their governance: when each
-/// was last written to, and a ping after each door that changed.
+/// was last written to, and a ping after each entry that changed.
 pub(super) struct Directory {
     /// When a member last wrote to each workspace, Unix milliseconds, since this
     /// relay started: the directory's activity hint.
     active: std::sync::Mutex<BTreeMap<String, u64>>,
-    /// The workspace UUID after each change of its door.
+    /// The workspace UUID after each change of its entry.
     changes: tokio::sync::broadcast::Sender<String>,
 }
 
@@ -155,7 +155,7 @@ impl Directory {
         self.active.lock_recover().get(workspace).copied()
     }
 
-    /// Someone changed `workspace`'s door: whoever follows the directory
+    /// Someone changed `workspace`'s entry: whoever follows the directory
     /// answers it again.
     pub(super) fn announce(&self, workspace: &str) {
         let _ = self.changes.send(workspace.to_owned());
@@ -196,8 +196,8 @@ const fn invited_part(role: Role) -> Option<Role> {
     }
 }
 
-/// The part a listing hands everyone who joins through the door. A listing hands
-/// out no more than an editor ([`DoorPolicy::checked`] refuses a moderator's or
+/// The part a listing hands everyone who joins through the entry. A listing hands
+/// out no more than an editor ([`EntryPolicy::checked`] refuses a moderator's or
 /// an owner's), so one written another way still hands out no governance.
 const fn listed_part(role: Role) -> Role {
     match role {
@@ -207,9 +207,9 @@ const fn listed_part(role: Role) -> Role {
     }
 }
 
-/// `door`'s listing as the directory and the pages read it.
-fn listing_of_door(door: &DoorPolicy) -> Option<Listing> {
-    door.listing.as_ref().map(|listing| Listing {
+/// `entry`'s listing as the directory and the pages read it.
+fn listing_of_entry(entry: &EntryPolicy) -> Option<Listing> {
+    entry.listing.as_ref().map(|listing| Listing {
         description: listing.description.clone(),
         default_role: listed_part(listing.default_role),
     })
@@ -250,36 +250,36 @@ impl Workspaces {
         }
     }
 
-    /// The door `governed` holds, as its governance records it.
-    pub(super) fn door_of(governed: &GovernedWorkspace) -> DoorPolicy {
-        governed.peer().governance().governed_door()
+    /// The entry `governed` holds, as its governance records it.
+    pub(super) fn entry_of(governed: &GovernedWorkspace) -> EntryPolicy {
+        governed.peer().governance().governed_entry()
     }
 
-    /// The door `workspace`'s governance records here now: whether a directory
+    /// The entry `workspace`'s governance records here now: whether a directory
     /// lists it, whom it lets in, and how many requests it keeps. `None` when
     /// this host does not govern the workspace.
-    pub async fn door_policy(&self, workspace: &str) -> Option<DoorPolicy> {
+    pub async fn entry_policy(&self, workspace: &str) -> Option<EntryPolicy> {
         let governed = self.workspace(workspace).await.ok()?;
         let governed = governed.lock().await;
-        Some(Self::door_of(&governed))
+        Some(Self::entry_of(&governed))
     }
 
     /// Whether a directory lists `workspace` here now.
     pub async fn is_listed(&self, workspace: &str) -> bool {
-        self.door_policy(workspace)
+        self.entry_policy(workspace)
             .await
-            .is_some_and(|door| door.is_listed())
+            .is_some_and(|entry| entry.is_listed())
     }
 
-    /// Settle `workspace`'s door as `change` asks, as `device`: the workspace's
+    /// Settle `workspace`'s entry as `change` asks, as `device`: the workspace's
     /// governance must let its person change its settings
-    /// ([`governance::SETTINGS`]). Answers the door the workspace now records.
-    async fn settle_door(
+    /// ([`governance::SETTINGS`]). Answers the entry the workspace now records.
+    async fn settle_entry(
         &self,
         workspace: &str,
         device: &DeviceCert,
-        change: impl FnOnce(&mut DoorPolicy),
-    ) -> Result<DoorPolicy, CollaborationError> {
+        change: impl FnOnce(&mut EntryPolicy),
+    ) -> Result<EntryPolicy, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let key = self.inner.host.key.clone();
         let state = self.workspace(workspace).await?;
@@ -290,15 +290,15 @@ impl Workspaces {
             WorkspaceOp::Govern(governance::SETTINGS),
             now,
         )?;
-        let mut door = Self::door_of(&governed);
-        change(&mut door);
-        let door = door
+        let mut entry = Self::entry_of(&governed);
+        change(&mut entry);
+        let entry = entry
             .checked()
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if door == Self::door_of(&governed) {
-            return Ok(door);
+        if entry == Self::entry_of(&governed) {
+            return Ok(entry);
         }
-        let digest = request_digest(&("the workspace's door", &door))
+        let digest = request_digest(&("the workspace's entry", &entry))
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         self.administer(
             &mut governed,
@@ -306,17 +306,17 @@ impl Workspaces {
             digest,
             |peer| {
                 peer.governance_mut()
-                    .put_governed_door(&door, &key, super::system_time(now))
+                    .put_governed_entry(&entry, &key, super::system_time(now))
             },
             now,
         )
         .await?;
-        let listed = door.is_listed();
+        let listed = entry.is_listed();
         drop(governed);
         self.load_records_when_opened(workspace, listed).await;
         self.inner.directory.announce(workspace);
-        tracing::info!(%workspace, listed, "the workspace's door settled");
-        Ok(door)
+        tracing::info!(%workspace, listed, "the workspace's entry settled");
+        Ok(entry)
     }
 
     /// Make `workspace` public with `listing`, as `device` asks: the workspace's
@@ -334,17 +334,17 @@ impl Workspaces {
             description: listing.description,
             default_role: listing.default_role,
         };
-        let door = self
-            .settle_door(workspace, device, |door| {
-                door.listing = Some(settling);
+        let entry = self
+            .settle_entry(workspace, device, |entry| {
+                entry.listing = Some(settling);
             })
             .await?;
-        listing_of_door(&door)
+        listing_of_entry(&entry)
             .ok_or_else(|| CollaborationError::new("the workspace records no listing"))
     }
 
     /// Take `workspace` out of the directory, as `device` asks. Its members stay;
-    /// nobody new gets in through its door.
+    /// nobody new gets in through its entry.
     ///
     /// # Errors
     ///
@@ -354,15 +354,15 @@ impl Workspaces {
         workspace: &str,
         device: &DeviceCert,
     ) -> Result<(), CollaborationError> {
-        self.settle_door(workspace, device, |door| door.listing = None)
+        self.settle_entry(workspace, device, |entry| entry.listing = None)
             .await
             .map(drop)
     }
 
-    /// Settle whether `workspace`'s door admits only people invited or
+    /// Settle whether `workspace`'s entry admits only people invited or
     /// pre-admitted, as the host's operator asked. Its listing is untouched:
     /// the workspace stays listed either way. Asked once, it is governance: a
-    /// restart reads the workspace's door rather than settling it again.
+    /// restart reads the workspace's entry rather than settling it again.
     ///
     /// # Errors
     ///
@@ -373,14 +373,14 @@ impl Workspaces {
         device: &DeviceCert,
         invites_only: bool,
     ) -> Result<(), CollaborationError> {
-        self.settle_door(workspace, device, |door| {
-            door.invitation_only = invites_only;
+        self.settle_entry(workspace, device, |entry| {
+            entry.invitation_only = invites_only;
         })
         .await
         .map(drop)
     }
 
-    /// Settle how many requests `workspace`'s door keeps for whoever may
+    /// Settle how many requests `workspace`'s entry keeps for whoever may
     /// invite, as the host's operator asked.
     ///
     /// # Errors
@@ -392,14 +392,14 @@ impl Workspaces {
         device: &DeviceCert,
         keep: usize,
     ) -> Result<(), CollaborationError> {
-        self.settle_door(workspace, device, |door| door.wait_list_max = keep)
+        self.settle_entry(workspace, device, |entry| entry.wait_list_max = keep)
             .await
             .map(drop)
     }
 
     /// Whether `user` holds an invitation this workspace issued and has not
-    /// spent: one from a member, or the one its door hands a person it lets
-    /// in. Either is bound to them, so an invitation-only door still knows
+    /// spent: one from a member, or the one its entry hands a person it lets
+    /// in. Either is bound to them, so an invitation-only entry still knows
     /// whom it let in when they come back to redeem it.
     pub(super) async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
         let Ok(state) = self.workspace(workspace).await else {
@@ -415,7 +415,7 @@ impl Workspaces {
     }
 
     /// The authority `workspace` records, as this host's device reads it: the
-    /// one policy lookup the door, the directory and a member's role answer
+    /// one policy lookup the entry, the directory and a member's role answer
     /// from.
     pub(super) async fn policy_of(
         &self,
@@ -439,13 +439,13 @@ impl Workspaces {
             .active_role(&hex::encode(user))
     }
 
-    /// `workspace`'s listing, as its door records it.
+    /// `workspace`'s listing, as its entry records it.
     pub async fn listing(&self, workspace: &str) -> Option<Listing> {
-        listing_of_door(&self.door_policy(workspace).await?)
+        listing_of_entry(&self.entry_policy(workspace).await?)
     }
 
-    /// The workspaces a directory lists here now, by the door each records.
-    /// Unlisted workspaces cost their door's read and nothing else: a host that
+    /// The workspaces a directory lists here now, by the entry each records.
+    /// Unlisted workspaces cost their entry's read and nothing else: a host that
     /// keeps many of them answers the directory without reading each one's
     /// people.
     pub async fn published_workspaces(&self) -> Vec<String> {
@@ -454,7 +454,7 @@ impl Workspaces {
             let workspaces = self.inner.workspaces.lock().await;
             for workspace in workspaces.values() {
                 let workspace = workspace.lock().await;
-                if Self::door_of(&workspace).is_listed() {
+                if Self::entry_of(&workspace).is_listed() {
                     listed.push(workspace.workspace().to_owned());
                 }
             }
@@ -463,13 +463,13 @@ impl Workspaces {
     }
 
     /// Take over the listings a relay kept in [`LISTINGS_FILE`] before a
-    /// workspace's door was part of its governance: each workspace that file
-    /// lists, whose door lists nothing yet, is listed again as its owner listed
+    /// workspace's entry was part of its governance: each workspace that file
+    /// lists, whose entry lists nothing yet, is listed again as its owner listed
     /// it, settled by this host as the workspace's governor. The file then
     /// moves beside the records as `listings.json.v1`, so going back to the
     /// build that wrote it still finds it. Nothing to do when there is none.
     ///
-    /// A listing whose workspace is gone, or whose door this host may not
+    /// A listing whose workspace is gone, or whose entry this host may not
     /// settle, is left out and said; the rest are still taken over.
     ///
     /// # Errors
@@ -521,17 +521,17 @@ impl Workspaces {
             .map_err(|error| format!("{}: {error}", path.display()))?;
         let host = self.inner.host.cert.clone();
         for (workspace, listing) in kept.workspaces {
-            if self.door_policy(&workspace).await.is_none() {
-                tracing::warn!(%workspace, "a listing kept before the door names a workspace this host no longer keeps");
+            if self.entry_policy(&workspace).await.is_none() {
+                tracing::warn!(%workspace, "a listing kept before the entry names a workspace this host no longer keeps");
                 continue;
             }
             if self.is_listed(&workspace).await {
                 continue;
             }
             match self.publish(&workspace, &host, listing.into()).await {
-                Ok(_) => tracing::info!(%workspace, "listed again as it was before the door"),
+                Ok(_) => tracing::info!(%workspace, "listed again as it was before the entry"),
                 Err(error) => {
-                    tracing::error!(%workspace, %error, "a listing kept before the door was not taken over");
+                    tracing::error!(%workspace, %error, "a listing kept before the entry was not taken over");
                 }
             }
         }
@@ -539,7 +539,7 @@ impl Workspaces {
             .map_err(|error| format!("{}: {error}", path.display()))
     }
 
-    /// The workspace UUID after each change of a workspace's door.
+    /// The workspace UUID after each change of a workspace's entry.
     #[must_use]
     pub fn listing_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.directory.changes.subscribe()
@@ -605,7 +605,7 @@ impl Workspaces {
                 .filter(|member| !member.removed)
                 .count();
             entries.push(DirectoryEntry {
-                door: door_path(&summary.workspace),
+                entry: entry_path(&summary.workspace),
                 workspace: summary.workspace.clone(),
                 name: summary.name,
                 description: listing.description,
@@ -622,27 +622,27 @@ impl Workspaces {
 
     /// Let the person `join` names into the public workspace `workspace`: an
     /// invitation only they can redeem, and the token of a pre-admission at
-    /// the listing's default role, under the owner's door. The door answers
+    /// the listing's default role, under the owner's entry. The entry answers
     /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
     ///
-    /// A workspace whose door takes people by invitation answers its door only
+    /// A workspace whose entry takes people by invitation answers its entry only
     /// to a person it has in it (joining again from another device of theirs),
     /// one an invitation still names
     /// [`PendingInvitation::recipient_user_public_key`], or one it declared a
     /// member before their device arrived. Everyone else is turned away with
-    /// the door's own words.
+    /// the entry's own words.
     ///
     /// Someone the workspace has in it is let in at the part they hold there,
     /// never the listing's default: their device's redemption writes the
-    /// invitation's part as theirs, and a door that handed them another would
+    /// invitation's part as theirs, and an entry that handed them another would
     /// change it. A device of theirs that enters on its session is admitted as
-    /// theirs before it would ask this door at all.
+    /// theirs before it would ask this entry at all.
     ///
-    /// For a person an invitation still names, the door answers with that
+    /// For a person an invitation still names, the entry answers with that
     /// invitation, and records a grant for it at once so the page that made
-    /// the join redeems it the way every page redeems a door's answer: its
-    /// token is the one the door hands back. The invitation itself is the
-    /// decision — its role and lifetime are the inviter's — and the door
+    /// the join redeems it the way every page redeems an entry's answer: its
+    /// token is the one the entry hands back. The invitation itself is the
+    /// decision — its role and lifetime are the inviter's — and the entry
     /// mints nothing.
     #[expect(
         clippy::significant_drop_tightening,
@@ -651,9 +651,9 @@ impl Workspaces {
     pub async fn admit_listed(
         &self,
         workspace: &str,
-        join: &DoorJoin,
-    ) -> Result<(IssuedInvitation, String), DoorRefusal> {
-        let refused = |error: CollaborationError| DoorRefusal::Refused(error.to_string());
+        join: &EntryJoin,
+    ) -> Result<(IssuedInvitation, String), EntryRefusal> {
+        let refused = |error: CollaborationError| EntryRefusal::Refused(error.to_string());
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -664,12 +664,12 @@ impl Workspaces {
                 .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
-            let door = Self::door_of(&governed);
-            let Some(listing) = door.listing.as_ref() else {
-                return Err(DoorRefusal::refused("that workspace is not public"));
+            let entry = Self::entry_of(&governed);
+            let Some(listing) = entry.listing.as_ref() else {
+                return Err(EntryRefusal::refused("that workspace is not public"));
             };
             let member = policy.active_role(&hex::encode(user));
-            // An invitation-only door refuses a stranger who holds no
+            // An invitation-only entry refuses a stranger who holds no
             // invitation of their own and whom the workspace does not have in
             // it, and says so: the person's page offers them the way to be
             // invited (the site's wait list) instead of a link in as a guest.
@@ -681,14 +681,14 @@ impl Workspaces {
                 .iter()
                 .any(|invitation| invitation.recipient_user_public_key == Some(user))
                 || self.inner.memberships.holds_any(&user);
-            if door.invitation_only && member.is_none() && !invited {
-                return Err(DoorRefusal::InvitationOnly);
+            if entry.invitation_only && member.is_none() && !invited {
+                return Err(EntryRefusal::InvitationOnly);
             }
             if policy.is_blocked(&hex::encode(user)) {
-                return Err(DoorRefusal::Banned);
+                return Err(EntryRefusal::Banned);
             }
-            if governed.door.refuses(user, now) {
-                return Err(DoorRefusal::Removed);
+            if governed.removals.refuses(user, now) {
+                return Err(EntryRefusal::Removed);
             }
             let role = member
                 .and_then(invited_part)
@@ -698,13 +698,13 @@ impl Workspaces {
             // A person an invitation of the workspace's own names is handed
             // that invitation, not a new one: the inviter decided its role and
             // how long it stands, and its consent is the decision. The page
-            // that joined redeems it with a token as it redeems every door's
-            // answer, so the door records a grant for this invitation at once.
+            // that joined redeems it with a token as it redeems every entry's
+            // answer, so the entry records a grant for this invitation at once.
             // An invitation a member already pre-admitted carries that grant,
             // and the person redeems it with the member's own token; a page
-            // that asks the door without it is handed a fresh invitation as
+            // that asks the entry without it is handed a fresh invitation as
             // any guest is.
-            let their_own = Self::door_of(&governed)
+            let their_own = Self::entry_of(&governed)
                 .invitation_only
                 .then(|| governed.invitation_for(user, now))
                 .flatten()
@@ -725,7 +725,7 @@ impl Workspaces {
                     .admissions
                     .full_for(now, self.inner.host.max_pre_admissions)
                 {
-                    return Err(DoorRefusal::Full { retry_after_secs });
+                    return Err(EntryRefusal::Full { retry_after_secs });
                 }
                 let host = self.inner.host.cert.clone();
                 let issued = self
@@ -763,8 +763,8 @@ impl Workspaces {
         Ok(issued)
     }
 
-    /// The grant the door records for the token it hands out at `workspace`'s
-    /// door: signed by this host's device key, which the redemption checks
+    /// The grant the entry records for the token it hands out at `workspace`'s
+    /// entry: signed by this host's device key, which the redemption checks
     /// against the host and the workspace's listing
     /// ([`Workspaces::pre_admission_signer`]).
     fn door_grant(
@@ -773,7 +773,7 @@ impl Workspaces {
         role: Role,
         now: u64,
         token: &str,
-    ) -> Result<PreAdmission, DoorRefusal> {
+    ) -> Result<PreAdmission, EntryRefusal> {
         let mut grant = PreAdmission {
             workspace: workspace.to_owned(),
             role,
@@ -784,24 +784,24 @@ impl Workspaces {
             signature: [0; 64],
         };
         grant.sign(&self.inner.host.key).map_err(|error| {
-            DoorRefusal::refused(CollaborationError::new(error.to_string()).to_string())
+            EntryRefusal::refused(CollaborationError::new(error.to_string()).to_string())
         })?;
         Ok(grant)
     }
 
-    /// Whether `workspace`'s door keeps `person` out because moderation removed
+    /// Whether `workspace`'s entry keeps `person` out because moderation removed
     /// them within the day.
     pub async fn removed_within_the_day(&self, workspace: &str, person: [u8; 32]) -> bool {
         let now = tilo_clock::unix_now_ns();
         match self.workspace(workspace).await {
-            Ok(state) => state.lock().await.door.refuses(person, now),
+            Ok(state) => state.lock().await.removals.refuses(person, now),
             Err(_) => false,
         }
     }
 
     /// Whether `grant`, recorded for an invitation to `workspace`, was signed by
     /// someone who may admit people there: the workspace's owner (this relay's
-    /// person), or this host's own door while the workspace is listed.
+    /// person), or this host's own entry while the workspace is listed.
     ///
     /// # Errors
     ///
@@ -818,12 +818,12 @@ impl Workspaces {
         }
         if grant.owner_user_public_key == host.device_public_key
             && grant.label == DOOR_LABEL
-            && Self::door_of(workspace).is_listed()
+            && Self::entry_of(workspace).is_listed()
         {
             return Ok(());
         }
         Err(
-            "the pre-admission is signed by neither the workspace's owner nor its host's door"
+            "the pre-admission is signed by neither the workspace's owner nor its host's entry"
                 .into(),
         )
     }
@@ -834,7 +834,7 @@ impl Workspaces {
     pub async fn report_listed(
         &self,
         workspace: &str,
-        report: &DoorReport,
+        report: &EntryReport,
     ) -> Result<(), CollaborationError> {
         if !self.is_listed(workspace).await {
             return Err(CollaborationError::new("that workspace is not public"));
@@ -898,13 +898,13 @@ pub(crate) mod door_tests {
     };
     use tilo_peer_state::join::Role;
     use tilo_relay_protocol::WorkspaceId;
-    use tilo_relay_protocol::directory::{DoorJoin, Listing};
+    use tilo_relay_protocol::directory::{EntryJoin, Listing};
     use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission};
     use tilo_relay_session::workspaces::RemoveMemberRequest;
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{HostWorkspaceActions, PUBLISH, UNPUBLISH};
-    use crate::workspaces::DoorRefusal;
+    use crate::workspaces::EntryRefusal;
     use crate::workspaces::Workspaces;
     use crate::workspaces::fixtures::signed_pre_admission;
     use crate::workspaces::tests::{governor, guest_device, test_host, test_host_with_grants};
@@ -962,14 +962,14 @@ pub(crate) mod door_tests {
         }
     }
 
-    /// A stranger asks the door of `workspace` and redeems what it answered, as
+    /// A stranger asks the entry of `workspace` and redeems what it answered, as
     /// a Tilo computer does: the reply, and their certificate.
     async fn walk_in(
         workspaces: &Workspaces,
         workspace: &str,
     ) -> (Result<JoinReply, String>, DeviceCert) {
         let (_, cert) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(cert.user_public_key),
             display_name: "Cy".into(),
         };
@@ -980,7 +980,7 @@ pub(crate) mod door_tests {
     pub(crate) async fn walk_in_as(
         workspaces: &Workspaces,
         workspace: &str,
-        join: &DoorJoin,
+        join: &EntryJoin,
         cert: &DeviceCert,
     ) -> Result<JoinReply, String> {
         let (issued, token) = workspaces
@@ -990,7 +990,7 @@ pub(crate) mod door_tests {
         Ok(redeem(workspaces, issued.signed_invitation, token, cert).await)
     }
 
-    /// Redeem `invitation` with the door's `token`, as the person's device.
+    /// Redeem `invitation` with the entry's `token`, as the person's device.
     pub(crate) async fn redeem(
         workspaces: &Workspaces,
         invitation: Vec<u8>,
@@ -1008,7 +1008,7 @@ pub(crate) mod door_tests {
             .await
     }
 
-    /// What a test does to a door's grant before it is redeemed.
+    /// What a test does to an entry's grant before it is redeemed.
     type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
 
     #[tokio::test]
@@ -1055,7 +1055,7 @@ pub(crate) mod door_tests {
         ];
         for (what, forge) in forgeries {
             let (_, guest) = guest_device();
-            let join = DoorJoin {
+            let join = EntryJoin {
                 user_public_key: hex::encode(guest.user_public_key),
                 display_name: "Mallory".into(),
             };
@@ -1083,7 +1083,7 @@ pub(crate) mod door_tests {
         }
 
         let (_, guest) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
         };
@@ -1129,7 +1129,7 @@ pub(crate) mod door_tests {
             let (reply, cert) = walk_in(workspaces, &workspace).await;
             match reply.unwrap() {
                 JoinReply::Admitted { role, .. } => assert_eq!(role, Role::Commenter),
-                other => panic!("the door admits at once: {other:?}"),
+                other => panic!("the entry admits at once: {other:?}"),
             }
             let members = workspaces.summary(&workspace).await.unwrap().members;
             let joined = members
@@ -1160,7 +1160,7 @@ pub(crate) mod door_tests {
                     ..
                 }
             ),
-            "the default is read at the door, not when the listing was first made"
+            "the default is read at the entry, not when the listing was first made"
         );
         relay.shutdown().await;
     }
@@ -1232,7 +1232,7 @@ pub(crate) mod door_tests {
     }
 
     /// A public workspace prunes the guests it has not seen for long; a Tilo
-    /// computer that holds the workspace comes back through the door as the same
+    /// computer that holds the workspace comes back through the entry as the same
     /// person, with the same device, and is a member again (the shell's
     /// `readmit_site_workspace`).
     #[tokio::test]
@@ -1254,7 +1254,7 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let (_, guest) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
         };
@@ -1296,7 +1296,7 @@ pub(crate) mod door_tests {
         relay.shutdown().await;
     }
 
-    /// Moderation takes a person's membership away and the door keeps them out
+    /// Moderation takes a person's membership away and the entry keeps them out
     /// for the day; an idle member the host prunes is let in again at once.
     #[tokio::test]
     async fn a_person_moderation_removed_is_refused_at_the_door_for_the_day() {
@@ -1317,7 +1317,7 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let (_, guest) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
@@ -1340,14 +1340,14 @@ pub(crate) mod door_tests {
             .admit_listed(&workspace, &join)
             .await
             .unwrap_err();
-        assert_eq!(refused, DoorRefusal::Removed);
+        assert_eq!(refused, EntryRefusal::Removed);
         assert!(
             workspaces
                 .removed_within_the_day(&workspace, guest.user_public_key)
                 .await
         );
 
-        // A moderator lets them in again: the door opens with the ban.
+        // A moderator lets them in again: the entry opens with the ban.
         workspaces
             .unban_member(
                 &workspace,
@@ -1368,7 +1368,7 @@ pub(crate) mod door_tests {
         relay.shutdown().await;
     }
 
-    /// A removal moderation made before the door had a record of its own (the
+    /// A removal moderation made before the entry had a record of its own (the
     /// workspace's `removals.json`) keeps the person out after a restart, while a
     /// removal past the day and a malformed key keep nobody out; the old file
     /// is gone once it has been taken over.
@@ -1391,7 +1391,7 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let (_, guest) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
@@ -1432,13 +1432,13 @@ pub(crate) mod door_tests {
                 .admit_listed(&workspace, &join)
                 .await
                 .unwrap_err(),
-            DoorRefusal::Removed
+            EntryRefusal::Removed
         );
         relay.shutdown().await;
     }
 
     /// A relay that kept its listings in a file of their own, before a
-    /// workspace's door was part of its governance, lists the same workspaces
+    /// workspace's entry was part of its governance, lists the same workspaces
     /// after the upgrade: each is listed again as its owner listed it, and the
     /// old file stays beside the records.
     #[tokio::test]
@@ -1482,7 +1482,7 @@ pub(crate) mod door_tests {
         );
         relay.shutdown().await;
 
-        // The workspace's door is its governance from then on: unlisted, it
+        // The workspace's entry is its governance from then on: unlisted, it
         // stays unlisted across a restart.
         let relay = test_host(dir.path(), &key, &owner).await;
         relay
@@ -1496,7 +1496,7 @@ pub(crate) mod door_tests {
         relay.shutdown().await;
     }
 
-    /// A door that holds as many open grants as the workspace keeps says when
+    /// An entry that holds as many open grants as the workspace keeps says when
     /// it has room again instead of taking another invitation.
     #[tokio::test]
     async fn a_full_door_answers_when_it_has_room_again() {
@@ -1518,7 +1518,7 @@ pub(crate) mod door_tests {
             .unwrap();
         let join = || {
             let (_, guest) = guest_device();
-            DoorJoin {
+            EntryJoin {
                 user_public_key: hex::encode(guest.user_public_key),
                 display_name: "Cy".into(),
             }
@@ -1526,13 +1526,13 @@ pub(crate) mod door_tests {
         workspaces
             .admit_listed(&workspace, &join())
             .await
-            .expect("the door takes the first grant");
+            .expect("the entry takes the first grant");
         let refused = workspaces
             .admit_listed(&workspace, &join())
             .await
             .unwrap_err();
-        let DoorRefusal::Full { retry_after_secs } = refused else {
-            panic!("the full door refused another way: {refused:?}");
+        let EntryRefusal::Full { retry_after_secs } = refused else {
+            panic!("the full entry refused another way: {refused:?}");
         };
         assert!(
             (1..=600).contains(&retry_after_secs),
@@ -1550,7 +1550,7 @@ pub(crate) mod door_tests {
         let summary = workspaces.create("Team").await.unwrap();
         let workspace = summary.workspace.clone();
         let (reply, _) = walk_in(workspaces, &workspace).await;
-        assert!(reply.is_err(), "never published: no door");
+        assert!(reply.is_err(), "never published: no entry");
 
         workspaces
             .publish(
@@ -1582,7 +1582,7 @@ pub(crate) mod door_tests {
                 .is_empty()
         );
         let (reply, _) = walk_in(workspaces, &workspace).await;
-        assert!(reply.is_err(), "unpublished: the door is shut again");
+        assert!(reply.is_err(), "unpublished: the entry is shut again");
 
         assert!(
             workspaces
@@ -1619,7 +1619,7 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let (_, guest) = guest_device();
-        let join = DoorJoin {
+        let join = EntryJoin {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Troll".into(),
         };
@@ -1643,11 +1643,11 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let again = workspaces.admit_listed(&workspace, &join).await;
-        assert!(again.is_err(), "banned: the door refuses them");
+        assert!(again.is_err(), "banned: the entry refuses them");
         let reported = workspaces
             .report_listed(
                 &workspace,
-                &tilo_relay_protocol::directory::DoorReport {
+                &tilo_relay_protocol::directory::EntryReport {
                     reporter_user_public_key: hex::encode([5; 32]),
                     reason: "spam in general".into(),
                 },
@@ -1657,10 +1657,10 @@ pub(crate) mod door_tests {
         relay.shutdown().await;
     }
 
-    /// A listed workspace whose door takes people by invitation only stays
+    /// A listed workspace whose entry takes people by invitation only stays
     /// listed — the site's directory names it — while a stranger who holds no
     /// invitation is told so, and a person a member invited walks in. Opening
-    /// the door again lets a stranger in as before.
+    /// the entry again lets a stranger in as before.
     #[tokio::test]
     async fn an_invitation_only_door_refuses_a_stranger_and_admits_an_invited_person() {
         let dir = tempfile::tempdir().unwrap();
@@ -1693,7 +1693,7 @@ pub(crate) mod door_tests {
 
         // A stranger who holds no invitation is refused, and told why.
         let (_stranger_key, stranger) = guest_device();
-        let stranger_join = DoorJoin {
+        let stranger_join = EntryJoin {
             user_public_key: hex::encode(stranger.user_public_key),
             display_name: "Cy".into(),
         };
@@ -1702,7 +1702,7 @@ pub(crate) mod door_tests {
                 .admit_listed(&workspace, &stranger_join)
                 .await
                 .map(|_| ()),
-            Err(DoorRefusal::InvitationOnly)
+            Err(EntryRefusal::InvitationOnly)
         );
 
         // A person a member invited is let in.
@@ -1719,7 +1719,7 @@ pub(crate) mod door_tests {
             )
             .await
             .unwrap();
-        let invited_join = DoorJoin {
+        let invited_join = EntryJoin {
             user_public_key: hex::encode(invited.user_public_key),
             display_name: "Ada".into(),
         };
@@ -1734,7 +1734,7 @@ pub(crate) mod door_tests {
             .await
             .unwrap();
         let (_, open) = guest_device();
-        let open_join = DoorJoin {
+        let open_join = EntryJoin {
             user_public_key: hex::encode(open.user_public_key),
             display_name: "Di".into(),
         };
@@ -1746,10 +1746,10 @@ pub(crate) mod door_tests {
     }
 
     /// Someone the host's operator declares an owner comes in through an
-    /// invitation-only door with no invitation: the first owner of a workspace
+    /// invitation-only entry with no invitation: the first owner of a workspace
     /// nobody is in yet has no one to invite them. The declaration is the
     /// workspace's governance, so it is still there after the host restarts,
-    /// and the door still lets them in.
+    /// and the entry still lets them in.
     #[tokio::test]
     async fn an_invitation_only_door_admits_whom_the_operator_declares() {
         let dir = tempfile::tempdir().unwrap();
@@ -1774,7 +1774,7 @@ pub(crate) mod door_tests {
             .unwrap();
 
         // Someone the operator declares an owner holds governance before any
-        // device of theirs arrives, so the door does not see a stranger.
+        // device of theirs arrives, so the entry does not see a stranger.
         let (_, declared) = guest_device();
         workspaces
             .set_member_administrator(
@@ -1786,7 +1786,7 @@ pub(crate) mod door_tests {
             )
             .await
             .unwrap();
-        let declared_join = DoorJoin {
+        let declared_join = EntryJoin {
             user_public_key: hex::encode(declared.user_public_key),
             display_name: "Ed".into(),
         };
@@ -1797,7 +1797,7 @@ pub(crate) mod door_tests {
         relay.shutdown().await;
 
         // The host starts again on the same workspace: the declaration and the
-        // invitation-only door are the workspace's own, so another person
+        // invitation-only entry are the workspace's own, so another person
         // still cannot walk in and the declared owner still can.
         let relay = test_host(dir.path(), &key, &owner).await;
         let workspaces = relay.workspaces();
@@ -1806,20 +1806,20 @@ pub(crate) mod door_tests {
             workspaces
                 .admit_listed(
                     &workspace,
-                    &DoorJoin {
+                    &EntryJoin {
                         user_public_key: hex::encode(stranger.user_public_key),
                         display_name: "Fa".into(),
                     }
                 )
                 .await
                 .map(|_| ()),
-            Err(DoorRefusal::InvitationOnly),
-            "the door takes people by invitation after the restart too"
+            Err(EntryRefusal::InvitationOnly),
+            "the entry takes people by invitation after the restart too"
         );
         let declared_again = walk_in_as(
             workspaces,
             &workspace,
-            &DoorJoin {
+            &EntryJoin {
                 user_public_key: hex::encode(declared.user_public_key),
                 display_name: "Ed".into(),
             },

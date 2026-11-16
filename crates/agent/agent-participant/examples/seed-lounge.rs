@@ -67,7 +67,7 @@ async fn main() -> Result<(), String> {
             cert,
             host_cert: Some(info.host_cert.clone()),
         };
-        let (cert, entering) = tilo_session_client::device::door_entry(
+        let (cert, entering) = tilo_session_client::device::entry_request(
             &info.host_cert,
             &workspace,
             &device,

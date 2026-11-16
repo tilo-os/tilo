@@ -1,10 +1,10 @@
 //! The workspace's own settings: its name, its saved grant sets and their
-//! assignment, its apps' sandbox capabilities, its door and its saved
+//! assignment, its apps' sandbox capabilities, its entry and its saved
 //! shortcuts, which every member reads
 //! from the workspace's governance document
 //! ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::workspace_sandbox_of`],
-//! [`tilo_desktop_model::projection::workspace_door_of`],
+//! [`tilo_desktop_model::projection::workspace_entry_of`],
 //! [`tilo_desktop_model::projection::workspace_shortcuts_of`]).
 //!
 //! A member's device writes a change to them itself, signed with its own
@@ -94,9 +94,9 @@ impl StatePeer {
                 self.governance_mut()
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
-            SettingsChange::Door(door) => {
-                let door = door.clone().checked().map_err(|error| error.to_string())?;
-                self.governance_mut().put_governed_door(&door, key, now)
+            SettingsChange::Entry(entry) => {
+                let entry = entry.clone().checked().map_err(|error| error.to_string())?;
+                self.governance_mut().put_governed_entry(&entry, key, now)
             }
             SettingsChange::Shortcuts(change) => self
                 .workspace_mut()
@@ -143,16 +143,16 @@ fn grant_sandbox(
 }
 
 impl PeerGovernance<'_> {
-    /// The workspace's door, as its governance records it: whether a directory
+    /// The workspace's entry, as its governance records it: whether a directory
     /// lists it, and whom it lets in. Every host serving the workspace answers
-    /// its door from this one record.
+    /// its entry from this one record.
     #[must_use]
-    pub fn governed_door(self) -> tilo_action_policy::DoorPolicy {
+    pub fn governed_entry(self) -> tilo_action_policy::EntryPolicy {
         self.peer
             .core
             .workspace_doc
             .as_deref()
-            .map(projection::workspace_door_of)
+            .map(projection::workspace_entry_of)
             .unwrap_or_default()
     }
 
@@ -169,21 +169,21 @@ impl PeerGovernance<'_> {
 }
 
 impl PeerGovernanceMut<'_> {
-    /// Settle the workspace's door as `door`, written by `key`: whether a
+    /// Settle the workspace's entry as `entry`, written by `key`: whether a
     /// directory lists it, whether it takes people by invitation only, and how
     /// many requests it keeps. Answers whether governance changed.
     ///
     /// # Errors
     ///
     /// `key` is not a member's device, or governance cannot be updated.
-    pub fn put_governed_door(
+    pub fn put_governed_entry(
         self,
-        door: &tilo_action_policy::DoorPolicy,
+        entry: &tilo_action_policy::EntryPolicy,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.author(key, now, |doc| {
-            projection::project_workspace_door(doc, door)
+            projection::project_workspace_entry(doc, entry)
         })
     }
 

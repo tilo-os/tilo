@@ -1,4 +1,4 @@
-//! A session's entry through a workspace's door ([`tilo_relay_protocol::entering`]), and what
+//! A session's entry through a workspace's entry ([`tilo_relay_protocol::entering`]), and what
 //! a failed connection says about this device: the host's answer to the entry, kept in the
 //! session's status, the failure each refusal stops the session with, and the wait before the
 //! next attempt.
@@ -63,22 +63,22 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
     }
 }
 
-/// The failure code of an entry's refusal: the door's own code, as its page
-/// reads it, or `not-admitted` when the workspace refused the device the door
+/// The failure code of an entry's refusal: the entry's own code, as its page
+/// reads it, or `not-admitted` when the workspace refused the device the entry
 /// let in.
 pub(super) const fn door_code(
     refusal: &tilo_relay_protocol::entering::EnterRefusal,
 ) -> &'static str {
-    use tilo_relay_protocol::directory::DoorRefusalCode;
+    use tilo_relay_protocol::directory::EntryRefusalCode;
     use tilo_relay_protocol::entering::EnterRefusal;
     match refusal {
         EnterRefusal::Workspace(_) => NOT_ADMITTED.0,
-        EnterRefusal::Door { refused, .. } => match refused.code {
-            DoorRefusalCode::Banned => "banned",
-            DoorRefusalCode::Removed => "removed",
-            DoorRefusalCode::InvitationOnly => "invitation-only",
-            DoorRefusalCode::Full => "full",
-            DoorRefusalCode::Refused => "refused",
+        EnterRefusal::Entry { refused, .. } => match refused.code {
+            EntryRefusalCode::Banned => "banned",
+            EntryRefusalCode::Removed => "removed",
+            EntryRefusalCode::InvitationOnly => "invitation-only",
+            EntryRefusalCode::Full => "full",
+            EntryRefusalCode::Refused => "refused",
         },
     }
 }
@@ -90,13 +90,13 @@ fn refused_entry(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Entry
         code: door_code(refusal),
         message: refusal.reason().to_owned(),
         retry_after_secs: match refusal {
-            EnterRefusal::Door {
+            EnterRefusal::Entry {
                 retry_after_secs, ..
             } => *retry_after_secs,
             EnterRefusal::Workspace(_) => None,
         },
-        door: match refusal {
-            EnterRefusal::Door { refused, .. } => Some(refused.clone()),
+        entry: match refusal {
+            EnterRefusal::Entry { refused, .. } => Some(refused.clone()),
             EnterRefusal::Workspace(_) => None,
         },
     }

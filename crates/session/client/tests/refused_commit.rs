@@ -22,7 +22,7 @@ use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
-    WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace,
+    WORKSPACE, enrol, enter, entry_grant, route, start_host_limiting, wait_for, workspace,
 };
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -170,7 +170,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     .unwrap();
     let peer = enter(
         &host,
-        door(
+        entry_grant(
             &host,
             &alice,
             &host_device,

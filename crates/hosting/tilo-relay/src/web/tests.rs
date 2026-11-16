@@ -82,7 +82,7 @@ async fn relay_at(
     .unwrap()
 }
 
-/// The web `relay` serves its pages, with every door a test does not open
+/// The web `relay` serves its pages, with every entry a test does not open
 /// closed.
 fn web_of(relay: &Relay, host: &Host) -> Web {
     web_of_at(relay, host, None)
@@ -117,7 +117,7 @@ fn web_of_at(relay: &Relay, host: &Host, site: Option<&str>) -> Web {
         stand_ins: Arc::new(stand_in::StandIns::new(
             relay.state_root().join("stand-ins"),
         )),
-        door: None,
+        wait_list: None,
     }
 }
 
@@ -329,10 +329,10 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     stop(relay, serving).await;
 }
 
-/// The public directory and its doors answer any site's page without
+/// The public directory and its entries answer any site's page without
 /// credentials: what a page on another origin reads and does without going
 /// through a proxy. Nobody is let in over HTTP: a device enters through the
-/// door on its session with the host, so the door has no `join` route.
+/// entry on its session with the host, so the entry has no `join` route.
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
@@ -378,7 +378,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     assert_eq!(page.workspaces.len(), 1);
     assert_eq!(page.workspaces[0].description, "Coffee and tea");
 
-    // Asking the door to let someone in over HTTP finds no such route.
+    // Asking the entry to let someone in over HTTP finds no such route.
     let body = serde_json::json!({
         "userPublicKey": hex::encode([31; 32]),
         "displayName": "Cy",
@@ -418,7 +418,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
         "{head}"
     );
 
-    // A page's own uncaught error goes to the door that let it in: the host
+    // A page's own uncaught error goes to the entry that let it in: the host
     // logs it, and answers the same whether or not it was a report, so a
     // failing page never asks twice.
     let report = serde_json::json!({
@@ -436,7 +436,7 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     assert_eq!(
         header_value(&head, "access-control-allow-origin"),
         Some("*"),
-        "any site's page reports to its own door"
+        "any site's page reports to its own entry"
     );
     let head = format!(
         "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 8\r\n\r\n"
@@ -1771,7 +1771,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
 
 /// The secret `mail` carries for `parameter`, as the page it lands on reads
 /// it: the hex after `?<parameter>=` (or `&<parameter>=`) in the mail's text.
-fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
+fn link_secret(mail: &crate::entry::mail::Mail, parameter: &str) -> String {
     let at = mail
         .text
         .find(&format!("{parameter}="))
@@ -1783,12 +1783,12 @@ fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
     rest[..end].to_owned()
 }
 
-/// The mails `mailer` took, once it has `count` of them: the door's outbox
+/// The mails `mailer` took, once it has `count` of them: the entry's outbox
 /// sends in its own task, so a check waits for it rather than reading once.
 async fn mails_taken(
-    mailer: &crate::door::mail::FakeMailer,
+    mailer: &crate::entry::mail::FakeMailer,
     count: usize,
-) -> Vec<crate::door::mail::Mail> {
+) -> Vec<crate::entry::mail::Mail> {
     for _ in 0..200 {
         let taken = mailer.sent.lock().unwrap().clone();
         if taken.len() >= count {
@@ -1800,7 +1800,7 @@ async fn mails_taken(
 }
 
 /// A relay serving one workspace, listed and taking people by invitation
-/// only, with the door's wait list keeping `max` addresses.
+/// only, with the entry's wait list keeping `max` addresses.
 async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
@@ -1828,16 +1828,16 @@ async fn invitation_only_host(
     (relay, host, workspace, state)
 }
 
-/// The door of `workspace`, keeping `max` addresses and mailing them through
+/// The entry of `workspace`, keeping `max` addresses and mailing them through
 /// `mailer`.
-fn wait_list_door(
+fn wait_list_page(
     relay: &Relay,
     workspace: &str,
     max: usize,
-    mailer: Arc<crate::door::mail::FakeMailer>,
-) -> Arc<crate::door::WaitListDoor> {
+    mailer: Arc<crate::entry::mail::FakeMailer>,
+) -> Arc<crate::entry::WaitListPage> {
     let workspaces = relay.workspaces().unwrap();
-    let door = Arc::new(crate::door::WaitListDoor::with_mailer(
+    let page = Arc::new(crate::entry::WaitListPage::with_mailer(
         workspaces,
         workspace,
         max,
@@ -1845,41 +1845,41 @@ fn wait_list_door(
         mailer,
         "https://site.example/",
     ));
-    let _ = workspaces.offer_wait_list(door.offered());
-    door
+    let _ = workspaces.offer_wait_list(page.offered());
+    page
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its workspaces serve the door until the relay shuts down at the end"
+    reason = "the relay and its workspaces serve the entry until the relay shuts down at the end"
 )]
 async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off() {
-    use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+    use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
 
     let root = SigningKey::from_bytes(&[150; 32]);
     let (relay, host, workspace, _state) = invitation_only_host(&root, 151).await;
-    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
     let mut web = web_of(&relay, &host);
-    web.door = Some(wait_list_door(&relay, &workspace, 4, mailer.clone()));
+    web.wait_list = Some(wait_list_page(&relay, &workspace, 4, mailer.clone()));
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
-    // Someone the door turns away is told it keeps a wait list, where the
+    // Someone the entry turns away is told it keeps a wait list, where the
     // contact is, and that it mails: the refusal their entry hears on its
     // session.
     let workspaces = relay.workspaces().unwrap();
     let refusal = workspaces
         .admit_listed(
             &workspace,
-            &tilo_relay_protocol::directory::DoorJoin {
+            &tilo_relay_protocol::directory::EntryJoin {
                 user_public_key: hex::encode([41u8; 32]),
                 display_name: "Ada".into(),
             },
         )
         .await
-        .expect_err("an invitation-only door turns a stranger away");
-    let refused: DoorRefused = refusal.answer_with(workspaces.wait_list_door());
-    assert_eq!(refused.code, DoorRefusalCode::InvitationOnly);
+        .expect_err("an invitation-only entry turns a stranger away");
+    let refused: EntryRefused = refusal.answer_with(workspaces.wait_list_page());
+    assert_eq!(refused.code, EntryRefusalCode::InvitationOnly);
     assert!(refused.wait_list, "{refused:?}");
     assert_eq!(refused.contact.as_deref(), Some("hello@tilo.example"));
     assert!(refused.mail, "{refused:?}");
@@ -1915,9 +1915,9 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
     assert_eq!(to, "Ada@Example.org");
     assert_eq!(
         remove_link, removal,
-        "the mail's removal link carries the secret the door handed out"
+        "the mail's removal link carries the secret the entry handed out"
     );
-    // The mail is in the language the door was read in.
+    // The mail is in the language the entry was read in.
     assert_eq!(confirm.len(), 64);
 
     // Until the link is opened the address waits, and is listed to nobody.
@@ -1987,7 +1987,7 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
     .await;
     assert_eq!(status, 200);
 
-    // A key this door never handed out is refused, not guessed at.
+    // A key this entry never handed out is refused, not guessed at.
     let (status, _, body) = ask(
         "wait-list/standing",
         serde_json::json!({"secret": "not-a-secret"}),
@@ -2018,9 +2018,9 @@ async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off()
 async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network() {
     let root = SigningKey::from_bytes(&[152; 32]);
     let (relay, host, workspace, _state) = invitation_only_host(&root, 153).await;
-    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
     let mut web = web_of(&relay, &host);
-    web.door = Some(wait_list_door(&relay, &workspace, 1, mailer));
+    web.wait_list = Some(wait_list_page(&relay, &workspace, 1, mailer));
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     let ask = |step: &str, body: serde_json::Value| {
@@ -2043,7 +2043,7 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
         "wait-list-full"
     );
 
-    // One address cannot fill the door's windows either: six asks in the
+    // One address cannot fill the entry's windows either: six asks in the
     // window are one too many, and the answer says when to come back.
     let mut limited = None;
     for index in 0..6 {
@@ -2064,7 +2064,7 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
         "too-many"
     );
 
-    // A workspace this door does not serve keeps no wait list.
+    // A workspace this entry does not serve keeps no wait list.
     let other = relay
         .workspaces()
         .unwrap()

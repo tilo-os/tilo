@@ -1,14 +1,14 @@
-//! The addresses of people who asked at the door of a workspace that takes
+//! The addresses of people who asked at the entry of a workspace that takes
 //! people by invitation, without one: each is an address their invitation
 //! goes to ([`WaitListEntry`]), not a person the workspace could admit. The
 //! person is not online for this: the workspace keeps it until it leaves the
 //! list, so it outlives restarts. One address is one entry, however it was typed
 //! ([`contact_key`]); it keeps the form first typed.
 //!
-//! Where the door sends mail, an entry is first unconfirmed: hidden from
+//! Where the entry sends mail, an entry is first unconfirmed: hidden from
 //! whoever may invite until the link mailed to the address is opened (the
 //! workspace keeps only the SHA-256 of its secret), and forgotten when that does
-//! not happen within [`UNCONFIRMED_FOR_NS`]. A door that sends no mail lists
+//! not happen within [`UNCONFIRMED_FOR_NS`]. An entry that sends no mail lists
 //! an address at once.
 //!
 //! An entry leaves the list three ways: whoever left it takes it off with a
@@ -39,7 +39,7 @@ pub(super) const FORMAT: Format = Format {
 pub const UNCONFIRMED_FOR_NS: u64 = 48 * 3600 * 1_000_000_000;
 
 /// The least time between two confirmation mails to one address, however
-/// often it is left at the door.
+/// often it is left at the entry.
 pub const MAIL_EVERY_NS: u64 = 3600 * 1_000_000_000;
 
 /// The least time between two invitation mails to one address.
@@ -147,7 +147,7 @@ pub struct Mailbox {
 pub struct Secrets {
     /// SHA-256 of the secret that takes the entry off.
     pub removal: [u8; 32],
-    /// SHA-256 of the secret that confirms it; `None` where the door sends
+    /// SHA-256 of the secret that confirms it; `None` where the entry sends
     /// no mail, which lists the address at once.
     pub confirm: Option<[u8; 32]>,
     /// SHA-256 of secrets the entry kept before, which the entry keeps on
@@ -567,60 +567,60 @@ pub struct WaitListMail {
     pub removal: [u8; 32],
 }
 
-/// What whoever runs the relay decided about the door's wait list, set once
+/// What whoever runs the relay decided about the entry's wait list, set once
 /// at its start: where an invitation a member asks for is mailed, and what the
-/// door says to someone it turns away.
+/// entry says to someone it turns away.
 #[derive(Default)]
-pub(super) struct DoorSettings {
+pub(super) struct EntrySettings {
     /// Where invitations to mail to wait-list addresses go
     /// ([`super::Workspaces::mail_wait_list`]).
     pub(super) mail: std::sync::OnceLock<(
         String,
         tokio::sync::mpsc::UnboundedSender<super::WaitListMail>,
     )>,
-    /// What the door says about the wait list
+    /// What the entry says about the wait list
     /// ([`super::Workspaces::offer_wait_list`]).
-    pub(super) wait_list: std::sync::OnceLock<tilo_relay_protocol::directory::DoorWaitList>,
+    pub(super) wait_list: std::sync::OnceLock<tilo_relay_protocol::directory::EntryWaitList>,
 }
 
 impl super::Workspaces {
-    /// The wait list the door keeps, as whoever runs the relay configured it:
-    /// what a person the door turns away is told about leaving an address
-    /// there ([`DoorRefused::wait_list`](tilo_relay_protocol::directory::DoorRefused)).
+    /// The wait list the entry keeps, as whoever runs the relay configured it:
+    /// what a person the entry turns away is told about leaving an address
+    /// there ([`EntryRefused::wait_list`](tilo_relay_protocol::directory::EntryRefused)).
     /// `false` once called before.
     #[must_use]
-    pub fn offer_wait_list(&self, door: tilo_relay_protocol::directory::DoorWaitList) -> bool {
-        self.inner.door.wait_list.set(door).is_ok()
+    pub fn offer_wait_list(&self, entry: tilo_relay_protocol::directory::EntryWaitList) -> bool {
+        self.inner.entry.wait_list.set(entry).is_ok()
     }
 
-    /// The wait list the door keeps, when whoever runs the relay offered one.
+    /// The wait list the entry keeps, when whoever runs the relay offered one.
     #[must_use]
-    pub fn wait_list_door(&self) -> Option<&tilo_relay_protocol::directory::DoorWaitList> {
-        self.inner.door.wait_list.get()
+    pub fn wait_list_page(&self) -> Option<&tilo_relay_protocol::directory::EntryWaitList> {
+        self.inner.entry.wait_list.get()
     }
 
     /// The invitations members ask to mail to addresses on a wait list,
-    /// for whoever runs the relay to send from the web entry `door`: until
+    /// for whoever runs the relay to send from the web entry `entry`: until
     /// this is called, the workspaces send no mail and refuse to, and they mail
-    /// only invitations on that door
+    /// only invitations on that entry
     /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]). `None` once
     /// called before.
     #[must_use]
     pub fn mail_wait_list(
         &self,
-        door: &str,
+        entry: &str,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.inner.door.mail.set((door.to_owned(), sender)).ok()?;
+        self.inner.entry.mail.set((entry.to_owned(), sender)).ok()?;
         Some(receiver)
     }
 
-    /// The page the workspace's door mails from, when it mails at all: a link
+    /// The page the workspace's entry mails from, when it mails at all: a link
     /// an invitation is mailed at leads there
     /// ([`tilo_relay_protocol::workspaces::invitation_on_door`]).
     #[must_use]
     pub fn mail_door(&self) -> Option<String> {
-        self.inner.door.mail.get().map(|(door, _)| door.clone())
+        self.inner.entry.mail.get().map(|(entry, _)| entry.clone())
     }
 }
 
@@ -713,7 +713,7 @@ mod tests {
         );
     }
 
-    /// Secrets for a door that sends no mail.
+    /// Secrets for an entry that sends no mail.
     fn listed(removal: u8) -> Secrets {
         Secrets {
             removal: [removal; 32],

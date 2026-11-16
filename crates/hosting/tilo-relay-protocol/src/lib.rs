@@ -16,7 +16,7 @@
 //! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
 //!   and the live grant;
 //! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;
-//! - [`directory`] — the public workspaces a host lists, and the door that
+//! - [`directory`] — the public workspaces a host lists, and the entry that
 //!   lets anyone in with the owner's default role;
 //! - [`sealed_invitations`] — the shelf a site keeps sealed invitations on,
 //!   so a link carries a handle and a key instead of an invitation;

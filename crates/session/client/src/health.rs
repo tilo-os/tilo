@@ -32,13 +32,13 @@ pub struct PeerSnapshot {
     pub synchronization: &'static str,
     /// Full health.
     pub health: SessionHealth,
-    /// What the host answered the entry through a workspace's door this
+    /// What the host answered the entry through a workspace's entry this
     /// session asked for, once it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<EntryHealth>,
 }
 
-/// The host's answer to a session's entry through a workspace's door.
+/// The host's answer to a session's entry through a workspace's entry.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "outcome")]
 pub enum EntryHealth {
@@ -52,20 +52,20 @@ pub enum EntryHealth {
         /// `viewer` | `commenter` | `editor` | `moderator`.
         role: &'static str,
     },
-    /// The door or the workspace did not let it in.
+    /// The entry or the workspace did not let it in.
     #[serde(rename_all = "camelCase")]
     Refused {
         /// `banned` | `removed` | `invitation-only` | `full` | `refused`, or
-        /// `not-admitted` when the workspace refused the device the door let in.
+        /// `not-admitted` when the workspace refused the device the entry let in.
         code: &'static str,
-        /// What the door said.
+        /// What the entry said.
         message: String,
-        /// How long the door asked to wait before the next try.
+        /// How long the entry asked to wait before the next try.
         retry_after_secs: Option<u64>,
-        /// The door's own refusal, when a workspace's door turned the device away: what it
+        /// The entry's own refusal, when a workspace's entry turned the device away: what it
         /// says about a wait list the workspace keeps, which its page offers.
         #[serde(skip_serializing_if = "Option::is_none")]
-        door: Option<tilo_relay_protocol::directory::DoorRefused>,
+        entry: Option<tilo_relay_protocol::directory::EntryRefused>,
     },
 }
 
@@ -86,12 +86,12 @@ impl EntryHealth {
                 code,
                 message,
                 retry_after_secs,
-                door,
+                entry,
             } => Self::Refused {
                 code,
                 message: message.clone(),
                 retry_after_secs: *retry_after_secs,
-                door: door.clone(),
+                entry: entry.clone(),
             },
         }
     }
@@ -362,7 +362,7 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
             ("identity", "error", vec![RecoveryRequest::Reauthenticate])
         }
         // The host no longer admits this person, or another host answers
-        // now: the page joins again through the workspace's door, which no
+        // now: the page joins again through the workspace's entry, which no
         // request to this session can do. A revoked device never comes back.
         // The workspace's owner deleted it: nothing brings it back.
         "not-admitted" | "host-changed" | "device-revoked" | "workspace-deleted" => {

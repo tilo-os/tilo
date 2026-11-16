@@ -134,13 +134,13 @@ fn operator(socket: &std::path::Path, command: &serde_json::Value) -> serde_json
     serde_json::from_str(event).unwrap_or_else(|error| panic!("{error}: {event}"))
 }
 
-/// Mail a door sends, kept as it was posted: what the people who were mailed an
+/// Mail an entry sends, kept as it was posted: what the people who were mailed an
 /// invitation got, and nothing reaches a real mail service.
 #[derive(Clone, Default)]
 struct MailSink(std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
 
 impl MailSink {
-    /// A sink listening on a free loopback port, and the URL a door posts to.
+    /// A sink listening on a free loopback port, and the URL an entry posts to.
     fn start() -> (Self, String) {
         use std::io::{BufRead as _, BufReader, Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
@@ -183,7 +183,7 @@ impl MailSink {
 }
 
 /// The Lounge as this checkout's image starts it, on `state`, its operator
-/// socket at `socket`, its door mailing through `mail` at `entry`. Its owner
+/// socket at `socket`, its entry mailing through `mail` at `entry`. Its owner
 /// root is the one the release kept: the deployment mounts the same secret
 /// before and after the switch.
 fn start_release(
@@ -446,7 +446,7 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
     });
 
     // What the export read out of the release's state: the people, the
-    // administrators its governance named, and the addresses its door kept
+    // administrators its governance named, and the addresses its entry kept
     // with the links their mails carried.
     let confirmed: Vec<&Waiting> = people
         .wait_list
@@ -615,12 +615,12 @@ fn the_people_a_release_kept_arrive_in_the_release_that_starts_fresh() {
                         .and_then(|text| text.as_str())
                         .is_some_and(|text| text.contains(entry))
             }),
-            "{address} was not mailed an invitation on the door: {mailed:?}"
+            "{address} was not mailed an invitation on the entry: {mailed:?}"
         );
     }
     assert!(
         !people.members.is_empty() && mailed.len() >= addressed.len(),
-        "the door mailed {} invitations for {} addresses: {mailed:?}",
+        "the entry mailed {} invitations for {} addresses: {mailed:?}",
         mailed.len(),
         addressed.len()
     );

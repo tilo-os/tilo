@@ -327,3 +327,18 @@ reason = "the task-run owners went with the task-run path; the variants left kee
 file = "crates/collab/tilo-action-broker/src/action_evidence.rs"
 enum = "VerifiedActor"
 reason = "the task-run actors went with the task-run path; the variants left keep their names in the JSON evidence, and evidence naming a task run is refused as unsupported"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
+enum = "EnterRefusal"
+reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/entering.rs"
+enum = "Through"
+reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
+enum = "SettingsChange"
+reason = "`Door` is renamed `Entry` at the same index: postcard writes no names, so the bytes read the same"

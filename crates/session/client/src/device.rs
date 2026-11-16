@@ -12,7 +12,7 @@ use tilo_actions::remote::{
 };
 use tilo_relay_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_relay_client::login::{Door, SignIn};
+use tilo_relay_client::login::{Entry, SignIn};
 use tilo_relay_client::{CertifyError, DeviceSigner};
 use tilo_relay_session::workspaces::{
     CREATE_OWN_WORKSPACE, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
@@ -117,7 +117,7 @@ impl Device {
         Self::entering(sign_in, signer, None)
     }
 
-    /// [`Self::connect`], its session entering a workspace through its door as it opens.
+    /// [`Self::connect`], its session entering a workspace through its entry as it opens.
     #[cfg(not(target_arch = "wasm32"))]
     fn entering(
         sign_in: &SignIn,
@@ -138,21 +138,21 @@ impl Device {
     }
 
     /// Take `sign_in`'s device into the workspace its link names ([`Self::enter_workspace`]). The
-    /// site's `door`, where it names one, lets the person in on the session as it opens: how a host
+    /// site's `entry`, where it names one, lets the person in on the session as it opens: how a host
     /// lets in someone it does not know yet, before it makes them a workspace of their own.
     ///
     /// # Errors
     /// The workspace's id is not one, the host could not be asked, or the workspace refused.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn enter(
-        door: Option<&Door>,
+        entry: Option<&Entry>,
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
     ) -> Result<Self, CertifyError> {
         let workspace = sign_in.link.workspace_id();
         WorkspaceId::parse(&workspace)
             .ok_or_else(|| CertifyError::Request("the link names no workspace".to_string()))?;
-        let entering = door.and_then(Door::workspace).map(|workspace| {
+        let entering = entry.and_then(Entry::workspace).map(|workspace| {
             tilo_relay_protocol::entering::Entering {
                 workspace,
                 name: tilo_relay_protocol::web::kept(
@@ -160,7 +160,7 @@ impl Device {
                     tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
                 ),
                 request_id: rand::random(),
-                through: tilo_relay_protocol::entering::Through::Door,
+                through: tilo_relay_protocol::entering::Through::Entry,
             }
         });
         let door_entered = entering.is_some();
@@ -583,7 +583,7 @@ fn lasting(cert: &DeviceCert, now_ns: u64) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Reconnecting {
-    /// The one the host just admitted it under (an invitation, its door, a pairing): kept from now
+    /// The one the host just admitted it under (an invitation, its entry, a pairing): kept from now
     /// on.
     Admitted,
     /// As [`Self::Admitted`], after moving what the device kept for the host before it (set up
@@ -665,7 +665,7 @@ pub async fn entering_certificate(
                 .to_owned(),
             refusal: None,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         });
     };
     tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
@@ -675,7 +675,7 @@ pub async fn entering_certificate(
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         })
 }
 
@@ -713,7 +713,7 @@ pub async fn invitation_entry(
                 message,
                 refusal: None,
                 retry_after_ms: None,
-                door: None,
+                entry: None,
             }
         })?;
     let cert = entering_certificate(
@@ -774,15 +774,15 @@ fn admission(
     }
 }
 
-/// What `device` enters `workspace` through its door with, on the host whose certificate is
+/// What `device` enters `workspace` through its entry with, on the host whose certificate is
 /// `host`: the certificate [`entering_certificate`] chooses (`entering.token` is not read: the
-/// door hands out its own) and the entry its session asks for as it opens
-/// ([`PeerConfig::entering`]). The door, the workspace's challenge and the admission all happen on
+/// entry hands out its own) and the entry its session asks for as it opens
+/// ([`PeerConfig::entering`]). The entry, the workspace's challenge and the admission all happen on
 /// that session's handshake; [`entered`] waits for the host's answer.
 ///
 /// # Errors
 /// The device holds no certificate it could enter with.
-pub async fn door_entry(
+pub async fn entry_request(
     host: &DeviceCert,
     workspace: &str,
     device: &dyn DeviceSigner,
@@ -804,15 +804,15 @@ pub async fn door_entry(
             tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id: rand::random(),
-        through: tilo_relay_protocol::entering::Through::Door,
+        through: tilo_relay_protocol::entering::Through::Entry,
     };
     Ok((cert, entry))
 }
 
-/// Wait for the host's answer to the entry `peer`'s session asked for ([`door_entry`]).
+/// Wait for the host's answer to the entry `peer`'s session asked for ([`entry_request`]).
 ///
 /// # Errors
-/// The door or the workspace refused (the door's own code: `banned`, `removed`,
+/// The entry or the workspace refused (the entry's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
 pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
     let started = tilo_clock::now();
@@ -837,14 +837,14 @@ pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
                 code,
                 message,
                 retry_after_secs,
-                door,
+                entry,
             }) => {
                 return Err(HostRefusal {
                     code: code.to_owned(),
                     message,
                     refusal: None,
                     retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
-                    door,
+                    entry,
                 });
             }
             None => {}
@@ -881,10 +881,10 @@ pub struct HostRefusal {
     /// How long the host asks to wait before the next try, in milliseconds, when it asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
-    /// The door's own refusal, when a workspace's door turned the device away: what it says
+    /// The entry's own refusal, when a workspace's entry turned the device away: what it says
     /// about a wait list the workspace keeps, which its page offers.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub door: Option<tilo_relay_protocol::directory::DoorRefused>,
+    pub entry: Option<tilo_relay_protocol::directory::EntryRefused>,
 }
 
 impl HostRefusal {
@@ -924,7 +924,7 @@ impl HostRefusal {
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         }
     }
 
@@ -937,7 +937,7 @@ impl HostRefusal {
                 .to_owned(),
             refusal: None,
             retry_after_ms: Some(retry_after_ms),
-            door: None,
+            entry: None,
         }
     }
 
@@ -955,7 +955,7 @@ impl HostRefusal {
             message: why.to_owned(),
             refusal: None,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         }
     }
 
@@ -967,20 +967,20 @@ impl HostRefusal {
             message: why,
             refusal: None,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         }
     }
 
     /// `reason` as the host said it, typed where it is a [`Refusal`]'s text, or the refusal of
-    /// the site's door when the host turned away a person it never let in.
+    /// the site's entry when the host turned away a person it never let in.
     fn said(code: &str, reason: &str) -> Self {
-        if let Some(door) = tilo_relay_protocol::directory::DoorRefused::from_reason(reason) {
+        if let Some(entry) = tilo_relay_protocol::directory::EntryRefused::from_reason(reason) {
             return Self {
                 code: Self::NOT_ADMITTED.to_owned(),
-                message: door.error.clone(),
+                message: entry.error.clone(),
                 refusal: None,
                 retry_after_ms: None,
-                door: Some(door),
+                entry: Some(entry),
             };
         }
         let refusal = Refusal::from_reason(reason);
@@ -991,7 +991,7 @@ impl HostRefusal {
                 .map_or_else(|| reason.to_owned(), |refusal| refusal.message.clone()),
             refusal,
             retry_after_ms: None,
-            door: None,
+            entry: None,
         }
     }
 }
@@ -1014,7 +1014,7 @@ impl From<CertifyError> for HostRefusal {
                 message: why,
                 refusal: None,
                 retry_after_ms: None,
-                door: None,
+                entry: None,
             },
             CertifyError::RateLimited { retry_after_ms } => Self::rate_limited(retry_after_ms),
             other => Self::unanswered(&other.to_string()),
@@ -1173,33 +1173,33 @@ mod tests {
             assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
         }
 
-        phase a_host_refusing_a_person_never_let_in_answers_the_doors_refusal;
-        // A host turning away a person its site never let in says it as the site's door does: the
-        // refusal reads as not admitted, with the door's wait list for whoever shows it.
+        phase a_host_refusing_a_person_never_let_in_answers_the_entry_refusal;
+        // A host turning away a person its site never let in says it as the site's entry does: the
+        // refusal reads as not admitted, with the entry's wait list for whoever shows it.
         {
-            use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
-            let door = DoorRefused {
-                code: DoorRefusalCode::InvitationOnly,
+            use tilo_relay_protocol::directory::{EntryRefusalCode, EntryRefused};
+            let entry = EntryRefused {
+                code: EntryRefusalCode::InvitationOnly,
                 error: "tilo.test takes people by invitation".into(),
                 wait_list: true,
                 contact: Some("hello@tilo.test".into()),
                 mail: true,
             };
             let refusal = HostRefusal::of(&ActionHostError::Refused {
-                reason: door.to_reason(),
+                reason: entry.to_reason(),
             });
             assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
-            assert_eq!(refusal.message, door.error);
-            assert_eq!(refusal.door.as_ref(), Some(&door));
+            assert_eq!(refusal.message, entry.error);
+            assert_eq!(refusal.entry.as_ref(), Some(&entry));
             assert!(matches!(
                 CertifyError::from(refusal),
-                CertifyError::Denied(why) if why == door.error
+                CertifyError::Denied(why) if why == entry.error
             ));
-            // A host account's typed refusal is not the door's.
+            // A host account's typed refusal is not the entry's.
             let plain = HostRefusal::of(&ActionHostError::Refused {
                 reason: "no such workspace".into(),
             });
-            assert_eq!(plain.door, None);
+            assert_eq!(plain.entry, None);
         }
     }
 

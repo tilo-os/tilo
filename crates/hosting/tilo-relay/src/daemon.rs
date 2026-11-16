@@ -294,7 +294,7 @@ pub struct RelayHandle {
 /// Verify `cert`'s device's delegation against the relay's user `own_user`
 /// and put it in the relay's agent register, replacing an earlier one: what
 /// confines an agent to its delegated workspaces from its next envelope on. Both
-/// doors that tell a relay about an agent come here
+/// paths that tell a relay about an agent come here
 /// ([`Relay::register_agent`], `RelayAgentLink::register`), so neither can
 /// register one the other leaves unconfined.
 ///

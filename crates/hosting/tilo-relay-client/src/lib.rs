@@ -53,10 +53,10 @@ pub mod invite;
 #[cfg(feature = "dial")]
 pub mod link;
 /// A computer signing in as one of the person's devices, and the two ways
-/// into a workspace with it: through the site's door, and by an invitation.
+/// into a workspace with it: through the site's entry, and by an invitation.
 /// Reading a login code is a computer's work alone (a page writes the code,
 /// never reads it), so that part of the module is native only; the ways in
-/// are a page's too ([`login::Door`]).
+/// are a page's too ([`login::Entry`]).
 #[cfg(feature = "dial")]
 pub mod login;
 /// A host's login codes and the person's stand-in approver, for the tab and the computer alike.
