@@ -991,21 +991,18 @@ impl Server {
         let Ok(csrf) = self.page_token(headers) else {
             return busy("/grants");
         };
-        self.name_workspaces_of(&person).await;
         let grants = self.store.grants_of(&person);
-        html(StatusCode::OK, &pages::grants(&grants, &csrf))
+        let names = self.workspace_names(&grants).await;
+        html(StatusCode::OK, &pages::grants(&grants, &names, &csrf))
     }
 
-    /// Learn the name of each workspace one of `person`'s grants reaches
-    /// alone, where the server does not know it yet: the host it is on
-    /// names it to the grant's own key. A host that does not answer in time
-    /// leaves the name for the next read.
-    async fn name_workspaces_of(&self, person: &str) {
-        let asks = self
-            .store
-            .grants_of(person)
-            .into_iter()
-            .filter(|grant| grant.workspace_name.is_none())
+    /// The name of each workspace one of `grants` reaches alone, by grant, as
+    /// the host it is on names it now to the grant's own key: the server keeps
+    /// no name of its own, so a rename shows the next time the page is read. A
+    /// host that does not answer in time leaves its grant unnamed.
+    async fn workspace_names(&self, grants: &[store::Grant]) -> HashMap<String, String> {
+        let asks = grants
+            .iter()
             .filter_map(|grant| match (&grant.scope, grant.key()) {
                 (store::Scope::Workspace(workspace), Some(key)) => {
                     Some((grant.id.clone(), workspace.clone(), key))
@@ -1017,13 +1014,16 @@ impl Server {
                     let connection = self.connection(&grant, &key).await.ok()?;
                     self.relay.workspace(&connection, &workspace).await.ok()?
                 };
-                if let Ok(Some(found)) = tokio::time::timeout(NAME_WAIT, named).await
-                    && let Err(error) = self.store.name_workspace(&grant, &found.name)
-                {
-                    tracing::warn!(%error, "the API could not keep a workspace's name");
+                match tokio::time::timeout(NAME_WAIT, named).await {
+                    Ok(Some(found)) => Some((grant, found.name)),
+                    _ => None,
                 }
             });
-        futures_util::future::join_all(asks).await;
+        futures_util::future::join_all(asks)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// Whether `form` was posted from the grants page of the browser that

@@ -125,9 +125,14 @@ fn facts(facts: &[String]) -> String {
     format!("<ul class=\"facts\">{items}</ul>")
 }
 
-/// The person's grants, each with a revoke button.
+/// The person's grants, each with a revoke button; a grant for one workspace
+/// by that workspace's name in `names` (by grant, as its host answered now).
 #[must_use]
-pub fn grants(grants: &[Grant], csrf: &str) -> String {
+pub fn grants<S: std::hash::BuildHasher>(
+    grants: &[Grant],
+    names: &std::collections::HashMap<String, String, S>,
+    csrf: &str,
+) -> String {
     let name_of_grant = |id: &str| {
         grants.iter().find(|grant| grant.id == id).map_or_else(
             || "another key".to_owned(),
@@ -139,9 +144,9 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
             Scope::Account => "All your workspaces".to_owned(),
             // Named by its host when the server could ask it; a host that
             // has not answered yet leaves the plain count.
-            Scope::Workspace(_) => grant
-                .workspace_name
-                .clone()
+            Scope::Workspace(_) => names
+                .get(&grant.id)
+                .cloned()
                 .unwrap_or_else(|| "One workspace".to_owned()),
         }];
         match &grant.kind {

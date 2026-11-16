@@ -871,7 +871,11 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     assert_eq!(row["last_used_at_ms"], later);
     assert_eq!(row["created_by"], "Laptop");
     assert!(row["expires_at_ms"].is_null());
-    let page = pages::grants(&server.store.grants_of(&alice.id()), "csrf");
+    let page = pages::grants(
+        &server.store.grants_of(&alice.id()),
+        &HashMap::new(),
+        "csrf",
+    );
     assert!(
         page.contains(&format!("Last used {}", pages::date(later))),
         "{page}"
@@ -990,22 +994,22 @@ async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_on
 
 #[test]
 fn a_key_for_one_workspace_is_listed_by_that_workspace_s_name() {
-    let grant = |name: Option<&str>| -> store::Grant {
+    let grant = || -> store::Grant {
         serde_json::from_value(json!({
             "id": "grant-1",
             "person": "aa",
             "client_id": "",
             "client_name": "Jane",
             "scope": {"workspace": "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21"},
-            "workspace_name": name,
             "kind": "key",
             "created_ms": 1,
         }))
         .unwrap()
     };
-    let unnamed = pages::grants(&[grant(None)], "csrf");
+    let unnamed = pages::grants(&[grant()], &HashMap::new(), "csrf");
     assert!(unnamed.contains("<li>One workspace</li>"), "{unnamed}");
-    let named = pages::grants(&[grant(Some("Applicant: Jane Doe"))], "csrf");
+    let applicant = HashMap::from([("grant-1".to_owned(), "Applicant: Jane Doe".to_owned())]);
+    let named = pages::grants(&[grant()], &applicant, "csrf");
     assert!(named.contains("<li>Applicant: Jane Doe</li>"), "{named}");
     assert!(!named.contains("One workspace"), "{named}");
 }
