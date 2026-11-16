@@ -155,7 +155,7 @@ impl Desktop {
     /// mentions of this person. A drawn frame hears it too; this is for the tab that draws none.
     pub(super) fn hear_news(&self) {
         // A rename someone else made is told as the shell takes the workspace's name.
-        let _ = self.follow_workspace_name(self.shared.peer);
+        let _ = self.project_governance(self.shared.peer);
         self.announce_agents_finished();
         self.tell_mentions();
     }

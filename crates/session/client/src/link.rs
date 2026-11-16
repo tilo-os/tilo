@@ -142,9 +142,6 @@ pub struct PeerStatus {
     /// What each joined workspace's governance calls its people, by workspace, by person id
     /// (root key, hex): how a page names someone who is not here now, never by their key.
     pub workspace_names: BTreeMap<String, BTreeMap<String, String>>,
-    /// When each of a joined workspace's people was admitted, by workspace, by person id: the
-    /// order people who share a name are numbered in, as the workspace's roster numbers them.
-    pub workspace_joined: BTreeMap<String, BTreeMap<String, u64>>,
     /// What the host answered the entry this session asked for, once it did.
     pub entry: Option<Entry>,
 }
@@ -171,7 +168,6 @@ impl PeerStatus {
             workspace_members: BTreeMap::new(),
             workspace_devices: BTreeMap::new(),
             workspace_names: BTreeMap::new(),
-            workspace_joined: BTreeMap::new(),
             entry: None,
         }
     }

@@ -354,13 +354,6 @@ impl Task {
                     None => _ = status.workspace_names.remove(&workspace),
                 });
             }
-            let joined = self.replicas.member_joined(workspace_id);
-            if self.reports.status().workspace_joined.get(&workspace) != joined.as_ref() {
-                self.reports.change(|status| match joined {
-                    Some(joined) => _ = status.workspace_joined.insert(workspace.clone(), joined),
-                    None => _ = status.workspace_joined.remove(&workspace),
-                });
-            }
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its

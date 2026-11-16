@@ -740,50 +740,57 @@ impl Desktop {
         }
     }
 
-    /// Project the workspace's one name onto the shell: its governance records it, and every
-    /// device and every list of the workspace reads it there; the shell keeps no name of its own.
-    /// A name the governance took since the last projection, which this page did not ask for, is
-    /// someone else's rename, and the person hears it. Whether the shell changed.
-    fn follow_workspace_name(&self, peer: Option<u32>) -> bool {
+    /// Project the workspace's governance onto the shell, as every device does: its one name and
+    /// its people (who is in it, in what part, admitted when, and the grants it makes). The shell
+    /// keeps none of these of its own. A name the governance took since the last projection, which
+    /// this page did not ask for, is someone else's rename, and the person hears it. Whether the
+    /// shell changed.
+    fn project_governance(&self, peer: Option<u32>) -> bool {
         let Some(peer) = peer else {
             return false;
         };
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&self.workspace) else {
             return false;
         };
-        let Some(name) = crate::replication::governance_name(peer, workspace) else {
+        let Some(revision) = crate::replication::governance_revision(peer) else {
             return false;
         };
-        let before = self.shared.projected_name.replace(Some(name.clone()));
-        let asked = self.shared.asked_name.borrow().clone();
-        if asked.as_deref() == Some(name.as_str()) {
-            self.shared.asked_name.replace(None);
-        } else if before.is_some_and(|before| before != name) {
-            self.notify(&tilo_desktop_surface::i18n::t_args(
-                "workspace-notice-renamed",
-                &[("workspace", name.clone().into())],
-            ));
-        }
-        let already = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .find(|held| held.id() == workspace)
-                .is_some_and(|held| held.name == name)
-        });
-        if already {
+        if self.shared.projected_at.get() == Some((revision, self.handle.revision())) {
             return false;
         }
+        let name = crate::replication::governance_name(peer, workspace);
+        if let Some(name) = &name {
+            let before = self.shared.projected_name.replace(Some(name.clone()));
+            let asked = self.shared.asked_name.borrow().clone();
+            if asked.as_deref() == Some(name.as_str()) {
+                self.shared.asked_name.replace(None);
+            } else if before.is_some_and(|before| before != *name) {
+                self.notify(&tilo_desktop_surface::i18n::t_args(
+                    "workspace-notice-renamed",
+                    &[("workspace", name.clone().into())],
+                ));
+            }
+        }
+        let policy = crate::replication::governance_policy(peer, workspace);
         let mut tree = self.handle.read(Clone::clone);
-        let Some(held) = tree
+        let changed = tree
             .workspaces
             .iter_mut()
             .find(|held| held.id() == workspace)
-        else {
-            return false;
-        };
-        held.named_as(&name);
-        self.handle.replace_tree(tree);
-        true
+            .is_some_and(|held| {
+                let named = name.as_deref().is_some_and(|name| held.named_as(name));
+                let people = policy
+                    .as_ref()
+                    .is_some_and(|policy| tilo_session_client::membership::project(held, policy));
+                named | people
+            });
+        if changed {
+            self.handle.replace_tree(tree);
+        }
+        self.shared
+            .projected_at
+            .set(Some((revision, self.handle.revision())));
+        changed
     }
 
     /// Serve the shell's search from the session's: what stands over the shell as published actions,
@@ -2711,7 +2718,7 @@ impl Mount {
             desktop.follow_notice_choices();
             desktop.tell_mentions();
             desktop.serve_activity();
-            let named = desktop.follow_workspace_name(self.peer);
+            let named = desktop.project_governance(self.peer);
             desktop.follow_search();
             let holders = desktop.refresh_holders(self.peer.is_some());
             named || holders

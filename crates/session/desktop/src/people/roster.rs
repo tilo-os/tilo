@@ -52,7 +52,7 @@ fn names_of(
         .filter(|(id, _)| *id != local_user)
         .map(|(id, member)| {
             let id = id.to_owned();
-            let joined = workspace.policy.joined_at(&id).or(member.joined_at);
+            let joined = workspace.policy.joined_at(&id);
             (id, member.name.clone(), joined)
         })
         .collect();

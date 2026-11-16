@@ -376,6 +376,9 @@ pub(crate) struct Shared {
     /// The name the workspace's governance recorded when this page last projected it onto the
     /// shell: a different one since is a rename.
     pub projected_name: Rc<RefCell<Option<String>>>,
+    /// The governance's revision and the shell's when the page last projected the governance onto
+    /// it: a projection is due when either moved.
+    pub projected_at: Rc<std::cell::Cell<Option<(u64, u64)>>>,
     /// Whether the workspace lets this desktop's person close and move what
     /// others made, as it last answered ([`crate::replication`] asks).
     pub moderates: Arc<AtomicBool>,
@@ -400,9 +403,6 @@ pub(crate) struct Shared {
     /// What the workspace's governance calls each of its people, by their person (root key,
     /// hex): whoever is not here now is named by it, never by their key.
     pub names: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
-    /// When the workspace admitted each of its people, once heard, by their person (root key,
-    /// hex): who shares a name is numbered in this order here, as in the workspace's roster.
-    pub joined: Rc<RefCell<std::collections::BTreeMap<String, u64>>>,
     /// The person's accounts with the services this workspace is connected to,
     /// read from the connectors' workspace records by the workspace's host
     /// ([`RecordActions`]).

@@ -192,9 +192,6 @@ pub(crate) struct Joined {
     members: Option<std::collections::BTreeSet<String>>,
     /// What the workspace's governance calls each of its people, by their person (root key, hex).
     names: std::collections::BTreeMap<String, String>,
-    /// When the workspace admitted each of its people, once heard, by their person (root key,
-    /// hex): who shares a name is numbered in this order.
-    admitted_at: std::collections::BTreeMap<String, u64>,
     /// Record routes whose commits this page published the workspace answered all of, since
     /// the last frame: what the record's windows said they did is said
     /// (`ResourceStore::workspace_settled`).
@@ -255,7 +252,6 @@ pub(crate) fn open(
         permit_answers: Arc::default(),
         members: None,
         names: BTreeMap::new(),
-        admitted_at: BTreeMap::new(),
         settled: Arc::default(),
         content: ContentWants::default(),
         changes: changes(),
@@ -428,6 +424,25 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     joined.peer.engine().workspace_name(joined.workspace)
+}
+
+/// How far the governance this page holds has moved: what it holds of its workspaces changed when
+/// this did.
+pub(crate) fn governance_revision(id: u32) -> Option<u64> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    Some(joined.peer.engine().owner().revision())
+}
+
+/// What `workspace`'s governance says of its people, as this page holds it: who is in it, in
+/// what part and since when, which the page projects onto its shell as every device does.
+pub(crate) fn governance_policy(
+    id: u32,
+    workspace: WorkspaceId,
+) -> Option<tilo_action_policy::WorkspacePolicy> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    joined.peer.engine().policy(&workspace.to_string()).ok()
 }
 
 /// The name `workspace`'s governance records, as this page holds it: the workspace's one name,
@@ -1778,33 +1793,26 @@ impl Joined {
         wanted
     }
 
-    /// The workspace's members and when it admitted each of them, as the peer last heard its
-    /// governance say: the attached desktops release what someone who left made, and number
-    /// people who share a name in the workspace's own order.
+    /// The workspace's members and their names, as the peer last heard its governance say: the
+    /// attached desktops release what someone who left made. When each was admitted is projected
+    /// onto the shell with the rest of the governance (`Desktop::project_governance`).
     fn follow_members(&mut self, woken: &mut HashSet<u64>) {
         let status = self.peer.status();
         let members = status.workspace_members.get(&self.uuid).cloned();
-        let joined = status
-            .workspace_joined
-            .get(&self.uuid)
-            .cloned()
-            .unwrap_or_default();
         let names = status
             .workspace_names
             .get(&self.uuid)
             .cloned()
             .unwrap_or_default();
-        if members == self.members && joined == self.admitted_at && names == self.names {
+        if members == self.members && names == self.names {
             return;
         }
         self.members = members;
-        self.admitted_at = joined;
         self.names = names;
         for (&id, mounted) in &self.mounts {
             if let Some((_, shared)) = &mounted.attachment.desktop {
                 shared.members.replace(self.members.clone());
                 shared.names.replace(self.names.clone());
-                shared.joined.replace(self.admitted_at.clone());
                 woken.insert(id);
             }
         }
