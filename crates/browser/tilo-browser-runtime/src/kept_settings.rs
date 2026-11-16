@@ -33,12 +33,12 @@ use ui::storage::SettingsDocument;
 /// stands in the start module.
 #[derive(Clone, Copy)]
 pub struct SettingsKeeper {
-    make: fn(&str, SettingsDocument) -> ServedProvider,
+    make: fn(&tilo_actions::MemberId, SettingsDocument) -> ServedProvider,
 }
 
 /// The provider that answers the sections' actions as `person`'s, kept in
 /// `document`: what they change is theirs, undone and redone as their steps.
-fn make(person: &str, document: SettingsDocument) -> ServedProvider {
+fn make(person: &tilo_actions::MemberId, document: SettingsDocument) -> ServedProvider {
     let records = tilo_app::framework::SettingsRecords::of_person_named_in(
         settings_sections::APP_ID,
         settings_sections::APP_TITLE,
@@ -65,8 +65,12 @@ ui::lazy_code! {
 /// Answer the settings sections the windows in `frame` change, kept in
 /// `document`, as `person`'s: what they change is theirs, undone and redone
 /// as their steps.
-pub(crate) fn serve(frame: &mut FrameHarness, person: &str, document: SettingsDocument) {
-    let person = person.to_owned();
+pub(crate) fn serve(
+    frame: &mut FrameHarness,
+    person: &tilo_actions::MemberId,
+    document: SettingsDocument,
+) {
+    let person = person.clone();
     let mut kept: Option<ServedProvider> = None;
     frame.serve_provider(
         settings_records::PROVIDER,
@@ -108,7 +112,11 @@ mod tests {
         let mut kept = None;
         app.kept_by_host(|frame, document, person| {
             kept = Some(document.clone());
-            super::serve(frame, person, document.clone());
+            super::serve(
+                frame,
+                &tilo_actions::MemberId::person(person),
+                document.clone(),
+            );
         });
         (app, kept.expect("the host is told the settings document"))
     }

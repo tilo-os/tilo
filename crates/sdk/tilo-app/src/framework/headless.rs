@@ -260,7 +260,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        harness.serve_provider(provider, records.served_for(author));
+        harness.serve_provider(provider, records.served_for(&MemberId::person(author)));
     }
 }
 

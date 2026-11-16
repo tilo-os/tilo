@@ -473,7 +473,7 @@ impl SettingsRecords {
     pub fn of_person_named(
         app_id: &'static str,
         app_title: &'static str,
-        person: &str,
+        person: &tilo_resource::MemberId,
         earlier: &[String],
         declares: &[super::Declare],
     ) -> Self {
@@ -493,7 +493,7 @@ impl SettingsRecords {
     pub fn of_person_named_in(
         app_id: &'static str,
         app_title: &'static str,
-        person: &str,
+        person: &tilo_resource::MemberId,
         earlier: &[String],
         declares: &[super::Declare],
         document: SettingsDocument,
@@ -503,7 +503,7 @@ impl SettingsRecords {
                 app_id,
                 document,
                 person: Some(Rc::new(super::person::PersonState::without_records(
-                    tilo_resource::MemberId::person(person),
+                    person.clone(),
                     earlier.to_vec(),
                     app_id,
                     app_title,
@@ -618,15 +618,10 @@ impl SettingsRecords {
     /// session's broker invokes them where it keeps them. The person's own
     /// settings: nobody else changes them.
     #[must_use]
-    pub fn served_for(self, person: &str) -> ui_core::headless::ServedProvider {
-        let person = person.to_owned();
+    pub fn served_for(self, person: &tilo_actions::MemberId) -> ui_core::headless::ServedProvider {
+        let person = person.clone();
         Box::new(move |invocation| {
-            if invocation
-                .actor
-                .member_id()
-                .and_then(tilo_actions::MemberId::person_id)
-                != Some(person.as_str())
-            {
+            if invocation.actor.member_id() != Some(&person) {
                 return Err(tilo_actions::ApiError::Unavailable {
                     code: "permission_denied".into(),
                     reason: "Only the person they belong to changes these settings".into(),
@@ -645,7 +640,7 @@ impl SettingsRecords {
                 invocation.address,
                 &arguments,
                 invocation.confirmed,
-                &ActionInvoker::person(&person),
+                &ActionInvoker::member(person.clone()),
                 None,
             )
         })
