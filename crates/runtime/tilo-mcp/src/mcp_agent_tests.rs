@@ -2861,7 +2861,7 @@ impl CatalogueHost {
     }
 }
 
-impl crate::mcp::TaskHosts for CatalogueHost {
+impl crate::TaskHosts for CatalogueHost {
     fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
         let (door, host) = std::os::unix::net::UnixStream::pair()?;
         let catalogue = self.catalogue.clone();

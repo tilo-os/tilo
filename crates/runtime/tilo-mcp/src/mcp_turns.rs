@@ -3,11 +3,11 @@
 
 /// A session's requests that work at once; more wait for a turn. One agent
 /// cannot occupy the host with every call it can send.
-pub(crate) const MAX_WORKING: usize = 16;
+pub const MAX_WORKING: usize = 16;
 /// A session's requests that work or wait for a turn; more are refused at
 /// once, so a flood of calls neither queues without end nor makes the one
 /// that cancels wait behind it.
-pub(crate) const MAX_ADMITTED: usize = 64;
+pub const MAX_ADMITTED: usize = 64;
 /// What a request past [`MAX_ADMITTED`] is refused with: that it did not
 /// run, and when sending it again will be taken.
 pub(super) const TOO_MANY_IN_FLIGHT: &str = "this connection already has 64 requests working or \

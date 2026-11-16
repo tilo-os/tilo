@@ -2253,8 +2253,8 @@ impl Session {
     #[must_use]
     pub fn device_mcp(
         &self,
-        devices: std::sync::Arc<dyn tilo_runtime::device_mcp::PersonsDevices>,
-    ) -> tilo_runtime::device_mcp::DeviceServer {
+        devices: std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>,
+    ) -> tilo_mcp::devices::DeviceServer {
         self.shared.device_agents.server(devices)
     }
 

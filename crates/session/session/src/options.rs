@@ -164,7 +164,7 @@ pub struct Options {
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
-    /// at the MCP server ([`tilo_runtime::session_door::AGENT_KEY_ENV`]) is admitted as that
+    /// at the MCP server ([`tilo_mcp::session_door::AGENT_KEY_ENV`]) is admitted as that
     /// grant's agent without asking them: what a session started for an agent, with no one to
     /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
     /// card, ends it.
@@ -288,9 +288,9 @@ pub(crate) fn start_collaboration(
     // Which devices are the person's is their own store's to say, for the agents that connect from
     // one of them and for those this one dials.
     let devices = personal.as_ref().map(|personal| {
-        std::sync::Arc::new(tilo_runtime::device_mcp::PersonalDevices::new(
+        std::sync::Arc::new(tilo_mcp::devices::PersonalDevices::new(
             personal.sync().clone(),
-        )) as std::sync::Arc<dyn tilo_runtime::device_mcp::PersonsDevices>
+        )) as std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>
     });
     if let Some(personal) = &personal {
         beside.push(personal.protocol());
@@ -332,7 +332,7 @@ pub(crate) fn start_collaboration(
                 sync.attach_personal(personal);
             }
             if let (Some(devices), Some(endpoint)) = (devices, sync.endpoint()) {
-                device_agents.attach(tilo_runtime::device_mcp::OtherDevices::new(
+                device_agents.attach(tilo_mcp::devices::OtherDevices::new(
                     endpoint,
                     devices,
                     tilo_rt::app().handle().clone(),

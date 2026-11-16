@@ -1,4 +1,19 @@
-//! Transport-independent MCP projection of the production action broker.
+//! The MCP projection of an action host, and the doors an MCP client reaches
+//! a desktop or another device through. Headless: an agent's bridge, the
+//! `tilo` command and the API serve it without the app toolkit.
+
+pub mod devices;
+pub mod enter;
+mod images;
+pub mod lines;
+pub mod session_door;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_hosts;
+pub mod windows;
+
+pub use images::MediaReader;
+use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime, take_images};
+
 #[path = "mcp_agent.rs"]
 mod agent;
 #[path = "mcp_confirm.rs"]
@@ -27,7 +42,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
-pub(crate) use turns::{MAX_ADMITTED, MAX_WORKING};
+pub use turns::{MAX_ADMITTED, MAX_WORKING};
 
 /// Host-configured per-session construction. It receives no client identity,
 /// label, requested workspace or execution UUID.
@@ -98,9 +113,9 @@ pub struct McpServer<H> {
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
     /// The person's other devices as the host reaches them, which
-    /// [`crate::device_mcp::DEVICES_TOOL`] lists; `None` for a host that
+    /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
-    devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
+    devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     /// The record this session's last agent call worked in
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
@@ -113,11 +128,11 @@ pub struct McpServer<H> {
     changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// The invocations of this session a watch follows, oldest first, each
     /// with where its latest phase falls in the watch's sequence
-    /// ([`crate::mcp::watch`]).
-    pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
+    /// ([`crate::watch`]).
+    pub(crate) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
     /// What this session's invocations changed, oldest first: where taking
     /// one's run back finds its changes ([`McpServer::undo_run`]).
-    pub(super) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
+    pub(crate) undoable: std::sync::Mutex<std::collections::VecDeque<agent::Undoable>>,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -168,14 +183,6 @@ enum EffectOf {
     Unsaid,
 }
 
-/// Where an answer carries the images it shows until [`tool_result`] moves
-/// them out of the JSON and into MCP image blocks. Not a valid JSON key an
-/// app could produce in an output.
-const IMAGES: &str = "\u{1}images";
-/// At most this many images answer one action.
-const MAX_IMAGES: usize = 4;
-/// Larger content is named, not shown.
-const MAX_IMAGE_BYTES: usize = 8 << 20;
 /// Pictures one session remembers having shown.
 const MAX_SHOWN: usize = 256;
 /// Where an answer says it carries content from outside the user's data:
@@ -193,30 +200,6 @@ fn mark_untrusted(value: &mut Value) {
         labelled.extend(std::mem::take(fields));
         *fields = labelled;
     }
-}
-
-/// The MIME type of image bytes an MCP client can show.
-fn image_mime(bytes: &[u8]) -> Option<&'static str> {
-    tilo_content::image_format(bytes)
-        .map(|format| format.mime)
-        .filter(|mime| matches!(*mime, "image/png" | "image/jpeg" | "image/webp"))
-}
-
-/// The images an answer carries, taken out of it: its own, and those of
-/// each result of a batch.
-fn take_images(value: &mut Value) -> Vec<Value> {
-    let mut images = Vec::new();
-    if let Some(fields) = value.as_object_mut() {
-        if let Some(Value::Array(own)) = fields.remove(IMAGES) {
-            images.extend(own);
-        }
-        if let Some(Value::Array(results)) = fields.get_mut("results") {
-            for result in results {
-                images.extend(take_images(result));
-            }
-        }
-    }
-    images
 }
 
 /// The instance each file last went to through the action its app declares
@@ -644,7 +627,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
-    pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
+    pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
         let Some(actor) = caller.acting().person_id() else {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",
@@ -710,11 +693,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     /// List the person's devices as `devices` reaches them, with
-    /// [`crate::device_mcp::DEVICES_TOOL`].
+    /// [`crate::devices::DEVICES_TOOL`].
     #[must_use]
     pub fn with_devices(
         mut self,
-        devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
+        devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
     ) -> Self {
         self.devices = devices;
         self
@@ -1436,11 +1419,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(call) if get::is_get_tool(&call.name) => {
                 Ok(self.get_call(&call.name, call.arguments, structured).await)
             }
-            Ok(call) if call.name == crate::device_mcp::DEVICES_TOOL => match &self.devices {
+            Ok(call) if call.name == crate::devices::DEVICES_TOOL => match &self.devices {
                 Some(devices) => {
                     let reach = devices.reach().await;
                     Ok(json!({
-                        "content": [{"type": "text", "text": crate::device_mcp::listing(&reach)}],
+                        "content": [{"type": "text", "text": crate::devices::listing(&reach)}],
                         "isError": false
                     }))
                 }
@@ -1628,7 +1611,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Reuse a live default presentation through its permission-checked view action.
     /// Absence permits a new launch; a present but unready/refusing owner does not.
-    pub(crate) async fn activate_existing(&self, app_id: &str) -> Result<Option<u64>, String> {
+    pub async fn activate_existing(&self, app_id: &str) -> Result<Option<u64>, String> {
         let (_, instances) = self.instances().await?;
         let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
             instance["app_id"].as_str() == Some(app_id)
@@ -3419,7 +3402,7 @@ fn definitions(
         tools.extend(get::tool_definitions());
     }
     if devices {
-        tools.push(crate::device_mcp::tool_definition());
+        tools.push(crate::devices::tool_definition());
     }
     tools
 }

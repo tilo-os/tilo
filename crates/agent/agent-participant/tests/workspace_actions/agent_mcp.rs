@@ -4,8 +4,7 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
-use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_runtime::mcp_windows;
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::Outbox;
 use tilo_session_client::remote::SessionActions;
 
@@ -75,7 +74,8 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // The records it works in open as windows on the workspace's layout, as
     // `tilo mcp` opens them; the host that executes its run is what shows it
     // there, doing what it does.
-    let windows = mcp_windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
+    let windows =
+        tilo_mcp::windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
         .with_agent_run("run-1", "Claude Code");
@@ -271,7 +271,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // Another change in the same workbook opens no second window of it.
     windows
         .changed(
-            vec![tilo_runtime::mcp::ActedRecord {
+            vec![tilo_mcp::ActedRecord {
                 app: SHEETS.into(),
                 record: sheets.record.clone(),
             }],

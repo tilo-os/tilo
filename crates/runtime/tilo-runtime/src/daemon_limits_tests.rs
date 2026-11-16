@@ -7,8 +7,6 @@
 //! read for what it is told, and room is then made the way a client makes
 //! it: a request answers, a caller cancels, a connection closes.
 use super::{Endpoint, MAX_CONNECTIONS, Status};
-use crate::mcp::{MAX_ADMITTED, MAX_WORKING, McpServer};
-use crate::mcp_test_hosts::{GatedHost, long_invoke};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -16,6 +14,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_actions::InvocationId;
+use tilo_mcp::test_hosts::{GatedHost, long_invoke};
+use tilo_mcp::{MAX_ADMITTED, MAX_WORKING, McpServer};
 
 /// An endpoint accepting on a socket of its own, over a host whose
 /// invocations end when the test says so. The accept loop runs for as long

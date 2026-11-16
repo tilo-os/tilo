@@ -3,11 +3,11 @@
 //! and `tilo_cancel` answer while a `tilo_invoke` of the same session still
 //! waits.
 use super::*;
-use crate::mcp::{MAX_ADMITTED, MAX_WORKING};
-use crate::mcp_test_hosts::{
+use crate::test_hosts::{
     GatedHost, Stale, StoredByTestApp, StubHost, WithoutRevision, long_invoke, run, run_paused,
     tool,
 };
+use crate::{MAX_ADMITTED, MAX_WORKING};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

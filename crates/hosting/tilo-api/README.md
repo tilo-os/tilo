@@ -23,7 +23,7 @@ generated for this one grant. The grant reaches **all my workspaces** (and
 making new ones), or **one workspace** when the agent was pointed at
 `https://mcp.tilo.sh/w/<workspace>`. Each MCP session is one agent run
 (`Claude Code #1`), which the API server serves itself: the agent surface `tilo mcp`
-serves (`tilo_runtime::mcp::McpServer`), over the grant's own session with the
+serves (`tilo_mcp::McpServer`), over the grant's own session with the
 relay the person's workspaces live on. Grants are listed and revoked at
 `https://mcp.tilo.sh/grants`.
 

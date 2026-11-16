@@ -105,7 +105,7 @@ impl BlobMedia {
     }
 }
 
-impl crate::MediaReader for BlobMedia {
+impl tilo_mcp::MediaReader for BlobMedia {
     fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
         read_media(&self.blob_socket, &self.workspace, app_id, hash)
     }

@@ -93,7 +93,6 @@ word-processor = { path = "../../../apps/word-processor" }
 tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-tilo-session-core = { path = "../../session/core" }
 # A device on the plane is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
@@ -193,7 +192,7 @@ test-http = { path = "../../dev/test-http" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
-tilo-runtime = { path = "../../runtime/tilo-runtime" }
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 iroh.workspace = true
 # The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }

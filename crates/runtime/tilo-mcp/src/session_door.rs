@@ -9,7 +9,8 @@
 //! would answer every question about the desktop wrongly, and silently.
 
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, BufRead as _};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 /// The MCP server's path under `runtime_dir`; `None` when there is none to
@@ -46,9 +47,9 @@ pub fn desktop_door() -> io::Result<Option<PathBuf>> {
 pub fn bridge(door: &Path) -> io::Result<()> {
     let stream = tilo_files::native::socket::connect(door)
         .map_err(|error| unreachable_door(door, &error))?;
-    crate::daemon::bridge_stdio(
+    bridge_stdio(
         stream,
-        crate::daemon::Asking {
+        Asking {
             workspace: None,
             key: agent_key()?,
         },
@@ -494,7 +495,7 @@ pub fn serve_after<H>(
     stream: std::os::unix::net::UnixStream,
     first: Option<Vec<u8>>,
     host: impl FnOnce() -> Result<H, String>,
-    tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
+    tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
@@ -516,8 +517,8 @@ where
 /// programs run, and the person's devices as the host reaches them.
 #[derive(Default)]
 pub struct Beside {
-    pub tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
-    pub devices: Option<std::sync::Arc<dyn crate::device_mcp::DeviceDirectory>>,
+    pub tasks: Option<std::sync::Arc<dyn crate::TaskHosts>>,
+    pub devices: Option<std::sync::Arc<dyn crate::devices::DeviceDirectory>>,
 }
 
 /// [`serve_after`], with what `beside` holds.
@@ -606,10 +607,10 @@ where
     // whoever the connection acts as: the agent, or the person typing at a REPL.
     let run = format!("door-{}", uuid::Uuid::new_v4().simple());
     let server = match agent {
-        Some((agent, name)) => crate::mcp::McpServer::for_agent(host, workspace, &agent, &person)
+        Some((agent, name)) => crate::McpServer::for_agent(host, workspace, &agent, &person)
             .agent_named(&name)
             .with_agent_run(run, agent),
-        None => crate::mcp::McpServer::for_person(host, workspace, &person).with_work_group(
+        None => crate::McpServer::for_person(host, workspace, &person).with_work_group(
             tilo_actions::WorkGroup {
                 id: run,
                 label: "REPL".into(),
@@ -625,18 +626,142 @@ where
         .block_on(server.handle(hello.request))
         .map_err(io::Error::other)?
     {
-        crate::mcp_process::write_reply(&mut stream, &reply)?;
+        crate::lines::write_reply(&mut stream, &reply)?;
     }
-    let input = crate::mcp_process::spawn_reader(stream.try_clone()?)?;
-    let ended = crate::mcp_process::serve_lines(
+    let input = crate::lines::spawn_reader(stream.try_clone()?)?;
+    let ended = crate::lines::serve_lines(
         runtime,
         input,
         &mut stream,
-        |request| crate::mcp_process::mcp_answer(&server, request),
+        |request| crate::lines::mcp_answer(&server, request),
         None,
     );
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended
+}
+
+/// What the relay writes into a client's `initialize`, under
+/// `params.capabilities.experimental["so.tilo"]`: the workspace it asks for
+/// ([`WORKSPACE`]) and the agent key it presents
+/// ([`KEY`]).
+#[derive(Clone, Debug, Default)]
+pub struct Asking {
+    pub workspace: Option<String>,
+    pub key: Option<String>,
+}
+
+impl Asking {
+    fn is_empty(&self) -> bool {
+        self.workspace.is_none() && self.key.is_none()
+    }
+
+    /// `line` with what this asks written in, when it is the client's `initialize`; `None` for
+    /// any other line, which goes to the door as it is.
+    fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
+        let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
+        if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
+            return None;
+        }
+        let params = request
+            .as_object_mut()?
+            .entry("params")
+            .or_insert_with(|| serde_json::json!({}));
+        let mut at = params;
+        for key in ["capabilities", "experimental", "so.tilo"] {
+            at = at
+                .as_object_mut()?
+                .entry(key)
+                .or_insert_with(|| serde_json::json!({}));
+        }
+        let ours = at.as_object_mut()?;
+        if let Some(workspace) = &self.workspace {
+            ours.insert("workspace".into(), serde_json::json!(workspace));
+        }
+        if let Some(key) = &self.key {
+            ours.insert("key".into(), serde_json::json!(key));
+        }
+        serde_json::to_vec(&request).ok()
+    }
+}
+
+/// Relay this process's stdin to `stream` and `stream` to its stdout; the
+/// client's `initialize` says what `asking` asks, when it asks anything.
+pub fn bridge_stdio(mut stream: UnixStream, asking: Asking) -> io::Result<()> {
+    let mut writer = stream.try_clone()?;
+    std::thread::Builder::new()
+        .name("tilo-mcp-proxy-stdin".into())
+        .spawn(move || {
+            let result = if asking.is_empty() {
+                relay(&mut io::stdin().lock(), &mut writer)
+            } else {
+                relay_asking(
+                    &mut io::BufReader::new(io::stdin().lock()),
+                    &mut writer,
+                    &asking,
+                )
+            };
+            let _ = writer.shutdown(std::net::Shutdown::Write);
+            result
+        })?;
+    relay(&mut stream, &mut io::stdout().lock())?;
+    Ok(())
+}
+
+/// [`relay`], with the client's `initialize` saying what `asking` asks: the
+/// lines before it, and it, are read whole; everything after is copied as it
+/// comes.
+pub fn relay_asking(
+    from: &mut impl io::BufRead,
+    to: &mut impl io::Write,
+    asking: &Asking,
+) -> io::Result<u64> {
+    /// The most the client sends before its `initialize` is through, as the
+    /// door reads it.
+    const MOST: u64 = 64 * 1024;
+    let mut total = 0_u64;
+    loop {
+        let mut line = Vec::new();
+        let read =
+            io::Read::take(&mut *from, MOST.saturating_sub(total)).read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(total);
+        }
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        let body = line.strip_suffix(b"\n").unwrap_or(&line);
+        let asked = asking.written_into(body);
+        match &asked {
+            Some(rewritten) => {
+                to.write_all(rewritten)?;
+                to.write_all(b"\n")?;
+            }
+            None => to.write_all(&line)?,
+        }
+        to.flush()?;
+        if asked.is_some() || total >= MOST {
+            break;
+        }
+    }
+    Ok(total.saturating_add(relay(from, to)?))
+}
+
+/// Copy `from` to `to`, flushing after every read. A client waits for each
+/// reply before it sends the next request, so a reply must not sit in a
+/// buffer until more arrives: `io::copy` into a buffered stdout fills its
+/// buffer and writes only when it is full or the stream ends.
+pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(buffer.get(..read).unwrap_or_default())?;
+        to.flush()?;
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
 }
 
 #[cfg(test)]

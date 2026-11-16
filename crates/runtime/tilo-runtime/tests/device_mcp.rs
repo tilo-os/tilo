@@ -28,12 +28,12 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
     ReceiptStatus,
 };
-use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_runtime::device_mcp::{
+use tilo_mcp::devices::{
     ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonalDevices,
     PersonsDevices, agent_id, ask_forward, forward_request, open, read_list,
 };
-use tilo_runtime::session_door::{Beside, Consent, read_first_line, serve_with};
+use tilo_mcp::session_door::{Beside, Consent, read_first_line, serve_with};
+use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
     sign_revocation_entry,
@@ -509,7 +509,7 @@ async fn what_b_refuses_reaches_the_agent_and_ends_its_connection_on_a() {
 async fn dial(b: &B, key: &SigningKey, certificate: &DeviceCert) -> Result<(), String> {
     let endpoint = endpoint(key).await;
     let dialed = open(&endpoint, addr(&b.endpoint), certificate, None, false).await;
-    dialed.map(tilo_runtime::device_mcp::Dialed::close)
+    dialed.map(tilo_mcp::devices::Dialed::close)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -566,7 +566,7 @@ async fn the_persons_devices_are_listed_with_whether_each_answers() {
         b.server.arrived.lock().unwrap().is_empty(),
         "asking whether a device answers admits nothing there"
     );
-    let listing = tilo_runtime::device_mcp::listing(&reach);
+    let listing = tilo_mcp::devices::listing(&reach);
     assert!(
         listing.contains("Build box") && listing.contains("reachable"),
         "{listing}"
@@ -623,7 +623,7 @@ async fn a_device_lists_and_names_the_siblings_it_never_met() {
         Arc::new(PersonalDevices::new(phone.clone())),
         tokio::runtime::Handle::current(),
     );
-    let listing = tilo_runtime::device_mcp::listing(&servers.reach_now().await);
+    let listing = tilo_mcp::devices::listing(&servers.reach_now().await);
     assert!(
         listing.contains("Build box") && listing.contains("Studio laptop"),
         "{listing}"
@@ -813,7 +813,7 @@ fn address_on_b(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_list_names() {
-    use tilo_runtime::enter::{Key, enter};
+    use tilo_mcp::enter::{Key, enter};
     let person = Person::new();
     let b = b(&person, &[]).await;
     let all = grant(
@@ -866,7 +866,7 @@ async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device() {
-    use tilo_runtime::enter::{Key, enter};
+    use tilo_mcp::enter::{Key, enter};
     let person = Person::new();
     let revoked = grant(
         &person.root,

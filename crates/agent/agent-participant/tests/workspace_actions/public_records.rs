@@ -25,9 +25,9 @@ use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
+use tilo_mcp::{McpServer, Surface};
 use tilo_peer_state::join::Role;
 use tilo_relay_protocol::directory::Listing;
-use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -548,7 +548,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let windows = std::sync::Arc::new(tilo_runtime::mcp_windows::AgentWindows::new(
+    let windows = std::sync::Arc::new(tilo_mcp::windows::AgentWindows::new(
         actions.clone(),
         person.clone(),
         workspace.clone(),
@@ -711,10 +711,10 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     browser.put_layout();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
-    let windows = tilo_runtime::mcp_windows::AgentWindows::new(actions, person, workspace.clone());
+    let windows = tilo_mcp::windows::AgentWindows::new(actions, person, workspace.clone());
     windows
         .changed(
-            vec![tilo_runtime::mcp::ActedRecord {
+            vec![tilo_mcp::ActedRecord {
                 app: NOTES.into(),
                 record: notes_record.clone(),
             }],

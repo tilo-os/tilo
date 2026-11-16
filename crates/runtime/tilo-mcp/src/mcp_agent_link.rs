@@ -81,7 +81,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// asked, each once, in the order first changed: what the door that shows
     /// its agent opens in front of the workspace's people. A read is none.
     #[must_use]
-    pub fn take_changed(&self) -> Vec<crate::mcp::ActedRecord> {
+    pub fn take_changed(&self) -> Vec<crate::ActedRecord> {
         std::mem::take(&mut *self.changed.lock_recover())
     }
 
@@ -223,11 +223,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// names nothing.
     pub(super) fn note_shown(&self, provider: &str, app_id: &str) {
         let shown = match tilo_actions::remote::record_parts(provider) {
-            Some((app, record)) => crate::mcp::ActedRecord {
+            Some((app, record)) => crate::ActedRecord {
                 app: app.to_owned(),
                 record: record.to_owned(),
             },
-            None if !app_id.is_empty() => crate::mcp::ActedRecord {
+            None if !app_id.is_empty() => crate::ActedRecord {
                 app: app_id.to_owned(),
                 record: String::new(),
             },

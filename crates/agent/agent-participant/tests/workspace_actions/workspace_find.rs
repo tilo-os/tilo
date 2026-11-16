@@ -6,7 +6,7 @@
 use super::own_agent::listed_resources;
 use super::*;
 use serde_json::{Value, json};
-use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";

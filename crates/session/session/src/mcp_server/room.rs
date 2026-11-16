@@ -16,7 +16,7 @@
 //! Sixteen, and not more, for what a connection costs the session. Each one keeps two threads
 //! of the compositor's process for as long as it lasts, the one that serves it and the one that
 //! reads it, and may have sixteen requests working and sixty-four working or waiting
-//! ([`tilo_runtime::mcp`]). All of them are worked on the one runtime thread and the eight
+//! ([`tilo_mcp`]). All of them are worked on the one runtime thread and the eight
 //! blocking threads every connection shares (`tilo_rt`), and what they ask of the session
 //! itself is answered on its loop's pass, between frames. More connections would wait behind
 //! those same threads and that same pass, beside the person's own frames. A runtime that runs

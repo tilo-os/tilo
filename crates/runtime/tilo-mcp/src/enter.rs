@@ -5,7 +5,7 @@
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
-//!   key dials that device's MCP server ([`crate::device_mcp`]), which admits
+//!   key dials that device's MCP server ([`crate::devices`]), which admits
 //!   it as the person's relay does (`tilo_workspace_host::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
@@ -15,7 +15,7 @@
 //!   host as one of the person's devices and enters the workspace as every
 //!   device does ([`tilo_session_client::device::Device::enter_workspace`]): the
 //!   host invites it in on that session and it redeems the invitation there.
-//!   The agent surface ([`crate::mcp::McpServer`]) runs here over the host's
+//!   The agent surface ([`crate::McpServer`]) runs here over the host's
 //!   actions.
 //!
 //! Either way the caller gets an [`Entered`], which answers MCP JSON-RPC.
@@ -29,7 +29,7 @@ use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 
-use crate::mcp::{McpServer, Surface};
+use crate::{McpServer, Surface};
 use collab_types::WorkspaceId;
 
 /// A key of the person's: its signing key and the certificate their root (or
@@ -109,7 +109,7 @@ pub async fn enter(
     if *endpoint.id().as_bytes() != key.cert.device_public_key {
         return Err("the endpoint dials as another key than the one entering".to_owned());
     }
-    let dialed = crate::device_mcp::open(
+    let dialed = crate::devices::open(
         endpoint,
         device.endpoint_addr.clone(),
         &key.cert,
@@ -147,12 +147,12 @@ impl Entered {
 /// request a line out, its answer the line back with its id; what the door
 /// says in between (a notification) is not an answer.
 pub struct DoorLines {
-    lines: tokio::sync::Mutex<crate::device_mcp::Lines>,
+    lines: tokio::sync::Mutex<crate::devices::Lines>,
     live: std::sync::atomic::AtomicBool,
 }
 
 impl DoorLines {
-    fn new(dialed: crate::device_mcp::Dialed) -> Self {
+    fn new(dialed: crate::devices::Dialed) -> Self {
         Self {
             lines: tokio::sync::Mutex::new(dialed.into_lines()),
             live: std::sync::atomic::AtomicBool::new(true),

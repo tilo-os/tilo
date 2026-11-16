@@ -4,7 +4,7 @@
 //! computer.
 //!
 //! What it serves is the runtime's own projection of a workspace
-//! ([`tilo_runtime::mcp::McpServer`], the agent surface: `tilo_ls`,
+//! ([`tilo_mcp::McpServer`], the agent surface: `tilo_ls`,
 //! `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), the same tools an
 //! agent gets on a Tilo desktop. Its actions are the workspace's: this
 //! device enters the person's workspace on its host as any device of theirs
@@ -35,12 +35,11 @@ use std::time::Duration;
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::device::Device as Entered;
 use tilo_session_client::remote::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
-use tilo_runtime::mcp_windows;
 
 /// The MCP protocol version this server speaks when it cannot reach the
 /// workspace; the projection answers with its own once it can.
@@ -184,7 +183,7 @@ struct Served {
     session: Arc<Session>,
     server: McpServer<SessionActions>,
     /// The windows of the records the agent works in.
-    windows: Arc<mcp_windows::AgentWindows>,
+    windows: Arc<tilo_mcp::windows::AgentWindows>,
 }
 
 impl<E: Enter> Connection<E> {
@@ -224,7 +223,7 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
     // The records the agent works in open as windows on the workspace's
     // shell; the host that executes its run shows it there, doing what it
     // does.
-    let windows = Arc::new(mcp_windows::AgentWindows::new(
+    let windows = Arc::new(tilo_mcp::windows::AgentWindows::new(
         actions.clone(),
         person.clone(),
         device.workspace.clone(),
@@ -244,9 +243,9 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
 /// hosted, as a connection to the process holding that device's session ([`held`]), started when
 /// none runs. `hold` is that process (`tilo mcp --hold`, which a connection starts).
 pub fn serve(hold: bool) -> Result<ExitCode> {
-    let device = match tilo_runtime::session_door::desktop_door() {
+    let device = match tilo_mcp::session_door::desktop_door() {
         Ok(Some(door)) => {
-            tilo_runtime::session_door::bridge(&door)?;
+            tilo_mcp::session_door::bridge(&door)?;
             return Ok(ExitCode::SUCCESS);
         }
         Ok(None) => crate::login::load(&crate::login::device_dir()?)?
@@ -555,7 +554,7 @@ mod tests {
     /// that needs `tilo login`: the agent hears what it waits for, never "not logged in".
     #[tokio::test]
     async fn a_desktop_whose_door_is_not_open_yet_never_says_not_logged_in() {
-        let waiting = tilo_runtime::session_door::route(
+        let waiting = tilo_mcp::session_door::route(
             false,
             None,
             true,

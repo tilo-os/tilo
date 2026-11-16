@@ -1,12 +1,12 @@
 //! The MCP server toward the person's other devices.
 //!
-//! This device's endpoint answers [`tilo_runtime::device_mcp::ALPN`]: an
+//! This device's endpoint answers [`tilo_mcp::devices::ALPN`]: an
 //! agent on another of the person's own devices connects to this session's
 //! MCP server over iroh, and is asked about and served exactly as a program of
 //! this login is ([`crate::mcp_server`]), as an agent the person delegates to,
 //! named after the device it came from. Which device dials is the transport's
 //! to say, and whether it is one of the person's is their own store's
-//! ([`tilo_runtime::device_mcp::PersonalDevices`]); a connection from anyone
+//! ([`tilo_mcp::devices::PersonalDevices`]); a connection from anyone
 //! else is refused before the person is asked.
 //!
 //! A connection the server admits takes one of the MCP server's places as it arrives, and waits
@@ -28,13 +28,13 @@
 //! The other way round, a `--connect --device NAME` client of this login asks
 //! this session to carry it to another device's server ([`DeviceAgents::forward`]),
 //! and an agent lists the person's devices with
-//! [`tilo_runtime::device_mcp::DEVICES_TOOL`].
+//! [`tilo_mcp::devices::DEVICES_TOOL`].
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
-use tilo_runtime::device_mcp::{
+use tilo_mcp::devices::{
     Arrival, Arrivals, DeviceDirectory, DeviceServer, Forward, OtherDevices, PersonsDevices, Reach,
 };
 use tilo_service::Wake;
@@ -83,7 +83,7 @@ impl DeviceAgents {
         devices: Arc<dyn PersonsDevices>,
     ) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
         (
-            tilo_runtime::device_mcp::ALPN.to_vec(),
+            tilo_mcp::devices::ALPN.to_vec(),
             Box::<dyn iroh::protocol::DynProtocolHandler>::from(self.server(devices)),
         )
     }
@@ -116,7 +116,7 @@ impl DeviceAgents {
     pub(crate) fn forward(&self, stream: UnixStream, forward: &Forward) {
         match self.servers.get() {
             Some(servers) => servers.serve_forward(stream, forward),
-            None => tilo_runtime::device_mcp::refuse_forward(
+            None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices: it takes no part in the \
                  collaboration plane"

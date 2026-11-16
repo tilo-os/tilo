@@ -132,7 +132,7 @@ Answers are the agent surface's text (`ok`, `failed: …`, `pending <id>`) and
 the same answer typed in `structuredContent`, so programs get JSON.
 
 Everything else is the agent surface `tilo mcp` serves
-(`tilo_runtime::mcp::McpServer`), which the API server runs for each session over
+(`tilo_mcp::McpServer`), which the API server runs for each session over
 the grant's own session with the relay: `tilo_ls`, `tilo_read`, `tilo_find`,
 `tilo_do`, `tilo_status` and `tilo`. Its actions are asked of the relay's own
 device, whose app workers run them with no tab open. File bytes go into the

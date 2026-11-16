@@ -1,7 +1,15 @@
 //! The hosts the MCP tests drive: a stub app whose directory and invocations
 //! the test states, and one that holds an invocation until the test says it
 //! changed.
-use crate::mcp::McpServer;
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::assigning_clones,
+    reason = "test fixtures: a failure here is the test's own assertion"
+)]
+
+use crate::McpServer;
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -51,7 +59,7 @@ mod schema_rows {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) enum CatalogueAvailability {
+pub enum CatalogueAvailability {
     #[default]
     Ready,
     Hidden,
@@ -60,28 +68,28 @@ pub(crate) enum CatalogueAvailability {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct StubHost {
-    pub(crate) activation: bool,
-    pub(crate) availability: CatalogueAvailability,
-    pub(crate) exited: Arc<std::sync::atomic::AtomicBool>,
-    pub(crate) record: Option<String>,
-    pub(crate) workspace: Option<String>,
-    pub(crate) invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
-    pub(crate) callers: Arc<StdMutex<Vec<Caller>>>,
-    pub(crate) confirmation: tilo_actions::ConfirmationPolicy,
+pub struct StubHost {
+    pub activation: bool,
+    pub availability: CatalogueAvailability,
+    pub exited: Arc<std::sync::atomic::AtomicBool>,
+    pub record: Option<String>,
+    pub workspace: Option<String>,
+    pub invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
+    pub callers: Arc<StdMutex<Vec<Caller>>>,
+    pub confirmation: tilo_actions::ConfirmationPolicy,
     /// Observations a started invocation stays accepted for before it
     /// succeeds.
-    pub(crate) running_for: Arc<AtomicUsize>,
+    pub running_for: Arc<AtomicUsize>,
     /// What a finished invocation produced.
-    pub(crate) output: Arc<StdMutex<tilo_actions::ActionOutput>>,
+    pub output: Arc<StdMutex<tilo_actions::ActionOutput>>,
     /// The kind of operation the published action is.
-    pub(crate) kind: Arc<StdMutex<tilo_actions::OperationKind>>,
+    pub kind: Arc<StdMutex<tilo_actions::OperationKind>>,
     /// The tags of the published action's contract.
-    pub(crate) tags: Arc<StdMutex<Vec<String>>>,
+    pub tags: Arc<StdMutex<Vec<String>>>,
     /// Answer for the resource as published, whatever id the caller named:
     /// as the host does for the id a window bound a resource under, which
     /// names no resource it publishes.
-    pub(crate) catalogue_only: bool,
+    pub catalogue_only: bool,
 }
 
 impl StubHost {
@@ -123,7 +131,7 @@ impl StubHost {
 }
 
 /// The confirmation the person gives `request` on their device.
-pub(crate) fn witnessed(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
+pub fn witnessed(request: &InvokeRequest) -> tilo_actions::remote::Confirmation {
     tilo_actions::remote::Confirmation::Witnessed(format!("person:{}", request.invocation.0))
 }
 
@@ -246,7 +254,7 @@ impl ActionHost for StubHost {
     }
 }
 
-pub(crate) fn run<F: std::future::Future>(future: F) -> F::Output {
+pub fn run<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -257,7 +265,7 @@ pub(crate) fn run<F: std::future::Future>(future: F) -> F::Output {
 /// Run `future` on a current-thread runtime whose clock moves only when
 /// every task waits, so "time passed and nothing happened" is exact: every
 /// piece of work that could happen first has.
-pub(crate) fn run_paused<F: std::future::Future>(future: F) -> F::Output {
+pub fn run_paused<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .start_paused(true)
@@ -267,7 +275,7 @@ pub(crate) fn run_paused<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// One `tools/call` of `server`, answering with its `result`.
-pub(crate) async fn tool<H: ActionHost + Send + Sync + 'static>(
+pub async fn tool<H: ActionHost + Send + Sync + 'static>(
     server: &McpServer<H>,
     name: &str,
     arguments: Value,
@@ -279,12 +287,12 @@ pub(crate) async fn tool<H: ActionHost + Send + Sync + 'static>(
     reply["result"].clone()
 }
 
-pub(crate) const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe-look";
-pub(crate) const JPEG: &[u8] = b"\xff\xd8\xff\xe0the-next-look";
+pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe-look";
+pub const JPEG: &[u8] = b"\xff\xd8\xff\xe0the-next-look";
 
 /// The content service as the stub app `so.tilo.test` reads it: a picture
 /// it stored and something that is not an image.
-pub(crate) struct StoredByTestApp;
+pub struct StoredByTestApp;
 
 impl crate::MediaReader for StoredByTestApp {
     fn read(&self, app_id: &str, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
@@ -301,27 +309,27 @@ impl crate::MediaReader for StoredByTestApp {
 /// cancelled, and which says when one changed, as the broker's hosts do:
 /// only to the caller that may observe it.
 #[derive(Clone, Default)]
-pub(crate) struct GatedHost {
-    pub(crate) stub: StubHost,
-    pub(crate) owner: Arc<StdMutex<Option<Caller>>>,
-    pub(crate) finished: Arc<StdMutex<HashSet<InvocationId>>>,
-    pub(crate) cancelled: Arc<StdMutex<HashSet<InvocationId>>>,
-    pub(crate) waiting: Arc<StdMutex<Vec<Completer<()>>>>,
-    pub(crate) observes: Arc<AtomicUsize>,
-    pub(crate) waits: Arc<AtomicUsize>,
+pub struct GatedHost {
+    pub stub: StubHost,
+    pub owner: Arc<StdMutex<Option<Caller>>>,
+    pub finished: Arc<StdMutex<HashSet<InvocationId>>>,
+    pub cancelled: Arc<StdMutex<HashSet<InvocationId>>>,
+    pub waiting: Arc<StdMutex<Vec<Completer<()>>>>,
+    pub observes: Arc<AtomicUsize>,
+    pub waits: Arc<AtomicUsize>,
     /// Every invocation finishes as soon as it starts.
-    pub(crate) at_once: bool,
+    pub at_once: bool,
     /// How an invocation naming no revision is refused, if it is.
-    pub(crate) without_revision: Option<WithoutRevision>,
+    pub without_revision: Option<WithoutRevision>,
     /// Take every invocation without ever answering its admission, as a
     /// broker whose admission journal waits on a slow disk.
-    pub(crate) admission_unanswered: bool,
+    pub admission_unanswered: bool,
     /// What, naming a revision other than `revision`, is refused as a
     /// directory that moved on refuses it.
-    pub(crate) stale: Option<Stale>,
-    pub(crate) revision: Arc<StdMutex<String>>,
-    pub(crate) unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
-    pub(crate) queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
+    pub stale: Option<Stale>,
+    pub revision: Arc<StdMutex<String>>,
+    pub unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
+    pub queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
 }
 
 /// An admission answer the host holds back.
@@ -329,7 +337,7 @@ type AdmissionCompleter = Completer<Result<InvocationReceipt, ActionHostError>>;
 
 /// Why a host refuses an invocation that names no revision.
 #[derive(Clone, Copy)]
-pub(crate) enum WithoutRevision {
+pub enum WithoutRevision {
     /// As an app built before revisionless resolution does: as a moved
     /// revision.
     Stale,
@@ -340,7 +348,7 @@ pub(crate) enum WithoutRevision {
 
 /// What a host that moved past the revision a caller named refuses.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Stale {
+pub enum Stale {
     /// A read: [`CataloguePage::stale_cursor`] answers a resolve that named
     /// one, and the read itself refuses.
     Reads,
@@ -370,7 +378,7 @@ fn map_poll(
 
 impl GatedHost {
     /// Finish `id` and wake whoever waits on a change.
-    pub(crate) fn finish(&self, id: InvocationId) {
+    pub fn finish(&self, id: InvocationId) {
         self.finished.lock().unwrap().insert(id);
         self.wake();
     }
@@ -381,7 +389,7 @@ impl GatedHost {
         }
     }
 
-    pub(crate) fn invoked(&self) -> Vec<InvocationId> {
+    pub fn invoked(&self) -> Vec<InvocationId> {
         self.stub
             .invoked
             .lock()
@@ -513,7 +521,7 @@ impl ActionHost for GatedHost {
     }
 }
 
-pub(crate) fn long_invoke(invocation: InvocationId) -> Value {
+pub fn long_invoke(invocation: InvocationId) -> Value {
     json!({
         "peer_id": 71, "revision": "1", "resource": "test.note:1",
         "action": tilo_resource::APPLY, "arguments": {},
@@ -528,7 +536,7 @@ pub(crate) fn long_invoke(invocation: InvocationId) -> Value {
 /// could not — and each reply comes back whole, on a line of its own, as
 /// soon as it is ready rather than in the order asked. Closing the client's
 /// side ends the connection.
-pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
+pub fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
     client
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();

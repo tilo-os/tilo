@@ -1,9 +1,7 @@
-use super::{
-    AppManifest, AppSpec, Frame, MAX_REQUEST_BYTES, parse_args, read_frame, validate_manifest,
-    write_reply,
-};
+use super::{AppManifest, AppSpec, parse_args, validate_manifest};
 use serde_json::json;
 use std::{ffi::OsString, io::BufReader, path::PathBuf};
+use tilo_mcp::lines::{Frame, MAX_REQUEST_BYTES, read_frame, write_reply};
 #[cfg(target_os = "linux")]
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -168,9 +166,9 @@ tilo_test_env::scenario! {
     // the order asked: a `tilo_status` and a `tilo_cancel` answer while two
     // invokes wait, and every reply is one whole line.
     {
-        use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
+        use tilo_mcp::test_hosts::{GatedHost, overlapping_lines};
         let host = GatedHost::default();
-        let server = std::sync::Arc::new(crate::mcp::McpServer::new(
+        let server = std::sync::Arc::new(tilo_mcp::McpServer::new(
             host.clone(),
             "workspace".into(),
             "owner".into(),

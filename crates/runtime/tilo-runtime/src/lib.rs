@@ -3,8 +3,8 @@
 //! attach to, and an MCP projection of its action host.
 //!
 //! The services are the host's: a desktop session and a standalone profile
-//! serve the same brokers. This crate owns the profile, the native endpoint,
-//! app attachment and the MCP protocol; it reaches the services only through
+//! serve the same brokers. This crate owns the profile, the native endpoint
+//! and app attachment, and serves `tilo_mcp`'s projection; it reaches the services only through
 //! [`RuntimeServices`]. [`standalone::Standalone`] hosts them without the
 //! Tilo desktop, for the `tilo-runtime` executable.
 
@@ -19,23 +19,15 @@ pub mod cli;
 mod daemon;
 #[cfg(target_os = "macos")]
 pub mod device_grants;
-pub mod device_mcp;
-pub mod enter;
 #[cfg(target_os = "macos")]
 mod i18n;
 pub mod key_runs;
-pub mod mcp;
 pub mod mcp_process;
-pub mod mcp_windows;
 pub mod offload;
 mod os_search;
 pub mod profile;
-pub mod session_door;
 pub mod standalone;
 pub mod unix;
-
-#[cfg(test)]
-pub(crate) mod mcp_test_hosts;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
@@ -56,15 +48,6 @@ pub const FILES_SOCKET: &str = "files.sock";
 /// Joins a workspace another host governs from an invitation, answering the
 /// joined workspace's id.
 pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
-
-/// Reads content an app of this profile stored, through that app's own
-/// scope, so an answer can carry what an action produced (the picture a
-/// `look` rendered) instead of only naming it.
-pub trait MediaReader: Send + Sync {
-    /// The bytes of `hash` as `app_id` stored them; `Ok(None)` when that app
-    /// may not read them or they are not here.
-    fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>>;
-}
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
@@ -132,12 +115,12 @@ pub trait RuntimeServices: Sized {
     fn mcp_session_factory(
         &self,
         workspace: &str,
-    ) -> io::Result<mcp::SessionFactory<Self::ActionHost>> {
+    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionHost>> {
         let workspace = self.mcp_workspace(Some(workspace))?;
         let host = self.action_host()?;
         let actor = self.actor().to_owned();
         Ok(std::sync::Arc::new(move || {
-            Ok(mcp::McpServer::new(
+            Ok(tilo_mcp::McpServer::new(
                 host.clone(),
                 workspace.clone(),
                 actor.clone(),
@@ -156,14 +139,14 @@ pub trait RuntimeServices: Sized {
 
     /// Where MCP answers read the content apps stored; `None` for a host
     /// without a content service.
-    fn media(&self) -> Option<std::sync::Arc<dyn MediaReader>> {
+    fn media(&self) -> Option<std::sync::Arc<dyn tilo_mcp::MediaReader>> {
         None
     }
 
     /// The MCP servers of the person's other devices, as this host reaches
     /// them from its own endpoint: what a `--connect --device` client is
     /// carried to. `None` for a host that reaches none.
-    fn other_devices(&self) -> Option<std::sync::Arc<device_mcp::OtherDevices>> {
+    fn other_devices(&self) -> Option<std::sync::Arc<tilo_mcp::devices::OtherDevices>> {
         None
     }
 }

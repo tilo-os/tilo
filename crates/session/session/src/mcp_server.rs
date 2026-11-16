@@ -1,7 +1,7 @@
 //! The session's MCP server: how agents reach the action API. `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 //! (0600, in the session's 0700 directory) is where a program of this login reaches this desktop's
 //! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
-//! ([`tilo_runtime::session_door`]). Three gates stand between a connection and the desktop: its
+//! ([`tilo_mcp::session_door`]). Three gates stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
@@ -13,7 +13,7 @@
 //! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's
 //! answers about it are remembered per environment. A client may ask for a workspace by id instead
-//! of the one in front ([`tilo_runtime::session_door::WORKSPACE`]); it is admitted there only if
+//! of the one in front ([`tilo_mcp::session_door::WORKSPACE`]); it is admitted there only if
 //! the person is one of its people.
 
 mod agent_key;
@@ -47,7 +47,7 @@ use tilo_actions::remote::{
 use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
-use tilo_runtime::session_door::{Consent, Hello};
+use tilo_mcp::session_door::{Consent, Hello};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
@@ -120,7 +120,7 @@ struct Facts {
     app: Option<String>,
     /// The other device of the person's it connected from, over iroh ([`crate::device_mcp`]);
     /// `None` for a program of this login.
-    origin: Option<tilo_runtime::device_mcp::Origin>,
+    origin: Option<tilo_mcp::devices::Origin>,
     /// The door of this login it came in by: the session's own, or an environment's.
     entrance: Origin,
 }
@@ -182,7 +182,7 @@ impl Facts {
     fn proposed(&self) -> String {
         let own = proposed_agent_id(&self.client);
         match &self.origin {
-            Some(origin) => tilo_runtime::device_mcp::agent_id(&own, &origin.device),
+            Some(origin) => tilo_mcp::devices::agent_id(&own, &origin.device),
             None => own,
         }
     }
@@ -1340,8 +1340,7 @@ fn facts_of(pid: u32, launches: &Launches, entrance: Origin) -> Facts {
 /// Tell a refused client why, as a JSON-RPC error, then let it go.
 fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     use std::io::Write as _;
-    let reply =
-        tilo_runtime::session_door::error_reply(&serde_json::Value::Null, refusal.message());
+    let reply = tilo_mcp::session_door::error_reply(&serde_json::Value::Null, refusal.message());
     let _ = stream.set_nonblocking(false);
     if let Err(error) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
         tracing::warn!(%error, "a refused client's connection has no write timeout");
@@ -2400,7 +2399,7 @@ enum From {
     /// own door ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
-    Device(Box<tilo_runtime::device_mcp::Origin>),
+    Device(Box<tilo_mcp::devices::Origin>),
     /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
     /// asks for its environments' doors, and is served nothing else.
     ShellRuntime(u32),
@@ -2432,7 +2431,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     } = serving;
     let (broker, device_agents) = (broker.clone(), device_agents.clone());
     let Opened { mut stream, from } = opened;
-    let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
+    let first = match tilo_mcp::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
         Err(error) => return left_before_asking(&error),
     };
@@ -2474,20 +2473,20 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     else {
         return;
     };
-    if let Some(forward) = tilo_runtime::device_mcp::forward_request(&first) {
+    if let Some(forward) = tilo_mcp::devices::forward_request(&first) {
         // A client of this login asks to be carried to another of the person's devices, which
         // decides whether it works there.
         tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
         match device_agents {
             Some(device_agents) => device_agents.forward(stream, &forward),
-            None => tilo_runtime::device_mcp::refuse_forward(
+            None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices".into(),
             ),
         }
         return;
     }
-    if tilo_runtime::session_door::is_control_request(&first) {
+    if tilo_mcp::session_door::is_control_request(&first) {
         // Only a program inside an app this session started drives the control protocol: it acts as
         // that app, in the workspace the app was started into, and the broker's permissions decide
         // for it.
@@ -2567,7 +2566,7 @@ fn serve_admitted(
             None
         }
     };
-    let ended = tilo_runtime::session_door::serve_with(
+    let ended = tilo_mcp::session_door::serve_with(
         stream,
         Some(first),
         || {
@@ -2600,11 +2599,10 @@ fn serve_admitted(
                 }
             }
         },
-        tilo_runtime::session_door::Beside {
-            tasks: Some(tasks as Arc<dyn tilo_runtime::mcp::TaskHosts>),
-            devices: device_agents.map(|device_agents| {
-                device_agents as Arc<dyn tilo_runtime::device_mcp::DeviceDirectory>
-            }),
+        tilo_mcp::session_door::Beside {
+            tasks: Some(tasks as Arc<dyn tilo_mcp::TaskHosts>),
+            devices: device_agents
+                .map(|device_agents| device_agents as Arc<dyn tilo_mcp::devices::DeviceDirectory>),
         },
         |hello, connected| {
             let consent = ask(

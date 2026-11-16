@@ -12,7 +12,7 @@
 //! ends as a device does: a revocation their root signs, from their device list or the agent's
 //! card. A revoked key is never certified again; a new key is a new FILE.
 //!
-//! A program presenting the key at the door ([`tilo_runtime::session_door::KEY`]) is admitted as
+//! A program presenting the key at the door ([`tilo_mcp::session_door::KEY`]) is admitted as
 //! the grant's agent without a question: every connection an instance of its own, attributed to the
 //! grant, working in a run its admission starts, like a client the person admitted on the sheet.
 //! A key the session does not hold, an expired or revoked grant, or one the person's root could not

@@ -32,7 +32,6 @@ mod workspace;
 mod workspace_keys;
 mod workspaces;
 
-use crate::device_mcp::PersonalDevices;
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
@@ -60,6 +59,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
+use tilo_mcp::devices::PersonalDevices;
 use tilo_peer_state::actions::ActionPlane;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
@@ -101,7 +101,7 @@ pub struct Standalone {
     _personal_router: iroh::protocol::Router,
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
-    other_devices: Arc<crate::device_mcp::OtherDevices>,
+    other_devices: Arc<tilo_mcp::devices::OtherDevices>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -490,7 +490,7 @@ impl RuntimeServices for Standalone {
     fn mcp_session_factory(
         &self,
         requested: &str,
-    ) -> io::Result<crate::mcp::SessionFactory<RuntimeActionHost>> {
+    ) -> io::Result<tilo_mcp::SessionFactory<RuntimeActionHost>> {
         let workspace = self.mcp_workspace(Some(requested))?;
         let actor = self.actor.clone();
         let host = self.action_host()?;
@@ -535,14 +535,14 @@ impl RuntimeServices for Standalone {
         )
     }
 
-    fn media(&self) -> Option<Arc<dyn crate::MediaReader>> {
+    fn media(&self) -> Option<Arc<dyn tilo_mcp::MediaReader>> {
         Some(Arc::new(profile::BlobMedia::new(
             &self.blob_socket,
             &self.workspace,
         )))
     }
 
-    fn other_devices(&self) -> Option<Arc<crate::device_mcp::OtherDevices>> {
+    fn other_devices(&self) -> Option<Arc<tilo_mcp::devices::OtherDevices>> {
         Some(Arc::clone(&self.other_devices))
     }
 }
@@ -648,7 +648,7 @@ impl RuntimeActionHost {
         workspace: String,
         actor: String,
         policy_time: tilo_action_broker::policy_clock::PolicyTime,
-    ) -> crate::mcp::SessionFactory<Self> {
+    ) -> tilo_mcp::SessionFactory<Self> {
         let host = self;
         Arc::new(move || {
             // The MCP client is an agent the person's device hands this
@@ -656,9 +656,9 @@ impl RuntimeActionHost {
             // of the durable owner, so people are shown a short label for it
             // instead of the whole run id.
             let (session_host, caller, agent) =
-                host.agent_run(&workspace, &actor, &policy_time, crate::mcp::agent_id)?;
-            let label = crate::mcp::agent_label(&agent);
-            Ok(crate::mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
+                host.agent_run(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
+            let label = tilo_mcp::agent_label(&agent);
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
         })
     }
 
@@ -1065,10 +1065,10 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
 
 /// The MCP servers of the person's other devices, dialed from `joined`'s
 /// endpoint as the device the person's store `personal` certifies.
-fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<crate::device_mcp::OtherDevices> {
-    Arc::new(crate::device_mcp::OtherDevices::new(
+fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<tilo_mcp::devices::OtherDevices> {
+    Arc::new(tilo_mcp::devices::OtherDevices::new(
         joined.endpoint(),
-        Arc::new(crate::device_mcp::PersonalDevices::new(personal.clone())),
+        Arc::new(tilo_mcp::devices::PersonalDevices::new(personal.clone())),
         tilo_rt::app().handle().clone(),
     ))
 }

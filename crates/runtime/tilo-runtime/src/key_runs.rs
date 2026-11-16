@@ -23,8 +23,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_host::app_serving::AppServingPlane;
 
-use crate::device_mcp::PersonsDevices;
 use collab_types::WorkspaceId;
+use tilo_mcp::devices::PersonsDevices;
 
 /// The most runs one device keeps for its person's keys at once.
 const MAX_RUNS: usize = 256;
@@ -114,7 +114,7 @@ impl KeyRuns {
             .is_some_and(|scope| !scope.reaches(&workspace))
         {
             return Err(ActionHostError::Refused {
-                reason: crate::device_mcp::Refusal::OutOfScope.reason(),
+                reason: tilo_mcp::devices::Refusal::OutOfScope.reason(),
             });
         }
         let mut open = self.open.lock_recover();

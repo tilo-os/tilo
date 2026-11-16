@@ -367,7 +367,7 @@ const ANSWERED_KEPT: usize = 256;
 const LISTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The provider surface apps address the desktop's actions under.
-pub const SESSION_PROVIDER: &str = tilo_runtime::session_door::SESSION_PROVIDER;
+pub const SESSION_PROVIDER: &str = tilo_mcp::session_door::SESSION_PROVIDER;
 
 /// What the session answers its surface apps' actions from: the published side every caller of the
 /// desktop reaches, so a surface invokes what a person's palette or an agent invokes.

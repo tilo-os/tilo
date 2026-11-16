@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_action_policy::AgentSessionId;
 use tilo_broker_core::services::AgentTurn;
 use tilo_lock::MutexRecover as _;
-use tilo_runtime::session_door::Consent;
+use tilo_mcp::session_door::Consent;
 
 /// The agent sessions served here, from the moment a client connects until its connection ends.
 pub(crate) struct AgentSessions {

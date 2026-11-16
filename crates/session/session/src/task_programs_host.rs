@@ -19,7 +19,7 @@ use crate::platform::programs::{ProgramRequest, Programs};
 type Host = Arc<dyn ActionHost + Send + Sync>;
 
 /// One agent session's door, over its own host.
-type Door = tilo_runtime::mcp::McpServer<Arc<Current>>;
+type Door = tilo_mcp::McpServer<Arc<Current>>;
 
 /// An agent session, by the workspace it works in, its agent and its id.
 type SessionKey = (String, String, String);
@@ -187,7 +187,7 @@ fn unavailable(message: String) -> HostStepOutcome {
     }))
 }
 
-fn outcome(ran: tilo_runtime::mcp::TaskProgram) -> tilo_actions::ActionOutput {
+fn outcome(ran: tilo_mcp::TaskProgram) -> tilo_actions::ActionOutput {
     let answer = wire::ProgramAnswer {
         text: ran.text,
         failed: ran.failed,

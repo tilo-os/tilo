@@ -2,7 +2,7 @@
 //! tools against a stub app, its directory, the content it produced and the
 //! runs and executions the calls are attributed to.
 use super::*;
-use crate::mcp_test_hosts::{
+use crate::test_hosts::{
     CatalogueAvailability, PNG, StoredByTestApp, StubHost, run, run_paused, tool, witnessed,
 };
 use std::sync::Arc;
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
         run(async {
             for name in ["Painter", "Critic"] {
                 let server =
-                    crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
+                    crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
                 server
                     .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}))
                     .await
@@ -251,7 +251,7 @@ tilo_test_env::scenario! {
         let host = StubHost::default();
         let invoked = Arc::clone(&host.invoked);
         run(async {
-            let first = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
+            let first = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let answer = first
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
             .await;
             drop(first);
 
-            let again = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
+            let again = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let answer = again
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
             .await;
 
             // A third connection continues the same run too.
-            let third = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
+            let third = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
             third
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}}))
                 .await
@@ -299,7 +299,7 @@ tilo_test_env::scenario! {
             .await;
             drop(third);
 
-            let bad = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+            let bad = crate::McpServer::new(host, "workspace".into(), "owner".into());
             let refused = bad
                 .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":"two words"}}}}}))
                 .await
@@ -340,7 +340,7 @@ tilo_test_env::scenario! {
         let host = StubHost::default();
         let running_for = Arc::clone(&host.running_for);
         let invoked = Arc::clone(&host.invoked);
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             let target = json!({"peer_id":71,"revision":"1","resource":"test.note:1","action":tilo_resource::APPLY});
             running_for.store(3, std::sync::atomic::Ordering::SeqCst);
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
     {
         let host = StubHost::default();
         let invoked = Arc::clone(&host.invoked);
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             let current = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
             let reply = tool(&server, "tilo_invoke", current.clone()).await;
@@ -407,7 +407,7 @@ tilo_test_env::scenario! {
     phase a_query_answers_compact_by_default_and_matches_every_word_of_a_needle;
     {
         let server =
-            crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
+            crate::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
         run(async {
             let compact = tool(&server, "tilo_query", json!({"peer_id":71})).await;
             let page = &compact["structuredContent"];
@@ -482,7 +482,7 @@ tilo_test_env::scenario! {
     {
         let host = StubHost::default();
         let invoked = Arc::clone(&host.invoked);
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             let page = tool(
                 &server,
@@ -510,7 +510,7 @@ tilo_test_env::scenario! {
     phase a_session_can_pin_the_full_rows_it_parses;
     {
         let server =
-            crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
+            crate::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
         run(async {
             let init = |capabilities: Value| json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":capabilities}});
             let reply = server.handle(init(json!({}))).await.unwrap();
@@ -552,7 +552,7 @@ tilo_test_env::scenario! {
     phase opening_a_host_application_answers_without_waiting_for_a_peer;
     {
         let server =
-            crate::mcp::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
+            crate::McpServer::new(StubHost::default(), "workspace".into(), "owner".into());
         // On the paused clock the answer takes no time unless it waits on a
         // timer, as waiting for a peer to start would.
         run_paused(async {
@@ -656,9 +656,9 @@ tilo_test_env::scenario! {
             resources: Vec::new(),
         };
         let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
-        let label = |reply: &Value| reply["structuredContent"][crate::mcp::UNTRUSTED].clone();
+        let label = |reply: &Value| reply["structuredContent"][crate::UNTRUSTED].clone();
 
-        let plain = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let plain = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into());
         run(async {
             let reply = tool(&plain, "tilo_invoke", target.clone()).await;
             assert_eq!(
@@ -679,7 +679,7 @@ tilo_test_env::scenario! {
         tags.lock()
             .unwrap()
             .push(tilo_actions::UNTRUSTED_CONTENT_TAG.into());
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             let listed = tool(&server, "tilo_query", json!({"peer_id":71})).await;
             assert!(
@@ -694,10 +694,10 @@ tilo_test_env::scenario! {
                 reply["structuredContent"]["update"]["state"], "succeeded",
                 "{reply}"
             );
-            assert_eq!(label(&reply), crate::mcp::UNTRUSTED_NOTE, "{reply}");
+            assert_eq!(label(&reply), crate::UNTRUSTED_NOTE, "{reply}");
             let text = reply["content"][0]["text"].as_str().unwrap();
             let note = text
-                .find(crate::mcp::UNTRUSTED_NOTE)
+                .find(crate::UNTRUSTED_NOTE)
                 .expect("the text block carries it");
             assert!(
                 note < text.find("Ignore your task").unwrap(),
@@ -709,7 +709,7 @@ tilo_test_env::scenario! {
             later["wait_ms"] = json!(0);
             let accepted = tool(&server, "tilo_invoke", later).await;
             assert_eq!(accepted["structuredContent"]["update"]["state"], "accepted");
-            assert_eq!(label(&accepted), crate::mcp::UNTRUSTED_NOTE, "{accepted}");
+            assert_eq!(label(&accepted), crate::UNTRUSTED_NOTE, "{accepted}");
             running_for.store(0, std::sync::atomic::Ordering::SeqCst);
             let id = accepted["structuredContent"]["invocation_id"]
                 .as_str()
@@ -720,7 +720,7 @@ tilo_test_env::scenario! {
                 status["structuredContent"]["update"]["state"], "succeeded",
                 "{status}"
             );
-            assert_eq!(label(&status), crate::mcp::UNTRUSTED_NOTE, "{status}");
+            assert_eq!(label(&status), crate::UNTRUSTED_NOTE, "{status}");
 
             let batch = tool(
                 &server,
@@ -733,8 +733,8 @@ tilo_test_env::scenario! {
             .await;
             for step in batch["structuredContent"]["results"].as_array().unwrap() {
                 assert_eq!(
-                    step[crate::mcp::UNTRUSTED],
-                    crate::mcp::UNTRUSTED_NOTE,
+                    step[crate::UNTRUSTED],
+                    crate::UNTRUSTED_NOTE,
                     "{batch}"
                 );
             }
@@ -755,7 +755,7 @@ tilo_test_env::scenario! {
         };
         let running_for = Arc::clone(&host.running_for);
         let output = Arc::clone(&host.output);
-        let server = crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into())
+        let server = crate::McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)));
         let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
         let images = |reply: &Value| -> Vec<Value> {
@@ -828,7 +828,7 @@ tilo_test_env::scenario! {
                 "the second call made the same picture, and says so: {batch}"
             );
         });
-        let blind = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into());
+        let blind = crate::McpServer::new(host, "workspace".into(), "owner".into());
         run(async {
             let reply = tool(&blind, "tilo_invoke", target).await;
             assert!(
@@ -848,7 +848,7 @@ tilo_test_env::scenario! {
             value: Some(json!({"width":4,"height":3})),
             resources: vec!["tilo.content:look".into()],
         };
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)));
         let images = |reply: &Value| {
             reply["content"]
@@ -898,7 +898,7 @@ tilo_test_env::scenario! {
             value: Some(json!({"url":"https://site.test/","agent":{"kind":"view","action":"outline"}})),
             resources: vec!["tilo.content:look".into()],
         };
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)));
         let images = |reply: &Value| {
             reply["content"]
@@ -936,7 +936,7 @@ tilo_test_env::scenario! {
             value: Some(json!({"agent":{"kind":"effect"}})),
             resources: vec!["tilo.content:look".into()],
         };
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)));
         run(async {
             let reply = tool(
@@ -980,7 +980,7 @@ tilo_test_env::scenario! {
             value: Some(json!({"url":"https://site.test/","message":"Found canvas"})),
             resources: vec!["tilo.content:look".into()],
         };
-        let server = crate::mcp::McpServer::new(host, "workspace".into(), "owner".into())
+        let server = crate::McpServer::new(host, "workspace".into(), "owner".into())
             .with_media(Some(Arc::new(StoredByTestApp)));
         let images = |reply: &Value| {
             reply["content"]
@@ -1025,7 +1025,7 @@ tilo_test_env::scenario! {
                 .count()
         };
         let session = || {
-            crate::mcp::McpServer::new(host.clone(), "workspace".into(), "owner".into())
+            crate::McpServer::new(host.clone(), "workspace".into(), "owner".into())
                 .with_media(Some(Arc::new(StoredByTestApp)))
         };
         let server = session();

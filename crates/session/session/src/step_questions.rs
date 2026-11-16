@@ -268,7 +268,7 @@ mod tests {
     /// this login, in that order.
     fn sessions_of(agent: &str) -> (Arc<AgentSessions>, [String; 2]) {
         let sessions = AgentSessions::new();
-        let consent = tilo_runtime::session_door::Consent::Admit {
+        let consent = tilo_mcp::session_door::Consent::Admit {
             workspace: "w1".to_owned(),
             agent: agent.to_owned(),
             person: "p".to_owned(),

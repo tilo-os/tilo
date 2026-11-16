@@ -84,7 +84,7 @@ impl TaskHosts {
     }
 }
 
-impl tilo_runtime::mcp::TaskHosts for TaskHosts {
+impl tilo_mcp::TaskHosts for TaskHosts {
     fn start(&self, workspace: &str, task: &str) -> io::Result<std::os::fd::OwnedFd> {
         let (door_end, host_end) = UnixStream::pair()?;
         // The person's own connection into the same session: the lines they type run there,

@@ -22,7 +22,7 @@
 use super::*;
 use serde_json::{Value, json};
 use tilo_desktop_search::Source as _;
-use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
 /// The apps the agent works in.

@@ -20,7 +20,7 @@ use tilo_actions::remote::{
 use tilo_relay_protocol::live::LiveRecord;
 use tilo_session_client::remote::SessionActions;
 
-use crate::mcp::ActedRecord;
+use crate::ActedRecord;
 
 /// Longest the agent waits for the host to open a record it changed as a
 /// window before it goes on.
@@ -51,7 +51,7 @@ impl AgentWindows {
 
     /// The agent's call made or changed `changed`: each opens as a window,
     /// said to be opened in `run`, the run the call was a step of
-    /// ([`crate::mcp::McpServer::run_of`]), and is waited for while the host
+    /// ([`crate::McpServer::run_of`]), and is waited for while the host
     /// opens it. Whether it opened is no
     /// matter to the agent's work: a record the host cannot show is still
     /// what the agent changed.

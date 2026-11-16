@@ -10,7 +10,7 @@
 //! path), the host's observation of an invocation for a run, and the host's
 //! roster for presence.
 use super::*;
-use crate::mcp::step::DeclaredRun;
+use crate::step::DeclaredRun;
 
 /// One invocation of this session, as `tilo_watch` follows it: what it ran,
 /// the run it is a step of, and how it stands.
@@ -84,22 +84,19 @@ impl Cursor {
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// How invocation `id` stands, as `tilo_status` answers it.
-    pub(in crate::mcp) async fn status(
-        &self,
-        id: tilo_actions::InvocationId,
-    ) -> Result<Value, String> {
+    pub(crate) async fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.observed(id)
             .await
             .as_ref()
-            .map(|state| crate::mcp::state_json(id, state))
-            .ok_or_else(|| crate::mcp::UNOWNED.into())
+            .map(|state| crate::state_json(id, state))
+            .ok_or_else(|| crate::UNOWNED.into())
     }
 
     /// The host's last state of invocation `id`, asked off this task's
     /// thread: a host may ask the device running it and wait for the answer
     /// (a session's actions do), and a wait on this thread would stall the
     /// connection that carries that answer until it gave up.
-    pub(in crate::mcp) async fn observed(
+    pub(crate) async fn observed(
         &self,
         id: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {

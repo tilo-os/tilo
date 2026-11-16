@@ -820,13 +820,10 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         codex.workspace,
         host.cert.device_public_key,
     );
-    let windows = tilo_runtime::mcp_windows::AgentWindows::new(
-        actions.clone(),
-        person.clone(),
-        WORKSPACE.into(),
-    );
-    let server = tilo_runtime::mcp::McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(tilo_runtime::mcp::Surface::Agent)
+    let windows =
+        tilo_mcp::windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
+    let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_run("run-codex", "Codex");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
     assert!(listed.contains("notes"), "{listed}");
@@ -915,8 +912,8 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         agent.workspace,
         host.cert.device_public_key,
     );
-    let server = tilo_runtime::mcp::McpServer::new(actions, cluster.clone(), person)
-        .with_surface(tilo_runtime::mcp::Surface::Agent)
+    let server = tilo_mcp::McpServer::new(actions, cluster.clone(), person)
+        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_run("run-guest", "Claude Code");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 

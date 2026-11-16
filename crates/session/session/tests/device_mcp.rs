@@ -1,6 +1,6 @@
 //! An agent on another of the person's devices at this desktop's MCP server,
 //! over iroh: the server this session answers on (`Session::device_mcp`, what
-//! its endpoint serves on `tilo_runtime::device_mcp::ALPN`) admits only the
+//! its endpoint serves on `tilo_mcp::devices::ALPN`) admits only the
 //! person's own devices, and an agent from one is asked about on the same
 //! sheet as a program of this login — named after the device it came from —
 //! unless the person let agents from their other devices in on this device.
@@ -33,9 +33,9 @@ use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+use tilo_mcp::devices::{ALPN, PersonalDevices, agent_id, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
-use tilo_runtime::device_mcp::{ALPN, PersonalDevices, agent_id, open};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;

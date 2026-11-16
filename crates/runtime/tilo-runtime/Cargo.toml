@@ -133,7 +133,7 @@ tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
-tilo-session-core = { path = "../../session/core" }
+tilo-mcp = { path = "../tilo-mcp" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
@@ -165,6 +165,7 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
+tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The attachment an app makes to the host this runtime serves, which the
 # process-boundary tests drive as an app inside a login does.
 runtime-portal = { path = "../runtime-portal" }

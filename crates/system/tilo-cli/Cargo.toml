@@ -59,10 +59,10 @@ postcard.workspace = true
 hex.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "signal"] }
-# `tilo mcp`: the runtime's own MCP projection of a workspace, its actions
-# asked of the workspace's host through this device's session, as the person
-# their workspaces name.
-tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# `tilo mcp`: the MCP projection of a workspace, its actions asked of the
+# workspace's host through this device's session, as the person their
+# workspaces name.
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 # The API: its description (`tilo sdk gen --lang openapi`), the routes the hosted
 # commands call, and the same routes served in process as this computer's key.
 tilo-api = { path = "../../hosting/tilo-api" }

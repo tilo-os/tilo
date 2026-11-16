@@ -2,7 +2,7 @@
 //! for a call that did not, and the rows a listing and a refusal carry.
 use super::render::render_value;
 use super::{ActionDescriptor, Reply, Value, json};
-use crate::mcp::UNTRUSTED;
+use crate::UNTRUSTED;
 use std::fmt::Write as _;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy

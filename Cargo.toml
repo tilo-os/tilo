@@ -412,6 +412,7 @@ members = [
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
+    "crates/runtime/tilo-mcp",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
     "crates/runtime/egress",

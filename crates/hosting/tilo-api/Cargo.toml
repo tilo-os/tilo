@@ -30,7 +30,7 @@ tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 tilo-relay-client = { path = "../tilo-relay-client" }
 tilo-relay-session = { path = "../tilo-relay-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
-tilo-runtime = { path = "../../runtime/tilo-runtime" }
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

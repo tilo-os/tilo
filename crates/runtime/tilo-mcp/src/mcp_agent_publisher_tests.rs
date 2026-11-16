@@ -270,7 +270,7 @@ async fn opening_or_showing_a_running_app_asks_for_its_window_on_the_shell() {
     let workspace = Workspace::default();
     let server = agent(&workspace);
     let browser = || {
-        vec![crate::mcp::ActedRecord {
+        vec![crate::ActedRecord {
             app: BROWSER.into(),
             record: String::new(),
         }]

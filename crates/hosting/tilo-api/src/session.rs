@@ -1,5 +1,5 @@
 //! One agent run through the server: an MCP session of the agent, served here
-//! by the agent surface `tilo mcp` serves ([`tilo_runtime::mcp::McpServer`]),
+//! by the agent surface `tilo mcp` serves ([`tilo_mcp::McpServer`]),
 //! its actions asked of the workspace's relay over the grant's own session
 //! ([`crate::relay`], [`SessionActions`]). Record actions run on the relay's
 //! app workers, and each record the agent makes or changes opens on the
@@ -21,7 +21,7 @@
 //! and which the workspace's host shows present, doing what it does, while
 //! the session lives: the host is the run's one voice, so the server says
 //! nothing of it itself, and opens the records the run works in as windows
-//! (`mcp_windows`, as `tilo mcp` does).
+//! (`tilo_mcp::windows`, as `tilo mcp` does).
 
 pub mod members;
 
@@ -33,8 +33,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_runtime::mcp_windows;
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
@@ -73,13 +72,13 @@ impl Reply {
 struct Served {
     server: McpServer<SessionActions>,
     /// The windows of the records the run works in.
-    windows: Arc<mcp_windows::AgentWindows>,
+    windows: Arc<tilo_mcp::windows::AgentWindows>,
 }
 
 /// A run in a workspace one of the person's devices hosts, entered at that
 /// device's MCP server: the device serves the whole run, its people and its
 /// windows included, and shows the agent there itself.
-struct OnDevice(tilo_runtime::enter::Entered);
+struct OnDevice(tilo_mcp::enter::Entered);
 
 /// One workspace's run, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
@@ -281,7 +280,7 @@ impl Session {
         let actions = device.actions(id);
         // The records the run works in open as windows on the workspace's
         // shell; the host that executes the run shows it there.
-        let windows = Arc::new(mcp_windows::AgentWindows::new(
+        let windows = Arc::new(tilo_mcp::windows::AgentWindows::new(
             actions.clone(),
             self.person.clone(),
             workspace.to_owned(),
@@ -377,7 +376,7 @@ impl Session {
             .endpoint()
             .await
             .map_err(|error| error.to_string())?;
-        let on_device = tilo_runtime::enter::enter(
+        let on_device = tilo_mcp::enter::enter(
             &endpoint,
             &self.connection.entering_key(),
             workspace,

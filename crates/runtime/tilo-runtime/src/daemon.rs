@@ -1,10 +1,5 @@
 //! Persistent native session shared by independently launched GUI apps and MCP.
-use crate::{
-    BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices,
-    mcp::McpServer,
-    mcp_process::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader},
-    unix,
-};
+use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, unix};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -22,6 +17,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tilo_mcp::McpServer;
+use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
+use tilo_mcp::session_door::{Asking, bridge_stdio};
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
@@ -65,7 +63,7 @@ pub struct Args {
     /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
     /// client to that device's MCP server instead of this one's
     /// ([`crate::device_mcp`]).
-    pub forward: Option<crate::device_mcp::Forward>,
+    pub forward: Option<tilo_mcp::devices::Forward>,
     /// `--workspace ID` without `--device`, for `--connect` only: the
     /// workspace the client asks this desktop's MCP server to let it work in,
     /// rather than the one in front of the person. The person decides; it is
@@ -212,13 +210,13 @@ fn forward_of(
     mode: &Mode,
     device: Option<String>,
     workspace: Option<String>,
-) -> io::Result<Option<crate::device_mcp::Forward>> {
+) -> io::Result<Option<tilo_mcp::devices::Forward>> {
     if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
         return Err(invalid(
             "--device and --workspace choose where --connect goes: use them with --connect",
         ));
     }
-    Ok(device.map(|device| crate::device_mcp::Forward { device, workspace }))
+    Ok(device.map(|device| tilo_mcp::devices::Forward { device, workspace }))
 }
 
 /// The device `--device` names, by its name or its endpoint id.
@@ -840,15 +838,15 @@ fn serve_profile<S: RuntimeServices + Send + Sync + 'static>(
 
 /// What every native connection is served with.
 struct Endpoint<H> {
-    session_factory: crate::mcp::SessionFactory<H>,
+    session_factory: tilo_mcp::SessionFactory<H>,
     status: Status,
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
     /// Where answers read the content actions produced.
-    media: Option<Arc<dyn crate::MediaReader>>,
+    media: Option<Arc<dyn tilo_mcp::MediaReader>>,
     /// The person's other devices' MCP servers, as this runtime reaches them.
-    other_devices: Option<Arc<crate::device_mcp::OtherDevices>>,
+    other_devices: Option<Arc<tilo_mcp::devices::OtherDevices>>,
 }
 
 /// The longest first line a native connection is read for before it is
@@ -919,7 +917,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     }
                     if let Some(forward) = first
                         .strip_suffix(b"\n")
-                        .and_then(crate::device_mcp::forward_request)
+                        .and_then(tilo_mcp::devices::forward_request)
                     {
                         match &other_devices {
                             // A client asks for nothing more before it is told
@@ -927,11 +925,11 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                             Some(other_devices) if reader.buffer().is_empty() => {
                                 other_devices.serve_forward(stream, &forward);
                             }
-                            Some(_) => crate::device_mcp::refuse_forward(
+                            Some(_) => tilo_mcp::devices::refuse_forward(
                                 stream,
                                 "a forward is the only line before its answer".into(),
                             ),
-                            None => crate::device_mcp::refuse_forward(
+                            None => tilo_mcp::devices::refuse_forward(
                                 stream,
                                 "this runtime reaches none of your other devices".into(),
                             ),
@@ -942,7 +940,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     let server = match factory() {
                         Ok(server) => Arc::new(server.with_media(media).with_devices(
                             other_devices.map(|other_devices| {
-                                other_devices as Arc<dyn crate::device_mcp::DeviceDirectory>
+                                other_devices as Arc<dyn tilo_mcp::devices::DeviceDirectory>
                             }),
                         )),
                         Err(error) => {
@@ -1101,174 +1099,50 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 ///
 /// With `forward`, the host this process belongs to carries the connection on
 /// to the MCP server of the device it names, and this process's stdio is that
-/// server's once it opened ([`crate::device_mcp::ask_forward`]). `workspace` is
+/// server's once it opened ([`tilo_mcp::devices::ask_forward`]). `workspace` is
 /// the workspace the client asks this desktop's MCP server for, written into
 /// its `initialize`.
 pub fn connect(
     profile: &Path,
     standalone: bool,
-    forward: Option<&crate::device_mcp::Forward>,
+    forward: Option<&tilo_mcp::devices::Forward>,
     workspace: Option<&str>,
 ) -> io::Result<()> {
-    let route = crate::session_door::route(
+    let route = tilo_mcp::session_door::route(
         standalone,
-        crate::session_door::environment_door(std::env::var_os(
+        tilo_mcp::session_door::environment_door(std::env::var_os(
             tilo_paths::login::AGENT_SOCKET_ENV,
         )),
         tilo_paths::login::is_tilo_login(),
-        crate::session_door::agent_socket_path(
+        tilo_mcp::session_door::agent_socket_path(
             tilo_paths::login::login_runtime_dir().map(Into::into),
         ),
         Path::exists,
     )?;
     let mut stream = match route {
-        crate::session_door::Route::Session(door) => UnixStream::connect(&door)
-            .map_err(|error| crate::session_door::unreachable_door(&door, &error))?,
-        crate::session_door::Route::Standalone if workspace.is_some() => {
+        tilo_mcp::session_door::Route::Session(door) => UnixStream::connect(&door)
+            .map_err(|error| tilo_mcp::session_door::unreachable_door(&door, &error))?,
+        tilo_mcp::session_door::Route::Standalone if workspace.is_some() => {
             return Err(invalid(
                 "--workspace asks a Tilo desktop's MCP server for a workspace, and this process \
                  is not in a Tilo login",
             ));
         }
-        crate::session_door::Route::Standalone => {
+        tilo_mcp::session_door::Route::Standalone => {
             ensure_running(profile)?;
             UnixStream::connect(profile.join("native.sock"))?
         }
     };
     if let Some(forward) = forward {
-        crate::device_mcp::ask_forward(&mut stream, forward)?;
+        tilo_mcp::devices::ask_forward(&mut stream, forward)?;
     }
     bridge_stdio(
         stream,
         Asking {
             workspace: workspace.map(str::to_owned),
-            key: crate::session_door::agent_key()?,
+            key: tilo_mcp::session_door::agent_key()?,
         },
     )
-}
-
-/// What the relay writes into a client's `initialize`, under
-/// `params.capabilities.experimental["so.tilo"]`: the workspace it asks for
-/// ([`crate::session_door::WORKSPACE`]) and the agent key it presents
-/// ([`crate::session_door::KEY`]).
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Asking {
-    pub(crate) workspace: Option<String>,
-    pub(crate) key: Option<String>,
-}
-
-impl Asking {
-    fn is_empty(&self) -> bool {
-        self.workspace.is_none() && self.key.is_none()
-    }
-
-    /// `line` with what this asks written in, when it is the client's `initialize`; `None` for
-    /// any other line, which goes to the door as it is.
-    fn written_into(&self, line: &[u8]) -> Option<Vec<u8>> {
-        let mut request: serde_json::Value = serde_json::from_slice(line).ok()?;
-        if request.get("method").and_then(serde_json::Value::as_str) != Some("initialize") {
-            return None;
-        }
-        let params = request
-            .as_object_mut()?
-            .entry("params")
-            .or_insert_with(|| serde_json::json!({}));
-        let mut at = params;
-        for key in ["capabilities", "experimental", "so.tilo"] {
-            at = at
-                .as_object_mut()?
-                .entry(key)
-                .or_insert_with(|| serde_json::json!({}));
-        }
-        let ours = at.as_object_mut()?;
-        if let Some(workspace) = &self.workspace {
-            ours.insert("workspace".into(), serde_json::json!(workspace));
-        }
-        if let Some(key) = &self.key {
-            ours.insert("key".into(), serde_json::json!(key));
-        }
-        serde_json::to_vec(&request).ok()
-    }
-}
-
-/// Relay this process's stdin to `stream` and `stream` to its stdout; the
-/// client's `initialize` says what `asking` asks, when it asks anything.
-pub(crate) fn bridge_stdio(mut stream: UnixStream, asking: Asking) -> io::Result<()> {
-    let mut writer = stream.try_clone()?;
-    std::thread::Builder::new()
-        .name("tilo-mcp-proxy-stdin".into())
-        .spawn(move || {
-            let result = if asking.is_empty() {
-                relay(&mut io::stdin().lock(), &mut writer)
-            } else {
-                relay_asking(
-                    &mut io::BufReader::new(io::stdin().lock()),
-                    &mut writer,
-                    &asking,
-                )
-            };
-            let _ = writer.shutdown(std::net::Shutdown::Write);
-            result
-        })?;
-    relay(&mut stream, &mut io::stdout().lock())?;
-    Ok(())
-}
-
-/// [`relay`], with the client's `initialize` saying what `asking` asks: the
-/// lines before it, and it, are read whole; everything after is copied as it
-/// comes.
-pub(crate) fn relay_asking(
-    from: &mut impl io::BufRead,
-    to: &mut impl io::Write,
-    asking: &Asking,
-) -> io::Result<u64> {
-    /// The most the client sends before its `initialize` is through, as the
-    /// door reads it.
-    const MOST: u64 = 64 * 1024;
-    let mut total = 0_u64;
-    loop {
-        let mut line = Vec::new();
-        let read =
-            io::Read::take(&mut *from, MOST.saturating_sub(total)).read_until(b'\n', &mut line)?;
-        if read == 0 {
-            return Ok(total);
-        }
-        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        let body = line.strip_suffix(b"\n").unwrap_or(&line);
-        let asked = asking.written_into(body);
-        match &asked {
-            Some(rewritten) => {
-                to.write_all(rewritten)?;
-                to.write_all(b"\n")?;
-            }
-            None => to.write_all(&line)?,
-        }
-        to.flush()?;
-        if asked.is_some() || total >= MOST {
-            break;
-        }
-    }
-    Ok(total.saturating_add(relay(from, to)?))
-}
-
-/// Copy `from` to `to`, flushing after every read. A client waits for each
-/// reply before it sends the next request, so a reply must not sit in a
-/// buffer until more arrives: `io::copy` into a buffered stdout fills its
-/// buffer and writes only when it is full or the stream ends.
-pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
-    let mut buffer = [0_u8; 16 * 1024];
-    let mut total = 0_u64;
-    loop {
-        let read = match from.read(&mut buffer) {
-            Ok(0) => return Ok(total),
-            Ok(read) => read,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        to.write_all(buffer.get(..read).unwrap_or_default())?;
-        to.flush()?;
-        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-    }
 }
 
 /// Attach connected service descriptors and replace this host with the app.

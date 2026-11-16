@@ -20,7 +20,7 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
 use tilo_fs::tree_record::record as tree_record;
-use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 
 /// The tree the workspace's host keeps, as the record its members read.

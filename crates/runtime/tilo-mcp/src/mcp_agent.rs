@@ -1082,7 +1082,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "files" | "file-explorer" | "so.tilo.file-explorer"
         ) {
             return Ok(AppRef::Installed {
-                app_id: tilo_fs::tree_record::FILES_APP.to_owned(),
+                app_id: fs_protocol::tree::FILES_APP.to_owned(),
                 opens: true,
             });
         }
@@ -2199,7 +2199,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // read from (`tilo sdk gen -w`).
         if structured
             && resolved.node.is_none()
-            && let Some(surface) = ui::app_surface::bytes_of(&resolved.app_id)
+            && let Some(surface) = collab_types::app_surface::bytes_of(&resolved.app_id)
         {
             let mut reply = Reply::ok(String::new());
             reply.structured = Some(json!({

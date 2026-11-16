@@ -155,7 +155,7 @@ description = "Every command of tilo, with its usage, arguments and options, gen
 
 [[page]]
 slug = "mcp-tools"
-source = "crates/runtime/tilo-runtime/src/mcp_agent.rs"
+source = "crates/runtime/tilo-mcp/src/mcp_agent.rs"
 generator = "tools/docs/reference/mcp_tools.py"
 section = "Reference"
 nav = "MCP tools"
