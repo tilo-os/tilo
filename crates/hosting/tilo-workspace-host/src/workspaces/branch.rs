@@ -24,9 +24,12 @@
 //!    sealed under the branch's own keys where its records are sealed.
 //! 4. The content those records name is copied into the branch's content by what
 //!    keeps it ([`BranchContent`]).
+//! 5. The source's Linux machine is copied into the branch's by what runs the
+//!    workspaces' machines ([`WorkspaceMachines`](super::WorkspaceMachines)): a
+//!    source without one branches without one.
 //!
-//! All or nothing: a branch that could not take a record or its content is deleted
-//! again, and the refusal names what did not come. It is the person's, and listed
+//! All or nothing: a branch that could not take a record, its content or its
+//! machine is deleted again, and the refusal names what did not come. It is the person's, and listed
 //! among their workspaces, only once it holds everything. Whoever keeps more of a
 //! workspace than its records hears of each branch made ([`Workspaces::branches`]).
 
@@ -229,6 +232,9 @@ mod copy {
                     Err(error) => return Err(files(error.to_string())),
                 }
             }
+            self.branch_machine(source, branch)
+                .await
+                .map_err(NotMade::of("its Linux machine"))?;
             let ownership = || NotMade::of("its ownership");
             let own = self.own().ok_or_else(|| {
                 ownership()("this host keeps no workspaces of people's own".to_owned())

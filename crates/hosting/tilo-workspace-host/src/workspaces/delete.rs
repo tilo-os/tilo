@@ -11,6 +11,11 @@
 //! and whoever keeps more of it here (the content its members posted, the
 //! app workers acting in it) hears it went ([`Workspaces::deletions`]).
 //!
+//! Its Linux machine goes first, while the workspace is still there for the
+//! machine's host to hold ([`Workspaces::machines`]): a machine that could not
+//! be deleted fails the deletion, which is asked again, and the workspace
+//! stays as it was.
+//!
 //! A marker beside where its record was is written first and stays
 //! (`<workspace>.deleted`): a host stopped halfway finishes deleting it when it
 //! opens again, and the workspace is never made again under its identity.
@@ -35,9 +40,9 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here, or the deletion could not be
-    /// recorded. Once recorded, what is left of it is removed when the host
-    /// opens again.
+    /// The workspace is not governed here, its Linux machine could not be
+    /// deleted, or the deletion could not be recorded. Once recorded, what is
+    /// left of it is removed when the host opens again.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -51,6 +56,9 @@ impl Workspaces {
             .get(workspace)
             .cloned()
             .ok_or("this host does not govern that workspace")?;
+        // Before the workspace is held: its machine's host enters it to be
+        // asked, which takes the workspace's lock.
+        self.delete_machine(workspace).await?;
         let governed = governed.lock().await;
         let workspace_id = governed.workspace_id();
         // Recorded first: a host stopped halfway finishes when it opens.

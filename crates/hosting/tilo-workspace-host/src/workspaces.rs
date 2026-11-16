@@ -40,6 +40,8 @@ mod creating;
 mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+mod machines;
+pub use machines::WorkspaceMachines;
 mod surfaces;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, WholeRecords, WorkspaceContent};
@@ -959,6 +961,9 @@ struct WorkspacesInner {
     /// What asks a person whether a workspace of theirs runs commands
     /// unattended ([`Workspaces::ask_people`]).
     asks_people: std::sync::RwLock<Option<Arc<dyn AsksPeople>>>,
+    /// What runs the workspaces' Linux machines, as a branch takes its
+    /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
+    machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What the changes a record's repair kept wait for, by record, so a
@@ -1217,6 +1222,7 @@ impl Workspaces {
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
                 asks_people: std::sync::RwLock::default(),
+                machines: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),
