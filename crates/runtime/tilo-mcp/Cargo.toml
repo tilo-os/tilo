@@ -30,7 +30,6 @@ tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
@@ -44,6 +43,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
+# A test checks the agent id it forms is one a workspace admits.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }

@@ -99,3 +99,8 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   package = "tilo-browser-runtime"
   why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in the participant's host"
 
+  [[rule.allow]]
+  package = "tilo-mcp"
+  tests = true
+  why = "a test checks that the agent id the MCP server forms is one a workspace admits"
+

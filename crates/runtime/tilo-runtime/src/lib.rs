@@ -25,6 +25,7 @@ pub mod key_sessions;
 pub mod mcp_process;
 pub mod offload;
 mod os_search;
+pub mod personal_devices;
 pub mod profile;
 pub mod standalone;
 pub mod unix;

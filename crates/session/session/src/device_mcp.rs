@@ -6,7 +6,7 @@
 //! this login is ([`crate::mcp_server`]), as an agent the person delegates to,
 //! named after the device it came from. Which device dials is the transport's
 //! to say, and whether it is one of the person's is their own store's
-//! ([`tilo_mcp::devices::PersonalDevices`]); a connection from anyone
+//! ([`tilo_runtime::personal_devices::PersonalDevices`]); a connection from anyone
 //! else is refused before the person is asked.
 //!
 //! A connection the server admits takes one of the MCP server's places as it arrives, and waits

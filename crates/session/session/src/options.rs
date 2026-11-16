@@ -288,7 +288,7 @@ pub(crate) fn start_collaboration(
     // Which devices are the person's is their own store's to say, for the agents that connect from
     // one of them and for those this one dials.
     let devices = personal.as_ref().map(|personal| {
-        std::sync::Arc::new(tilo_mcp::devices::PersonalDevices::new(
+        std::sync::Arc::new(tilo_runtime::personal_devices::PersonalDevices::new(
             personal.sync().clone(),
         )) as std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>
     });

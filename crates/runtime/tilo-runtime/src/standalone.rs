@@ -32,6 +32,7 @@ mod workspace;
 mod workspace_keys;
 mod workspaces;
 
+use crate::personal_devices::PersonalDevices;
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
@@ -59,7 +60,6 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
-use tilo_mcp::devices::PersonalDevices;
 use tilo_peer_state::actions::ActionPlane;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
@@ -1068,7 +1068,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
 fn other_devices(joined: &Joined, personal: &PersonalSync) -> Arc<tilo_mcp::devices::OtherDevices> {
     Arc::new(tilo_mcp::devices::OtherDevices::new(
         joined.endpoint(),
-        Arc::new(tilo_mcp::devices::PersonalDevices::new(personal.clone())),
+        Arc::new(PersonalDevices::new(personal.clone())),
         tilo_rt::app().handle().clone(),
     ))
 }

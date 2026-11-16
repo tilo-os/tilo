@@ -29,11 +29,12 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_mcp::devices::{
-    ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonalDevices,
-    PersonsDevices, agent_id, ask_forward, forward_request, open, read_list,
+    ALPN, Arrival, Arrivals, DeviceServer, Forward, Origin, OtherDevices, PersonsDevices, agent_id,
+    ask_forward, forward_request, open, read_list,
 };
 use tilo_mcp::session_door::{Beside, Consent, read_first_line, serve_with};
 use tilo_peer_state::{PersonalStore, PersonalSync};
+use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
     sign_revocation_entry,

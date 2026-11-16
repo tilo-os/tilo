@@ -12,7 +12,7 @@
 //! the dialing device's key, which the QUIC handshake proved; the certificate
 //! the dialer presents first must name that key, be signed by the identity root
 //! of B's person, hold now, and not be revoked in the person's own store
-//! ([`PersonalDevices`]). Anything else is refused, with the reason, before
+//! ([`PersonsDevices`]). Anything else is refused, with the reason, before
 //! anyone is asked and before anything is read of the MCP stream.
 //!
 //! On A the connection is opened by A's host — the desktop session or a
@@ -30,14 +30,13 @@ use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::PersonalSync;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -164,88 +163,6 @@ pub trait PersonsDevices: Send + Sync {
     fn revocations(&self) -> RevocationList {
         RevocationList::new()
     }
-}
-
-/// The person's devices as their own store holds them: the identity root it
-/// opened on, the certificates it admitted, and the revocations that root
-/// signed, which reach it from any of their devices.
-#[derive(Clone)]
-pub struct PersonalDevices(PersonalSync);
-
-impl PersonalDevices {
-    /// The devices `store` holds.
-    #[must_use]
-    pub fn new(store: PersonalSync) -> Self {
-        Self(store)
-    }
-}
-
-fn now_ns(now: SystemTime) -> u64 {
-    now.duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
-        })
-}
-
-impl PersonsDevices for PersonalDevices {
-    fn this_device(&self) -> DeviceCert {
-        self.0.read(|store| store.device().clone())
-    }
-
-    fn devices(&self) -> Vec<DeviceCert> {
-        let now = SystemTime::now();
-        self.0.read(|store| {
-            store
-                .devices()
-                .into_iter()
-                .filter(|device| {
-                    holds(store.root(), device, now).is_ok()
-                        && store.admits_device(&device.device_public_key, now).is_ok()
-                })
-                .collect()
-        })
-    }
-
-    fn admit(&self, dialer: [u8; 32], certificate: &DeviceCert) -> Result<(), Refusal> {
-        if certificate.device_public_key != dialer {
-            return Err(Refusal::NotTheDialer);
-        }
-        let now = SystemTime::now();
-        let revoked = self.revocations().refuses(certificate);
-        self.0.read(|store| {
-            holds(store.root(), certificate, now)?;
-            // A grant a revoked grant minted ends with it.
-            if revoked {
-                return Err(Refusal::Revoked);
-            }
-            store
-                .admits_device(&dialer, now)
-                .map_err(|why| match why.as_str() {
-                    "device revoked" => Refusal::Revoked,
-                    _ => Refusal::NotCertified(why),
-                })
-        })
-    }
-
-    fn revocations(&self) -> RevocationList {
-        let entries = self.0.read(tilo_peer_state::PersonalStore::revocations);
-        let mut revocations = RevocationList::new();
-        for entry in entries {
-            // The store only ever holds entries its root signed.
-            let _ = revocations.insert(entry);
-        }
-        revocations
-    }
-}
-
-/// Whether `certificate` is one of `root`'s devices that acts for them now:
-/// signed by it and current.
-fn holds(root: [u8; 32], certificate: &DeviceCert, now: SystemTime) -> Result<(), Refusal> {
-    if certificate.user_public_key != root {
-        return Err(Refusal::OtherPerson);
-    }
-    tilo_user_identity::verify_device_cert_at(certificate, now_ns(now))
-        .map_err(|error| Refusal::NotCertified(error.to_string()))
 }
 
 /// What a hello asks of a server.
