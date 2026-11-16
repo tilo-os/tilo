@@ -1166,8 +1166,8 @@ mod tests {
             replica
                 .apply(Document::ADD_COMMENT.with(document::AddComment {
                     block,
-                    start: 14,
-                    end: 19,
+                    start: 18,
+                    end: 23,
                     text: "Seven sharp?".parse().unwrap(),
                 }))
                 .unwrap();
