@@ -256,7 +256,6 @@ fn saving_a_new_buffer_asks_where_and_then_writes_back_there() {
     assert_eq!(std::fs::read(&chosen).unwrap()[0], 0xCD);
 }
 
-/// A file larger than a host may hand the app is refused through the same door a
 /// A file larger than a host may hand the app is refused through the same action API a
 /// person's chooser and an agent's path use, and the open buffer stays as it was.
 #[test]
