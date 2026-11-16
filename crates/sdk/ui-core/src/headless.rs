@@ -420,16 +420,9 @@ pub struct FrameHarness {
     /// Pointer position, buttons held and where the last press landed until a key is pressed: a
     /// confirmation sits over the window pressed in.
     pointer: crate::host_core::PointerPlace,
-    /// The cards the root presents over it, as the frame stands them: the
-    /// place the floating column gives each, and the place the app was told.
-    /// A card is drawn by its app and routed to by the frame, as a native
-    /// desktop's cards are (`tilo_desktop::desktop_host::cards`).
-    cards: Vec<StandingCard>,
-    /// Requests for cards the frame has not stood yet.
-    cards_asked: Vec<crate::floating_surface::FloatingSurfaceRequest>,
-    /// The card that the person last pressed: it takes the keys a window's
-    /// controls would, until the person presses something else.
-    card_focus: Option<String>,
+    /// The cards the root presents over it: the frame has one window, so it
+    /// stands them itself, as every one-window shell does.
+    cards: crate::shell_cards::ShellCards,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
@@ -1500,9 +1493,7 @@ impl FrameHarness {
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer: crate::host_core::PointerPlace::default(),
-            cards: Vec::new(),
-            cards_asked: Vec::new(),
-            card_focus: None,
+            cards: crate::shell_cards::ShellCards::default(),
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -3983,17 +3974,14 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
-            for id in self.standing_ids() {
-                crate::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
-                    self.root.as_mut(),
-                    id.as_str(),
-                    &mut self.scene,
-                    transform,
-                    &mut self.text,
-                    &self.theme,
-                    &self.presence,
-                );
-            }
+            self.cards.draw(
+                self.root.as_mut(),
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
             self.root.mark_drawn();
         }
         self.drawn_input = crate::input_generation::generation();
@@ -8956,8 +8944,6 @@ impl FrameHarness {
 }
 
 mod cards;
-
-use cards::StandingCard;
 
 #[cfg(test)]
 mod floating_input_tests;

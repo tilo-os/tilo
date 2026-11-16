@@ -135,7 +135,7 @@ pub struct BackgroundLayer {
     start_cards: Rc<dyn Fn() -> Vec<LaunchpadAction>>,
     /// The cards the windows' apps present over the shell, for a host with no
     /// compositor to give each one a window of its own.
-    cards: cards::Cards,
+    cards: ui::shell_cards::ShellCards,
     /// Whether this session hosts those cards.
     hosts_cards: bool,
     rect: Rect,
@@ -232,7 +232,7 @@ impl BackgroundLayer {
             cursor: None,
             asks,
             start_cards,
-            cards: cards::Cards::default(),
+            cards: ui::shell_cards::ShellCards::default(),
             hosts_cards: false,
             rect: Rect::ZERO,
         }
@@ -508,19 +508,9 @@ impl Widget for BackgroundLayer {
             self.cursor = None;
         }
         // A card the shell stands over its windows takes the pointer where it
-        // is drawn: the app that paints it is the one the press is for.
-        if self.hosts_cards
-            && matches!(
-                event,
-                WindowEvent::CursorMoved { .. }
-                    | WindowEvent::MouseInput { .. }
-                    | WindowEvent::MouseWheel { .. }
-                    | WindowEvent::Touch(_)
-            )
-            && let Some(at) = self.cursor
-            && let Some(id) = self.card_at(at)
-            && self.card_event(&id, event, ctx)
-        {
+        // is drawn, and the keys once pressed: the app that paints it is the
+        // one the event is for.
+        if self.hosts_cards && self.card_event(event, ctx) {
             // The card took it: the windows under the card and the press away
             // from what the shell has open never hear of it.
             *ctx.handled = true;

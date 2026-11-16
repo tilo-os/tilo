@@ -337,6 +337,7 @@ pub mod secret_paint;
 pub mod selection;
 pub mod session_api;
 pub mod shared_selection;
+pub mod shell_cards;
 pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
