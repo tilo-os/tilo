@@ -85,7 +85,8 @@ impl Talk {
         let mut action = invoke
             .build(self.now_ms)
             .map_err(ApiError::InvalidArguments)?;
-        ChatPart::prepare(&mut action, &self.chat.state().unwrap()).map_err(ApiError::Failed)?;
+        ChatPart::prepare(&mut action, &self.chat.state().unwrap(), &[])
+            .map_err(ApiError::Failed)?;
         self.part.apply_action(&action).map(drop)
     }
 

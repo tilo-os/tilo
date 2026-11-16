@@ -1848,6 +1848,13 @@ impl FrameHarness {
         {
             return false;
         }
+        // As the live host: a component with a history of its own (a text
+        // field, a window that also writes records beside its own) is offered
+        // the request first.
+        if crate::undo::handle_local_undo_request(self.root.as_mut(), request) {
+            self.relayout();
+            return true;
+        }
         let author = self.author.clone();
         let done = if let Some(binding) = self
             .focused

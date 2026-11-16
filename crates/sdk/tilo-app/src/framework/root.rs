@@ -261,7 +261,7 @@ fn open_spec() -> tilo_actions::ActionSpec {
 const ITEM_VIEW_LABEL: &str = "Item";
 
 /// `open` on one item resource: show that item, as its search hit would.
-fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
+pub(crate) fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
     let encoded = tilo_actions::EncodedAction::encode_operation(
         OPEN_TYPE,
         &serde_json::json!({ OPEN_ANCHOR: anchor }),
@@ -1372,7 +1372,8 @@ thread_local! {
 /// and the entries its surfaces show.
 #[derive(PartialEq)]
 struct SearchState {
-    revision: (u64, u64),
+    /// The record's revision and loads, and the chains' revision.
+    revision: (u64, u64, u64),
     shown: Vec<SearchEntry>,
 }
 
@@ -1924,8 +1925,9 @@ impl ResourceRoot {
             shown.extend(surface.search_entries());
             queries.extend(surface.search_queries());
         });
+        let (revision, loads) = self.version();
         let state = SearchState {
-            revision: self.version(),
+            revision: (revision, loads, self.storage.chains_revision()),
             shown,
         };
         (state, queries)
@@ -1972,6 +1974,7 @@ impl ResourceRoot {
     /// its surfaces show.
     fn entries_of(&self, state: &SearchState) -> Vec<SearchEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
+        entries.extend(self.storage.chains_search());
         entries.extend(state.shown.iter().cloned());
         entries
     }
@@ -2166,6 +2169,7 @@ impl RootSearch for ResourceRoot {
     /// contributes none.
     fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
+        entries.extend(self.storage.chains_search());
         self.surfaces(&mut |surface| {
             if surface.kept_in_search_index() {
                 entries.extend(surface.search_entries());

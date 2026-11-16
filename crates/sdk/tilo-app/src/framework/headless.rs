@@ -1899,6 +1899,23 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
+    /// The parts of the chain of `P` the app's store holds, oldest first,
+    /// each read as it is stored: what the app keeps beside its record.
+    pub fn chain_parts<P: super::Chained>(&self) -> Vec<(u64, std::rc::Rc<P::State>)> {
+        let chain = P::chain();
+        self.records
+            .held_parts(&chain)
+            .into_iter()
+            .filter_map(|index| {
+                let state = self
+                    .records
+                    .read(&chain.part(index), |doc| P::read(doc))?
+                    .ok()?;
+                Some((index, std::rc::Rc::new(state)))
+            })
+            .collect()
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "a test harness surfaces corruption loudly"

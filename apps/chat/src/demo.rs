@@ -886,7 +886,7 @@ pub fn apply_part_doc(
     let mut action = invoke
         .build(ui::tilo_resource::origin_now_ms())
         .map_err(ApiError::InvalidArguments)?;
-    ChatPart::prepare(&mut action, chat).map_err(ApiError::Failed)?;
+    ChatPart::prepare(&mut action, chat, &[]).map_err(ApiError::Failed)?;
     let mut replica = Replica::<ChatPart>::from_doc(std::mem::take(part))
         .as_invoker(author)
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");

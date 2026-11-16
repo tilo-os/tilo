@@ -388,6 +388,22 @@ impl ViewStorage {
             .unwrap_or_default()
     }
 
+    /// What search finds in the chains the views opened.
+    pub(crate) fn chains_search(&self) -> Vec<tilo_resource::SearchEntry> {
+        self.chains
+            .apis()
+            .iter()
+            .flat_map(|api| api.search())
+            .collect()
+    }
+
+    /// A revision that moves whenever a chain the views opened changed.
+    pub(crate) fn chains_revision(&self) -> u64 {
+        self.chains.apis().iter().fold(0u64, |revision, api| {
+            revision.wrapping_mul(31).wrapping_add(api.revision())
+        })
+    }
+
     pub(crate) fn record_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = self
             .person
