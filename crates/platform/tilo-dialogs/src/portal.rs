@@ -445,10 +445,6 @@ impl PickRequest {
         crate::current_picker().pick_contents(self)
     }
 
-    pub fn send_save_contents(self, bytes: Vec<u8>) -> SaveChannel {
-        crate::current_picker().save_contents(self, bytes)
-    }
-
     pub fn send_save_destination(self) -> DestinationChannel {
         crate::current_picker().save_destination(self)
     }

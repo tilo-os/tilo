@@ -83,12 +83,16 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         bytes: Vec<u8>,
         then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
-        let saved = request.send_save_contents(bytes);
-        self.wait_for(saved, move |host, outcome, cx| match outcome {
-            Some(SaveOutcome::Saved) => then(host, true, cx),
-            Some(SaveOutcome::Cancelled) => then(host, false, cx),
-            Some(SaveOutcome::Failed(reason)) => Err(reason),
-            None => Err(CHOOSER_GONE.into()),
+        self.choose_destination(request, move |host, chosen, cx| {
+            let Some(destination) = chosen else {
+                return then(host, false, cx);
+            };
+            Ok(
+                cx.write_destination(&destination, bytes, move |host, written, cx| {
+                    written?;
+                    then(host, true, cx)
+                }),
+            )
         })
     }
 
