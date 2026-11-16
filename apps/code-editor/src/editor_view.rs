@@ -2461,6 +2461,17 @@ impl EditorView {
 }
 
 impl Widget for EditorView {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Code);
+        cx.element("pre");
+        cx.text(ui::composition::TextLook::new(
+            self.lines.join("\n"),
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        ));
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_observed(state, path, None);
     }

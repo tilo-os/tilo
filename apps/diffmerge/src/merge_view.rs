@@ -970,6 +970,28 @@ impl MergeView {
 }
 
 impl Widget for MergeView {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Code);
+        let shown = match &self.inputs {
+            Some(inputs) => format!(
+                "{}\n{}\n{}\n{}\n{}",
+                inputs.ours_label.0,
+                inputs.ours.0,
+                inputs.base_label.0,
+                inputs.base.0,
+                inputs.theirs.0
+            ),
+            None => String::new(),
+        };
+        cx.element("pre");
+        cx.text(ui::composition::TextLook::new(
+            shown,
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        ));
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document_ref(state, path);
         self.merged_editor.pull(doc);

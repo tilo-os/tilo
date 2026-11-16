@@ -1265,6 +1265,10 @@ impl HexView {
 }
 
 impl Widget for HexView {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(dyn ui::widget::Findable);
 
     fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {

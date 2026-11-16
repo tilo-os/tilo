@@ -2086,6 +2086,10 @@ impl AudiencePresentationProvider for SlidesApp {
 }
 
 impl Widget for SlidesApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,

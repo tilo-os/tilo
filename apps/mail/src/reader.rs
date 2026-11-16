@@ -1407,6 +1407,31 @@ impl MessageReader {
 }
 
 impl Widget for MessageReader {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Reading);
+        let shared = self.shared.clone();
+        let state = shared.borrow();
+        let mut shown = String::new();
+        for message in state.selected_thread_messages() {
+            if !shown.is_empty() {
+                shown.push_str("\n\n");
+            }
+            shown.push_str(&format!(
+                "{}\n{}\n\n{}",
+                message.from.display(),
+                message.subject,
+                message.body
+            ));
+        }
+        cx.element("article");
+        cx.text(ui::composition::TextLook::new(
+            shown,
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        ));
+    }
+
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if self.offers_find() && request.wants::<dyn Findable>() {
             request.provide::<dyn Findable>(self);

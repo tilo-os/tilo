@@ -128,6 +128,10 @@ impl FullscreenProvider for PlayerHost {
 }
 
 impl Widget for PlayerHost {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

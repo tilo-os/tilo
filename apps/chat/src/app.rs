@@ -1654,6 +1654,10 @@ impl Collaborative for ChatApp {
 }
 
 impl Widget for ChatApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         // The record is lent to the settle pass: the workspace's other records
         // take writes now.

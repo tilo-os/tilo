@@ -153,6 +153,17 @@ impl CodeView {
 }
 
 impl Widget for CodeView {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Code);
+        cx.element("pre");
+        cx.text(ui::composition::TextLook::new(
+            self.text.clone(),
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        ));
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -599,5 +610,25 @@ mod tests {
             }
         }
         assert_eq!(keys, 2, "both keys were checked");
+    }
+
+    #[test]
+    fn the_body_composes_its_code_as_text() {
+        let view = CodeView::json("Body", "{\"a\": 1, \"b\": [1, 2]}");
+        let composed = ui::composition::compose_alone(&view, &Theme::dark(), "body");
+        assert_eq!(
+            composed.tag,
+            Some("pre"),
+            "the body is a preformatted block"
+        );
+        let Some(ui::composition::Own::Text(look)) = &composed.own else {
+            panic!("the body's code is words: {composed:#?}");
+        };
+        assert!(
+            look.text.contains("\"a\""),
+            "the code is its text: {}",
+            look.text
+        );
+        assert!(look.mono, "code is set in the mono face");
     }
 }

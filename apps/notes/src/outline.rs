@@ -146,6 +146,10 @@ impl NotesOutline {
 }
 
 impl Widget for NotesOutline {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.list.sync(state, path);
     }

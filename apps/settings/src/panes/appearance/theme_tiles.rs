@@ -359,6 +359,10 @@ fn tile_bar(
 }
 
 impl Widget for ThemeTiles {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(

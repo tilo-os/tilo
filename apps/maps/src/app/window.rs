@@ -361,6 +361,10 @@ impl ui::widget::WindowHeader for MapWindow {
 }
 
 impl Widget for MapWindow {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.picture();
+    }
+
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::WindowHeader,

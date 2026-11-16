@@ -1300,4 +1300,15 @@ fn the_conversion_page_answers_in_units_and_says_why_money_cannot() {
         app.with_widget(|app: &mut CalculatorApp| app.mode_for_test()),
         Some(Mode::Calc)
     );
+
+    #[test]
+    fn the_calculator_composes_its_display_as_text() {
+        let app = CalculatorApp::new();
+        let composed = ui::composition::compose_alone(&app, &Theme::dark(), "calc");
+        assert_eq!(composed.tag, Some("output"), "the display is its output");
+        let Some(ui::composition::Own::Text(look)) = &composed.own else {
+            panic!("the display is words: {composed:#?}");
+        };
+        assert!(!look.text.is_empty(), "the display says what it shows");
+    }
 }

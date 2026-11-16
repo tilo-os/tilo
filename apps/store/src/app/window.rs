@@ -131,6 +131,10 @@ impl ui::widget::Queryable for StoreApp {
 }
 
 impl Widget for StoreApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(
         dyn ui::widget::Collaborative,
         dyn ui::widget::controls::ActionControls,

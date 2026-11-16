@@ -456,6 +456,23 @@ struct BodyWell {
 }
 
 impl Widget for BodyWell {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        let theme = cx.theme().clone();
+        let style = theme.text(ui::tokens::TextRole::Code);
+        let core = self.core.borrow();
+        let shown = core
+            .open
+            .as_ref()
+            .and_then(|id| core.library.get(id))
+            .map_or_else(String::new, |snippet| snippet.body.clone());
+        cx.element("pre");
+        cx.text(ui::composition::TextLook::new(
+            shown,
+            &style,
+            Some(theme.tokens.colors.text_primary),
+        ));
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

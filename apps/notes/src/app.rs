@@ -2856,6 +2856,10 @@ fn making_action(address: &ui::tilo_actions::ActionAddress) -> Option<&'static s
 }
 
 impl Widget for NotesApp {
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     ui::provides!(
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
