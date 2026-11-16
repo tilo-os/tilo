@@ -466,25 +466,11 @@ fn show_settings(uri: &str) -> bool {
             )));
             return false;
         };
-        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "settings link {uri}: queued in {} desktops",
-            by_mount.len()
-        )));
         requests.borrow_mut().push(request);
         true
     });
-    if shown {
-        match WAKE.with_borrow(Clone::clone) {
-            Some(wake) => {
-                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
-                    "settings link: waking the page",
-                ));
-                wake();
-            }
-            None => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
-                "settings link: no wake installed",
-            )),
-        }
+    if shown && let Some(wake) = WAKE.with_borrow(Clone::clone) {
+        wake();
     }
     shown
 }

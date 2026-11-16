@@ -3337,7 +3337,11 @@ impl Mount {
                 .and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone())))
                 .filter(|name| !name.trim().is_empty())
                 .or_else(|| self.workspace_name.clone()),
-            "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
+            "hostRequests": self.desktop.as_ref().map(|d| crate::settings_link::take_for_page(
+                &mut d.requests.borrow_mut(),
+                // The desktop shows what an app asked to see itself.
+                |request| matches!(request, crate::shell::HostRequest::ShowInApp { .. }),
+            )).filter(|r| !r.is_empty()),
             "ime": ime,
         });
         let mut value = value;
