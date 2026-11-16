@@ -275,6 +275,7 @@ fn part_at(
 pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
     HostKey {
         keycode: 0,
+        at: std::time::Instant::now(),
         pressed,
         repeat: false,
         keysym,

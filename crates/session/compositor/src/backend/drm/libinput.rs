@@ -368,6 +368,12 @@ pub(super) fn dispatch(
     extent: Size<i32, Logical>,
 ) {
     let typed_on = typed_on(&event);
+    // When the device says the key changed: a press made before a sheet came up keeps its own
+    // instant, though the loop routes it after the sheet opened.
+    let at = match &event {
+        DeviceEvent::Keyboard { event } => State::instant_at(event.time_msec()),
+        _ => Instant::now(),
+    };
     let events = {
         let mut this = input.borrow_mut();
         let this = &mut *this;
@@ -460,7 +466,7 @@ pub(super) fn dispatch(
     };
     for event in events {
         state.note_typing(&event, Instant::now());
-        state.handle_input(event);
+        state.handle_input_at(event, at);
     }
     show_alert(input, state, Instant::now());
     arm_ticker(input, handle);

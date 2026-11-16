@@ -153,6 +153,74 @@ fn a_click_on_allow_once_at_its_reported_place_allows_the_step() {
     );
 }
 
+/// An Enter the person was already pressing when the question came up answers nothing: its press
+/// began before the sheet was shown, so it is not their answer to it. The next press, made with
+/// the sheet in sight, answers as any press does.
+#[test]
+fn an_enter_being_typed_before_the_sheet_showed_answers_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = session_at(1440, 900);
+    // The person's finger went down just before the agent's step asked.
+    let begun = ui::time::now()
+        .checked_sub(Duration::from_millis(50))
+        .expect("fifty milliseconds before now");
+    let mut asked = ask_a_step(&questions);
+    crate::common::wait_for(&mut session, "the ask's sheet", |session| {
+        session
+            .portal()
+            .and_then(tilo_sheets::portal::PortalState::dialog)
+            .map(|_| ())
+    });
+    settled(&mut session);
+    // The loop routes that press only now, with the question already up.
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input_at(
+                InputEvent::Key {
+                    keycode: crate::common::KEY_ENTER,
+                    pressed,
+                },
+                begun,
+            )
+            .expect("the key");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        (&mut asked).now_or_never().is_none(),
+        "an Enter being typed when the sheet appeared allowed the step"
+    );
+    assert!(
+        session
+            .portal()
+            .and_then(tilo_sheets::portal::PortalState::dialog)
+            .is_some(),
+        "the ask is still up"
+    );
+    // A press that starts with the sheet in sight answers it: Enter takes Allow once.
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input_at(
+                InputEvent::Key {
+                    keycode: crate::common::KEY_ENTER,
+                    pressed,
+                },
+                ui::time::now(),
+            )
+            .expect("the key");
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let answer = crate::common::wait_for(&mut session, "the ask's answer", |_| {
+        (&mut asked).now_or_never()
+    });
+    assert_eq!(
+        answer.expect("the step is allowed, not declined").choice,
+        Some(0),
+        "a press that starts with the sheet in sight answers it"
+    );
+}
+
 /// A press that arrives before any pointer motion — the pointer was never reported over the
 /// sheet — must not answer the ask: nothing was pressed on the sheet.
 #[test]

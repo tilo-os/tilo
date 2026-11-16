@@ -175,6 +175,9 @@ impl Scroll {
 pub struct HostKey {
     /// The evdev code.
     pub keycode: u32,
+    /// When the key changed at the device. What a surface shows is not the person's answer to a
+    /// press that began before it appeared: the loop may route that press after the surface is up.
+    pub at: std::time::Instant,
     /// Pressed or released.
     pub pressed: bool,
     /// A press repeated while the key is held, not a new one.

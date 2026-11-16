@@ -409,7 +409,18 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
     }
 
     fn key(&mut self, key: &HostKey) {
-        self.host.key(key);
+        // A press that began before the sheet was shown is not the person's answer to it: they
+        // were already typing when it came up, and the loop routed that press after it. A press
+        // that starts with the sheet in sight still acts.
+        let already_pressing = key.pressed
+            && self
+                .state
+                .presentation()
+                .opened_at()
+                .is_some_and(|shown| key.at < shown);
+        if !already_pressing {
+            self.host.key(key);
+        }
     }
 
     fn prepare_frame(&mut self) -> bool {

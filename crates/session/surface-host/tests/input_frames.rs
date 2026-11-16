@@ -74,6 +74,7 @@ fn key(pressed: bool, text: &str) -> HostKey {
     let keysym = u32::from(text.bytes().next().unwrap_or(b' '));
     HostKey {
         keycode: keysym,
+        at: std::time::Instant::now(),
         pressed,
         repeat: false,
         keysym,

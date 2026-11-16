@@ -832,6 +832,7 @@ mod tests {
     fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> HostKey {
         HostKey {
             keycode: 0,
+            at: std::time::Instant::now(),
             pressed: true,
             repeat: false,
             keysym,

@@ -72,6 +72,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
         for pressed in [true, false] {
             let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
+                at: std::time::Instant::now(),
                 pressed,
                 repeat: false,
                 keysym: u32::from(letter),
@@ -1084,6 +1085,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         for pressed in [true, false] {
             let key = tilo_session_core::surface::HostKey {
                 keycode: 0,
+                at: std::time::Instant::now(),
                 pressed,
                 repeat: false,
                 keysym: u32::from(letter),

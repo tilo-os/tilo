@@ -1995,6 +1995,7 @@ mod tests {
         use tilo_session_core::surface::SurfaceHost as _;
         let key = tilo_session_core::surface::HostKey {
             keycode: 0,
+            at: std::time::Instant::now(),
             pressed: true,
             repeat: false,
             keysym: 0xff1b,

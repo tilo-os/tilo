@@ -2038,12 +2038,18 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) and flush what it sent. Route one input event
     /// (see [`InputEvent`]) through the person's assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
+        self.input_at(event, Instant::now())
+    }
+
+    /// The same, for an event whose device says when it began: a key pressed before a sheet
+    /// appeared carries that instant to the sheet, which does not take it as the person's answer.
+    pub fn input_at(&mut self, event: InputEvent, at: Instant) -> Result<(), Error> {
         let now = Instant::now();
         self.recorder.note_input(now);
         let events = self.keys.filter(event, now);
         for event in events {
             self.data.state.note_typing(&event, now);
-            self.data.state.handle_input(event);
+            self.data.state.handle_input_at(event, at);
         }
         if self.keys.take_alert() {
             self.flash();
@@ -2354,17 +2360,19 @@ impl Compositor {
                 continue;
             };
             let time = self.data.state.now_ms();
+            // Typed by the shell, not pressed by the person: each key begins now.
+            let at = Instant::now();
             for modifier in &stroke.modifiers {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(modifier.key, true, serial, time);
+                self.data.state.key(modifier.key, true, serial, time, at);
             }
             for pressed in [true, false] {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(stroke.key, pressed, serial, time);
+                self.data.state.key(stroke.key, pressed, serial, time, at);
             }
             for modifier in stroke.modifiers.iter().rev() {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(modifier.key, false, serial, time);
+                self.data.state.key(modifier.key, false, serial, time, at);
             }
         }
         self.data.state.seat_end(seat, person);

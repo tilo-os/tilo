@@ -39,6 +39,8 @@ pub struct Presentation(Rc<Inner>);
 
 struct Inner {
     phase: Cell<Phase>,
+    /// When the shell last put the sheet up: what a key pressed before then is not an answer to.
+    opened_at: Cell<Option<ui::time::Instant>>,
     /// How many times the shell opened the sheet: the sheet shows each
     /// opening afresh.
     openings: Cell<u64>,
@@ -68,6 +70,7 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             phase: Cell::default(),
+            opened_at: Cell::default(),
             openings: Cell::default(),
             by_keyboard: Cell::default(),
             place: Cell::default(),
@@ -104,6 +107,7 @@ impl Presentation {
     /// The shell puts the sheet up; `by_keyboard` when a key asked.
     pub fn open(&self, by_keyboard: bool) {
         self.0.phase.set(Phase::Open);
+        self.0.opened_at.set(Some(ui::time::now()));
         self.0.openings.set(self.0.openings.get().wrapping_add(1));
         self.0.by_keyboard.set(by_keyboard);
         let source = if by_keyboard {
@@ -146,6 +150,12 @@ impl Presentation {
     /// Which opening the sheet shows now.
     pub fn openings(&self) -> u64 {
         self.0.openings.get()
+    }
+
+    /// When the shell last put the sheet up: a key whose press began before then is not the
+    /// person answering it. `None` while it was never up.
+    pub fn opened_at(&self) -> Option<ui::time::Instant> {
+        self.0.opened_at.get()
     }
 
     pub fn by_keyboard(&self) -> bool {

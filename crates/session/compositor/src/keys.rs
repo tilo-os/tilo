@@ -282,6 +282,7 @@ mod tests {
     fn key(keycode: u32) -> HostKey {
         HostKey {
             keycode,
+            at: Instant::now(),
             pressed: true,
             repeat: false,
             keysym: 0x61,

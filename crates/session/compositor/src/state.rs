@@ -461,6 +461,21 @@ impl State {
         u32::try_from(self.now().as_millis() & u128::from(u32::MAX)).unwrap_or_default()
     }
 
+    /// The instant a device's `time_msec` names: the monotonic clock's milliseconds, wrapping
+    /// every 49 days, as the loop's clock reads them now. A stamp the clocks cannot place is now.
+    pub(crate) fn instant_at(time_msec: u32) -> Instant {
+        use smithay::reexports::rustix::time::{ClockId, clock_gettime};
+        let now = Instant::now();
+        let clock = clock_gettime(ClockId::Monotonic);
+        let now_ms = u64::try_from(clock.tv_sec)
+            .unwrap_or_default()
+            .saturating_mul(1000)
+            .saturating_add(u64::try_from(clock.tv_nsec / 1_000_000).unwrap_or_default());
+        let age =
+            (now_ms & u64::from(u32::MAX)).wrapping_sub(u64::from(time_msec)) & u64::from(u32::MAX);
+        now.checked_sub(Duration::from_millis(age)).unwrap_or(now)
+    }
+
     /// `output` must be drawn again: something that shows on it changed since its last frame.
     pub(crate) fn mark_redraw(&mut self, output: &Output) {
         if self.redraw_owed(output) {
@@ -844,6 +859,12 @@ impl State {
 
     /// Route one input event to the hosted surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
+        self.handle_input_at(event, Instant::now());
+    }
+
+    /// The same, for an event whose device says when it began: a key pressed before a surface
+    /// appeared, which the loop routes after it, carries that earlier instant to the surface.
+    pub(crate) fn handle_input_at(&mut self, event: InputEvent, at: Instant) {
         let now = Instant::now();
         self.remote_input.note_local(now);
         // The person's own Ctrl+Alt+Escape gives back whatever holds their keyboard and pointer —
@@ -867,7 +888,7 @@ impl State {
             }
             return;
         }
-        self.route_input(event);
+        self.route_input(event, at);
     }
 
     /// Route one event from another device, if the person allows it now.
@@ -877,10 +898,10 @@ impl State {
             tracing::debug!(refusal, "remote input refused");
             return;
         }
-        self.route_input(event);
+        self.route_input(event, now);
     }
 
-    pub(crate) fn route_input(&mut self, event: InputEvent) {
+    pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant) {
         self.note_input();
         // What a capture takes never reaches the desktop.
         if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))
@@ -941,7 +962,7 @@ impl State {
                 // The person's own keyboard, kept so a seat's next event puts their held keys aside
                 // and gives them back.
                 self.seats.hold_person_key(keycode, pressed);
-                self.key(keycode, pressed, serial, time);
+                self.key(keycode, pressed, serial, time, at);
             }
             InputEvent::TouchDown { slot, x, y } => {
                 self.touch_down(slot, Point::from((x, y)), serial, time);
@@ -963,8 +984,16 @@ impl State {
 
     /// Route a key: a press to the hosted surface that claims it, else to
     /// the topmost one that wants the keyboard, else to the focused client;
-    /// a release to where its press went ([`crate::keys`]).
-    pub(crate) fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+    /// a release to where its press went ([`crate::keys`]). `at` is when the
+    /// device says the key changed.
+    pub(crate) fn key(
+        &mut self,
+        keycode: u32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+        at: Instant,
+    ) {
         self.sync_keyboard_owner();
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
@@ -1005,6 +1034,7 @@ impl State {
                 let text = pressed.then(|| state.typed(keysym, modifiers)).flatten();
                 let key = HostKey {
                     keycode,
+                    at,
                     pressed,
                     repeat: false,
                     keysym: keysym.raw(),
