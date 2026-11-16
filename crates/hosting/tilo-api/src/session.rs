@@ -23,6 +23,7 @@
 //! nothing of it itself.
 
 pub mod members;
+pub mod unattended;
 
 use crate::relay::{Connection, Relay, RelayError};
 use crate::store::Scope;
@@ -312,6 +313,16 @@ impl Session {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let answered = self.members(workspace, tool, arguments, structured).await;
+                return Reply::one(result(&id, &answered));
+            }
+            if unattended::addresses(tool, arguments) {
+                let structured = request
+                    .pointer("/params/_meta/so.tilo.mcp/structured")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let answered = self
+                    .unattended(workspace, tool, arguments, structured)
+                    .await;
                 return Reply::one(result(&id, &answered));
             }
         }
@@ -679,6 +690,11 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
+A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
+time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
+to let keys minted for that workspace alone run commands there without asking (and in branches \
+made from it), answering `pending` until they decide; this key itself is still asked, and \
+`{on: false}` asks again from the next command. \
 A call that changed a record answers its `link`, and `tilo_link {path, workspace}` answers the link \
 to anything a path names: hand it to the person reviewing your work. It opens the record in its \
 app for the workspace's members and carries no secret, so invite the person first. \

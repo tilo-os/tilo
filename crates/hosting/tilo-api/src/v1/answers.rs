@@ -83,6 +83,21 @@ pub struct Workspace {
     /// `cus_8121`), read by their own keys alone.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
+    /// Keys made for this workspace alone run commands in its Linux machine
+    /// without asking the person each time; absent while they are asked, as
+    /// every workspace starts. Read by the owner's keys alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
+}
+
+/// Whether keys made for a workspace alone run commands in its machine
+/// without asking the person each time.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct UnattendedChange {
+    /// `true` asks the person to let them, on their approving device, and
+    /// holds for the branches made from the workspace too; `false` asks again
+    /// from the next command on.
+    pub on: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -536,6 +551,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         WorkspaceList,
         NewWorkspace,
         NewBranch,
+        UnattendedChange,
         DeletedWorkspace,
         WorkspaceExport,
         KeyRow,

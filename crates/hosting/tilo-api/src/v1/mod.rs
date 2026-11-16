@@ -409,6 +409,7 @@ impl<'a> Caller<'a> {
             "getAccount" | "listWorkspaces" | "createWorkspace" | "deleteWorkspace"
             | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
             "branchWorkspace" => self.branch_workspace().await,
+            "setUnattended" => self.set_unattended().await,
             "listResources" | "readResource" | "search" | "getLink" => {
                 self.resource_operation(operation.id).await
             }
@@ -503,6 +504,19 @@ impl<'a> Caller<'a> {
         let made = self.account("account/workspaces#branch", args).await?;
         shaped::<answers::Workspace>(made.get("workspace").cloned().unwrap_or_default())
             .map(Answer::created)
+    }
+
+    /// Turn running commands unattended in the route's workspace on or off:
+    /// done at once when off, or answered `202` while the person is asked,
+    /// followed at the run it names like an action's.
+    async fn set_unattended(&self) -> Result<Answer, ApiError> {
+        let change: answers::UnattendedChange = self.json_body()?;
+        let call = with(
+            json!({"path": "workspace/unattended#set", "args": {"on": change.on}}),
+            "invocation_id",
+            self.invocation.as_ref(),
+        );
+        action_answer(self.call("tilo_do", call).await?, &self.workspace())
     }
 
     /// Reading the workspace: listings, resources, search and links.
@@ -1611,6 +1625,7 @@ mod export_tests {
             host: None,
             role: Some("owner".to_owned()),
             labels: std::collections::BTreeMap::new(),
+            unattended: false,
         }
     }
 

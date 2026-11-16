@@ -1839,10 +1839,13 @@ impl ActionHost for InWorkspace {
         // of slow operations (a backend making hundreds of workspaces at once)
         // is answered as each finishes, never left unanswered past the
         // caller's deadline while it still runs.
-        let wait = request.wait_ms.map(|wait_ms| {
-            std::time::Duration::from_millis(u64::from(wait_ms))
-                .min(tilo_actions::remote::MAX_REMOTE_WAIT)
-        });
+        let wait = request
+            .wait_ms
+            .map(|wait_ms| {
+                std::time::Duration::from_millis(u64::from(wait_ms))
+                    .min(tilo_actions::remote::MAX_REMOTE_WAIT)
+            })
+            .or_else(|| super::unattended::asks_first(&request));
         let runtime = self.host.shared.runtime.clone();
         self.host.spawn(async move {
             let mut work = runtime.spawn(async move {

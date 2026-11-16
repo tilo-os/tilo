@@ -35,6 +35,21 @@ use super::Workspaces;
 /// unattended: as long as a question about one action waits.
 const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 
+/// How long a request that may wait for the person is held before it is
+/// answered accepted and followed instead: turning running commands
+/// unattended off is answered within it, and the person takes longer.
+const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long the host holds `request` for its answer when the caller named no
+/// wait: [`ANSWERED_WITHIN`] for a turn of running commands unattended, which
+/// may wait minutes for the person, so the caller follows it rather than
+/// holding its answer open; `None` for anything else.
+pub(super) fn asks_first(request: &InvokeRequest) -> Option<std::time::Duration> {
+    (request.target.provider == tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+        && request.target.address.action == tilo_relay_session::workspaces::RUN_UNATTENDED)
+        .then_some(ANSWERED_WITHIN)
+}
+
 /// The person's answer to a question, once they gave it or it lapsed.
 pub type Answer = Pin<Box<dyn Future<Output = Result<ConfirmationAnswer, String>> + Send>>;
 

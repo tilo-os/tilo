@@ -48,6 +48,11 @@ pub struct Workspace {
     /// key of its owner's reads them.
     #[serde(skip_serializing_if = "WorkspaceLabels::is_empty")]
     pub labels: WorkspaceLabels,
+    /// Whether its owner let keys made for it alone run commands in its
+    /// machine without asking them each time: only a key of its owner's reads
+    /// it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
     /// Where its host is reached, as the person's list says.
     #[serde(skip)]
     pub address: Option<tilo_relay_session::workspaces::WorkspaceHostAddress>,
@@ -241,6 +246,7 @@ impl Relay {
                 host: listed.host.as_ref().map(|host| host.name.clone()),
                 role: listed.role,
                 labels: listed.labels,
+                unattended: listed.unattended,
                 address: listed.host,
             })
             .collect())
@@ -492,6 +498,7 @@ impl Connection {
             host: Some(self.host.clone()),
             role: listing.role.clone(),
             labels: listing.labels.clone(),
+            unattended: listing.unattended,
             address: None,
         }
     }

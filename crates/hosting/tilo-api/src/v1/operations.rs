@@ -145,6 +145,14 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("NewBranch"))
         .json(201, "Workspace"),
         op(
+            "setUnattended",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/unattended",
+            "Let keys made for this workspace alone run commands in its machine without asking each time, or ask again",
+        )
+        .body(Body::Json("UnattendedChange"))
+        .answers(Answer::Action),
+        op(
             "deleteWorkspace",
             Method::DELETE,
             "/v1/workspaces/{workspace}",

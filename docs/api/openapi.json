@@ -306,6 +306,77 @@
         }
       }
     },
+    "/v1/workspaces/{workspace}/unattended": {
+      "put": {
+        "operationId": "setUnattended",
+        "summary": "Let keys made for this workspace alone run commands in its machine without asking each time, or ask again",
+        "tags": [
+          "Resources"
+        ],
+        "parameters": [
+          {
+            "name": "workspace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The workspace's id"
+          },
+          {
+            "$ref": "#/components/parameters/Run"
+          },
+          {
+            "$ref": "#/components/parameters/RunTitle"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "It ran",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionAnswer"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "It has not finished, or waits for the person: follow `Location`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionAnswer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A refusal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnattendedChange"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/workspaces/{workspace}": {
       "delete": {
         "operationId": "deleteWorkspace",
@@ -2283,6 +2354,10 @@
               "type": "string"
             },
             "description": "What the person labelled it with when they made it (`customer_id` →\n`cus_8121`), read by their own keys alone."
+          },
+          "unattended": {
+            "type": "boolean",
+            "description": "Keys made for this workspace alone run commands in its Linux machine\nwithout asking the person each time; absent while they are asked, as\nevery workspace starts. Read by the owner's keys alone."
           }
         },
         "required": [
@@ -2340,6 +2415,19 @@
           "name"
         ],
         "description": "A branch of a workspace: a new workspace of the person's own that starts\nwith everything the source holds and goes on apart from it."
+      },
+      "UnattendedChange": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "`true` asks the person to let them, on their approving device, and\nholds for the branches made from the workspace too; `false` asks again\nfrom the next command on."
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "description": "Whether keys made for a workspace alone run commands in its machine\nwithout asking the person each time."
       },
       "DeletedWorkspace": {
         "type": "object",

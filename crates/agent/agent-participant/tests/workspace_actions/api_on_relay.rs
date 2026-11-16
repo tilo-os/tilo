@@ -70,6 +70,10 @@ pub struct OnRelay {
     _site: test_http::Responder,
     /// Where the relay keeps its state.
     pub state: tempfile::TempDir,
+    /// Where its workspaces' Terminal sessions keep their files, when it runs
+    /// them: under the system's temporary directory, which a shell's sandbox
+    /// grants, unlike the shared memory the state is kept in.
+    _shells: Option<tempfile::TempDir>,
 }
 
 impl OnRelay {
@@ -89,6 +93,20 @@ pub async fn api_on_relay(issuer: &str) -> OnRelay {
 pub async fn api_on_relay_limiting(
     issuer: &str,
     member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+) -> OnRelay {
+    start(issuer, member_limits, false).await
+}
+
+/// [`api_on_relay`], its relay running its workspaces' Terminal sessions
+/// itself (ush's own commands, no VM): what a key's `terminal#run` runs on.
+pub async fn api_on_relay_shelled(issuer: &str) -> OnRelay {
+    start(issuer, None, true).await
+}
+
+async fn start(
+    issuer: &str,
+    member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
+    shelled: bool,
 ) -> OnRelay {
     // The site the door and the relay hand people's links out under: its
     // `entry.json` names the home workspace's door once the relay made it.
@@ -127,6 +145,7 @@ pub async fn api_on_relay_limiting(
         tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
+    let shells = shelled.then(|| tempfile::tempdir().unwrap());
     let hosted = crate::harness::hosted::start(
         &operator,
         &host,
@@ -134,6 +153,9 @@ pub async fn api_on_relay_limiting(
         Options {
             plain: true,
             member_limits,
+            shell: shells.as_ref().map(|shells| {
+                tilo_relay::agents::host_shells(shells.path().join("shells")).unwrap()
+            }),
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
@@ -190,6 +212,7 @@ pub async fn api_on_relay_limiting(
         hosted,
         _site: site,
         state,
+        _shells: shells,
     }
 }
 
@@ -207,6 +230,7 @@ impl OnRelay {
             hosted,
             _site: site,
             state,
+            _shells,
             ..
         } = self;
         let Hosted {
@@ -252,6 +276,7 @@ impl OnRelay {
             hosted,
             _site: site,
             state,
+            _shells,
         }
     }
 }
