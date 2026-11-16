@@ -50,9 +50,6 @@ const MARGIN: f64 = 8.0;
 /// The width of a popover under the bar.
 const POPOVER_WIDTH: f64 = 380.0;
 
-/// The height of a popover under the bar: its footprint, which no page it shows moves.
-const POPOVER_HEIGHT: f64 = 640.0;
-
 /// A coordinate the stack published stands where this test expects it, to the pixel the surface is
 /// drawn at.
 #[track_caller]
@@ -495,18 +492,14 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     near(y, bar, "under the bar");
     near(w, POPOVER_WIDTH, "the stack's width");
     near(
-        h,
-        POPOVER_HEIGHT,
-        "its footprint, not the rest of the display",
-    );
-    assert!(
-        y + h < f64::from(HEIGHT) - MARGIN,
-        "with the shell it does not cover left below it"
+        y + h,
+        f64::from(HEIGHT) - MARGIN,
+        "its room reaches the display's margin, so no page that fits the display is cut",
     );
     assert_eq!(
         surface(&session, "quick-settings")["size"],
-        json!({ "width": POPOVER_WIDTH, "height": POPOVER_HEIGHT }),
-        "the footprint the surface asks for"
+        json!({ "width": POPOVER_WIDTH }),
+        "its width; its height is its page's, down to the display's margin"
     );
 
     // Beside a caret, clear of the line it sits on: the popover stands below that line and takes

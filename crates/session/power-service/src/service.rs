@@ -24,6 +24,8 @@ pub const SLEEP_KIND: &str = "so.tilo.power.sleep";
 pub struct SessionPower {
     link: PowerLink,
     runtime: tokio::runtime::Runtime,
+    /// How often the readings had moved when the session last read them.
+    seen: u64,
 }
 
 impl SessionPower {
@@ -57,7 +59,7 @@ impl SessionPower {
                 ),
             }
         });
-        Ok(Self { link, runtime })
+        Ok(Self::over(link, runtime))
     }
 
     /// The service over `connection`, where logind and `UPower` answer: a
@@ -83,7 +85,7 @@ impl SessionPower {
             let _connection = connection;
             service.run().await;
         });
-        Ok(Self { link, runtime })
+        Ok(Self::over(link, runtime))
     }
 
     /// The policy and its resources with nothing behind them: no logind and
@@ -94,10 +96,15 @@ impl SessionPower {
     /// # Errors
     /// The runtime it runs on did not start.
     pub fn without_daemons(link: PowerLink) -> std::io::Result<Self> {
-        Ok(Self {
+        Ok(Self::over(link, runtime()?))
+    }
+
+    const fn over(link: PowerLink, runtime: tokio::runtime::Runtime) -> Self {
+        Self {
             link,
-            runtime: runtime()?,
-        })
+            runtime,
+            seen: 0,
+        }
     }
 
     /// The policy and the mailbox behind it.
@@ -152,6 +159,14 @@ pub fn battery_surface() -> tilo_resource::surface::Surface {
 impl Service for SessionPower {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![sleep_resource(), battery_resource()]
+    }
+
+    /// The daemons answer on the service's own thread: the profiles they
+    /// offer, the one in force and the battery land after the session first
+    /// read them, and move while it runs.
+    fn poll(&mut self) -> bool {
+        let moved = self.link.bridge().readings_moved();
+        std::mem::replace(&mut self.seen, moved) != moved
     }
 
     fn read(&self, resource: &str) -> Option<Value> {

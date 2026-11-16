@@ -60,8 +60,9 @@ pub fn surface_of(program: impl Into<PathBuf>) -> Surface {
     Surface::new(SURFACE, program)
         .layer(Layer::Overlay)
         // It stands where the stack placed the slot, which the compositor is told: wherever that
-        // is, it is above the windows it covers. Its app starts at the most room a popover has and
-        // asks for the height of the page it shows.
+        // is, it is above the windows it covers. Its app starts at a popover's starting size and
+        // asks for the height of the page it shows, which the room down to the display's margin
+        // holds.
         .anchor(Anchor::TOP | Anchor::LEFT)
         .size((whole(POPOVER_WIDTH), whole(POPOVER_HEIGHT)))
         // Its field takes the keyboard when the person presses it, and the window they were typing

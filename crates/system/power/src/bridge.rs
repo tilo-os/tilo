@@ -74,6 +74,10 @@ struct BridgeInner {
     /// Whether the machine runs on battery, as the service last saw it; `None`
     /// before it first looked.
     on_battery: Option<bool>,
+    /// How often what the session's power readings show moved: the profiles
+    /// offered, the active one, the battery. The session reads them again when
+    /// it changes.
+    moved: u64,
 }
 
 /// How the compositor loop is woken when a signal arrives for it.
@@ -121,6 +125,10 @@ impl PowerBridge {
     /// Push a signal for the compositor loop and wake it to apply it.
     pub fn push_signal(&self, signal: PowerSignal) {
         self.lock().signals.push(signal);
+        self.wake();
+    }
+
+    fn wake(&self) {
         let wake = self.signal_wake.lock_recover().clone();
         if let Some(wake) = wake {
             wake();
@@ -139,6 +147,8 @@ impl PowerBridge {
         let mut inner = self.lock();
         if inner.active_profile.as_deref() != Some(profile) {
             inner.active_profile = Some(profile.to_owned());
+            drop(inner);
+            self.reading_moved();
         }
     }
 
@@ -150,7 +160,27 @@ impl PowerBridge {
 
     /// Record the power profiles power-profiles-daemon offers, in its order.
     pub fn note_profiles(&self, profiles: Vec<String>) {
-        self.lock().profiles = profiles;
+        let mut inner = self.lock();
+        if inner.profiles != profiles {
+            inner.profiles = profiles;
+            drop(inner);
+            self.reading_moved();
+        }
+    }
+
+    /// How often what the power readings show moved: a session that saw another
+    /// count reads them again.
+    pub fn readings_moved(&self) -> u64 {
+        self.lock().moved
+    }
+
+    /// Count a move of what the readings show (the battery read anew) and wake
+    /// the session's loop to read them, as a signal does.
+    pub fn reading_moved(&self) {
+        let mut inner = self.lock();
+        inner.moved = inner.moved.wrapping_add(1);
+        drop(inner);
+        self.wake();
     }
 
     pub fn profiles(&self) -> Vec<String> {

@@ -244,7 +244,8 @@ fn glyph_space() -> Container {
 /// The width of a slider's leading and trailing controls: a pointer target.
 const GLYPH_COLUMN: f32 = ui::tokens::Metrics::BASE.min_pointer_target;
 
-/// The tiles two to a row.
+/// The tiles two to a row. An odd one out takes the whole last row: every
+/// tile is half the page or all of it, never a width of its own beside a gap.
 fn tile_grid(
     cx: &ViewCx<QuickSettings>,
     tiles: &[TileFace],
@@ -262,14 +263,9 @@ fn tile_grid(
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Stretch)
             .with_rhythm(Rhythm::Sibling);
+        let share = if pair.len() == 1 { 1.0 } else { 0.5 };
         for face in pair {
-            row = row.push(tile(cx, face));
-        }
-        if pair.len() == 1 {
-            // A lone tile keeps a tile's width.
-            row = row.push(Box::new(
-                Container::new().with_no_padding().with_flex_grow(),
-            ));
+            row = row.push(tile(cx, face, share));
         }
         grid = grid.push(Box::new(row));
         if pair
@@ -282,14 +278,15 @@ fn tile_grid(
     grid.into_widget()
 }
 
-fn tile(cx: &ViewCx<QuickSettings>, face: &TileFace) -> Element {
+/// A tile drawn in `share` of the page's width.
+fn tile(cx: &ViewCx<QuickSettings>, face: &TileFace, share: f32) -> Element {
     let id = format!("qs-tile-{}", crate::faces::control_id(face.control));
     let mut tile = QuickTile::new(&id, face.icon, &face.label)
         .detail(&face.detail)
         .on(face.on)
-        // Two to a row: the tile is as tall as the state line it will have
-        // in half the page's width.
-        .share(0.5)
+        // The tile is as tall as the state line it will have in its share
+        // of the page's width.
+        .share(share)
         .enabled(face.switch.is_some());
     let actions = cx.actions();
     if let Some(binding) = face

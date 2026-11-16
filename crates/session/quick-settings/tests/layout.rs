@@ -72,19 +72,10 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
         "its controls stay on it"
     );
     assert!(
-        (wifi.y0 - bluetooth.y0).abs() < 1.0 && wifi.x1 <= bluetooth.x0,
-        "two tiles to a row: {wifi:?} {bluetooth:?}"
-    );
-    assert!(
-        (wifi.height() - bluetooth.height()).abs() < 1.0,
-        "the two tiles of a row stand the same height: {wifi:?} {bluetooth:?}"
-    );
-    assert!(
         bluetooth.height() > power_mode.height() + 1.0,
         "the state line that does not fit its tile breaks onto a second line, \
          and the tile grows for it: {bluetooth:?} {power_mode:?}"
     );
-    assert!(vpn.y0 >= wifi.y1, "the third tile starts the next row");
     assert!(brightness.y0 >= vpn.y1, "the sliders come under the tiles");
     assert!(volume.y0 >= brightness.y1, "brightness, then volume");
     assert!(battery.y0 >= volume.y1, "the rows come under the sliders");
@@ -1585,4 +1576,65 @@ fn opened_to_paste_tab_and_the_arrows_reach_the_copies() {
         [QsEffect::PasteCopy { copy: "b2".into() }],
         "the arrows walk the copies"
     );
+}
+
+/// However many controls the person keeps, the tiles stand two to a row and an odd one out takes
+/// the whole last row: no tile has a width of its own beside a gap. And in the room the shell
+/// gives the panel on the smallest display it is drawn for, the whole page fits: nothing scrolls
+/// under the footer.
+#[test]
+fn every_tile_is_half_the_page_or_all_of_it_and_the_page_fits_its_room() {
+    use settings_store::hardware::QuickSettingsControl;
+    use tilo_quick_settings::control_id;
+    use tilo_quick_settings::resource::{PANEL_HEIGHT, PANEL_WIDTH};
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted_at("controls", (PANEL_WIDTH, PANEL_HEIGHT), 1.0);
+    host.update(|state| {
+        state.rotation_available = true;
+        state.network.mobile.available = true;
+    });
+    for kept in 1..=QuickSettingsControl::ALL.len() {
+        let controls = QuickSettingsControl::ALL[..kept].to_vec();
+        host.update(|state| state.arrangement.controls.clone_from(&controls));
+        app.settle();
+        let slider = target(&mut app, "qs-brightness-row");
+        let tiles: Vec<Rect> = controls
+            .iter()
+            .map(|control| target(&mut app, &format!("qs-tile-{}", control_id(*control))))
+            .collect();
+        let (left, right) = (tiles[0].x0, slider.x1);
+        for (index, tile) in tiles.iter().enumerate() {
+            let lone = index % 2 == 0 && index + 1 == tiles.len();
+            if lone {
+                assert!(
+                    (tile.x0 - left).abs() < 0.5 && (tile.x1 - right).abs() < 0.5,
+                    "{kept} tiles: the odd one out takes the whole row: {tile:?} on {left}..{right}"
+                );
+            } else {
+                let partner = tiles[index ^ 1];
+                assert!(
+                    (tile.width() - partner.width()).abs() < 0.5
+                        && (tile.y0 - partner.y0).abs() < 0.5
+                        && (tile.height() - partner.height()).abs() < 0.5,
+                    "{kept} tiles: two to a row, one shape: {tile:?} {partner:?}"
+                );
+                assert!(
+                    tile.width() < (right - left) / 2.0 + 0.5,
+                    "{kept} tiles: half the page: {tile:?} on {left}..{right}"
+                );
+            }
+        }
+        let (_, height) = wanted(&mut app);
+        assert!(
+            height <= f64::from(PANEL_HEIGHT),
+            "{kept} tiles: the page fits the panel's room and nothing scrolls under the footer: \
+             it asks for {height} of {PANEL_HEIGHT}"
+        );
+        let notifications = target(&mut app, "qs-row-notifications");
+        let account = target(&mut app, "qs-account");
+        assert!(
+            notifications.y1 <= account.y0,
+            "{kept} tiles: the last row stands whole above the footer: {notifications:?} {account:?}"
+        );
+    }
 }

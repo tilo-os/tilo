@@ -168,11 +168,12 @@ impl QuickSettings {
 /// The app.
 pub struct QuickSettingsApp;
 
-/// The most room the panel has, as the shell sizes a popover (its
-/// `POPOVER_WIDTH` and `POPOVER_HEIGHT`): the window starts there and is
-/// as tall as the page it shows.
+/// The room the shell gives the panel on a 1280x800 display, the smallest
+/// laptop display it is drawn for: a popover's width (`POPOVER_WIDTH`), and
+/// the height from under the bar down to the display's margin. The window is
+/// as tall as the page it shows inside it.
 pub const PANEL_WIDTH: u32 = 380;
-pub const PANEL_HEIGHT: u32 = 640;
+pub const PANEL_HEIGHT: u32 = 760;
 
 impl ResourceApp for QuickSettingsApp {
     type Resource = QuickSettings;

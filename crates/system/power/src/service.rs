@@ -606,6 +606,7 @@ impl PowerService {
     }
 
     async fn apply_battery_snapshot(&mut self, snap: BatterySnapshot) {
+        self.bridge.reading_moved();
         if self.bridge.note_on_battery(snap.runs_on_battery()) {
             self.reapply_policy();
         }

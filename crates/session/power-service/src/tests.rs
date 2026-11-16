@@ -265,12 +265,22 @@ fn a_power_profile_is_switched_through_the_machines_own_daemon() {
     let mut service = SessionPower::without_daemons(link.clone()).expect("service");
 
     // A machine whose daemon offers profiles: the reading lists them, and
-    // nothing is asked of a profile the machine does not have.
+    // nothing is asked of a profile the machine does not have. The daemon
+    // answers after the session first read the service, which says its
+    // reading moved, once.
+    assert!(!service.poll(), "nothing moved yet");
     link.bridge().note_profiles(vec![
         "performance".into(),
         "balanced".into(),
         "power-saver".into(),
     ]);
+    assert!(
+        service.poll(),
+        "the profiles the daemon offers move the reading"
+    );
+    assert!(!service.poll(), "and only once");
+    link.bridge().note_active_profile("balanced");
+    assert!(service.poll(), "so does the profile in force");
     assert_eq!(
         link.sleep().profiles,
         ["performance", "balanced", "power-saver"]

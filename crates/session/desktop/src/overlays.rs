@@ -227,12 +227,10 @@ impl Slot {
     #[must_use]
     pub const fn size(self) -> Size {
         match self {
-            Self::QuickSettings => Size {
-                width: Some(POPOVER_WIDTH),
-                height: Some(POPOVER_HEIGHT),
-            },
-            // As tall as its rows, down to the display's margin.
-            Self::Centre => Size {
+            // As tall as its page or its rows, down to the display's margin: a
+            // page that fits the display is never cut, and only one taller than
+            // the display scrolls.
+            Self::QuickSettings | Self::Centre => Size {
                 width: Some(POPOVER_WIDTH),
                 height: None,
             },
@@ -269,8 +267,7 @@ pub struct Size {
 /// The width of a popover hanging under the bar, logical pixels.
 pub const POPOVER_WIDTH: f64 = 380.0;
 
-/// The most height a popover hanging under the bar takes: it is as tall as the page it shows up to
-/// this, and what a page has beyond it scrolls inside it.
+/// The height a popover's window starts at, before it asks for the height of the page it shows.
 pub const POPOVER_HEIGHT: f64 = 640.0;
 
 /// The gap between a popover and the edges of its display: the same corner margin the banner stack
@@ -1368,13 +1365,9 @@ mod tests {
             assert_eq!(place.y0, bar, "under the bar");
             assert_eq!(place.width(), POPOVER_WIDTH);
             assert_eq!(
-                place.height(),
-                POPOVER_HEIGHT,
-                "its footprint, not the rest of the display"
-            );
-            assert!(
-                place.y1 < DISPLAY.y1 - POPOVER_MARGIN,
-                "with the shell it does not cover left below it"
+                place.y1,
+                DISPLAY.y1 - POPOVER_MARGIN,
+                "its room reaches the display's margin: the page it shows is never cut short of it"
             );
         }
 
@@ -1452,7 +1445,11 @@ mod tests {
             let standing = overlays.place(Slot::QuickSettings).expect("placed");
             assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
             assert!(standing.rests_at_bottom, "hanging by its bottom edge");
-            assert_eq!(standing.room.height(), POPOVER_HEIGHT);
+            assert_eq!(
+                standing.room.y0,
+                DISPLAY.y0 + POPOVER_MARGIN,
+                "the room above it, up to the display's margin"
+            );
             assert!(
                 standing.room.y1 <= low.y0,
                 "the pane stands clear of the line: {:?} against {low:?}",
