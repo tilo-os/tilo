@@ -903,14 +903,7 @@ impl BrowserShell {
     fn go_to_person(&self, who: &str) {
         let tree = self.handle.read(Clone::clone);
         let people = here_people(&self.chrome.here, &self.chrome.shared, &tree);
-        let Some(person) = people.iter().find(|person| person.id == who) else {
-            return;
-        };
-        if let Some(tab) = person.tab {
-            self.handle.focus_tab(tab);
-        } else if let Some(app) = person.followed_app() {
-            self.handle.focus_app(app);
-        }
+        tilo_desktop::here::go_to(&self.handle, &people, who);
     }
 
     /// Where the person's own agent works comes into view each time it moves or acts: they see what
@@ -930,13 +923,11 @@ impl BrowserShell {
         self.agent_work_seen.set(Some(seen));
         let tree = self.handle.read(Clone::clone);
         let people = here_people(&self.chrome.here, &self.chrome.shared, &tree);
-        let place = self.chrome.here.borrow_mut().take_own_agent_work(&people);
-        let tab = match place {
-            Some(tilo_desktop::here::WorkPlace::Window(tab)) => Some(tab),
-            Some(tilo_desktop::here::WorkPlace::App(app)) => self.handle.tab_of_app(&app),
-            None => None,
-        };
-        tab.is_some_and(|tab| self.handle.reveal_tab(tab))
+        tilo_desktop::here::reveal_own_agent_work(
+            &mut self.chrome.here.borrow_mut(),
+            &people,
+            &self.handle,
+        )
     }
 
     /// The person's own agent arriving (the one their setup prompt connected) is followed at once,

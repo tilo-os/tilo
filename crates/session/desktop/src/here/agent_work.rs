@@ -18,6 +18,37 @@ pub enum WorkPlace {
     App(String),
 }
 
+/// Go to where `who` (a roster id among `people`) works, once: the window of theirs shown here,
+/// else a window of the app they are in. Nothing moves when neither stands here. Every shell (a
+/// device's session, a page) goes there through this.
+pub fn go_to(handle: &tilo_desktop_surface::DesktopHandle, people: &[Person], who: &str) {
+    let Some(person) = people.iter().find(|person| person.id == who) else {
+        return;
+    };
+    if let Some(tab) = person.tab {
+        handle.focus_tab(tab);
+    } else if let Some(app) = person.followed_app() {
+        handle.focus_app(app);
+    }
+}
+
+/// Bring where this person's own agent works into view, when that is news
+/// ([`HereState::take_own_agent_work`]): the strip scrolls to the window without taking the
+/// keyboard, and waits while the person types or drags (`DesktopHandle::reveal_tab`). Whether it
+/// asked the strip to move.
+pub fn reveal_own_agent_work(
+    here: &mut HereState,
+    people: &[Person],
+    handle: &tilo_desktop_surface::DesktopHandle,
+) -> bool {
+    let tab = match here.take_own_agent_work(people) {
+        Some(WorkPlace::Window(tab)) => Some(tab),
+        Some(WorkPlace::App(app)) => handle.tab_of_app(&app),
+        None => None,
+    };
+    tab.is_some_and(|tab| handle.reveal_tab(tab))
+}
+
 /// What this page last showed of each of its person's agents, and whether one acted since.
 #[derive(Debug, Default)]
 pub(super) struct AgentWork {

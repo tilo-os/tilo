@@ -234,14 +234,7 @@ impl Shared {
             &self.notes,
             &|app: &str| Some(crate::app_names::app_name(app)),
         );
-        let Some(person) = people.iter().find(|person| person.id == who) else {
-            return;
-        };
-        if let Some(tab) = person.tab {
-            self.handle.focus_tab(tab);
-        } else if let Some(app) = person.followed_app() {
-            self.handle.focus_app(app);
-        }
+        tilo_desktop::here::go_to(&self.handle, &people, who);
     }
 
     /// This device follows nobody from now on, and the workspace hears it once.
