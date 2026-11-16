@@ -1,12 +1,13 @@
-//! A mail account's session with its servers, carried where the account is
-//! kept: on the device that holds it, and on the host that runs a person's
-//! workspace when their page reaches no mail server.
+//! A mail account's session with its servers, where the account is kept and
+//! no app runs: the machine that runs a person's workspace when their page
+//! reaches no mail server (crates/hosting/tilo-workspace-host).
 //!
-//! The host reads a folder as a mail program does (the newest page of
+//! It reads a folder as a mail program does (the newest page of
 //! messages, or what arrived since the newest one the reader holds), tells a
 //! server what changed about a message, and hands a written message to the
 //! server's SMTP endpoint. Everything is bounded by the same deadline as the
-//! sign-in probes; nothing here keeps a secret or answers one.
+//! sign-in probes (crates/platform/account-probe); nothing here keeps a
+//! secret or answers one.
 
 use std::sync::Arc;
 use std::time::Duration;

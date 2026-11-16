@@ -45,6 +45,12 @@ syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
 # shared runtime every app maps leaves syntect and the grammars out; any
 # other build links them.
 lazy-highlight = ["dep:tilo-engine-loader"]
+# The interpreter a theme's painter sets run on is not linked: `part_paint`
+# opens it from libtilo_theme_painter_engine.so the first time a theme names
+# a set. The engine library's own build (crates/runtime/engines/theme-painter)
+# turns this on, so the shared runtime every app maps leaves wasmi out; any
+# other build links it.
+lazy-painter = ["dep:tilo-engine-loader"]
 # The search engine's code is not linked in: the host fetches it when something
 # first asks (`tilo-search`'s `lazy-engine`). What the browser shell builds
 # with, so a surface that searches fetches the engine ahead of its first query.
@@ -180,8 +186,9 @@ tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
-# (`part_paint::wasm`): fuel-bounded, memory-capped, no imports.
-wasmi = { version = "1.1", default-features = false, features = ["std"] }
+# (`part_paint::wasm`): fuel-bounded, memory-capped, no imports. Named only
+# while `lazy-painter` is off; the engine library carries it otherwise.
+tilo-theme-painter-wasm = { version = "0.1.0", path = "../theme-painter-wasm" }
 # The emoji catalogue the toolkit's picker, reaction strip and text fields
 # read: a text field resolves `:name:` without the app naming a catalogue
 # crate, and every app's field offers emoji by default. A workspace's own

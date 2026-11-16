@@ -18,6 +18,7 @@ pub mod wasm;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+#[cfg(not(feature = "lazy-painter"))]
 mod wasm_tests;
 
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -1,6 +1,11 @@
 //! Battery health and charge limits, read from the kernel's power-supply class: level,
 //! health, cycles, and which charge-limit control the hardware has.
 
+/// The session's battery resource, which the power service publishes.
+pub const BATTERY: &str = "power:battery";
+/// The kind of [`BATTERY`].
+pub const BATTERY_KIND: &str = "power:battery";
+
 pub use tilo_power_mgmt::sysfs::{
     BatteryInfo, CapacityUnit, ChargeCapBackend, ChargeCapCapability, PowerDevice, PowerSupplyKind,
     charge_capability, power_devices,

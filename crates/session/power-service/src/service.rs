@@ -2,6 +2,7 @@
 //! other services: `power:sleep` (the policy and the holds) and
 //! `power:battery` (the pack as it reads).
 
+use os_actions::battery::{BATTERY, BATTERY_KIND};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_resource::Effect as _;
@@ -15,10 +16,6 @@ use crate::effects::{BatteryAction, SleepAction};
 pub const SLEEP: &str = "power:sleep";
 /// The kind of [`SLEEP`].
 pub const SLEEP_KIND: &str = "so.tilo.power.sleep";
-/// The resource holding the battery's charge.
-pub const BATTERY: &str = "power:battery";
-/// The kind of [`BATTERY`].
-pub const BATTERY_KIND: &str = "power:battery";
 
 /// The session's power service: the policy, and the machine's logind and
 /// `UPower` behind it.

@@ -9603,7 +9603,6 @@ dependencies = [
  "taffy",
  "tempfile",
  "test-http",
- "tilo-account-probe",
  "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
@@ -9615,6 +9614,7 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-mail-engine",
+ "tilo-mail-session",
  "tilo-mime",
  "tilo-net",
  "tilo-oauth",
@@ -15408,7 +15408,6 @@ dependencies = [
  "tilo-process",
  "tilo-relay-protocol",
  "tilo-rt",
- "tilo-session-power",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
@@ -17188,16 +17187,11 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "async-imap",
- "futures-util",
- "lettre",
- "mail-builder",
- "mail-parser",
  "rcgen",
  "rustls",
  "serde_json",
  "tempfile",
  "test-http",
- "tilo-actions",
  "tilo-dav",
  "tilo-net",
  "tilo-test-env",
@@ -19952,6 +19946,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-mail-session"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "async-imap",
+ "futures-util",
+ "lettre",
+ "mail-builder",
+ "mail-parser",
+ "rustls",
+ "serde_json",
+ "tilo-actions",
+ "tilo-net",
+ "tokio",
+ "tokio-rustls",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-mcp"
 version = "0.1.0"
 dependencies = [
@@ -22341,6 +22355,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-theme-painter-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-theme-painter-wasm",
+ "tilo-theme-sdk",
+ "tilo-ui",
+ "wat",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-theme-painter-wasm"
+version = "0.1.0"
+dependencies = [
+ "tilo-lock",
+ "tilo-theme-sdk",
+ "wasmi",
+ "wat",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-theme-sdk"
 version = "0.1.0"
 dependencies = [
@@ -22540,6 +22577,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-theme-bauhaus",
+ "tilo-theme-painter-wasm",
  "tilo-theme-sdk",
  "tilo-tts",
  "tilo-ui",
@@ -22562,7 +22600,6 @@ dependencies = [
  "unicode-script",
  "url",
  "uuid",
- "wasmi",
  "wat",
  "wgpu",
  "wgpu-hal",
@@ -23206,6 +23243,7 @@ dependencies = [
  "tilo-files",
  "tilo-history",
  "tilo-lock",
+ "tilo-mail-session",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",

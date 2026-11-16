@@ -174,17 +174,19 @@ its engine library, which runs the app and brings the accounts engine.
 Some code the toolkit reaches on behalf of every app, but only once a person
 does something particular: the syntax
 grammars (syntect, fancy-regex and two-face's packed grammars) for a line of
-code, the ad-block compiler (adblock-rust) for the browser's filter lists. No
+code, the ad-block compiler (adblock-rust) for the browser's filter lists, and
+the interpreter (wasmi) a theme's painter set loaded from wasm runs on. No
 app names those engines: the toolkit opens them by name the first time
 (`tilo-engine-loader`: `dlopen` with local symbols, never closed) and calls
 one entry function, whose type the toolkit defines and the engine crate is
 checked against at compile time (`tilo_highlight::GrammarsEntry`,
-`ui::webview::adblock::EngineEntry`):
+`ui::webview::adblock::EngineEntry`, `tilo_theme_sdk::PainterEntry`):
 
 | engine library | opened by | the first time |
 |---|---|---|
 | `libtilo_highlight_engine.so` | the code editor's highlighter (`lazy-highlight`) | a line of code is highlighted |
 | `libtilo_adblock_engine.so` | `ui::webview::adblock` (`lazy-adblock`) | an app compiles filter lists |
+| `libtilo_theme_painter_engine.so` | `part_paint` (`lazy-painter`) | a theme names a painter set that is not built in |
 
 The runtime-side crate names the engine's code only while its `lazy-*`
 feature is off, and each engine's `thin` feature turns it on, so in the
@@ -193,8 +195,9 @@ every other build (`tilo-app dev`, workspace tests, the shell) links it as
 before. The surface check knows these edges (`LAZY_EDGES`). The engine's
 check binary goes through the toolkit's own path, so a release proves the
 runtime finds and runs it. A library that does not open is logged once:
-code highlights as plain text, filter lists
-do not compile. The Typst engine chains on the highlight engine (Typst's raw
+code highlights as plain text, filter lists do not compile, a theme's painter
+sets do not load and its built-in ones draw. The Typst engine chains on the
+highlight engine (Typst's raw
 blocks use the same syntect and grammars), so Typst Editor maps one copy and
 the toolkit's `dlopen` finds it already loaded.
 
@@ -288,6 +291,19 @@ record and action SDK (`tilo_actions` 1.06 -> 1.26, `tilo_resource` 1.22 ->
 used, `runtime_collab`, `tilo_fs_client`, `read_fonts` and `skrifa` gave back
 4.0 MB.
 
+The wasm painter interpreter is no longer in the runtime: `wasmi`,
+`wasmi_ir` and `wasmi_core` are an engine of their own that the toolkit opens
+the first time a theme names a painter set that is not built in
+(`libtilo_theme_painter_engine.so`, crates/runtime/engines/theme-painter,
+through the toolkit's `lazy-painter`), so no app maps them until then. In the
+runtime, its `.text` fell 40 KB with the interpreter; the loader and the
+interpreter's `Refusal` in the theme SDK came to a little more, so the file is
+159507352 bytes in t's app-sizes-x86_64 run r1bcf1340bd against 159484120
+before. The 1.3 MB above is what the unstripped build names, which keeps the
+code the release's link drops. What remains over the budget is the toolkit's
+own widget and SDK code measured above, and the budget rises by that
+remainder (`raises/painter-interpreter-in-its-engine.toml`).
+
 `libtilo_settings_engine.so` grew 4.8 MB of named code over the same period
 (9.6 -> 14.4 MB; 13.6 MB shipped, 3.4 MB over its budget of 10.2): the SDK the
 panes are written against, 3.1 MB (`tilo_app` 0.58 -> 1.38 MB, `tilo_resource`
@@ -299,6 +315,16 @@ panes are written against, 3.1 MB (`tilo_app` 0.58 -> 1.38 MB, `tilo_resource`
 0.07, and the mail stack the sign-in probe asks: `mail-parser` 0.15, `lettre`
 0.10, `mail-builder` 0.05, which `libtilo_mail_engine.so` also carries); and
 Settings' own panes, 0.31 MB.
+
+That engine also carried libraries twice. The account probe carried the mail
+session only the machine that runs a person's workspace reaches
+(tilo-mail-session), which took `mail-parser`, `mail-builder` and `lettre` out
+of the engine; and the Power pane opens the session's battery resource by the
+name `os-actions` gives it, which took the session's power service and its
+part of the `zbus` and `zvariant` code out with it. `libtilo_settings_engine.so` is
+13554288 bytes in t's app-sizes-x86_64 run r1bcf1340bd, down from 13,604,688;
+the rest of its overage is the SDK the panes are written against, and the
+engine's budget rises by that remainder (`raises/settings-panes-sdk.toml`).
 
 ## What an app start pays for the runtime
 

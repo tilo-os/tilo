@@ -116,7 +116,9 @@ symbol_relocations = 6592
 # The two engines that hold what Sheets' formulas and the agent's web tools
 # used to carry in their own tapps, measured at rb4387cd6ce (x86_64). The
 # aarch64 numbers are that measurement: the first aarch64 run prints what to
-# lower them to.
+# lower them to. The theme painter interpreter's engine (wasmi) was measured
+# by t's app-sizes-x86_64 run 1bcf1340bd; its aarch64 number is the x86_64 one
+# until the first aarch64 run prints what to lower it to.
 [engines.x86_64]
 "libtilo_accounts_engine.so" = 2752512
 "libtilo_agent_web_engine.so" = 393216
@@ -134,6 +136,7 @@ symbol_relocations = 6592
 "libtilo_pdf_engine.so" = 10551296
 "libtilo_settings_engine.so" = 10223616
 "libtilo_spotify_engine.so" = 11599872
+"libtilo_theme_painter_engine.so" = 131072
 "libtilo_timezone_engine.so" = 1310720
 "libtilo_typst_engine.so" = 43581440
 "libtilo_youtube_engine.so" = 5898240
@@ -155,6 +158,7 @@ symbol_relocations = 6592
 "libtilo_pdf_engine.so" = 9568256
 "libtilo_settings_engine.so" = 9240576
 "libtilo_spotify_engine.so" = 11337728
+"libtilo_theme_painter_engine.so" = 131072
 "libtilo_timezone_engine.so" = 1376256
 "libtilo_typst_engine.so" = 41418752
 "libtilo_youtube_engine.so" = 5308416

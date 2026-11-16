@@ -38,7 +38,8 @@ use tilo_power_mgmt::{
 };
 
 pub use model::{Battery, ChargeCapCapability, Notice, Sleep};
-pub use service::{BATTERY, SLEEP, SessionPower, battery_surface};
+pub use os_actions::battery::BATTERY;
+pub use service::{SLEEP, SessionPower, battery_surface};
 
 /// The pack's charge-limit control as this machine offers it: the limit the
 /// driver exposes and the write that sets it. The real one is the

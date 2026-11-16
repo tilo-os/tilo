@@ -1,0 +1,39 @@
+[package]
+name = "tilo-mail-session"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A mail account's session with its servers, carried by the machine that runs a person's workspace: what a page's Mail reads, sends and marks."
+
+[dependencies]
+# The account and secret shapes the session reads; nothing here keeps either.
+accounts = { path = "../../system/accounts" }
+# The same clients Mail uses: async-imap, the message codecs, and the SMTP
+# client (lettre). Mail's own engine library carries them for the app; this
+# crate carries them for the machine that runs a person's workspace, where
+# no app runs.
+async-imap.workspace = true
+mail-parser = "0.11.4"
+mail-builder = "0.4.4"
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
+# Certificate roots and the TLS client configuration, as every other app's
+# outbound connection makes them.
+tilo-net = { path = "../tilo-net" }
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+tokio-rustls.workspace = true
+# The vocabulary a page's mail actions carry: what a folder read answers and
+# what a send is told.
+tilo-actions = { path = "../../collab/actions" }
+futures-util.workspace = true
+serde_json.workspace = true
+# A deadline that is the same clock on every machine, a page included.
+web-time = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

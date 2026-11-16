@@ -7,8 +7,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_account_probe::{Attachment, LiveMailSession, MailSession};
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, SendMail};
+use tilo_mail_session::{Attachment, LiveMailSession, MailSession};
 
 use mail::fake_imap::{FakeImap, Layout};
 use mail::fake_servers::{FakeSmtp, server_identity};

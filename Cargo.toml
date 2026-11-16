@@ -195,6 +195,7 @@ members = [
     "crates/sdk/tilo-page-raster",
     "crates/sdk/ui-paint",
     "crates/sdk/theme-sdk",
+    "crates/sdk/theme-painter-wasm",
     "crates/sdk/themes/bauhaus",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
@@ -313,6 +314,7 @@ members = [
 
     # Platform
     "crates/platform/account-probe",
+    "crates/platform/mail-session",
     "crates/platform/migration-sources",
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-app-id",
@@ -398,6 +400,7 @@ members = [
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",
     "crates/runtime/engines/settings",
+    "crates/runtime/engines/theme-painter",
     "crates/runtime/engines/spreadsheet",
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/timezone",

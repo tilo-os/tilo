@@ -334,7 +334,10 @@ outline at all. It is encoded last, for the same reason as the light.
 
 - The module may import nothing, so it has no clock, no I/O and no host to
   ask; a module that imports anything is refused.
-- It runs on wasmi.
+- It runs on wasmi, in an engine library of its own beside the shared runtime
+  (`libtilo_theme_painter_engine.so`, `crates/runtime/engines/theme-painter`),
+  which the toolkit opens the first time a theme names a set it does not have
+  built in. Every other build links the interpreter in `part_paint::wasm`.
 - Each call has a fuel budget (`FUEL_PER_CALL`) and the memory is capped
   (`MAX_MEMORY`).
 - Its answers are decoded as untrusted bytes, bounded by `MAX_ANSWER`.

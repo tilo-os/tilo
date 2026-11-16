@@ -23,6 +23,7 @@
 //! through [`export_painter!`] and the [`wire`] encoding.
 //! `docs/architecture/theming.md`, "Part painters".
 
+pub mod engine;
 mod motion;
 mod part;
 mod scene;
@@ -31,6 +32,7 @@ pub mod wire;
 
 pub mod guest;
 
+pub use engine::{PAINTER_ENGINE_ENTRY, PAINTER_ENGINE_LIBRARY, PainterEntry, Refusal};
 pub use kurbo;
 pub use peniko;
 

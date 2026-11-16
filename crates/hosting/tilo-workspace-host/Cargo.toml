@@ -85,6 +85,7 @@ accounts = { path = "../../system/accounts" }
 agent-provider-config = { path = "../../agent/provider-config" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../platform/account-probe" }
+tilo-mail-session = { path = "../../platform/mail-session" }
 
 [dev-dependencies]
 # A dispatcher that answers as an app's own host: what a device's plane asks

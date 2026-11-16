@@ -4,12 +4,9 @@
 //! `CalDAV`/`WebDAV`.
 //!
 //! They run wherever the account's server can be reached: on the device that
-//! keeps the account, and on the host a person's workspace runs on when the
-//! account is added from a page. The host also carries the account's mail
-//! session there ([`mail`]): what a page's Mail reads, sends and changes.
-
-mod mail;
-pub use mail::{Attachment, LiveMailSession, MailSession};
+//! keeps the account, and on the machine that runs a person's workspace when
+//! the account is added from a page. What a page's Mail reads and sends there
+//! is its own crate (tilo-mail-session).
 
 use std::sync::Arc;
 use web_time::{Duration, Instant};

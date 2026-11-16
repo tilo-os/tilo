@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Map, Value};
-use tilo_account_probe::{AccountTester, Attachment, LiveAccountTester, LiveMailSession};
+use tilo_account_probe::{AccountTester, LiveAccountTester};
 use tilo_actions::remote::person_accounts::{
     AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
     MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendId, SendMail, SendPiece,
@@ -35,6 +35,7 @@ use tilo_actions::remote::person_models::{
 use tilo_actions::remote::{
     ActionHostError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
 };
+use tilo_mail_session::{Attachment, LiveMailSession};
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
@@ -560,7 +561,7 @@ async fn mark_mail(root: &Path, marking: MarkMail) -> Result<(), String> {
     mark_with(Arc::new(LiveMailSession::default()), root, marking).await
 }
 
-type Session = Arc<dyn tilo_account_probe::MailSession + Send + Sync>;
+type Session = Arc<dyn tilo_mail_session::MailSession + Send + Sync>;
 
 /// [`fetch_mail`] through `session`, so a test asks a server it stands in
 /// for.
@@ -994,7 +995,7 @@ mod mail_session_tests {
         invitation: Mutex<Option<String>>,
     }
 
-    impl tilo_account_probe::MailSession for Fixture {
+    impl tilo_mail_session::MailSession for Fixture {
         fn fetch(
             &self,
             account: &accounts::Account,

@@ -267,7 +267,7 @@ pub struct SystemPower;
 impl SystemPower {
     fn battery() -> Result<ui::collaboration::SessionResource, String> {
         crate::device_read::off_ui_thread();
-        ui::collaboration::SessionResource::open(tilo_session_power::BATTERY)
+        ui::collaboration::SessionResource::open(os_actions::battery::BATTERY)
     }
 
     fn reading(resource: &ui::collaboration::SessionResource) -> Option<BatteryReading> {

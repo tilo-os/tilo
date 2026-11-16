@@ -1,0 +1,5 @@
+reason = "The toolkit's own growth since the budgets in force is what this raise covers: tilo_ui's widget code (2.9 MB of the 7.3 MB measured in docs/measurements/runtime-size.md between b0ce8f7c78d and 6f39392b683) and the resource and action SDK with what it instantiates in core, alloc and serde_json, and tilo-desktop-entry's reading of the desktop files. This change already took the wasm painter interpreter out of the runtime into its own engine library (wasmi, wasmi_ir, wasmi_core), so the amount is the measured remainder after that cut plus the ratchet's 1 % headroom, rounded up to 64 KiB. Measured by t's app-sizes-x86_64 (run 1bcf1340bd); the aarch64 numbers are the same change, and its first run prints what to raise them to."
+run = "r1bcf1340bd"
+
+[runtime.x86_64]
+bytes = 11534336
