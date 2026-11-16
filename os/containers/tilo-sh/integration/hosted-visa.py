@@ -25,6 +25,12 @@ agent take there, with the person's answering device held by the check
      shows its receipt and reference (`read-page`); then a third is allowed on
      a phone paired to the person, which holds no root (`tilo-approve pair`):
      the person is asked on whichever of their devices they are at;
+  e3. the page the person's root is in shows another workspace, and a second
+     browser of theirs, paired to them by that page and holding none of the
+     root, is open in the applicant's: the question reaches that browser, and
+     allowing there releases the submission. A submission they deny there is
+     refused to the agent with the refusal's own code (`not_permitted`), and
+     the filled page stays unsent;
   f. a click on the submit button is held and asked the same way; the question
      names what leaves, just as the submission's did;
   g. a reviewer who joined by invitation reads the agent's run in History;
@@ -93,6 +99,10 @@ PERSON_PAGE = Path(__file__).with_name("person.mjs")
 # the person's view of each is kept beside its answers.
 PAGE_ASKS = os.environ.get("HOSTED_VISA_PAGE_ASKS", "")
 PAGE_ANSWERS = os.environ.get("HOSTED_VISA_PAGE_ANSWERS", "")
+# The workspace the person's page is open on, which is not the one their
+# agent works in: what the held page is put to them on a device of theirs,
+# wherever their page is showing.
+PAGE_WORKSPACE = os.environ.get("HOSTED_VISA_PAGE_WORKSPACE", "")
 # What the agent puts in the page's fields, by the name the page gives each
 # of them: the words of its label, which is what `find-page-element` matches.
 FILLED = {
@@ -115,6 +125,8 @@ RECEIPT = "Application received"
 
 # The shells this run opened, stopped whichever way the run ends.
 SHELLS: list[Shell] = []
+# The browsers the person paired this run, stopped whichever way it ends.
+BROWSERS: list[PairedBrowser] = []
 
 
 def say(step: str, detail: str = "") -> None:
@@ -235,6 +247,118 @@ class PagePerson:
                             return questions
             await asyncio.sleep(0.2)
         raise AssertionError(f"the person's page did not answer {name} in 120 s ({self.answers})")
+
+    def pair(self, workspace: str) -> dict:
+        """The person's root page makes a pairing link into `workspace`: the
+        device that follows it is approved here, as an agent set up from this
+        tab is (the page offers an agent's link the same way)."""
+        with open(self.asks, "w") as asks:
+            asks.write(f"pair {workspace}\n")
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if os.path.isfile(self.answers):
+                with open(self.answers) as answered:
+                    for line in answered:
+                        try:
+                            said = json.loads(line)
+                        except ValueError:
+                            continue
+                        made = said.get("pair") if isinstance(said, dict) else None
+                        if isinstance(made, dict) and made.get("workspace") == workspace:
+                            check(
+                                made.get("link"),
+                                f"the person's page made a pairing link into {workspace} ({made})",
+                            )
+                            return made
+            time.sleep(0.2)
+        raise AssertionError(
+            f"the person's page made no pairing link into {workspace} in 120 s ({self.answers})"
+        )
+
+
+class PairedBrowser(PagePerson):
+    """A second browser of the person's, paired to them by their root page and
+    holding none of it, open in the workspace their agent works in
+    (integration/person.mjs --pair-link --answer). The page their root is in
+    shows another workspace, so what the agent holds is put to this one."""
+
+    def __init__(self, link: str, directory: str, watcher: Person) -> None:
+        check(bool(SITE and SITE_RELAY), "the check names the site and the relay the person's browsers enter through")
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        self.log = Path(directory) / "browser.log"
+        self.out = Path(directory) / "browser.out"
+        asks = str(Path(directory) / "asks")
+        answers = str(Path(directory) / "answers.jsonl")
+        for stale in (asks, answers):
+            try:
+                os.unlink(stale)
+            except FileNotFoundError:
+                pass
+        os.mkfifo(asks)
+        # Held open read-write, as check.sh holds the person's own FIFO: a
+        # write never waits for the browser to reach a line, and one that
+        # comes as it stops is kept rather than refused.
+        self.holder = os.open(asks, os.O_RDWR)
+        self.stdout = open(self.out, "w")
+        self.stderr = open(self.log, "w")
+        self.ran = subprocess.Popen(
+            ["node", str(PERSON_PAGE), SITE, SITE_RELAY, directory, "--pair-link", link,
+             "--answer", asks],
+            stdout=self.stdout, stderr=self.stderr,
+        )
+        super().__init__(asks, answers, watcher)
+        self.stopped = False
+        # Listed before it is waited for: a browser that never paired is
+        # still this run's to stop.
+        BROWSERS.append(self)
+        self.report = self.paired(directory)
+
+    def paired(self, directory: str) -> dict:
+        """The report the browser printed once it was paired and in."""
+        deadline = time.monotonic() + 420
+        while time.monotonic() < deadline:
+            try:
+                text = self.out.read_text()
+            except OSError:
+                text = ""
+            for line in text.splitlines():
+                try:
+                    said = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(said, dict) and said.get("paired"):
+                    return said
+            if self.ran.poll() not in (None, 0):
+                raise AssertionError(
+                    f"the paired browser ended ({self.ran.returncode}): "
+                    f"{self.log.read_text()[-2000:]}"
+                )
+            time.sleep(0.2)
+        raise AssertionError(f"the browser was not paired in 420 s (see {self.log})")
+
+    def stop(self) -> None:
+        """Its browser goes, as one a person closes does."""
+        if self.stopped:
+            return
+        self.stopped = True
+        try:
+            with open(self.asks, "w") as asks:
+                asks.write("done\n")
+        except OSError:
+            pass
+        try:
+            self.ran.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            self.ran.terminate()
+            try:
+                self.ran.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.ran.kill()
+            self.ran.wait()
+        self.stdout.close()
+        self.stderr.close()
+        os.close(self.holder)
+        self.holder = -1
 
 
 class Page:
@@ -581,6 +705,70 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["shell_receipt"] = seen
         shell.stop()
 
+        say("e3. the root's page shows another workspace, and the browser the person paired is asked there")
+        check(
+            PAGE_WORKSPACE and PAGE_WORKSPACE != workspace,
+            f"the page holding the person's root shows another workspace ({PAGE_WORKSPACE}), not the agent's ({workspace})",
+        )
+        check(on_page is not None, "the person's page is open, holding their root")
+        paired = PairedBrowser(on_page.pair(workspace), os.path.join(OUT, "paired-browser"), person)
+        check(
+            paired.report.get("workspace") == workspace,
+            f"the paired browser is in the agent's workspace ({paired.report.get('workspace')})",
+        )
+        report["paired_browser"] = {
+            key: paired.report.get(key) for key in ("workspace", "pairedMs", "paired")
+        }
+        submit = await fill(page)
+        asked = paired.begin("allow", "browser-allowed")
+        began = time.perf_counter()
+        started = await page.do("submit-page", element=submit)
+        if isinstance(started, Run):
+            # The agent following it reads where it stands while it waits,
+            # not only that nothing answered yet.
+            report["while_waiting"] = await started.endpoint.status(started.run_id)
+            released = await started.result()
+        else:
+            released = started
+        report["browser_allow_seconds"] = round(time.perf_counter() - began, 2)
+        check(
+            "released" in json.dumps(released),
+            f"the submission ran once the person allowed it on their paired browser ({released})",
+        )
+        questions = await paired.settle(asked)
+        check(len(questions) == 1, f"the paired browser was asked exactly once ({questions})")
+        check_leaves(questions[0], "a submission answered on a browser paired to the person")
+        check(
+            not [seen for seen in on_page.seen if seen.get("name") == "browser-allowed"],
+            "the answer came from the paired browser, not from the page holding the root",
+        )
+        allowed_page = await page.read()
+        check(RECEIPT in json.dumps(allowed_page), "the page shows the application was received")
+        say(
+            "   allowed",
+            f"the person allowed it on their paired browser in {report['browser_allow_seconds']} s",
+        )
+
+        say("e4. a submission the person denies on their paired browser is refused to the agent by name")
+        submit = await fill(page)
+        asked = paired.begin("deny", "browser-denied")
+        refused = await refusal_of(page.do("submit-page", element=submit))
+        questions = await paired.settle(asked)
+        check(len(questions) == 1, f"the paired browser was asked exactly once ({questions})")
+        check_leaves(questions[0], "a submission denied on a browser paired to the person")
+        check(
+            code_of(refused) == "not_permitted",
+            f"the agent's call is refused with the refusal's own code when the person denies it ({refused})",
+        )
+        denied_page = await page.read()
+        check(RECEIPT not in json.dumps(denied_page), "the page shows no receipt after the denial")
+        check(
+            all(value in json.dumps(denied_page) for value in FILLED.values()),
+            "the form is still filled, and unsent",
+        )
+        report["browser_denied"] = refused
+        paired.stop()
+
         say("f. a click on the submit button is held, and the person is asked once")
         submit = await fill(page)
         asked = person.begin("allow")
@@ -702,6 +890,8 @@ async def main() -> int:
         # shell left open would sit in the stack for the next step.
         for shell in SHELLS:
             shell.stop()
+        for browser in BROWSERS:
+            browser.stop()
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
     return status

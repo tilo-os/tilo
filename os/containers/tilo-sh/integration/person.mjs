@@ -46,9 +46,18 @@
 //                   as NAME-asked.png, presses Allow once or Deny on the sheet,
 //                   and keeps NAME-answered.png once the sheet is gone; a line
 //                   of {name, answer, sheet, askedMs, answeredMs} is appended
-//                   to OUT_DIR/answers.jsonl. `done` (or the FIFO's end) ends it.
+//                   to OUT_DIR/answers.jsonl. `pair WORKSPACE` makes a pairing
+//                   link into that workspace on the host this page is in, the
+//                   device that follows it approved here as an agent's link
+//                   is, and appends {pair: {workspace, link, invite,
+//                   expiresAt}}. `done` (or the FIFO's end) ends it.
+//   --pair-link LINK
+//                   this browser is the device that follows LINK: it pairs to
+//                   the person the link names, holding none of their root, and
+//                   is in the workspace it opens; with --answer it answers
+//                   there, with its own device key, as a device of theirs does.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO] [--pair-link LINK]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -85,6 +94,7 @@ const typed = option('--type');
 const pageName = option('--page');
 const changes = Number(option('--changes') ?? 1);
 const answerFifo = option('--answer');
+const pairLink = option('--pair-link');
 mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
@@ -145,21 +155,38 @@ const identityModule = `await import(new URL('identity.mjs', new URL('.', (docum
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
 
-// A fresh visitor's entry.
+// A fresh visitor's entry, or a browser a person paired to themselves: the
+// pairing link makes this browser a device of theirs, holding none of their
+// root, in the workspace the link names.
 const began = Date.now();
-await tab.navigate(site);
-await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
-if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
-  await finish(1, `the page stopped arriving: ${await text()}`);
+let membership = null;
+if (pairLink) {
+  await tab.navigate(pairLink);
+  await until(`document.documentElement.dataset.entry === 'open'`, 'the page pairing this browser');
+  membership = JSON.parse(await until(`(() => {
+    const now = ${memberships};
+    const found = (Array.isArray(now) ? now : Object.values(now)).find(entry => entry?.paired && entry?.workspace);
+    return found ? JSON.stringify(found) : '';
+  })()`, 'this browser being paired to the person'));
+  report.pairedMs = Date.now() - began;
+  report.paired = membership;
+  report.workspace = membership.workspace;
+  console.error(`ok: the browser paired to ${membership.userPublicKey} and was in ${membership.workspace} after ${report.pairedMs} ms`);
+} else {
+  await tab.navigate(site);
+  await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
+  if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
+    await finish(1, `the page stopped arriving: ${await text()}`);
+  }
+  report.arrivedMs = Date.now() - began;
+  membership = JSON.parse(await until(`(() => {
+    const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
+    return kept?.workspace ? JSON.stringify(kept) : '';
+  })()`, 'joining the Lounge'));
+  report.joinedMs = Date.now() - began;
+  report.workspace = membership.workspace;
+  console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.workspace}) at ${report.joinedMs} ms`);
 }
-report.arrivedMs = Date.now() - began;
-const membership = JSON.parse(await until(`(() => {
-  const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
-  return kept?.workspace ? JSON.stringify(kept) : '';
-})()`, 'joining the Lounge'));
-report.joinedMs = Date.now() - began;
-report.workspace = membership.workspace;
-console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.workspace}) at ${report.joinedMs} ms`);
 
 if (rootFile) {
   // The person this page is, opened elsewhere: the page's own identity module
@@ -179,7 +206,7 @@ if (rootFile) {
   const kept = JSON.parse(held);
   if (!kept.recovery_key || !kept.envelope) await finish(1, `the page made no way to hold this person: ${held}`);
   // The person held must be the person the page joined the Lounge as.
-  if (membership.userPublicKey && membership.userPublicKey !== kept.person) {
+  if (membership?.userPublicKey && membership.userPublicKey !== kept.person) {
     await finish(1, `the page holds ${kept.person}, but joined as ${membership.userPublicKey}`);
   }
   writeFileSync(rootFile, JSON.stringify(kept, null, 2), {mode: 0o600});
@@ -611,16 +638,39 @@ if (answerFifo) {
   console.log(JSON.stringify(report));
   reported = true;
   // Back on the site, where the page holding their root answers what their
-  // agents' hosts ask them (entry-page.mjs, answerAgentQuestions).
-  await tab.navigate(site);
-  await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again to answer questions');
-  console.error('ok: the person is on the site, answering their agents\' questions');
+  // agents' hosts ask them (entry-page.mjs, answerAgentQuestions). A browser
+  // paired to them stays where it is, in the workspace the pairing put it in.
+  if (pairLink) {
+    console.error('ok: the paired browser is in its workspace, answering the person\'s questions there');
+  } else {
+    await tab.navigate(site);
+    await until(`document.documentElement.dataset.arrival === 'done'`, 'the page arriving again to answer questions');
+    console.error('ok: the person is on the site, answering their agents\' questions');
+  }
   const asks = createInterface({input: createReadStream(answerFifo)});
   for await (const line of asks) {
     const [answer, name] = line.trim().split(/\s+/);
     if (!answer) continue;
     if (answer === 'done') break;
-    if (!['allow', 'deny'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME" or "deny NAME", not ${JSON.stringify(line)}`);
+    if (answer === 'pair') {
+      // A pairing link for a browser of the person's, into `name`'s
+      // workspace: the device that follows it is approved here, as an agent
+      // set up from this tab is.
+      await until('Boolean(globalThis.tiloIdentity?.connectAgent)', 'the page ready to pair a device', 120_000);
+      const made = await tab.evaluate(`(async () => {
+        try {
+          const made = await globalThis.tiloIdentity.connectAgent({workspace: ${JSON.stringify(name)}});
+          return {link: made.link, invite: made.invite, expiresAt: made.expiresAt};
+        } catch (error) {
+          return {error: String(error?.message ?? error), code: error?.code ?? null};
+        }
+      })()`).catch(error => ({error: String(error?.message ?? error)}));
+      appendFileSync(join(out, 'answers.jsonl'), `${JSON.stringify({pair: {workspace: name, ...made}})}\n`);
+      if (made.link) console.error(`ok: the page made a pairing link into ${name}`);
+      else console.error(`FAIL: the page made no pairing link into ${name}: ${JSON.stringify(made)}`);
+      continue;
+    }
+    if (!['allow', 'deny'].includes(answer) || !name) await finish(2, `--answer reads "allow NAME", "deny NAME" or "pair WORKSPACE", not ${JSON.stringify(line)}`);
     const waiting = Date.now();
     const button = await axNamed(answer === 'allow' ? /^Allow once$/ : /^Deny$/, {within: 300_000});
     if (!button) await finish(1, `no question came to the person's sheet for ${name} in 300 s (the page reads: ${await text()})`);
