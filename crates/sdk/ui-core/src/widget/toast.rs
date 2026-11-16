@@ -1592,8 +1592,8 @@ fn paint_card_text(
 
 /// The notice a host shows over everything for a while, not in a window's bar: the shell's
 /// "Link copied", or "Notes closed" with its Undo after the window went. A small pill near the
-/// bottom of [`Self::place`]'s area; its buttons report their action's id
-/// ([`Self::take_pressed`]) to the host, which carries it out.
+/// bottom of [`Self::place`]'s area; a press of a button, by pointer or assistive technology,
+/// hands its action's id to the host, which carries it out.
 #[crate::component::not_a_component(framework, "the host's notice drawn over its windows")]
 pub struct NoticeLayer {
     notice: std::rc::Rc<std::cell::RefCell<Transient<crate::window_toolbar::ToolbarNotice>>>,
@@ -1604,13 +1604,14 @@ pub struct NoticeLayer {
     /// The button the pointer is over, and whether a press began on it.
     hovered: Option<usize>,
     pressed: bool,
-    taken: Option<String>,
+    on_press: Box<dyn Fn(&str)>,
     drawn: std::cell::Cell<Option<(Option<crate::time::Instant>, Option<usize>, bool)>>,
 }
 
 impl NoticeLayer {
     pub fn new(
         notice: std::rc::Rc<std::cell::RefCell<Transient<crate::window_toolbar::ToolbarNotice>>>,
+        on_press: impl Fn(&str) + 'static,
     ) -> Self {
         Self {
             notice,
@@ -1619,7 +1620,7 @@ impl NoticeLayer {
             buttons: Vec::new(),
             hovered: None,
             pressed: false,
-            taken: None,
+            on_press: Box::new(on_press),
             drawn: std::cell::Cell::new(None),
         }
     }
@@ -1656,18 +1657,26 @@ impl NoticeLayer {
         }
         let pressed = std::mem::take(&mut self.pressed);
         if pressed && let Some(index) = on {
-            let notice = self.notice.borrow();
-            self.taken = notice
-                .get()
-                .and_then(|shown| shown.actions.get(index))
-                .map(|action| action.id.clone());
+            self.press_action(|actions| actions.get(index));
         }
         pressed
     }
 
-    /// The id of the action whose button was pressed, once.
-    pub fn take_pressed(&mut self) -> Option<String> {
-        self.taken.take()
+    /// Hand the action `pick` chooses of the notice up to the host. Whether there was one.
+    fn press_action(
+        &self,
+        pick: impl FnOnce(
+            &[crate::window_toolbar::ToolbarAction],
+        ) -> Option<&crate::window_toolbar::ToolbarAction>,
+    ) -> bool {
+        let id = {
+            let notice = self.notice.borrow();
+            notice
+                .get()
+                .and_then(|shown| pick(&shown.actions))
+                .map(|action| action.id.clone())
+        };
+        id.inspect(|id| (self.on_press)(id)).is_some()
     }
 
     fn paint(
@@ -1907,19 +1916,42 @@ impl crate::widget::Widget for NoticeLayer {
         let shown = notice.get();
         let buttons = shown
             .into_iter()
-            .flat_map(|notice| notice.actions.iter().zip(&self.buttons))
-            .map(|(action, rect)| {
-                AccessNode::new(Role::Button)
+            .flat_map(|notice| notice.actions.iter().enumerate())
+            .map(|(index, action)| {
+                let button = AccessNode::new(Role::Button)
                     .with_name(action.name.clone())
-                    .with_bounds(*rect)
+                    .with_hashed_key(&action.id);
+                match self.buttons.get(index) {
+                    Some(rect) => button.with_bounds(*rect),
+                    None => button,
+                }
             })
             .collect();
         Some(
             AccessNode::new(Role::Label)
                 .with_live(Politeness::Polite)
                 .with_value(shown.map(|notice| notice.text.clone()).unwrap_or_default())
-                .with_children(buttons),
+                .with_children(buttons)
+                .with_keyed_action_routes("notice"),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let Some(&key) = key_path.last() else {
+            return false;
+        };
+        matches!(action, crate::a11y::Action::Activate)
+            && self.press_action(|actions| {
+                actions
+                    .iter()
+                    .find(|action| crate::a11y::hash_key(&action.id) == key)
+            })
     }
 }
 

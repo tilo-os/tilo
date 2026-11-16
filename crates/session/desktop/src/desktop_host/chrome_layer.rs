@@ -233,7 +233,12 @@ impl DesktopChrome {
         Self {
             bar,
             compact: Vec::new(),
-            notice: ui::widget::toast::NoticeLayer::new(handle.notice()),
+            notice: ui::widget::toast::NoticeLayer::new(handle.notice(), {
+                let handle = handle.clone();
+                move |action| {
+                    handle.press_notice(action);
+                }
+            }),
             placement: Placement::default(),
             bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
@@ -1531,7 +1536,7 @@ impl DesktopChrome {
     /// The pointer over the notice's button ("Undo"), drawn over the windows: hovering lights
     /// it, and a press that begins on it is its own. Whether the event was the button's.
     fn notice_takes(&mut self, event: &WindowEvent) -> bool {
-        let taken = match event {
+        match event {
             WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } => {
                 self.notice.pointer_at(self.cursor);
                 false
@@ -1544,11 +1549,7 @@ impl DesktopChrome {
                 .cursor
                 .is_some_and(|at| self.notice.press(at, *state == ElementState::Pressed)),
             _ => false,
-        };
-        if let Some(action) = self.notice.take_pressed() {
-            self.handle.press_notice(&action);
         }
-        taken
     }
 
     /// Step strips by `steps` , saying so when the person steps past an end.
