@@ -35,6 +35,7 @@ use tilo_relay::door;
 
 mod bots;
 mod discord_sign_in;
+mod host_invite;
 mod http;
 use bots::{offer_sign_in, start_bots};
 
@@ -300,6 +301,8 @@ pub(crate) struct PersistentWorkspace {
     pub workspace: String,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+    /// Where the invitations the host makes for its operator open.
+    links: host_invite::Links,
 }
 
 impl PersistentWorkspace {
@@ -913,7 +916,6 @@ async fn host_at(origin: &str) -> Result<([u8; 32], iroh_base::EndpointAddr), St
 async fn declare_owner(
     workspaces: &Workspaces,
     workspace: &str,
-    host: &DeviceCert,
     key: &str,
     name: Option<&str>,
 ) -> String {
@@ -924,33 +926,8 @@ async fn declare_owner(
         }
         .to_line();
     };
-    let declared = match workspaces
-        .set_member_administrator(
-            workspace,
-            host,
-            request_id(b"owner", &user, tilo_clock::unix_now_ns()),
-            user,
-            name,
-        )
-        .await
-    {
-        // The person an operator declares the owner is whom the workspace is
-        // kept for: they make and unmake its administrators as its owner,
-        // this host, does.
-        Ok(_) => {
-            workspaces
-                .set_member_keeper(
-                    workspace,
-                    host,
-                    request_id(b"keeper", &user, tilo_clock::unix_now_ns()),
-                    user,
-                )
-                .await
-        }
-        Err(error) => Err(error),
-    };
-    match declared {
-        Ok(_) => OperatorEvent::OwnerDeclared {
+    match workspaces.declare_owner(workspace, user, name).await {
+        Ok(()) => OperatorEvent::OwnerDeclared {
             user_public_key: key.to_owned(),
         }
         .to_line(),
@@ -960,16 +937,6 @@ async fn declare_owner(
         }
         .to_line(),
     }
-}
-
-/// A fresh administration request id per decision: the same person can be
-/// promoted, demoted and promoted again over the workspace's life.
-fn request_id(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(kind);
-    hasher.update(key);
-    hasher.update(&now_ns.to_le_bytes());
-    *hasher.finalize().as_bytes()
 }
 
 /// Seed the workspace with `apps`: each one's record written from its own
@@ -1615,6 +1582,10 @@ pub(crate) async fn run(
             workspace,
             host_cert,
             web,
+            links: host_invite::Links {
+                web_entry: args.web.web_entry.clone(),
+                relay_origin: args.web.public_origin.clone(),
+            },
         };
         // The deployment's own routes: its health check and the addresses other
         // services are configured with. Started once the workspace serves, so a health
@@ -1824,6 +1795,7 @@ struct OperatorContext {
     workspaces: Workspaces,
     workspace: String,
     host_cert: DeviceCert,
+    links: host_invite::Links,
 }
 
 impl OperatorContext {
@@ -1832,7 +1804,34 @@ impl OperatorContext {
             workspaces: context.workspaces.clone(),
             workspace: context.workspace.clone(),
             host_cert: context.host_cert.clone(),
+            links: context.links.clone(),
         }
+    }
+
+    /// Answer an [`OperatorCommand::Invite`].
+    async fn invite(&self, command: OperatorCommand) -> String {
+        let OperatorCommand::Invite {
+            request,
+            workspace,
+            role,
+            invitee_name,
+            unless_owned,
+        } = command
+        else {
+            return String::new();
+        };
+        host_invite::invite(
+            &self.workspaces,
+            &self.links,
+            host_invite::Asked {
+                request,
+                workspace: workspace.unwrap_or_else(|| self.workspace.clone()),
+                role,
+                invitee_name,
+                unless_owned,
+            },
+        )
+        .await
     }
 }
 
@@ -1854,12 +1853,12 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
                 declare_owner(
                     &context.workspaces,
                     &context.workspace,
-                    &context.host_cert,
                     &user_public_key,
                     name.as_deref(),
                 )
                 .await
             }
+            Ok(command @ OperatorCommand::Invite { .. }) => context.invite(command).await,
             Ok(OperatorCommand::Hold { workspace, host }) => {
                 hold(&context.workspaces, &context.host_cert, &workspace, &host).await
             }
@@ -1869,7 +1868,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             Ok(other) => OperatorEvent::OwnerRefused {
                 user_public_key: String::new(),
                 reason: format!(
-                    "the owner socket takes declare_owner and hold, not {}",
+                    "the owner socket takes declare_owner, invite and hold, not {}",
                     other.to_line().trim()
                 ),
             }
@@ -1962,12 +1961,14 @@ async fn serve_operator(
                         declare_owner(
                             &context.workspaces,
                             &context.workspace,
-                            &context.host_cert,
                             &user_public_key,
                             name.as_deref(),
                         )
                         .await
                     );
+                }
+                Some(Ok(command @ OperatorCommand::Invite { .. })) => {
+                    println!("{}", OperatorContext::of(context).invite(command).await);
                 }
                 Some(Ok(OperatorCommand::Hold { workspace, host })) => {
                     println!(
@@ -2461,7 +2462,6 @@ mod tests {
         let answered = declare_owner(
             &workspaces,
             &workspace,
-            &host_cert,
             &hex::encode(owner.1.user_public_key),
             None,
         )
@@ -2508,7 +2508,7 @@ mod tests {
             "the declared owner governs the workspace once their device is in"
         );
         // What the operator cannot declare is nothing at all.
-        let refused = declare_owner(&workspaces, &workspace, &host_cert, "Ada", None).await;
+        let refused = declare_owner(&workspaces, &workspace, "Ada", None).await;
         assert!(refused.contains("owner_refused"), "{refused}");
         relay.shutdown().await;
     }

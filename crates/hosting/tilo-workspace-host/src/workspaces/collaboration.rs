@@ -157,7 +157,7 @@ impl Workspaces {
             // workspace already shows for them, so the person it reaches
             // sees who asked them in, not "someone".
             if request.inviter_name.is_none() {
-                request.inviter_name = self.member_name(workspace, &governed, administrator);
+                request.inviter_name = self.member_name(&governed, administrator);
             }
             self.stage_issue(
                 &mut governed,
@@ -171,15 +171,10 @@ impl Workspaces {
         Ok(issued)
     }
 
-    /// The name `workspace` shows for the person `device` belongs to, where
+    /// The name `governed` shows for the person `device` belongs to, where
     /// they chose one an invitation can carry.
-    fn member_name(
-        &self,
-        workspace: &str,
-        governed: &GovernedWorkspace,
-        device: &DeviceCert,
-    ) -> Option<String> {
-        self.people(workspace, governed)
+    fn member_name(&self, governed: &GovernedWorkspace, device: &DeviceCert) -> Option<String> {
+        self.people(governed)
             .members
             .into_iter()
             .find(|member| member.root() == Some(device.user_public_key) && !member.removed)

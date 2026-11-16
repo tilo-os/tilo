@@ -1607,8 +1607,9 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
 }
 
 /// Someone a person let in invited into their workspace enters it with any
-/// key of theirs, as before, though the site never let them in: entering
-/// what they were invited into is no workspace of their own.
+/// key of theirs, and the invitation lets them past the site's invite-only
+/// sign-up: whoever invited them let them in, so they make workspaces of
+/// their own as well.
 #[tokio::test]
 async fn an_invited_member_enters_what_they_were_invited_into() {
     let (host, workspaces, lounge, stranger, _state) = gated_host().await;
@@ -1648,8 +1649,12 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
     let mut keep = own_request(json!({"list": {"workspaces": []}}));
     keep.target.address.action = tilo_relay_session::workspaces::KEEP_PERSONAL.into();
     invoke(&host, &stranger, keep).await.unwrap();
-    // A workspace of their own is still the door's to give.
-    waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
+    // Invited into a workspace here, they are past the site's invite-only
+    // sign-up: a workspace of their own is theirs to make too.
+    let mine = create_own(&host, &stranger, json!({"name": "Mine"}))
+        .await
+        .expect("someone invited anywhere here makes workspaces of their own");
+    assert_ne!(mine.workspace.workspace, created.workspace.workspace);
 }
 
 /// A device of the person whose root is `root`, certified now for an hour, as

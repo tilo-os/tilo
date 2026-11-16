@@ -15,13 +15,14 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
 ///
-/// 12 has the operator have another host hold a workspace governed here
-/// ([`OperatorCommand::Hold`]); 11 dropped the command that took in the
+/// 13 has the operator ask the host for an invitation of its own
+/// ([`OperatorCommand::Invite`]); 12 has the operator have another host hold
+/// a workspace governed here ([`OperatorCommand::Hold`]); 11 dropped the command that took in the
 /// people an earlier release kept; 10
 /// is the operator's declaration of a workspace's owner carrying the name that
 /// person goes by ([`OperatorCommand::DeclareOwner`]), so a reader of that one
 /// decodes no line of this.
-pub const VERSION: u16 = 12;
+pub const VERSION: u16 = 13;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -134,6 +135,28 @@ pub enum OperatorCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// Have the host invite someone into `workspace` (this workspace when
+    /// none), as itself: an invitation from the workspace rather than from a
+    /// person, for whoever the operator hands its link to. The child answers
+    /// [`OperatorEvent::Invited`], [`OperatorEvent::Owned`] or
+    /// [`OperatorEvent::InviteRefused`] for the same `request`.
+    Invite {
+        /// The operator's name for this request, echoed in the answer.
+        request: String,
+        /// The workspace, as listing workspaces names it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        /// What whoever accepts it becomes.
+        role: InviteRole,
+        /// Who it is for, as the operator names them (an address, a name).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        invitee_name: Option<String>,
+        /// For an owner's invitation: make none when the workspace has an
+        /// owner already ([`OperatorEvent::Owned`]), and hand back the one
+        /// made before while nobody has accepted it.
+        #[serde(default, skip_serializing_if = "is_false")]
+        unless_owned: bool,
+    },
     /// Have the host at `host`, a site's or a relay's origin
     /// (`https://eu1.tilo.sh`), hold `workspace`, governed here, as well: it
     /// is handed the workspace and named among its hosts, so both hold it
@@ -156,6 +179,35 @@ pub enum OperatorCommand {
         /// The other host's origin.
         host: String,
     },
+}
+
+/// What a host-made invitation makes of whoever accepts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InviteRole {
+    Viewer,
+    Commenter,
+    Editor,
+    /// An editor who administers the workspace.
+    Administrator,
+    /// An administrator whom the workspace is kept for, as
+    /// [`OperatorCommand::DeclareOwner`] makes them.
+    Owner,
+}
+
+impl InviteRole {
+    /// The role as `stack.sh` and the operator's tools spell it.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "viewer" => Self::Viewer,
+            "commenter" => Self::Commenter,
+            "editor" => Self::Editor,
+            "administrator" => Self::Administrator,
+            "owner" => Self::Owner,
+            _ => return None,
+        })
+    }
 }
 
 /// What the workspace relay reports to the workspace service.
@@ -197,6 +249,30 @@ pub enum OperatorEvent {
         /// The key the operator named, as given.
         user_public_key: String,
         /// Why it declared nobody.
+        reason: String,
+    },
+    /// The invitation an [`OperatorCommand::Invite`] asked for.
+    Invited {
+        /// The command's `request`.
+        request: String,
+        /// The link that brings whoever opens it in.
+        link: String,
+        /// The invitation's id (hex).
+        invite: String,
+        /// When it lapses, in Unix nanoseconds.
+        expires_at_ns: u64,
+    },
+    /// The workspace has an owner already: an [`OperatorCommand::Invite`]
+    /// for an owner, `unless_owned`, made no invitation.
+    Owned {
+        /// The command's `request`.
+        request: String,
+    },
+    /// The host made no invitation.
+    InviteRefused {
+        /// The command's `request`.
+        request: String,
+        /// Why not.
         reason: String,
     },
     /// The host the operator named holds the workspace as well.
@@ -592,6 +668,19 @@ mod tests {
             OperatorEvent::OwnerDeclared {
                 user_public_key: "ef".repeat(32),
             },
+            OperatorEvent::Invited {
+                request: "owner".into(),
+                link: "https://tilo.example/i/abc#def".into(),
+                invite: "ab".repeat(32),
+                expires_at_ns: 7,
+            },
+            OperatorEvent::Owned {
+                request: "owner".into(),
+            },
+            OperatorEvent::InviteRefused {
+                request: "owner".into(),
+                reason: "no workspace w here".into(),
+            },
             OperatorEvent::OwnerRefused {
                 user_public_key: "Ada".into(),
                 reason: "a user root key is 64 lowercase hex characters".into(),
@@ -602,9 +691,37 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_operator_protocol_round_trips_pins_and_refuses_its_lines;
 
-        phase protocol_twelve_round_trips_and_pins_its_wire_form;
+        phase protocol_thirteen_round_trips_and_pins_its_wire_form;
         {
-            assert_eq!(VERSION, 12);
+            assert_eq!(VERSION, 13);
+            let invite = OperatorCommand::Invite {
+                request: "owner".into(),
+                workspace: None,
+                role: InviteRole::Owner,
+                invitee_name: None,
+                unless_owned: true,
+            };
+            assert_eq!(
+                invite.to_line(),
+                "{\"op\":\"invite\",\"request\":\"owner\",\"role\":\"owner\",\"unless_owned\":true}\n"
+            );
+            assert_eq!(OperatorCommand::from_line(&invite.to_line()).unwrap(), invite);
+            let editor = OperatorCommand::from_line(
+                "{\"op\":\"invite\",\"request\":\"r\",\"workspace\":\"w\",\"role\":\"editor\"}",
+            )
+            .unwrap();
+            assert_eq!(
+                editor,
+                OperatorCommand::Invite {
+                    request: "r".into(),
+                    workspace: Some("w".into()),
+                    role: InviteRole::Editor,
+                    invitee_name: None,
+                    unless_owned: false,
+                }
+            );
+            assert_eq!(InviteRole::parse("administrator"), Some(InviteRole::Administrator));
+            assert_eq!(InviteRole::parse("Owner"), None);
             let wait = OperatorCommand::WaitList {
                 request: "12".repeat(32),
                 contact: "Ada@example.org".into(),

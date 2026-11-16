@@ -1413,7 +1413,7 @@ impl Workspaces {
                     .and_then(|own| own.owner_of(workspace))
                     .unwrap_or_else(|| governed.peer().owner());
                 Ok(self
-                    .people(workspace, &governed)
+                    .people(&governed)
                     .members
                     .iter()
                     .filter(|member| !member.removed)

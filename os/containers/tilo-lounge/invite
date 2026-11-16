@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Have a running Lounge invite someone, through its operator socket.
+
+Usage: invite SOCKET [--workspace WORKSPACE] [--role ROLE] [--for NAME] [--unless-owned]
+
+SOCKET is the workspace's `--operator-socket` (a UNIX socket in its state
+directory). The host makes the invitation itself, so the person who opens it
+reads the workspace's name, not a person's, and prints the link that brings
+whoever opens it in. Opened in a browser with no Tilo identity yet, the page
+makes one and joins.
+
+--workspace WORKSPACE  the workspace, by its id or the name people see (the
+                       Lounge itself when not given)
+--role ROLE            viewer, commenter, editor (the default), administrator,
+                       or owner: an administrator the workspace is kept for, as
+                       declare-owner makes someone
+--for NAME             who it is for (an address, a name), as the workspace's
+                       open invitations list it
+--unless-owned         with --role owner: print nothing when the workspace has
+                       an owner already, and the same link as before while
+                       nobody has opened it
+
+Prints the link and answers 0; answers 3 with nothing printed when
+--unless-owned found an owner; answers 1 with the reason on stderr otherwise.
+"""
+import json
+import socket
+import sys
+import uuid
+
+
+def usage():
+    print(__doc__.strip().splitlines()[2], file=sys.stderr)
+    return 2
+
+
+def main(argv):
+    arguments = argv[1:]
+    if not arguments or arguments[0].startswith("-"):
+        return usage()
+    path = arguments.pop(0)
+    command = {"op": "invite", "request": uuid.uuid4().hex, "role": "editor"}
+    while arguments:
+        flag = arguments.pop(0)
+        if flag == "--unless-owned":
+            command["unless_owned"] = True
+            continue
+        if flag not in ("--workspace", "--role", "--for") or not arguments:
+            return usage()
+        value = arguments.pop(0).strip()
+        if flag == "--workspace":
+            command["workspace"] = value
+        elif flag == "--role":
+            command["role"] = value
+        else:
+            command["invitee_name"] = value
+    if command["role"] not in ("viewer", "commenter", "editor", "administrator", "owner"):
+        print(f"{command['role']!r} is not a role: viewer, commenter, editor, administrator or owner",
+              file=sys.stderr)
+        return 2
+    try:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect(path)
+    except OSError as error:
+        print(f"the workspace is not listening on {path}: {error}", file=sys.stderr)
+        return 1
+    with connection:
+        connection.sendall((json.dumps(command) + "\n").encode())
+        answer = b""
+        while True:
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            answer += chunk
+    line = answer.decode(errors="replace").strip()
+    prefix = "tilo-workspace-operator "
+    if not line.startswith(prefix):
+        print(f"the workspace answered nothing: {line!r}", file=sys.stderr)
+        return 1
+    event = json.loads(line[len(prefix):])
+    if event.get("event") == "invited":
+        print(event["link"])
+        return 0
+    if event.get("event") == "owned":
+        return 3
+    print(event.get("reason") or f"the workspace answered {event}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

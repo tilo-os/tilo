@@ -31,9 +31,9 @@ an empty build directory, so they take minutes where the default takes
 seconds; use them to rehearse exactly what the checks build. A clean checkout
 is built as its commit, one with changes as t finds it when the run starts.
 
-`stack.sh down --wipe` deletes the operator's key with the rest of the state:
-the API server's new state never approved it. `up` also mints a new one
-whenever the API server starts without its state.
+A fresh Lounge takes people by invitation, as production's does, and nobody
+owns it yet: `up` prints an owner link, and whoever opens it, in any browser,
+is in as the Lounge's owner (`stack.sh owner` prints it again).
 
 `stack.sh up --images` runs the release images instead: `image-lounge`,
 `image-api` and `image-web-entry`, built by `t` for this commit, under rootless
@@ -114,6 +114,14 @@ eval "$(os/containers/tilo-sh/stack.sh env)"
 This sets `TILO_API_URL` and `TILO_SITE`, and everything points at the local
 stack:
 
+- **You, the owner:** open the owner link `up` printed (`stack.sh owner` prints
+  it again) in your browser. It makes your identity on the spot and you are in
+  the Lounge as its owner and an administrator.
+- **Someone you invite:** `stack.sh invite [WORKSPACE] -- --role editor` prints
+  an invite link from the stack's host (the card names the workspace). Opened
+  in a browser with no Tilo identity yet, the page makes one and joins; being
+  in any workspace here also lets them past the invite-only sign-up and into
+  the Lounge.
 - **A fresh visitor:** `stack.sh browser` opens Chromium on a throwaway profile
   at the local site. `integration/person.mjs SITE RELAY OUT` does the same
   headless and prints the time until they are in the Lounge.

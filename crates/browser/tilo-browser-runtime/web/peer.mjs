@@ -1450,8 +1450,10 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
   }
   return {
     // An administrator's invitation gives the Editor role and makes them an
-    // administrator: the card names what they become.
-    workspaceName: reply.name, role: reply.administrator ? 'administrator' : reply.role.toLowerCase(),
+    // administrator, an owner's an administrator the workspace is kept for:
+    // the card names what they become.
+    workspaceName: reply.name,
+    role: reply.owner ? 'owner' : reply.administrator ? 'administrator' : reply.role.toLowerCase(),
     workspace: reply.workspace, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
   };

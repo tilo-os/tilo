@@ -652,10 +652,12 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             expires_at_ns,
             inviter,
             members,
+            administrator,
+            owner,
         } => serde_json::json!({
             "kind": "invitation", "workspace": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
-            "members": members,
+            "members": members, "administrator": administrator, "owner": owner,
             "inviter": inviter.map(|inviter| serde_json::json!({
                 "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
             })),

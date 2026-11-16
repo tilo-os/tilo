@@ -546,8 +546,9 @@ impl JoinLedger {
                 grant.clone(),
                 // The person who asked, under the name they give, or their
                 // name's stand-in: whom it is from is what an admitting
-                // member checks.
-                Some(Inviter {
+                // member checks. The host asking for itself is the issuer
+                // already, and is nobody's name.
+                (administrator.user_public_key != grant.issuer.user_public_key).then(|| Inviter {
                     user_public_key: administrator.user_public_key,
                     name: request
                         .inviter_name
@@ -646,6 +647,26 @@ impl JoinLedger {
             .collect::<Vec<_>>();
         invitations.sort_by_key(|invitation| invitation.invite_id);
         invitations
+    }
+
+    /// Invitation `invite_id` as it was signed, and when it lapses, while it
+    /// may still be redeemed at `now`: what its issuer hands out again
+    /// rather than making another.
+    #[must_use]
+    pub fn open_invitation(
+        &self,
+        invite_id: [u8; 32],
+        now: u64,
+    ) -> Option<(IssuedInvitation, u64)> {
+        self.invitations
+            .iter()
+            .find(|record| {
+                record.issued.invite_id == invite_id
+                    && record.cancellation.is_none()
+                    && record.grant.expires_at_ns > now
+                    && !self.redeemed(invite_id)
+            })
+            .map(|record| (record.issued.clone(), record.grant.expires_at_ns))
     }
 
     /// The signed invitation still redeemable at `now` that names only

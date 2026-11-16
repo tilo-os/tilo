@@ -715,7 +715,7 @@ impl Workspaces {
             if !self.lists_to(device, workspace.workspace()) {
                 continue;
             }
-            let summary = self.people(workspace.workspace(), &workspace);
+            let summary = self.people(&workspace);
             let certificates = workspace.peer().certificates();
             let owner = workspace.peer().owner();
             drop(workspace);
@@ -776,7 +776,7 @@ impl Workspaces {
     async fn page_workspace(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         let workspace = workspace.lock().await;
-        let summary = self.people(workspace.workspace(), &workspace);
+        let summary = self.people(&workspace);
         let certificates = workspace.peer().certificates();
         let owner = workspace.peer().owner();
         drop(workspace);
@@ -1106,7 +1106,9 @@ impl Workspaces {
                 user_public_key: inviter.user_public_key,
                 name: inviter.name.clone(),
             }),
-            members: self.people(workspace.workspace(), &workspace).people(),
+            members: self.people(&workspace).people(),
+            administrator: join.administrator(),
+            owner: self.owner_invitation(join.invite_id(), workspace.workspace()),
         })
     }
 
@@ -1161,9 +1163,13 @@ impl Workspaces {
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
         let proving = crate::timing::start();
+        let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let reply = self
             .prove(presented, &valid_name(name)?, token, now)
             .await?;
+        if let JoinReply::Admitted { workspace, .. } = &reply {
+            self.accepted(workspace, &invitation, person).await;
+        }
         crate::timing::event("join.prove.admitted", proving, 0);
         let retaining = crate::timing::start();
         self.retained_for(&reply).await;

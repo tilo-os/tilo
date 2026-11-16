@@ -455,6 +455,11 @@ pub enum JoinReply {
         /// How many people the workspace has, so the invitation says what
         /// someone joins, not only where.
         members: usize,
+        /// It makes whoever accepts it an administrator besides its role.
+        administrator: bool,
+        /// It makes whoever accepts it an owner: an administrator the
+        /// workspace is kept for.
+        owner: bool,
     },
     /// The workspace admitted the device.
     Admitted {

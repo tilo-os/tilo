@@ -7,7 +7,7 @@
 //! key, and the member certificate the root signed for it. `tilo-enroll
 //! certify --identity-root` reads the same files. A host lets the person in
 //! once its operator declares their user public key an owner (the local
-//! stack's `stack.sh owner`).
+//! stack's `stack.sh owner KEY`), or it joins with an invitation.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -309,12 +309,13 @@ async fn through_door(person: &Person, site: &str) -> Result<()> {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             Err(refused) if refused.code == "invitation-only" => bail!(
-                "{site}'s door does not let {} in: its operator declares {} an owner first \
-                 (on the local stack: stack.sh owner)",
+                "{site} takes people by invitation and has not let {} in yet. Open an invite \
+                 link someone sent you in a browser, or have whoever runs {site} make you an \
+                 owner (on the local stack: stack.sh owner {})",
                 person.name,
                 person.user()
             ),
-            Err(refused) => bail!("{site}'s door: {}", refused.message),
+            Err(refused) => bail!("{site} did not let you in: {}", refused.message),
         }
     }
 }

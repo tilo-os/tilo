@@ -60,7 +60,7 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_WORKSPACES_PERSON_STORAGE_GB` | `10` | gigabytes per person, shared by the workspaces of their own the host gives anyone who asks |
 | `TILO_WORKSPACES_STATE` | `/run/tilo-workspaces` | the volume the workspace lives on |
-| `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator declares owners of the running workspace (`os/containers/tilo-lounge/declare-owner`): its door lets them in and its governance makes them an administrator once they join |
+| `TILO_WORKSPACES_OPERATOR_SOCKET` | `$TILO_WORKSPACES_STATE/$TILO_WORKSPACES_PERSISTENT/operator.sock` | where the operator declares owners of the running workspace (`os/containers/tilo-lounge/declare-owner`): the workspace lets them in and makes them an administrator once they join; and where the host invites someone as itself (`os/containers/tilo-lounge/invite`): a link that names the workspace rather than a person, or an owner's link whose opener becomes an owner |
 | `TILO_WORKSPACES_HOLD_FOR` | none | the workspaces of other people this host holds when the host governing one hands it over (the operator socket takes `hold` and `unhold` there): `anyone`, or their ids, comma-separated |
 | `TILO_WORKSPACES_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_WORKSPACES_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |

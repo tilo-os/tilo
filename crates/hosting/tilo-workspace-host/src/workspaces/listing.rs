@@ -417,7 +417,10 @@ impl Workspaces {
     /// The authority `workspace` records, as this host's device reads it: the
     /// one policy lookup the door, the directory and a member's role answer
     /// from.
-    async fn policy_of(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
+    pub(super) async fn policy_of(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_action_policy::WorkspacePolicy> {
         let state = self.workspace(workspace).await.ok()?;
         let state = state.lock().await;
         state
@@ -670,11 +673,14 @@ impl Workspaces {
             // invitation of their own and whom the workspace does not have in
             // it, and says so: the person's page offers them the way to be
             // invited (the site's wait list) instead of a link in as a guest.
+            // Someone invited into any workspace on this host is no stranger:
+            // whoever invited them let them in.
             let invited = governed
                 .collaboration()
                 .pending(now)
                 .iter()
-                .any(|invitation| invitation.recipient_user_public_key == Some(user));
+                .any(|invitation| invitation.recipient_user_public_key == Some(user))
+                || self.inner.memberships.holds_any(&user);
             if door.invitation_only && member.is_none() && !invited {
                 return Err(DoorRefusal::InvitationOnly);
             }
@@ -881,7 +887,7 @@ pub(super) mod tests {
 }
 
 #[cfg(test)]
-mod door_tests {
+pub(crate) mod door_tests {
     #![expect(
         clippy::significant_drop_tightening,
         reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
@@ -971,7 +977,7 @@ mod door_tests {
         (reply, cert)
     }
 
-    pub(super) async fn walk_in_as(
+    pub(crate) async fn walk_in_as(
         workspaces: &Workspaces,
         workspace: &str,
         join: &DoorJoin,
@@ -985,7 +991,7 @@ mod door_tests {
     }
 
     /// Redeem `invitation` with the door's `token`, as the person's device.
-    pub(super) async fn redeem(
+    pub(crate) async fn redeem(
         workspaces: &Workspaces,
         invitation: Vec<u8>,
         token: String,

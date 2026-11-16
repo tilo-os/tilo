@@ -60,6 +60,7 @@ mod hard_stop_tests;
 #[cfg(test)]
 mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
+mod host_invitations;
 mod hosts;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
@@ -128,6 +129,7 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
+pub use host_invitations::HostInvitation;
 pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_relay_protocol::WorkspaceId;
@@ -1002,6 +1004,9 @@ struct WorkspacesInner {
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
     memberships: memberships::Memberships,
+    /// The owner invitations the host handed out and nobody accepted yet
+    /// ([`host_invitations`]).
+    owner_invitations: host_invitations::OwnerInvitations,
     /// The workspace lists people's devices kept here ([`personal`]).
     personal: personal::PersonalLists,
     /// How many sessions of each device key are open here now, by key: every
@@ -1230,6 +1235,7 @@ impl Workspaces {
                 door: wait_list::DoorSettings::default(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
+                owner_invitations: host_invitations::OwnerInvitations::open(&dir),
                 personal: personal::PersonalLists::new(&dir),
                 online: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
@@ -1429,7 +1435,7 @@ impl Workspaces {
             )?,
         };
         self.bind(&workspace).await?;
-        let summary = self.people(workspace.workspace(), &workspace);
+        let summary = self.people(&workspace);
         let workspace = Arc::new(AsyncMutex::new(workspace));
         self.inner
             .workspaces
@@ -1568,7 +1574,7 @@ impl Workspaces {
         let mut summaries = Vec::with_capacity(workspaces.len());
         for workspace in workspaces {
             let workspace = workspace.lock().await;
-            summaries.push(self.people(workspace.workspace(), &workspace));
+            summaries.push(self.people(&workspace));
         }
         summaries
     }
@@ -1751,7 +1757,7 @@ impl Workspaces {
     pub async fn summary(&self, workspace: &str) -> Result<WorkspaceSummary, CollaborationError> {
         let governed = self.workspace(workspace).await?;
         let governed = governed.lock().await;
-        Ok(self.people(workspace, &governed))
+        Ok(self.people(&governed))
     }
 
     /// `governed`'s people as everything that lists or counts them reads them:
@@ -1759,17 +1765,16 @@ impl Workspaces {
     /// whose device runs the workspace, which holds it by being its owner
     /// rather than by an admission receipt that would list it.
     ///
-    /// A workspace this host keeps for somebody as their own takes nobody
-    /// that way: it is theirs by the door's invitation, and the device
-    /// governing it is this host's, which runs it without being one of its
-    /// people.
-    fn people(&self, workspace: &str, governed: &GovernedWorkspace) -> WorkspaceSummary {
+    /// A host that keeps workspaces of people's own (a site such as tilo.sh)
+    /// takes nobody that way: it runs for everyone and is no person itself,
+    /// so its root is none of its workspaces' people. A workspace there is
+    /// its people's, let in on arrival or by an invitation, and an owner the
+    /// operator declared is one of them.
+    fn people(&self, governed: &GovernedWorkspace) -> WorkspaceSummary {
         let mut summary = governed.summary();
-        let kept_for_someone = self
-            .own()
-            .is_some_and(|own| own.owner_of(workspace).is_some());
+        let runs_for_people = self.own().is_some();
         let owner = governed.peer().owner();
-        if !kept_for_someone
+        if !runs_for_people
             && !summary
                 .members
                 .iter()

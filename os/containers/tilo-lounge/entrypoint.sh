@@ -18,7 +18,9 @@
 # The operator declares a person an owner of the running workspace through its
 # operator socket (os/containers/tilo-lounge/declare-owner), which the host
 # answers by letting them in at its door and making them an administrator once
-# they are a member:
+# they are a member, and has the host invite someone as itself
+# (os/containers/tilo-lounge/invite: a link that names the workspace, an owner's
+# link for a host nobody owns yet):
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #

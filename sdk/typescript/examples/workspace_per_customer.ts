@@ -20,8 +20,9 @@
  * children; `host:parent` names the process that started this one), their
  * memory and CPU through the run.
  *
- *     eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL
- *     eval "$(head -1 "$TILO_SH_STATE/operator.env")"  # TILO_API_KEY: the stack's operator's server key
+ *     eval "$(os/containers/tilo-sh/stack.sh env)"   # TILO_API_URL, TILO_SITE
+ *     eval "$(tilo keys create "Customer backend" | head -1)"  # TILO_API_KEY, approved in the
+ *                                                    # browser that opened stack.sh owner's link
  *     CUSTOMERS=300 bun sdk/typescript/examples/workspace_per_customer.ts
  *
  * Every step runs for every customer, whatever happened to the others: what

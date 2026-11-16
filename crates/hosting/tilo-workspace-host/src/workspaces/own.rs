@@ -481,7 +481,8 @@ impl Workspaces {
 
     /// Whether `person` was let in to keep workspaces of their own here: the
     /// host's person; a member of the site's home workspace, whom its door or
-    /// an invitation admitted; a person an invitation into it still names,
+    /// an invitation admitted, or of any other workspace here, whom an
+    /// invitation into it admitted; a person an invitation into it still names,
     /// who enters by it; or a person who keeps workspaces of their own here
     /// already, which only someone let in was given. That last keeps a person
     /// in whose home membership lapsed while they worked in their own
@@ -500,7 +501,7 @@ impl Workspaces {
         let Some(home) = own.home.get() else {
             return false;
         };
-        self.inner.memberships.holds(person, home) || self.invited(home, *person, now).await
+        self.inner.memberships.holds_any(person) || self.invited(home, *person, now).await
     }
 
     /// Whether `home`'s door takes people by invitation only, as its governance

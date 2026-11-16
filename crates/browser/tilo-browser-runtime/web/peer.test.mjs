@@ -1130,6 +1130,21 @@ test('recertification retires voice before disposing the certified peer', async 
   await peer.dispose();
 });
 
+test('an invitation the host made for itself names what it makes of whoever accepts it, and nobody who sent it', async () => {
+  const offered = async ({administrator, owner}) => {
+    const runtime = fakeRuntime();
+    runtime.inspectInvitation = async () => JSON.stringify({kind: 'invitation', workspace: WORKSPACE, workspaceId: '7',
+      name: 'Lounge', role: 'Editor', expiresAtNs: '9', members: 0, administrator, owner});
+    return inspectInvitation('https://host.example:8443', 'AQID', {runtime});
+  };
+  const owner = await offered({administrator: true, owner: true});
+  assert.equal(owner.role, 'owner');
+  assert.equal(owner.inviter, undefined, 'the card says "You’re invited to", from no person');
+  assert.equal(owner.members, 0, 'the host is none of the people it counts');
+  assert.equal((await offered({administrator: true, owner: false})).role, 'administrator');
+  assert.equal((await offered({administrator: false, owner: false})).role, 'editor');
+});
+
 test('an invitation is accepted as the root-certified device, through the shared entry', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
