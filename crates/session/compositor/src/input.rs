@@ -12,6 +12,7 @@ use smithay::backend::input::{
 };
 use smithay::utils::{Logical, Size};
 use smithay::wayland::tablet_manager::{TabletDescriptor, TabletPadDescriptor};
+use tilo_session_core::surface::Scroll;
 
 /// The pointer button a pen's tip presses for apps that know no tablets.
 pub const BTN_LEFT: u32 = 0x110;
@@ -25,8 +26,8 @@ pub enum InputEvent {
     PointerMotionRelative { dx: f64, dy: f64 },
     /// A pointer button (evdev code, `BTN_LEFT` = `0x110` ) changed state.
     PointerButton { button: u32, pressed: bool },
-    /// Scrolling, in logical pixels.
-    PointerAxis { horizontal: f64, vertical: f64 },
+    /// Scrolling: a wheel's notches or fingers' pixels.
+    PointerAxis(Scroll),
     /// A key (evdev code) changed state.
     Key { keycode: u32, pressed: bool },
     /// A finger touched the screen at a logical position. `slot` tells fingers apart until they
@@ -88,13 +89,10 @@ impl InputEvent {
             Self::PointerButton { button, pressed } => {
                 ObservedInput::PointerButton { button, pressed }
             }
-            Self::PointerAxis {
-                horizontal,
-                vertical,
-            } => ObservedInput::Scroll {
-                dx: horizontal,
-                dy: vertical,
-            },
+            Self::PointerAxis(scroll) => {
+                let (dx, dy) = scroll.pixels();
+                ObservedInput::Scroll { dx, dy }
+            }
             Self::Key { keycode, pressed } => ObservedInput::Key { keycode, pressed },
             _ => return None,
         })
@@ -266,10 +264,7 @@ impl InputEvent {
                 button: event.button_code(),
                 pressed: event.state() == ButtonState::Pressed,
             }),
-            DeviceEvent::PointerAxis { event } => Some(Self::PointerAxis {
-                horizontal: scroll_amount::<B>(&event, Axis::Horizontal),
-                vertical: scroll_amount::<B>(&event, Axis::Vertical),
-            }),
+            DeviceEvent::PointerAxis { event } => Some(Self::PointerAxis(scroll::<B>(&event))),
             DeviceEvent::TouchDown { event } => {
                 let at = event.position_transformed(extent);
                 Some(Self::TouchDown {
@@ -421,18 +416,18 @@ pub(crate) fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(i32::from(slot)).unwrap_or(0)
 }
 
-/// Logical pixels scrolled on `axis` : a wheel notch (120 in v120 units) is [`WHEEL_STEP`] pixels,
-/// as clients expect; fingers and continuous devices report pixels.
-fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f64 {
+/// A device's scroll: a wheel's turn in notches (120 v120 units each), and fingers' or a
+/// continuous device's travel in pixels.
+fn scroll<B: InputBackend>(event: &B::PointerAxisEvent) -> Scroll {
+    let (h, v) = (Axis::Horizontal, Axis::Vertical);
     match event.source() {
-        AxisSource::Wheel | AxisSource::WheelTilt => event.amount_v120(axis).map_or_else(
-            || event.amount(axis).unwrap_or(0.0),
-            |v120| v120 * WHEEL_STEP / 120.0,
+        AxisSource::Wheel | AxisSource::WheelTilt => {
+            let notches = |axis| event.amount_v120(axis).unwrap_or(0.0) / 120.0;
+            Scroll::Notches(notches(h), notches(v))
+        }
+        _ => Scroll::Pixels(
+            event.amount(h).unwrap_or(0.0),
+            event.amount(v).unwrap_or(0.0),
         ),
-        _ => event.amount(axis).unwrap_or(0.0),
     }
 }
-
-/// Logical pixels one wheel notch scrolls: what a wheel turned by notches is said in to a client,
-/// whether a device turned it or a test did.
-pub const WHEEL_STEP: f64 = 15.0;

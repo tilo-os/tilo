@@ -19,7 +19,6 @@ use tilo_sort::CompactSort as _;
 const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
 const MAX_DRAG_FLING_VELOCITY: f64 = 6_000.0;
-const WHEEL_LINE_PX: f64 = 60.0;
 const KINETIC_WINDOW: Duration = Duration::from_millis(100);
 /// The shortest interval one sample is assumed to span. Devices report at 60-240 Hz; a
 /// burst delivered faster than that (event coalescing, replay, a test driver) must not
@@ -279,7 +278,7 @@ impl ScrollMomentum {
         match delta {
             MouseScrollDelta::LineDelta(_, y) => {
                 self.kinetic.reset();
-                let delta = f64::from(*y) * -WHEEL_LINE_PX;
+                let delta = f64::from(*y) * -crate::widget::line_of_wheel();
                 if reduce_motion {
                     self.stop();
                     WheelStep::Scroll(delta)

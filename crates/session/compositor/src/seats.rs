@@ -260,12 +260,9 @@ impl State {
                     self.seat_button(button, pressed, serial, time);
                 }
             }
-            InputEvent::PointerAxis {
-                horizontal,
-                vertical,
-            } => {
+            InputEvent::PointerAxis(scroll) => {
                 self.pointer_target = PointerTarget::Clients;
-                self.pointer_axis(horizontal, vertical, time);
+                self.pointer_axis(scroll, time);
             }
             InputEvent::Key { keycode, pressed } => {
                 let Some(held) = self.seats.get_mut(seat) else {

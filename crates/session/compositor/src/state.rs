@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use smithay::backend::input::KeyState;
-use smithay::backend::input::{Axis, ButtonState};
+use smithay::backend::input::{Axis, AxisSource, ButtonState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, Keysym, XkbConfig};
@@ -49,7 +49,9 @@ use crate::input::InputEvent;
 use crate::keys::HostKeys;
 use crate::policy::{WindowInfo, WindowPolicy};
 use tilo_session_core::super_tap::{self, SuperTap};
-use tilo_session_core::surface::{HostKey, HostedOutput, KeyClaim, KeyModifiers, SurfaceHost};
+use tilo_session_core::surface::{
+    HostKey, HostedOutput, KeyClaim, KeyModifiers, Scroll, SurfaceHost,
+};
 
 /// Per-client data every Wayland client carries.
 #[derive(Default)]
@@ -934,10 +936,7 @@ impl State {
             InputEvent::PointerButton { button, pressed } => {
                 self.pointer_button(button, pressed, serial, time);
             }
-            InputEvent::PointerAxis {
-                horizontal,
-                vertical,
-            } => self.pointer_axis(horizontal, vertical, time),
+            InputEvent::PointerAxis(scroll) => self.pointer_axis(scroll, time),
             InputEvent::Key { keycode, pressed } => {
                 // The person's own keyboard, kept so a seat's next event puts their held keys aside
                 // and gives them back.
@@ -1221,24 +1220,17 @@ impl State {
         }
     }
 
-    pub(crate) fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
+    pub(crate) fn pointer_axis(&mut self, scroll: Scroll, time: u32) {
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
-                host.pointer_axis(horizontal, vertical);
+                host.pointer_axis(scroll);
             }
             return;
         }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let mut frame = AxisFrame::new(time);
-        if horizontal != 0.0 {
-            frame = frame.value(Axis::Horizontal, horizontal);
-        }
-        if vertical != 0.0 {
-            frame = frame.value(Axis::Vertical, vertical);
-        }
-        pointer.axis(self, frame);
+        pointer.axis(self, axis_frame(scroll, time));
         pointer.frame(self);
     }
 
@@ -2564,5 +2556,50 @@ impl State {
         if let Some(sample) = self.switch_latency.frames_retired(serial, at) {
             eprintln!("{sample}");
         }
+    }
+}
+
+/// The axis frame a client reads for `scroll`: a wheel's notches go as `axis_value120` (a client
+/// scrolls a line per notch) beside the pixels they stand for, and fingers' pixels as they are.
+pub(crate) fn axis_frame(scroll: Scroll, time: u32) -> AxisFrame {
+    let (x, y) = scroll.pixels();
+    let mut frame = AxisFrame::new(time);
+    for (axis, pixels) in [(Axis::Horizontal, x), (Axis::Vertical, y)] {
+        if pixels != 0.0 {
+            frame = frame.value(axis, pixels);
+        }
+    }
+    if let Scroll::Notches(x, y) = scroll {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a scroll's notches are few; v120 counts them in 120ths"
+        )]
+        let v120 = |notches: f64| (notches * 120.0).round() as i32;
+        frame = frame.source(AxisSource::Wheel);
+        for (axis, notches) in [(Axis::Horizontal, x), (Axis::Vertical, y)] {
+            if notches != 0.0 {
+                frame = frame.v120(axis, v120(notches));
+            }
+        }
+    }
+    frame
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Scroll, axis_frame};
+    use smithay::backend::input::AxisSource;
+
+    #[test]
+    fn a_wheel_notch_goes_as_value120_and_fingers_as_pixels() {
+        let notch = axis_frame(Scroll::Notches(0.0, 1.0), 7);
+        assert_eq!(notch.source, Some(AxisSource::Wheel));
+        assert_eq!(notch.v120, Some((0, 120)));
+        assert_eq!(notch.axis, (0.0, Scroll::NOTCH_PIXELS));
+
+        let fingers = axis_frame(Scroll::Pixels(0.0, 4.5), 7);
+        assert_eq!(fingers.source, None);
+        assert_eq!(fingers.v120, None);
+        assert_eq!(fingers.axis, (0.0, 4.5));
     }
 }

@@ -30,7 +30,7 @@ use std::cell::Cell;
 
 use tilo_session_core::surface::{
     BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
-    HostTextInput, SurfaceHost,
+    HostTextInput, Scroll, SurfaceHost,
 };
 
 use ui::App;
@@ -429,18 +429,8 @@ impl SurfaceHost for AppHost {
         self.input(mouse_input(button, pressed));
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        let scale = self.placement.scale;
-        self.input(WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            // The compositor scrolls content by what it reports; the toolkit
-            // moves content against the wheel's delta.
-            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(
-                -horizontal * scale,
-                -vertical * scale,
-            )),
-            phase: TouchPhase::Moved,
-        });
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.input(mouse_wheel(scroll, self.placement.scale));
     }
 
     fn key(&mut self, key: &HostKey) {
@@ -615,6 +605,27 @@ impl SurfaceHost for AppHost {
 }
 
 /// The toolkit's event for a pointer button (evdev code) changing state.
+/// A scroll as winit reports it at `scale`: a wheel's notches are lines, as winit reports a
+/// Wayland client's `axis_value120`, and fingers' pixels are physical. The axis counts down as
+/// positive and the toolkit moves content against winit's delta, so the signs turn.
+pub(crate) fn mouse_wheel(scroll: Scroll, scale: f64) -> WindowEvent {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "winit's lines are f32; a scroll's notches are few"
+    )]
+    let delta = match scroll {
+        Scroll::Notches(x, y) => MouseScrollDelta::LineDelta(-x as f32, -y as f32),
+        Scroll::Pixels(x, y) => {
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(-x * scale, -y * scale))
+        }
+    };
+    WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta,
+        phase: TouchPhase::Moved,
+    }
+}
+
 pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
     let button = match button {
         BTN_LEFT => MouseButton::Left,

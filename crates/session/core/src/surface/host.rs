@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, Region,
+    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, Region, Scroll,
     WindowPicture,
 };
 
@@ -695,8 +695,8 @@ pub trait SurfaceHost {
     /// over, and so is everything it was still doing.
     fn press_ended(&mut self, _x: f64, _y: f64) {}
 
-    /// Scroll over the surface, in logical pixels.
-    fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}
+    /// Scroll over the surface.
+    fn pointer_axis(&mut self, _scroll: Scroll) {}
 
     /// Whether keys should come to this surface instead of the focused window (an open launcher or
     /// menu).
@@ -855,7 +855,7 @@ impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
         pointer_leave();
         pointer_button(button: u32, pressed: bool);
         press_ended(x: f64, y: f64);
-        pointer_axis(horizontal: f64, vertical: f64);
+        pointer_axis(scroll: Scroll);
         key(key: &HostKey);
         ime(event: HostIme);
         claim_key(key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim;

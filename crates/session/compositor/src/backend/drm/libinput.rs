@@ -39,6 +39,7 @@ use super::tablet::{
 use crate::LoopData;
 use crate::input::{InputEvent, PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use crate::state::State;
+use tilo_session_core::surface::Scroll;
 
 /// An output as a tablet maps onto it: connector, position, logical size.
 type OutputRect = (String, (i32, i32), (u32, u32));
@@ -244,10 +245,7 @@ pub(super) fn dispatch_pad(
         return;
     }
     if let Some(vertical) = steps {
-        state.handle_input(InputEvent::PointerAxis {
-            horizontal: 0.0,
-            vertical,
-        });
+        state.handle_input(InputEvent::PointerAxis(Scroll::Pixels(0.0, vertical)));
     }
 }
 
@@ -442,13 +440,11 @@ pub(super) fn dispatch(
             other => InputEvent::from_device(other, extent)
                 .map(|event| match event {
                     // libinput has no scroll speed; the compositor scales.
-                    InputEvent::PointerAxis {
-                        horizontal,
-                        vertical,
-                    } => vec![InputEvent::PointerAxis {
-                        horizontal: horizontal * this.config.scroll_speed,
-                        vertical: vertical * this.config.scroll_speed,
-                    }],
+                    InputEvent::PointerAxis(scroll) => {
+                        vec![InputEvent::PointerAxis(
+                            scroll.scaled(this.config.scroll_speed),
+                        )]
+                    }
                     event => this.access.filter(event, Instant::now()),
                 })
                 .unwrap_or_default(),

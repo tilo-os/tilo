@@ -10,7 +10,7 @@ pub(crate) mod mount;
 
 use crate::platform::surfaces::{AppHost, Placement};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_session_core::surface::{HostKey, KeyClaim};
+use tilo_session_core::surface::{HostKey, KeyClaim, Scroll};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
 use tilo_session_core::surfaces::Published;
@@ -371,8 +371,8 @@ impl<S: SheetState> SurfaceHost for Sheet<S> {
         self.host.pointer_button(button, pressed);
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.host.pointer_axis(horizontal, vertical);
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.host.pointer_axis(scroll);
     }
 
     fn wants_keyboard(&self) -> bool {

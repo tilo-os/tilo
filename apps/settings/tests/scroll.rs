@@ -194,71 +194,23 @@ fn a_sidebar_taller_than_the_window_scrolls_by_the_wheel_to_its_last_row() {
         about.rect
     );
 
+    // A notch is a line, so seven notches bring Storage, the sidebar's foot, into the window.
     let point = Point::new(140.0, 400.0);
     h.dispatch(&ui::synthetic_input::cursor_moved(point.x, point.y));
-    for _ in 0..12 {
-        h.wheel(4.0);
+    for _ in 0..7 {
+        h.wheel(1.0);
         h.relayout();
     }
     let after = sidebar_rows(&mut h);
-    let about = after
-        .iter()
-        .find(|row| row.label == "About")
-        .expect("the sidebar still lists About");
-    assert!(
-        about.rect.y0 >= 0.0 && about.rect.y1 <= 724.0,
-        "the wheel brought the last category into the window: {:?}",
-        about.rect
-    );
-    let storage = after
-        .iter()
-        .find(|row| row.label == "Storage")
-        .expect("the sidebar still lists Storage");
-    assert!(
-        storage.rect.y0 >= 0.0 && storage.rect.y1 <= 724.0,
-        "Storage is in the window too: {:?}",
-        storage.rect
-    );
-}
-
-/// The wheel as a host sends it to an app window: pixel deltas, positive up.
-fn pixel_wheel(dy: f64) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
-            0.0, dy,
-        )),
-        phase: winit::event::TouchPhase::Moved,
+    for label in ["Storage", "About"] {
+        let row = after
+            .iter()
+            .find(|row| row.label == label)
+            .expect("the sidebar still lists the category");
+        assert!(
+            row.rect.y0 >= 0.0 && row.rect.y1 <= 724.0,
+            "seven notches brought {label} into the window: {:?}",
+            row.rect
+        );
     }
-}
-
-#[test]
-fn the_sidebar_scrolls_by_the_pixel_wheel_a_window_sends_it() {
-    let mut h = Harness::new(Category::opening(), 1280.0, 724.0);
-    let before = sidebar_rows(&mut h);
-    let about = before
-        .iter()
-        .find(|row| row.label == "About")
-        .expect("the sidebar lists About");
-    assert!(
-        about.rect.y0 >= 724.0,
-        "the last category waits past the window's foot: {:?}",
-        about.rect
-    );
-
-    h.dispatch(&ui::synthetic_input::cursor_moved(140.0, 400.0));
-    for _ in 0..12 {
-        h.dispatch(&pixel_wheel(-60.0));
-        h.relayout();
-    }
-    let after = sidebar_rows(&mut h);
-    let about = after
-        .iter()
-        .find(|row| row.label == "About")
-        .expect("the sidebar still lists About");
-    assert!(
-        about.rect.y0 >= 0.0 && about.rect.y1 <= 724.0,
-        "the pixel wheel brought the last category into the window: {:?}",
-        about.rect
-    );
 }

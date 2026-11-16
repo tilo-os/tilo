@@ -4211,9 +4211,8 @@ impl ActivityTimeline {
     }
 
     fn handle_mouse_wheel(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
-        const LINE_PX: f64 = 60.0;
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * LINE_PX,
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * super::wheel::line_of_wheel(),
             MouseScrollDelta::PixelDelta(pp) => -pp.y,
         };
         let new_scroll = (self.scroll_y + dy).clamp(0.0, self.max_scroll());

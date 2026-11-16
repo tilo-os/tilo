@@ -13,7 +13,7 @@ use std::task::Waker;
 use crate::platform::surfaces::{Placement, WidgetHost};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_session_core::surface::HostKey;
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{HostLayer, Scroll, SurfaceHost};
 
 use tilo_onboarding_host::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
@@ -326,8 +326,8 @@ impl SurfaceHost for Setup {
         self.widgets_mut().pointer_button(button, pressed);
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.widgets_mut().pointer_axis(horizontal, vertical);
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.widgets_mut().pointer_axis(scroll);
     }
 
     fn wants_keyboard(&self) -> bool {

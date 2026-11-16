@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_session_core::surface::Scroll;
 /// The platform search the shell opens on its chord.
 const HOST_SEARCH: &str = "tilo.host:search";
 use crate::common::tree::window;
@@ -440,10 +441,7 @@ tilo_test_env::scenario! {
             .expect("the pointer");
         session
             .compositor()
-            .input(InputEvent::PointerAxis {
-                horizontal: 0.0,
-                vertical: -15.0,
-            })
+            .input(InputEvent::PointerAxis(Scroll::Notches(0.0, -1.0)))
             .expect("the wheel");
         key(&mut session, KEY_LEFT_META, false);
         for _ in 0..10 {

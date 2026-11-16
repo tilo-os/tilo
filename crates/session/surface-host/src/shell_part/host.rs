@@ -1,6 +1,8 @@
 //! The part as the compositor's surface host: the layers it lays out, the pixels it shows of
 //! the windows over it, and the material it records for the compositor to fill in below.
 
+use tilo_session_core::surface::Scroll;
+
 use super::{
     CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, Origin, ShellPart,
     SurfaceHost, SurfaceKey,
@@ -115,9 +117,9 @@ impl SurfaceHost for ShellPart {
         self.widgets.clear_focus();
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
+    fn pointer_axis(&mut self, scroll: Scroll) {
         self.input = true;
-        self.widgets.pointer_axis(horizontal, vertical);
+        self.widgets.pointer_axis(scroll);
     }
 
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {

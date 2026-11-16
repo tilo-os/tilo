@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use tilo_compositor::InputEvent;
 use tilo_session::Session;
+use tilo_session_core::surface::Scroll;
 
 use crate::common::{
     CANVAS, CANVAS_CARET, KEY_ESCAPE, PERSON, click, drag, frame_and_say, key, on_screen, places,
@@ -110,10 +111,7 @@ fn pan_and_zoom(session: &mut Session, by: (f64, f64)) {
     for _ in 0..2 {
         session
             .compositor()
-            .input(InputEvent::PointerAxis {
-                horizontal: 0.0,
-                vertical: -15.0,
-            })
+            .input(InputEvent::PointerAxis(Scroll::Notches(0.0, -1.0)))
             .unwrap();
         session.step(Duration::from_millis(16)).unwrap();
     }
@@ -158,7 +156,9 @@ fn a_click_puts_the_caret_where_it_points_under_pan_and_zoom() {
     pan_and_zoom(&mut session, (-140.0, -90.0));
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
 
-    for at in [(x + w * 0.3, y + h * 0.35), (x + w * 0.62, y + h * 0.7)] {
+    // Each point leaves the zoomed caret's line room to its right: one that would not fit makes
+    // the camera pan to keep it whole, and the caret then stands left of the point.
+    for at in [(x + w * 0.3, y + h * 0.35), (x + w * 0.5, y + h * 0.7)] {
         click(&mut session, at);
         let (cx, cy, _, _) = caret(&mut session);
         assert!(

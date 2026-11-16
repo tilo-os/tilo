@@ -4,14 +4,16 @@
 //! and the frame is drawn as an app's is.
 
 use tilo_session_core::surface::WindowPicture;
-use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, LayerPose, SurfaceHost};
+use tilo_session_core::surface::{
+    HostIme, HostLayer, HostTextInput, LayerPose, Scroll, SurfaceHost,
+};
 
 use ui::headless::FrameHarness;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{DeviceId, WindowEvent};
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -940,16 +942,8 @@ impl SurfaceHost for WidgetHost {
         self.dismissed.clone()
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        let scale = self.placement.scale;
-        self.input(&WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(
-                -horizontal * scale,
-                -vertical * scale,
-            )),
-            phase: TouchPhase::Moved,
-        });
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.input(&crate::mouse_wheel(scroll, self.placement.scale));
     }
 
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {

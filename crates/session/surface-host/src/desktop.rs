@@ -17,7 +17,7 @@ use tilo_compositor::{
     Arrangement, GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPolicy,
     WindowRequest,
 };
-use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, Scroll, SurfaceHost};
 
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
@@ -831,11 +831,8 @@ impl SurfaceHost for DesktopHost {
             .pointer_button(button, pressed);
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.desktop
-            .borrow_mut()
-            .host
-            .pointer_axis(horizontal, vertical);
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.desktop.borrow_mut().host.pointer_axis(scroll);
     }
 
     fn wants_keyboard(&self) -> bool {

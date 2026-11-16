@@ -24,6 +24,7 @@ use serde_json::{Map, Value, json};
 use std::time::Duration;
 use tilo_compositor::InputEvent;
 use tilo_session::Session;
+use tilo_session_core::surface::Scroll;
 
 use crate::common::{CANVAS, on_screen, until};
 
@@ -379,10 +380,7 @@ fn every_pan_gesture_pans_every_time() {
     for _ in 0..3 {
         session
             .compositor()
-            .input(InputEvent::PointerAxis {
-                horizontal: 0.0,
-                vertical: -1.0,
-            })
+            .input(InputEvent::PointerAxis(Scroll::Notches(0.0, -1.0)))
             .expect("a notch");
         session.step(Duration::from_millis(1)).expect("a frame");
     }

@@ -135,6 +135,40 @@ impl HostedOutput {
     }
 }
 
+/// A scroll, `(horizontal, vertical)`, counted down and right as positive as the Wayland axis
+/// counts it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Scroll {
+    /// Fingers on a touchpad, or another continuous device, moved this many logical pixels.
+    Pixels(f64, f64),
+    /// A wheel turned this many notches, fractions of one for a high-resolution wheel. Clients
+    /// scroll a line of their own per notch.
+    Notches(f64, f64),
+}
+
+impl Scroll {
+    /// Logical pixels a notch stands for where a reader takes only pixels.
+    pub const NOTCH_PIXELS: f64 = 15.0;
+
+    /// The scroll in logical pixels.
+    #[must_use]
+    pub fn pixels(self) -> (f64, f64) {
+        match self {
+            Self::Pixels(x, y) => (x, y),
+            Self::Notches(x, y) => (x * Self::NOTCH_PIXELS, y * Self::NOTCH_PIXELS),
+        }
+    }
+
+    /// The scroll `factor` times as far.
+    #[must_use]
+    pub fn scaled(self, factor: f64) -> Self {
+        match self {
+            Self::Pixels(x, y) => Self::Pixels(x * factor, y * factor),
+            Self::Notches(x, y) => Self::Notches(x * factor, y * factor),
+        }
+    }
+}
+
 /// A key as a surface receives it: the host's keymap already applied, so surfaces need no keyboard
 /// state of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]

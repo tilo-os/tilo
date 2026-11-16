@@ -6,11 +6,12 @@ use std::collections::BTreeSet;
 
 use serde_json::Value as Json;
 use tilo_compositor::{Compositor, InputEvent};
+use tilo_session_core::surface::Scroll;
 
 use super::{KEY_ALT, KEY_CTRL, KEY_SHIFT, KEY_SUPER, answer, number, refusal};
 
 /// A wheel turned: `dy` up (positive) and `dx` across, in logical pixels, or in wheel notches with
-/// `"unit": "notch"` (each the pixels a device's notch scrolls), at `x`, `y` when the request names
+/// `"unit": "notch"` (each a line of the client's own), at `x`, `y` when the request names
 /// a point (the pointer goes there first, as a hand moves the mouse before it turns the wheel),
 /// with `ctrl`, `shift`, `alt` and `logo` held while it turns: Ctrl and a wheel is how a person
 /// zooms a canvas. A modifier the request holds that a `modifiers` request already holds stays
@@ -20,9 +21,13 @@ pub(super) fn wheel(
     compositor: &mut Compositor,
     held: &RefCell<BTreeSet<u32>>,
 ) -> Json {
-    let per = match request.get("unit").and_then(Json::as_str) {
-        None | Some("pixel") => 1.0,
-        Some("notch") => tilo_compositor::input::WHEEL_STEP,
+    // A notch up is the wire's positive `dy`; the compositor speaks the protocol's axis, which
+    // counts down as positive.
+    let x = -number(request, "dx").unwrap_or(0.0);
+    let y = -number(request, "dy").unwrap_or(0.0);
+    let scroll = match request.get("unit").and_then(Json::as_str) {
+        None | Some("pixel") => Scroll::Pixels(x, y),
+        Some("notch") => Scroll::Notches(x, y),
         Some(other) => {
             return refusal(
                 "parse_error",
@@ -30,8 +35,6 @@ pub(super) fn wheel(
             );
         }
     };
-    let dx = number(request, "dx").unwrap_or(0.0) * per;
-    let dy = number(request, "dy").unwrap_or(0.0) * per;
     match (number(request, "x"), number(request, "y")) {
         (Some(x), Some(y)) => {
             if let Err(error) = compositor.input(InputEvent::PointerMotion { x, y }) {
@@ -60,12 +63,7 @@ pub(super) fn wheel(
         })
     });
     if result.is_ok() {
-        // A notch up is the wire's positive `dy`; the compositor speaks the protocol's axis,
-        // which counts down as positive.
-        result = compositor.input(InputEvent::PointerAxis {
-            horizontal: -dx,
-            vertical: -dy,
-        });
+        result = compositor.input(InputEvent::PointerAxis(scroll));
     }
     // What the turn pressed is let go whatever came of it, so no key stays down after a refusal.
     for &keycode in pressed.iter().rev() {

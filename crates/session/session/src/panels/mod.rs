@@ -9,7 +9,7 @@ use std::rc::Rc;
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::OutputInfo;
 use tilo_session_core::surface::HostKey;
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{HostLayer, Scroll, SurfaceHost};
 
 use tilo_desktop::overlays::Overlays;
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
@@ -295,8 +295,8 @@ impl SurfaceHost for Banners {
         self.host.pointer_button(button, pressed);
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.host.pointer_axis(horizontal, vertical);
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.host.pointer_axis(scroll);
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -617,8 +617,8 @@ impl SurfaceHost for ActivityLayer {
         self.host.pointer_button(button, pressed);
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
-        self.host.pointer_axis(horizontal, vertical);
+    fn pointer_axis(&mut self, scroll: Scroll) {
+        self.host.pointer_axis(scroll);
     }
 
     fn wants_keyboard(&self) -> bool {

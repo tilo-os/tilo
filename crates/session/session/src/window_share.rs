@@ -42,6 +42,7 @@ use tilo_actions::{
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
+use tilo_session_core::surface::Scroll;
 
 use tilo_desktop_model::window_share::{
     mapped_window, window_node, window_of_node, window_share_id, window_shares,
@@ -1781,13 +1782,7 @@ impl WindowShares {
                 )
                 .map(drop),
             SharedInput::PointerAxis { dx, dy } => compositor
-                .seat_input(
-                    seat,
-                    &InputEvent::PointerAxis {
-                        horizontal: *dx,
-                        vertical: *dy,
-                    },
-                )
+                .seat_input(seat, &InputEvent::PointerAxis(Scroll::Pixels(*dx, *dy)))
                 .map(drop),
             SharedInput::Key {
                 keysym, pressed, ..

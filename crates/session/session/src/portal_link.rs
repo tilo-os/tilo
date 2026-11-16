@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, ObservedInput, Selection};
+use tilo_session_core::surface::Scroll;
 
 use tilo_desktop_model::capability::Capability;
 use tilo_desktop_model::layout::TileContent;
@@ -46,9 +47,6 @@ fn frame_interval() -> Duration {
         .checked_div(FRAMERATE)
         .unwrap_or(Duration::ZERO)
 }
-
-/// A pointer step of a scroll wheel notch, in logical pixels.
-pub(crate) const NOTCH: f64 = 15.0;
 
 type Reply<T> = tokio::sync::oneshot::Sender<Result<T, String>>;
 
@@ -618,16 +616,14 @@ impl SessionLink {
                 button: u32::try_from(button).unwrap_or(0),
                 pressed,
             },
-            RemoteInput::PointerAxis { dx, dy } => InputEvent::PointerAxis {
-                horizontal: dx,
-                vertical: dy,
-            },
+            RemoteInput::PointerAxis { dx, dy } => InputEvent::PointerAxis(Scroll::Pixels(dx, dy)),
             RemoteInput::PointerAxisDiscrete { axis, steps } => {
-                let distance = f64::from(steps) * NOTCH;
-                InputEvent::PointerAxis {
-                    horizontal: if axis == 1 { distance } else { 0.0 },
-                    vertical: if axis == 1 { 0.0 } else { distance },
-                }
+                let notches = f64::from(steps);
+                InputEvent::PointerAxis(if axis == 1 {
+                    Scroll::Notches(notches, 0.0)
+                } else {
+                    Scroll::Notches(0.0, notches)
+                })
             }
             RemoteInput::KeyboardKeycode { keycode, pressed } => InputEvent::Key {
                 keycode: u32::try_from(keycode).unwrap_or(0),

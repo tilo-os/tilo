@@ -31,6 +31,7 @@ use tilo_compositor::clipboard_history::{Pull, Pulled};
 use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::surface::Scroll;
 
 use crate::platform::fabric::{
     CarriedDrag, CarriedOffer, Continuity, DeviceId, FabricInputEvent, InputLease,
@@ -1312,15 +1313,13 @@ fn injected(event: FabricInputEvent) -> InputEvent {
             vertical,
             unit,
         } => {
-            // A wheel line is a notch, which the desktop scrolls as far as a portal's notch.
-            let per = match unit {
-                ScrollUnit::Pixels => 1.0,
-                ScrollUnit::Lines => crate::portal_link::NOTCH,
-            };
-            InputEvent::PointerAxis {
-                horizontal: f64::from(horizontal) / ScrollUnit::STEPS * per,
-                vertical: f64::from(vertical) / ScrollUnit::STEPS * per,
-            }
+            // A wheel line is a notch.
+            let x = f64::from(horizontal) / ScrollUnit::STEPS;
+            let y = f64::from(vertical) / ScrollUnit::STEPS;
+            InputEvent::PointerAxis(match unit {
+                ScrollUnit::Pixels => Scroll::Pixels(x, y),
+                ScrollUnit::Lines => Scroll::Notches(x, y),
+            })
         }
         FabricInputEvent::Key {
             keycode, pressed, ..
@@ -1582,10 +1581,7 @@ mod tests {
                     vertical: steps(-3.5),
                     unit: ScrollUnit::Pixels,
                 }),
-                InputEvent::PointerAxis {
-                    horizontal: 0.0,
-                    vertical: -3.5,
-                }
+                InputEvent::PointerAxis(Scroll::Pixels(0.0, -3.5))
             );
             assert_eq!(
                 injected(FabricInputEvent::Key {

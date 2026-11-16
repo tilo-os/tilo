@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_session_core::surface::{CursorIcon, HostKey};
+use tilo_session_core::surface::{CursorIcon, HostKey, Scroll};
 use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
 
 use tilo_render_protocol::patch::local::pair;
@@ -649,9 +649,9 @@ impl SurfaceHost for SlotView {
         }
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
+    fn pointer_axis(&mut self, scroll: Scroll) {
         if let Some(open) = self.open.as_mut() {
-            open.widgets.pointer_axis(horizontal, vertical);
+            open.widgets.pointer_axis(scroll);
         }
     }
 

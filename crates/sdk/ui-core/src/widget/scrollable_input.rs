@@ -162,7 +162,7 @@ impl Scrollable {
     ) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
-        const LINE_PX: f32 = 60.0;
+        let line = crate::tokens::Metrics::BASE.wheel_line;
         self.device_scale = scale_factor;
         self.scroll_to.take_over(crate::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
@@ -218,7 +218,7 @@ impl Scrollable {
         }
         self.fling(0.0, 0.0);
         let (mut dx, mut dy) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
+            MouseScrollDelta::LineDelta(x, y) => (*x * -line, *y * -line),
             MouseScrollDelta::PixelDelta(pp) => (
                 -f32_of_f64(pp.x / scale_factor),
                 -f32_of_f64(pp.y / scale_factor),
