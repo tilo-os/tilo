@@ -863,7 +863,10 @@ requires = ["arch=x86_64"]
 # The SDKs' native part (tools/ci/sdk-native.sh): the Python extension and the Node addon that
 # bind the one Rust client of Tilo's API, so a program reaches a Tilo host directly as a device
 # of its person. The first check builds both beside the api-on-relay harness; the second drives
-# each SDK's native test through them against that harness's relay, in the SDKs' image.
+# each SDK's native test through them against that harness's relay, in the SDKs' image. What the
+# build writes is mostly the compiler cache: about 120 MB with every unit cached, and about 2 GB
+# in the run after a vendor patch or a dependency bump, which compiles the client and the harness
+# again. The same commit writes both, so a run past this check's disk envelope says what was stale.
 [[check]]
 name = "sdk-native-build"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -6242,7 +6245,11 @@ timeout_secs = 5400
 name = "relay-upgrade"
 run = "bash tools/relay-upgrade/run.sh upgrade v0.1.5 /target/relay-upgrade/v0.1.5/kept"
 # The relay with its agents links every app, and some apps embed image fixtures whose build
-# script fetches them: this check has no network, so the seeded cache is their only source.
+# script fetches them: this check has no network, so the seeded cache is their only source. The
+# upgrade builds this checkout's relay tests, so what it writes is mostly the compiler cache:
+# about 240 MB with every unit cached, and about 4 GB in the run after a vendor patch or a
+# dependency bump. The same commit writes both, so a run past this check's disk envelope says
+# what was stale.
 needs = ["relay-upgrade-release", "test-assets"]
 env = { RUST_BACKTRACE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
