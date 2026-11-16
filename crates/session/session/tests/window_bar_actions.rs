@@ -287,8 +287,8 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
     let one_strip = strip_of(&session, &one);
     let other_strip = strip_of(&session, &other);
     assert_ne!(one_strip, other_strip, "each note stands in its own strip");
-    let one_name = crate::common::window_name_of(&session, &one);
-    let other_name = crate::common::window_name_of(&session, &other);
+    let one_name = crate::common::place_title(&session, &one);
+    let other_name = crate::common::place_title(&session, &other);
     until(
         &mut session,
         "both notes' windows on the Strips shell",
@@ -336,7 +336,8 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         on_screen(session, "Notifications").is_some()
     });
     let key = place(&mut session, &note);
-    let name = crate::common::window_name_of(&session, &note);
+    let window_name = crate::common::place_title(&session, &note);
+    let drawn = crate::common::drawn_name(&session, &note);
 
     for preset in ["Frames", "Strips", "Desktop"] {
         // The note's own flag, read before the menu opens: running anything through the door may
@@ -350,15 +351,12 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         let label = if before { "Unpin" } else { "Pin" };
 
         show(&mut session, root.path(), preset);
-        // The canvas captions a place by the thing it shows (`canvas.md` §7): the note's title,
-        // where the other sessions name its window.
-        let shown = if preset == "Frames" {
-            crate::common::places(&session)
-                .into_iter()
-                .find(|place| place.record == note)
-                .map_or_else(|| name.clone(), |place| place.title)
+        // The canvas captions a place by the thing it shows, and a strip names its window as the
+        // session does.
+        let shown = if preset == "Strips" {
+            window_name.clone()
         } else {
-            name.clone()
+            drawn.clone()
         };
         until(
             &mut session,
@@ -370,7 +368,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         // Desktop's top bar (`action_bar` with its subject), the window's own menu at the end of
         // its bar in the two canvas frames. The window in front is the note just placed.
         if preset == "Desktop" {
-            press_shown(&mut session, &name);
+            press_shown(&mut session, &window_name);
         } else {
             press_shown(&mut session, WINDOW_MENU);
         }

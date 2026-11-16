@@ -177,7 +177,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     show(&mut session, root.path(), "Desktop");
 
     for note in &notes {
-        let name = crate::common::window_name_of(&session, note);
+        let name = crate::common::drawn_name(&session, note);
         until(
             &mut session,
             &format!("the bar naming {name:?}"),
@@ -274,7 +274,7 @@ fn every_pan_gesture_pans_every_time() {
     });
     show(&mut session, root.path(), "Frames");
     place(&mut session, &notes[0], 40, 40, 480, 360);
-    let titled = crate::common::window_name_of(&session, &notes[0]);
+    let titled = crate::common::drawn_name(&session, &notes[0]);
     until(&mut session, "the frame", |session| {
         on_screen(session, &titled).is_some()
     });
@@ -433,7 +433,7 @@ fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
     // pans to it, never zooming the conversation into a narrow column to fit both.
     let conversation = place(&mut session, &notes[0], 0, 3000, 720, 520);
     let inbox = root_of(&session, ".Mail");
-    let titled = crate::common::window_name_of(&session, &notes[0]);
+    let titled = crate::common::drawn_name(&session, &notes[0]);
 
     // Only the frame on the canvas counts: the shell's own bar also names the window in front at
     // the top, and that one never pans.
@@ -488,7 +488,7 @@ fn opening_beside_a_conversation_opens_it_without_shrinking_the_conversation() {
     });
     // What arrived stands wholly in view: the camera panned to it.
     let mail_in_view = |session: &mut Session| {
-        let mail = crate::common::window_name_of(session, &inbox);
+        let mail = crate::common::drawn_name(session, &inbox);
         on_canvas(session, &mail).into_iter().any(in_view)
     };
     until(&mut session, "mail's frame in view", mail_in_view);
@@ -525,7 +525,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
         .next()
         .expect("the note is placed");
     let key = crate::common::number(&place.key);
-    let name = crate::common::window_name_of(&session, &notes[0]);
+    let name = crate::common::place_title(&session, &notes[0]);
 
     // The bar names the window in front on its own row, and pressing it lists the resource's
     // actions: the note's unpin and rename, and the group its tags are changed under, which no

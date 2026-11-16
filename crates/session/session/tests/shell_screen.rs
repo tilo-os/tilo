@@ -134,7 +134,7 @@ fn the_shell_is_the_screen_and_its_layout_follows_the_published_actions() {
     // A note placed through the layout stands on the canvas, drawn by its app: its title on
     // screen, inside the canvas.
     place(&mut session, &note);
-    let shown = shown_as(&session, NOTE_TITLE);
+    let shown = crate::common::drawn_name(&session, &note);
     until(&mut session, "the note's title on the canvas", |session| {
         on_screen(session, &shown).is_some()
     });

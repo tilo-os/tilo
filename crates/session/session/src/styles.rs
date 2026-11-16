@@ -18,7 +18,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::runtime::meta::{Meta, Ty};
 
 /// The origin of the layout's type: a view of a type holding it is a style.
-const ARRANGEMENT_ORIGIN: &str = "session.layout";
+const LAYOUT_ORIGIN: &str = "session.layout";
 
 /// What the person's package store's registry says now.
 ///
@@ -130,7 +130,7 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<Style> {
         }
     }
     // The layout types, by every module's own name for them: a module of another package
-    // names the layout's type as `arrangement_app.Name`, so a style of it holds that name.
+    // names the layout's type as `layout_app.Name`, so a style of it holds that name.
     let mut out = broken;
     for (package, meta) in &modules {
         out.extend(styles_of(package, meta, &modules));
@@ -188,7 +188,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
         .flat_map(|(_, meta)| {
             meta.types
                 .iter()
-                .filter(|t| t.origin.as_deref() == Some(ARRANGEMENT_ORIGIN))
+                .filter(|t| t.origin.as_deref() == Some(LAYOUT_ORIGIN))
                 .map(|t| (meta.app.clone(), t.name.clone()))
         })
         .collect();
@@ -203,7 +203,7 @@ fn styles_of(package: &str, meta: &Meta, modules: &[(String, Meta)]) -> Vec<Styl
     let defaults: BTreeSet<&str> = meta
         .types
         .iter()
-        .filter(|t| t.origin.as_deref() == Some(ARRANGEMENT_ORIGIN))
+        .filter(|t| t.origin.as_deref() == Some(LAYOUT_ORIGIN))
         .filter_map(|t| meta.default_view(&t.id))
         .collect();
     let rows: BTreeSet<&str> = meta.row_views.iter().map(|r| r.view.as_str()).collect();
@@ -258,7 +258,7 @@ mod tests {
         .expect("the meta reads")
     }
 
-    fn arrangement_type() -> serde_json::Value {
+    fn layout_type() -> serde_json::Value {
         serde_json::json!([{
             "id": "Layout",
             "name": "Layout",
@@ -312,9 +312,9 @@ mod tests {
     }
 
     #[test]
-    fn a_view_of_the_arrangement_is_a_style_shell_and_another_view_is_not() {
+    fn a_view_of_the_layout_is_a_style_shell_and_another_view_is_not() {
         let meta = meta(
-            &arrangement_type(),
+            &layout_type(),
             &serde_json::json!([
                 view(
                     "strips",
@@ -322,7 +322,7 @@ mod tests {
                     "Layout"
                 ),
                 // A view of another type is no style.
-                view("notes", "Notes", "Layout"),
+                view("notes", "Notes", "Note"),
             ]),
         );
         let modules = [("so.tilo.shell".to_owned(), meta.clone())];
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn a_package_with_no_arrangement_type_offers_no_style() {
+    fn a_package_with_no_layout_type_offers_no_style() {
         let meta = meta(&serde_json::json!([]), &serde_json::json!([]));
         let modules = [("so.tilo.notes".to_owned(), meta.clone())];
         assert!(styles_of("so.tilo.notes", &meta, &modules).is_empty());

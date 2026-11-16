@@ -1831,17 +1831,19 @@ impl Device {
     }
 
     /// What this device's session logged of `app` ending, once the log had `already_logged` lines:
-    /// the app stopping, and the lines the app itself printed before it did.
+    /// the app stopping or failing to open, and the lines the app itself printed before it did.
     fn ended_since(&self, already_logged: usize, app: &str) -> Option<String> {
         let log = self.log();
         let lines: Vec<&str> = log.lines().skip(already_logged).collect();
+        let named = format!("app={app}");
         let stopped = lines.iter().position(|line| {
-            line.contains("an app stopped") && line.contains(&format!("app={app}"))
+            line.contains(&named)
+                && (line.contains("an app stopped") || line.contains("an app could not open"))
         })?;
         let said: Vec<&str> = lines[stopped..]
             .iter()
             .copied()
-            .filter(|line| line.contains(&format!("app={app}")) || line.contains("tilo-launcher"))
+            .filter(|line| line.contains(&named) || line.contains("tilo-launcher"))
             .take(20)
             .collect();
         Some(said.join("\n"))

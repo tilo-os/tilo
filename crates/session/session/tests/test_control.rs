@@ -453,7 +453,8 @@ fn text_typed_through_the_socket_reaches_the_canvas_caret() {
     );
 
     // The press a person's pointer makes on the canvas's free ground, waited out as a hand's is
-    // (the frame it lands on is the one that shows it), then text as the socket writes it.
+    // (the frame it lands on is the one that shows it, and the caret it puts there the frame
+    // after), then text as the socket writes it.
     let (x, y, w, h) = session.shell_control(CANVAS).expect("the canvas");
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     assert_eq!(
@@ -466,8 +467,15 @@ fn text_typed_through_the_socket_reaches_the_canvas_caret() {
         "the click on the canvas is taken"
     );
     assert!(
-        session.compositor().host_takes_keys(),
+        reached(&mut session, |session| {
+            session.shell_control(crate::common::CANVAS_CARET).is_some()
+        }),
         "the press put the caret on the canvas: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.compositor().host_takes_keys(),
+        "the caret holds the keyboard: {:?}",
         session.accessible_labels()
     );
     let typed = ask(
@@ -525,6 +533,14 @@ fn a_sentence_typed_through_the_socket_reaches_the_canvas_caret_in_order() {
         ),
         json!({"ok": {}}),
         "the click on the canvas is taken"
+    );
+    // The caret the press puts there stands the frame after, and the keys go to it.
+    assert!(
+        reached(&mut session, |session| {
+            session.shell_control(crate::common::CANVAS_CARET).is_some()
+        }),
+        "the press put the caret on the canvas: {:?}",
+        session.accessible_labels()
     );
     let sentence = "summarise what changed in my notes this week";
     let typed = ask(

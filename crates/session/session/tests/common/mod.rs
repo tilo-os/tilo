@@ -1172,19 +1172,42 @@ fn surface_stack(session: &Session) -> Value {
         .expect("the session publishes its surface stack")
 }
 
-/// The name the shell shows the place `record` is on: the window's own name, resolved once by the
-/// session for the bar, the chips, the switcher and the overview, and its app's name beside it.
+/// The name the shell shows the place `record` is on in its bars and menus: the window's own name,
+/// resolved once by the session for the bar, the chips, the switcher and the overview, and its
+/// app's name beside it.
 ///
 /// # Panics
 /// The shell holds no place for `record`.
 #[track_caller]
-pub fn window_name_of(session: &Session, record: &str) -> String {
+pub fn place_title(session: &Session, record: &str) -> String {
     places(session)
         .into_iter()
         .find(|place| place.record == record)
         .map_or_else(
             || panic!("the shell holds a place for {record}"),
             |place| place.name,
+        )
+}
+
+/// What the canvas draws the place `record` by: its own title, or its window's name where it has
+/// none.
+///
+/// # Panics
+/// The shell holds no place for `record`.
+#[track_caller]
+pub fn drawn_name(session: &Session, record: &str) -> String {
+    places(session)
+        .into_iter()
+        .find(|place| place.record == record)
+        .map_or_else(
+            || panic!("the shell holds a place for {record}"),
+            |place| {
+                if place.title.is_empty() {
+                    place.name
+                } else {
+                    place.title
+                }
+            },
         )
 }
 
