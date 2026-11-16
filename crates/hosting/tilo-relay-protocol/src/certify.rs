@@ -513,6 +513,82 @@ mod tests {
         }
     }
 
+    /// A command one of the member's devices signs, carrying its certificate.
+    fn from_device(
+        root: &SigningKey,
+        device: &SigningKey,
+        capabilities: tilo_user_identity::DeviceCapabilities,
+        request: ApproverRequest,
+    ) -> MemberApproval {
+        let now = 1_000 * MEMBER_APPROVAL_SKEW_NS;
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Phone".into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: Some(now + MEMBER_APPROVAL_SKEW_NS),
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+        let user_public_key = root.verifying_key().to_bytes();
+        let message = MemberApproval::signed_message(&user_public_key, now, &request).unwrap();
+        MemberApproval {
+            user_public_key,
+            issued_at_ns: now,
+            request,
+            signature: device.sign(&message).to_bytes(),
+            device: Some(cert),
+        }
+    }
+
+    #[test]
+    fn a_device_of_the_member_answers_their_questions_and_pairs_nothing() {
+        let (root, phone) = (
+            SigningKey::from_bytes(&[7; 32]),
+            SigningKey::from_bytes(&[8; 32]),
+        );
+        let now = 1_000 * MEMBER_APPROVAL_SKEW_NS;
+        let member = tilo_user_identity::DeviceCapabilities::member();
+        let asked = from_device(
+            &root,
+            &phone,
+            member.clone(),
+            ApproverRequest::Confirmations,
+        );
+        assert_eq!(asked.verify(now), Ok(()));
+        let answered = ApproverRequest::Answer {
+            id: [1; 32],
+            answer: ConfirmationAnswer::AllowOnce,
+        };
+        assert_eq!(
+            from_device(&root, &phone, member.clone(), answered).verify(now),
+            Ok(())
+        );
+        assert!(
+            from_device(&root, &phone, member.clone(), ApproverRequest::ListPending)
+                .verify(now)
+                .is_err(),
+            "pairing stays the root's"
+        );
+        let agent = tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::AllWorkspaces,
+        );
+        assert!(
+            from_device(&root, &phone, agent, ApproverRequest::Confirmations)
+                .verify(now)
+                .is_err(),
+            "an agent's key answers nothing for its person"
+        );
+        let mut forged = from_device(&root, &phone, member, ApproverRequest::Confirmations);
+        forged.user_public_key = [9; 32];
+        assert!(
+            forged.verify(now).is_err(),
+            "a device answers only for its own person"
+        );
+    }
+
     #[test]
     fn a_member_approval_holds_only_for_its_root_command_and_time() {
         let root = SigningKey::from_bytes(&[7; 32]);

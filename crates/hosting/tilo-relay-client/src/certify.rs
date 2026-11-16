@@ -247,8 +247,10 @@ pub struct Approver {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Approver {
-    /// Open an approver session. The host must chain to `own_cert`'s user
-    /// root; the host refuses devices without `can_admit_devices`.
+    /// Open an approver session. `host` pins the host's endpoint, so it may
+    /// be any person's device: the owner's admitting devices approve
+    /// everything there, any other device of a person it serves answers only
+    /// that person's questions, and the host refuses the rest.
     pub async fn connect(
         endpoint: &Endpoint,
         host: EndpointAddr,
@@ -256,7 +258,6 @@ impl Approver {
         signer: &dyn DeviceSigner,
         revocations: &RevocationList,
     ) -> Result<Self, CertifyError> {
-        let user = own_cert.user_public_key;
         let connection = endpoint
             .connect(host, CERTIFY_ALPN)
             .await
@@ -272,13 +273,7 @@ impl Approver {
         let ack: HelloAck =
             auth::decode_handshake(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
                 .map_err(|error| codec(&error))?;
-        auth::verify_hello_ack(
-            &ack,
-            &user,
-            revocations,
-            tilo_clock::unix_now_ns(),
-            &client_nonce,
-        )?;
+        auth::verify_pinned_host_ack(&ack, revocations, tilo_clock::unix_now_ns(), &client_nonce)?;
         write(
             &mut send,
             &signed_ack2(signer, &ack.server_nonce)

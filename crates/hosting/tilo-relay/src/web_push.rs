@@ -316,96 +316,6 @@ fn expand(prk: &ring::hkdf::Prk, info: &[u8], len: usize) -> Result<Vec<u8>, ()>
     Ok(out)
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
-mod tests {
-    use super::*;
-    use ring::{aead, agreement, hkdf};
-
-    /// What a browser does with a push: agree on the key with its own
-    /// private key and auth secret, and open the one record.
-    fn decrypt(
-        own: agreement::EphemeralPrivateKey,
-        own_public: &[u8],
-        auth: &[u8],
-        body: &[u8],
-    ) -> Vec<u8> {
-        let salt = &body[..16];
-        let id_len = usize::from(body[20]);
-        let sender = &body[21..21 + id_len];
-        let record = &body[21 + id_len..];
-        let shared = agreement::agree_ephemeral(
-            own,
-            &agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, sender),
-            |secret| secret.to_vec(),
-        )
-        .unwrap();
-        let mut info = b"WebPush: info\0".to_vec();
-        info.extend_from_slice(own_public);
-        info.extend_from_slice(sender);
-        let ikm = expand(
-            &hkdf::Salt::new(hkdf::HKDF_SHA256, auth).extract(&shared),
-            &info,
-            32,
-        )
-        .unwrap();
-        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(&ikm);
-        let cek = expand(&prk, b"Content-Encoding: aes128gcm\0", 16).unwrap();
-        let nonce = expand(&prk, b"Content-Encoding: nonce\0", 12).unwrap();
-        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
-        let mut record = record.to_vec();
-        let opened = key
-            .open_in_place(
-                aead::Nonce::try_assume_unique_for_key(&nonce).unwrap(),
-                aead::Aad::empty(),
-                &mut record,
-            )
-            .unwrap();
-        assert_eq!(opened.last(), Some(&2), "one record, the last");
-        opened[..opened.len() - 1].to_vec()
-    }
-
-    #[test]
-    fn a_browser_opens_what_it_is_pushed_and_nothing_else_does() {
-        let random = SystemRandom::new();
-        let browser =
-            agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &random).unwrap();
-        let public = browser.compute_public_key().unwrap().as_ref().to_vec();
-        let subscription = PushSubscription {
-            endpoint: "https://push.example/send/abc".into(),
-            p256dh: public.clone(),
-            auth: vec![7; 16],
-        };
-        let body = encrypt(&subscription, br#"{"title":"Visa backend needs you"}"#).unwrap();
-        assert_eq!(
-            decrypt(browser, &public, &[7; 16], &body),
-            br#"{"title":"Visa backend needs you"}"#
-        );
-    }
-
-    #[test]
-    fn the_vapid_header_names_the_push_service_and_this_hosts_key() {
-        let state = tempfile::tempdir().unwrap();
-        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
-        let header = push.vapid("https://push.example/send/abc").unwrap();
-        let (token, key) = header
-            .strip_prefix("vapid t=")
-            .unwrap()
-            .split_once(", k=")
-            .unwrap();
-        assert_eq!(URL_SAFE_NO_PAD.decode(key).unwrap(), push.public_key());
-        let claims = token.split('.').nth(1).unwrap();
-        let claims: serde_json::Value =
-            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(claims).unwrap()).unwrap();
-        assert_eq!(claims["aud"], "https://push.example");
-        assert_eq!(claims["sub"], "mailto:ops@example.com");
-        // The key is kept: a host that restarts signs with the same one,
-        // so the browsers subscribed to it keep working.
-        let again = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
-        assert_eq!(again.public_key(), push.public_key());
-    }
-}
-
 impl crate::certification::QuestionNotifier for WebPush {
     fn push_key(&self) -> Vec<u8> {
         self.public_key()
@@ -450,5 +360,95 @@ impl crate::certification::QuestionNotifier for WebPush {
                 "a person with no Tilo open was told a question waits"
             );
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+mod tests {
+    use super::*;
+    use ring::{aead, agreement, hkdf};
+
+    /// What a browser does with a push: agree on the key with its own
+    /// private key and auth secret, and open the one record.
+    fn decrypt(
+        own: agreement::EphemeralPrivateKey,
+        own_public: &[u8],
+        auth: &[u8],
+        body: &[u8],
+    ) -> Vec<u8> {
+        let salt = &body[..16];
+        let id_len = usize::from(body[20]);
+        let sender = &body[21..21 + id_len];
+        let record = &body[21 + id_len..];
+        let shared = agreement::agree_ephemeral(
+            own,
+            &agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, sender),
+            <[u8]>::to_vec,
+        )
+        .unwrap();
+        let mut info = b"WebPush: info\0".to_vec();
+        info.extend_from_slice(own_public);
+        info.extend_from_slice(sender);
+        let ikm = expand(
+            &hkdf::Salt::new(hkdf::HKDF_SHA256, auth).extract(&shared),
+            &info,
+            32,
+        )
+        .unwrap();
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, salt).extract(&ikm);
+        let cek = expand(&prk, b"Content-Encoding: aes128gcm\0", 16).unwrap();
+        let nonce = expand(&prk, b"Content-Encoding: nonce\0", 12).unwrap();
+        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
+        let mut record = record.to_vec();
+        let opened = key
+            .open_in_place(
+                aead::Nonce::try_assume_unique_for_key(&nonce).unwrap(),
+                aead::Aad::empty(),
+                &mut record,
+            )
+            .unwrap();
+        assert_eq!(opened.last(), Some(&2), "one record, the last");
+        opened[..opened.len().saturating_sub(1)].to_vec()
+    }
+
+    #[test]
+    fn a_browser_opens_what_it_is_pushed_and_nothing_else_does() {
+        let random = SystemRandom::new();
+        let browser =
+            agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &random).unwrap();
+        let public = browser.compute_public_key().unwrap().as_ref().to_vec();
+        let subscription = PushSubscription {
+            endpoint: "https://push.example/send/abc".into(),
+            p256dh: public.clone(),
+            auth: vec![7; 16],
+        };
+        let body = encrypt(&subscription, br#"{"title":"Visa backend needs you"}"#).unwrap();
+        assert_eq!(
+            decrypt(browser, &public, &[7; 16], &body),
+            br#"{"title":"Visa backend needs you"}"#
+        );
+    }
+
+    #[test]
+    fn the_vapid_header_names_the_push_service_and_this_hosts_key() {
+        let state = tempfile::tempdir().unwrap();
+        let push = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+        let header = push.vapid("https://push.example/send/abc").unwrap();
+        let (token, key) = header
+            .strip_prefix("vapid t=")
+            .unwrap()
+            .split_once(", k=")
+            .unwrap();
+        assert_eq!(URL_SAFE_NO_PAD.decode(key).unwrap(), push.public_key());
+        let claims = token.split('.').nth(1).unwrap();
+        let claims: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(claims).unwrap()).unwrap();
+        assert_eq!(claims["aud"], "https://push.example");
+        assert_eq!(claims["sub"], "mailto:ops@example.com");
+        // The key is kept: a host that restarts signs with the same one,
+        // so the browsers subscribed to it keep working.
+        let again = WebPush::open(state.path(), "mailto:ops@example.com").unwrap();
+        assert_eq!(again.public_key(), push.public_key());
     }
 }

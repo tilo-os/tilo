@@ -73,7 +73,7 @@ async fn answered_by_page(
         root,
         device: None,
     };
-    answered_on(mcp, page, answer).await
+    Box::pin(answered_on(mcp, page, answer)).await
 }
 
 /// [`answered_by_page`], from wherever `host` reaches the person's questions:
@@ -189,24 +189,6 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
     let asked = seen.asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 1, "the phone was asked once: {asked:?}");
     assert_eq!(asked[0].action_label, "Remove from library");
-
-    // A key that is no device of hers (an agent's) is no approver.
-    let agents_key = enrol(
-        &ada,
-        "Visa backend",
-        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces),
-    );
-    let mut as_agent = MemberQuestions {
-        host: &host,
-        root: &agents_key.key,
-        device: Some(&agents_key.cert),
-    };
-    assert!(
-        tilo_relay_client::questions::QuestionHost::confirmations(&mut as_agent)
-            .await
-            .is_err(),
-        "an agent's key reads no question of its person's"
-    );
 
     // A computer paired to Ada, which cannot admit devices: its approver
     // session lists and answers her questions.

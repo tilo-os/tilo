@@ -1001,7 +1001,7 @@ impl Server {
     /// names it to the grant's own key. A host that does not answer in time
     /// leaves the name for the next read.
     async fn name_workspaces_of(&self, person: &str) {
-        let unnamed: Vec<(String, String, GrantKey)> = self
+        let asks = self
             .store
             .grants_of(person)
             .into_iter()
@@ -1012,9 +1012,6 @@ impl Server {
                 }
                 _ => None,
             })
-            .collect();
-        let asks = unnamed
-            .into_iter()
             .map(|(grant, workspace, key)| async move {
                 let named = async {
                     let connection = self.connection(&grant, &key).await.ok()?;
