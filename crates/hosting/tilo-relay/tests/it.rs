@@ -66,6 +66,9 @@ mod personal_device_process;
 #[path = "placed_browser.rs"]
 mod placed_browser;
 #[cfg(feature = "agents")]
+#[path = "placed_machine.rs"]
+mod placed_machine;
+#[cfg(feature = "agents")]
 #[path = "placed_shell.rs"]
 mod placed_shell;
 #[path = "presence_batching.rs"]

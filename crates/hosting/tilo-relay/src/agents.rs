@@ -358,10 +358,29 @@ pub enum HostShells {
 }
 
 impl HostShells {
-    /// Ask VM hosts' members, if any, as `relay`'s own device.
+    /// Ask VM hosts' members, if any, as `relay`'s own device, and have the
+    /// workspaces' machines branched and deleted with them.
     fn serve_from(&self, relay: &Relay) {
         if let (Self::Placed(placed), Some(workspaces)) = (self, relay.workspaces()) {
             placed.ask_from(workspaces.plane(), relay.endpoint());
+        }
+        if let (Some(machines), Some(workspaces)) = (self.machines(), relay.workspaces()) {
+            workspaces.machines(machines);
+        }
+    }
+
+    /// What branches and deletes the workspaces' Linux machines: the VM hosts'
+    /// members, or the hosted-VM service a host running its shells here names;
+    /// `None` when its shells run no Linux programs, so there are no machines.
+    fn machines(&self) -> Option<Arc<dyn crate::workspaces::WorkspaceMachines>> {
+        match self {
+            Self::Placed(placed) => Some(Arc::new(crate::placed_machines::PlacedMachines::new(
+                Arc::clone(placed),
+            ))),
+            Self::Here(shells) => shells.hosted().map(|target| {
+                Arc::new(crate::placed_machines::LocalMachines::new(target.clone()))
+                    as Arc<dyn crate::workspaces::WorkspaceMachines>
+            }),
         }
     }
 }

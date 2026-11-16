@@ -160,6 +160,16 @@ impl PlacedShells {
         &self.account
     }
 
+    /// The size of the VMs placed from here.
+    pub(crate) const fn size(&self) -> VmSize {
+        self.size
+    }
+
+    /// Where the placer is reached.
+    pub(crate) fn placer(&self) -> &str {
+        &self.placer
+    }
+
     /// The VM hosts' member devices, by the name the placer answers.
     pub(crate) fn members(&self) -> &Members {
         &self.members
@@ -290,7 +300,7 @@ pub(crate) fn member_address(member: &Member) -> Result<EndpointAddr, String> {
     ))
 }
 
-fn ask_placer(placer: &str, request: &Request) -> Result<Reply, String> {
+pub(crate) fn ask_placer(placer: &str, request: &Request) -> Result<Reply, String> {
     let socket = placer
         .to_socket_addrs()
         .map_err(|error| format!("the placer {placer}: {error}"))?
