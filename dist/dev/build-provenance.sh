@@ -56,11 +56,13 @@ record_of() { printf '%s/%s\n' "$1" "$record_name"; }
 # does, and a run that reused a build across such an edit is still this tree's build — so they
 # are out of the digest, and `--no-build` stays usable while a developer works on them. What
 # *does* change the artifacts (Cargo files, sources, `vendor/`, build scripts, app manifests and
-# app surfaces, `os/scripts/build-thin-apps.sh`, `tools/apps/`) is what is left in.
+# app surfaces, `os/scripts/build-thin-apps.sh`, `tools/apps/`) is what is left in. Python
+# bytecode is out too: a build's own tools write it into the tree, where a git checkout ignores
+# it and a tree outside git would count it as a change the build itself made.
 not_an_input() {
     case $1 in
         ./docs/* | ./.claude/* | ./dist/dev/* | ./scripts/headless-examples/* | *.md | ./target/* \
-            | ./os/output/* | ./t.toml) return 0 ;;
+            | ./os/output/* | ./t.toml | */__pycache__/*) return 0 ;;
         *) return 1 ;;
     esac
 }
