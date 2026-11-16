@@ -113,10 +113,10 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
         .map(|resource| resource.id.0)
         .find(|id| !id.starts_with("settings.section:") && window.publishes(id, "open"))
         .expect("Settings publishes its open");
-    let pane = crate::settings_link::resource("settings://external_accounts").unwrap();
+    let pane = crate::settings_link::resource("settings://appearance").unwrap();
     window
         .call_on(&own, "open", serde_json::json!({ "anchor": pane }))
-        .expect("Settings opens External accounts");
+        .expect("Settings opens Appearance");
     for _ in 0..10 {
         window.settle();
         let _ = window.frame_mut().poll_frame();
@@ -128,8 +128,8 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect();
     assert!(
-        labels.iter().any(|label| label == "Add a mail account"),
-        "the External accounts pane is painted: {labels:?}"
+        labels.iter().any(|label| label == "Your colour"),
+        "the Appearance pane is painted: {labels:?}"
     );
 }
 
