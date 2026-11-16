@@ -112,6 +112,11 @@ crate::area::pane_area! {
     fn poll(&self) {
         DevicesAccessArea::poll(self);
     }
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        let model = self.model.get()?.try_borrow().ok()?;
+        let wait = model.ask_again_in()?;
+        Some(ui::time::now() + std::time::Duration::from_millis(wait))
+    }
 }
 
 pub fn area(app: &SettingsApp) -> Option<&DevicesAccessArea> {
@@ -395,7 +400,14 @@ pub struct AccessModel {
     asking_asked: Asked,
     pending: Vec<Pending>,
     now_ms: Option<i64>,
+    /// When the lists were last asked for, ms since the epoch: while the page is
+    /// open they are asked again every [`ASK_AGAIN_MS`], so a device or an agent
+    /// the person connects while looking at it shows up here.
+    asked_ms: Option<i64>,
 }
+
+/// How often an open page asks for the person's devices and asks again.
+const ASK_AGAIN_MS: i64 = 4000;
 
 impl AccessModel {
     fn asking(remote: &ui::RemoteActions) -> Self {
@@ -428,6 +440,7 @@ impl AccessModel {
             asking_asked: Asked::default(),
             pending: Vec::new(),
             now_ms: None,
+            asked_ms: None,
         }
     }
 
@@ -436,7 +449,23 @@ impl AccessModel {
             .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
     }
 
+    /// How long until the open page asks for the lists again, in ms: `None` while an answer is
+    /// still awaited, which wakes the page itself.
+    fn ask_again_in(&self) -> Option<u64> {
+        if self.devices_asked.call.is_some() || self.asking_asked.call.is_some() {
+            return None;
+        }
+        let asked = self.asked_ms?;
+        u64::try_from(
+            ASK_AGAIN_MS
+                .saturating_sub(self.now().saturating_sub(asked))
+                .max(0),
+        )
+        .ok()
+    }
+
     fn ask_lists(&mut self, remote: &ui::RemoteActions) {
+        self.asked_ms = Some(self.now());
         self.devices_asked.call = Some(crate::device_fleet::list(remote));
         self.asking_asked.call = Some(remote.invoke(
             device_pairing::target(device_pairing::ASKING),
@@ -580,22 +609,43 @@ impl AccessModel {
             remote.poll();
         }
         let mut changed = self.poll_api();
+        let before = (
+            self.devices_asked.answered,
+            self.devices_asked.error.clone(),
+        );
         if let Some(answer) = settle(&mut self.devices_asked) {
             match answer.and_then(crate::device_fleet::devices) {
-                Ok(devices) => self.devices = devices,
+                Ok(devices) => {
+                    changed |= self.devices != devices;
+                    self.devices = devices;
+                }
                 Err(error) => self.devices_asked.error = Some(error),
             }
-            changed = true;
+            changed |= before != (true, self.devices_asked.error.clone());
         }
+        let first = !self.asking_asked.answered;
         if let Some(answer) = settle(&mut self.asking_asked) {
-            match answer.and_then(|value| {
-                serde_json::from_value::<AskingAnswer>(value.unwrap_or_default())
-                    .map_err(|_| t("settings-access-unreadable"))
-            }) {
-                Ok(answered) => self.asking = answered.asking,
-                Err(_) => self.asking.clear(),
-            }
-            changed = true;
+            changed |= first;
+            let asking = answer
+                .and_then(|value| {
+                    serde_json::from_value::<AskingAnswer>(value.unwrap_or_default())
+                        .map_err(|_| t("settings-access-unreadable"))
+                })
+                .map(|answered| answered.asking)
+                .unwrap_or_default();
+            changed |= self.asking != asking;
+            self.asking = asking;
+        }
+        // An open page follows what the host keeps: a computer or an agent connected from the
+        // sheet this page opened (or from anywhere else) shows up while the person looks.
+        if self.devices_asked.call.is_none()
+            && self.asking_asked.call.is_none()
+            && self.pending.is_empty()
+            && self
+                .asked_ms
+                .is_some_and(|asked| self.now().saturating_sub(asked) >= ASK_AGAIN_MS)
+        {
+            self.ask_lists(remote);
         }
         let mut settled = false;
         for pending in std::mem::take(&mut self.pending) {

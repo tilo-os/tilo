@@ -341,8 +341,10 @@ enum Cmd {
         /// the person goes by with it.
         #[arg(long, requires = "new_identity")]
         json: bool,
-        /// The agent that runs here, as your workspace shows it; found by
-        /// itself when not given (Claude Code, Codex, Gemini CLI, ...).
+        /// Which of your agents runs here, by the name your workspace shows
+        /// it under: every computer logged in under one name is one agent,
+        /// with its history; another name is another agent. Found by itself
+        /// when not given (Claude Code, Codex, Gemini CLI, ...).
         #[arg(long)]
         agent: Option<String>,
         /// The site whose tab made the code, when not tilo.sh (also

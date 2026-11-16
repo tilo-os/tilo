@@ -350,6 +350,27 @@ async fn sign_in_not_taken(
 /// devices called what it would be.
 const MAX_LABEL_ATTEMPTS: u32 = 9;
 
+/// What a login that worked says: the device this computer now is, and which of the person's
+/// agents runs on it ([`which_agent`]).
+fn logged_in_said(label: &str, days: u64, agent: &str) -> String {
+    format!(
+        "Logged in: this computer is now \"{label}\", one of the person's devices for {days} days. \
+         Their identity stays in their browser; only this device's own key is kept here.\n{}",
+        which_agent(agent)
+    )
+}
+
+/// Which of the person's agents a login made this computer's agent: every computer of theirs
+/// that logs in under the same name is that one agent, with its name, colour and history in their
+/// workspace; another name is another agent.
+fn which_agent(name: &str) -> String {
+    format!(
+        "You work in Tilo as the person's agent \"{name}\": they see you by that name, and any \
+         computer of theirs logged in as \"{name}\" is this same agent, with what it did before. \
+         If they want you as another of their agents, log in again with `--agent \"<its name>\"`."
+    )
+}
+
 /// What a login that failed says: what happened, in the person's words, and
 /// the one action that fixes it.
 fn certify_said(error: &CertifyError) -> String {
@@ -881,9 +902,18 @@ pub fn login(code: &str, agent: Option<&str>, site: Option<&str>) -> Result<Exit
         );
     };
     trust_test_certificates()?;
-    let agent = agent
-        .filter(|name| !name.trim().is_empty())
-        .map_or_else(agent::detect_here, agent::named);
+    // A name of its own (`--agent "Reviewer"`) is another agent of the person's than the one
+    // the tool goes by, run by the same tool: its tools are still added to it.
+    let agent =
+        agent
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(agent::detect_here, |name| {
+                let named = agent::named(name);
+                agent::Agent {
+                    tool: named.tool.or_else(|| agent::detect_here().tool),
+                    ..named
+                }
+            });
     let site = site_origin(site)?;
     let runtime = runtime()?;
     runtime.block_on(async {
@@ -950,10 +980,7 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     let days = signed.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(signed.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
-    println!(
-        "Logged in: this computer is now \"{label}\", one of the person's devices for {days} days. \
-         Their identity stays in their browser; only this device's own key is kept here."
-    );
+    println!("{}", logged_in_said(&label, days, &agent.name));
     let tilo = std::env::current_exe().context("finding this program")?;
     let tools = add_tools(agent, &tilo, &agent::System);
     if let Tools::Added(tool) = &tools {

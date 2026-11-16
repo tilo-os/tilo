@@ -5,6 +5,37 @@ use tilo_action_policy::Acting;
 
 use super::{ExecutionLease, within};
 
+/// The agent a person's own computer runs under the name `name`: one agent
+/// on every computer of theirs and in every workspace, whichever session it
+/// comes in on. A workspace's record of its agents keeps it under this id
+/// (`agent:<id>`), so its name, colour, permissions and history follow it from
+/// session to session; another name is another agent. The name is compared
+/// without case or surrounding space.
+#[must_use]
+pub fn device_agent_id(person: &[u8; 32], name: &str) -> String {
+    let name = name.trim().to_lowercase();
+    let mut stem: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while stem.contains("--") {
+        stem = stem.replace("--", "-");
+    }
+    let stem: String = stem.trim_matches('-').chars().take(40).collect();
+    let stem = if stem.is_empty() {
+        "agent".to_owned()
+    } else {
+        stem
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo device agent\0");
+    hasher.update(person);
+    hasher.update(name.as_bytes());
+    let hash = hasher.finalize();
+    let tag = hex::encode(hash.as_bytes().get(..5).unwrap_or_default());
+    format!("{stem}-{tag}")
+}
+
 /// The authenticated actor behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -439,5 +470,23 @@ impl Caller {
     #[must_use]
     pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
         self.device_public_key.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_agent_id;
+
+    /// One person's agent under one name is one agent, however the name is typed; another name
+    /// or another person's agent is another.
+    #[test]
+    fn a_persons_agent_is_one_agent_by_its_name() {
+        let ada = [1; 32];
+        let claude = device_agent_id(&ada, "Claude Code");
+        assert!(claude.starts_with("claude-code-"), "{claude}");
+        assert_eq!(claude, device_agent_id(&ada, "  claude code "));
+        assert_ne!(claude, device_agent_id(&ada, "Reviewer"));
+        assert_ne!(claude, device_agent_id(&[2; 32], "Claude Code"));
+        assert!(device_agent_id(&ada, "…").starts_with("agent-"));
     }
 }

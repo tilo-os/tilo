@@ -53,6 +53,13 @@ fn listed_actions(listing: &str) -> Vec<String> {
         .collect()
 }
 
+/// The agent "Claude Code" of the person whose root is `person` (hex): one agent on every
+/// computer of theirs.
+fn claude_code(person: &str) -> String {
+    let root: [u8; 32] = hex::decode(person).unwrap().try_into().unwrap();
+    tilo_actions::remote::device_agent_id(&root, "Claude Code")
+}
+
 /// Who `bytes`' changes recorded acting, from the actions they carry.
 fn invokers(changes: &[([u8; 32], Vec<u8>)]) -> Vec<tilo_actions::ActionInvoker> {
     let mut doc = automerge::AutoCommit::new();
@@ -226,7 +233,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         let by = invokers(browser.documents.get(&notes).map_or(&[][..], Vec::as_slice));
         if by.iter().any(|invoker| {
             invoker.acting.is_agent()
-                && invoker.acting.agent_id() == Some("Claude Code")
+                && invoker.acting.agent_id() == Some(claude_code(&person).as_str())
                 && invoker.acting.acted_for_person() == Some(person.as_str())
         }) {
             break;
@@ -658,7 +665,7 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
             .collect();
         let by_agent = invokers(&changes).iter().any(|invoker| {
             invoker.acting.is_agent()
-                && invoker.acting.agent_id() == Some("Claude Code")
+                && invoker.acting.agent_id() == Some(claude_code(&person).as_str())
                 && invoker.acting.acted_for_person() == Some(person.as_str())
         });
         if by_agent {
@@ -745,7 +752,7 @@ fn agents_changes(tab: &mut Browser, person: &str) -> usize {
         .filter(|(invoker, run)| {
             invoker.as_ref().is_some_and(|invoker| {
                 invoker.acting.is_agent()
-                    && invoker.acting.agent_id() == Some("Claude Code")
+                    && invoker.acting.agent_id() == Some(claude_code(person).as_str())
                     && invoker.acting.acted_for_person() == Some(person)
             }) && run
                 .as_ref()

@@ -35,7 +35,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::device::Device as Entered;
 use tilo_session_client::remote::SessionActions;
 
@@ -248,8 +248,10 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
         .ok_or(crate::login::LOGIN_DAMAGED)?;
     let actions = session.device.actions(workspace_id);
     let person = hex::encode(user);
-    let server = McpServer::new(actions, device.workspace.clone(), person)
-        .with_surface(Surface::Agent)
+    // Every session of this agent, on any computer of the person's, is the one agent the host
+    // and the workspace's record of its agents know it by.
+    let agent = tilo_actions::remote::device_agent_id(&user, &device.agent);
+    let server = McpServer::for_agent(actions, device.workspace.clone(), &agent, &person)
         .with_agent_session(run, device.agent.clone());
     Ok(Served {
         session: Arc::downgrade(session),

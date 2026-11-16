@@ -441,6 +441,9 @@ export async function launch({args = [], media = false} = {}) {
   // unanswered then is a browser or a page that stopped: the test that is
   // waiting on it fails and names the command, instead of waiting for ever.
   const ANSWER_TIMEOUT_MS = 180_000;
+  // A screenshot comes with the page's next frame: one that takes longer was
+  // asked of a document the page left.
+  const CAPTURE_TIMEOUT_MS = 15_000;
   const stop = error => {
     for (const waiting of pending.values()) waiting.reject(error);
     pending.clear();
@@ -586,8 +589,20 @@ export async function launch({args = [], media = false} = {}) {
     // `Page.captureScreenshot`s (a recording's frame and a shot) with frames
     // of each other's size, so a shot came back as the page tiled 2x2.
     let capturing = Promise.resolve();
+    // Captures go one at a time. One asked for while the page loads another
+    // document (a link opened in it, a reload) can wait for a frame of the
+    // document that went away and is never answered: it gives up after
+    // CAPTURE_TIMEOUT_MS, so the next capture asks the new document rather than
+    // queueing behind it for the whole answer timeout.
     const capture = params => {
-      const taking = capturing.then(() => send('Page.captureScreenshot', params, sessionId));
+      const taking = capturing.then(() => {
+        let timer;
+        const lost = new Promise((_, refuse) => {
+          timer = setTimeout(() => refuse(new Error(`Page.captureScreenshot: no frame came in ${CAPTURE_TIMEOUT_MS / 1000}s (the page was loading another document?)`)), CAPTURE_TIMEOUT_MS);
+          timer.unref?.();
+        });
+        return Promise.race([send('Page.captureScreenshot', params, sessionId), lost]).finally(() => clearTimeout(timer));
+      });
       capturing = taking.catch(() => undefined);
       return taking;
     };

@@ -535,6 +535,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run h1 { margin: 0 0 12px; font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -0.018em; text-wrap: balance; }
     #first-run h1:focus { outline: none; }
     .fr-lead { margin: 0 0 28px; max-width: 32em; color: var(--fr-muted); text-wrap: pretty; }
+    /* Reopened from the card, the agent is set up in the workspace the tab shows. */
+    #first-run[data-reopened=true] .fr-for-first, #first-run:not([data-reopened=true]) .fr-for-reopened { display: none; }
     #first-run button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     #first-run button:focus-visible { outline: 2px solid var(--fr-focus); outline-offset: 2px; }
     #first-run .fr-primary { display: inline-flex; align-items: center; justify-content: center; gap: 10px; box-sizing: border-box; width: min(360px, 100%); min-height: 52px; padding: 0 22px; border: 0; border-radius: 12px; background: var(--fr-primary); color: var(--fr-primary-ink); font-size: 16px; font-weight: 600; }
@@ -693,7 +695,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
         <h1 id="first-run-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1>
         <h1 id="first-run-heading-hand" class="fr-for-wait fr-for-setup fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is setting up Tilo</h1>
         <h1 id="first-run-heading-hand-sign-in" class="fr-for-wait fr-for-sign-in fr-hand" tabindex="-1"><span class="fr-hand-agent">Your agent</span> is signing this tab in</h1></div>
-        <div class="fr-leads"><p class="fr-lead fr-for-start">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <div class="fr-leads"><p class="fr-lead fr-for-start fr-for-first">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <p class="fr-lead fr-for-start fr-for-reopened">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, in the workspace this tab shows, where you see it work.</p>
         <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
         <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
         <div class="fr-well fr-offer"><pre id="first-run-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-run-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-run-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>

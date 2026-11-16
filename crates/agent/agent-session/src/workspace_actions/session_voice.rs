@@ -35,10 +35,37 @@ use tilo_relay_protocol::WorkspaceId;
 /// How soon a run leaves once the session that is the run ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
 
+/// The colour `caller`'s runs are drawn in: the agent's own, never its display name's nor its
+/// session's, so one agent is one colour in every session and on every surface that draws it. It
+/// is the colour the workspace's record of its agents gives an agent kept by its person
+/// ([`collab_types::presence::PresenceHue::of_member`]); a caller that names no agent (a key) is
+/// drawn as its run.
+fn colour_of(caller: &Caller) -> [u8; 3] {
+    let (r, g, b) = match caller.acting().agent_id() {
+        Some(agent) => {
+            collab_types::presence::identity_rgb(collab_types::presence::PresenceHue::of_member(
+                &collab_types::MemberId::agent(agent),
+                caller.acting_for_person(),
+            ))
+        }
+        None => agent_rgb(
+            caller
+                .agent_session()
+                .map(|run| run.id)
+                .as_deref()
+                .unwrap_or(""),
+        ),
+    };
+    [r, g, b]
+}
+
 /// What the host says of one run it executes.
 struct Voice {
     /// The agent's or key's name, as the host knows it.
     label: String,
+    /// Its colour: the agent's own, the one its every session and the workspace's record of
+    /// its agents draw it in.
+    colour: [u8; 3],
     /// What it is doing now: the action it takes.
     activity: Option<String>,
     /// The record it works in, and what its last action left selected there.
@@ -186,6 +213,7 @@ impl Sessions {
         let lease = caller.execution_lease()?;
         let voice = self.by_session.entry(run.id).or_insert_with(|| Voice {
             label: run.label,
+            colour: colour_of(caller),
             activity: None,
             focus: None,
             selection: None,
@@ -239,14 +267,11 @@ impl Sessions {
         self.by_session
             .iter()
             .map(|(run, voice)| {
-                // The colour the run is known by, never its display name's: one agent is one colour
-                // on every surface that draws it, as its own session paints it.
-                let (r, g, b) = agent_rgb(run);
                 let mut face = tilo_session_client::presence::view(
                     0,
                     tilo_clock::unix_now_ms(),
                     &voice.label,
-                    [r, g, b],
+                    voice.colour,
                     voice.activity.clone(),
                     voice.focus.as_ref(),
                     None,

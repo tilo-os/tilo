@@ -42,7 +42,7 @@ mod caller;
 pub mod environment_device;
 pub mod linux_apps;
 pub mod mcp_server;
-pub use caller::Caller;
+pub use caller::{Caller, device_agent_id};
 mod catalogue;
 mod changes;
 mod confirmation;

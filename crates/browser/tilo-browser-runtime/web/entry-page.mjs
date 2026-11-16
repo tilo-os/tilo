@@ -2024,8 +2024,10 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     // person saw when they arrived. On the person's own desktop no workspace
     // peer is in front, so the code comes from their home host, as the first
     // screen's did.
+    // The agent is set up in the workspace in front, where the person is
+    // and sees it working; on their own desktop, in their own workspace.
     showAgentSetup: setupOrigin({peer, home})
-      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link}); }
+      ? () => { connectAnAgent({origin: setupOrigin({peer, home}), identity, runtime, link, workspace: peer?.workspace ?? null}); }
       : null,
     // Arrived by an invitation, not set up yet: once they used the workspace
     // a while, the setup is what they are asked (first-run.inline.js).
@@ -2134,14 +2136,16 @@ const LET_IN_MS = 30_000;
  * `codes` are the host's login codes themselves. Its `ours(saved)` says
  * whether a kept code is this person's, on this host.
  *
- * The code names a pairing link to this tab, into the person's own
+ * The code names a pairing link to this tab, into `workspace` when one is
+ * named (the one in front, where the person connects an agent from their
+ * card and sees it working), else into the person's own
  * workspace on that host, as the host answers it once this tab is let in
  * (`askOwnWorkspace`): made then on a first visit, under an id the host
  * chooses, so the link names a workspace the host knows. The tab approves the
  * agent's device through the host's published address, and gives the person
  * a stand-in there.
  */
-function agentSetupCodes({origin, identity, runtime, link}) {
+function agentSetupCodes({origin, identity, runtime, link, workspace = null}) {
   const host = new URL(origin).origin;
   const codes = loginCodes(runtime, host);
   let actions = null;
@@ -2168,7 +2172,7 @@ function agentSetupCodes({origin, identity, runtime, link}) {
   const make = () => makeCode().catch(error => { throw hostNamed(error, host); });
   const makeCode = async () => {
     const agents = await agentActions();
-    const pairing = await agents.connectAgent({workspace: await setupWorkspace(), watch: false});
+    const pairing = await agents.connectAgent({workspace: workspace ?? await setupWorkspace(), watch: false});
     const made = watched(await codes.create(pairing.link), agents);
     return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
       invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
@@ -2195,14 +2199,14 @@ function agentSetupCodes({origin, identity, runtime, link}) {
  * the same place, with a fresh code (`first-run.mjs` `openFirstRun`). Skip
  * there only closes it: the person is set up already.
  */
-function connectAnAgent({origin, identity, runtime, link}) {
+function connectAnAgent({origin, identity, runtime, link, workspace = null}) {
   const run = openFirstRun(document);
   if (!run) return false;
   if (!origin || !runtime?.createLoginCode) {
     run.unavailable({code: 'no-workspace'});
     return true;
   }
-  const {make, resume} = agentSetupCodes({origin, identity, runtime, link});
+  const {make, resume} = agentSetupCodes({origin, identity, runtime, link, workspace});
   run.offerSetup(make, resume);
   return true;
 }

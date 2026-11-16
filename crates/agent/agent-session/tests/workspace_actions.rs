@@ -29,6 +29,9 @@ use tilo_relay_protocol::WorkspaceId;
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
 #[cfg(test)]
+#[path = "workspace_actions/agent_member.rs"]
+mod agent_member;
+#[cfg(test)]
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]

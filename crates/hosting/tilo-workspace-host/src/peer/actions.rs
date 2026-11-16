@@ -595,8 +595,15 @@ pub(super) fn session_caller(
         }
         None => {
             let person = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+            // The agent this device runs is one agent of the person's under its name, on
+            // every computer of theirs: the id their workspaces keep it by.
             match session.agent.get() {
-                Some(agent) => person.delegated_to(agent.clone()),
+                Some(agent) => person
+                    .delegated_to(tilo_actions::remote::device_agent_id(
+                        &peer.user_public_key,
+                        agent,
+                    ))
+                    .named(agent),
                 None => person,
             }
         }
