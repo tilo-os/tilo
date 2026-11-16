@@ -292,13 +292,12 @@ fn failure(answer: &Answer) -> Option<String> {
         Arrival::Failed(ActionHostError::Unavailable { .. }) => {
             Some(CATALOG.t("discord-setup-host-unreachable"))
         }
-        Arrival::Failed(ActionHostError::UnknownAction | ActionHostError::NotPermitted) => {
+        // The workspace's server runs no bots: nobody can bridge it.
+        Arrival::Failed(ActionHostError::UnknownAction) => Some(CATALOG.t("discord-setup-no-bots")),
+        Arrival::Failed(ActionHostError::NotPermitted) => {
             Some(CATALOG.t("discord-setup-not-allowed"))
         }
-        Arrival::Failed(error) => Some(CATALOG.t_args(
-            "discord-setup-host-refused",
-            &[("reason", ArgValue::Text(error.to_string()))],
-        )),
+        Arrival::Failed(_) => Some(CATALOG.t("discord-setup-host-refused")),
     }
 }
 

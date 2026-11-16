@@ -35,14 +35,14 @@ discord-no-sign-in = This workspace's host doesn't offer signing in with Discord
 ## Bridging a server.
 discord-setup-title = Bridge a Discord server
 discord-setup-token = Bot token
-discord-setup-token-explanation = Paste the token from the Bot page of your application in the Discord developer portal. It goes to this workspace's host for the bridge and is kept nowhere else.
+discord-setup-token-explanation = Paste the token from the Bot page of your application in the Discord developer portal. It's kept with this workspace for the bridge and nowhere else.
 discord-setup-find = Find servers
 discord-setup-finding = Asking Discord which servers the bot is in…
 discord-setup-choose = Choose the server this workspace bridges.
 discord-setup-server = Server
 discord-setup-no-servers = The bot isn't in any server yet. Invite it to yours from the developer portal, then try again.
 discord-setup-bridge = Bridge
-discord-setup-asking = Asking the workspace's host to bridge { $server }…
+discord-setup-asking = Bridging { $server }…
 discord-setup-asked = { $server } is being bridged. Its channels show up in Chat as the bridge brings them in.
 discord-setup-done = Done
 discord-setup-try-again = Try again
@@ -53,10 +53,11 @@ discord-setup-unreachable = Discord didn't answer. Check the connection, then tr
 discord-setup-discord-error = Discord couldn't list the bot's servers right now. Try again in a moment.
 discord-setup-unreadable = Discord's answer couldn't be read. Try again in a moment.
 discord-setup-no-workspace = Only a workspace can bridge a server. Open Discord from a workspace.
-discord-setup-host-unreachable = The workspace's host can't be reached right now. Try again in a moment.
-discord-setup-not-allowed = Bridging needs a workspace hosted on a relay that runs bots, and the right to add bots to it.
-discord-setup-host-refused = The workspace's host didn't take it: { $reason }
-discord-setup-cancelled = The workspace's host stopped before the bridge was set up.
+discord-setup-host-unreachable = Tilo can't reach this workspace right now. Try again in a moment.
+discord-setup-not-allowed = Only someone who may add bots to this workspace can bridge a Discord server. Ask a workspace owner to do it.
+discord-setup-no-bots = This workspace can't run bots, so it can't bridge a Discord server.
+discord-setup-host-refused = The bridge couldn't be set up. Try again in a moment.
+discord-setup-cancelled = Setting up the bridge stopped before it finished. Try again.
 
 ## History: the bridge's verbs.
 discord-connect = Connected the Discord server { $name }

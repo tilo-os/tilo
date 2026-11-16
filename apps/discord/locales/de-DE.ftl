@@ -35,14 +35,14 @@ discord-no-sign-in = Der Host dieses Arbeitsbereichs bietet keine Anmeldung mit 
 ## Einen Server verbinden.
 discord-setup-title = Einen Discord-Server verbinden
 discord-setup-token = Bot-Token
-discord-setup-token-explanation = Füge das Token von der Bot-Seite deiner Anwendung im Discord-Entwicklerportal ein. Es geht an den Host dieses Arbeitsbereichs für die Bridge und wird nirgends sonst aufbewahrt.
+discord-setup-token-explanation = Füge das Token von der Bot-Seite deiner Anwendung im Discord-Entwicklerportal ein. Es wird für die Bridge bei diesem Arbeitsbereich aufbewahrt und sonst nirgends.
 discord-setup-find = Server finden
 discord-setup-finding = Discord wird gefragt, in welchen Servern der Bot ist…
 discord-setup-choose = Wähle den Server, den dieser Arbeitsbereich verbindet.
 discord-setup-server = Server
 discord-setup-no-servers = Der Bot ist noch in keinem Server. Lade ihn aus dem Entwicklerportal in deinen ein und versuche es dann erneut.
 discord-setup-bridge = Verbinden
-discord-setup-asking = Der Host des Arbeitsbereichs wird gebeten, { $server } zu verbinden…
+discord-setup-asking = { $server } wird verbunden…
 discord-setup-asked = { $server } wird verbunden. Die Kanäle erscheinen im Chat, sobald die Bridge sie geholt hat.
 discord-setup-done = Fertig
 discord-setup-try-again = Erneut versuchen
@@ -53,10 +53,11 @@ discord-setup-unreachable = Discord hat nicht geantwortet. Prüfe die Verbindung
 discord-setup-discord-error = Discord konnte die Server des Bots gerade nicht auflisten. Versuche es gleich noch einmal.
 discord-setup-unreadable = Die Antwort von Discord war nicht lesbar. Versuche es gleich noch einmal.
 discord-setup-no-workspace = Nur ein Arbeitsbereich kann einen Server verbinden. Öffne Discord aus einem Arbeitsbereich.
-discord-setup-host-unreachable = Der Host des Arbeitsbereichs ist gerade nicht erreichbar. Versuche es gleich noch einmal.
-discord-setup-not-allowed = Verbinden braucht einen Arbeitsbereich auf einem Relay, der Bots ausführt, und das Recht, ihm Bots hinzuzufügen.
-discord-setup-host-refused = Der Host des Arbeitsbereichs hat es nicht angenommen: { $reason }
-discord-setup-cancelled = Der Host des Arbeitsbereichs hörte auf, bevor die Bridge eingerichtet war.
+discord-setup-host-unreachable = Tilo erreicht diesen Arbeitsbereich gerade nicht. Versuche es gleich noch einmal.
+discord-setup-not-allowed = Nur wer diesem Arbeitsbereich Bots hinzufügen darf, kann einen Discord-Server verbinden. Bitte eine Person, die den Arbeitsbereich besitzt, darum.
+discord-setup-no-bots = Dieser Arbeitsbereich kann keine Bots ausführen und deshalb keinen Discord-Server verbinden.
+discord-setup-host-refused = Die Bridge konnte nicht eingerichtet werden. Versuche es gleich noch einmal.
+discord-setup-cancelled = Das Einrichten der Bridge hörte auf, bevor es fertig war. Versuche es noch einmal.
 
 ## Verlauf: die Verben der Bridge.
 discord-connect = Den Discord-Server { $name } verbunden
