@@ -474,6 +474,9 @@ impl Board {
                 member.spoken_by = own;
                 member.run = Some(run.clone());
                 member.device.clone_from(&self.own.device);
+                // A run this device executes works for the person at this device: what a surface
+                // showing this person their own agent's work reads.
+                member.user.clone_from(&self.own.user);
                 self.presents.push(member);
             }
             let Some(member) = self

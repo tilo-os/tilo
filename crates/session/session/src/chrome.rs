@@ -500,9 +500,12 @@ impl ChromeSource for SessionChrome {
 
     fn place_people(&self, tree: &mut Layout) {
         if let Some(sync) = &self.sync {
-            sync.show(tree, &self.notes, &|app: &str| {
+            let people = sync.show(tree, &self.notes, &|app: &str| {
                 Some(crate::app_names::app_name(app))
             });
+            // Where the person's own agent works comes into view each time it moves or acts: they
+            // see what their agent does, without the keyboard leaving the field they are in.
+            sync.reveal_own_agent_work(&people, &self.handle);
         }
     }
 

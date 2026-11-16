@@ -2,7 +2,7 @@ use super::*;
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
+use tilo_desktop_model::{Tab, Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_session_client::{InCall, presence::now_ms, topic_of};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -1665,4 +1665,154 @@ fn a_host_is_dialled_where_this_device_reached_it_whatever_it_says_of_itself() {
         stranger.close().await;
         host.close().await;
     });
+}
+
+/// A window source for a desktop no test draws: every window says it is a notice.
+struct Plain;
+
+impl tilo_desktop_surface::TileSource for Plain {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> ui::widget::TileHost {
+        ui::widget::TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+/// A desktop showing one window running `app`, and the window's tab.
+fn desktop_running(app: &str) -> (DesktopHandle, tilo_desktop_model::TabId) {
+    let mut minter = tilo_desktop_model::IdMinter::new(7);
+    let tab = Tab {
+        id: minter.mint(),
+        title: "Notes".to_owned(),
+        tile: tilo_desktop_model::TileContent::LocalApp {
+            app_id: app.to_owned(),
+            label: "Notes".to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let id = tab.id;
+    let tree = tilo_desktop_surface::seed_tree(&mut minter, "Session", vec![tab]);
+    let (_surface, handle) = tilo_desktop_surface::DesktopSurface::new(tree, 7, Box::new(Plain));
+    (handle, id)
+}
+
+/// The record `app`'s window shows, as presence names records to the others.
+fn record_of(app: &str) -> tilo_relay_protocol::live::LiveRecord {
+    tilo_relay_protocol::live::LiveRecord {
+        app: app.to_owned(),
+        record: "0f1e2d3c4b5a6978".to_owned(),
+    }
+}
+
+/// A narrated action of the run `run` in `app`, as the live plane carries it, and the device that
+/// spoke it: the frame a device of the workspace hands a session.
+fn narration_of(
+    run: &str,
+    app: &str,
+    speaker: EndpointId,
+) -> ([u8; 32], tilo_relay_protocol::live::SemanticFrame) {
+    let action = tilo_actions::ActionAddress::new("note", "write");
+    let event = tilo_session_client::narration::frame(
+        &tilo_session_client::narration::Narrated {
+            agent: "Claude Code",
+            invocation: tilo_actions::InvocationId::new(),
+            app,
+            action: &action,
+            phase: tilo_actions::InteractionPhase::Applying,
+            on_behalf: Some(run),
+        },
+        1,
+        1_700_000_000_000,
+    )
+    .expect("a well-formed action is narrated");
+    (*speaker.as_bytes(), event)
+}
+
+tilo_test_env::scenario! {
+    fn a_persons_own_agent_at_work_is_brought_into_view_here;
+
+    phase the_narrated_action_of_the_persons_own_agent_brings_its_window_into_view;
+    // An agent's action reaches a device's session as its narration does on the live plane: the
+    // window the person's own agent works in comes into view, so they see what it does, and the
+    // cursor it drew stands where it acted.
+    {
+        let _settled = ui::motion::testing::settled();
+        let (sync, _said) = session("Quinten", Some(0x04));
+        let (handle, tab) = desktop_running("so.tilo.notes");
+        sync.attach_shell(handle.clone());
+        // The agent, run by this device for its own person, working in the notes window.
+        let run = "agent-session:7";
+        let face = tilo_session_client::presence::view(
+            0,
+            ui::time::unix_now_ms(),
+            "Claude Code",
+            [0x80, 0xa8, 0xff],
+            Some("Writing a note".to_owned()),
+            Some(&record_of("so.tilo.notes")),
+            None,
+        );
+        sync.speak_for(&[(WORKSPACE.to_owned(), run.to_owned(), face)]);
+
+        // Where it works is news the first time the surface looks, and stays put after.
+        let mut tree = shell(WORKSPACE);
+        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
+        assert!(
+            sync.reveal_own_agent_work(&people, &handle),
+            "the window its agent works in comes into view"
+        );
+        assert_eq!(handle.reveal_waiting(), Some(tab));
+        let mut tree = shell(WORKSPACE);
+        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
+        assert!(
+            !sync.reveal_own_agent_work(&people, &handle),
+            "it did not move, so nothing moved"
+        );
+
+        let (from, event) = narration_of(run, "so.tilo.notes", device(0xf0));
+        sync.hear(Event::Live {
+            ws: topic(WORKSPACE),
+            from,
+            frame: tilo_relay_protocol::live::LiveFrame::Ops(
+                tilo_relay_protocol::live::OpsFrame::Semantic {
+                    record: record_of("so.tilo.notes"),
+                    event: event.clone(),
+                },
+            )
+            .encode()
+            .expect("a frame"),
+        });
+
+        // Acting where it already was shows that window again, without taking the keyboard.
+        let mut tree = shell(WORKSPACE);
+        let people = sync.show(&mut tree, &no_records(), &|app: &str| Some(app.to_owned()));
+        assert!(
+            sync.reveal_own_agent_work(&people, &handle),
+            "an action where it works shows that window again"
+        );
+        assert_eq!(handle.reveal_waiting(), Some(tab));
+
+        // The work is the agent's, acting for this person, and its cursor stands where it acted.
+        let here = sync.members(WORKSPACE);
+        let admitted = tilo_session_client::narration::admit(&here, from, &event)
+            .expect("admitted from the agent the board names");
+        assert_eq!(
+            admitted.actor.acted_for_person(),
+            Some(person(0x04).as_str()),
+            "the board says whose agent it is"
+        );
+        let mut presence = ui::presence::PresenceCtx::default();
+        assert!(
+            tilo_desktop::here::apply_narrated(&mut presence, &[admitted]),
+            "the cursor moved to the control it acted on"
+        );
+        assert_eq!(
+            presence.visible_interactions(ui::time::now()).len(),
+            1,
+            "the agent's cursor stands where it acted"
+        );
+    }
 }
