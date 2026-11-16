@@ -3,6 +3,7 @@
 import type { Tilo } from "./client.ts";
 import { type Endpoint, RunGroup, withinRun } from "./endpoint.ts";
 import {
+  actionAnswerOf,
   type Event,
   type Hit,
   hitOf,
@@ -16,6 +17,7 @@ import {
   type ProgramAnswer,
   type WorkspaceExport,
   type WorkspaceInfo,
+  resultOf,
   workspaceOf,
 } from "./models.ts";
 import { ProtocolError, refusalOf } from "./errors.ts";
@@ -328,6 +330,28 @@ export class Workspace {
         ? (answer.unread as { path: string; error: string }[])
         : [],
     };
+  }
+
+  /**
+   * Let the keys made for this workspace alone run commands in its Linux
+   * machine (`terminal#run`) without asking the person each time, here and in
+   * the branches made from it; `on = false` asks again from the next command.
+   * Turning it on asks the person on their approving device, whichever key
+   * asks: it throws `AskPending`, whose `wait()` answers
+   * `{ workspace, unattended: true }` once they allow it, or throws `Refused`
+   * if they do not. Turning it off asks nobody. A key reaching all their
+   * workspaces is still asked, and so is everything else that asks.
+   */
+  async unattended(on = true): Promise<Record<string, unknown>> {
+    const endpoint = await this.endpoint();
+    const answer = actionAnswerOf(
+      await endpoint.answer("PUT", routes.unattended(endpoint.id), { json: { on } }),
+    );
+    if (answer.status === "pending") {
+      throw endpoint.askOf(answer);
+    }
+    const result = resultOf(answer);
+    return result !== null && typeof result === "object" ? (result as Record<string, unknown>) : {};
   }
 
   /**

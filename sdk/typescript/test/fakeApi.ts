@@ -111,6 +111,9 @@ export class FakeApi {
   invitations: Answer[] = [];
   /** The branches made, by the idempotency key each was asked with. */
   branches = new Map<string, Answer>();
+  /** Whether the person answered a workspace's ask to run commands
+   * unattended: `null` while they have not, then whether they allowed it. */
+  unattendedAllowed: boolean | null = null;
   /** How many calls the host refuses as busy before it answers them, and the wait it says. */
   busy = 0;
   busyWaitMs = 5;
@@ -273,6 +276,8 @@ export class FakeApi {
       }
       case "runs":
         return this.run(tail, method, call);
+      case "unattended":
+        return method === "PUT" ? this.unattended(workspace, call) : this.refuse("method_not_allowed", 405);
       case "search":
         return this.json({
           query: call.query.q ?? "",
@@ -497,6 +502,21 @@ export class FakeApi {
     if (method !== "GET") {
       return this.refuse("method_not_allowed", 405);
     }
+    if (run.startsWith("unattended-")) {
+      const workspace = run.slice("unattended-".length);
+      if (this.unattendedAllowed === null) {
+        return this.json({ status: "pending", run, ask: {} }, 202);
+      }
+      if (!this.unattendedAllowed) {
+        return this.refuse("refused", 403, "the workspace refused: the person did not allow it");
+      }
+      for (const row of this.workspaces) {
+        if (row.id === workspace) {
+          row.unattended = true;
+        }
+      }
+      return this.json({ status: "ok", run, result: { workspace, unattended: true } });
+    }
     if (run === "ask-1") {
       return this.json({ status: "ok", run, path: `${TODO}#ask`, result: { allowed: true } });
     }
@@ -569,6 +589,20 @@ export class FakeApi {
     this.workspaces.push(made);
     this.branches.set(key, made);
     return this.json(made, 201);
+  }
+
+  /** Running commands unattended in `workspace`: off at once, on only once the person allows it. */
+  private unattended(workspace: string, call: Recorded): Response {
+    const on = (JSON.parse(call.body || "{}") as Answer).on === true;
+    if (!on) {
+      for (const row of this.workspaces) {
+        if (row.id === workspace) {
+          delete row.unattended;
+        }
+      }
+      return this.json({ status: "ok", result: { workspace, unattended: false } });
+    }
+    return this.json({ status: "pending", run: `unattended-${workspace}`, ask: {} }, 202);
   }
 
   private deleteWorkspace(workspace: string): Response {

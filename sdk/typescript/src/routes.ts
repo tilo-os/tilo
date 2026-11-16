@@ -55,6 +55,7 @@ export const routes = {
     )}`,
   workspace: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}`,
   branches: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/branches`,
+  unattended: (workspace: string) => `${PREFIX}/workspaces/${segment(workspace)}/unattended`,
 
   keys: () => `${PREFIX}/keys`,
   key: (grant: string) => `${PREFIX}/keys/${segment(grant)}`,

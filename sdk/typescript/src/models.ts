@@ -12,6 +12,9 @@ export interface WorkspaceInfo {
   /** What the person labelled it with when they made it (`customer_id` →
    * `cus_8121`): read by their own keys alone, empty for none. */
   labels: Record<string, string>;
+  /** Whether the person let the keys made for it alone run commands in its
+   * Linux machine without asking them each time. */
+  unattended: boolean;
 }
 
 /** Everything a workspace holds, as `workspace.export()` reads it. */
@@ -61,6 +64,7 @@ export function workspaceOf(raw: Record<string, unknown>): WorkspaceInfo {
     host: String(raw.host ?? ""),
     role: String(raw.role ?? "owner"),
     labels: labelsOf(raw.labels),
+    unattended: raw.unattended === true,
   };
 }
 

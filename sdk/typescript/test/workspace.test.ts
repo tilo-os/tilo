@@ -193,6 +193,44 @@ describe("a run", () => {
   });
 });
 
+describe("running commands unattended", () => {
+  it("asks the person, and is on once they allow it", async () => {
+    const api = new FakeApi();
+    const tilo = open(api);
+
+    const failure = tilo.workspace("jane-doe").unattended();
+
+    await expect(failure).rejects.toBeInstanceOf(AskPending);
+    const ask = (await failure.catch((error) => error)) as AskPending;
+    expect(ask.invocationId).toBe(`unattended-${WORKSPACE_ID}`);
+    expect(api.last()?.method).toBe("PUT");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/unattended`);
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ on: true });
+    expect((await tilo.workspaces.list())[0]?.unattended).toBe(false);
+
+    api.unattendedAllowed = true;
+    expect(await ask.wait()).toEqual({ workspace: WORKSPACE_ID, unattended: true });
+    expect((await tilo.workspaces.list())[0]?.unattended).toBe(true);
+  });
+
+  it("stays asking when the person does not allow it", async () => {
+    const api = new FakeApi();
+    const failure = open(api).workspace("jane-doe").unattended();
+    const ask = (await failure.catch((error) => error)) as AskPending;
+
+    api.unattendedAllowed = false;
+    await expect(ask.wait()).rejects.toBeInstanceOf(Refused);
+  });
+
+  it("is turned off without asking", async () => {
+    const api = new FakeApi();
+    const answer = await open(api).workspace("jane-doe").unattended(false);
+
+    expect(answer).toEqual({ workspace: WORKSPACE_ID, unattended: false });
+    expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ on: false });
+  });
+});
+
 describe("a grouped run", () => {
   it("names its run and title on its calls, and keeps the links they changed", async () => {
     const api = new FakeApi();

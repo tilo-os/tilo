@@ -369,7 +369,7 @@ export class Tilo {
       listing = await this.workspaceList();
     } catch (error) {
       if ((error instanceof Refused || error instanceof ProtocolError) && UUID.test(ref)) {
-        return { id: ref, name: "", host: "", role: "", labels: {} };
+        return { id: ref, name: "", host: "", role: "", labels: {}, unattended: false };
       }
       throw error;
     }
@@ -377,7 +377,7 @@ export class Tilo {
     // A workspace the listing does not name still answers to its id, as the
     // host decides.
     if (found === undefined && UUID.test(ref)) {
-      return { id: ref, name: "", host: "", role: "", labels: {} };
+      return { id: ref, name: "", host: "", role: "", labels: {}, unattended: false };
     }
     if (found === undefined) {
       throw new Refused("not_found", `no workspace ${ref}`, [
