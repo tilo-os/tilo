@@ -1,5 +1,5 @@
 //! This device's lists as resources of the session's: its windows, the tray, the agents at the
-//! person's API and the styles, and inviting into a workspace. A shell's views read them, and
+//! person's plane and the styles, and inviting into a workspace. A shell's views read them, and
 //! so does a script or an agent, through the API, by the same addresses: one reading for every
 //! reader.
 
@@ -209,7 +209,7 @@ pub(crate) enum InviteEffect {
 /// except the quick settings, which stand in the panel's own app where the device has one and
 /// no shell covers the shell that app stands in.
 /// What `show-surface` and `close-surface` open and close, whether the person asks on the
-/// shell's API or on the chrome's above it, so both open the one surface.
+/// shell's surface or on the chrome's above it, so both open the one surface.
 #[derive(Clone)]
 pub(crate) struct Surfaces {
     /// Whether the device has the quick settings' app; without, the status opens the shell's own

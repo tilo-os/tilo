@@ -119,7 +119,7 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every API. Every step is this device's own
+/// What `step` may do and answers, the same through every caller. Every step is this device's own
 /// identity store. Changing the store is privileged and asked first. Delivering the home-server
 /// removals still pending signs nothing new — each was signed when it was confirmed — so it asks
 /// nothing.

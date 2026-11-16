@@ -2,7 +2,7 @@
 //! (the touchpad, locking the screen) or holds the questions about the person's apps.
 //! They are served as a service beside every other the session runs, so an app reaches them the way
 //! it reaches each service's resources: reads what they are now and invokes what changes them
-//! through one API. What only the session holds is published here as its reading — whether the
+//! through one action API. What only the session holds is published here as its reading — whether the
 //! screens are locked, the touchpad is on, the night light is on and how far the magnifier zooms —
 //! so a resource that only acted would be the one kind of resource a panel could not open.
 

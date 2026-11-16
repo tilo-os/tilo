@@ -7,9 +7,9 @@
 //! The resource also reports what the session's heap is doing ([`tilo_compositor::heap_trim`]):
 //! whether a trim a close asked for is still owed, how many ran, and whether startup's trim has
 //! run.
-//! It is published on the session's API like the shell and the session's controls, so the action
+//! It is published on the session's plane like the shell and the session's controls, so the action
 //! model lists it: `tilo-control actions list session-diagnostics` , an agent through the broker,
-//! and the test-control API all reach the same verbs, and `profile-status` answers the same
+//! and the test-control socket all reach the same verbs, and `profile-status` answers the same
 //! reading the owner's `profile_status` request does.
 
 use serde_json::{Map, Value, json};
@@ -85,7 +85,7 @@ fn resource() -> ResourceSpec {
 }
 
 /// What the session knows of its own cost now: the profiler's state and the heap trim's. One
-/// reading for every API that asks.
+/// reading for every caller that asks.
 #[must_use]
 pub fn reading() -> Value {
     json!({
@@ -98,7 +98,7 @@ pub fn reading() -> Value {
     })
 }
 
-/// The session's diagnostics as a surface on its API: the profiler, its reading, and the heap
+/// The session's diagnostics as a surface on its plane: the profiler, its reading, and the heap
 /// trim.
 pub(crate) struct Served;
 

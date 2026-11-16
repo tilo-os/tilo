@@ -3,7 +3,7 @@
 //!
 //! The session's own date and clock formatters read them through [`ui::format::region`], which
 //! is read once and kept; a change is read again here, and every tilolang host running in this
-//! session's apps is told on its API ([`crate::apps::Apps::locale_changed`]), so the instances
+//! session's apps is told on its channel ([`crate::apps::Apps::locale_changed`]), so the instances
 //! write what their windows show again in the formats the person chose. Their windows' dates,
 //! clocks and "this week" read the same day their shell's calendar starts a week on.
 

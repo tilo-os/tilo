@@ -178,7 +178,7 @@ struct Outputs {
     entries: BTreeMap<Key, Entry>,
 }
 
-/// What the API holds of this session's audio output.
+/// What the service holds of this session's audio output.
 struct Shared {
     outputs: Mutex<Outputs>,
     streams: &'static dyn AudioStreams,

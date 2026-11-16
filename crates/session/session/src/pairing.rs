@@ -114,7 +114,7 @@ pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     }
 }
 
-/// What `step` may do and answers, the same through every API. Approval admits a device to the
+/// What `step` may do and answers, the same through every caller. Approval admits a device to the
 /// person's identity through an administrator's authentication: privileged, and asked first.
 pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{

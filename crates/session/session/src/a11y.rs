@@ -136,7 +136,7 @@ pub(crate) struct Accessibility {
     /// The surfaces the shell's own screen stands in for: they draw nothing while it draws, so they
     /// read as nothing too, and the screen's parts are the windows a client finds.
     aside: Vec<Shared>,
-    /// The adapters by the place of the surface they publish in the API.
+    /// The adapters by the place of the surface they publish on the plane.
     windows: BTreeMap<usize, Exported>,
 }
 
@@ -253,7 +253,7 @@ impl Accessibility {
             if let Some(window) = self.windows.get_mut(&place) {
                 window.focus(hosts_keyboard);
             }
-            // A surface with no name is no window of its own: an API over services or commands
+            // A surface with no name is no window of its own: a surface over services or commands
             // publishes actions, nothing to read.
             if surface.borrow().a11y_name().is_none() {
                 continue;
