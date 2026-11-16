@@ -1,7 +1,5 @@
 //! Effect handlers that answer on the window a view laid out.
 
-use std::any::Any;
-
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_resource::{Effect, Resource};
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
@@ -43,7 +41,7 @@ pub(super) struct WindowHandler<R: Resource, E, W> {
     pub(super) handle: WindowHandle<R, E, W, ()>,
 }
 
-impl<R: Resource, E: Effect, W: 'static> ViewHandler for WindowHandler<R, E, W> {
+impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for WindowHandler<R, E, W> {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -53,7 +51,7 @@ impl<R: Resource, E: Effect, W: 'static> ViewHandler for WindowHandler<R, E, W> 
         if op.with_custody().0.type_id != E::OPERATION {
             return Ok(None);
         }
-        let window = window_in::<W>(view).ok_or("the window is not open")?;
+        let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;
         let handle = &mut self.handle;
         self.runner.start(op, &mut (), Some(doc), |(), effect, cx| {
             handle(window, effect, cx)
@@ -81,7 +79,7 @@ pub(super) struct HostedWindowHandler<R: Resource, E, W> {
     pub(super) scope: WindowScope,
 }
 
-impl<R: Resource, E: Effect, W: 'static> ViewHandler for HostedWindowHandler<R, E, W> {
+impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for HostedWindowHandler<R, E, W> {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -91,7 +89,7 @@ impl<R: Resource, E: Effect, W: 'static> ViewHandler for HostedWindowHandler<R, 
         if op.with_custody().0.type_id != E::OPERATION {
             return Ok(None);
         }
-        let window = window_in::<W>(view).ok_or("the window is not open")?;
+        let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;
         self.runner.start(op, window, Some(doc), &mut self.handle)
     }
 
@@ -106,7 +104,7 @@ impl<R: Resource, E: Effect, W: 'static> ViewHandler for HostedWindowHandler<R, 
         if !self.scope.0.active() {
             return None;
         }
-        let window = window_in::<W>(view)?;
+        let window = ui_core::widget::find_mut::<W>(view)?;
         self.runner.poll(invocation, cancel, window)
     }
 }
@@ -119,7 +117,7 @@ pub(super) struct WindowJobs<R: Resource, W> {
     pub(super) scope: WindowScope,
 }
 
-impl<R: Resource, W: 'static> ViewHandler for WindowJobs<R, W> {
+impl<R: Resource, W: Widget + 'static> ViewHandler for WindowJobs<R, W> {
     fn start(
         &mut self,
         _op: &ResourceOperation<'_>,
@@ -142,24 +140,16 @@ impl<R: Resource, W: 'static> ViewHandler for WindowJobs<R, W> {
     /// its jobs finished waits for it: the completion needs the window.
     fn poll_jobs(&mut self, view: &mut dyn Widget) {
         if self.scope.0.active()
-            && let Some(window) = window_in::<W>(view)
+            && let Some(window) = ui_core::widget::find_mut::<W>(view)
         {
             self.jobs.poll(window);
         }
     }
 }
 
-/// The first widget of type `W` in `widget`, whatever wraps it.
-fn window_in<W: 'static>(widget: &mut dyn Widget) -> Option<&mut W> {
-    if widget.as_any().is_some_and(<dyn Any>::is::<W>) {
-        return widget.as_any_mut()?.downcast_mut::<W>();
-    }
-    widget.children_mut().into_iter().find_map(window_in::<W>)
-}
-
 /// Registering the handlers of a view's windows.
 impl<R: Resource> Effects<R> {
-    pub(crate) fn handle_in_window<E: Effect, W: 'static>(
+    pub(crate) fn handle_in_window<E: Effect, W: Widget + 'static>(
         &self,
         alive: Weak<()>,
         handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
@@ -177,7 +167,7 @@ impl<R: Resource> Effects<R> {
         });
     }
 
-    pub(crate) fn handle_hosted_in_window<E: Effect, W: 'static>(
+    pub(crate) fn handle_hosted_in_window<E: Effect, W: Widget + 'static>(
         &self,
         alive: Weak<()>,
         handle: impl FnMut(&mut W, E, &mut EffectCx<R, W>) -> EffectAnswer + 'static,
@@ -199,7 +189,7 @@ impl<R: Resource> Effects<R> {
 
     /// Jobs for the window `W` while `alive` lives: polled with the window
     /// before the view syncs, stopped once `alive` is gone.
-    pub(crate) fn window_jobs<W: 'static>(&self, alive: Weak<()>) -> Jobs<R> {
+    pub(crate) fn window_jobs<W: Widget + 'static>(&self, alive: Weak<()>) -> Jobs<R> {
         let scope = WindowScope::new(&alive);
         let jobs = self.scoped_surface_jobs(&scope.0);
         if self.env.is_some() {

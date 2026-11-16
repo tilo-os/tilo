@@ -162,6 +162,7 @@ impl ResourceApp for App {
                 recents,
                 cx.live().clone(),
                 (**cx).clone(),
+                cx.window_jobs::<panels::files::FileChooser>(),
             ),
             compact,
         ))

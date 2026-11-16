@@ -15,10 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
 use ui::tilo_resource::{AbsolutePath, Invoke};
 
-use ui::framework::{Dispatcher, Live, PersonRecord, RecordEnv};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, Effected, Jobs, Live, PersonRecord, RecordEnv,
+};
 use ui::portal::{
-    ContentsChannel, ContentsOutcome, DestinationChannel, DestinationOutcome, FileFilter,
-    PickRequest, PickedContents, SaveChannel, SaveOutcome,
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, SaveDestination,
 };
 use ui::prelude::*;
 use ui::vello::Scene;
@@ -34,26 +35,11 @@ use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 use ui::widget::DrawChild;
 
-enum Pending {
-    Open(ContentsChannel),
-    /// Where to save the artwork: keep working on it there (`follow`), or
-    /// save a copy and keep working where it is.
-    Save {
-        follow: bool,
-        channel: DestinationChannel,
-    },
-    /// The artwork, or a copy, being written where the host keeps it;
-    /// `announce` names the place when saying so is news.
-    Saving {
-        follow: bool,
-        announce: Option<String>,
-        channel: SaveChannel,
-    },
-    Export {
-        name: String,
-        channel: SaveChannel,
-    },
-}
+/// What a save through the chooser runs with: its answers finish on the chooser.
+type FilesCx = EffectCx<Artwork, FileChooser>;
+
+/// The one save the chooser runs at a time.
+const SAVING: &str = "canvas-files";
 
 /// An export whose pictures are being rendered: the save chooser opens
 /// once they are there.
@@ -77,7 +63,10 @@ pub struct FileChooser {
     dispatch: Dispatcher<Artwork>,
     /// Where the window opens another of the workspace's artworks.
     env: RecordEnv<Artwork>,
-    chooser: Option<Pending>,
+    /// The Open chooser, until it answers.
+    opening: Option<ContentsChannel>,
+    /// Where saves and exports wait for the chooser and the write.
+    jobs: Jobs<Artwork>,
     exporting: Option<Exporting>,
     /// An artwork of the workspace asked to open in this window, until the
     /// host answers.
@@ -92,6 +81,7 @@ impl FileChooser {
         recents: Option<(PersonRecord<ArtworkRecents>, String)>,
         live: Live<Artwork>,
         env: RecordEnv<Artwork>,
+        jobs: Jobs<Artwork>,
     ) -> Self {
         Self {
             content,
@@ -100,7 +90,8 @@ impl FileChooser {
             live,
             dispatch: env.dispatcher(),
             env,
-            chooser: None,
+            opening: None,
+            jobs,
             exporting: None,
             reopening: None,
             text: None,
@@ -149,7 +140,7 @@ impl FileChooser {
             return;
         };
         self.tools.files.set(None);
-        if self.chooser.is_some() || self.exporting.is_some() {
+        if self.busy() {
             // One chooser at a time; the open one answers first.
             return;
         }
@@ -170,7 +161,7 @@ impl FileChooser {
                                 .mimetype("image/svg+xml"),
                         )
                         .max_contents_bytes(document::MAX_FILE_BYTES);
-                self.chooser = Some(Pending::Open(request.send_contents()));
+                self.opening = Some(request.send_contents());
             }
             FileRequest::OpenRecent(path) => self.open(&PathBuf::from(path)),
             FileRequest::OpenWorkspace(uri) => match self.env.open_here(&[uri]) {
@@ -180,7 +171,13 @@ impl FileChooser {
             FileRequest::Save => match self.tools.file.get() {
                 Some(path) => self.save_to(&PathBuf::from(path), true),
                 None => match self.tools.kept.with(Clone::clone) {
-                    Some(kept) => self.write_to(&kept, true, None),
+                    Some(kept) => {
+                        if let Some(bytes) = self.packed() {
+                            self.jobs.start::<Self>(SAVING, move |cx| {
+                                Ok(write_packed(cx, &kept, bytes, true, None))
+                            });
+                        }
+                    }
                     None => self.choose_save(&art, true),
                 },
             },
@@ -224,9 +221,13 @@ impl FileChooser {
                 .mimetype(document::MEDIA_TYPE),
         )
         .thread_name("canvas-save");
-        self.chooser = Some(Pending::Save {
-            follow,
-            channel: request.send_save_destination(),
+        self.jobs.start::<Self>(SAVING, move |cx| {
+            Ok(
+                cx.choose_destination(request, move |chooser, chosen, cx| match chosen {
+                    Some(destination) => Ok(chooser.save_to_destination(destination, follow, cx)),
+                    None => Ok(Effected::done()),
+                }),
+            )
         });
     }
 
@@ -311,10 +312,19 @@ impl FileChooser {
                 }),
         )
         .thread_name("canvas-export");
-        self.chooser = Some(Pending::Export {
-            name,
-            channel: request.send_save_contents(bytes),
+        self.jobs.start::<Self>(SAVING, move |cx| {
+            Ok(cx.save_file(request, bytes, move |chooser, saved, _| {
+                if saved {
+                    chooser.say("canvas-exported", &[("name", name.into())]);
+                }
+                Ok(Effected::done())
+            }))
         });
+    }
+
+    /// Whether a chooser, a save or an export is under way: one at a time.
+    fn busy(&self) -> bool {
+        self.opening.is_some() || self.exporting.is_some() || self.jobs.is_running(SAVING)
     }
 
     fn poll(&mut self) {
@@ -331,115 +341,61 @@ impl FileChooser {
                 self.say("canvas-open-failed", &[("why", why.into())]);
             }
         }
-        let Some(pending) = self.chooser.take() else {
+        let Some(channel) = self.opening.take() else {
             return;
         };
         let gone = || crate::locales::CATALOG.t("canvas-chooser-gone");
-        match pending {
-            Pending::Open(channel) => match channel.try_recv() {
-                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Open(channel)),
-                Ok(ContentsOutcome::Picked(files)) => {
-                    if let Some(file) = files.into_iter().next() {
-                        self.open_chosen(&file);
-                    }
+        match channel.try_recv() {
+            Err(TryRecvError::Empty) => self.opening = Some(channel),
+            Ok(ContentsOutcome::Picked(files)) => {
+                if let Some(file) = files.into_iter().next() {
+                    self.open_chosen(&file);
                 }
-                Ok(ContentsOutcome::Cancelled) => {}
-                Ok(ContentsOutcome::Failed(why)) => {
-                    self.say("canvas-files-failed", &[("why", why.into())]);
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.say("canvas-files-failed", &[("why", gone().into())]);
-                }
-            },
-            Pending::Save { follow, channel } => match channel.try_recv() {
-                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Save { follow, channel }),
-                Ok(DestinationOutcome::Chosen(destination)) => {
-                    self.save_to_destination(destination, follow);
-                }
-                Ok(DestinationOutcome::Cancelled) => {}
-                Ok(DestinationOutcome::Failed(why)) => {
-                    self.say("canvas-files-failed", &[("why", why.into())]);
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.say("canvas-files-failed", &[("why", gone().into())]);
-                }
-            },
-            Pending::Saving {
-                follow,
-                announce,
-                channel,
-            } => match channel.try_recv() {
-                Err(TryRecvError::Empty) => {
-                    self.chooser = Some(Pending::Saving {
-                        follow,
-                        announce,
-                        channel,
-                    });
-                }
-                Ok(SaveOutcome::Saved) => {
-                    // The host keeps it where no path reaches; the artwork
-                    // lives there now, and the first save says where.
-                    if follow {
-                        self.tools.file.set(None);
-                    }
-                    if let Some(name) = announce {
-                        self.say("canvas-duplicated", &[("name", name.into())]);
-                    }
-                }
-                Ok(SaveOutcome::Cancelled) => {}
-                Ok(SaveOutcome::Failed(why)) => {
-                    self.say("canvas-save-failed", &[("why", why.into())]);
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.say("canvas-save-failed", &[("why", gone().into())]);
-                }
-            },
-            Pending::Export { name, channel } => match channel.try_recv() {
-                Err(TryRecvError::Empty) => self.chooser = Some(Pending::Export { name, channel }),
-                Ok(SaveOutcome::Saved) => self.say("canvas-exported", &[("name", name.into())]),
-                Ok(SaveOutcome::Cancelled) => {}
-                Ok(SaveOutcome::Failed(why)) => {
-                    self.say("canvas-export-failed", &[("why", why.into())]);
-                }
-                Err(TryRecvError::Disconnected) => {
-                    self.say("canvas-export-failed", &[("why", gone().into())]);
-                }
-            },
+            }
+            Ok(ContentsOutcome::Cancelled) => {}
+            Ok(ContentsOutcome::Failed(why)) => {
+                self.say("canvas-files-failed", &[("why", why.into())]);
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.say("canvas-files-failed", &[("why", gone().into())]);
+            }
         }
     }
 
     /// Save the artwork where the person chose: in place where that has a
     /// path on this device, else through the host, which keeps it.
-    fn save_to_destination(&mut self, destination: ui::portal::SaveDestination, follow: bool) {
+    fn save_to_destination(
+        &mut self,
+        destination: SaveDestination,
+        follow: bool,
+        cx: &mut FilesCx,
+    ) -> Effected {
         if let Some(path) = destination.location() {
             let path = with_extension(path.to_path_buf(), EXTENSION);
             self.save_to(&path, follow);
-            return;
+            return Effected::done();
         }
+        let Some(bytes) = self.packed() else {
+            return Effected::done();
+        };
         let name = destination.name().to_owned();
-        self.write_to(&destination, follow, Some(name));
+        let saving = write_packed(cx, &destination, bytes, follow, Some(name));
         if follow {
             // Kept: the next Save writes here without asking.
             self.tools.kept.set(Some(destination));
         }
+        saving
     }
 
-    fn write_to(
-        &mut self,
-        destination: &ui::portal::SaveDestination,
-        follow: bool,
-        announce: Option<String>,
-    ) {
+    /// The artwork as its file, or `None` once the person is told why not.
+    fn packed(&self) -> Option<Vec<u8>> {
         let file = ArtworkFile::of(&self.live.get());
         match document::pack(&file, &crate::content::store()) {
-            Ok((bytes, _missing)) => {
-                self.chooser = Some(Pending::Saving {
-                    follow,
-                    announce,
-                    channel: destination.write(bytes),
-                });
+            Ok((bytes, _missing)) => Some(bytes),
+            Err(why) => {
+                self.say("canvas-save-failed", &[("why", why.into())]);
+                None
             }
-            Err(why) => self.say("canvas-save-failed", &[("why", why.into())]),
         }
     }
 
@@ -797,7 +753,7 @@ impl ui::widget::Decorator for FileChooser {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.content.needs_animation_frame() || self.chooser.is_some() || self.exporting.is_some()
+        self.content.needs_animation_frame() || self.opening.is_some() || self.exporting.is_some()
     }
 }
 
@@ -841,4 +797,35 @@ mod tests {
         };
         assert_eq!(export_stem(&retitled), "Bruno");
     }
+}
+
+/// Write the artwork, or a copy (not `follow`), where the host keeps it;
+/// `announce` names the place when saying so is news.
+fn write_packed(
+    cx: &mut FilesCx,
+    destination: &SaveDestination,
+    bytes: Vec<u8>,
+    follow: bool,
+    announce: Option<String>,
+) -> Effected {
+    cx.write_destination(
+        destination,
+        bytes,
+        move |chooser, written, _| -> EffectAnswer {
+            match written {
+                Ok(()) => {
+                    // The host keeps it where no path reaches; the artwork lives
+                    // there now, and the first save says where.
+                    if follow {
+                        chooser.tools.file.set(None);
+                    }
+                    if let Some(name) = announce {
+                        chooser.say("canvas-duplicated", &[("name", name.into())]);
+                    }
+                }
+                Err(why) => chooser.say("canvas-save-failed", &[("why", why.into())]),
+            }
+            Ok(Effected::done())
+        },
+    )
 }
