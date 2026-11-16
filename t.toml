@@ -242,10 +242,17 @@ on = ["dispatch"]
 # the test families: a run that asks for a few of its packages builds them beside workspace-unify,
 # so every shared library resolves with the features the family's whole build gives it, and an
 # ad-hoc `t cargo clippy -p` of a package resolves them the same way.
+# The lint and check families strip symbols like the test profile does (`CARGO_PROFILE_TEST_STRIP`
+# above): the build scripts, proc macros and host libraries they compile are then the same units
+# cargo compiles for the tests, under one `-C metadata`, so each is compiled and cached once rather
+# than once per profile. Cargo hashes a unit's whole profile, strip among it, into its metadata.
+# Nothing they build is run for its symbols: their libraries are metadata only, and their build
+# scripts and proc macros run the same stripped.
 [[cargo]]
 name = "clippy"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
+env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
@@ -265,6 +272,7 @@ exclude = [
 name = "clippy-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
+env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 trailing = ["-D", "warnings"]
@@ -279,6 +287,7 @@ on = ["dispatch", "idle"]
 name = "clippy-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
+env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 requires = ["arch={arch}"]
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
@@ -302,6 +311,7 @@ matrix = { arch = ["x86_64", "aarch64"] }
 name = "check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "check"
+env = { CARGO_PROFILE_DEV_STRIP = "symbols" }
 args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 exclude = [
