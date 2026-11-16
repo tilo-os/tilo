@@ -41,6 +41,7 @@
     .tilo-sign-in h1 { margin: 0; font-size: 19px; font-weight: 600; line-height: 1.35; color: var(--heading); text-wrap: balance; overflow-wrap: anywhere; }
     .tilo-sign-in p { margin: 0; color: var(--text); }
     .tilo-sign-in dl { display: grid; gap: 10px; margin: 14px 0 0; }
+    .tilo-sign-in dl:not(:has(> div:not([hidden]))) { display: none; }
     .tilo-sign-in dl > div { display: grid; grid-template-columns: 6em 1fr; gap: 12px; }
     .tilo-sign-in dt { color: var(--quiet); font-size: 13px; }
     .tilo-sign-in dd { margin: 0; min-width: 0; color: var(--value); overflow-wrap: anywhere; }
