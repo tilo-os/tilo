@@ -619,6 +619,16 @@ impl TileSource for Apps {
                 offset: WIDE.with(Rc::clone),
             }),
             "Greedy" => Box::new(TakesEveryWheel::default()),
+            // A folder's rows as Files lists them: each says who wrote it when the pointer
+            // rests on it.
+            "Rows" => Box::new(
+                ui::widget::Column::new().push(Box::new(
+                    ui::widget::ListRow::new("terms", "terms.txt")
+                        .secondary("Nov 15, 14:59")
+                        .tooltip("Claude Code wrote this for Ada on laptop")
+                        .on_view(|| {}),
+                )),
+            ),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
                 return TileHost::new(ui::widget::TileContent::Notice {
@@ -1067,6 +1077,33 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     assert!(
         !driver.frame_schedule().queued_work,
         "the frame took the wheels' work"
+    );
+}
+
+/// A row of a window's app says what it says of itself when the pointer rests on it, as the
+/// window bar's controls do: the page's tooltip layer reaches into the window's content.
+#[test]
+fn resting_on_a_row_of_a_windows_app_shows_its_tooltip() {
+    let _settled = ui::motion::testing::settled();
+    let (mut driver, _handle, _) = mount_apps(&["Rows"]);
+    driver.relayout();
+    let row = find(&driver.inspection().root, "ListRow")
+        .expect("the window shows its row")
+        .rect;
+    let (x, y) = (row[0] + row[2] / 3.0, row[1] + row[3] / 2.0);
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+    let _ = driver.poll_frame();
+    let reveal = driver
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("the host is woken when the dwell over the row runs out");
+    let shown = ui::time::testing::with_monotonic_time(reveal, || {
+        driver.poll_frame().expect("the frame lays out");
+        driver.drawn_tooltip().map(|(text, _)| text.to_owned())
+    });
+    assert_eq!(
+        shown.as_deref(),
+        Some("Claude Code wrote this for Ada on laptop")
     );
 }
 

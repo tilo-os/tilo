@@ -244,21 +244,15 @@ pub fn mouse_modifiers(event: &MouseEvent) -> ModifiersState {
 }
 
 pub fn pointer_move_event(event: PointerEvent) -> impl Iterator<Item = PointerEvent> {
-    // make a single iterator depending on the availability of coalesced events
-    if has_coalesced_events_support(&event) {
-        None.into_iter().chain(
-            Some(
-                event
-                    .get_coalesced_events()
-                    .into_iter()
-                    .map(PointerEvent::unchecked_from_js),
-            )
-            .into_iter()
-            .flatten(),
-        )
+    // The coalesced events when the browser keeps them. A move the page dispatched itself (one
+    // it hands on from an element over the canvas) has none, so it is its own only position:
+    // without it, such a move never reaches the window and nothing under it is hovered.
+    let coalesced: Vec<PointerEvent> = if has_coalesced_events_support(&event) {
+        event.get_coalesced_events().into_iter().map(PointerEvent::unchecked_from_js).collect()
     } else {
-        Some(event).into_iter().chain(None.into_iter().flatten())
-    }
+        Vec::new()
+    };
+    if coalesced.is_empty() { vec![event] } else { coalesced }.into_iter()
 }
 
 // TODO: Remove when Safari supports `getCoalescedEvents`.
