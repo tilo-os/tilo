@@ -154,7 +154,9 @@ pub(crate) fn view(cx: &ViewCx<PhotoLibrary>, mut window: PhotosApp) -> Element 
     cx.on_open_item(photos.borrow().opener());
     {
         let photos = Rc::clone(&photos);
-        cx.effects(move |effect: PhotosEffect, cx| photos.borrow_mut().effect(effect, cx));
+        cx.window_host_effects(move |_: &mut PhotosApp, effect: PhotosEffect, cx| {
+            photos.borrow_mut().effect(effect, cx)
+        });
     }
     {
         let photos = Rc::clone(&photos);

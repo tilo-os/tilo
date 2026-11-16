@@ -21,7 +21,7 @@ impl PdfApp {
         &self,
         address: &str,
         name: Option<&str>,
-        cx: &EffectCx<PdfMarkup>,
+        cx: &EffectCx<PdfMarkup, Self>,
     ) -> Result<serde_json::Value, String> {
         let reference = ui::tilo_actions::named_reference(address).ok_or_else(|| {
             format!("`{address}` names no content: give the PDF's `tilo.content:<reference>`")

@@ -911,7 +911,7 @@ fn reader_view(cx: &ViewCx<PdfMarkup>, mut app: PdfApp) -> Element {
     app.follow(cx.live().clone(), cx.read_only_state());
     app.publish();
     let store = app.shared();
-    cx.window_effects(PdfApp::effect);
+    cx.window_host_effects(PdfApp::effect);
     #[cfg(feature = "samples")]
     {
         let store = Rc::clone(&store);

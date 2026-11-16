@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
         ];
         let absolute = std::env::temp_dir().join("notes.pdf");
         let absolute = absolute.to_str().expect("a UTF-8 temporary directory");
-        for id in ["open-pdf", "save-as", "insert-pages"] {
+        for id in ["open-pdf", "save-to", "insert-pages"] {
             for path in relative {
                 let mut arguments = serde_json::Map::new();
                 arguments.insert("path".into(), path.into());
@@ -323,9 +323,9 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 PdfEffect::decode("save-as", &none),
-                Ok(PdfEffect::SaveAs { path: None })
+                Ok(PdfEffect::SaveAs)
             ),
-            "save-as without a path"
+            "save-as asks the picker"
         );
         assert!(
             matches!(

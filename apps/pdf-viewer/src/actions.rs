@@ -223,11 +223,16 @@ pub enum PdfEffect {
         pages: Option<Vec<usize>>,
     },
     /// Save annotated PDF
-    #[effect(job, cancellable, destructive)]
+    ///
+    /// Asks where with the system picker, which asks before it replaces a file.
+    #[effect(attended, job, cancellable)]
     #[effect(label = "pdf-bar-save")]
-    SaveAs {
-        #[param("Absolute path; omit to use the system picker")]
-        path: Option<tilo_resource::AbsolutePath>,
+    SaveAs,
+    /// Save annotated PDF to a file.
+    #[effect(job, cancellable, destructive)]
+    SaveTo {
+        #[param("Absolute path")]
+        path: tilo_resource::AbsolutePath,
     },
 }
 
