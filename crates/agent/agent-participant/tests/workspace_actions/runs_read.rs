@@ -7,7 +7,9 @@
 //! next listing says nothing of the runs there, not their record, their
 //! words nor their count, while the host's own person still lists them. A
 //! call of theirs waiting for the person on a record they can no longer read
-//! is not listed to them, nor counted as waiting.
+//! is not listed to them, nor counted as waiting. And where the record's
+//! policy admits them but a grant of their own takes Read there, the listing
+//! answers as the read would: nothing of it.
 use super::*;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -17,6 +19,7 @@ use tilo_actions::remote::{
 use tilo_agent_participant::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
 use tilo_relay_protocol::WorkspaceId;
 use ui::permissions::Role;
+use ui::permissions::policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
 
 const NOTES: &str = "so.tilo.notes";
 const TASKS: &str = "so.tilo.tasks";
@@ -29,23 +32,45 @@ struct Reading {
     person: [u8; 32],
     device: [u8; 32],
     unreadable: Mutex<HashSet<String>>,
+    /// Apps whose records the policy admits them to, while a grant of their
+    /// own denies them Read there.
+    bound: Mutex<HashSet<String>>,
     asked: Mutex<Vec<Completer<Result<ConfirmationReply, ActionHostError>>>>,
 }
 
 impl Reading {
     fn policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
-        (caller.user_public_key() == Some(&self.person)
-            && caller.device_public_key() == Some(&self.device)
-            && caller.acting().is_person())
-        .then(|| ViewReadPolicy {
+        if caller.user_public_key() != Some(&self.person)
+            || caller.device_public_key() != Some(&self.device)
+            || !caller.acting().is_person()
+        {
+            return None;
+        }
+        let person = hex::encode(self.person);
+        let standing =
+            ui::permissions::PermissionContext::member_of(WORKSPACE, person.clone(), Role::Editor)
+                .standing()
+                .clone();
+        let denied: Vec<Grant> = self
+            .bound
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|app| {
+                let grantee = Grantee::person(person.clone());
+                Grant::new(
+                    format!("no-read:{app}"),
+                    grantee.clone(),
+                    standing.node(&TreePath::root().app(app)),
+                    KindSet::of(ActionKind::Read),
+                    Answer::Deny,
+                    grantee,
+                )
+            })
+            .collect();
+        Some(ViewReadPolicy {
             workspace: WORKSPACE.into(),
-            standing: ui::permissions::PermissionContext::member_of(
-                WORKSPACE,
-                hex::encode(self.person),
-                Role::Editor,
-            )
-            .standing()
-            .clone(),
+            standing: standing.granted(denied),
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
@@ -228,6 +253,7 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         person: guest_device.cert.user_public_key,
         device: guest_device.cert.device_public_key,
         unreadable: Mutex::default(),
+        bound: Mutex::default(),
         asked: Mutex::default(),
     });
     let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(crate::common::catalogue));
@@ -356,4 +382,23 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         "{asking} {hidden}"
     );
     assert_eq!(runs(&actions, workspace, &owner)["waiting"], 1);
+
+    // The record's policy admits them to the notes, while a grant of their
+    // own takes Read there: what a read decides, the listing decides too.
+    let before = runs(&actions, workspace, &member);
+    let in_notes = in_app(&before, NOTES).len() as u64;
+    assert!(in_notes > 0, "{before}");
+    reading.bound.lock().unwrap().insert(NOTES.to_owned());
+    let bound = runs(&actions, workspace, &member);
+    assert!(in_app(&bound, NOTES).is_empty(), "{bound}");
+    assert_eq!(
+        bound["total"].as_u64().unwrap(),
+        before["total"].as_u64().unwrap().saturating_sub(in_notes),
+        "{before} {bound}"
+    );
+    assert_eq!(
+        in_app(&runs(&actions, workspace, &owner), NOTES).len() as u64,
+        in_notes,
+        "the host's own person still lists them"
+    );
 }

@@ -17,9 +17,13 @@
 //!
 //! A caller is given, of each run, only what lies in records they may read
 //! now: a record's share of a run when the check a read of that record makes
-//! passes for them ([`Worker::policy_for`], the host's own person as the
-//! owner), a call the ledger remembers when they may read the record it
-//! addressed (or, for a call on no record, the workspace's content). A run
+//! passes for them (the host's own person as the owner; anyone else by the
+//! record's policy ([`Worker::policy_for`]) held to their own bound, an
+//! agent's grants or a device's cap included, answering Read, not Ask, at the
+//! record's node), a call the ledger remembers when they may read the record
+//! it addressed (or, for a call on no record, read across the workspace,
+//! [`Worker::may_across`]). A run's words are its steps' titles, never what
+//! a step carried ([`step_title`]): the index is read once for everyone. A run
 //! with nothing left for them is not listed, nor counted, nor said to wait;
 //! their own runs are no exception, as `tilo_status` reads those by id. The
 //! index is the workspace's, shared; each listing asks the policy again,
@@ -62,7 +66,8 @@ struct Share {
     edits: usize,
     /// Of its edits, those taken back.
     undone: usize,
-    /// What its newest change did.
+    /// What its newest change did, without the values it carried
+    /// ([`step_title`]).
     summary: Option<String>,
     /// Who changed the record after its last change still in effect, while
     /// that change of theirs is in effect too.
@@ -134,6 +139,21 @@ fn text<'a>(entry: &'a Value, key: &str) -> Option<&'a str> {
         .get(key)
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
+}
+
+/// What the change the history entry lists did, said without the values it
+/// carried: an action by its published label, never through the app's
+/// sentence, which may quote an argument (the words of a message posted).
+/// The index reads History once for everyone, with the host's eyes; a caller
+/// whose permissions withhold a field must not read it here. `None` for an
+/// entry that says not what it did.
+fn step_title(entry: &Value) -> Option<String> {
+    let what = serde_json::from_value::<tilo_actions::Did>(entry.get("what")?.clone()).ok()?;
+    ui::history_source::sentence::step_title(&tilo_actions::ActionContext {
+        what: Some(what),
+        ..tilo_actions::ActionContext::default()
+    })
+    .filter(|title| !title.trim().is_empty())
 }
 
 /// Whether the history entry is someone's edit of what the record holds: an
@@ -234,8 +254,8 @@ fn shares(app_id: &str, record: &str, entries: &[Value]) -> Vec<(String, Share)>
         share.changes = share.changes.saturating_add(1);
         share.first_ms = share.first_ms.min(time);
         share.last_ms = share.last_ms.max(time);
-        if let Some(sentence) = text(entry, "sentence") {
-            share.summary = Some(sentence.to_owned());
+        if let Some(title) = step_title(entry) {
+            share.summary = Some(title);
         }
         if !is_content(entry) {
             continue;
@@ -626,12 +646,22 @@ impl Worker {
         let owner = self.serves_as_owner(caller);
         let who = if owner { None } else { self.bounded(caller) };
         let mut reads: HashMap<RecordKey, bool> = HashMap::new();
+        // A bounded caller reads a record as a read decides it: the record's
+        // policy for their person, held to their own bound (an agent's
+        // grants, a device's cap, the workspace's sandbox), answering Read at
+        // the record's node; Ask is no read.
         let mut may_read = |key: &RecordKey| {
             *reads.entry(key.clone()).or_insert_with(|| {
                 owner
                     || who.as_ref().is_some_and(|who| {
                         self.policy_for(workspace_id, who, &cluster_id, Some((&key.0, &key.1)))
-                            .is_ok()
+                            .and_then(|policy| super::bounded::bounded_permissions(&policy, who))
+                            .is_ok_and(|permissions| {
+                                permissions.answer(
+                                    &super::TreePath::root().app(&key.0),
+                                    super::ActionKind::Read,
+                                ) == super::Answer::Allow
+                            })
                     })
             })
         };
@@ -639,11 +669,7 @@ impl Worker {
             shares.retain(|share| may_read(&(share.app_id.clone(), share.record.clone())));
             !shares.is_empty()
         });
-        let across = owner
-            || who.as_ref().is_some_and(|who| {
-                self.policy_for(workspace_id, who, &cluster_id, None)
-                    .is_ok()
-            });
+        let across = owner || self.may_across(workspace_id, caller, super::ActionKind::Read);
         calls.retain(|(_, call)| match &call.addressed {
             Some(record) => may_read(record),
             None => across,
@@ -738,6 +764,21 @@ mod tests {
             let runs = listing(BTreeMap::from([("s3".to_owned(), vec![ran.clone()])]), Vec::new());
             assert_eq!(runs[0].status, RunStatus::Ended);
             assert!(runs[0].recorded && !runs[0].undoable, "{:?}", runs[0]);
+        }
+
+        phase a_runs_words_never_quote_what_it_carried;
+        {
+            let mut posted = change("p1", Some("s1"), "Jane Doe's agent", 10);
+            posted["what"] = json!({"did": "verb",
+                "action": {"app": "so.tilo.chat", "kind": "chat.channel", "action": "post"},
+                "args": {"text": "the secret words"}});
+            posted["sentence"] = json!("Posted \"the secret words\"");
+            let said = shares("so.tilo.chat", "", &[posted]);
+            let summary = said[0].1.summary.clone().unwrap_or_default();
+            assert!(!summary.is_empty(), "the step says what it did");
+            assert!(!summary.contains("secret"), "never what it carried: {summary}");
+            let bare = shares("so.tilo.chat", "", &[change("p2", Some("s2"), "Jane Doe's agent", 11)]);
+            assert_eq!(bare[0].1.summary, None, "an entry that says not what it did says nothing");
         }
 
         phase a_run_taken_back_is_undone_and_stands_under_nothing;
