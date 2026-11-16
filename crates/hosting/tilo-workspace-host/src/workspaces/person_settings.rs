@@ -49,11 +49,31 @@ impl Workspaces {
         self.inner.dir.join("people").join(hex::encode(person))
     }
 
+    /// The mail accounts the person's vault keeps, as [`person_accounts::LIST`]
+    /// answers them: what a window following [`person_accounts::WATCH`] is
+    /// sent again whenever they change.
+    pub(super) fn accounts_listing(&self, person: &[u8; 32]) -> Result<Value, ActionHostError> {
+        answer(&mail_accounts(&self.person_settings_root(person)))
+    }
+
+    /// What the person's own settings kept here changed: a window following
+    /// them reads them again.
+    pub(super) fn person_settings_changed(&self) {
+        self.inner
+            .person_settings_moved
+            .send_modify(|count| *count = count.wrapping_add(1));
+    }
+
+    /// Fires whenever a person's own settings kept here change.
+    pub(super) fn person_settings_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.person_settings_moved.subscribe()
+    }
+
     /// The person `caller` asks for, on the device `certificate` certifies,
     /// from a workspace `workspace_id` names: what a request that keeps a
     /// person's own secrets needs before it runs. Unknown and forbidden are
     /// the same answer.
-    fn asking_person(
+    pub(super) fn asking_person(
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -85,11 +105,19 @@ impl Workspaces {
             person_accounts::LIST => answer(&mail_accounts(&root)),
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
-                answer(&add_mail(&root, adding).await)
+                let kept = add_mail(&root, adding).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
             }
             person_accounts::REMOVE => {
                 let account = account_argument(request)?;
-                answer(&remove_mail(&root, &account))
+                let kept = remove_mail(&root, &account);
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
             }
             person_accounts::FETCH => {
                 let asking: person_accounts::FetchMail = argument(request, "a folder to read")?;

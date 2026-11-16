@@ -966,6 +966,10 @@ struct WorkspacesInner {
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
+    /// Moves whenever a person's own settings kept here — their mail
+    /// accounts — changed, so a window following them reads them again
+    /// ([`person_settings`]).
+    person_settings_moved: tokio::sync::watch::Sender<u64>,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_records`]).
@@ -1224,6 +1228,7 @@ impl Workspaces {
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
+                person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),
                 content: content::ContentSlot::default(),

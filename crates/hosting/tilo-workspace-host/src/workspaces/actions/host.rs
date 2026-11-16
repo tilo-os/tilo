@@ -1084,6 +1084,8 @@ impl Workspaces {
     }
 }
 
+#[cfg(test)]
+mod accounts_tests;
 mod branch;
 #[cfg(test)]
 mod own_tests;

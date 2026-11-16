@@ -1544,6 +1544,10 @@ struct Shared {
     /// The admitted invocations that follow the MCP server: live reads,
     /// moved on whenever the MCP server does.
     mcp_follows: Mutex<std::collections::HashSet<InvocationId>>,
+    /// The admitted invocations that follow the person's mail accounts: live
+    /// reads, each with the person whose accounts it reads, moved on whenever
+    /// those settings change.
+    account_follows: Mutex<std::collections::HashMap<InvocationId, [u8; 32]>>,
 }
 
 impl HostWorkspaceActions {
@@ -1557,6 +1561,7 @@ impl HostWorkspaceActions {
                 runtime: tokio::runtime::Handle::current(),
                 ledger: Mutex::new(InvocationLedger::default()),
                 mcp_follows: Mutex::default(),
+                account_follows: Mutex::default(),
             }),
         }
     }
@@ -1695,6 +1700,82 @@ impl HostWorkspaceActions {
         self.ledger().get(caller, id).is_some()
     }
 
+    /// Follow the person's mail accounts for `caller` as invocation
+    /// `request` asks ([`person_accounts::WATCH`]): the accounts now, as its
+    /// first item; [`Self::accounts_moved`] moves it on.
+    fn follow_accounts(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<WorkspaceId>,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        let person = Workspaces::asking_person(caller, certificate, workspace_id)?;
+        let invocation = request.invocation;
+        let mut ledger = self.ledger();
+        if ledger.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
+            return ledger
+                .get(caller, &invocation)
+                .map(InvocationState::receipt)
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        let state = InvocationState::new(
+            invocation,
+            InvocationUpdate::Item {
+                invocation,
+                sequence: 1,
+                value: workspaces.accounts_listing(&person)?,
+            },
+        );
+        let receipt = state.receipt();
+        ledger.complete(&invocation, state);
+        drop(ledger);
+        self.shared
+            .account_follows
+            .lock_recover()
+            .insert(invocation, person);
+        Ok(receipt)
+    }
+
+    /// Whether `id` is a live read of the accounts `caller` follows.
+    fn follows_accounts(&self, caller: &Caller, id: &InvocationId) -> bool {
+        self.shared.account_follows.lock_recover().contains_key(id) && self.admitted(caller, id)
+    }
+
+    /// Read the person's accounts again for the follow `id`; whether they
+    /// moved.
+    fn accounts_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
+        let Some(person) = self.shared.account_follows.lock_recover().get(id).copied() else {
+            return false;
+        };
+        let Ok(value) = workspaces.accounts_listing(&person) else {
+            return false;
+        };
+        let mut ledger = self.ledger();
+        let Some(entry) = ledger.get_mut(caller, id) else {
+            return false;
+        };
+        let sequence = match &entry.update {
+            InvocationUpdate::Item {
+                sequence,
+                value: read,
+                ..
+            } if *read != value => *sequence,
+            _ => return false,
+        };
+        *entry = InvocationState::new(
+            *id,
+            InvocationUpdate::Item {
+                invocation: *id,
+                sequence: sequence.saturating_add(1),
+                value,
+            },
+        );
+        drop(ledger);
+        true
+    }
+
     /// The answer `work` gives, on the relay's runtime: a workspace is decided
     /// under its lock, which is never held on the caller's thread.
     fn spawn<T: Send + 'static>(
@@ -1811,6 +1892,15 @@ impl ActionHost for InWorkspace {
                 &request,
             ));
         }
+        if request.target == person_accounts::target(person_accounts::WATCH) {
+            return Pending::ready(self.host.follow_accounts(
+                &workspaces,
+                caller,
+                self.certificate.as_ref(),
+                self.workspace_id,
+                &request,
+            ));
+        }
         let invocation = request.invocation;
         // The ledger's guard must not outlive the reservation: a retry reads
         // it again below.
@@ -1890,10 +1980,29 @@ impl ActionHost for InWorkspace {
         {
             self.host.mcp_moved(workspaces, caller, id);
         }
+        // As does a follow of the person's accounts.
+        if self.host.follows_accounts(caller, id)
+            && let Some(workspaces) = self.host.shared.workspaces.get()
+        {
+            self.host.accounts_moved(workspaces, caller, id);
+        }
         self.host.ledger().get(caller, id).cloned()
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        if self.host.follows_accounts(caller, id) {
+            let workspaces = self.host.shared.workspaces.get()?.clone();
+            let mut changes = workspaces.person_settings_changes();
+            if self.host.accounts_moved(&workspaces, caller, id) {
+                return Some(Pending::ready(()));
+            }
+            let (host, caller, id) = (self.host.clone(), caller.clone(), *id);
+            return Some(self.host.spawn(async move {
+                // Bounded, as a waiter's deadline is only checked when woken.
+                let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
+                host.accounts_moved(&workspaces, &caller, &id);
+            }));
+        }
         if !self.host.follows_mcp(caller, id) {
             return None;
         }
@@ -1929,6 +2038,20 @@ impl ActionHost for InWorkspace {
             );
             return Pending::ready(Ok(()));
         }
+        if self.host.follows_accounts(caller, id) {
+            self.host.shared.account_follows.lock_recover().remove(id);
+            self.host.ledger().complete(
+                id,
+                InvocationState::new(
+                    *id,
+                    InvocationUpdate::Cancelled {
+                        invocation: *id,
+                        message: None,
+                    },
+                ),
+            );
+            return Pending::ready(Ok(()));
+        }
         tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
             Err(ActionHostError::NotCancellable {
                 reason: "workspace governance completes at once".into(),
@@ -1939,7 +2062,7 @@ impl ActionHost for InWorkspace {
     }
 }
 
-/// The longest a follower of the MCP server waits before it reads again.
+/// The longest a live follow here waits before it reads again.
 const FOLLOW_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The MCP server as its read answers it.

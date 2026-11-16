@@ -11,6 +11,7 @@
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use ui::tilo_actions::InvocationUpdate;
 use ui::tilo_actions::remote::{
     InvokeArgument, person_accounts,
     person_accounts::{
@@ -23,10 +24,6 @@ use ui::{Arrival, InvocationCall, RemoteActions};
 use super::{EngineEvent, EngineHandle, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{Addr, Attachment, Folder, Message, MessageId, ServerPlace};
 use crate::sync::Synced;
-
-/// How long the page trusts what it read of the person's accounts before
-/// asking the host again: an account added in another tab shows here too.
-const ACCOUNTS_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One request asked of the host, and where its answer goes.
 struct Asked {
@@ -94,8 +91,14 @@ pub(crate) struct HostMail {
     /// The accounts the host answered since the last read, with the one the
     /// person chose last.
     accounts: Option<MailAccounts>,
-    listing: Option<InvocationCall>,
-    listed_at: Option<ui::time::Instant>,
+    /// The host's live reading of the person's accounts: each item is the
+    /// whole listing as the host keeps it now, sent again whenever they
+    /// change, so an account added in another window reaches this one
+    /// without asking again. Kept for as long as the window lives; dropping
+    /// it ends the reading on the host.
+    watching: Option<ui::Followed>,
+    /// The update of the reading last taken in.
+    watched: u64,
     /// The account the person asked to add, while the host keeps it.
     adding: Option<InvocationCall>,
     /// Why the host would not keep the account, once it would not.
@@ -116,8 +119,8 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         events,
         asking: Vec::new(),
         accounts: None,
-        listing: None,
-        listed_at: None,
+        watching: None,
+        watched: 0,
         adding: None,
         add_error: None,
         staging: Vec::new(),
@@ -132,28 +135,17 @@ impl HostMail {
             .clone()
     }
 
-    fn ask_for_accounts(&mut self) {
+    fn follow_accounts(&mut self) {
         let remote = self.remote();
-        self.listing = Some(remote.invoke(
-            person_accounts::target(person_accounts::LIST),
+        self.watching = Some(remote.follow(
+            person_accounts::target(person_accounts::WATCH),
             InvokeArgument::None,
-            None,
         ));
-        self.listed_at = Some(ui::time::now());
     }
 
     /// The accounts the host answered since the last read.
     pub(super) fn take_accounts(&mut self) -> Option<MailAccounts> {
         self.accounts.take()
-    }
-
-    /// When the window reads the person's accounts again, so an account
-    /// added in another window shows here too. A window whose mail is this
-    /// host's session asks it; one with its own account reads reaches the
-    /// server itself, so nothing there waits on it.
-    #[cfg(any(test, not(feature = "live")))]
-    pub(super) fn next_listing_at(&self) -> Option<ui::time::Instant> {
-        self.listed_at.map(|at| at + ACCOUNTS_FRESH)
     }
 
     /// Why the host would not keep the account the person added, once it
@@ -278,8 +270,8 @@ impl HostMail {
         changed
     }
 
-    /// Take the host's answer to an account it was asked to keep, and
-    /// read the accounts again when they are due. Whether anything moved.
+    /// Take the host's answer to an account it was asked to keep, and the
+    /// host's reading of the person's accounts. Whether anything moved.
     fn poll_accounts(&mut self) -> bool {
         let mut changed = false;
         if let Some(adding) = &self.adding
@@ -287,34 +279,58 @@ impl HostMail {
         {
             changed = true;
             self.adding = None;
-            match outcome {
-                Ok(_) => self.ask_for_accounts(),
-                Err(reason) => self.add_error = Some(reason),
+            if let Err(reason) = outcome {
+                self.add_error = Some(reason);
             }
         }
-        if let Some(listing) = &self.listing {
-            if let Some(outcome) = answered(listing) {
-                changed = true;
-                self.listing = None;
-                match outcome {
-                    Ok(listed) => match serde_json::from_value::<MailAccounts>(listed) {
-                        Ok(accounts) => self.accounts = Some(accounts),
-                        Err(error) => {
-                            tracing::warn!(%error, "mail: the host's accounts are not readable");
-                        }
-                    },
-                    Err(reason) => {
-                        tracing::warn!(%reason, "mail: the host did not answer its accounts");
+        changed |= self.read_watched_accounts();
+        changed
+    }
+
+    /// The person's accounts as the host keeps them: the window follows the
+    /// host's live reading of them, so an account another window adds or
+    /// removes reaches this one when it happens rather than on a clock.
+    /// Whether it moved.
+    fn read_watched_accounts(&mut self) -> bool {
+        if self.watching.is_none() {
+            self.follow_accounts();
+        }
+        let Some(watching) = &self.watching else {
+            return false;
+        };
+        let call = watching.call();
+        let revision = call.revision();
+        if revision == self.watched {
+            return false;
+        }
+        self.watched = revision;
+        match call.get() {
+            Arrival::Ready(InvocationUpdate::Item { value, .. }) => {
+                match <MailAccounts as serde::Deserialize>::deserialize(value) {
+                    Ok(accounts) => self.accounts = Some(accounts),
+                    Err(error) => {
+                        tracing::warn!(%error, "mail: the host's accounts are not readable");
                     }
                 }
+                true
             }
-        } else if self
-            .listed_at
-            .is_none_or(|at| at + ACCOUNTS_FRESH <= ui::time::now())
-        {
-            self.ask_for_accounts();
+            Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
+                tracing::warn!(reason = %error.message, "mail: the host did not read its accounts for this window");
+                true
+            }
+            Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => {
+                tracing::warn!(
+                    reason = message.as_deref().unwrap_or("the host ended the reading"),
+                    "mail: the host stopped reading its accounts for this window"
+                );
+                true
+            }
+            Arrival::Failed(error) => {
+                tracing::warn!(%error, "mail: the host could not be asked for its accounts");
+                true
+            }
+            Arrival::Ready(_) | Arrival::Pending { .. } => false,
         }
-        changed
     }
 
     /// Ask the host to begin the message the window sent: what it says, whom
@@ -670,7 +686,6 @@ fn map(argument: &impl serde::Serialize) -> Option<InvokeArgument> {
 
 /// What the host answered, once it has.
 fn answered(call: &InvocationCall) -> Option<Result<serde_json::Value, String>> {
-    use ui::tilo_actions::InvocationUpdate;
     match call.get() {
         Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
             Some(Ok(output.value.unwrap_or(serde_json::Value::Null)))
@@ -802,32 +817,129 @@ mod tests {
         reason = "in a test these are the assertion, not a hazard"
     )]
 
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use serde_json::json;
-    use ui::tilo_actions::ActionOutput;
     use ui::tilo_actions::remote::{
-        ActionHostError, Caller, InvocationReceipt, Pending as HostPending, ReceiptStatus, TestHost,
+        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
+        InvocationReceipt, InvocationState, InvokeRequest, Pending as HostPending, ReceiptStatus,
+        pending,
     };
+    use ui::tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
     use super::*;
 
-    fn host() -> TestHost {
-        TestHost::new().answering(|_, request| {
+    /// The host that keeps the person's accounts, as a window asks it for
+    /// them: the live reading it follows, and the accounts it keeps.
+    #[derive(Default)]
+    struct Keeping {
+        accounts: Mutex<Vec<MailAccount>>,
+        /// The reading the window follows: the update the host last sent, and
+        /// the waits it wakes when the accounts change.
+        reading: Mutex<Reading>,
+        asked: Mutex<Vec<InvokeRequest>>,
+    }
+
+    #[derive(Default)]
+    struct Reading {
+        update: Option<InvocationUpdate>,
+        waiting: Vec<Completer<()>>,
+    }
+
+    fn adas_account() -> MailAccount {
+        MailAccount {
+            id: "ada@example.test".into(),
+            address: "ada@example.test".into(),
+            display_name: "Ada".into(),
+            incoming_host: "imap.example.test".into(),
+            incoming_port: 993,
+            outgoing_host: "smtp.example.test".into(),
+            outgoing_port: 465,
+            has_secret: true,
+        }
+    }
+
+    impl Keeping {
+        fn of(accounts: Vec<MailAccount>) -> Self {
+            Self {
+                accounts: Mutex::new(accounts),
+                ..Self::default()
+            }
+        }
+
+        /// The accounts as the window's reading answers them.
+        fn listing(&self) -> serde_json::Value {
+            let accounts = self.accounts.lock().unwrap();
+            let active = accounts.first().map(|account| account.id.clone());
+            serde_json::to_value(MailAccounts {
+                accounts: accounts.clone(),
+                active: active.unwrap_or_default(),
+            })
+            .unwrap()
+        }
+
+        /// Another window adds `account` through this host: it is kept, and
+        /// the reading this window follows moves.
+        fn added(&self, account: MailAccount) {
+            self.accounts.lock().unwrap().push(account);
+            let listing = self.listing();
+            let waiting = {
+                let mut reading = self.reading.lock().unwrap();
+                let Some(InvocationUpdate::Item {
+                    invocation,
+                    sequence,
+                    ..
+                }) = reading.update.clone()
+                else {
+                    return;
+                };
+                reading.update = Some(InvocationUpdate::Item {
+                    invocation,
+                    sequence: sequence.saturating_add(1),
+                    value: listing,
+                });
+                std::mem::take(&mut reading.waiting)
+            };
+            for wake in waiting {
+                wake.complete(());
+            }
+        }
+
+        fn asked(&self) -> Vec<InvokeRequest> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl ActionHost for Keeping {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> HostPending<Result<CataloguePage, ActionHostError>> {
+            HostPending::ready(Ok(CataloguePage::default()))
+        }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            request: InvokeRequest,
+        ) -> HostPending<Result<InvocationReceipt, ActionHostError>> {
+            self.asked.lock().unwrap().push(request.clone());
+            let invocation = request.invocation;
+            // The window's reading of the accounts: the whole listing now,
+            // and again when they change.
+            if request.target.address.action == person_accounts::WATCH {
+                self.reading.lock().unwrap().update = Some(InvocationUpdate::Item {
+                    invocation,
+                    sequence: 1,
+                    value: self.listing(),
+                });
+                return HostPending::ready(Ok(InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Accepted,
+                }));
+            }
             let value = match request.target.address.action.as_str() {
-                person_accounts::LIST => json!({
-                    "accounts": [{
-                        "id": "ada@example.test",
-                        "address": "ada@example.test",
-                        "displayName": "Ada",
-                        "incomingHost": "imap.example.test",
-                        "incomingPort": 993,
-                        "outgoingHost": "smtp.example.test",
-                        "outgoingPort": 465,
-                        "hasSecret": true
-                    }],
-                    "active": "ada@example.test"
-                }),
                 person_accounts::FETCH => json!({
                     "account": "ada@example.test",
                     "folder": "inbox",
@@ -866,7 +978,7 @@ mod tests {
                 _ => serde_json::Value::Null,
             };
             HostPending::ready(Ok(InvocationReceipt {
-                invocation: request.invocation,
+                invocation,
                 status: ReceiptStatus::Completed {
                     output: ActionOutput {
                         value: Some(value),
@@ -874,24 +986,54 @@ mod tests {
                     },
                 },
             }))
-        })
+        }
+
+        fn observe(&self, _: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            let update = self.reading.lock().unwrap().update.clone()?;
+            Some(InvocationState::new(*id, update))
+        }
+
+        fn next_change(&self, _: &Caller, _: &InvocationId) -> Option<HostPending<()>> {
+            let (wake, waiting) = pending();
+            self.reading.lock().unwrap().waiting.push(wake);
+            Some(waiting)
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            id: &InvocationId,
+        ) -> HostPending<Result<(), ActionHostError>> {
+            self.reading.lock().unwrap().update = Some(InvocationUpdate::Cancelled {
+                invocation: *id,
+                message: None,
+            });
+            HostPending::ready(Ok(()))
+        }
+    }
+
+    /// Take the accounts the host answered, polling as the window's frames
+    /// do until it has.
+    fn taken_accounts(mail: &mut HostMail) -> MailAccounts {
+        for _ in 0..8 {
+            mail.poll();
+            if let Some(listed) = mail.take_accounts() {
+                return listed;
+            }
+        }
+        panic!("the host answered its accounts");
     }
 
     /// A page window's accounts and mail come from the host that keeps
     /// them, and the window's engine events are the host's answers.
     #[test]
     fn a_window_reads_its_accounts_and_mail_through_the_host() {
-        let serving = Arc::new(host());
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving, Caller::local_person("ada"));
         let (handle, mut mail) = engine();
 
-        // The first frame asks the host for the accounts, the next reads its
-        // answer.
-        mail.poll();
-        assert!(mail.poll());
-        let listed = mail
-            .take_accounts()
-            .expect("the host answered its accounts");
+        // The host reads its accounts, and the window takes what it sent.
+        let listed = taken_accounts(&mut mail);
         let account = account(&listed.accounts[0]);
         assert_eq!(account.id, "ada@example.test");
         assert_eq!(account.config.email, "ada@example.test");
@@ -928,12 +1070,51 @@ mod tests {
         assert_eq!(fetched.1.messages[0].server.map(|at| at.uid), Some(42));
     }
 
+    /// An account another window adds through the host reaches this window
+    /// through what it follows: no timer asks the host again, and the
+    /// window's listing is the host's whole answer.
+    #[test]
+    fn an_account_added_in_another_window_reaches_this_one() {
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
+        let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
+        let (_handle, mut mail) = engine();
+        let listed = taken_accounts(&mut mail);
+        assert_eq!(listed.accounts.len(), 1);
+
+        serving.added(MailAccount {
+            id: "bob@example.test".into(),
+            address: "bob@example.test".into(),
+            display_name: "Bob".into(),
+            incoming_host: "imap.example.test".into(),
+            incoming_port: 993,
+            outgoing_host: "smtp.example.test".into(),
+            outgoing_port: 465,
+            has_secret: true,
+        });
+        let listed = taken_accounts(&mut mail);
+        assert_eq!(
+            listed
+                .accounts
+                .iter()
+                .map(|account| account.address.as_str())
+                .collect::<Vec<_>>(),
+            ["ada@example.test", "bob@example.test"]
+        );
+        assert!(
+            serving
+                .asked()
+                .iter()
+                .all(|request| request.target.address.action != person_accounts::LIST),
+            "the window asks for the listing once and follows it, never listing again"
+        );
+    }
+
     /// An account a page takes in — added in Settings or moved in by another
     /// mail program — is the host's to keep, with the sign-in and the other
     /// names it sends as that travelled with it.
     #[test]
     fn a_page_hands_the_account_it_takes_in_to_the_host() {
-        let serving = Arc::new(host());
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
         let (_handle, mut mail) = engine();
         let config = crate::model::AccountConfig {
@@ -973,7 +1154,7 @@ mod tests {
     /// carrying no secret: the host signs in with the one it keeps.
     #[test]
     fn a_send_hands_its_files_to_the_host_a_piece_at_a_time() {
-        let serving = Arc::new(host());
+        let serving = Arc::new(Keeping::of(vec![adas_account()]));
         let _served = RemoteActions::enter(serving.clone(), Caller::local_person("ada"));
         let (handle, mut mail) = engine();
         let file = |name: &str, bytes: &[u8]| crate::model::SendFile {
