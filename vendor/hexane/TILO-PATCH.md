@@ -20,5 +20,9 @@ column edited at its end does not copy itself on every edit. Pinned by
 `raw::tests::splits_of_a_loaded_column_keep_no_more_than_they_hold`: 2,000 inserts into a
 loaded 4 MB column held 30 MB before, and now hold less than three times the column.
 
+`log!` in `src/lib.rs` calls `$crate::__log!` by path instead of importing it first: as a path
+dependency the crate builds under the workspace's warnings, where the import is an unused-import
+error.
+
 Everything else is crates.io `hexane` 1.0.0-alpha.5, verbatim. Remove this copy once a
 release carries an equivalent fix.

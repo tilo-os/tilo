@@ -4,10 +4,7 @@
 #[macro_export]
 macro_rules! log {
      ( $( $t:tt )* ) => {
-          {
-            use $crate::__log;
-            __log!( $( $t )* );
-          }
+          $crate::__log!( $( $t )* )
      }
  }
 
