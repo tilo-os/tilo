@@ -240,6 +240,9 @@ pub enum ReplicaActor {
         agent: Option<String>,
         /// The name that agent goes by, as its admission certified it.
         agent_name: Option<String>,
+        /// The agent's session that acted, when one did: History names the session's writer
+        /// beside the person, as the person's files name it.
+        agent_session: Option<String>,
     },
 }
 
@@ -1495,6 +1498,7 @@ fn replica_standing(
             unix_time,
             agent,
             agent_name,
+            agent_session,
         } => {
             // The host bounded the standing as it reads the caller
             // (`Caller::invoker`), and puts an ask to the person on their own
@@ -1513,6 +1517,9 @@ fn replica_standing(
                 invoker = tilo_actions::ActionInvoker::agent(agent)
                     .acting_for(person)
                     .named(agent_name);
+                if let Some(session) = agent_session {
+                    invoker.acting = invoker.acting.in_session(session);
+                }
             }
             permissions
         }

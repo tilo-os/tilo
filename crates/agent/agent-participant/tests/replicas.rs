@@ -705,6 +705,7 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
             unix_time: 1_900_000_000,
             agent: Some("Claude Code".into()),
             agent_name: None,
+            agent_session: Some("s1".into()),
         },
         Seed::Existing {
             record: made.record_id().clone(),
@@ -736,6 +737,25 @@ fn an_agent_acting_for_a_person_hands_back_what_it_wrote_as_the_agent() {
                 == Some("agent:Claude Code")
         }),
         "written as the agent"
+    );
+    // Its session is on the change, so History names the session's writer beside the person.
+    assert!(
+        doc.get_changes(&before).iter().any(|change| {
+            change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+                .and_then(|context| context.invoker)
+                .is_some_and(|invoker| {
+                    invoker
+                        .acting
+                        .agent_session
+                        .as_ref()
+                        .map(tilo_action_policy::AgentSessionId::as_str)
+                        == Some("s1")
+                        && invoker.acting.acted_for_person() == Some("ada")
+                })
+        }),
+        "the agent's session is on its change"
     );
 }
 
@@ -770,6 +790,7 @@ fn two_replicas_of_one_agent_never_write_one_sequence_twice() {
                 unix_time: 1_900_000_000,
                 agent: Some("Claude Code".into()),
                 agent_name: None,
+                agent_session: None,
             },
             Seed::Existing {
                 record: made.record_id().clone(),

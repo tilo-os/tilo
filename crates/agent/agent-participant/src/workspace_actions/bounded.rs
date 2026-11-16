@@ -345,6 +345,12 @@ pub(super) fn member_actor(
         unix_time: policy.unix_time,
         agent: who.agent.clone(),
         agent_name: who.agent_name.clone(),
+        agent_session: who
+            .caller
+            .acting()
+            .agent_session
+            .as_ref()
+            .map(|session| session.as_str().to_owned()),
     })
 }
 
