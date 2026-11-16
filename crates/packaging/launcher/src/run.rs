@@ -3224,24 +3224,24 @@ pub(crate) fn run_with_context(
         // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
-            && let Some(channel) = crate::registration_gate::take_window_channel()
+            && let Some(link) = crate::registration_gate::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
-                host: channel,
+                host: link,
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
-        // The shell opens the app's later windows in this process through the channel it released this
+        // The shell opens the app's later windows in this process through the link it released this
         // launch with (`runtime_portal::windows`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
-            && let Some(channel) = crate::registration_gate::take_window_channel()
+            && let Some(link) = crate::registration_gate::take_window_link()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::windows::SERVICE.to_owned(),
-                host: channel,
+                host: link,
                 child_fd: runtime_portal::windows::CHILD_FD,
             });
         }

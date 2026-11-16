@@ -57,7 +57,7 @@ use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
 use crate::plane::Plane;
 use crate::search::SessionSearch;
 use crate::services::plane::{mount_services, start_action_plane};
-use tilo_app_launch::Channels as WindowChannels;
+use tilo_app_launch::Links as WindowLinks;
 
 pub use os_actions::SessionAction;
 
@@ -542,10 +542,10 @@ impl Session {
         // process the session started, with connections of their own. A
         // window mapping settles what its app's API serves, so an app built
         // before the API keeps a process per window from then on.
-        let window_channels = WindowChannels::new(crate::app_tabs::ServiceLinks::new(
+        let window_links = WindowLinks::new(crate::app_tabs::ServiceLinks::new(
             std::sync::Arc::clone(&options.launches),
         ));
-        let settling = Rc::clone(&window_channels);
+        let settling = Rc::clone(&window_links);
         let mut policy =
             crate::background::WindowPlacement::for_shell(options.shell, &desktop, strips);
         // A window opens in the workspace its process was launched into: an agent's or a service's
@@ -568,7 +568,7 @@ impl Session {
         // tilolang instance reach an origin through.
         let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_channels(Rc::clone(&window_channels), Rc::clone(&connectors));
+            launch.lend_links(Rc::clone(&window_links), Rc::clone(&connectors));
         }
 
         // The programs the person downloaded: the registry takes the

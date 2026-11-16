@@ -1266,7 +1266,7 @@ def debug_switch(ctx) -> str:
 JOURNAL_KINDS = {
     "launches": r"application launch requested|application launcher spawned|application toplevel mapped|"
                 r"application first frame|launch timing retired|running process opens the window|"
-                r"window channel is closed|raised the window|asked for without a window",
+                r"window link is closed|raised the window|asked for without a window",
     "ends": r"an app closed|an app stopped|could not open|launch was refused|launch did not start|"
             r"an app this session did not start|no notice for the app|app_output|\\[app so\\.tilo\\.chat",
     "scopes": r"app-tilo-so\\.tilo\\.chat-",

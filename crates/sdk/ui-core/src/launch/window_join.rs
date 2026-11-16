@@ -162,7 +162,7 @@ pub(super) fn live_native(spec: &LaunchSpec, args: &LaunchArgs) -> bool {
         && !args.first_frame
 }
 
-/// The live app `args` launch, built as the process's first window was (`crate::window_channel`); `None`
+/// The live app `args` launch, built as the process's first window was (`crate::window_link`); `None`
 /// when they launch no live window.
 pub(crate) fn dispatch_window(
     spec: &LaunchSpec,
@@ -191,9 +191,7 @@ pub(crate) fn dispatch_window_arrived(
 /// launched on.
 fn window_args(args: &LaunchArgs) -> LaunchArgs {
     let mut args = args.clone();
-    args.positionals = crate::window_channel::requested_open()
-        .into_iter()
-        .collect();
+    args.positionals = crate::window_link::requested_open().into_iter().collect();
     args
 }
 
@@ -253,11 +251,11 @@ pub(super) fn dispatch_definition_in(
 }
 
 /// The connection a native launch's manager joins on: a window the shell opened in this running process
-/// has one of its own ([`crate::window_channel`]); the one the launcher handed the process is its first
+/// has one of its own ([`crate::window_link`]); the one the launcher handed the process is its first
 /// window's.
 pub(super) fn native_connection() -> crate::collaboration::NativeConnection {
-    if crate::window_channel::is_building() {
-        crate::collaboration::NativeConnection::Window(crate::window_channel::take_collaboration())
+    if crate::window_link::is_building() {
+        crate::collaboration::NativeConnection::Window(crate::window_link::take_collaboration())
     } else {
         crate::collaboration::NativeConnection::Launch
     }

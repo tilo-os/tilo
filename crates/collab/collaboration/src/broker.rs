@@ -2627,7 +2627,7 @@ impl CollaborationManager {
             media::audio_output::require_governed();
         }
         // A window the shell opened in this running process has a
-        // connection of its own (`ui::window_channel`); the one the launcher
+        // connection of its own (`ui::window_link`); the one the launcher
         // handed the process is its first window's.
         let source = match connection {
             crate::NativeConnection::Window(None) => return Ok(Self::disabled()),

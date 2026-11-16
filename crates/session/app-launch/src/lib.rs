@@ -37,9 +37,9 @@
 //! by what it can see, and gives memory back from the background ones first.
 
 pub mod authority;
-pub mod channels;
 pub mod downloaded;
 pub mod env;
+pub mod links;
 /// What a resource of a kind this crate publishes from outside a document is
 /// called, in the person's language: the kind's entry in the catalogue beside
 /// this crate, read the way a declaration's words are.
@@ -63,10 +63,10 @@ pub mod tilolang_hosts;
 pub mod workspace;
 
 pub use authority::Authority;
-pub use channels::{Channels, Connects, HeldChannel, HostedWindow, Opens, Routed, StartAlone};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};
+pub use links::{Connects, HeldLink, HostedWindow, Links, Opens, Routed, StartAlone};
 pub use plan::{Kind, PlanContext, PlanError, Planned};
 pub use spawner::{Cause, End, Event, Spawner, Started};
 pub use workspace::Workspace;

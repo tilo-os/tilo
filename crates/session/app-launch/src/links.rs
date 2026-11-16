@@ -2,24 +2,24 @@
 //! the process it started for the first.
 //!
 //! When the session starts a Tilo app in a workspace it keeps one end of a window
-//! channel (`runtime_portal::windows`) and hands the other to the launch with
+//! link (`runtime_portal::windows`) and hands the other to the launch with
 //! its release ([`launcher::registration_gate`]). Every later window of that
-//! app in that workspace is then a request on the channel instead of a second
+//! app in that workspace is then a request on the link instead of a second
 //! process, which could never hold the app's records: one process owns them.
 //! The request names the window's instance and carries the window's own
 //! connections to the session ([`Connects`]), so the window it maps claims a
 //! tab of its own and its data reaches the app it belongs to.
 //!
-//! The channel is reserved when the first launch is decided, before its process
+//! The link is reserved when the first launch is decided, before its process
 //! exists, so windows asked for at once (a workspace's tabs restored together) all
 //! reach the one process. It is retired when the process ends.
 //!
 //! The session and the apps are updated apart, so a window goes through the
-//! channel only once the app has said it reads it
+//! link only once the app has said it reads it
 //! (`runtime_portal::windows::SERVES_VERB`), which it does before it maps its
 //! first window. Until the app has said it or mapped a window, windows asked
-//! for wait at the channel; an app that maps a window without having said it was
-//! built before the channel, and each of its windows starts a process of its own,
+//! for wait at the link; an app that maps a window without having said it was
+//! built before the link, and each of its windows starts a process of its own,
 //! as it always did.
 
 use std::collections::HashMap;
@@ -88,8 +88,8 @@ pub struct Opens {
 /// What the session does with a hosted window's instance.
 pub type HostsInstances = Box<dyn Fn(HostedWindow)>;
 
-/// A reserved or running process's channel, by `(app, workspace)`.
-struct Channel {
+/// A reserved or running process's link, by `(app, workspace)`.
+struct Link {
     /// The session's end.
     ours: OwnedFd,
     /// The launch's end, until the launch takes it with its release.
@@ -98,29 +98,29 @@ struct Channel {
     /// connections are attributed to.
     launcher_pid: Option<u32>,
     /// Which reservation this is, so the end of an earlier launch never
-    /// retires a later one's channel.
+    /// retires a later one's link.
     generation: u64,
-    /// What the app behind the channel said about its windows.
+    /// What the app behind the link said about its windows.
     serves: Serves,
     /// Windows asked for before the app said whether it opens them.
     queued: Vec<Queued>,
     /// A tilolang app whose instances a tilolang host runs: its process is
-    /// its windows alone, each shown over a patch connection the channel carries.
+    /// its windows alone, each shown over a patch connection the link carries.
     hosted: bool,
 }
 
-/// Whether the app behind a channel opens the windows the session asks for.
+/// Whether the app behind a link opens the windows the session asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Serves {
     /// It has neither said so nor mapped a window yet.
     Unknown,
     /// It said so.
     Yes,
-    /// It mapped a window without saying so: an app built before the channel.
+    /// It mapped a window without saying so: an app built before the link.
     No,
 }
 
-/// Starts a window in a process of its own, as a launch without a channel does.
+/// Starts a window in a process of its own, as a launch without a link does.
 pub type StartAlone = Box<dyn FnOnce()>;
 
 /// A window asked for while its app had not yet said whether it opens it.
@@ -129,7 +129,7 @@ struct Queued {
     workspace: String,
     /// What the shell asked the window to show.
     opens: Opens,
-    /// The window's instance: the tab the shell held for it, or one the channel
+    /// The window's instance: the tab the shell held for it, or one the link
     /// names when the shell named none.
     instance: Option<u64>,
     alone: StartAlone,
@@ -144,12 +144,12 @@ pub enum Routed {
     NotRunning,
 }
 
-/// The channels of the apps this session started, by app and workspace.
-pub struct Channels {
+/// The links of the apps this session started, by app and workspace.
+pub struct Links {
     connections: Box<dyn Connects>,
     /// Where a hosted window's instance goes.
     hosts: std::cell::RefCell<Option<HostsInstances>>,
-    inner: Mutex<HashMap<Key, Channel>>,
+    inner: Mutex<HashMap<Key, Link>>,
     generations: AtomicU64,
     instances: AtomicU64,
 }
@@ -158,8 +158,8 @@ fn key(app: &str, workspace: &str) -> Key {
     (app.to_owned(), workspace.to_owned())
 }
 
-impl Channels {
-    /// The channels of the apps `connections` makes windows for.
+impl Links {
+    /// The links of the apps `connections` makes windows for.
     #[must_use]
     pub fn new(connections: impl Connects + 'static) -> Rc<Self> {
         Rc::new(Self {
@@ -171,33 +171,33 @@ impl Channels {
         })
     }
 
-    fn channels(&self) -> std::sync::MutexGuard<'_, HashMap<Key, Channel>> {
+    fn links(&self) -> std::sync::MutexGuard<'_, HashMap<Key, Link>> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Reserve the channel of the process about to start for `app` in `workspace`,
+    /// Reserve the link of the process about to start for `app` in `workspace`,
     /// unless one is reserved already. Later windows of the app there are
     /// routed to it. The reservation is given up when it is dropped
     /// before [`Reservation::launched`]: the launch did not start.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "one look at the channels decides and records a window's process, so two launches never both start one"
+        reason = "one look at the links decides and records a window's process, so two launches never both start one"
     )]
     fn reserve(self: &Rc<Self>, app: &str, workspace: &str) -> Option<Reservation> {
-        let mut channels = self.channels();
+        let mut links = self.links();
         let key = key(app, workspace);
-        if channels.contains_key(&key) {
+        if links.contains_key(&key) {
             return None;
         }
         let (ours, theirs) = runtime_portal::windows::pair()
-            .map_err(|error| tracing::warn!(%error, app, "no window channel for the launch"))
+            .map_err(|error| tracing::warn!(%error, app, "no window link for the launch"))
             .ok()?;
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
-        channels.insert(
+        links.insert(
             key.clone(),
-            Channel {
+            Link {
                 ours,
                 theirs: Some(theirs),
                 launcher_pid: None,
@@ -208,30 +208,30 @@ impl Channels {
             },
         );
         Some(Reservation {
-            channels: Rc::clone(self),
+            links: Rc::clone(self),
             key,
             generation,
         })
     }
 
-    /// The channel a launch of `app` in `workspace` serves, held for as long as the
+    /// The link a launch of `app` in `workspace` serves, held for as long as the
     /// launch runs: its end goes to the launcher with the release, and when
-    /// the launch is over (its process ended, or it never started) the channel
+    /// the launch is over (its process ended, or it never started) the link
     /// is retired, so the app's next window there starts a process again.
     #[must_use]
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the channel is looked up and taken in one hold of the channels"
+        reason = "the link is looked up and taken in one hold of the links"
     )]
-    pub fn hold(self: &Rc<Self>, app: &str, workspace: &str) -> Option<HeldChannel> {
+    pub fn hold(self: &Rc<Self>, app: &str, workspace: &str) -> Option<HeldLink> {
         let key = key(app, workspace);
-        let mut channels = self.channels();
-        let channel = channels.get_mut(&key)?;
-        let theirs = channel.theirs.take()?;
-        Some(HeldChannel {
-            channels: Rc::clone(self),
+        let mut links = self.links();
+        let link = links.get_mut(&key)?;
+        let theirs = link.theirs.take()?;
+        Some(HeldLink {
+            links: Rc::clone(self),
             key,
-            generation: channel.generation,
+            generation: link.generation,
             theirs: Some(theirs),
         })
     }
@@ -248,21 +248,21 @@ impl Channels {
         alone: &dyn Fn() -> StartAlone,
         instance: Option<u64>,
     ) -> Routed {
-        let mut channels = self.channels();
-        let Some(channel) = channels.get_mut(&key(app, workspace)) else {
+        let mut links = self.links();
+        let Some(link) = links.get_mut(&key(app, workspace)) else {
             return Routed::NotRunning;
         };
         let mut late = Vec::new();
-        if channel.serves == Serves::Unknown
-            && runtime_portal::windows::take_serves(&channel.ours).unwrap_or(false)
+        if link.serves == Serves::Unknown
+            && runtime_portal::windows::take_serves(&link.ours).unwrap_or(false)
         {
-            channel.serves = Serves::Yes;
-            late = std::mem::take(&mut channel.queued);
+            link.serves = Serves::Yes;
+            late = std::mem::take(&mut link.queued);
         }
-        let routed = match channel.serves {
+        let routed = match link.serves {
             Serves::No => Routed::NotRunning,
             Serves::Unknown => {
-                channel.queued.push(Queued {
+                link.queued.push(Queued {
                     app: app.to_owned(),
                     workspace: workspace.to_owned(),
                     opens: opens.clone(),
@@ -271,13 +271,13 @@ impl Channels {
                 });
                 Routed::Opened
             }
-            Serves::Yes => match send_window(self, channel, app, workspace, opens, instance) {
+            Serves::Yes => match send_window(self, link, app, workspace, opens, instance) {
                 Ok(()) => Routed::Opened,
                 Err(error) => {
                     // The process is gone; the next launch starts another.
-                    tracing::info!(%error, app, "the app's window channel is closed");
-                    let gone = channels.remove(&key(app, workspace));
-                    drop(channels);
+                    tracing::info!(%error, app, "the app's window link is closed");
+                    let gone = links.remove(&key(app, workspace));
+                    drop(links);
                     if let Some(gone) = gone {
                         start_alone(gone.queued);
                     }
@@ -289,10 +289,10 @@ impl Channels {
         let failed = late
             .into_iter()
             .filter_map(|queued| {
-                let channel = channels.get_mut(&key(&queued.app, &queued.workspace))?;
+                let link = links.get_mut(&key(&queued.app, &queued.workspace))?;
                 send_window(
                     self,
-                    channel,
+                    link,
                     &queued.app,
                     &queued.workspace,
                     &queued.opens,
@@ -302,40 +302,39 @@ impl Channels {
                 .then_some(queued)
             })
             .collect();
-        drop(channels);
+        drop(links);
         start_alone(failed);
         routed
     }
 
-    /// A window of the process `pid` mapped. If the app behind its channel has
+    /// A window of the process `pid` mapped. If the app behind its link has
     /// not said it opens windows by now it never will: it was built before
-    /// the channel. The windows that waited go where its answer says.
+    /// the link. The windows that waited go where its answer says.
     pub fn window_mapped(&self, pid: u32) {
         let lineage = ancestry(pid);
         let (open, alone) = {
-            let mut channels = self.channels();
-            let Some(channel) = channels.values_mut().find(|channel| {
-                channel.serves == Serves::Unknown
-                    && channel
+            let mut links = self.links();
+            let Some(link) = links.values_mut().find(|link| {
+                link.serves == Serves::Unknown
+                    && link
                         .launcher_pid
                         .is_some_and(|launcher| lineage.contains(&launcher))
             }) else {
                 return;
             };
-            channel.serves = if runtime_portal::windows::take_serves(&channel.ours).unwrap_or(false)
-            {
+            link.serves = if runtime_portal::windows::take_serves(&link.ours).unwrap_or(false) {
                 Serves::Yes
             } else {
                 Serves::No
             };
-            let queued = std::mem::take(&mut channel.queued);
-            if channel.serves == Serves::Yes {
+            let queued = std::mem::take(&mut link.queued);
+            if link.serves == Serves::Yes {
                 let failed: Vec<Queued> = queued
                     .into_iter()
                     .filter_map(|queued| {
                         send_window(
                             self,
-                            channel,
+                            link,
                             &queued.app,
                             &queued.workspace,
                             &queued.opens,
@@ -345,40 +344,40 @@ impl Channels {
                         .then_some(queued)
                     })
                     .collect();
-                drop(channels);
+                drop(links);
                 (true, failed)
             } else {
-                drop(channels);
+                drop(links);
                 (false, queued)
             }
         };
         if !open {
-            tracing::info!("an app built before the window channel starts a process per window");
+            tracing::info!("an app built before the window link starts a process per window");
         }
         start_alone(alone);
     }
 
-    /// Reserve the channel of a process about to start for `app` in `workspace`
+    /// Reserve the link of a process about to start for `app` in `workspace`
     /// with no window: `None` when a process of the app runs there already,
     /// or is starting, and serves the workspace in its place.
     ///
     /// # Errors
-    /// No channel could be made for the process.
+    /// No link could be made for the process.
     pub fn reserve_unless_running(
         self: &Rc<Self>,
         app: &str,
         workspace: &str,
     ) -> Result<Option<Reservation>, String> {
-        if self.channels().contains_key(&key(app, workspace)) {
+        if self.links().contains_key(&key(app, workspace)) {
             return Ok(None);
         }
         self.reserve(app, workspace)
             .map(Some)
-            .ok_or_else(|| format!("no window channel for {app}"))
+            .ok_or_else(|| format!("no window link for {app}"))
     }
 
     /// Where a window of `app` in `workspace` opens: in the process already
-    /// serving the workspace, or in one this launch starts, whose channel it
+    /// serving the workspace, or in one this launch starts, whose link it
     /// reserves. Only a `routable` launch, the app's own window, on nothing or
     /// on the file or link `opens` names, can open in a running process.
     ///
@@ -416,21 +415,21 @@ impl Channels {
     }
 
     /// The process reserved for `app` in `workspace` is a tilolang app's
-    /// windows alone: a tilolang host runs their instances. Whether its channel
+    /// windows alone: a tilolang host runs their instances. Whether its link
     /// is reserved.
     pub fn host_instances(&self, app: &str, workspace: &str) -> bool {
-        self.channels()
+        self.links()
             .get_mut(&key(app, workspace))
-            .map(|channel| channel.hosted = true)
+            .map(|link| link.hosted = true)
             .is_some()
     }
 
     /// The first window of the hosted app `app` in `workspace`, which the
-    /// launch whose channel it serves started: send it its patch connection on
-    /// the channel, and hand its instance to its host.
+    /// launch whose link it serves started: send it its patch connection on
+    /// the link, and hand its instance to its host.
     ///
     /// # Errors
-    /// The channel is not served, or the connections could not be made.
+    /// The link is not served, or the connections could not be made.
     pub fn first_hosted_window(
         &self,
         app: &str,
@@ -439,11 +438,11 @@ impl Channels {
         opens: &Opens,
     ) -> std::io::Result<()> {
         let hosted = self
-            .channels()
+            .links()
             .get(&key(app, workspace))
-            .filter(|channel| channel.hosted)
+            .filter(|link| link.hosted)
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
-            .and_then(|channel| hosted_window(self, channel, app, workspace, instance, opens))?;
+            .and_then(|link| hosted_window(self, link, app, workspace, instance, opens))?;
         self.hand_over(hosted);
         Ok(())
     }
@@ -464,16 +463,16 @@ impl Channels {
     }
 }
 
-/// A channel reserved for a launch that has not started yet.
+/// A link reserved for a launch that has not started yet.
 pub struct Reservation {
-    channels: Rc<Channels>,
+    links: Rc<Links>,
     key: Key,
     generation: u64,
 }
 
 impl Reservation {
-    /// The launch is on its way: it holds the channel from its start
-    /// ([`Channels::hold`]).
+    /// The launch is on its way: it holds the link from its start
+    /// ([`Links::hold`]).
     pub fn launched(self) {
         std::mem::forget(self);
     }
@@ -481,56 +480,57 @@ impl Reservation {
 
 impl Drop for Reservation {
     fn drop(&mut self) {
-        let mut channels = self.channels.channels();
-        if channels.get(&self.key).is_some_and(|channel| {
-            channel.generation == self.generation && channel.theirs.is_some()
-        }) {
-            channels.remove(&self.key);
+        let mut links = self.links.links();
+        if links
+            .get(&self.key)
+            .is_some_and(|link| link.generation == self.generation && link.theirs.is_some())
+        {
+            links.remove(&self.key);
         }
     }
 }
 
-/// The channel a launch serves, held for as long as the launch runs.
-pub struct HeldChannel {
-    channels: Rc<Channels>,
+/// The link a launch serves, held for as long as the launch runs.
+pub struct HeldLink {
+    links: Rc<Links>,
     key: Key,
     generation: u64,
     theirs: Option<OwnedFd>,
 }
 
-impl HeldChannel {
-    /// The launcher `launcher_pid` serves the channel: hand it its end, which it
+impl HeldLink {
+    /// The launcher `launcher_pid` serves the link: hand it its end, which it
     /// takes with its release.
     pub fn serve(&mut self, launcher_pid: u32) -> Option<OwnedFd> {
-        if let Some(channel) = self
-            .channels
-            .channels()
+        if let Some(link) = self
+            .links
+            .links()
             .get_mut(&self.key)
-            .filter(|channel| channel.generation == self.generation)
+            .filter(|link| link.generation == self.generation)
         {
-            channel.launcher_pid = Some(launcher_pid);
+            link.launcher_pid = Some(launcher_pid);
         }
         self.theirs.take()
     }
 }
 
-impl Drop for HeldChannel {
+impl Drop for HeldLink {
     fn drop(&mut self) {
         let gone = {
-            let mut channels = self.channels.channels();
-            if channels
+            let mut links = self.links.links();
+            if links
                 .get(&self.key)
-                .is_some_and(|channel| channel.generation == self.generation)
+                .is_some_and(|link| link.generation == self.generation)
             {
-                channels.remove(&self.key)
+                links.remove(&self.key)
             } else {
                 None
             }
         };
         // Windows that waited for a process that never said it opens them
         // start their own.
-        if let Some(channel) = gone {
-            start_alone(channel.queued);
+        if let Some(link) = gone {
+            start_alone(link.queued);
         }
     }
 }
@@ -544,19 +544,19 @@ fn start_alone(queued: Vec<Queued>) {
 }
 
 /// The window `instance` of the hosted app `app` in `workspace`, whose
-/// process is behind `entry`: its patch connection is sent on the channel, before
+/// process is behind `entry`: its patch connection is sent on the link, before
 /// the window is asked for, and the host's end goes with the instance, with
 /// what the window `opens`.
 fn hosted_window(
-    channel: &Channels,
-    entry: &Channel,
+    link: &Links,
+    entry: &Link,
     app: &str,
     workspace: &str,
     instance: u64,
     opens: &Opens,
 ) -> std::io::Result<HostedWindow> {
     let launcher_pid = entry.launcher_pid.ok_or(std::io::ErrorKind::NotConnected)?;
-    let collaboration = channel
+    let collaboration = link
         .connections
         .collaboration(app, workspace, instance, Some(launcher_pid))
         .ok_or_else(|| std::io::Error::other("the instance has no collaboration connection"))?;
@@ -573,42 +573,39 @@ fn hosted_window(
     })
 }
 
-/// Ask the process behind `channel` for a window of `app` in `workspace`.
+/// Ask the process behind `link` for a window of `app` in `workspace`.
 fn send_window(
-    channel: &Channels,
-    entry: &Channel,
+    link: &Links,
+    entry: &Link,
     app: &str,
     workspace: &str,
     opens: &Opens,
     instance: Option<u64>,
 ) -> std::io::Result<()> {
     // The shell names the tab a window takes, which is the window's instance;
-    // a window asked for with no tab of its own gets one from the channel.
-    let instance = instance.unwrap_or_else(|| channel.next_instance());
+    // a window asked for with no tab of its own gets one from the link.
+    let instance = instance.unwrap_or_else(|| link.next_instance());
     // A tilolang host runs the window's instance: the window gets its patch
     // connection, and the instance the window's collaboration connection.
     let hosted = entry
         .hosted
-        .then(|| hosted_window(channel, entry, app, workspace, instance, opens))
+        .then(|| hosted_window(link, entry, app, workspace, instance, opens))
         .transpose()?;
     let collaboration = if hosted.is_some() {
         None
     } else {
-        channel
-            .connections
+        link.connections
             .collaboration(app, workspace, instance, entry.launcher_pid)
     };
-    let shell_ui = channel
-        .connections
-        .shell_ui(app, instance, entry.launcher_pid);
-    let request = ui::window_channel::WindowRequest {
+    let shell_ui = link.connections.shell_ui(app, instance, entry.launcher_pid);
+    let request = ui::window_link::WindowRequest {
         instance,
         collaboration: collaboration.is_some(),
         shell_ui: shell_ui.is_some(),
         reveal: opens.reveal.clone(),
         open: opens.open.clone(),
     };
-    ui::window_channel::send(
+    ui::window_link::send(
         &entry.ours,
         &request,
         collaboration.as_ref(),
@@ -616,7 +613,7 @@ fn send_window(
     )?;
     tracing::info!(app, instance, "window opened in the running app");
     if let Some(hosted) = hosted {
-        channel.hand_over(hosted);
+        link.hand_over(hosted);
     }
     Ok(())
 }
@@ -686,16 +683,16 @@ mod tests {
         }
     }
 
-    fn channels() -> (Rc<Channels>, Rc<TestConnections>) {
+    fn links() -> (Rc<Links>, Rc<TestConnections>) {
         let connections = Rc::new(TestConnections::default());
-        (Channels::new(Rc::clone(&connections)), connections)
+        (Links::new(Rc::clone(&connections)), connections)
     }
 
-    const APP: &str = "so.tilo.window-channel-test";
+    const APP: &str = "so.tilo.window-link-test";
     const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000001";
 
-    fn has_channel(channels: &Channels, app: &str, workspace: &str) -> bool {
-        channels.channels().contains_key(&key(app, workspace))
+    fn has_channel(links: &Links, app: &str, workspace: &str) -> bool {
+        links.links().contains_key(&key(app, workspace))
     }
 
     fn never_alone() -> StartAlone {
@@ -712,7 +709,7 @@ mod tests {
         }
     }
 
-    impl Channels {
+    impl Links {
         fn reserve_for_test(self: &Rc<Self>, app: &str, workspace: &str) {
             self.reserve(app, workspace).expect("reserved").launched();
         }
@@ -723,67 +720,67 @@ mod tests {
 
         phase a_workspaces_app_keeps_one_channel_until_its_launch_is_over;
         // The first window of an app in a workspace starts its process and reserves
-        // its channel; its launch holds the channel and hands its end to the
+        // its link; its launch holds the link and hands its end to the
         // launcher; once the launch is over, a window starts a process again.
         {
-            let (channels, _) = channels();
-            channels.reserve_for_test(APP, WORKSPACE);
-            let mut held = channels
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links
                 .hold(APP, WORKSPACE)
-                .expect("the launch holds the channel");
-            assert!(channels.hold(APP, WORKSPACE).is_none(), "held by one launch");
+                .expect("the launch holds the link");
+            assert!(links.hold(APP, WORKSPACE).is_none(), "held by one launch");
             assert!(
-                channels.reserve(APP, WORKSPACE).is_none(),
-                "a second launch keeps the running process's channel"
+                links.reserve(APP, WORKSPACE).is_none(),
+                "a second launch keeps the running process's link"
             );
             assert!(held.serve(4242).is_some(), "the launcher's end");
             assert!(held.serve(4242).is_none(), "handed over once");
-            assert!(has_channel(&channels, APP, WORKSPACE));
+            assert!(has_channel(&links, APP, WORKSPACE));
             drop(held);
-            assert!(!has_channel(&channels, APP, WORKSPACE), "the launch is over");
+            assert!(!has_channel(&links, APP, WORKSPACE), "the launch is over");
         }
 
         phase an_earlier_launch_never_retires_a_later_channel;
-        // A launch that ends after its channel was replaced leaves the new one.
+        // A launch that ends after its link was replaced leaves the new one.
         {
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000002";
-            let (channels, _) = channels();
-            channels.reserve_for_test(APP, WORKSPACE);
-            let earlier = channels.hold(APP, WORKSPACE).expect("held");
-            channels.channels().remove(&key(APP, WORKSPACE));
-            channels.reserve_for_test(APP, WORKSPACE);
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let earlier = links.hold(APP, WORKSPACE).expect("held");
+            links.links().remove(&key(APP, WORKSPACE));
+            links.reserve_for_test(APP, WORKSPACE);
             drop(earlier);
             assert!(
-                has_channel(&channels, APP, WORKSPACE),
-                "the later launch's channel stays"
+                has_channel(&links, APP, WORKSPACE),
+                "the later launch's link stays"
             );
         }
 
         phase a_launch_that_never_started_gives_its_channel_up;
-        // A launch that never started gives its channel up.
+        // A launch that never started gives its link up.
         {
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000003";
-            let (channels, _) = channels();
-            drop(channels.reserve(APP, WORKSPACE).expect("reserved"));
-            assert!(!has_channel(&channels, APP, WORKSPACE));
+            let (links, _) = links();
+            drop(links.reserve(APP, WORKSPACE).expect("reserved"));
+            assert!(!has_channel(&links, APP, WORKSPACE));
         }
 
         phase a_launch_that_names_what_it_opens_reserves_a_channel_and_starts;
-        // A launch the channel does not carry, such as a record, never opens in a
+        // A launch the link does not carry, such as a record, never opens in a
         // running process: the app's own command line carries it.
         {
-            let (channels, _) = channels();
-            let reserved = channels
+            let (links, _) = links();
+            let reserved = links
                 .route_or_reserve(APP, WORKSPACE, false, &Opens::default(), &never_alone, None)
                 .expect("not routed");
-            assert!(reserved.is_none(), "a process of its own, without a channel");
-            let reserved = channels
+            assert!(reserved.is_none(), "a process of its own, without a link");
+            let reserved = links
                 .route_or_reserve(APP, WORKSPACE, true, &Opens::default(), &never_alone, None)
                 .expect("reserved");
-            assert!(reserved.is_some(), "the first window reserves the channel");
+            assert!(reserved.is_some(), "the first window reserves the link");
             drop(reserved);
             assert!(
-                !has_channel(&channels, APP, WORKSPACE),
+                !has_channel(&links, APP, WORKSPACE),
                 "a launch that never started"
             );
         }
@@ -794,38 +791,38 @@ mod tests {
 
         phase another_window_of_a_running_app_opens_in_its_process;
         // One process per app per workspace: the second window of an app running in
-        // a workspace, once the app said it opens windows, is a request on its channel,
+        // a workspace, once the app said it opens windows, is a request on its link,
         // naming the window's own instance and carrying its own connections; in
         // a workspace where the app does not run, or once its process is gone, a
         // window starts a process.
         {
-            const APP: &str = "so.tilo.window-channel-route";
+            const APP: &str = "so.tilo.window-link-route";
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000004";
             const ELSEWHERE: &str = "7a110d00-0000-4000-8000-000000000005";
-            let (channels, _) = channels();
+            let (links, _) = links();
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::NotRunning
             );
-            channels.reserve_for_test(APP, WORKSPACE);
-            let mut held = channels.hold(APP, WORKSPACE).expect("held");
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_001).expect("the launcher's end");
             runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
-            let opening = ui::window_channel::receive(&launcher_end)
+            let opening = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open");
             let first = opening.request.instance;
             assert!(opening.request.collaboration, "the window's own connection");
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
-            let plain = ui::window_channel::receive(&launcher_end)
+            let plain = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open")
                 .request;
@@ -839,11 +836,11 @@ mod tests {
             );
 
             assert_eq!(
-                channels.open_in_running(
+                links.open_in_running(
                     APP,
                     WORKSPACE,
                     &Opens {
-                        reveal: Some("chat/channels/c_ada".to_owned()),
+                        reveal: Some("chat/links/c_ada".to_owned()),
                         ..Opens::default()
                     },
                     &never_alone,
@@ -851,13 +848,13 @@ mod tests {
                 ),
                 Routed::Opened
             );
-            let told = ui::window_channel::receive(&launcher_end)
+            let told = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open")
                 .request;
             assert_eq!(
                 told.reveal.as_deref(),
-                Some("chat/channels/c_ada"),
+                Some("chat/links/c_ada"),
                 "the window opens on what it was asked for"
             );
             assert_ne!(first, told.instance);
@@ -870,10 +867,10 @@ mod tests {
                 ..Opens::default()
             };
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &budget, &never_alone, None),
                 Routed::Opened
             );
-            let opened = ui::window_channel::receive(&launcher_end)
+            let opened = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open")
                 .request;
@@ -888,13 +885,13 @@ mod tests {
             );
 
             assert_eq!(
-                channels.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, ELSEWHERE, &Opens::default(), &never_alone, None),
                 Routed::NotRunning
             );
             drop(launcher_end);
             drop(held);
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::NotRunning,
                 "the process is gone"
             );
@@ -904,19 +901,19 @@ mod tests {
         // A window the session starts takes the tab the shell made for it, and that
         // tab is the instance it is known by, which its request names.
         {
-            const APP: &str = "so.tilo.window-channel-tab";
+            const APP: &str = "so.tilo.window-link-tab";
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-00000000000a";
-            let (channels, _) = channels();
-            channels.reserve_for_test(APP, WORKSPACE);
-            let mut held = channels.hold(APP, WORKSPACE).expect("held");
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_002).expect("the launcher's end");
             runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, Some(77)),
                 Routed::Opened
             );
-            let request = ui::window_channel::receive(&launcher_end)
+            let request = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open")
                 .request;
@@ -926,34 +923,34 @@ mod tests {
             );
         }
 
-        phase an_app_built_before_the_window_channel_keeps_a_process_per_window;
+        phase an_app_built_before_the_window_link_keeps_a_process_per_window;
         // The session and the apps are updated apart. An app built before the
-        // window channel never says it opens windows: a window asked for while it
+        // window link never says it opens windows: a window asked for while it
         // starts waits until it maps its own, then starts a process of its own,
         // as every window of such an app always did, and so does every later
         // one.
         {
-            const APP: &str = "so.tilo.window-channel-older-app";
+            const APP: &str = "so.tilo.window-link-older-app";
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000006";
-            let (channels, _) = channels();
-            channels.reserve_for_test(APP, WORKSPACE);
-            let mut held = channels.hold(APP, WORKSPACE).expect("held");
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
             // The process that maps a window is the launcher itself here.
             let _launcher_end = held.serve(std::process::id()).expect("the launcher's end");
             let (started, waiting) = std::sync::mpsc::channel();
             let alone = alone_into(started);
 
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
                 Routed::Opened,
                 "waits for the app to answer"
             );
-            channels.window_mapped(std::process::id());
+            links.window_mapped(std::process::id());
             waiting
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .expect("the waiting window starts a process of its own");
             assert_eq!(
-                channels.open_in_running(
+                links.open_in_running(
                     APP,
                     WORKSPACE,
                     &Opens::default(),
@@ -966,23 +963,23 @@ mod tests {
         }
 
         phase a_window_asked_for_while_its_app_starts_opens_in_it;
-        // An app that reads its channel says so before it maps its first window: a
+        // An app that reads its link says so before it maps its first window: a
         // window asked for while it started opens in it.
         {
-            const APP: &str = "so.tilo.window-channel-starting";
+            const APP: &str = "so.tilo.window-link-starting";
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000007";
-            let (channels, _) = channels();
-            channels.reserve_for_test(APP, WORKSPACE);
-            let mut held = channels.hold(APP, WORKSPACE).expect("held");
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(std::process::id()).expect("the launcher's end");
             assert_eq!(
-                channels.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
                 Routed::Opened
             );
             runtime_portal::windows::send_serves(&launcher_end).unwrap();
-            channels.window_mapped(std::process::id());
+            links.window_mapped(std::process::id());
             assert!(
-                ui::window_channel::receive(&launcher_end)
+                ui::window_link::receive(&launcher_end)
                     .expect("a request")
                     .is_some(),
                 "the window that waited opens in the app"
@@ -991,20 +988,20 @@ mod tests {
 
         phase a_hosted_windows_instance_goes_to_its_host_with_its_patch_connection;
         // A tilolang app whose instances a tilolang host runs: each window gets
-        // its patch connection on the channel before it is asked for, and no
+        // its patch connection on the link before it is asked for, and no
         // collaboration connection of its own; its instance goes to the host
         // with the other end of that connection and the window's collaboration.
         {
             use std::io::{Read as _, Write as _};
-            const APP: &str = "so.tilo.window-channel-tilolang";
+            const APP: &str = "so.tilo.window-link-tilolang";
             const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000008";
-            let (channels, _) = channels();
+            let (links, _) = links();
             let handed = Rc::new(RefCell::new(Vec::new()));
             let into = Rc::clone(&handed);
-            channels.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
-            channels.reserve_for_test(APP, WORKSPACE);
-            assert!(channels.host_instances(APP, WORKSPACE));
-            let mut held = channels.hold(APP, WORKSPACE).expect("held");
+            links.hand_instances_to(Box::new(move |hosted| into.borrow_mut().push(hosted)));
+            links.reserve_for_test(APP, WORKSPACE);
+            assert!(links.host_instances(APP, WORKSPACE));
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
             let launcher_end = held.serve(4_100_008).expect("the launcher's end");
             runtime_portal::windows::send_serves(&launcher_end).unwrap();
 
@@ -1012,7 +1009,7 @@ mod tests {
                 record: Some("uuid:7a110d00-0000-4000-8000-000000000009".to_owned()),
                 ..Opens::default()
             };
-            channels
+            links
                 .first_hosted_window(APP, WORKSPACE, 5, &first_opens)
                 .unwrap();
             let Some(runtime_portal::windows::Message::Patch(first, first_patch)) =
@@ -1023,7 +1020,7 @@ mod tests {
             assert_eq!(first, 5);
 
             assert_eq!(
-                channels.open_in_running(
+                links.open_in_running(
                     APP,
                     WORKSPACE,
                     &Opens {
@@ -1040,7 +1037,7 @@ mod tests {
             else {
                 panic!("the window's patch connection comes first");
             };
-            let opening = ui::window_channel::receive(&launcher_end)
+            let opening = ui::window_link::receive(&launcher_end)
                 .expect("a request")
                 .expect("open");
             assert_eq!(

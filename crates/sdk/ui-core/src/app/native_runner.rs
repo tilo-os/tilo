@@ -5053,7 +5053,7 @@ impl App {
     }
 
     /// [`Self::run_with_setup`], serving the windows the shell opens in this
-    /// process later with `open` ([`crate::window_channel`]): each becomes one
+    /// process later with `open` ([`crate::window_link`]): each becomes one
     /// more window of the loop, and the loop ends with the last.
     #[allow(
         clippy::expect_used,
@@ -5129,7 +5129,7 @@ impl App {
         // The channel is taken before the launch's own window is made: the
         // shell takes a window as it maps as one this process serves, and only
         // a process that said so before that is served more.
-        let open = open.and_then(|open| process_windows::serve_channel(&proxy).map(|()| open));
+        let open = open.and_then(|open| process_windows::serve_link(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::host::environment().windowless;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);

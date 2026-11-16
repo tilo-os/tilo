@@ -51,25 +51,22 @@ impl RegistrationGate {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn release_with_window_channel(
-        self,
-        channel: std::os::fd::BorrowedFd<'_>,
-    ) -> io::Result<()> {
+    pub fn release_with_window_link(self, link: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         use std::os::fd::AsFd as _;
-        crate::message::send(self.0.as_fd(), &[&[1]], &[channel])
+        crate::message::send(self.0.as_fd(), &[&[1]], &[link])
     }
 }
 
-/// The window channel the shell handed over with the release, until the launch
-/// takes it ([`take_window_channel`]).
+/// The window link the shell handed over with the release, until the launch
+/// takes it ([`take_window_link`]).
 #[cfg(target_os = "linux")]
-static WINDOW_CHANNEL: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
+static WINDOW_LINK: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "linux")]
-pub fn take_window_channel() -> Option<OwnedFd> {
-    WINDOW_CHANNEL.lock().map_or_else(
+pub fn take_window_link() -> Option<OwnedFd> {
+    WINDOW_LINK.lock().map_or_else(
         |poisoned| poisoned.into_inner().take(),
-        |mut channel| channel.take(),
+        |mut link| link.take(),
     )
 }
 
@@ -121,10 +118,10 @@ fn read_release() -> io::Result<()> {
     // SAFETY: fd 0 is the gate the host handed over, open until `dup2`
     // replaces it after this returns.
     let gate = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
-    if let Some(channel) = read_release_from(gate)? {
-        *WINDOW_CHANNEL
+    if let Some(link) = read_release_from(gate)? {
+        *WINDOW_LINK
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(channel);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(link);
     }
     Ok(())
 }
@@ -276,16 +273,16 @@ mod tests {
         assert!(child.wait().expect("child exit").success());
     }
 
-    /// The shell's window channel rides on the release, and a release without
+    /// The shell's window link rides on the release, and a release without
     /// one is still a release.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_window_channel_comes_with_the_release() {
+    fn the_window_link_comes_with_the_release() {
         use std::os::fd::AsFd as _;
         let (release, wait) = UnixStream::pair().expect("gate");
-        let (channel, _app) = UnixStream::pair().expect("channel");
+        let (link, _app) = UnixStream::pair().expect("link");
         RegistrationGate(release)
-            .release_with_window_channel(channel.as_fd())
+            .release_with_window_link(link.as_fd())
             .expect("release");
         assert!(read_release_from(wait.as_fd()).expect("released").is_some());
 

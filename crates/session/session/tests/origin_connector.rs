@@ -55,7 +55,7 @@ fn youtube_connector_child() {
     if runtime_portal::registration_gate::wait_on_stdin().is_err() {
         return;
     }
-    let Some(socket) = runtime_portal::registration_gate::take_window_channel() else {
+    let Some(socket) = runtime_portal::registration_gate::take_window_link() else {
         return;
     };
     let attachments = std::iter::from_fn(move || {

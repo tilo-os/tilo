@@ -137,7 +137,7 @@ impl NativeProcessHost {
     }
 
     /// Prepare a window of this process: its first, or one the shell opened in it later
-    /// (`crate::window_channel`).
+    /// (`crate::window_link`).
     pub fn prepare_window(
         definition: &ApplicationDefinition,
         named: Option<RecordId>,
@@ -145,7 +145,7 @@ impl NativeProcessHost {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         Self::with_process_host(
             definition,
-            |host| match crate::window_channel::requested_instance() {
+            |host| match crate::window_link::requested_instance() {
                 Some(instance) => host.prepare_instance(definition, instance, named, inputs),
                 None => host.prepare_launch(definition, named, inputs),
             },
@@ -162,7 +162,7 @@ impl NativeProcessHost {
         definition: &ApplicationDefinition,
     ) -> Result<Option<PathBuf>, LaunchError> {
         Self::with_process_host(definition, |host| {
-            let instance = crate::window_channel::requested_instance().unwrap_or(host.instance_id);
+            let instance = crate::window_link::requested_instance().unwrap_or(host.instance_id);
             Ok(host
                 .host
                 .saved_view(instance)?

@@ -1,7 +1,7 @@
 //! Every window of the process on one loop.
 //!
 //! A process shows the window it was launched with and every window the
-//! shell opens in it later ([`crate::window_channel`]). Each is an
+//! shell opens in it later ([`crate::window_link`]). Each is an
 //! [`AppHandler`] of its own, with its own app, window, renderer and
 //! connections; this hands each the events of its windows, and the events of
 //! no window to all of them or to the one in front. A window that is done
@@ -19,15 +19,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 /// Builds the window the shell asked for, or says why it cannot.
-pub(crate) type OpenWindow<'a> =
-    dyn FnMut(crate::window_channel::PendingWindow) -> Option<App> + 'a;
+pub(crate) type OpenWindow<'a> = dyn FnMut(crate::window_link::PendingWindow) -> Option<App> + 'a;
 
-/// Read the window channel the launcher handed this process, if it was handed
+/// Read the window link the launcher handed this process, if it was handed
 /// one, waking the loop behind `proxy` with each window the shell asks for.
-pub(super) fn serve_channel(proxy: &EventLoopProxy<UserEvent>) -> Option<()> {
-    let channel = crate::window_channel::take_channel()?;
+pub(super) fn serve_link(proxy: &EventLoopProxy<UserEvent>) -> Option<()> {
+    let link = crate::window_link::take_link()?;
     let proxy = proxy.clone();
-    crate::window_channel::serve(channel, move |pending| {
+    crate::window_link::serve(link, move |pending| {
         proxy.send_event(UserEvent::OpenWindow(pending)).is_ok()
     })
     .map_err(|error| tracing::warn!(%error, "the shell cannot open more windows here"))
@@ -92,7 +91,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             .position(|handler| handler.closing.get())
         {
             if self.windows.len() == 1 {
-                crate::window_channel::stop_serving();
+                crate::window_link::stop_serving();
                 event_loop.exit();
                 return;
             }
@@ -107,7 +106,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
     fn open_window(
         &mut self,
         event_loop: &ActiveEventLoop,
-        pending: crate::window_channel::PendingWindow,
+        pending: crate::window_link::PendingWindow,
     ) {
         let Some(open) = self.open.as_mut() else {
             return;
