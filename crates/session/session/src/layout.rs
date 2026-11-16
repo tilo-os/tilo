@@ -1637,9 +1637,13 @@ impl Layouts {
         let Some(going) = self.held(key, |held| held.writing.take()) else {
             return true;
         };
+        // A look skips a record while its write is under way, though another device's write to it
+        // may have moved the engine's revision before that look: once the write is done, the next
+        // look reads the record whatever the revision says.
         let going = match going {
             Going::View(mut publishing) => match publishing.writing.done() {
                 Some(written) => {
+                    self.seen.set(None);
                     let publishing = *publishing;
                     self.published(
                         key,
@@ -1654,6 +1658,7 @@ impl Layouts {
             },
             Going::Layout(mut laying) => match laying.writing.done() {
                 Some(laid) => {
+                    self.seen.set(None);
                     self.laid(key, laid, &laying);
                     return true;
                 }
@@ -2475,6 +2480,60 @@ mod tests {
         assert!(
             desktops.held(&key, |held| held.writing.is_some()),
             "the write is still under way"
+        );
+    }
+
+    /// A look that skipped a record while its write was under way leaves it to the look after the
+    /// write: what reached the record meanwhile moved the engine's revision before the skip, so the
+    /// revision alone says nothing moved.
+    #[test]
+    fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
+        let workspace = workspace_id();
+        let tree = Layout {
+            workspaces: vec![Workspace::new(workspace, "Layout")],
+            active: workspace,
+            ..Layout::default()
+        };
+        let (wake, heard) = woken();
+        let desktops = Layouts {
+            wake,
+            ..Layouts::default()
+        };
+        let key = (workspace, Route::layout());
+        desktops.held(&key, |held| held.read = true);
+        assert!(
+            !desktops.settled(7, &tree),
+            "the first look reads the records"
+        );
+        assert!(desktops.settled(7, &tree), "nothing moved since");
+        // Another device's write moves the record, and this look reads it while it starts a write
+        // of its own, which the look skips the record for.
+        assert!(!desktops.settled(8, &tree), "the record moved");
+        let (answer, answered) = tokio::sync::oneshot::channel::<()>();
+        let wake = desktops.wake.handle();
+        desktops.held(&key, |held| {
+            held.writing = Some(Going::View(Box::new(Publishing {
+                writing: crate::engine_write::Writing::write(wake, async {
+                    let _ = answered.await;
+                    Err("refused".to_owned())
+                }),
+                candidate: automerge::AutoCommit::new(),
+                replaced: None,
+                revision: None,
+            })));
+        });
+        assert!(!desktops.settle_publishing(), "the write is under way");
+        let _ = answer.send(());
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the write wakes the loop once it is done");
+        assert!(
+            !desktops.settled(8, &tree),
+            "the look after the write reads the record again"
+        );
+        assert!(
+            desktops.settled(8, &tree),
+            "and the one after that has nothing to read"
         );
     }
 
