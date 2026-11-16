@@ -114,6 +114,14 @@ pub struct NewIssue {
     /// shown as its author and date, while its history keeps who moved it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// Its place in the tracker's order, after every issue there: filled
+    /// in where it is made, from the issues held there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<String>,
+    /// The project or area `project` names, as the issue keeps it: filled
+    /// in where it is made, from the tracker's projects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<Area>,
 }
 
 impl NewIssue {
@@ -133,6 +141,8 @@ impl NewIssue {
             due_ms: None,
             labels: None,
             origin: None,
+            rank: None,
+            goal: None,
         }
     }
 }
@@ -325,6 +335,11 @@ pub struct Issue {
     /// counter when it was made.
     #[model(readonly)]
     pub number: u64,
+    /// Its place in the tracker's order ([`tilo_resource::order`]): the
+    /// list and the board show issues by it, wherever each is kept. Only
+    /// `create` and `place` set it.
+    #[model(readonly)]
+    pub rank: String,
     /// Title
     #[model(label)]
     pub title: String,

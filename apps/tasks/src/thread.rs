@@ -11,7 +11,7 @@ use crate::model::{Issue, Tracker};
 use ui::prelude::*;
 use ui::widget::ListRow;
 
-use crate::{Filter, Nav, reference};
+use crate::{Filter, Issues, Nav, Window, reference};
 
 /// One task as the thread view reads it: the issue and what its thread last
 /// said.
@@ -56,9 +56,8 @@ fn one_line(text: &str) -> String {
 
 /// The tasks showing a conversation, the newest task first: a task that was
 /// asked later reads above one asked before it.
-fn rows(tracker: &Tracker, people: &ui::framework::People) -> Vec<(Id, Row)> {
-    let mut shown: Vec<(Id, Row)> = tracker
-        .issues
+fn rows(issues: &Issues<'_>, people: &ui::framework::People) -> Vec<(Id, Row)> {
+    let mut shown: Vec<(Id, Row)> = issues
         .iter()
         .filter(|(_, issue)| !issue.comments.is_empty())
         .filter_map(|(id, issue)| Row::of(issue, people).map(|row| (id.clone(), row)))
@@ -67,19 +66,19 @@ fn rows(tracker: &Tracker, people: &ui::framework::People) -> Vec<(Id, Row)> {
     shown
 }
 
-pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
+pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
     let chosen = nav.filter.clone();
     let me = cx.me().cloned();
     let people = cx.people();
     let nav = nav.clone();
+    let tasks = window.tasks.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
-        let tracker = cx.value(Tracker::clone);
         let nav = nav.clone();
         let me = me.clone();
         let people = people.clone();
-        cx.switch(&tracker, move |_, tracker| {
-            list_of(tracker, &nav, &filter, me.as_ref(), &people)
+        cx.switch(&tasks, move |_, tasks| {
+            list_of(&tasks.issues(), &nav, &filter, me.as_ref(), &people)
         })
     });
     // The view's name is the window's location: the bar says where the
@@ -88,32 +87,31 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(crate::new_issue(cx, None, None, "tasks-thread-new"))
+            .push(crate::new_issue(cx, window, None, None, "tasks-thread-new"))
             .push(list),
     )
 }
 
 fn list_of(
-    tracker: &Tracker,
+    issues: &Issues<'_>,
     nav: &Nav,
     filter: &Filter,
     me: Option<&ui::tilo_resource::MemberId>,
     people: &ui::framework::People,
 ) -> Element {
-    if tracker.issues.is_empty() {
+    if issues.is_empty() {
         return Box::new(
             EmptyState::new("tasks-empty-title")
                 .with_message("tasks-empty-message")
                 .with_id("tasks-thread-empty"),
         );
     }
-    let shown: Vec<(Id, Row)> = rows(tracker, people)
+    let shown: Vec<(Id, Row)> = rows(issues, people)
         .into_iter()
         .filter(|(id, _)| {
-            tracker
-                .issues
+            issues
                 .get(id)
-                .is_some_and(|issue| filter.shows(tracker, id, issue, me))
+                .is_some_and(|issue| filter.shows(issues, id, issue, me))
         })
         .collect();
     if shown.is_empty() {

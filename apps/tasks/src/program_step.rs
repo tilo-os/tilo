@@ -6,11 +6,12 @@ use ui::prelude::*;
 use ui::tilo_reference::ProgramStep;
 use ui::widget::{Badge, ChipStyle, ProgramStepView, StepAnswer};
 
-use crate::model::{Message, Tracker};
+use crate::IssuePart;
+use crate::model::Message;
 use crate::tr;
 
 /// The thread row of a [`crate::model::MessageKind::Step`]: `heading` names who ran it.
-pub(crate) fn step_row(cx: &ViewCx<Tracker>, heading: Row, message: &Message) -> Element {
+pub(crate) fn step_row(cx: &ViewCx<IssuePart>, heading: Row, message: &Message) -> Element {
     let heading = heading.push(Box::new(
         Badge::text(tr("tasks-message-step")).style(ChipStyle::Neutral),
     ));

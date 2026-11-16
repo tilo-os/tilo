@@ -12,7 +12,8 @@ use std::collections::BTreeSet;
 
 use ui::tilo_resource::Id;
 
-use crate::model::{Issue, Tracker};
+use crate::Issues;
+use crate::model::Issue;
 
 /// Which issues the list and the board show.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -108,33 +109,27 @@ impl Filter {
     /// Whether the issue shows: it matches, or something under it does.
     pub(crate) fn shows(
         &self,
-        tracker: &Tracker,
+        issues: &Issues<'_>,
         id: &Id,
         issue: &Issue,
         me: Option<&ui::tilo_resource::MemberId>,
     ) -> bool {
-        self.matches(issue, me) || self.shows_below(tracker, id, me)
+        self.matches(issue, me) || self.shows_below(issues, id, me)
     }
 
-    fn shows_below(
-        &self,
-        tracker: &Tracker,
-        id: &Id,
-        me: Option<&ui::tilo_resource::MemberId>,
-    ) -> bool {
-        tracker
+    fn shows_below(&self, issues: &Issues<'_>, id: &Id, me: Option<&ui::tilo_resource::MemberId>) -> bool {
+        issues
             .children(Some(id))
-            .any(|(child, issue)| self.shows(tracker, child, issue, me))
+            .any(|(child, issue)| self.shows(issues, child, issue, me))
     }
 }
 
 /// Every label the tracker's issues carry, in the order a person reads
 /// them, for the sidebar's labels.
-pub(crate) fn labels(tracker: &Tracker) -> Vec<String> {
-    let all: BTreeSet<&str> = tracker
-        .issues
-        .values()
-        .flat_map(|issue| issue.labels.iter())
+pub(crate) fn labels(issues: &Issues<'_>) -> Vec<String> {
+    let all: BTreeSet<&str> = issues
+        .iter()
+        .flat_map(|(_, issue)| issue.labels.iter())
         .map(String::as_str)
         .collect();
     all.into_iter().map(str::to_owned).collect()

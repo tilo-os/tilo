@@ -366,11 +366,16 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         record_provider(&tasks),
         record_provider(&books),
     );
-    // The host's own person files an issue for members to comment on.
+    // The host's own person files an issue for members to comment on: in
+    // the parts the tracker keeps its issues in, published as one chain.
+    let issues = ui::record::chain_resource_id(&ui::record::DocumentId::derived(
+        "issues",
+        &ui::record::DocumentId::workspace_default(),
+    ));
     let filed = browser
         .invoke(request(
             &tasks_provider,
-            ActionAddress::new("", "create"),
+            ActionAddress::new(issues, "create"),
             json(serde_json::json!({"title": "Ship the launch"})),
         ))
         .await;

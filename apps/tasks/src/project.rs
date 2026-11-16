@@ -13,17 +13,18 @@ use ui::tilo_resource::NonBlank;
 use ui::widget::{Fact, Facts};
 
 use crate::model::{Kind, Tracker, tracker};
-use crate::{reference, tr};
+use crate::{Issues, Window, reference, tr};
 
 /// The project's page, or that it is gone.
-pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id) -> Element {
+pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, window: &Window) -> Element {
+    let window = window.clone();
     let exists = cx.value({
         let id = id.clone();
         move |tracker: &Tracker| tracker.areas.contains(&id)
     });
     cx.switch(&exists, move |cx, exists| {
         if *exists {
-            content(cx, &id)
+            content(cx, &id, &window)
         } else {
             Box::new(
                 Column::new()
@@ -38,7 +39,7 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id) -> Element {
     })
 }
 
-fn content(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn content(cx: &ViewCx<Tracker>, id: &Id, window: &Window) -> Element {
     let paths = Tracker::paths().areas.item(id);
     Box::new(
         Scrollable::new_vertical()
@@ -62,8 +63,8 @@ fn content(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                             ))
                             .push(kind(cx, id))
                             .push(people(cx, id))
-                            .push(tasks(cx, id))
-                            .push(documents(cx, id)),
+                            .push(tasks(cx, id, window))
+                            .push(documents(cx, id, window)),
                     )),
             )),
     )
@@ -219,11 +220,24 @@ fn people(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 
 /// The tasks that work towards the project, at any depth under their
 /// parent, each opening as a task does.
-fn tasks(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let held = cx.value({
+/// `read` of the issues, following every change of them; nothing in a view
+/// that holds no issues (a past version).
+fn of_issues<V: PartialEq + Clone + Default + 'static>(
+    cx: &ViewCx<Tracker>,
+    window: &Window,
+    read: impl Fn(&Issues<'_>) -> V + 'static,
+) -> LocalState<V> {
+    match &window.chain {
+        Some(chain) => cx.chain_value(chain, move |_, parts| read(&Issues::of(parts))),
+        None => LocalState::new(V::default()),
+    }
+}
+
+fn tasks(cx: &ViewCx<Tracker>, id: &Id, window: &Window) -> Element {
+    let held = of_issues(cx, window, {
         let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
+        move |issues| {
+            issues
                 .in_area(&id)
                 .map(|(task, issue)| (task.clone(), issue.number, issue.title.clone()))
                 .collect::<Vec<_>>()
@@ -268,11 +282,11 @@ fn tasks(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 
 /// The documents the project holds: what its tasks link, so the project
 /// shows them without storing a second copy.
-fn documents(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let links = cx.value({
+fn documents(cx: &ViewCx<Tracker>, id: &Id, window: &Window) -> Element {
+    let links = of_issues(cx, window, {
         let id = id.clone();
-        move |tracker: &Tracker| {
-            let mut links: Vec<_> = tracker
+        move |issues| {
+            let mut links: Vec<_> = issues
                 .in_area(&id)
                 .flat_map(|(_, issue)| issue.links.values().cloned())
                 .collect();

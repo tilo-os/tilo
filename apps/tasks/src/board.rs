@@ -5,21 +5,23 @@
 //! lane, one undo step. A card opens its issue; its status changes there
 //! too, so nothing needs a pointer.
 
-use crate::model::{Issue, Status, Tracker, tracker};
+use crate::model::{Issue, Status, Tracker};
+use crate::part::{IssuePart, Issues, issue_part};
 use ui::prelude::*;
 use ui::widget::{Badge, Board, BoardDrop, Card, ChipStyle, Tone};
 
-use crate::{Filter, Nav, TasksEffect, reference, tr};
+use crate::{Filter, Nav, TasksEffect, Window, reference, tr};
 
-pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
+pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
     let chosen = nav.filter.clone();
     let me = cx.me().cloned();
+    let window = window.clone();
     let board = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
-        let tracker = cx.value(Tracker::clone);
         let me = me.clone();
-        cx.switch(&tracker, move |cx, tracker| {
-            lanes(cx, tracker, &filter, me.as_ref())
+        let shown = window.clone();
+        cx.switch(&window.tasks, move |cx, tasks| {
+            lanes(cx, &shown, &tasks.issues(), &filter, me.as_ref())
         })
     });
     // The board's name is the window's location: the bar says where the
@@ -46,18 +48,18 @@ fn status_of(lane: &str) -> Option<Status> {
 
 fn lanes(
     cx: &ViewCx<Tracker>,
-    tracker: &Tracker,
+    window: &Window,
+    issues: &Issues<'_>,
     filter: &Filter,
     me: Option<&ui::tilo_resource::MemberId>,
 ) -> Element {
     let people = cx.people();
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
-        let cards: Vec<(String, Element)> = tracker
-            .issues
+        let cards: Vec<(String, Element)> = issues
             .iter()
             .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
-            .map(|(id, issue)| (id.to_string(), card(cx, tracker, id, issue, &people)))
+            .map(|(id, issue)| (id.to_string(), card(window, issues, id, issue, &people)))
             .collect();
         let header = Text::new(&crate::locales::CATALOG.t_args(
             "tasks-lane-heading",
@@ -73,6 +75,7 @@ fn lanes(
             cards,
             Some(crate::new_issue(
                 cx,
+                window,
                 None,
                 Some(status),
                 &format!("tasks-board-new-{}", status.label_key()),
@@ -81,14 +84,19 @@ fn lanes(
     }
     // A drop is the `place` action: one gesture, one undo step, confirmed
     // and permitted like the same move made anywhere else.
-    let place = Tracker::PLACE.try_map(move |drop: BoardDrop| {
-        Some(tracker::Place {
+    let place = IssuePart::PLACE.try_map(move |drop: BoardDrop| {
+        Some(issue_part::Place {
             issue: Id::from_raw(drop.card),
             status: status_of(&drop.lane)?,
             before: drop.before.map(Id::from_raw),
+            rank: None,
         })
     });
-    let board = match cx.actions().binding(place) {
+    let board = match window
+        .actions
+        .as_ref()
+        .and_then(|actions| actions.binding(place))
+    {
         Some(binding) => board.on_drop_binding(binding),
         None => board,
     };
@@ -97,8 +105,8 @@ fn lanes(
 
 /// One issue's card: its reference and title, and what it is waiting on.
 fn card(
-    cx: &ViewCx<Tracker>,
-    tracker: &Tracker,
+    window: &Window,
+    issues: &Issues<'_>,
     id: &Id,
     issue: &Issue,
     people: &ui::framework::People,
@@ -117,7 +125,7 @@ fn card(
             Badge::text(who.name)
         }));
     }
-    let (closed, total) = tracker.progress(id);
+    let (closed, total) = issues.progress(id);
     if total > 0 {
         facts = facts.push(Box::new(
             Text::new(&crate::locales::CATALOG.t_args(
@@ -137,8 +145,14 @@ fn card(
     // The card opens its issue through the app's published effect, the one
     // the list, a script and an agent invoke.
     let open = TasksEffect::OpenIssue { issue: id.clone() };
-    Box::new(match cx.actions().effect(&open) {
-        Some(binding) => card.on_action(format!("tasks-card-{id}"), binding),
-        None => card,
-    })
+    Box::new(
+        match window
+            .actions
+            .as_ref()
+            .and_then(|actions| actions.effect(&open))
+        {
+            Some(binding) => card.on_action(format!("tasks-card-{id}"), binding),
+            None => card,
+        },
+    )
 }

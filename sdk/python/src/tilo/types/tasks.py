@@ -20,25 +20,34 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
-    "Area",
-    "Issue",
     "Kind",
+    "Person",
+    "TrackerArea",
+    "Area",
+    "Attachment",
+    "Issue",
     "Link",
     "Message",
     "MessageKind",
-    "Person",
+    "Origin",
+    "Priority",
     "Status",
-    "TrackerArea",
     "Tracker",
-    "CreateArgs",
+    "Issues",
     "CreateAreaArgs",
-    "RenameArgs",
     "RenameAreaArgs",
     "SetKindArgs",
     "InvolveArgs",
     "RemovePersonArgs",
+    "DeleteAreaArgs",
+    "CreateArgs",
+    "StartArgs",
+    "RenameArgs",
     "MoveUnderArgs",
     "AssignArgs",
+    "SetProjectArgs",
+    "AttachArgs",
+    "DetachArgs",
     "AddLabelArgs",
     "PlaceArgs",
     "CommentArgs",
@@ -48,14 +57,35 @@ __all__ = [
     "PlanArgs",
 ]
 
+Kind = Literal["project", "area"]
+
+class Person(TypedDict):
+    name: str
+    role: str
+
+class TrackerArea(TypedDict):
+    id: str
+    name: str
+    kind: Kind
+    people: list[Person]
+
 class Area(TypedDict):
     resource: str
     app: str
     kind: str
     label: str
 
+class Attachment(TypedDict):
+    name: str
+    media_type: str | None
+    bytes: Any
+    author: str | None
+    author_name: str
+    at_ms: int
+
 class Issue(TypedDict):
     number: int
+    rank: str
     title: str
     body: str
     status: Status
@@ -66,12 +96,14 @@ class Issue(TypedDict):
     area: Area | None
     due_ms: int | None
     priority: int | None
+    estimate: int | None
+    attachments: list[Attachment]
     comments: list[Message]
     author: str | None
+    author_name: str
     created_ms: int
+    origin: Origin | None
     url: str | None
-
-Kind = Literal["project", "area"]
 
 class Link(TypedDict):
     label: str
@@ -82,8 +114,10 @@ class Link(TypedDict):
 
 class Message(TypedDict):
     author: str | None
+    author_name: str
     by_agent: bool
     at_ms: int
+    origin: Origin | None
     text: str
     kind: MessageKind
     run: int
@@ -93,39 +127,24 @@ class Message(TypedDict):
 
 MessageKind = Literal["comment", "to_run", "from_run", "lookup", "step", "answer"]
 
-class Person(TypedDict):
-    name: str
-    role: str
+class Origin(TypedDict):
+    author: str
+    handle: str | None
+    source: str
+    url: str | None
+    reference: str | None
+    created_ms: int | None
+    updated_ms: int | None
+
+Priority = Literal["none", "urgent", "high", "medium", "low"]
 
 Status = Literal["backlog", "todo", "in_progress", "in_review", "done", "cancelled"]
-
-class TrackerArea(TypedDict):
-    id: str
-    name: str
-    kind: Kind
-    people: list[Person]
-
-CreateArgs = TypedDict("CreateArgs", {
-    "title": "str",
-    "parent": NotRequired["str | None"],
-    "body": NotRequired["str | None"],
-    "status": NotRequired["Status | None"],
-    "assignee": NotRequired["str | None"],
-    "url": NotRequired["str | None"],
-})
-"""The arguments of `create`."""
 
 CreateAreaArgs = TypedDict("CreateAreaArgs", {
     "name": "str",
     "kind": NotRequired["Kind | None"],
 })
 """The arguments of `create-area`."""
-
-RenameArgs = TypedDict("RenameArgs", {
-    "issue": "str",
-    "title": "str",
-})
-"""The arguments of `rename`."""
 
 RenameAreaArgs = TypedDict("RenameAreaArgs", {
     "area": "str",
@@ -152,6 +171,40 @@ RemovePersonArgs = TypedDict("RemovePersonArgs", {
 })
 """The arguments of `remove-person`."""
 
+DeleteAreaArgs = TypedDict("DeleteAreaArgs", {
+    "area": "str",
+})
+"""The arguments of `delete-area`."""
+
+CreateArgs = TypedDict("CreateArgs", {
+    "title": "str",
+    "parent": NotRequired["str | None"],
+    "body": NotRequired["str | None"],
+    "status": NotRequired["Any | None"],
+    "assignee": NotRequired["str | None"],
+    "url": NotRequired["str | None"],
+    "project": NotRequired["str | None"],
+    "priority": NotRequired["Any | None"],
+    "estimate": NotRequired["int | None"],
+    "due_ms": NotRequired["int | None"],
+    "labels": NotRequired["list[str] | None"],
+    "origin": NotRequired["Any | None"],
+    "rank": NotRequired["str | None"],
+    "goal": NotRequired["Any | None"],
+})
+"""The arguments of `create`."""
+
+StartArgs = TypedDict("StartArgs", {
+    "before": "int",
+})
+"""The arguments of `start`."""
+
+RenameArgs = TypedDict("RenameArgs", {
+    "issue": "str",
+    "title": "str",
+})
+"""The arguments of `rename`."""
+
 MoveUnderArgs = TypedDict("MoveUnderArgs", {
     "issue": "str",
     "parent": NotRequired["str | None"],
@@ -164,6 +217,27 @@ AssignArgs = TypedDict("AssignArgs", {
 })
 """The arguments of `assign`."""
 
+SetProjectArgs = TypedDict("SetProjectArgs", {
+    "issue": "str",
+    "project": NotRequired["str | None"],
+    "goal": NotRequired["Area | None"],
+})
+"""The arguments of `set-project`."""
+
+AttachArgs = TypedDict("AttachArgs", {
+    "issue": "str",
+    "name": "str",
+    "bytes": "Any",
+    "media_type": NotRequired["str | None"],
+})
+"""The arguments of `attach`."""
+
+DetachArgs = TypedDict("DetachArgs", {
+    "issue": "str",
+    "attachment": "str",
+})
+"""The arguments of `detach`."""
+
 AddLabelArgs = TypedDict("AddLabelArgs", {
     "issue": "str",
     "label": "str",
@@ -174,12 +248,14 @@ PlaceArgs = TypedDict("PlaceArgs", {
     "issue": "str",
     "status": "Status",
     "before": NotRequired["str | None"],
+    "rank": NotRequired["str | None"],
 })
 """The arguments of `place`."""
 
 CommentArgs = TypedDict("CommentArgs", {
     "issue": "str",
     "text": "str",
+    "origin": NotRequired["Origin | None"],
 })
 """The arguments of `comment`."""
 
@@ -207,48 +283,16 @@ DeleteArgs = TypedDict("DeleteArgs", {
 PlanArgs = TypedDict("PlanArgs", {
     "issue": "str",
     "area": NotRequired["Area | None"],
-    "priority": NotRequired["int | None"],
+    "priority": NotRequired["Priority | None"],
+    "estimate": NotRequired["int | None"],
     "due_ms": NotRequired["int | None"],
 })
 """The arguments of `plan`."""
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@7e65343905e59068"
-    issues: list[Issue]
+    __surface__ = "so.tilo.tasks@455e39db12025c1d"
     areas: list[TrackerArea]
-    @property
-    def numbers(self) -> int:
-        """Read only."""
-        return self.fields["numbers"]
-
-    def create(self,
-        *,
-        title: str,
-        parent: str | None = None,
-        body: str | None = None,
-        status: Status | None = None,
-        assignee: str | None = None,
-        url: str | None = None,
-    ) -> Run | None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["title"] = title
-        if parent is not None:
-            args["parent"] = parent
-        if body is not None:
-            args["body"] = body
-        if status is not None:
-            args["status"] = status
-        if assignee is not None:
-            args["assignee"] = assignee
-        if url is not None:
-            args["url"] = url
-        return self.action("create", **args)
-
-    def create_many(self, items: list[CreateArgs]) -> list[dict[str, Any]]:
-        """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
-        return self.many("create", items)
 
     def create_area(self,
         *,
@@ -265,18 +309,6 @@ class Tracker(Resource):
     def create_area_many(self, items: list[CreateAreaArgs]) -> list[dict[str, Any]]:
         """Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("create-area", items)
-
-    def rename(self,
-        *,
-        issue: str,
-        title: str,
-    ) -> Run | None:
-        """Runs the app's action."""
-        return self.action("rename", issue=issue, title=title)
-
-    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
-        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
-        return self.many("rename", items)
 
     def rename_area(self,
         *,
@@ -332,6 +364,104 @@ class Tracker(Resource):
         """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-person", items)
 
+    def delete_area(self, *, area: str) -> Run | None:
+        """Runs the app's action."""
+        return self.action("delete-area", area=area)
+
+    def delete_area_many(self, items: list[DeleteAreaArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-area", items)
+
+    def new_project(self) -> None:
+        """Runs the app's action."""
+        return self.action("new-project")
+
+
+class Issues(Resource):
+    """Issues — `tasks.issues`."""
+    __surface__ = "so.tilo.tasks@455e39db12025c1d"
+    issues: list[Issue]
+    @property
+    def before(self) -> int:
+        """Read only."""
+        return self.fields["before"]
+    @property
+    def numbers(self) -> int:
+        """Read only."""
+        return self.fields["numbers"]
+
+    def create(self,
+        *,
+        title: str,
+        parent: str | None = None,
+        body: str | None = None,
+        status: Any | None = None,
+        assignee: str | None = None,
+        url: str | None = None,
+        project: str | None = None,
+        priority: Any | None = None,
+        estimate: int | None = None,
+        due_ms: int | None = None,
+        labels: list[str] | None = None,
+        origin: Any | None = None,
+        rank: str | None = None,
+        goal: Any | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["title"] = title
+        if parent is not None:
+            args["parent"] = parent
+        if body is not None:
+            args["body"] = body
+        if status is not None:
+            args["status"] = status
+        if assignee is not None:
+            args["assignee"] = assignee
+        if url is not None:
+            args["url"] = url
+        if project is not None:
+            args["project"] = project
+        if priority is not None:
+            args["priority"] = priority
+        if estimate is not None:
+            args["estimate"] = estimate
+        if due_ms is not None:
+            args["due_ms"] = due_ms
+        if labels is not None:
+            args["labels"] = labels
+        if origin is not None:
+            args["origin"] = origin
+        if rank is not None:
+            args["rank"] = rank
+        if goal is not None:
+            args["goal"] = goal
+        return self.action("create", **args)
+
+    def create_many(self, items: list[CreateArgs]) -> list[dict[str, Any]]:
+        """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create", items)
+
+    def start(self, *, before: int) -> Run | None:
+        """Runs the app's action."""
+        return self.action("start", before=before)
+
+    def start_many(self, items: list[StartArgs]) -> list[dict[str, Any]]:
+        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("start", items)
+
+    def rename(self,
+        *,
+        issue: str,
+        title: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("rename", issue=issue, title=title)
+
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename", items)
+
     def move_under(self,
         *,
         issue: str,
@@ -364,6 +494,57 @@ class Tracker(Resource):
         """Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("assign", items)
 
+    def set_project(self,
+        *,
+        issue: str,
+        project: str | None = None,
+        goal: Area | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        if project is not None:
+            args["project"] = project
+        if goal is not None:
+            args["goal"] = goal
+        return self.action("set-project", **args)
+
+    def set_project_many(self, items: list[SetProjectArgs]) -> list[dict[str, Any]]:
+        """Runs `set-project` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-project", items)
+
+    def attach(self,
+        *,
+        issue: str,
+        name: str,
+        bytes: Any,
+        media_type: str | None = None,
+    ) -> Run | None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        args["name"] = name
+        args["bytes"] = bytes
+        if media_type is not None:
+            args["media_type"] = media_type
+        return self.action("attach", **args)
+
+    def attach_many(self, items: list[AttachArgs]) -> list[dict[str, Any]]:
+        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("attach", items)
+
+    def detach(self,
+        *,
+        issue: str,
+        attachment: str,
+    ) -> Run | None:
+        """Runs the app's action."""
+        return self.action("detach", issue=issue, attachment=attachment)
+
+    def detach_many(self, items: list[DetachArgs]) -> list[dict[str, Any]]:
+        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("detach", items)
+
     def add_label(self,
         *,
         issue: str,
@@ -381,6 +562,7 @@ class Tracker(Resource):
         issue: str,
         status: Status,
         before: str | None = None,
+        rank: str | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -388,6 +570,8 @@ class Tracker(Resource):
         args["status"] = status
         if before is not None:
             args["before"] = before
+        if rank is not None:
+            args["rank"] = rank
         return self.action("place", **args)
 
     def place_many(self, items: list[PlaceArgs]) -> list[dict[str, Any]]:
@@ -398,9 +582,15 @@ class Tracker(Resource):
         *,
         issue: str,
         text: str,
+        origin: Origin | None = None,
     ) -> Run | None:
         """Runs the app's action."""
-        return self.action("comment", issue=issue, text=text)
+        args: dict[str, Any] = {}
+        args["issue"] = issue
+        args["text"] = text
+        if origin is not None:
+            args["origin"] = origin
+        return self.action("comment", **args)
 
     def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
         """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
@@ -454,7 +644,8 @@ class Tracker(Resource):
         *,
         issue: str,
         area: Area | None = None,
-        priority: int | None = None,
+        priority: Priority | None = None,
+        estimate: int | None = None,
         due_ms: int | None = None,
     ) -> Run | None:
         """Runs the app's action."""
@@ -464,6 +655,8 @@ class Tracker(Resource):
             args["area"] = area
         if priority is not None:
             args["priority"] = priority
+        if estimate is not None:
+            args["estimate"] = estimate
         if due_ms is not None:
             args["due_ms"] = due_ms
         return self.action("plan", **args)
@@ -471,9 +664,5 @@ class Tracker(Resource):
     def plan_many(self, items: list[PlanArgs]) -> list[dict[str, Any]]:
         """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("plan", items)
-
-    def new_project(self) -> None:
-        """Runs the app's action."""
-        return self.action("new-project")
 
 

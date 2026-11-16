@@ -1,17 +1,28 @@
 //! What the capture scenarios show: a few issues of a small launch. Never
 //! written into a real workspace.
 //!
-//! The issues are made through the tracker's own actions — a [`Replica`]
-//! applies each one through the same api a person's does — and then staged
-//! as the record's start, since a capture cannot wait for a handful of
-//! changes, and the issues it shows must be the person's own for "Mine" and
-//! its count to read as they do.
+//! The issues are made through the parts' own actions, carried out through
+//! the window's chain as the person's, as the window opens: the issues it
+//! shows must be the person's own for "Mine" and its count to read as they
+//! do.
 
+use ui::framework::Chain;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
 
-use crate::model::{Status, Tracker, tracker};
-use crate::{Filter, Nav, Place};
+use crate::model::Status;
+use crate::part::{IssuePart, issue_part};
+use crate::{Filter, Issues, Nav, Place, Tasks};
+
+/// What a capture's tracker holds as its window opens, staged by the
+/// scenario's fixture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scene {
+    /// A small launch's issues.
+    Launch,
+    /// What a migration from Linear leaves.
+    Migrated,
+}
 
 pub(crate) const SCENARIOS: &[&str] = &[
     "issues",
@@ -81,12 +92,29 @@ const ISSUES: [Sample; 6] = [
     },
 ];
 
-/// The tracker a scenario shows, its issues the person's own changes.
-pub(crate) fn tracker(person: &str) -> Tracker {
-    let mut replica = Replica::<Tracker>::new();
-    let mut at = ui::time::unix_now_ms_i64().saturating_sub(60_000);
+/// Fill an empty tracker's issues with `scene`, as `person`'s changes.
+pub(crate) fn fill(scene: Scene, chain: &Chain<IssuePart>, person: &str) {
+    if !chain.parts().is_empty() {
+        return;
+    }
+    match scene {
+        Scene::Launch => launch(chain, person),
+        Scene::Migrated => migrated(chain, person),
+    }
+}
+
+/// The issue titled `title`, as the chain holds it now.
+fn made(chain: &Chain<IssuePart>, title: &str) -> Option<Id> {
+    let parts = chain.parts();
+    Issues::of(&parts)
+        .iter()
+        .find(|(_, shown)| shown.title == title)
+        .map(|(id, _)| id.clone())
+}
+
+/// A small launch's issues, the person's own changes.
+fn launch(chain: &Chain<IssuePart>, person: &str) {
     for issue in &ISSUES {
-        at = at.saturating_add(1_000);
         let assignee = if issue.mine {
             Some(crate::model::person_assignee(person).0)
         } else if issue.agent {
@@ -97,22 +125,12 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         let Some(title) = NonBlank::parse(issue.title) else {
             continue;
         };
-        replica = replica.as_author(person);
-        replica.set_now_ms(at);
-        if replica
-            .apply(Tracker::CREATE.with(crate::model::NewIssue {
-                title,
-                parent: None,
+        if chain
+            .invoke(&IssuePart::CREATE.with(crate::model::NewIssue {
                 body: Some(format!("## Why\n\n{} before the launch.", issue.title)),
                 status: Some(issue.status),
                 assignee,
-                url: None,
-                project: None,
-                priority: None,
-                estimate: None,
-                due_ms: None,
-                labels: None,
-                origin: None,
+                ..crate::model::NewIssue::titled(title)
             }))
             .is_err()
         {
@@ -121,39 +139,31 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         // Some of the tasks have been talked about, so the thread view has
         // something to read and the person's own voice is in it.
         if matches!(issue.status, Status::InProgress | Status::InReview)
-            && let Some(id) = made(&replica, issue.title)
+            && let Some(id) = made(chain, issue.title)
             && let Some(text) = NonBlank::parse(&format!(
                 "Started on {}: the first draft is in the folder.",
                 issue.title
             ))
         {
-            at = at.saturating_add(1_000);
-            replica = replica.as_author(person);
-            replica.set_now_ms(at);
-            replica
-                .apply(Tracker::COMMENT.with(tracker::Comment {
-                    issue: id.clone(),
-                    text,
-                    origin: None,
-                }))
-                .ok();
+            let _ = chain.invoke(&IssuePart::COMMENT.with(issue_part::Comment {
+                issue: id,
+                text,
+                origin: None,
+            }));
         }
-        let Some(label) = issue.label.and_then(NonBlank::parse) else {
+        let (Some(label), Some(id)) = (
+            issue.label.and_then(NonBlank::parse),
+            made(chain, issue.title),
+        ) else {
             continue;
         };
-        let Some(id) = made(&replica, issue.title) else {
-            continue;
-        };
-        at = at.saturating_add(1_000);
-        replica.set_now_ms(at);
-        let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel { issue: id, label }));
+        let _ = chain.invoke(&IssuePart::ADD_LABEL.with(issue_part::AddLabel { issue: id, label }));
     }
-    replica.state().unwrap_or_default()
 }
 
-/// The tracker a migration from Linear leaves: issues added through the import inbox, as
-/// opening Tasks after the migration adds them.
-pub(crate) fn migrated(person: &str) -> Tracker {
+/// The issues a migration from Linear leaves: added through the import inbox, as opening
+/// Tasks after the migration adds them.
+fn migrated(chain: &Chain<IssuePart>, person: &str) {
     let page = |identifier: &str| format!("https://tracker.example/acme/issue/{identifier}");
     let issue = |identifier: &str, title: &str, status: &str, extra: serde_json::Value| {
         let mut entry = serde_json::json!({
@@ -211,33 +221,11 @@ pub(crate) fn migrated(person: &str) -> Tracker {
             serde_json::json!({}),
         ),
     ];
-    let mut replica = Replica::<Tracker>::new();
-    let mut doc = replica.doc_mut().clone();
-    if crate::import_inbox::apply(
-        &mut doc,
-        &entries,
-        &ui::tilo_resource::MemberId::person(person),
-    )
-    .is_err()
-    {
-        return Tracker::default();
-    }
-    <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap_or_default()
-}
-
-/// The issue `title` names, as the replica has it now.
-fn made(replica: &Replica<Tracker>, title: &str) -> Option<Id> {
-    replica.state().ok().and_then(|state| {
-        state
-            .issues
-            .iter()
-            .find(|(_, shown)| shown.title == title)
-            .map(|(id, _)| id.clone())
-    })
+    let _ = crate::import_inbox::apply(chain, &entries);
 }
 
 /// The view state a scenario shows.
-pub(crate) fn stage(scenario: Option<&str>, nav: &Nav, tracker: &Tracker) {
+pub(crate) fn stage(scenario: Option<&str>, nav: &Nav, tasks: &Tasks) {
     match scenario {
         Some("board") => nav.place.set(Place::Board),
         Some("mine") => {
@@ -246,7 +234,7 @@ pub(crate) fn stage(scenario: Option<&str>, nav: &Nav, tracker: &Tracker) {
         }
         Some("issue" | "migrated-issue") => {
             nav.place.set(Place::List);
-            if let Some((id, _)) = tracker.by_number(1) {
+            if let Some((id, _)) = tasks.issues().by_number(1) {
                 nav.open(id);
             }
         }

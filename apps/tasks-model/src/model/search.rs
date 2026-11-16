@@ -3,14 +3,14 @@
 
 use tilo_resource::{SearchEntry, SearchWeight};
 
-use crate::model::record::Tracker;
+use crate::model::issue::Issue;
 
 /// One entry per issue, opening the issue.
 #[must_use]
-pub fn entries(tracker: &Tracker) -> Vec<SearchEntry> {
-    tracker
-        .issues
-        .iter()
+pub fn entries<'a>(
+    issues: impl Iterator<Item = (&'a tilo_resource::Id, &'a Issue)>,
+) -> Vec<SearchEntry> {
+    issues
         .map(|(id, issue)| {
             let mut entry = SearchEntry::new(issue.title.clone(), issue.body.text())
                 .anchored(crate::model::issue_resource(id))

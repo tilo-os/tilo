@@ -1809,7 +1809,7 @@ mod tests {
             assert!(
                 ts.contains(
                     "export interface CreateArgs {\n  title: string;\n  parent?: string;\n  \
-                     body?: string;\n  status?: Status;\n"
+                     body?: string;\n"
                 ),
                 "{ts}"
             );

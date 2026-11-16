@@ -9,25 +9,50 @@
 
 use crate::model::{
     Issue, Message, MessageKind, Priority, Status, Tracker, agent_assignee, issue_resource,
-    person_assignee, tracker,
+    person_assignee,
 };
+use crate::part::{IssuePart, issue_part};
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::tilo_resource::NonBlank;
 use ui::widget::{Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
 
-use crate::{Nav, reference, tr, tr_with};
+use crate::{Nav, Tasks, Window, reference, tr, tr_with};
 
-pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
-    let exists = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| tracker.issues.contains(&id)
-    });
+pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> Element {
+    // The part that keeps the issue: the page is a view of that part, so its
+    // fields bind the issue's paths there and every change goes to it. Built
+    // again only when the issue is kept elsewhere (or no longer), never
+    // while it is edited.
+    let (held, labels) = match &window.chain {
+        Some(chain) => {
+            let (id, labelled) = (id.clone(), id.clone());
+            (
+                cx.chain_value(chain, move |_, parts| {
+                    parts
+                        .iter()
+                        .rev()
+                        .find(|(_, part)| part.issues.contains(&id))
+                        .map(|(index, _)| *index)
+                }),
+                cx.chain_value(chain, move |_, parts| Labels::of(parts, &labelled)),
+            )
+        }
+        None => (LocalState::new(None), LocalState::new(Labels::default())),
+    };
+    let page = Page {
+        window: window.clone(),
+        labels,
+        tracker: cx.actions(),
+    };
     let nav = nav.clone();
-    cx.switch(&exists, move |cx, exists| {
-        if *exists {
-            content(cx, &id, &nav)
-        } else {
+    cx.switch(&held, move |cx, held| {
+        let part = held.and_then(|index| page.window.chain.as_ref()?.part_record(index));
+        let shown = part.and_then(|part| {
+            let (id, nav, page) = (id.clone(), nav.clone(), page.clone());
+            cx.record(&part, move |cx| content(cx, &id, &nav, &page))
+        });
+        shown.unwrap_or_else(|| {
             Box::new(
                 Column::new()
                     .with_rhythm(ui::tokens::Rhythm::Group)
@@ -37,15 +62,27 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav) -> Element {
                             .with_id("tasks-issue-gone"),
                     )),
             )
-        }
+        })
     })
 }
 
-fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
-    let paths = Tracker::paths().issues.item(id);
+/// What an issue's page reads beyond the part that keeps it: the window,
+/// and the labels every issue carries.
+#[derive(Clone)]
+struct Page {
+    window: Window,
+    labels: LocalState<Labels>,
+    /// The tracker's actions: the app's effects on an issue (writing its
+    /// note) are the window's, answered where the tracker is shown.
+    tracker: ui::framework::Actions<Tracker>,
+}
+
+fn content(cx: &ViewCx<IssuePart>, id: &Id, nav: &Nav, page: &Page) -> Element {
+    let window = &page.window;
+    let paths = IssuePart::paths().issues.item(id);
     let number = cx.value({
         let id = id.clone();
-        move |tracker: &Tracker| tracker.issues.get(&id).map_or(0, |issue| issue.number)
+        move |part: &IssuePart| part.issues.get(&id).map_or(0, |issue| issue.number)
     });
     let header = Row::new()
         .no_wrap()
@@ -91,11 +128,11 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                             .with_intrinsic_height()
                             .with_rhythm(ui::tokens::Rhythm::Group)
                             .push(Box::new(header))
-                            .push(properties(cx, id))
+                            .push(properties(cx, id, page))
                             .push(plan(cx, id))
                             .push(body)
-                            .push(sub_issues(cx, id, nav))
-                            .push(links(cx, id))
+                            .push(sub_issues(cx, id, nav, window))
+                            .push(links(cx, id, &page.tracker))
                             .push(thread(cx, id)),
                     )),
             )),
@@ -108,32 +145,31 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
     reason = "a rich-text op is plain data that always serializes, and every field of the tracker offers its edits"
 )]
 fn body_edit(
-    path: &ui::tilo_resource::Path<Tracker, tilo_rich_text::RichText>,
+    path: &ui::tilo_resource::Path<IssuePart, tilo_rich_text::RichText>,
     op: &tilo_rich_text::RichTextAction,
-) -> <Tracker as ui::tilo_resource::Resource>::Action {
-    Tracker::edit_action(path.perform(op).expect("a rich-text op serializes"))
+) -> <IssuePart as ui::tilo_resource::Resource>::Action {
+    IssuePart::edit_action(path.perform(op).expect("a rich-text op serializes"))
         .expect("the tracker offers field edits")
 }
 
 /// Where the issue stands, whom it is for and what it is filed under: one
 /// row of properties under its title, each a chip that opens what it can be
 /// set to — no field labels above them.
-fn properties(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn properties(cx: &ViewCx<IssuePart>, id: &Id, window: &Page) -> Element {
     Box::new(
         Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(status_picker(cx, id))
             .push(assignee_picker(cx, id))
-            .push(labels(cx, id)),
+            .push(labels(cx, id, &window.labels)),
     )
 }
 
 /// The issue's status, as the chip that opens every status it can take.
-fn status_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn status_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     let read_id = id.clone();
-    let status = cx.value(move |tracker: &Tracker| {
-        tracker
-            .issues
+    let status = cx.value(move |part: &IssuePart| {
+        part.issues
             .get(&read_id)
             .map(|issue| issue.status)
             .unwrap_or_default()
@@ -143,10 +179,11 @@ fn status_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         let mut choices = Stack::new();
         for choice in Status::ALL {
             let place_id = id.clone();
-            let place = Tracker::PLACE.map(move |()| tracker::Place {
+            let place = IssuePart::PLACE.map(move |()| issue_part::Place {
                 issue: place_id.clone(),
                 status: choice,
                 before: None,
+                rank: None,
             });
             let label = tr(choice.label_key());
             let button = Button::new(
@@ -171,7 +208,7 @@ fn status_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 }
 
 /// The issue's assignee, as the chip of the person or agent it is for.
-fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn assignee_picker(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     let read_id = id.clone();
     let assign_id = id.clone();
     cx.person_picker(
@@ -183,13 +220,12 @@ fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             ui::permissions::MemberId::Agent(id) => Some(agent_assignee(id).0),
             ui::permissions::MemberId::Bot(_) => None,
         },
-        move |tracker: &Tracker| {
-            tracker
-                .issues
+        move |part: &IssuePart| {
+            part.issues
                 .get(&read_id)
                 .and_then(|issue| issue.assignee.as_ref().map(|assignee| assignee.0.clone()))
         },
-        Tracker::ASSIGN.map(move |assignee: Option<String>| tracker::Assign {
+        IssuePart::ASSIGN.map(move |assignee: Option<String>| issue_part::Assign {
             issue: assign_id.clone(),
             assignee,
         }),
@@ -201,10 +237,10 @@ fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 /// each its own field a person reads, never a control and never one
 /// sentence joined with separators. Who wrote it is the shared provenance
 /// row: the author's chip, the tool it came from, and the day.
-fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn plan(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     let planned = cx.value({
         let id = id.clone();
-        move |tracker: &Tracker| tracker.issues.get(&id).map(Plan::of).unwrap_or_default()
+        move |part: &IssuePart| part.issues.get(&id).map(Plan::of).unwrap_or_default()
     });
     let people = cx.people();
     cx.switch(&planned, move |_cx, planned| {
@@ -294,11 +330,9 @@ impl Plan {
 
 /// The issue's labels, as the chips it carries, and the chip that opens the
 /// ones the workspace already uses and the field that makes a new one.
-fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let read_id = id.clone();
-    let shown = cx.value(move |tracker: &Tracker| Labels::of(tracker, &read_id));
+fn labels(cx: &ViewCx<IssuePart>, id: &Id, shown: &LocalState<Labels>) -> Element {
     let id = id.clone();
-    cx.switch(&shown, move |cx, shown| {
+    cx.switch(shown, move |cx, shown| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
         for label in &shown.mine {
             row = row.push(Box::new(Badge::text(label.clone())));
@@ -310,7 +344,7 @@ fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 
 /// The issue's labels, and the ones the rest of the workspace carries.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Labels {
+pub(crate) struct Labels {
     /// The issue's own, in the order it holds them.
     mine: Vec<String>,
     /// Every label another issue carries, sorted: what the picker offers
@@ -319,14 +353,13 @@ struct Labels {
 }
 
 impl Labels {
-    fn of(tracker: &Tracker, id: &Id) -> Self {
-        let mine: Vec<String> = tracker
-            .issues
+    fn of(parts: &[(u64, std::rc::Rc<IssuePart>)], id: &Id) -> Self {
+        let issues = crate::Issues::of(parts);
+        let mine: Vec<String> = issues
             .get(id)
             .map(|issue| issue.labels.iter().cloned().collect())
             .unwrap_or_default();
-        let mut others: Vec<String> = tracker
-            .issues
+        let mut others: Vec<String> = issues
             .iter()
             .flat_map(|(_, issue)| issue.labels.iter().cloned())
             .filter(|label| !mine.contains(label))
@@ -339,11 +372,11 @@ impl Labels {
 
 /// The `+` after the labels: it opens the labels the workspace already uses,
 /// each one adding it to the issue, and a field whose text makes a new one.
-fn add_label(cx: &ViewCx<Tracker>, id: &Id, others: &[String]) -> Element {
+fn add_label(cx: &ViewCx<IssuePart>, id: &Id, others: &[String]) -> Element {
     let draft = cx.local(String::new());
     let label_id = id.clone();
-    let add = Tracker::ADD_LABEL.try_map(move |label: String| {
-        Some(tracker::AddLabel {
+    let add = IssuePart::ADD_LABEL.try_map(move |label: String| {
+        Some(issue_part::AddLabel {
             issue: label_id.clone(),
             label: NonBlank::parse(&label)?,
         })
@@ -355,8 +388,8 @@ fn add_label(cx: &ViewCx<Tracker>, id: &Id, others: &[String]) -> Element {
     for label in others {
         let issue = id.clone();
         let name = label.clone();
-        let add_one = Tracker::ADD_LABEL.try_map(move |()| {
-            Some(tracker::AddLabel {
+        let add_one = IssuePart::ADD_LABEL.try_map(move |()| {
+            Some(issue_part::AddLabel {
                 issue: issue.clone(),
                 label: NonBlank::parse(&name)?,
             })
@@ -405,33 +438,18 @@ fn add_label(cx: &ViewCx<Tracker>, id: &Id, others: &[String]) -> Element {
 
 /// The issue's sub-issues, each opening its own page, and a field to add
 /// one.
-fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
-    let children = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .children(Some(&id))
-                .map(|(child, issue)| {
-                    (
-                        child.clone(),
-                        issue.number,
-                        issue.title.clone(),
-                        issue.status,
-                    )
-                })
-                .collect::<Vec<_>>()
-        }
-    });
+fn sub_issues(cx: &ViewCx<IssuePart>, id: &Id, nav: &Nav, window: &Window) -> Element {
     let nav = nav.clone();
-    let list = cx.switch(&children, move |_, children| {
+    let parent = id.clone();
+    let list = cx.switch(&window.tasks, move |_, tasks: &Tasks| {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Tight);
-        for (child, number, title, status) in children {
+        for (child, issue) in tasks.issues().children(Some(&parent)) {
             let open = nav.clone();
             let child = child.clone();
-            let label = format!("{} {}", reference(*number), title);
+            let label = format!("{} {}", reference(issue.number), issue.title);
             column = column.push(Box::new(
                 Row::new()
                     .with_rhythm(ui::tokens::Rhythm::Related)
@@ -439,7 +457,7 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                         Button::new(&format!("tasks-sub-issue-{child}"), &label)
                             .on_view(move || open.open(&child)),
                     ))
-                    .push(Box::new(status_badge(*status))),
+                    .push(Box::new(status_badge(issue.status))),
             ));
         }
         Box::new(column) as Element
@@ -455,6 +473,7 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
             .push(list)
             .push(crate::new_issue(
                 cx,
+                window,
                 Some(id.clone()),
                 None,
                 "tasks-sub-issue-new",
@@ -466,20 +485,19 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 /// that keeps it; the way to write a note for it in Notes, which links the
 /// note here; and the way to link a note already written, picked by its
 /// title in the system palette.
-fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn links(cx: &ViewCx<IssuePart>, id: &Id, tracker: &ui::framework::Actions<Tracker>) -> Element {
     let links = cx.value({
         let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
+        move |part: &IssuePart| {
+            part.issues
                 .get(&id)
                 .map(|issue| issue.links.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default()
         }
     });
-    let write_note = cx
-        .effect_button(
-            "tasks-write-note",
+    let write_note = tracker
+        .bind_effect_invocation(
+            Button::new("tasks-write-note", "tasks-write-note"),
             &crate::TasksEffect::WriteNote { issue: id.clone() },
         )
         .with_icon(ui::icons::Icon::Plus);
@@ -530,7 +548,7 @@ fn link_note_button(id: &Id) -> Button {
     let issue = ui::tilo_resource::items::item_resource_id::<Tracker>("issues", id);
     let request = ui::search::SearchRequest::asking(
         ui::search::ScopeDecl::new(issue.clone(), crate::tr("tasks-link-note-scope")),
-        Tracker::LINK_NOTE.id(),
+        IssuePart::LINK_NOTE.id(),
     );
     Button::new(&format!("tasks-link-note-{issue}"), "tasks-link-note")
         .with_icon(ui::icons::Icon::Link)
@@ -554,12 +572,11 @@ fn status_badge(status: Status) -> Badge {
 /// The thread: every message, oldest first, and the composer. A message is
 /// the issue's own comment, written by whoever asks — a person here, or the
 /// agent it is assigned to, through the same action.
-fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+fn thread(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
     let messages = cx.value({
         let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
+        move |part: &IssuePart| {
+            part.issues
                 .get(&id)
                 .map(|issue| issue.comments.values().cloned().collect::<Vec<Message>>())
                 .unwrap_or_default()
@@ -586,8 +603,8 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let send = cx.actions().bind_draft(
         Button::new("tasks-thread-send", "tasks-thread-send"),
         &draft,
-        Tracker::COMMENT.try_map(move |text: String| {
-            Some(tracker::Comment {
+        IssuePart::COMMENT.try_map(move |text: String| {
+            Some(issue_part::Comment {
                 issue: comment_id.clone(),
                 text: NonBlank::parse(&text)?,
                 origin: None,
@@ -608,7 +625,11 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     )
 }
 
-fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {
+fn message_row(
+    cx: &ViewCx<IssuePart>,
+    people: &ui::framework::People,
+    message: &Message,
+) -> Element {
     // A comment moved from another tracker reads as its author's there, on
     // its day there; any other as its author's here, by the name they acted
     // under where the workspace names them not. Who, where and when are the

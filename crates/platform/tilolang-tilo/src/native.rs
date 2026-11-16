@@ -401,10 +401,13 @@ impl<'a> NativeReads<'a> {
     /// # Errors
     /// Why the app lists no record: it does not run, the task may not see it.
     fn published(&self, app: &str) -> Result<String, String> {
+        self.published_in(app, &self.calls.children(app, "")?)
+    }
+
+    /// [`Self::published`], from `top`, the top of the app's directory as it listed it.
+    fn published_in(&self, app: &str, top: &[Json]) -> Result<String, String> {
         let record = self.record(app)?;
-        self.calls
-            .children(app, "")?
-            .iter()
+        top.iter()
             .find(|row| keyed(row) == Some(record))
             .and_then(|row| row.get("id"))
             .and_then(Json::as_str)
@@ -463,7 +466,22 @@ impl<'a> NativeReads<'a> {
         let published = self.published(app)?;
         let mut found = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut beside = Vec::new();
         for row in self.calls.children(app, &published)? {
+            // What the app keeps beside its record (a tracker's issues, in the parts of a chain)
+            // is listed under it as a resource of its own kind: its items are the record's too,
+            // held by the record's id as the record's own are.
+            let within = keyed(&row).is_some_and(|key| key.starts_with(&format!("{record}/")));
+            if !within
+                && let Some(kind) = row.get("kind").and_then(Json::as_str)
+                && let Some(kind_root) = self.kind_root(app, kind)
+                && let Some(id) = row.get("id").and_then(Json::as_str)
+            {
+                if holds_type(kind_root, ty, 0) {
+                    beside.push((id.to_owned(), kind.to_owned(), kind_root));
+                }
+                continue;
+            }
             let Some(key) = keyed(&row) else { continue };
             if !seen.insert(key.to_owned()) || item_type(record, root, key) != Some(ty) {
                 continue;
@@ -478,8 +496,37 @@ impl<'a> NativeReads<'a> {
                 key: Some(key.to_owned()),
             });
         }
+        for (under, kind, kind_root) in beside {
+            for row in self.calls.children(app, &under)? {
+                let Some(key) = keyed(&row) else { continue };
+                if !seen.insert(key.to_owned()) || item_type(&kind, kind_root, key) != Some(ty) {
+                    continue;
+                }
+                let Some(id) = row.get("id").and_then(Json::as_str) else {
+                    continue;
+                };
+                found.push(Row {
+                    held: held_id(record, key),
+                    id: id.to_owned(),
+                    under: under.clone(),
+                    key: Some(key.to_owned()),
+                });
+            }
+        }
         found.sort_by(|one, two| one.held.cmp(&two.held));
         Ok(found)
+    }
+
+    /// The schema of the resources of the kind `kind` `app` publishes beside its record: the
+    /// type its surface declares for that kind (`tasks.issues` is `Issues`).
+    fn kind_root(&self, app: &str, kind: &str) -> Option<&'static TypeSchema> {
+        if Some(kind) == self.native.record(app) {
+            return None;
+        }
+        let name = crate::catalogue::kind_type_name(kind);
+        let meta = self.native.meta(app)?;
+        let found = meta.types.iter().find(|found| found.name == name)?;
+        lookup(&found.id)
     }
 
     /// Every field of a resource of the type `ty` as the app answered it, by field id. What the
@@ -573,6 +620,20 @@ fn keyed(row: &Json) -> Option<&str> {
 /// one, so a resource nested under another is held by the id of the item it sits in.
 fn held_id(record: &str, key: &str) -> String {
     format!("{record}/{}", key.rsplit('/').next().unwrap_or(key))
+}
+
+/// Whether `schema` keeps resources of the type `ty` in its collections, at most a few levels
+/// down: whether its items are worth listing for a program finding that type.
+fn holds_type(schema: &TypeSchema, ty: &str, depth: usize) -> bool {
+    depth < 4
+        && schema.fields.iter().any(|field| {
+            field.kind == MergeKind::Collection
+                && field.record.as_deref().is_some_and(|record| {
+                    record == ty
+                        || lookup(record)
+                            .is_some_and(|held| holds_type(held, ty, depth.saturating_add(1)))
+                })
+        })
 }
 
 /// The type of the resource `key` of the record `record`, walking the collections of `root`:
@@ -885,23 +946,35 @@ mod tests {
             let _tasks = tasks();
             let root = lookup("so.tilo.tasks.Tracker").expect("the tracker's schema");
             let ty = |key: &str| item_type("tasks.tracker", root, key);
-            assert_eq!(ty("tasks.tracker/issues/abc"), Some("so.tilo.tasks.Issue"));
             assert_eq!(
-                ty("tasks.tracker/issues/abc/links/one"),
+                ty("tasks.tracker/areas/abc"),
+                Some("so.tilo.tasks.TrackerArea")
+            );
+            assert_eq!(
+                ty("tasks.tracker/areas/abc/people/one"),
+                Some("so.tilo.tasks.Person")
+            );
+            // The tracker's issues are a resource kind of their own, kept
+            // in the parts beside the tracker.
+            let issues = lookup("so.tilo.tasks.Issues").expect("the issues' schema");
+            let ty = |key: &str| item_type("tasks.issues", issues, key);
+            assert_eq!(ty("tasks.issues/issues/abc"), Some("so.tilo.tasks.Issue"));
+            assert_eq!(
+                ty("tasks.issues/issues/abc/links/one"),
                 Some("so.tilo.tasks.Link")
             );
             assert_eq!(
-                ty("tasks.tracker/issues/abc/comments/one"),
+                ty("tasks.issues/issues/abc/comments/one"),
                 Some("so.tilo.tasks.Message")
             );
             // A field of an item is no resource, and neither is a collection.
-            assert_eq!(ty("tasks.tracker/issues/abc/title"), None);
-            assert_eq!(ty("tasks.tracker/issues"), None);
-            assert_eq!(ty("tasks.tracker/nothing/abc"), None);
-            // A program's id keeps the item's own id, which [`NativeReads::read`] matches against
-            // the rows the app's directory lists.
+            assert_eq!(ty("tasks.issues/issues/abc/title"), None);
+            assert_eq!(ty("tasks.issues/issues"), None);
+            assert_eq!(ty("tasks.issues/nothing/abc"), None);
+            // A program's id keeps the record's name and the item's own id, which
+            // [`NativeReads::read`] matches against the rows the app's directory lists.
             assert_eq!(
-                held_id("tasks.tracker", "tasks.tracker/issues/abc"),
+                held_id("tasks.tracker", "tasks.issues/issues/abc"),
                 "tasks.tracker/abc"
             );
         }

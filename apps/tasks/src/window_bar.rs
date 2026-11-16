@@ -10,7 +10,7 @@ use ui::framework::{Choice, Dispatcher, WindowBar};
 use ui::prelude::*;
 use ui::widget::{AppModel, ModelPath, NavShell, Stack};
 
-use crate::{Filter, Nav, Place, TasksEffect, Tracker, reference, tr};
+use crate::{Filter, Nav, Place, Tasks, TasksEffect, Tracker, reference, tr};
 
 /// What shows `place`: the effect the place's own view runs, in the bar or
 /// from the palette or an agent alike.
@@ -31,9 +31,11 @@ pub(crate) struct TasksWindow {
     link: ui::widget::WindowBarLink,
     nav: Nav,
     /// The tracker as the window reads it, for the location.
-    tracker: LocalState<Tracker>,
+    tasks: LocalState<Tasks>,
     /// The record's actions, for the bar's own slots.
     dispatcher: Dispatcher<Tracker>,
+    /// The issues' chain, whose writes the window's Undo takes back.
+    chain: Option<ui::framework::Chain<crate::IssuePart>>,
     /// The bar as it was declared last: the press heard now names one of its
     /// slots, then the window declares the bar for what it shows now.
     bar: WindowBar<Tracker>,
@@ -44,7 +46,8 @@ impl TasksWindow {
         shell: NavShell,
         bar: WindowBar<Tracker>,
         nav: Nav,
-        tracker: LocalState<Tracker>,
+        tasks: LocalState<Tasks>,
+        chain: Option<ui::framework::Chain<crate::IssuePart>>,
         dialog: Element,
     ) -> Self {
         let link = shell.window_bar_link();
@@ -54,8 +57,9 @@ impl TasksWindow {
             page,
             link,
             nav,
-            tracker,
+            tasks,
             dispatcher,
+            chain,
             bar,
         }
     }
@@ -83,16 +87,16 @@ impl TasksWindow {
     fn location(&self, open: Option<&Id>, place: Place, filter: &Filter) -> (String, bool) {
         if let Some(area) = self.nav.area() {
             let name = self
-                .tracker
-                .with(|tracker| tracker.area(&area).map(|area| area.name.clone()));
+                .tasks
+                .with(|tasks| tasks.tracker.area(&area).map(|area| area.name.clone()));
             if let Some(name) = name {
                 return (name, false);
             }
         }
         if let Some(id) = open {
-            let shown = self.tracker.with(|tracker| {
-                tracker
-                    .issues
+            let shown = self.tasks.with(|tasks| {
+                tasks
+                    .issues()
                     .get(id)
                     .map(|issue| format!("{} {}", reference(issue.number), issue.title))
             });
@@ -144,5 +148,39 @@ impl ui::widget::Decorator for TasksWindow {
 
     fn name(&self) -> &'static str {
         "TasksWindow"
+    }
+
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn ui::undo::LocalUndo>() {
+            request.provide::<dyn ui::undo::LocalUndo>(self);
+            return;
+        }
+        ui::widget::Widget::provide(&self.page, request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn ui::undo::LocalUndo>() {
+            request.provide::<dyn ui::undo::LocalUndo>(self);
+            return;
+        }
+        ui::widget::Widget::provide_mut(&mut self.page, request);
+    }
+}
+
+/// The window's Undo: what has a history of its own inside it (a field being
+/// typed in) first, then the person's last change to an issue, which lives in
+/// a part beside the tracker; the tracker's own changes after that.
+impl ui::undo::LocalUndo for TasksWindow {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        if ui::undo::handle_local_undo_request(&mut self.page, request) {
+            return true;
+        }
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        match request {
+            ui::undo::UndoRequest::Undo => chain.undo_last(),
+            ui::undo::UndoRequest::Redo => chain.redo_last(),
+        }
     }
 }

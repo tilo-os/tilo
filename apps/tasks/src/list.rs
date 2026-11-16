@@ -8,13 +8,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Issue, Status, Tracker, tracker};
+use crate::model::{Issue, Status, Tracker};
+use crate::part::{IssuePart, issue_part};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::widget::context_menu::MenuItem;
 use ui::widget::{ListRow, TreeMarks, VecListModel, VirtualList};
 
-use crate::{Filter, Nav, reference, tr};
+use crate::{Filter, Issues, Nav, Tasks, Window, reference, tr};
 
 /// What a row shows besides its label.
 #[derive(Clone)]
@@ -31,17 +32,18 @@ struct Row {
     progress: (usize, usize),
 }
 
-pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
+pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element {
     let chosen = nav.filter.clone();
     let me = cx.me().cloned();
     let nav = nav.clone();
+    let shown = window.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
-        let tracker = cx.value(Tracker::clone);
         let nav = nav.clone();
         let me = me.clone();
-        cx.switch(&tracker, move |cx, tracker| {
-            tree(cx, tracker, &nav, &filter, me.as_ref())
+        let window = shown.clone();
+        cx.switch(&shown.tasks, move |_cx, tasks| {
+            tree(tasks, &nav, &window, &filter, me.as_ref())
         })
     });
     // The list's name is the window's location: the bar says where the
@@ -50,7 +52,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(crate::new_issue(cx, None, None, "tasks-list-new"))
+            .push(crate::new_issue(cx, window, None, None, "tasks-list-new"))
             .push(list),
     )
 }
@@ -62,7 +64,7 @@ fn label(issue: &Issue) -> String {
 /// The rows under `parent`, each followed by its own: only what the filter
 /// shows, and the issues above it so the tree stays whole.
 fn collect(
-    tracker: &Tracker,
+    issues: &Issues<'_>,
     parent: Option<&Id>,
     parent_key: Option<u64>,
     ids: &mut Vec<Id>,
@@ -70,9 +72,9 @@ fn collect(
     filter: &Filter,
     me: Option<&ui::tilo_resource::MemberId>,
 ) {
-    for (id, issue) in tracker
+    for (id, issue) in issues
         .children(parent)
-        .filter(|(id, issue)| filter.shows(tracker, id, issue, me))
+        .filter(|(id, issue)| filter.shows(issues, id, issue, me))
     {
         ids.push(id.clone());
         let key = u64::try_from(ids.len()).unwrap_or(u64::MAX);
@@ -83,20 +85,15 @@ fn collect(
             parent: parent_key,
             number: issue.number,
             status: issue.status,
-            progress: tracker.progress(id),
+            progress: issues.progress(id),
         });
-        collect(tracker, Some(id), Some(key), ids, out, filter, me);
+        collect(issues, Some(id), Some(key), ids, out, filter, me);
     }
 }
 
-fn tree(
-    cx: &ViewCx<Tracker>,
-    tracker: &Tracker,
-    nav: &Nav,
-    filter: &Filter,
-    me: Option<&ui::tilo_resource::MemberId>,
-) -> Element {
-    if tracker.issues.is_empty() {
+fn tree(tasks: &Tasks, nav: &Nav, window: &Window, filter: &Filter, me: Option<&ui::tilo_resource::MemberId>) -> Element {
+    let issues = tasks.issues();
+    if issues.is_empty() {
         return Box::new(
             EmptyState::new("tasks-empty-title")
                 .with_message("tasks-empty-message")
@@ -105,7 +102,7 @@ fn tree(
     }
     let mut ids = Vec::new();
     let mut rows = Vec::new();
-    collect(tracker, None, None, &mut ids, &mut rows, filter, me);
+    collect(&issues, None, None, &mut ids, &mut rows, filter, me);
     if rows.is_empty() {
         // The tracker holds issues; this filter shows none of them.
         return Box::new(
@@ -114,18 +111,12 @@ fn tree(
                 .with_id("tasks-list-filter-empty"),
         );
     }
-    list(rows, Rc::new(ids), tracker, nav, cx.dispatcher())
+    list(rows, Rc::new(ids), tasks, nav, window)
 }
 
 /// The list over `rows`: the flat rows stand as the tree their parents make,
 /// and each opens its issue, ticks its box and moves under another.
-fn list(
-    rows: Vec<Row>,
-    ids: Rc<Vec<Id>>,
-    tracker: &Tracker,
-    nav: &Nav,
-    dispatcher: ui::prelude::Dispatcher<Tracker>,
-) -> Element {
+fn list(rows: Vec<Row>, ids: Rc<Vec<Id>>, tasks: &Tasks, nav: &Nav, window: &Window) -> Element {
     let issue_of = move |key: u64| -> Option<Id> {
         usize::try_from(key)
             .ok()
@@ -134,23 +125,20 @@ fn list(
     };
     let open_issue = issue_of.clone();
     let opener = nav.clone();
-    let check = tracker.clone();
+    let check = tasks.clone();
     let validate_issue = issue_of.clone();
-    let parents = tracker.clone();
+    let parents = tasks.clone();
     // The row's own controls: the box that finishes an issue and the menu a
     // right click, the menu key or its more button opens. Both reach the
     // tracker through the same actions the board and the issue page use.
     let boxes = Rc::new(RefCell::new(row_check(
         issue_of.clone(),
-        tracker.clone(),
-        dispatcher.clone(),
+        tasks.clone(),
+        window.clone(),
     )));
-    let menu_chosen = row_menu_callback(
-        issue_of.clone(),
-        nav.clone(),
-        tracker.clone(),
-        dispatcher.clone(),
-    );
+    let menu_chosen =
+        row_menu_callback(issue_of.clone(), nav.clone(), tasks.clone(), window.clone());
+    let moving = window.clone();
     let Ok(model) =
         VecListModel::new(rows, |row| row.key).map(|model| model.with_parents(|row| row.parent))
     else {
@@ -182,7 +170,7 @@ fn list(
                 else {
                     return false;
                 };
-                !check.is_under(&target, &source)
+                !check.issues().is_under(&target, &source)
             },
             move |_, dropped: ReorderDrop<u64>| {
                 let (Some(source), Some(target)) =
@@ -192,12 +180,14 @@ fn list(
                 };
                 let parent = match dropped.target.placement {
                     DropPlacement::Inside => Some(target),
-                    DropPlacement::Before | DropPlacement::After => parents
-                        .issues
-                        .get(&target)
-                        .and_then(|issue| issue.parent.clone()),
+                    DropPlacement::Before | DropPlacement::After => {
+                        let issues = parents.issues();
+                        issues
+                            .get(&target)
+                            .and_then(|issue| issues.parent_of(issue).cloned())
+                    }
                 };
-                dispatcher.submit(Tracker::MOVE_UNDER.with(tracker::MoveUnder {
+                moving.submit(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
                     issue: source,
                     parent,
                 }));
@@ -262,14 +252,14 @@ fn status_text(row: &Row) -> String {
 /// The row's box: ticking it finishes the issue, unticking reopens it.
 fn row_check(
     issue_of: impl Fn(u64) -> Option<Id> + 'static,
-    tracker: Tracker,
-    dispatcher: ui::prelude::Dispatcher<Tracker>,
+    tasks: Tasks,
+    window: Window,
 ) -> impl FnMut(u64) + 'static {
     move |key| {
         let Some(issue) = issue_of(key) else {
             return;
         };
-        let Some(status) = tracker.issues.get(&issue).map(|now| {
+        let Some(status) = tasks.issues().get(&issue).map(|now| {
             if now.status.closed() {
                 Status::Todo
             } else {
@@ -278,7 +268,7 @@ fn row_check(
         }) else {
             return;
         };
-        change_status(&tracker, &dispatcher, issue, status);
+        change_status(&tasks, &window, issue, status);
     }
 }
 
@@ -286,36 +276,32 @@ fn row_check(
 fn row_menu_callback(
     issue_of: impl Fn(u64) -> Option<Id> + 'static,
     nav: Nav,
-    tracker: Tracker,
-    dispatcher: ui::prelude::Dispatcher<Tracker>,
+    tasks: Tasks,
+    window: Window,
 ) -> impl FnMut(Option<u64>, usize) + 'static {
     move |target, index| {
         if let Some(issue) = target.and_then(&issue_of) {
-            row_menu_chosen(&tracker, &nav, &dispatcher, issue, index);
+            row_menu_chosen(&tasks, &nav, &window, issue, index);
         }
     }
 }
 
 /// Set `issue`'s status as the row's box and menu do: a place in the list
 /// that keeps the issue where it is.
-fn change_status(
-    tracker: &Tracker,
-    dispatcher: &ui::prelude::Dispatcher<Tracker>,
-    issue: Id,
-    status: Status,
-) {
+fn change_status(tasks: &Tasks, window: &Window, issue: Id, status: Status) {
     // Finishing an issue is not a move: it keeps the place it had in the
     // list, before the issue that follows it.
-    let before = tracker
-        .issues
+    let before = tasks
+        .issues()
         .iter()
         .map(|(id, _)| id.clone())
         .skip_while(|id| id != &issue)
         .nth(1);
-    dispatcher.submit(Tracker::PLACE.with(tracker::Place {
+    window.submit(IssuePart::PLACE.with(issue_part::Place {
         issue,
         status,
         before,
+        rank: None,
     }));
 }
 
@@ -342,17 +328,11 @@ fn row_menu(model: &VecListModel<Row, u64>, target: Option<&u64>) -> Vec<MenuIte
 }
 
 /// What a row's menu item does, by the order [`row_menu`] lists them.
-fn row_menu_chosen(
-    tracker: &Tracker,
-    nav: &Nav,
-    dispatcher: &ui::prelude::Dispatcher<Tracker>,
-    issue: Id,
-    index: usize,
-) {
-    let Some(now) = tracker.issues.get(&issue) else {
+fn row_menu_chosen(tasks: &Tasks, nav: &Nav, window: &Window, issue: Id, index: usize) {
+    let Some(closed) = tasks.issues().get(&issue).map(|now| now.status.closed()) else {
         return;
     };
-    let status = match (index, now.status.closed()) {
+    let status = match (index, closed) {
         (0, _) => {
             nav.open(&issue);
             return;
@@ -361,5 +341,5 @@ fn row_menu_chosen(
         (1, true) => Status::Todo,
         _ => return,
     };
-    change_status(tracker, dispatcher, issue, status);
+    change_status(tasks, window, issue, status);
 }
