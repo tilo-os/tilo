@@ -3051,13 +3051,13 @@
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "How many changes it made to the workspace's records."
+            "description": "How many changes it made to the workspace's records: its edits, and\nwhat it brought in from outside (what a command printed)."
           },
           "undone": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0,
-            "description": "How many of those were taken back since."
+            "description": "How many of its edits were taken back since; what came from outside is\nno edit, and no undo takes it back."
           },
           "records": {
             "type": "array",
@@ -3068,7 +3068,7 @@
           },
           "undoable": {
             "type": "boolean",
-            "description": "Its changes still stand and nobody's change stands on them: its undo\nwould take back exactly its own."
+            "description": "Its edits still stand and nobody's edit stands on them: its undo would\ntake back exactly its own."
           },
           "undo_blocked": {
             "type": [

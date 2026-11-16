@@ -455,15 +455,17 @@ pub struct RunInfo {
     /// What its newest change did, as History says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// How many changes it made to the workspace's records.
+    /// How many changes it made to the workspace's records: its edits, and
+    /// what it brought in from outside (what a command printed).
     pub changes: u64,
-    /// How many of those were taken back since.
+    /// How many of its edits were taken back since; what came from outside is
+    /// no edit, and no undo takes it back.
     pub undone: u64,
     /// The records it changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<RunRecord>,
-    /// Its changes still stand and nobody's change stands on them: its undo
-    /// would take back exactly its own.
+    /// Its edits still stand and nobody's edit stands on them: its undo would
+    /// take back exactly its own.
     pub undoable: bool,
     /// Why it would not be taken back, when someone's change stands on its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
