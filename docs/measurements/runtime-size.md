@@ -261,6 +261,33 @@ instantiates the `image` crate's encoders in its own binary (`ui::png`,
 and Imager loads account custody and the FUSE presentation from their
 engines instead of carrying them.
 
+## Reading what makes it large
+
+A shipped library carries no symbol table, so a built one has to say what is in
+it: build the runtime with the profile's strip off
+(`CARGO_PROFILE_THIN_APP_STRIP=none`) and sum `nm -S --defined-only -C` by the
+first path segment of each name, which is each crate's bytes. The same build at
+the commit whose budgets are in force gives the delta, and
+`cargo tree -p runtime-dylib -e normal` between the two names the crates that
+entered. That build skips `tools/ci/rustc-thin-app-wrapper.sh` (no
+`-Bsymbolic`, no section collection, no lazy link), so its bytes are larger
+than the shipped file's and it keeps what a release leaves out (the ad-block
+compiler, `syn`); its delta is what it is good for.
+
+Between b0ce8f7c78d (2026-10-29, the budgets in force) and 6f39392b683 the
+runtime gained 7.3 MB of named code: 11.3 MB across the crates and symbol
+buckets that grew, less 4.0 MB across those that shrank. `tilo_ui` 14.2 ->
+17.6 MB, 2.9 MB of it in `widget` (7.1 -> 10.0 MB); `core` 15.6 -> 17.2,
+`alloc` 5.3 -> 5.9, `hashbrown` 1.7 -> 1.9 and `serde_json` 2.0 -> 2.2 from
+what that new code instantiates; 1.3 MB of new `wasmi`, `wasmparser` and
+`wasmi_ir`, the interpreter a theme's painter set runs in (5218566cc71); the
+record and action SDK (`tilo_actions` 1.06 -> 1.26, `tilo_resource` 1.22 ->
+1.42, `tilo_user_identity`, `tilo_action_policy`, `key_group` 0.21,
+`tilo_workspace_agent` 0.09); and `tilo-desktop-entry`'s host filesystem
+(`host_fs`, `trash`, 0.08). Against it, the capnp pair the peer transport
+used, `runtime_collab`, `tilo_fs_client`, `read_fonts` and `skrifa` gave back
+4.0 MB.
+
 ## What an app start pays for the runtime
 
 Warm, the loader's work before `main` is almost all the runtime's: it copies
