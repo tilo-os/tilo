@@ -723,11 +723,9 @@ impl DesktopHandle {
         self.shared.borrow_mut().minter.mint()
     }
 
-    /// Apply a workspace or strip command to the active workspace through
-    /// the model's own reduction
-    /// ([`tilo_desktop_model::commands::apply_command`]), with ids from the
-    /// tree's id space. A strip it creates is shown; when the strip shown is
-    /// removed, the workspace's first one is. The caller has asked the
+    /// Apply a workspace or strip command to the active workspace as
+    /// [`tilo_desktop_model::commands::apply_to_active_workspace`] does, with
+    /// ids from the tree's id space. The caller has asked the
     /// workspace's policy ([`tilo_desktop_model::commands::may_command`]) first.
     /// Returns the strip a `CreateStrip` made.
     ///
@@ -741,45 +739,14 @@ impl DesktopHandle {
         &self,
         command: &tilo_desktop_model::commands::DesktopCommand,
     ) -> Result<Option<StripId>, String> {
-        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
-        if !matches!(
-            command,
-            DesktopCommand::RenameWorkspace { .. }
-                | DesktopCommand::CreateStrip { .. }
-                | DesktopCommand::RenameStrip { .. }
-                | DesktopCommand::RemoveStrip { .. }
-                | DesktopCommand::MoveStrip { .. }
-        ) {
-            return Err("only workspace and strip commands apply here".into());
-        }
         let mut shared = self.shared.borrow_mut();
         let Shared { tree, minter, .. } = &mut *shared;
-        let active = tree.active;
-        let workspace = tree
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id() == active)
-            .ok_or("there is no active workspace")?;
-        let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
-        apply_command(
-            workspace,
-            command,
-            &mut || Ok(minter.mint()),
-            &mut |_, _| Err("a workspace command opens no window".into()),
-        )?;
-        let after: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
-        let made = after.iter().copied().find(|id| !before.contains(id));
-        let first = after.first().copied();
-        if let Some(made) = made {
-            tree.active_strip.insert(active, made);
-        } else if let Some(first) = first
-            && tree
-                .active_strip
-                .get(&active)
-                .is_none_or(|shown| !after.contains(shown))
-        {
-            tree.active_strip.insert(active, first);
-        }
+        let made =
+            tilo_desktop_model::commands::apply_to_active_workspace(tree, command, &mut || {
+                Ok(minter.mint())
+            })?;
+        // The session publishes the edit as it does any other change from outside the shell.
+        tree.external_revision = tree.external_revision.wrapping_add(1);
         shared.replaced = true;
         shared.changed();
         Ok(made)

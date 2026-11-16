@@ -318,12 +318,10 @@ impl DesktopChrome {
                 )
             })
         });
-        let row = match next {
-            Some(Some(row)) => Some(row),
+        self.move_focused_group_to(match next {
             Some(None) if steps > 0 => Some(window_menu::MOVE_TO_NEW_STRIP.to_owned()),
-            _ => None,
-        };
-        self.move_focused_group_to(row);
+            next => next.flatten(),
+        });
     }
 
     /// Carry the window `tab` into a new strip below the last one, made as the strip switcher's

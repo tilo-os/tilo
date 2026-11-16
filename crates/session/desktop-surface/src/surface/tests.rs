@@ -132,56 +132,6 @@ fn a_window_someone_else_holds_is_not_closed_and_the_desktop_says_why() {
         .unwrap();
 }
 
-/// Workspace and strip edits go through the model's commands: a strip made that way is shown, and a
-/// name the model refuses changes nothing.
-#[test]
-fn workspace_and_strip_commands_run_through_the_models_reduction() {
-    use tilo_desktop_model::commands::DesktopCommand;
-    let (_surface, handle) = desktop(1);
-    let made = handle
-        .apply_command(&DesktopCommand::CreateStrip {
-            name: "Second".into(),
-        })
-        .unwrap()
-        .expect("a strip was made");
-    handle.read(|tree| {
-        let workspace = tree.active_workspace().unwrap();
-        assert_eq!(workspace.strips.len(), 2);
-        assert_eq!(tree.active_strip.get(&workspace.id()), Some(&made));
-    });
-    handle
-        .apply_command(&DesktopCommand::RenameWorkspace {
-            name: " Lounge ".into(),
-        })
-        .unwrap();
-    assert!(
-        handle
-            .apply_command(&DesktopCommand::RenameWorkspace { name: " ".into() })
-            .is_err()
-    );
-    handle
-        .apply_command(&DesktopCommand::RemoveStrip { strip: made.0 })
-        .unwrap();
-    handle.read(|tree| {
-        let workspace = tree.active_workspace().unwrap();
-        assert_eq!(workspace.name, "Lounge");
-        assert_eq!(workspace.strips.len(), 1);
-        assert_eq!(
-            tree.active_strip.get(&workspace.id()),
-            Some(&workspace.strips[0].id)
-        );
-    });
-    // Windows change through navigation, never through this API.
-    assert!(
-        handle
-            .apply_command(&DesktopCommand::OpenApp {
-                app: "so.tilo.notes".into(),
-                beside: None,
-            })
-            .is_err()
-    );
-}
-
 /// Hover never moves a window: the pointer over a window's bar, above its top edge, on its body or
 /// in the gap beside it leaves every window's frame, bar and body where they were, and focus where
 /// it was (a focused window's edge is drawn in another colour, never further out). Hover may

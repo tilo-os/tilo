@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
+use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination, LayoutEffect};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
@@ -1085,10 +1085,7 @@ impl DesktopChrome {
     /// Apply a strip or workspace edit through the desktop's one command path and replicate the
     /// result; the strip it made, if any.
     fn edit_workspace(&self, command: &DesktopCommand) -> Result<Option<StripId>, String> {
-        let mut tree = self.handle.read(Clone::clone);
-        let made =
-            apply_to_active_workspace(&mut tree, command, &mut || Ok(self.handle.mint_id()))?;
-        self.handle.replace_tree(tree);
+        let made = self.handle.apply_command(command)?;
         if let DesktopCommand::RenameWorkspace { name } = command {
             // The workspace's name is the workspace's, which every device and list of it reads
             // from its governance: the shell keeps it at once, and the host writes it there.

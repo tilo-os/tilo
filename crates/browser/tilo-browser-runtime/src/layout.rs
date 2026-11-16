@@ -356,17 +356,13 @@ mod tests {
 
         /// A second row on the layout, called `name`.
         fn add_row(&self, name: &str) -> u64 {
-            let mut tree = self.handle.read(Clone::clone);
-            let made = tilo_desktop_model::commands::apply_to_active_workspace(
-                &mut tree,
-                &DesktopCommand::CreateStrip {
+            let made = self
+                .handle
+                .apply_command(&DesktopCommand::CreateStrip {
                     name: name.to_owned(),
-                },
-                &mut || Ok(self.handle.mint_id()),
-            )
-            .expect("the layout takes a second row")
-            .expect("the row has an id");
-            self.handle.replace_tree(tree);
+                })
+                .expect("the layout takes a second row")
+                .expect("the row has an id");
             made.0
         }
     }

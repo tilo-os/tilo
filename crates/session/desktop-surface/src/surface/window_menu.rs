@@ -1275,8 +1275,6 @@ impl crate::surface::DesktopHandle {
             self.rename_in_bar(tab);
             return Ok(());
         }
-        // The share with the workspace is the session's: the row leaves the ask for it, and the
-        // session invokes its window share with the tab.
         // The new strip is the person's, made by the host that keeps who made each strip.
         if id == MOVE_TO_NEW_STRIP {
             let mut shared = self.shared.borrow_mut();
@@ -1284,6 +1282,8 @@ impl crate::surface::DesktopHandle {
             shared.wake.wake();
             return Ok(());
         }
+        // The share with the workspace is the session's: the row leaves the ask for it, and the
+        // session invokes its window share with the tab.
         if id == SHARE_WITH_WORKSPACE || id == STOP_SHARING_WITH_WORKSPACE {
             self.ask_workspace_share(tab, id == SHARE_WITH_WORKSPACE);
             return Ok(());

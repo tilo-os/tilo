@@ -525,11 +525,7 @@ fn a_window_sharing_the_only_strip_is_offered_a_new_one() {
     let route = first_route(&handle);
     let rows = handle.window_menu(route.tab);
     let strips = row(&rows, MOVE_TO_STRIP).expect("the strip submenu shows");
-    assert_eq!(
-        ids(&strips.children),
-        [MOVE_TO_NEW_STRIP],
-        "its one row makes a new strip"
-    );
+    assert_eq!(ids(&strips.children), [MOVE_TO_NEW_STRIP]);
     assert_eq!(strips.children[0].label, "New strip");
 
     handle
