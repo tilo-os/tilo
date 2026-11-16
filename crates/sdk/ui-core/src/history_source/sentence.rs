@@ -46,15 +46,14 @@ pub fn sentence(entry: &ActionContext) -> String {
 /// change: the name it carries is a name, and whom software acted for is
 /// said here once.
 pub fn author_line(author: &HistoryAuthor) -> String {
-    let reader = author.relation == AuthorRelation::Reader;
     actor_line(
         &author.name,
-        // The reader's own change, made through software for them, is theirs: "You", never
-        // "You, for" themselves.
+        // Only software acts for someone: a person's own row, whatever wrote it for them, is
+        // theirs ("Ada", "You"), never "Ada for Ada".
         author
             .attribution
             .as_ref()
-            .filter(|_| !(reader && author.for_reader))
+            .filter(|_| author.relation == AuthorRelation::Software)
             .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
         author.for_reader,
         author.relation == AuthorRelation::Reader,

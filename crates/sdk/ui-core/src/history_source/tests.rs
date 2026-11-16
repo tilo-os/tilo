@@ -955,10 +955,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_change_taken_in_a_task_is_named_by_the_task;
-    // A change taken in a task is attributed to that task: there are no
-    // separate agents, so history names the person through the task the change
-    // was made in, and the task's id and label stay on the row as data.
+    phase a_change_in_a_work_group_is_the_persons_with_the_agent_beside_them;
+    // A change an agent made for a person inside a work group reads as that person with the
+    // agent beside them; the group stays on the row as data, and its label is never a name.
     {
         use crate::widget::history::AuthorRelation;
         use tilo_actions::{ActionContext, ActionInvoker};
@@ -970,26 +969,26 @@ tilo_test_env::scenario! {
                 "Prepare Q3 financials",
                 "task",
             )
-            .with_invoker(
-                ActionInvoker::agent("claude")
-                    .acting_for("ada"),
-            );
+            .with_invoker(ActionInvoker::agent("claude").acting_for("ada"));
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
         authors.set_reader("kai");
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
         assert_eq!(entry.author.name, "ada");
-        assert_eq!(
-            crate::author_line(&entry.author),
-            "ada via task ‘Prepare Q3 financials’"
-        );
+        assert_eq!(crate::author_line(&entry.author), "ada");
         assert_eq!(entry.author.relation, AuthorRelation::Person);
+        assert_eq!(
+            crate::history_source::sentence::author_parts(&entry.author)
+                .writer
+                .as_deref(),
+            Some("Claude Code")
+        );
         let group = entry
             .context
             .as_ref()
             .and_then(|context| context.group.as_ref())
-            .expect("the task the change was taken in");
+            .expect("the group the change was made in");
         assert_eq!(group.kind, "task");
         assert_eq!(group.label, "Prepare Q3 financials");
         assert_eq!(group.id, "11111111-1111-4111-8111-111111111111");

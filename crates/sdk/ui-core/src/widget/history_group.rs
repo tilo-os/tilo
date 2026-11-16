@@ -106,8 +106,8 @@ pub struct HistoryGroup {
     /// The kind of explicit work unit (`task`, `agent-run`, `shortcut`, …)
     /// the band is, when its changes share one rather than a person's name.
     pub work: Option<String>,
-    /// What an agent session was titled (by its agent, often its conversation), when the band is one:
-    /// detail a hover shows, never the band's title, which says what the run did.
+    /// What an agent session was titled, when the band is one: detail a hover shows, never the
+    /// band's title, which says what the session did.
     pub work_title: Option<String>,
     pub open: bool,
     pub start: usize,
@@ -446,7 +446,7 @@ pub fn group_entries(
             .any(|named| run_start < named.end && run_end > named.start);
         if !overlaps_named {
             // An agent session is titled by what it did, as derived bands are: the label it
-            // carries is what its session called itself, which says who ran it at best.
+            // carries is what the session was called, which says who ran it at best.
             let agent_session = group.kind == tilo_actions::context::AGENT_SESSION_GROUP;
             resolved.push(Placed {
                 id: format!("action-group:{}", group.id),

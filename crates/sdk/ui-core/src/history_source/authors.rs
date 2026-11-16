@@ -1129,7 +1129,10 @@ mod tests {
             crate::history_source::sentence::writer_badge(&author).as_deref(),
             Some("Claude Code")
         );
-        assert_eq!(author.task.as_deref(), Some("Workspace folder"));
+        // The session's title is detail on the hover, never part of who did it.
+        assert_eq!(author.task, None);
+        let hover = crate::history_source::sentence::attribution_hover(&author).unwrap_or_default();
+        assert!(hover.contains("Workspace folder"), "{hover}");
     }
 
     /// An agent that acted for its person outside a recorded session (a change written before
