@@ -163,6 +163,22 @@ pub enum WorkspacesCmd {
         #[arg(long = "label", value_name = "NAME=VALUE", value_parser = label_of)]
         labels: Vec<(String, String)>,
     },
+    /// Let the keys made for one workspace of yours alone run commands in its
+    /// Linux machine without asking you each time, or ask again.
+    #[command(
+        after_help = "Example:\n  tilo account workspaces unattended template\n\n\
+                      It asks you on your approving device first, and waits for your answer. \
+                      Branches made from the workspace start with it on. A key for all your \
+                      workspaces is still asked, and so is everything else that asks. \
+                      `--off` asks again from the next command, without asking you."
+    )]
+    Unattended {
+        /// The workspace, by its id or its name.
+        workspace: String,
+        /// Ask before each command again.
+        #[arg(long)]
+        off: bool,
+    },
     /// Delete a workspace of yours with everything in it, and revoke its
     /// minted keys: final, there is no undo.
     Rm { workspace: String },
@@ -308,6 +324,9 @@ fn workspace_line(row: &Value) -> String {
         .flatten()
     {
         let _ = write!(line, ", {name}={}", value.as_str().unwrap_or_default());
+    }
+    if row.get("unattended").and_then(Value::as_bool) == Some(true) {
+        line.push_str(", runs commands unattended");
     }
     line.push(')');
     line
@@ -660,6 +679,10 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
                 crate::mcp::ask_peer_list_again();
                 Ok(show(reach.json, &made, &workspace_line(&made)))
             }
+            WorkspacesCmd::Unattended {
+                workspace: named,
+                off,
+            } => unattended(&client, reach.json, &named, off).await,
             WorkspacesCmd::Rm { workspace: named } => {
                 let id = workspace_id(&client, &named).await?;
                 let deleted = client.delete(&format!("/v1/workspaces/{id}")).await?;
@@ -681,6 +704,32 @@ pub fn account(reach: Reach<'_>, cmd: AccountCmd) -> ExitCode {
             }
         }
     })
+}
+
+/// `tilo account workspaces unattended <workspace> [--off]`: held while the
+/// person decides on their approving device, and said as it stands then.
+async fn unattended(client: &Client, json: bool, named: &str, off: bool) -> Result<ExitCode> {
+    let id = workspace_id(client, named).await?;
+    let answer = client
+        .put_asking(
+            &format!("/v1/workspaces/{id}/unattended"),
+            &serde_json::json!({"on": !off}),
+        )
+        .await?;
+    let said = match (
+        text(&answer, "status"),
+        answer.pointer("/result/unattended"),
+    ) {
+        ("pending", _) => format!(
+            "pending {}: it waits for you on your approving device",
+            text(&answer, "run")
+        ),
+        (_, Some(Value::Bool(true))) => format!(
+            "{named}: keys made for it alone run commands in its Linux machine without asking you"
+        ),
+        _ => format!("{named}: every command asks you first"),
+    };
+    Ok(show(json, &answer, &said))
 }
 
 /// `tilo files …`.
@@ -1401,6 +1450,11 @@ mod tests {
                 json!({"id": WORKSPACE, "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh",
                     "role": "owner"}),
             ),
+            ("PUT", route) if route.ends_with("/unattended") => json_reply(
+                200,
+                json!({"status": "ok", "path": "workspace/unattended#set",
+                    "result": {"workspace": WORKSPACE, "unattended": true}}),
+            ),
             ("POST", route) if route.ends_with("/branches") => json_reply(
                 201,
                 json!({"id": BRANCH, "name": "Applicant: Jane Doe, second try",
@@ -1505,6 +1559,24 @@ mod tests {
                 serde_json::from_slice::<Value>(&branch.body).unwrap(),
                 json!({"name": "Applicant: Jane Doe, second try",
                     "labels": {"customer_id": "cus_8121"}})
+            );
+            // Running commands unattended is `PUT /v1/workspaces/{id}/unattended`,
+            // held while the person decides.
+            account(
+                reach,
+                AccountCmd::Workspaces(WorkspacesCmd::Unattended {
+                    workspace: "Applicant: Jane Doe".into(),
+                    off: false,
+                }),
+            );
+            let unattended = api_server.drain_requests();
+            let asked = unattended.last().expect("the setting");
+            assert_eq!(asked.method, "PUT");
+            assert_eq!(asked.target, format!("/v1/workspaces/{WORKSPACE}/unattended"));
+            assert_eq!(asked.header("prefer"), Some("wait=60"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&asked.body).unwrap(),
+                json!({"on": true})
             );
             // Listing by a label is `GET /v1/workspaces?label[name]=value`.
             account(

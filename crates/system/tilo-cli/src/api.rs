@@ -246,6 +246,20 @@ impl Client {
         Ok(answer.json())
     }
 
+    /// `PUT path` with `body` as its JSON, under a new idempotency key, held
+    /// while the person decides: the answer, `pending` when they have not
+    /// answered yet.
+    pub async fn put_asking(&self, path: &str, body: &Value) -> Result<Value> {
+        let said = body.to_string();
+        let answer = self
+            .call(Method::Put, path, said.as_bytes(), &[], Waiting::ForPerson)
+            .await?;
+        if !answer.ok() && answer.status != 202 {
+            return Err(answer.refused());
+        }
+        Ok(answer.json())
+    }
+
     /// `DELETE path`, under a new idempotency key: the answer.
     pub async fn delete(&self, path: &str) -> Result<Value> {
         let answer = self
