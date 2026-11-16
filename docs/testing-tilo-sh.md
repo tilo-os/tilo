@@ -43,7 +43,7 @@ booting, answering their health route and answering one request per route.
 Each service gets the environment its manifest sets in tilo/infra
 (`apps/tilo-sh-relay`, `apps/tilo-api` and `apps/tilo-web`); only the public
 names change to loopback ports and the secrets become throwaway local ones.
-`stack.sh` lists the variables per service in `relay_env`, `door_env` and
+`stack.sh` lists the variables per service in `relay_env`, `api_env` and
 `web_env`, and both modes use them, so a change to a production manifest
 belongs there too. Natively each service also gets the `ENV` its image's
 Containerfile sets. Only paths that live in the image move under the stack's
@@ -193,51 +193,55 @@ images reproduce what is deployed.
 ## Releasing the Lounge's people
 
 A release starts the Lounge on fresh state: it does not read the previous
-release's people, roles, wait list or invitations back. The people come over by
-hand, in this order. `t test release-tilo-sh` proves each step on the previous
-release's own state (`relay-upgrade`).
+release's people, roles, wait list or invitations back. The deployment brings
+them over once, in the relay's own pod (tilo/infra `apps/tilo-sh-relay`), with
+nobody reaching the cluster. `t test release-tilo-sh` proves the same steps on
+the previous release's own state (`relay-upgrade`).
 
-1. **Export**, from the live volume, read-only, out of the pod that holds it
-   (namespace `tilo-sh-vm-host`, deployment `tilo-sh-relay`, container
-   `room-service`). The old relay's state is `/run/tilo-rooms/lounge`; copy it
-   out, then read the copy with this checkout's command: the export runs no
-   relay, and writes nothing.
-
-   ```sh
-   mkdir -p /tmp/lounge-people
-   kubectl -n tilo-sh-vm-host exec deploy/tilo-sh-relay -c room-service -- \
-     tar -C /run/tilo-rooms -cf - lounge | tar -C /tmp/lounge-people -xf -
-   $CARGO --fetch debug/tilo-relay build -p tilo-relay --features agents
-   target/debug/tilo-relay release-people export \
-     --state /tmp/lounge-people/lounge --out /tmp/lounge-people/people.json
-   ```
-
-   The JSON holds the addresses the old release kept on its wait list, with
-   the secrets their removal and confirmation links carry, and the people with
-   the role each had: an administrator is an administrator, and the workspace's
-   own root is nobody.
-
-2. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
+1. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
    --publish`, and keep the three image digests it prints (the signing steps are
    skipped here; they run on a trusted release run).
-3. **Push infra**: the branch that starts the host on
-   `TILO_WORKSPACES_STATE=/run/tilo-rooms/v0.2.0`, with the new digests. The
-   old release's files stay where they are, under `/run/tilo-rooms/lounge`.
-4. **Import**, in the new pod, over the workspace's operator socket at
-   `/run/tilo-rooms/v0.2.0/lounge/operator.sock`: each address comes back as it
-   stood, an owner is declared by their key, and every other person gets the
-   host's own invitation, mailed to the address the export names and printed as
-   a link otherwise.
+2. **Push infra**: the branch that starts the host on a new state directory
+   (`TILO_WORKSPACES_STATE=/run/tilo-rooms/<version>`), with the new digests,
+   and points the deployment's carry-over at the old and new state (the
+   `release-people` container's `OLD_STATE` and `NEW_STATE`, the
+   `keep-identity` init container's paths). The old release's files stay where
+   they are.
+3. **The host keeps its identity**: before the host first serves from the new
+   directory, `keep-identity` copies the old release's device key
+   (`relay/host-device.key`) into it, once. The endpoint the VM hosts take work
+   from and the address a workspace's Browser reaches the host at are derived
+   from that key, so they stay the same.
+4. **The people come over**: the `release-people` container waits for the new
+   Lounge's operator socket (`<new state>/lounge/operator.sock`), then runs
 
    ```sh
-   kubectl -n tilo-sh-vm-host exec -i deploy/tilo-sh-relay -c room-service -- \
-     tilo-relay release-people import \
-     --socket /run/tilo-rooms/v0.2.0/lounge/operator.sock --file - \
-     < /tmp/lounge-people/people.json
+   tilo-relay release-people export --state <old state> --out <new state>/release-people/people.json
+   tilo-relay release-people import --socket <new state>/lounge/operator.sock \
+     --file <new state>/release-people/people.json
    ```
 
-5. **Check**: the import named every person and the link each one got, the
+   The export reads the old release's state and writes nothing there: the
+   addresses it kept on its wait list, with the secrets their removal and
+   confirmation links carry, and the people with the role each had (an
+   administrator is an administrator, the workspace's own root is nobody). The
+   import brings each address back as it stood, declares an owner by their key,
+   and gives every other person the host's own invitation, mailed to the
+   address the export names. Once the host has answered, the container writes
+   `<new state>/release-people/imported` and never imports again, even after a
+   restart, so nobody is invited twice.
+5. **Hand out the links nobody was mailed**: the import prints every invitation
+   with its link, `, mailed` after the ones the host sent. The others reach
+   their people only through whoever runs the host. They are in the
+   container's log, and kept on the volume in
+   `<new state>/release-people/import.log`:
+
+   ```sh
+   kubectl -n tilo-sh-vm-host logs deploy/tilo-sh-relay -c release-people
+   ```
+
+6. **Check**: the import named every person and the link each one got, the
    addresses it mailed were the ones the previous release kept, the wait list
    lists the same addresses (an unconfirmed one still waits for its link to be
    opened), the administrators stand as administrators, and the previous
-   release's files are still where it left them, under `/run/tilo-rooms/lounge`.
+   release's files are still where it left them.

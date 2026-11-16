@@ -466,7 +466,7 @@ vm_skip_reason() { vm_host_blocker; }
 vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
 
 # The API server's environment: apps/tilo-api/deployment.yaml.
-door_env() {
+api_env() {
   printf '%s\n' \
     "TILO_API_LISTEN=127.0.0.1:$api_port" \
     "TILO_API_ORIGIN=$api_origin" \
@@ -837,7 +837,7 @@ seed() {
 # The same services as plain processes: the programs t builds for this
 # checkout, each started the way its image starts it (the image's entrypoint
 # where it has one), with the image's ENV and the manifest's variables
-# (relay_env, door_env, web_env), only the paths that live in the image
+# (relay_env, api_env, web_env), only the paths that live in the image
 # moved under the stack's state.
 
 # containerfile_env FILE: the ENV the final stage of FILE sets, one NAME=VALUE
@@ -1338,7 +1338,7 @@ start_native_relay() {
 
 start_native_api() {
   { private_env api "$programs"
-    door_env
+    api_env
   } > "$runs/api.env"
   run_native api "$state/api" "$programs/tilo-api"
 }
@@ -1708,7 +1708,7 @@ up_images() {
 
   # The API server: uid 65532, its state on its own volume.
   local api_args=()
-  mapfile -d '' api_args < <(door_env | env_args)
+  mapfile -d '' api_args < <(api_env | env_args)
   local api_user=()
   mapfile -d '' api_user < <(as_user 65532)
   start api --network host --read-only --tmpfs /tmp "${api_user[@]}" \
