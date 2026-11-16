@@ -1244,7 +1244,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase same_principal_runs_receive_distinct_host_owned_participant_views;
+    phase same_actor_runs_receive_distinct_host_owned_participant_views;
     {
         let (state, first, mut app) = fixture();
         let second = first.clone().in_new_execution();

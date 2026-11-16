@@ -538,7 +538,7 @@ fn actor_name(actor: &str, device: Option<&Device>, device_unknown: bool) -> Opt
     if actor.is_empty() {
         return None;
     }
-    let name = ui::history_source::agent_principal_name(actor).unwrap_or_else(|| actor.to_owned());
+    let name = ui::history_source::agent_actor_name(actor).unwrap_or_else(|| actor.to_owned());
     Some(match device {
         Some(device) => CATALOG.t_args(
             "browser-review-actor-on-device",

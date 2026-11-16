@@ -114,7 +114,7 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
 pub struct AuthorParts {
     /// The person the change is in the name of.
     pub person: String,
-    /// That person's principal, as presence knows them.
+    /// That person's actor, as presence knows them.
     pub person_identity: Option<String>,
     /// The agent (or app, or program) that wrote for the person, when one did.
     pub writer: Option<String>,

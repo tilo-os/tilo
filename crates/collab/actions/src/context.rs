@@ -1127,7 +1127,7 @@ impl ParticipantId {
     }
 
     /// One host-minted execution's private view. This key is subordinate to the
-    /// admitted principal and confers no authority. Hosts derive it from their
+    /// admitted actor and confers no authority. Hosts derive it from their
     /// execution lease, never a client-supplied run label or context.
     pub fn for_execution(execution: uuid::Uuid) -> Self {
         Self(format!("execution:{execution}"))

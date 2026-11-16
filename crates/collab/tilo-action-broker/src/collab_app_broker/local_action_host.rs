@@ -318,7 +318,7 @@ impl AppBrokerState {
             .certificate
             .as_ref()
             .ok_or("original certificate unavailable")?;
-        if caller.acting().person_id() != Some(admission.admitted.principal_id.as_str())
+        if caller.acting().person_id() != Some(admission.admitted.actor_key.as_str())
             || caller.user_public_key() != Some(&certificate.user_public_key)
             || caller.device_public_key() != Some(&certificate.device_public_key)
         {
@@ -424,13 +424,13 @@ impl CertifiedActionLifecycle {
 /// device enrolment or account grant is exposed by this projection.
 #[derive(Clone)]
 pub struct CertifiedPersonContext {
-    principal: String,
+    actor: String,
     device: String,
     checked: Arc<CertifiedLocalActionHost>,
 }
 impl CertifiedPersonContext {
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
     pub fn device(&self) -> &str {
         &self.device
@@ -467,10 +467,10 @@ impl AppBrokerState {
                 "native credentials require this person's own admitted device workspace".into(),
             );
         }
-        let principal = checked.admission.admitted.principal_id.clone();
+        let actor = checked.admission.admitted.actor_key.clone();
         let device = hex::encode(certificate.device_public_key);
         Ok(CertifiedPersonContext {
-            principal,
+            actor,
             device,
             checked,
         })

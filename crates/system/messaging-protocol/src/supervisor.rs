@@ -74,7 +74,7 @@ impl AccountSupervisor {
                 | crate::Service::Whatsapp
                 | crate::Service::Signal
                 | crate::Service::Sms
-        ) || !owner.valid_principal()
+        ) || !owner.valid_actor()
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
             || owner.linking_generation == 0
@@ -109,7 +109,7 @@ impl AccountSupervisor {
     /// Install the native host's private linking capability for this exact
     /// frozen owner. This neither starts linking nor publishes Ready.
     pub fn install_setup(&self, setup: tilo_messaging::SetupClient) -> Result<(), SendError> {
-        if setup.principal() != self.owner.principal
+        if setup.actor() != self.owner.actor
             || setup.account() != &self.account
             || setup.generation() != self.owner.linking_generation
         {
@@ -128,7 +128,7 @@ impl AccountSupervisor {
         &self.owner
     }
     pub fn client(self: &Arc<Self>) -> MessagingClient {
-        MessagingClient::new(self.owner.principal.clone(), self.clone())
+        MessagingClient::new(self.owner.actor.clone(), self.clone())
     }
     /// Publish a recoverable non-ready state without replacing any adapter.
     /// Ready can only be published by verified installation below.

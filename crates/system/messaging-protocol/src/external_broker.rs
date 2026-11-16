@@ -249,7 +249,7 @@ impl ExternalBroker {
         &self.owner
     }
     pub fn client(&self) -> MessagingClient {
-        MessagingClient::new(&self.owner.principal, Arc::new(self.clone()))
+        MessagingClient::new(&self.owner.actor, Arc::new(self.clone()))
     }
     /// Read one host-selected native SMS into exact-route encrypted history.
     /// The supervisor supplies the object and holds the current SIM lease.

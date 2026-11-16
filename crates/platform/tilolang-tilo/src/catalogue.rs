@@ -705,7 +705,7 @@ impl Reader<'_> {
             FieldType::Time => "Time".to_owned(),
             FieldType::Duration => "Duration".to_owned(),
             FieldType::Identifier => "std.Identifier".to_owned(),
-            FieldType::Principal => "Actor".to_owned(),
+            FieldType::Actor => "Actor".to_owned(),
             FieldType::Resource(kind) => self.resource(kind)?,
             FieldType::Named(name) => {
                 let name = rename(name);

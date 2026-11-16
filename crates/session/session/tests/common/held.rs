@@ -154,7 +154,7 @@ pub fn presentation(device: &SigningKey, cert: &DeviceCert) -> Vec<u8> {
 }
 
 /// The person `root` certifies, as a workspace names its owner.
-pub fn principal(root: &[u8; 32]) -> String {
+pub fn actor(root: &[u8; 32]) -> String {
     hex::encode(root)
 }
 
@@ -184,7 +184,7 @@ pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     );
     session
         .handle()
-        .replace_tree(layout(WORKSPACE, &principal(root)));
+        .replace_tree(layout(WORKSPACE, &actor(root)));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }

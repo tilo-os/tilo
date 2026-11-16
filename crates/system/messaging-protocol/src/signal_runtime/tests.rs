@@ -6,7 +6,7 @@ use std::io::BufReader;
 
 fn owner() -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "device-a".into(),
         service: Service::Signal,
         account: "tilo-account-a".into(),

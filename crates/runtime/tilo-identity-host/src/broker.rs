@@ -64,9 +64,9 @@ fn identity_in(
     {
         return Ok(profile);
     }
-    let principal = profile.person_id();
+    let actor = profile.person_id();
     match read_workspace(tree, workspace, |workspace| {
-        workspace.policy.is_member(&principal)
+        workspace.policy.is_member(&actor)
     }) {
         Some(true) => Ok(profile),
         Some(false) => Err(format!(
@@ -299,7 +299,7 @@ fn metadata_response(
         Err(error) => return Response::Error(error.to_string()),
     };
     if record.group_public_key != profile.user_public_key {
-        return Response::Denied("identity record no longer matches the selected principal".into());
+        return Response::Denied("identity record no longer matches the selected actor".into());
     }
     let (device, cert) = match require_trusted_current_device(&profile) {
         Ok(material) => material,
@@ -512,16 +512,16 @@ fn sign_collaboration_op(
             Err(error) => Response::Error(error.to_string()),
         };
     }
-    let principal_id = hex::encode(profile.user_public_key);
+    let actor_key = hex::encode(profile.user_public_key);
     let decided = read_workspace(tree, bound_workspace, |workspace| {
-        workspace.role_of(&principal_id)?;
+        workspace.role_of(&actor_key)?;
         let record = collab_types::Record {
             workspace: &workspace.policy.workspace,
             app: app_id,
             record: record_id,
         };
         let allows = |node: &tilo_action_policy::TreePath, kind| {
-            workspace.answer_at(&principal_id, node, kind, unix_now()) == Answer::Allow
+            workspace.answer_at(&actor_key, node, kind, unix_now()) == Answer::Allow
         };
         Some(collab_types::decide_op(
             &op,
@@ -602,7 +602,7 @@ fn group_keys(
         }
         Err(error) => return Response::Denied(error.to_string()),
     }
-    let principal_id = hex::encode(profile.user_public_key);
+    let actor_key = hex::encode(profile.user_public_key);
     // The person reads their own cluster, the launch workspace of an app
     // opened there included; a workspace, as its policy says.
     let own_cluster =
@@ -614,7 +614,7 @@ fn group_keys(
                 route.app_id,
                 route.record_id,
             );
-            workspace.answer_at(&principal_id, &node, ActionKind::Read, unix_now()) != Answer::Deny
+            workspace.answer_at(&actor_key, &node, ActionKind::Read, unix_now()) != Answer::Deny
         })
         .unwrap_or(false);
     if !reads {
@@ -716,7 +716,7 @@ fn require_trusted_current_device(
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalDeviceIdentity {
     pub profile_id: String,
-    pub principal_id: String,
+    pub actor_key: String,
     pub user_root_public_key: [u8; 32],
     pub device_public_key: [u8; 32],
 }

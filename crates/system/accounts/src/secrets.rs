@@ -373,7 +373,7 @@ struct GrantKey {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialScope {
-    pub principal: String,
+    pub actor: String,
     pub device: String,
     pub service: String,
     pub account: String,
@@ -382,7 +382,7 @@ pub struct CredentialScope {
 impl CredentialScope {
     fn valid(&self) -> bool {
         self.generation > 0
-            && [&self.principal, &self.device, &self.service, &self.account]
+            && [&self.actor, &self.device, &self.service, &self.account]
                 .iter()
                 .all(|value| {
                     !value.is_empty()

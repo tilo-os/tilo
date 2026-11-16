@@ -230,7 +230,7 @@ pub(super) fn admit_kept_agent(
     let keeper = roster
         .keeper(workspace, agent_id)
         .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
-    if !tilo_action_policy::same_person(&keeper, &admitted.principal_id) {
+    if !tilo_action_policy::same_person(&keeper, &admitted.actor_key) {
         return Err(format!(
             "the agent {agent_id} is {keeper}'s to launch, not this session's"
         ));

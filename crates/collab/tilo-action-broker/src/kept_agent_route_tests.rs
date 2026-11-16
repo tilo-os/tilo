@@ -2,10 +2,10 @@
 /// canvas's ask hands it a turn: the session that keeps its state runs a
 /// broker with a journal (`durable_owner_required`), whose join refuses every
 /// application route it was not handed a private worker descriptor for. The
-/// app the launcher started is the worker of its own route whichever principal
+/// app the launcher started is the worker of its own route whichever actor
 /// joins it, so the workspace's kept agent — which joins as `agent`, not as
 /// its person — is admitted there too, and the workspace's record of its
-/// agents is what admits the principal, separately.
+/// agents is what admits the actor, separately.
 #[tokio::test(flavor = "current_thread")]
 async fn a_kept_agent_joins_its_own_route_in_a_journaled_session() {
     tokio::task::LocalSet::new()

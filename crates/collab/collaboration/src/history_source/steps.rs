@@ -10,7 +10,7 @@
 //! and the undo is itself a step that can be undone.
 //!
 //! A step belongs to a [`Scope`]: an agent run (every invocation of one
-//! agent connection), else the invoking principal, else the writing actor.
+//! agent connection), else the invoking actor, else the writing actor.
 //! What a scope has undone is recorded at [`UNDONE_KEY`] root keys, one per
 //! undone change. Ordinary undo writes completion in that same change;
 //! outside compensation stays pending until its admitted receipt confirms it.

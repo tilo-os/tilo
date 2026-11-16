@@ -209,16 +209,16 @@ pub async fn serve_connection(
     backend: Arc<dyn BlobBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<()> {
-    let principal = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream))
+    let actor = tokio::time::timeout(HANDOFF_TIMEOUT, read_handoff(&mut stream))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handoff timed out"))??;
-    let root: Arc<dyn ServeObject> = match principal {
-        BlobPrincipal::App(scope) => Arc::new(ScopedBlobs {
+    let root: Arc<dyn ServeObject> = match actor {
+        BlobActor::App(scope) => Arc::new(ScopedBlobs {
             scope,
             backend,
             runtime,
         }),
-        BlobPrincipal::Session => Arc::new(SessionServer { backend, runtime }),
+        BlobActor::Session => Arc::new(SessionServer { backend, runtime }),
     };
     serve_connected(stream, root).await
 }

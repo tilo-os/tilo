@@ -1729,19 +1729,19 @@ impl WorkspaceActivityPane {
         if self.source.authors().is_registered(actor) {
             return;
         }
-        let principal = if let Some(local) = &self.explicit_local_user {
+        let member = if let Some(local) = &self.explicit_local_user {
             Some(local.clone())
         } else {
             self.host.local_author(self.source.authors_mut(), actor)
         };
         // The hue follows the person, as receipt rows' does: one person editing from this device
         // and acting through a receipt is one colour, not one per key.
-        if let Some(principal) = principal {
-            let rgb = self.source.authors().colour_for(&principal);
+        if let Some(member) = member {
+            let rgb = self.source.authors().colour_for(&member);
             self.source.authors_mut().register(
                 actor,
                 ui::history_source::author_coloured(
-                    principal,
+                    member,
                     ui::history_source::short_id(actor),
                     rgb,
                 ),

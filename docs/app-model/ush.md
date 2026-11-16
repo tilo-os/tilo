@@ -145,7 +145,7 @@ are what the kernel can enforce.
 
 ## The trust boundary
 
-Three principals, in decreasing authority.
+Three actors, in decreasing authority.
 
 **The supervisor** is Tilo code and runs in the user's session outside every app
 sandbox. It builds namespaces, so it needs `unshare`, `mount` and `pivot_root`

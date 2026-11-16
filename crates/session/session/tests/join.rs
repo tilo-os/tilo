@@ -25,7 +25,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-use crate::common::held::{WORKSPACE, presentation, principal};
+use crate::common::held::{WORKSPACE, actor, presentation};
 
 /// The app whose record the channel carries.
 const APP: &str = "so.tilo.notes";
@@ -115,7 +115,7 @@ fn person() -> Person {
 fn layout(person: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Session");
-    workspace.set_owner(principal(&person.root));
+    workspace.set_owner(actor(&person.root));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

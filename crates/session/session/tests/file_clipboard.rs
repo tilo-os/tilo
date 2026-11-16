@@ -33,7 +33,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::DeviceCert;
 
-use crate::common::held::{Fixture, WORKSPACE, fixture, layout, presentation, principal};
+use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
 use ui::dnd::COPIED_FILES_MIME;
 
 /// The app whose clipboard this is.
@@ -62,7 +62,7 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
     });
     session
         .handle()
-        .replace_tree(layout(WORKSPACE, &principal(&fixture.cert.user_public_key)));
+        .replace_tree(layout(WORKSPACE, &actor(&fixture.cert.user_public_key)));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }

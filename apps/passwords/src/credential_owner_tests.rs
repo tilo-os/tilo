@@ -29,14 +29,14 @@ impl Owned {
         store.put(&mut item).unwrap();
         let broker = Arc::new(Mutex::new(CredentialBroker::new(store)));
         let scope = CredentialScope {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "test-device".into(),
             service: "signal".into(),
             account: "synthetic-native-account-alpha".into(),
             generation: 1,
         };
         let owner =
-            CredentialOwner::from_broker(&scope.principal, &scope.device, broker.clone()).unwrap();
+            CredentialOwner::from_broker(&scope.actor, &scope.device, broker.clone()).unwrap();
         let request = AccessRequest {
             app_id: "so.tilo.messages".into(),
             item_id: item.id,
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
         let alpha_id = owned.grant(&owned.scope);
         let beta_id = owned.grant(&beta);
         let mut app = TestApp::<PasswordsShell>::for_person_with_lent(
-            &owned.scope.principal,
+            &owned.scope.actor,
             owned.owner.clone(),
         )
         .unwrap();
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let mut app = TestApp::<PasswordsShell>::for_person_with_lent(
-            &owned.scope.principal,
+            &owned.scope.actor,
             owned.owner.clone(),
         )
         .unwrap();
@@ -301,7 +301,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let mut app = TestApp::<PasswordsShell>::for_person_with_lent(
-            &owned.scope.principal,
+            &owned.scope.actor,
             owned.owner.clone(),
         )
         .unwrap();
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let mut app = TestApp::<PasswordsShell>::for_person_with_lent(
-            &owned.scope.principal,
+            &owned.scope.actor,
             owned.owner.clone(),
         )
         .unwrap();
@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
             )
             .unwrap();
         let mut app = TestApp::<PasswordsShell>::for_person_with_lent(
-            &owned.scope.principal,
+            &owned.scope.actor,
             owned.owner.clone(),
         )
         .unwrap();

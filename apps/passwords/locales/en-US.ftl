@@ -27,7 +27,7 @@ passwords-request-details = { $app } requests access to { $item }.
     { $service }
     Account { $account }
     Link { $generation }
-    Person: { $principal }
+    Person: { $actor }
     Device: { $device }
 passwords-saved-item = Saved { $item }
 passwords-new-item = New item

@@ -8,7 +8,7 @@
 //!   approving device is where consent is given), and a root-signed
 //!   `tilo_relay_protocol::delegation::Delegation` naming its label, cursor
 //!   colour, workspaces and apps. The host confines the device to those workspaces and
-//!   treats it as its own principal ([`control::AgentIdentity`]).
+//!   treats it as its own actor ([`control::AgentIdentity`]).
 //! - **Apps.** Each record the agent works in is a replica of the app's
 //!   resource, looked up by the kind the record names and used only through
 //!   the operations the resource publishes — the same API a person's window

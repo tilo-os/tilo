@@ -275,18 +275,18 @@ async fn local_report_admission(
             );
             assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             let once_grant = |id: &str| {
-                let principal = tilo_action_policy::Grantee::person(person_id_for_root(
+                let actor = tilo_action_policy::Grantee::person(person_id_for_root(
                     env.cert.user_public_key,
                 ));
                 tilo_action_policy::Grant::new(
                     id,
-                    principal.clone(),
+                    actor.clone(),
                     env.membership.read().workspaces[0]
                         .node()
                         .app(env.route.app_id.clone()),
                     tilo_action_policy::KindSet::ALL,
                     tilo_action_policy::Answer::Allow,
-                    principal,
+                    actor,
                 )
                 .with_lifetime(tilo_action_policy::Lifetime::Once)
             };

@@ -54,7 +54,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Who a connection acts for, fixed by the handoff frame before the first RPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BlobPrincipal {
+pub enum BlobActor {
     /// A sandboxed app in a workspace: the connection's bootstrap is that scope's
     /// `DocumentBlobs`.
     App(BlobScope),
@@ -184,28 +184,28 @@ impl From<runtime_portal::NotAvailable> for BlobError {
 #[serde(deny_unknown_fields)]
 struct HandoffFrame {
     protocol: u16,
-    principal: String,
+    actor: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_id: Option<String>,
 }
 
-/// Write the handoff that fixes a new connection's principal: the magic, a
+/// Write the handoff that fixes a new connection's actor: the magic, a
 /// little-endian `u32` length and a JSON object
-/// `{"protocol":1,"principal":"app","workspace":…,"app_id":…}` or
-/// `{"protocol":1,"principal":"session"}`. The launcher writes the same bytes.
-pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> io::Result<()> {
-    let frame = match principal {
-        BlobPrincipal::App(scope) => HandoffFrame {
+/// `{"protocol":1,"actor":"app","workspace":…,"app_id":…}` or
+/// `{"protocol":1,"actor":"session"}`. The launcher writes the same bytes.
+pub fn write_handoff(stream: &mut impl io::Write, actor: &BlobActor) -> io::Result<()> {
+    let frame = match actor {
+        BlobActor::App(scope) => HandoffFrame {
             protocol: BLOB_HANDOFF_PROTOCOL,
-            principal: "app".into(),
+            actor: "app".into(),
             workspace: Some(scope.workspace.clone()),
             app_id: Some(scope.app.clone()),
         },
-        BlobPrincipal::Session => HandoffFrame {
+        BlobActor::Session => HandoffFrame {
             protocol: BLOB_HANDOFF_PROTOCOL,
-            principal: "session".into(),
+            actor: "session".into(),
             workspace: None,
             app_id: None,
         },
@@ -217,7 +217,7 @@ pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> 
 }
 
 /// Read and validate a handoff frame (server side).
-pub async fn read_handoff<R>(reader: &mut R) -> io::Result<BlobPrincipal>
+pub async fn read_handoff<R>(reader: &mut R) -> io::Result<BlobActor>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -236,12 +236,12 @@ where
     if frame.protocol != BLOB_HANDOFF_PROTOCOL {
         return Err(invalid("unsupported document-media handoff protocol"));
     }
-    match (frame.principal.as_str(), frame.workspace, frame.app_id) {
+    match (frame.actor.as_str(), frame.workspace, frame.app_id) {
         ("app", Some(workspace), Some(app)) => BlobScope::new(workspace, app)
-            .map(BlobPrincipal::App)
+            .map(BlobActor::App)
             .map_err(|_| invalid("document-media handoff names an invalid scope")),
-        ("session", None, None) => Ok(BlobPrincipal::Session),
-        _ => Err(invalid("document-media handoff names an unknown principal")),
+        ("session", None, None) => Ok(BlobActor::Session),
+        _ => Err(invalid("document-media handoff names an unknown actor")),
     }
 }
 
@@ -422,7 +422,7 @@ impl BlobClient {
     pub fn connect_session(socket: &Path) -> Result<Self, BlobError> {
         let mut stream = StdUnixStream::connect(socket)
             .map_err(|error| BlobError::Disconnected(format!("{}: {error}", socket.display())))?;
-        write_handoff(&mut stream, &BlobPrincipal::Session)
+        write_handoff(&mut stream, &BlobActor::Session)
             .map_err(|error| BlobError::Disconnected(error.to_string()))?;
         Self::from_session_stream(stream)
     }

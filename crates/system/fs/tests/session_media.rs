@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use runtime_fs::blobs::{BlobClient, BlobPrincipal, BlobScope, ReadOutcome, write_handoff};
+use runtime_fs::blobs::{BlobActor, BlobClient, BlobScope, ReadOutcome, write_handoff};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 fn fs_binary() -> PathBuf {
@@ -77,7 +77,7 @@ impl Server {
         let mut stream = UnixStream::connect(&self.socket).expect("the media socket answers");
         write_handoff(
             &mut stream,
-            &BlobPrincipal::App(BlobScope::new(workspace, app).unwrap()),
+            &BlobActor::App(BlobScope::new(workspace, app).unwrap()),
         )
         .expect("the launcher's handoff");
         BlobClient::from_app_stream(stream).expect("the app's connection")

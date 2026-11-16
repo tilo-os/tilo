@@ -243,9 +243,9 @@ pub(crate) struct AdmittedJoinIdentity {
     worker_registration: Option<PrivateWorkerRegistration>,
     certificate: Option<tilo_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
-    principal_id: String,
+    actor_key: String,
     /// Informational display label announced by this authenticated session.
-    /// Authorization always uses `principal_id`, never this handle.
+    /// Authorization always uses `actor_key`, never this handle.
     display_handle: Option<String>,
     /// Workspace admission role from the live owner/capability roster.
     /// Certified document operations use this directly instead of requiring
@@ -253,7 +253,7 @@ pub(crate) struct AdmittedJoinIdentity {
     /// delegated agent it is the agent's role
     /// ([`roles::agent_policy::role`]): its preset's, capped by its person's.
     role: CapRole,
-    /// Delegated agent principal for this channel. The certified device still
+    /// Delegated agent actor for this channel. The certified device still
     /// proves which person launched it, while policy uses this revocable id.
     agent_id: Option<String>,
     /// The agent is one this person's own device handed the session to (an
@@ -358,7 +358,7 @@ impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
         let actor = match &self.agent_id {
             Some(agent) => {
-                let actor = BrokerActor::agent(agent.clone()).for_person(self.principal_id.clone());
+                let actor = BrokerActor::agent(agent.clone()).for_person(self.actor_key.clone());
                 let actor = if self.session_delegated {
                     actor.session_delegated()
                 } else {
@@ -370,7 +370,7 @@ impl AdmittedJoinIdentity {
                     None => actor,
                 }
             }
-            None => BrokerActor::person(self.principal_id.clone()),
+            None => BrokerActor::person(self.actor_key.clone()),
         };
         actor.capped(self.verified.capped)
     }
@@ -386,8 +386,8 @@ impl AdmittedJoinIdentity {
             // ([`tilo_actions::remote::Caller::acting_for_person`]): every op it
             // makes and everything presence says about it names that person.
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone())
-                .acting_for(self.principal_id.clone()),
-            None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
+                .acting_for(self.actor_key.clone()),
+            None => tilo_actions::remote::Caller::local_person(self.actor_key.clone()),
         }
         .in_workspace(workspace)
         .from_foreign_device(foreign)
@@ -443,7 +443,7 @@ impl AdmittedJoinIdentity {
             // The personal cluster's devices are its owner's; a foreign one is
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
-            let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
+            let policy = WorkspacePolicy::new(workspace_id, self.actor_key.clone());
             let actor = self.broker_actor();
             let acting = actor.acting();
             let granted = actor.granted(workspace_id);
@@ -502,7 +502,7 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
-    let principal_id = person_id_for_root(verified.user_public_key);
+    let actor_key = person_id_for_root(verified.user_public_key);
     // The personal cluster has no roster to consult: its members are, by the
     // workspace id's derivation, exactly the devices this root certified, each
     // acting as the workspace's owner — a foreign device with the foreign-device
@@ -513,7 +513,7 @@ fn admit_verified_join_at(
             worker_registration: None,
             certificate: None,
             verified,
-            principal_id,
+            actor_key,
             role,
             display_handle: None,
             agent_id: None,
@@ -525,15 +525,15 @@ fn admit_verified_join_at(
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
     // Taking part is being allowed to read the workspace now: as a member, or
     // by a grant for a while.
-    if !BrokerActor::person(principal_id.clone()).reads_in(workspace, now) {
+    if !BrokerActor::person(actor_key.clone()).reads_in(workspace, now) {
         return Err("certified collaboration identity is not a workspace member".into());
     }
-    let role = workspace.role_of(&principal_id).unwrap_or(CapRole::Viewer);
+    let role = workspace.role_of(&actor_key).unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
         worker_registration: None,
         certificate: None,
         verified,
-        principal_id,
+        actor_key,
         role,
         display_handle: None,
         agent_id: None,
@@ -1269,7 +1269,7 @@ impl AppBrokerState {
         presentation: &[u8],
     ) -> Result<VerifiedActionCaller, String> {
         // The local certified presentation format also binds the exact workspace.
-        // No caller-controlled `is_agent` or principal string enters this api.
+        // No caller-controlled `is_agent` or actor string enters this api.
         if uuid::Uuid::parse_str(workspace).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
@@ -5099,7 +5099,7 @@ impl AppBrokerState {
             // another actor.
             let admitted_actor = match &admitted.agent_id {
                 Some(agent) => actor.member().agent_id() == Some(delegated_agent_name(agent)),
-                None => actor.member().person_id() == Some(admitted.principal_id.as_str()),
+                None => actor.member().person_id() == Some(admitted.actor_key.as_str()),
             };
             if caller.workspace != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
@@ -6296,7 +6296,7 @@ impl AppBrokerState {
     /// Display handles remain presentation only.
     fn member_id(admitted: &AdmittedJoinIdentity) -> collab_types::MemberId {
         admitted.agent_id.as_ref().map_or_else(
-            || collab_types::MemberId::person(admitted.principal_id.clone()),
+            || collab_types::MemberId::person(admitted.actor_key.clone()),
             |agent| collab_types::MemberId::agent(agent.clone()),
         )
     }
@@ -7073,7 +7073,7 @@ impl AppBrokerState {
         // unless their session announced a name of its own; never by their key.
         let mut me = mine.unwrap_or_else(|| {
             collab_types::Member::of_person(
-                &collab_types::Person::new(admitted.principal_id.clone(), String::new()),
+                &collab_types::Person::new(admitted.actor_key.clone(), String::new()),
                 None,
             )
         });
@@ -11492,7 +11492,7 @@ pub mod tests {
                             device_public_key: [0; 32],
                             capped: false,
                         },
-                        principal_id: "fixture-application".into(),
+                        actor_key: "fixture-application".into(),
                         display_handle: None,
                         role: CapRole::Editor,
                         agent_id: None,
@@ -12297,19 +12297,19 @@ pub mod tests {
         phase certified_join_admission_uses_workspace_membership_and_role;
         {
             let root = SigningKey::from_bytes(&[20; 32]);
-            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let actor = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId::from_u128(1),
                 "Member workspace",
             );
             let route = CrdtRoute::cluster(workspace.id().to_string());
-            workspace.admit(principal.clone(), crate::test_support::Role::Editor);
+            workspace.admit(actor.clone(), crate::test_support::Role::Editor);
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
 
             let admitted = admit_verified_join(&tree, &route, verified_device(&root))
                 .expect("a certified editor is admitted");
-            assert_eq!(admitted.principal_id, principal);
+            assert_eq!(admitted.actor_key, actor);
             assert_eq!(admitted.role, CapRole::Editor);
             assert!(
                 verify_session_author(
@@ -12373,12 +12373,12 @@ pub mod tests {
         phase certified_join_admission_rejects_cross_workspace_replay;
         {
             let root = SigningKey::from_bytes(&[23; 32]);
-            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let actor = person_id_for_root(root.verifying_key().to_bytes());
             let mut member_workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId::from_u128(3),
                 "Member workspace",
             );
-            member_workspace.set_owner(&principal);
+            member_workspace.set_owner(&actor);
             let other_workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId::from_u128(4),
                 "Other workspace",
@@ -12413,15 +12413,11 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn downgrade_member_to_viewer(
-        membership: &WorkspaceTreeHandle,
-        principal: &str,
-        _workspace: &str,
-    ) {
+    fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, actor: &str, _workspace: &str) {
         let mut tree = membership.write();
         let workspace = &mut tree.workspaces[0];
         workspace.policy.owner = None;
-        workspace.admit(principal, Role::Viewer);
+        workspace.admit(actor, Role::Viewer);
         drop(tree);
     }
 
@@ -12613,7 +12609,7 @@ pub mod tests {
         phase a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them;
         {
             let root = SigningKey::from_bytes(&[44; 32]);
-            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let actor = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId::from_u128(44),
                 "Agent workspace",
@@ -12621,10 +12617,10 @@ pub mod tests {
             let owner =
                 person_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
             workspace.set_owner(owner.clone());
-            workspace.admit(principal.clone(), Role::Moderator);
+            workspace.admit(actor.clone(), Role::Moderator);
             workspace.grant(tilo_action_policy::Grant::new(
                 "fixture:launches-agents",
-                crate::test_support::Grantee::person(principal.clone()),
+                crate::test_support::Grantee::person(actor.clone()),
                 tilo_action_policy::roles::governance_action(
                     &workspace.id().to_string(),
                     tilo_action_policy::roles::governance::GRANT,
@@ -12693,7 +12689,7 @@ pub mod tests {
                 state.revalidate_admission(&route, &admitted).is_ok(),
                 "a going agent session is admitted while its person is"
             );
-            assert!(membership.write().workspaces[0].dismiss(&principal));
+            assert!(membership.write().workspaces[0].dismiss(&actor));
             assert!(
                 state.revalidate_admission(&route, &admitted).is_err(),
                 "removing the person invalidates an already-open agent channel"
@@ -12843,7 +12839,7 @@ pub mod tests {
             assert!(state.revalidate_admission(&route, &scribe).is_ok());
         }
 
-        phase non_owner_cannot_claim_an_agent_principal;
+        phase non_owner_cannot_claim_an_agent_actor;
         {
             let member = SigningKey::from_bytes(&[45; 32]);
             let member_id = person_id_for_root(member.verifying_key().to_bytes());
@@ -13278,12 +13274,12 @@ pub mod tests {
     fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
         let root = SigningKey::from_bytes(&[24; 32]);
         let device = SigningKey::from_bytes(&[25; 32]);
-        let principal = person_id_for_root(root.verifying_key().to_bytes());
+        let actor = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId::from_u128(5),
             "Typed document workspace",
         );
-        workspace.set_owner(&principal);
+        workspace.set_owner(&actor);
         let route = CrdtRoute::record("so.tilo.notes", workspace.id().to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -13378,7 +13374,7 @@ pub mod tests {
 
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
 
-        downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
+        downgrade_member_to_viewer(&membership, &actor, &route.cluster_id);
         let viewer = state
             .revalidate_admission(&route, &admitted)
             .expect("member still admitted");
@@ -13421,7 +13417,7 @@ pub mod tests {
             .expect("the root's own device joins its personal cluster");
         assert_eq!(admitted.role, CapRole::Owner);
         assert_eq!(
-            admitted.principal_id,
+            admitted.actor_key,
             person_id_for_root(root.verifying_key().to_bytes())
         );
         assert!(
@@ -14893,7 +14889,7 @@ mod host_worker_capacity_tests {
                 device_public_key: [92; 32],
                 capped: false,
             },
-            principal_id: "host".into(),
+            actor_key: "host".into(),
             display_handle: None,
             role: CapRole::Owner,
             agent_id: None,

@@ -259,7 +259,7 @@ impl SelectionRange {
 /// This is an *identity*, not a policy: it names an app so a presence
 /// cursor can be scoped to it. The stable string [`AppKind::app_id`]
 /// returns is the same app id the compositor's portal and a
-/// `Principal::App` subject use.
+/// `Actor::App` subject use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum AppKind {
     Terminal,

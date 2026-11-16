@@ -529,7 +529,7 @@ mod tests {
             use crate::routing::{LinkState, LiveBinding};
             let root = tempfile::tempdir().unwrap();
             let owner = Owner {
-                principal: "11".repeat(32),
+                actor: "11".repeat(32),
                 device: "device-a".into(),
                 service: crate::Service::Signal,
                 account: "account-a".into(),

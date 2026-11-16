@@ -64,7 +64,7 @@ const MAX_CODE_BYTES: usize = 64;
 /// The longest name an engine takes for who asks, in UTF-16 units, which is
 /// how the engine counts it.
 pub const MAX_ACTOR_UNITS: usize = 64;
-/// How much of a longer principal a shortened name keeps before its digest.
+/// How much of a longer actor a shortened name keeps before its digest.
 const ACTOR_HEAD_UNITS: usize = 31;
 /// The most entries of other actors' work one answer carries.
 pub const MAX_OTHERS: usize = 8;
@@ -109,28 +109,28 @@ pub enum FormSubmit {
 /// actions under, so each actor in a tab is told what changed since its own
 /// last read and what the others did.
 ///
-/// It is the principal the caller admitted, unchanged, whenever the engine
-/// can take it. A principal longer than [`MAX_ACTOR_UNITS`] is shortened the
+/// It is the actor the caller admitted, unchanged, whenever the engine
+/// can take it. An actor longer than [`MAX_ACTOR_UNITS`] is shortened the
 /// same way every time: its first 31 UTF-16 units, a `~`, and the first 128
-/// bits of its BLAKE3 digest in hex. Two long principals that begin alike
-/// still get two names, and one principal always gets the same name, so the
+/// bits of its BLAKE3 digest in hex. Two long actors that begin alike
+/// still get two names, and one actor always gets the same name, so the
 /// record never merges two actors or splits one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PageActor(String);
 
 impl PageActor {
-    /// The name `principal` acts under, or `None` for no principal at all:
+    /// The name `actor` acts under, or `None` for no actor at all:
     /// a caller nobody named is the tab's one unnamed actor.
-    pub fn named(principal: &str) -> Option<Self> {
-        if principal.is_empty() {
+    pub fn named(actor: &str) -> Option<Self> {
+        if actor.is_empty() {
             return None;
         }
-        if principal.encode_utf16().count() <= MAX_ACTOR_UNITS {
-            return Some(Self(principal.to_owned()));
+        if actor.encode_utf16().count() <= MAX_ACTOR_UNITS {
+            return Some(Self(actor.to_owned()));
         }
         let mut name = String::with_capacity(MAX_ACTOR_UNITS);
         let mut units = 0;
-        for character in principal.chars() {
+        for character in actor.chars() {
             units += character.len_utf16();
             if units > ACTOR_HEAD_UNITS {
                 break;
@@ -138,7 +138,7 @@ impl PageActor {
             name.push(character);
         }
         name.push('~');
-        let digest = blake3::hash(principal.as_bytes());
+        let digest = blake3::hash(actor.as_bytes());
         for byte in &digest.as_bytes()[..16] {
             use std::fmt::Write as _;
             let _ = write!(name, "{byte:02x}");

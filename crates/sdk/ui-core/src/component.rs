@@ -387,12 +387,12 @@ impl Ord for Person {
 
 impl PropType for Person {
     fn ty() -> Type {
-        Type::Principal
+        Type::Actor
     }
 
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
-            Value::Principal { identity, name } => Ok(Self {
+            Value::Actor { identity, name } => Ok(Self {
                 hue: crate::tokens::PresenceHue::of_identity(identity),
                 identity: identity.clone(),
                 name: name.clone(),

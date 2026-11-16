@@ -1,29 +1,29 @@
 //! `tilo-messaging`: the person's messaging accounts, started by the
 //! compositor with the session (see the crate docs).
 //!
-//! `tilo-messaging --principal <hex> --device <id> --profile <dir>`; the
+//! `tilo-messaging --actor <hex> --device <id> --profile <dir>`; the
 //! session with the compositor is standard input and output.
 
 use std::path::PathBuf;
 
 use tilo_messaging_service::service::{Service, SessionHandler, listen};
-use tilo_messaging_service::session::{DEVICE_ARG, PRINCIPAL_ARG, PROFILE_ARG, SessionLink};
+use tilo_messaging_service::session::{ACTOR_ARG, DEVICE_ARG, PROFILE_ARG, SessionLink};
 
 fn arguments() -> Option<(String, String, PathBuf)> {
-    let mut principal = None;
+    let mut actor = None;
     let mut device = None;
     let mut profile = None;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let value = args.next()?;
         match flag.as_str() {
-            PRINCIPAL_ARG => principal = Some(value),
+            ACTOR_ARG => actor = Some(value),
             DEVICE_ARG => device = Some(value),
             PROFILE_ARG => profile = Some(PathBuf::from(value)),
             _ => return None,
         }
     }
-    Some((principal?, device?, profile?))
+    Some((actor?, device?, profile?))
 }
 
 fn main() {
@@ -40,10 +40,8 @@ fn main() {
     unsafe {
         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
     }
-    let Some((principal, device, profile)) = arguments() else {
-        eprintln!(
-            "usage: tilo-messaging {PRINCIPAL_ARG} <hex> {DEVICE_ARG} <id> {PROFILE_ARG} <dir>"
-        );
+    let Some((actor, device, profile)) = arguments() else {
+        eprintln!("usage: tilo-messaging {ACTOR_ARG} <hex> {DEVICE_ARG} <id> {PROFILE_ARG} <dir>");
         std::process::exit(2);
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -70,13 +68,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let service = match Service::new(
-        &principal,
-        &device,
-        &profile,
-        session,
-        runtime.handle().clone(),
-    ) {
+    let service = match Service::new(&actor, &device, &profile, session, runtime.handle().clone()) {
         Ok(service) => service,
         Err(error) => {
             // No custody on this device yet: no accounts to hold.

@@ -38,13 +38,9 @@ pub(crate) struct HistoryView {
 }
 
 impl HistoryView {
-    pub(crate) fn new(
-        client: Option<HistoryClient>,
-        principal: Option<&str>,
-        direct: bool,
-    ) -> Self {
+    pub(crate) fn new(client: Option<HistoryClient>, actor: Option<&str>, direct: bool) -> Self {
         let client = client.filter(|client| {
-            principal.is_some_and(|person| !person.is_empty() && person == client.principal())
+            actor.is_some_and(|person| !person.is_empty() && person == client.actor())
         });
         let changes = LocalState::new(0u64);
         let wake = changes.clone();
@@ -59,7 +55,7 @@ impl HistoryView {
         Self {
             client,
             direct,
-            me: principal.map(str::to_owned),
+            me: actor.map(str::to_owned),
             state: LocalState::new(Projection::default()),
             changes,
             _subscription: subscription,

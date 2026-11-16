@@ -1,7 +1,7 @@
-//! Who wrote what a host shows: the name and colour presence shows a principal by, and the actors
+//! Who wrote what a host shows: the name and colour presence shows an actor by, and the actors
 //! the host's own mounts write records as.
 //!
-//! A change of a shell or a record names its author by the principal it writes as, never something
+//! A change of a shell or a record names its author by the actor it writes as, never something
 //! to show. A host that knows who that is — its presence roster, the mounts of its own page — names
 //! them; one that does not leaves the change to the history's own naming.
 
@@ -9,7 +9,7 @@ use std::rc::Rc;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 
-/// The name and colour presence shows `principal` by, when this host knows them.
+/// The name and colour presence shows `actor` by, when this host knows them.
 pub type People = Rc<dyn Fn(&str) -> Option<(String, (u8, u8, u8))>>;
 
 /// Told the writer a record's document carries as it is read.

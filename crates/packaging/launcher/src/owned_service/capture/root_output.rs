@@ -285,7 +285,7 @@ mod tests {
                 panic!("Retired authority admitted");
             };
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            // Neither principal branch skips this production constructor.
+            // Neither actor branch skips this production constructor.
             let expected = if rustix::process::getuid().as_raw() == 0
                 && rustix::process::geteuid().as_raw() == 0
                 && unsafe { libc::setfsuid(u32::MAX) } == 0

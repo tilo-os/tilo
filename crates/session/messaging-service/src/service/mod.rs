@@ -63,20 +63,20 @@ pub struct Service {
 }
 
 impl Service {
-    /// The service for `principal` on SDK device `device`, keeping account
+    /// The service for `actor` on SDK device `device`, keeping account
     /// state under `profile`, asking the compositor through `session`.
     ///
     /// # Errors
     /// The person's custody cannot be read.
     pub fn new(
-        principal: &str,
+        actor: &str,
         device: &str,
         profile: &std::path::Path,
         session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
-        let custody = Arc::new(Custody::load(principal, device)?);
-        let vault = CredentialOwner::deferred(principal, device, accounts::SecretStore::open)
+        let custody = Arc::new(Custody::load(actor, device)?);
+        let vault = CredentialOwner::deferred(actor, device, accounts::SecretStore::open)
             .map_err(|_| "the vault refuses this person or device".to_owned())?;
         Self::assemble(custody, vault, profile, session, runtime)
     }
@@ -88,10 +88,10 @@ impl Service {
         session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
-        let principal = custody.principal().to_owned();
-        let principal = principal.as_str();
-        let registry = tilo_messaging::messaging_registry(principal)
-            .map_err(|_| "invalid person".to_owned())?;
+        let actor = custody.actor().to_owned();
+        let actor = actor.as_str();
+        let registry =
+            tilo_messaging::messaging_registry(actor).map_err(|_| "invalid person".to_owned())?;
         let messaging = registry.clone().client();
         let service = Arc::new_cyclic(|this: &Weak<Self>| Self {
             custody,
@@ -211,7 +211,7 @@ impl Service {
         enrollments.extend(self.flows.whatsapp.views());
         enrollments.extend(self.flows.sms.views());
         Snapshot {
-            principal: self.custody.principal().into(),
+            actor: self.custody.actor().into(),
             accounts,
             enrollments,
             proposals: *self.vault_changed.borrow(),

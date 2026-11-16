@@ -200,7 +200,7 @@ mod tests {
 
     fn owner() -> Owner {
         Owner {
-            principal: "p".into(),
+            actor: "p".into(),
             device: "d".into(),
             service: Service::Sms,
             account: "a".into(),

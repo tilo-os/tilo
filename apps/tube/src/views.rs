@@ -239,7 +239,7 @@ mod tests {
         let cx = ViewCx::new(
             channel.resource(),
             "page",
-            tilo_view::Principal {
+            tilo_view::Actor {
                 id: "Pat".to_owned(),
                 name: "Pat".to_owned(),
             },

@@ -387,7 +387,7 @@ impl Adapter {
                     }
                 }))
             }
-            Prop::Principal { identity, name } => Value::Principal(crate::Principal {
+            Prop::Actor { identity, name } => Value::Actor(crate::Actor {
                 id: identity.clone(),
                 name: name.clone(),
             }),
@@ -673,7 +673,7 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         (Type::Float, Value::Int(number)) => Prop::Float(*number as f64),
         (Type::Bool, Value::Bool(flag)) => Prop::Bool(*flag),
         (Type::Bool, Value::Int(number)) => Prop::Bool(*number != 0),
-        (Type::Principal, Value::Principal(who)) => Prop::Principal {
+        (Type::Actor, Value::Actor(who)) => Prop::Actor {
             identity: who.id.clone(),
             name: who.name.clone(),
         },
@@ -835,7 +835,7 @@ impl Source for NodeSource<'_> {
         Some(match ty {
             // A moment is held as its ISO text (or the day it names), a person as their identity,
             // and a case as its name: what its widget shows, and what an edit carries.
-            Type::Text | Type::Time | Type::Principal | Type::Enum => BoundValue::Text(Bound {
+            Type::Text | Type::Time | Type::Actor | Type::Enum => BoundValue::Text(Bound {
                 state: self.reconciler.text_state(&key),
                 edits,
                 name: called,

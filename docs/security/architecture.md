@@ -67,7 +67,7 @@ routing metadata and wants content.
 
 ### 2.3 Trust tiers
 
-| Tier | Principal | Posture | Boundary |
+| Tier | Actor | Posture | Boundary |
 |---|---|---|---|
 | T0 | kernel, compositor, filesystem daemon, portal broker | trusted, must be **verifiable** | signed UKI, sealed root, MAC, measured boot |
 | T1 | first-party apps | our code, assume bugs | sandbox + capability grants |

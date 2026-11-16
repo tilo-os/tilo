@@ -16,7 +16,7 @@ use tilo_messaging_protocol::journal::Owner;
 /// The person's device custody and whether their session is usable now.
 pub(crate) struct Custody {
     host: HostIdentity,
-    principal: String,
+    actor: String,
     device: String,
     workspace: collab_types::WorkspaceId,
     active: AtomicBool,
@@ -24,17 +24,17 @@ pub(crate) struct Custody {
 }
 
 impl Custody {
-    /// The device custody of `principal` as this device holds it, on SDK
+    /// The device custody of `actor` as this device holds it, on SDK
     /// device `device`.
     ///
     /// # Errors
     /// The device key or the person's certificate cannot be read.
-    pub(crate) fn load(principal: &str, device: &str) -> Result<Self, String> {
+    pub(crate) fn load(actor: &str, device: &str) -> Result<Self, String> {
         let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
         let key =
             tilo_user_identity::persist::load_device_key(&paths).map_err(|e| e.to_string())?;
         let mut person = [0; 32];
-        hex::decode_to_slice(principal, &mut person).map_err(|e| e.to_string())?;
+        hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
         let cert =
             tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&person))
                 .map_err(|e| e.to_string())?;
@@ -44,24 +44,20 @@ impl Custody {
                 key,
                 std::sync::Arc::new(tilo_identity_host::custody::files::Files::new(paths)),
             ),
-            principal,
+            actor,
             device,
         )
     }
 
-    pub(crate) fn with_host(
-        host: HostIdentity,
-        principal: &str,
-        device: &str,
-    ) -> Result<Self, String> {
+    pub(crate) fn with_host(host: HostIdentity, actor: &str, device: &str) -> Result<Self, String> {
         let mut person = [0; 32];
-        hex::decode_to_slice(principal, &mut person).map_err(|e| e.to_string())?;
+        hex::decode_to_slice(actor, &mut person).map_err(|e| e.to_string())?;
         let room = collab_types::personal_cluster(&person).to_string();
         let workspace = collab_types::WorkspaceId::parse(&room)
             .ok_or_else(|| "a person's cluster is not a workspace id".to_string())?;
         Ok(Self {
             host,
-            principal: principal.into(),
+            actor: actor.into(),
             device: device.into(),
             workspace,
             active: AtomicBool::new(false),
@@ -69,8 +65,8 @@ impl Custody {
         })
     }
 
-    pub(crate) fn principal(&self) -> &str {
-        &self.principal
+    pub(crate) fn actor(&self) -> &str {
+        &self.actor
     }
 
     pub(crate) fn device(&self) -> &str {
@@ -97,7 +93,7 @@ impl Custody {
     /// # Errors
     /// Another person or device, an inactive session or changed custody.
     pub(crate) fn admit(self: &Arc<Self>, owner: Owner) -> Result<Identity, SendError> {
-        if owner.principal != self.principal || owner.device != self.device {
+        if owner.actor != self.actor || owner.device != self.device {
             return Err(SendError::Revoked);
         }
         let identity = Identity {
@@ -113,7 +109,7 @@ impl Custody {
     /// generation.
     pub(crate) fn new_owner(&self, service: tilo_messaging_protocol::Service) -> Owner {
         Owner {
-            principal: self.principal.clone(),
+            actor: self.actor.clone(),
             device: self.device.clone(),
             service,
             account: uuid::Uuid::new_v4().to_string(),
@@ -149,9 +145,9 @@ impl Identity {
             .host
             .current_material(self.custody.workspace)
             .map_err(|_| SendError::Revoked)?;
-        if self.owner.principal != self.custody.principal
+        if self.owner.actor != self.custody.actor
             || self.owner.device != self.custody.device
-            || hex::encode(certificate.user_public_key) != self.owner.principal
+            || hex::encode(certificate.user_public_key) != self.owner.actor
             || certificate.capabilities.foreign
         {
             return Err(SendError::Revoked);
@@ -180,7 +176,7 @@ pub(crate) fn service_name(service: tilo_messaging_protocol::Service) -> &'stati
 
 pub(crate) fn credential_scope(owner: &Owner) -> CredentialScope {
     CredentialScope {
-        principal: owner.principal.clone(),
+        actor: owner.actor.clone(),
         device: owner.device.clone(),
         service: service_name(owner.service).into(),
         account: owner.account.clone(),
@@ -210,7 +206,7 @@ impl Credential {
             || request.origin.is_none()
             || owner.linking_generation == 0
             || owner.account.is_empty()
-            || vault.principal() != owner.principal
+            || vault.actor() != owner.actor
             || vault.device() != owner.device
         {
             return Err(SendError::Revoked);

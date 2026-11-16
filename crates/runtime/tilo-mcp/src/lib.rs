@@ -599,7 +599,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// One session of agent `agent_id`, which the host admitted itself into
     /// `workspace` (a desktop's MCP server, after `person` said so). The
     /// person's own device hands the session to that agent: the agent stays
-    /// the principal, and what it may do is the person's own authority held
+    /// the actor, and what it may do is the person's own authority held
     /// to the delegation a device gives its agents
     /// ([`tilo_action_policy::roles::agent_grants`]). Each session is its own
     /// fresh execution, retired when the session drops.

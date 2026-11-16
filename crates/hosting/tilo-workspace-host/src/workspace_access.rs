@@ -404,7 +404,7 @@ impl RelayTrust<'_> {
     /// # Errors
     ///
     /// The first reason `peer` may not act in `workspace_id`.
-    pub(crate) fn principal(
+    pub(crate) fn actor(
         &self,
         peer: &AuthenticatedPeer,
         workspace_id: WorkspaceId,
@@ -516,7 +516,7 @@ pub(crate) fn decide_in(
     op: WorkspaceOperation,
     now_ns: u64,
 ) -> Decision {
-    if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
+    if let Err(reason) = trust.actor(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
     match crate::environment::environment_of(trust.environments, &peer.device_public_key) {

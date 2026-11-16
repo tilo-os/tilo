@@ -68,14 +68,14 @@ mod durable_local_matrix {
             );
             // Someone the workspace grants everything until 50 seconds after the
             // start, and nothing after.
-            let principal = person_id_for_root(cert.user_public_key);
+            let actor = person_id_for_root(cert.user_public_key);
             let changes = tilo_action_policy::Grant::new(
                 "changes-for-a-while",
-                tilo_action_policy::Grantee::person(principal.clone()),
+                tilo_action_policy::Grantee::person(actor.clone()),
                 workspace.node(),
                 tilo_action_policy::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(principal),
+                tilo_action_policy::Grantee::person(actor),
             )
             .with_lifetime(tilo_action_policy::Lifetime::Until(
                 (start / 1_000_000_000 + 50) * 1000,

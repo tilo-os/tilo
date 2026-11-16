@@ -31,7 +31,7 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-use crate::common::held::{WORKSPACE, presentation, principal};
+use crate::common::held::{WORKSPACE, actor, presentation};
 
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
@@ -247,7 +247,7 @@ fn hold_workspace(state: &Path, keys: &Keys) {
 fn shell(keys: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Shell");
-    workspace.set_owner(principal(&keys.root));
+    workspace.set_owner(actor(&keys.root));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

@@ -16,7 +16,7 @@ use tilo_relay_protocol::WorkspaceId;
 
 /// Answers remote-action requests addressed to this host.
 ///
-/// `caller` is the principal the relay authenticated for the connection the
+/// `caller` is the actor the relay authenticated for the connection the
 /// request arrived on; implementations decide authority from it alone.
 pub trait AppServingPlane: Send + Sync {
     /// Answer one message for `workspace_id` — whenever the answer is ready,

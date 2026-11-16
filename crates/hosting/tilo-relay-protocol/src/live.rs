@@ -45,7 +45,7 @@ pub const MAX_SEMANTIC_INTERACTION_BYTES: usize = 32 * 1024;
 /// Broker-reported semantic work on one exact record. This is an inert wire
 /// value, never physical input or proof of a document mutation. Receivers must
 /// authenticate the transport publisher, validate the canonical interaction
-/// and bind its principal and resource before presenting it.
+/// and bind its actor and resource before presenting it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticFrame {

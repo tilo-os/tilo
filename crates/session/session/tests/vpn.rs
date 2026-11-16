@@ -991,7 +991,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         .find(|change| change["action"] == serde_json::json!("settings.device-vpn/route-through"))
         .expect("the laptop's choice came off through the action that made it");
     assert_eq!(
-        cleared["principal"],
+        cleared["actor"],
         serde_json::json!(PERSON),
         "the person's own change, not a file written behind their back"
     );

@@ -13,7 +13,7 @@ move to which project, rename to what, snooze until when. So tilolang has no fre
 
 ```
 /// Shares the note with someone in the workspace.
-action share(n: Note, with: Principal, can: Access = .read) (label: "Share", icon: .share) {
+action share(n: Note, with: Actor, can: Access = .read) (label: "Share", icon: .share) {
     grant(n, to: with, can: can)
 }
 ```
@@ -32,7 +32,7 @@ a command that still asks for an argument, so no app writes them.
   | `enum` | segmented control up to four values, otherwise a menu |
   | `Date`, `Time` | date and time pickers that take natural text ("tomorrow 9") |
   | `Number` with a unit | number field with steps and the unit |
-  | `Principal` | people picker over `workspace.members` |
+  | `Actor` | people picker over `workspace.members` |
   | a resource type | a picker over `find(T)`, with the palette's search |
 
   Labels come from parameter names and doc comments, through the app's i18n catalogue.
@@ -65,7 +65,7 @@ The app declares the form; the shell decides how it appears:
 When the generated form isn't right, the action names a view for it:
 
 ```
-action share(n: Note, with: Principal, can: Access = .read) (label: "Share", form: share_form) { ... }
+action share(n: Note, with: Actor, can: Access = .read) (label: "Share", form: share_form) { ... }
 
 view share_form(f: Form<share>) {
     stack(gap: related) {

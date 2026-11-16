@@ -25,13 +25,13 @@ pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown participant";
 #[doc(hidden)]
 pub const SHORT_LEN: usize = 8;
 
-/// The namespace of the principal an application acts under (`app:so.tilo.notes`).
+/// The namespace of the actor an application acts under (`app:so.tilo.notes`).
 pub const APP_NAMESPACE: &str = "app:";
-/// The namespace of the principal an agent acts under (`agent:scribe`).
+/// The namespace of the actor an agent acts under (`agent:scribe`).
 pub const AGENT_NAMESPACE: &str = "agent:";
-/// The namespace of the principal an installed bot acts under (`bot:status`).
+/// The namespace of the actor an installed bot acts under (`bot:status`).
 pub const BOT_NAMESPACE: &str = "bot:";
-/// The namespace of the principal a Shortcut's run acts under (`shortcut:morning`).
+/// The namespace of the actor a Shortcut's run acts under (`shortcut:morning`).
 pub const SHORTCUT_NAMESPACE: &str = "shortcut:";
 
 /// Where the words a reader names software by come from — a history row, a presence mark, a
@@ -413,8 +413,8 @@ impl HistoryAttribution {
 
     /// Record whom it acted for.
     #[must_use]
-    pub fn acting_for(mut self, principal: impl Into<String>, name: impl Into<String>) -> Self {
-        let person = principal.into();
+    pub fn acting_for(mut self, actor: impl Into<String>, name: impl Into<String>) -> Self {
+        let person = actor.into();
         if self.acting.person_id() != Some(person.as_str()) {
             self.acting.acted_for = vec![tilo_actions::Acting::person(person)];
         }

@@ -6,7 +6,7 @@
 //! resource. Nothing in the app knows about windows, places or themes.
 //! ```
 //! # use tilo_view::{ui, ViewCx};
-//! # use tilo_view::node::{Node, ResourceRef, Principal};
+//! # use tilo_view::node::{Node, ResourceRef, Actor};
 //! fn page(cx: &ViewCx) -> Node {
 //!     let node = ui::TextBuilder::new(&cx.key("title"), "Groceries").into();
 //!     ui::stack(&cx.key("page"), ui::Gap::Sibling, vec![node])
@@ -34,7 +34,7 @@ pub mod registry;
 pub mod ui;
 
 pub use cx::{Arg, Effect, ViewCx};
-pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
+pub use node::{Actor, Binding, BuildError, Event, Node, Offered, Picture, ResourceRef, Value};
 pub use registry::{View, ViewRegistry, ViewResource};
 
 pub use tilo_render_protocol::patch;

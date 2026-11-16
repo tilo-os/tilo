@@ -102,8 +102,8 @@ fn answered_by(engine: &TestEngine) -> Vec<(u32, bool, AnsweredBy)> {
 }
 
 /// An agent the action API admitted, by its id.
-fn agent(principal: &str) -> ui::tilo_actions::ActionInvoker {
-    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(principal))
+fn agent(actor: &str) -> ui::tilo_actions::ActionInvoker {
+    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(actor))
 }
 
 /// The payload of the page's action `id` with `args`, as a caller sends it.

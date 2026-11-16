@@ -548,7 +548,7 @@ fn write_blob_handoff(
 ) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": BLOB_HANDOFF_PROTOCOL,
-        "principal": "app",
+        "actor": "app",
         "workspace": workspace,
         "app_id": app_id,
     }))
@@ -1240,7 +1240,7 @@ mod tests {
                     frames[0].1,
                     serde_json::json!({
                         "protocol": 1,
-                        "principal": "app",
+                        "actor": "app",
                         "workspace": "workspace-7",
                         "app_id": "so.tilo.notes",
                     })

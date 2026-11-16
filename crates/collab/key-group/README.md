@@ -282,7 +282,7 @@ workspace's content only as a **service member**
 - It has its own device key, which is also its MLS leaf.
 - A workspace administrator admits it with a purpose, a scope (the verb it
   may exercise) and an optional deadline. The grant is a workspace-membership
-  capability on the agent principal `service:<device key hex>`.
+  capability on the agent actor `service:<device key hex>`.
 - It is listed in the Agents pane as a service row, with its purpose and
   when access ends.
 - When the deadline passes, or `revoke_service_member` ends the job, a

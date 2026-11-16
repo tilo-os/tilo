@@ -679,7 +679,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
     assert_eq!(posted, [("bot:b1".to_owned(), "welcome!".to_owned())]);
 }
 
-/// An agent acting for a person writes as the agent (its own principal is
+/// An agent acting for a person writes as the agent (its own actor is
 /// the change's author) and the replica hands that change back to be saved:
 /// what it wrote as the agent is its own, as what it writes as the person is.
 #[test]

@@ -931,7 +931,7 @@ mod tests {
 }
 
 /// Read-only block-device control uses the existing kernel authenticated private
-/// rendezvous, rather than another socket, caller principal, or PID authority.
+/// rendezvous, rather than another socket, caller actor, or PID authority.
 pub struct MediaReadSession {
     channel: WorkerChannel,
 }

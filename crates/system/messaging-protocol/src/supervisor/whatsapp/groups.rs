@@ -172,7 +172,7 @@ impl AccountSupervisor {
     ) -> Option<GroupClient> {
         let host = self.whatsapp_group_host(account)?;
         Some(GroupClient::new(
-            self.owner.principal.clone(),
+            self.owner.actor.clone(),
             account.clone(),
             host,
         ))
@@ -236,7 +236,7 @@ mod tests {
         let root = required(tempfile::tempdir());
         let (gate, _, network) = super::super::network::tests::fixture(false, false);
         let owner = crate::journal::Owner {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "device".into(),
             service: crate::Service::Whatsapp,
             account: "account-a".into(),

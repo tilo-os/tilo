@@ -401,7 +401,7 @@ mod tests {
     ) {
         let root = tempfile::tempdir().unwrap();
         let owner = Owner {
-            principal: "11".repeat(32),
+            actor: "11".repeat(32),
             device: "fixture-device".into(),
             service: crate::Service::Whatsapp,
             account: "fixture-account".into(),

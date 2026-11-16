@@ -113,7 +113,7 @@ impl AppBrokerState {
                 if original.workspace != workspace || expected.member() != actor.member() {
                     return Err(ActionHostError::NotPermitted);
                 }
-                // Revalidation checks the full certificate, not a principal supplied
+                // Revalidation checks the full certificate, not an actor supplied
                 // by the transport or an actor reconstructed from a display name.
                 let certificate = current.certificate.as_ref().ok_or_else(|| {
                     unavailable("action_evidence_unavailable: caller certificate missing")
@@ -342,7 +342,7 @@ impl AppBrokerState {
 
     /// Recover an observation, never a service dispatch permit. Ownership uses
     /// exactly the same key as admission; certificate-shaped owners are not
-    /// interchangeable, even when their principal happens to match.
+    /// interchangeable, even when their actor happens to match.
     pub(super) fn host_action_replay(
         &self,
         caller: &Caller,

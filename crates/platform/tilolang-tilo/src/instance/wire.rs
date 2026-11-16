@@ -185,8 +185,8 @@ impl Convert<'_> {
                     .collect(),
             },
             Value::Ref(reference) => wire::Value::Ref(resource(&reference.target)),
-            Value::Actor(who) => wire::Value::Principal(wire::Principal {
-                id: principal_id(who),
+            Value::Actor(who) => wire::Value::Actor(wire::Actor {
+                id: actor_key(who),
                 name: self.names.name(who),
             }),
             Value::Error(text) => wire::Value::Error(text.clone()),
@@ -349,13 +349,13 @@ pub fn runtime_resource(target: &wire::ResourceRef) -> Option<ResourceRef> {
 /// read a participant from (an author's colour, an agent's caret, an avatar), until the render
 /// protocol carries the actor itself.
 #[must_use]
-pub fn principal_id(who: &crate::runtime::Actor) -> String {
+pub fn actor_key(who: &crate::runtime::Actor) -> String {
     who.key()
 }
 
-/// The actor [`principal_id`] spells.
+/// The actor [`actor_key`] spells.
 #[must_use]
-pub fn actor_of_principal(id: &str) -> Option<crate::runtime::Actor> {
+pub fn actor_of_key(id: &str) -> Option<crate::runtime::Actor> {
     match id.strip_prefix("app:") {
         Some(app) => Some(crate::runtime::Actor::App(app.into())),
         None => crate::runtime::ids::MemberId::parse(id).map(crate::runtime::Actor::Member),
@@ -371,7 +371,7 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Float(number) => Value::Float(*number),
         wire::Value::Bool(flag) => Value::Bool(*flag),
         wire::Value::Ref(target) => Value::resource(&runtime_resource(target)?),
-        wire::Value::Principal(who) => Value::Actor(actor_of_principal(&who.id)?),
+        wire::Value::Actor(who) => Value::Actor(actor_of_key(&who.id)?),
         // What a drop carries: the card and its place.
         wire::Value::List(items) => {
             Value::List(items.iter().map(runtime_value).collect::<Option<_>>()?)

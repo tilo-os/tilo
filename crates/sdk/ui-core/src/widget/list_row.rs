@@ -47,7 +47,7 @@ use crate::widget::{
 pub struct RowAuthor<'a> {
     /// The person the change is in the name of.
     pub person: &'a str,
-    /// That person's principal, which colours their face.
+    /// That person's actor, which colours their face.
     pub identity: &'a str,
     /// The picture they set, already decoded by the app's image store.
     pub image: Option<&'a ImageData>,

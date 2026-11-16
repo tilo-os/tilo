@@ -55,7 +55,7 @@ pub(super) struct Bounded {
     /// The person, on the device the request came from: what the workspace's
     /// policy is asked about.
     pub(super) person_caller: Caller,
-    /// The person's policy principal id.
+    /// The person's policy actor id.
     pub(super) person: String,
     /// The agent acting for the person, by its agent id.
     pub(super) agent: Option<String>,

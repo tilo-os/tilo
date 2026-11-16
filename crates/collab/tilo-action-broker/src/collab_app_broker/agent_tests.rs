@@ -476,7 +476,7 @@ impl Fixture {
             let kept = crate::test_support::KeptAgents::default().keeping(
                 &route.cluster_id,
                 "scribe",
-                &admitted.principal_id,
+                &admitted.actor_key,
             );
             admit_kept_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
         }

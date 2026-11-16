@@ -269,11 +269,11 @@ tilo_test_env::scenario! {
         // the clear replaces the object the field held.
         step(&mut doc, ALICE, None, |doc| {
             let who = doc.put_object(ROOT, "assignee", ObjType::Map).unwrap();
-            doc.put(&who, "principal", "ada").map(drop).unwrap();
+            doc.put(&who, "actor", "ada").map(drop).unwrap();
         });
         step(&mut doc, ALICE, None, |doc| {
             let (_, who) = doc.get(ROOT, "assignee").unwrap().unwrap();
-            doc.put(&who, "principal", "ben").map(drop).unwrap();
+            doc.put(&who, "actor", "ben").map(drop).unwrap();
         });
         step(&mut doc, ALICE, None, |doc| {
             doc.put(ROOT, "assignee", "nobody").map(drop).unwrap();
@@ -368,9 +368,9 @@ fn title_of(doc: &AutoCommit, list: &ObjId, at: usize) -> ObjId {
 fn assignee(doc: &AutoCommit) -> Option<String> {
     match doc.get(ROOT, "assignee").unwrap().unwrap() {
         (Value::Scalar(_), _) => None,
-        (Value::Object(_), who) => match doc.get(&who, "principal").unwrap().unwrap().0 {
+        (Value::Object(_), who) => match doc.get(&who, "actor").unwrap().unwrap().0 {
             Value::Scalar(scalar) => scalar.as_str().map(str::to_owned),
-            other => panic!("a principal: {other:?}"),
+            other => panic!("an actor: {other:?}"),
         },
     }
 }

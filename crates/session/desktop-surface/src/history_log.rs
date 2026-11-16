@@ -114,7 +114,7 @@ impl WorkspaceRename {
     }
 }
 
-/// The name and colour presence shows for an author (the principal a desktop change names), when
+/// The name and colour presence shows for an author (the actor a desktop change names), when
 /// the host knows them.
 pub type PersonOf<'a> = &'a dyn Fn(&str) -> Option<(String, (u8, u8, u8))>;
 
@@ -136,7 +136,7 @@ pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
 
 /// Name `authors` ' actors in `directory` , as one participant per author. An author `person` knows
 /// reads as presence shows them, by the same name and in the same colour as their avatar; a change
-/// names its author by their principal (a key, in a workspace), never something to show.
+/// names its author by their actor (a key, in a workspace), never something to show.
 pub fn register_authors(
     directory: &mut ui::AuthorDirectory,
     authors: &BTreeMap<String, String>,
@@ -236,15 +236,15 @@ mod tests {
         }
 
         phase an_author_presence_knows_reads_by_their_name_and_colour;
-        // A workspace's changes name their author by principal (a key); History shows them as presence
+        // A workspace's changes name their author by actor (a key); History shows them as presence
         // does, by name and colour, not by the key's first letter in a colour of its own.
         {
             let key = "b46342a2fe9dd341355944fb4be947d6";
             let pink = (0xee, 0x83, 0xaf);
             let authors = BTreeMap::from([("aa".to_owned(), key.to_owned())]);
             let mut directory = ui::AuthorDirectory::new();
-            register_authors(&mut directory, &authors, &|principal| {
-                (principal == key).then(|| ("Eager Dolphin".to_owned(), pink))
+            register_authors(&mut directory, &authors, &|actor| {
+                (actor == key).then(|| ("Eager Dolphin".to_owned(), pink))
             });
             let author = directory.resolve("aa");
             assert_eq!(author.name, "Eager Dolphin");

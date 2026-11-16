@@ -26,9 +26,9 @@ pub(crate) struct EnrollmentView {
     epoch: LocalState<u64>,
 }
 impl EnrollmentView {
-    pub(crate) fn new(client: Option<EnrollmentClient>, principal: Option<&str>) -> Self {
+    pub(crate) fn new(client: Option<EnrollmentClient>, actor: Option<&str>) -> Self {
         Self {
-            client: client.filter(|client| principal == Some(client.principal())),
+            client: client.filter(|client| actor == Some(client.actor())),
             state: LocalState::new(Projection::default()),
             epoch: LocalState::new(0),
         }

@@ -92,7 +92,7 @@ pub struct Given {
     pub store: Option<Store>,
     pub state: Option<PathBuf>,
     pub apps: Option<Arc<dyn Apps>>,
-    /// Who a principal is, as presence shows them.
+    /// Who an actor is, as presence shows them.
     pub people: People,
     pub writers: Writers,
     pub pane: Rc<dyn Pane>,
@@ -119,7 +119,7 @@ struct Inner {
     person: String,
     maps: HistoryMaps,
     apps: Option<Arc<dyn Apps>>,
-    /// Who a principal is, as presence shows them: the names the devices that answered a boot go
+    /// Who an actor is, as presence shows them: the names the devices that answered a boot go
     /// by.
     #[cfg(target_os = "linux")]
     people: People,

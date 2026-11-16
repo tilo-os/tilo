@@ -96,7 +96,7 @@ impl SectionKind {
         invoked_by: Option<&InvokingAction>,
     ) -> Result<(), ActionError> {
         let origin = ChangeOrigin::action(format!("{}/{id}", self.kind))
-            .by(principal(by))
+            .by(actor(by))
             .invoked_by(invoked_by.cloned());
         (self.ops)(self, SectionOp::Apply(action, &origin)).map(drop)
     }
@@ -135,7 +135,7 @@ impl SectionKind {
         aliases: &[String],
     ) -> Result<bool, String> {
         let verb = if undo { "undo" } else { "redo" };
-        let by = principal(by);
+        let by = actor(by);
         let origin = ChangeOrigin::action(format!("{}/{verb}", self.kind)).by(by.clone());
         let actions = format!("{}/", self.kind);
         let owns = |version: &tilo_resource::history::Version| {
@@ -165,7 +165,7 @@ impl SectionKind {
 }
 
 /// How the settings document names who made a change: the actor as JSON.
-fn principal(by: &tilo_actions::Actor) -> String {
+fn actor(by: &tilo_actions::Actor) -> String {
     serde_json::to_string(by).unwrap_or_default()
 }
 

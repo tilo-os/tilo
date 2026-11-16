@@ -54,19 +54,19 @@ impl MessagingClient {
     pub fn groups(&self, account: &crate::ServiceAccount) -> Option<crate::GroupClient> {
         self.host
             .groups(account)
-            .filter(|groups| groups.principal() == self.principal() && groups.account() == account)
+            .filter(|groups| groups.actor() == self.actor() && groups.account() == account)
     }
     /// The authenticated mounting host supplies this capability, never metadata.
-    pub fn new(principal: impl Into<String>, host: Arc<dyn MessagingHost>) -> Self {
+    pub fn new(actor: impl Into<String>, host: Arc<dyn MessagingHost>) -> Self {
         Self {
-            history: HistoryClient::new(principal, host.clone()),
+            history: HistoryClient::new(actor, host.clone()),
             host,
         }
     }
     pub fn setup(&self, account: &crate::ServiceAccount) -> Option<crate::SetupClient> {
         self.host
             .setup(account)
-            .filter(|setup| setup.principal() == self.principal() && setup.account() == account)
+            .filter(|setup| setup.actor() == self.actor() && setup.account() == account)
     }
     pub fn account_state(&self, account: &crate::ServiceAccount) -> crate::AccountState {
         self.host.account_state(account)
@@ -77,8 +77,8 @@ impl MessagingClient {
     pub fn history(&self) -> HistoryClient {
         self.history.clone()
     }
-    pub fn principal(&self) -> &str {
-        self.history.principal()
+    pub fn actor(&self) -> &str {
+        self.history.actor()
     }
     /// Submit once on the exact route. An ambiguous answer is never retried.
     pub async fn send(&self, request: SendRequest) -> Result<SendReceipt, SendError> {
@@ -164,7 +164,7 @@ mod tests {
         }
     }
     fn send(host: Arc<Host>, request: SendRequest) -> Poll<Result<Delivery, SendError>> {
-        let client = MessagingClient::new("principal", host);
+        let client = MessagingClient::new("actor", host);
         let mut future = Box::pin(client.send(request));
         future
             .as_mut()

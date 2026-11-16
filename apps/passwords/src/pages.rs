@@ -675,7 +675,7 @@ fn proposal_details(core: &Core, proposal: &accounts::CredentialProposal) -> Str
         ),
         ("account", proposal.scope.account.clone()),
         ("generation", proposal.scope.generation.to_string()),
-        ("principal", proposal.scope.principal.clone()),
+        ("actor", proposal.scope.actor.clone()),
         ("device", proposal.scope.device.clone()),
     ];
     crate::CATALOG.t_args(

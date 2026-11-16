@@ -225,7 +225,7 @@ pub struct PeerContext {
 
 /// Agent devices by device key: their verified delegation, or `None` once
 /// the agent was withdrawn. An agent device is confined to its delegated
-/// workspaces, is its own principal for remote actions, and a withdrawn one is
+/// workspaces, is its own actor for remote actions, and a withdrawn one is
 /// refused like a revoked device.
 pub type AgentRegistry = Arc<
     std::sync::RwLock<

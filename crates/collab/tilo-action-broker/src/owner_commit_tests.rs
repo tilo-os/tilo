@@ -27,10 +27,10 @@ mod owner_commit_tests {
             let directory = canonical_tempdir();
             let root = SigningKey::from_bytes(&[24; 32]);
             let device = SigningKey::from_bytes(&[25; 32]);
-            let principal = person_id_for_root(root.verifying_key().to_bytes());
+            let actor = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
                 crate::test_support::WorkspaceId::from_u128(5), "Durability boundary");
-            workspace.set_owner(&principal);
+            workspace.set_owner(&actor);
             let route = CrdtRoute::record("so.tilo.word-processor", workspace.id().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
@@ -101,12 +101,12 @@ mod owner_commit_tests {
                 let directory = canonical_tempdir();
                 let root = SigningKey::from_bytes(&[24; 32]);
                 let device = SigningKey::from_bytes(&[25; 32]);
-                let principal = person_id_for_root(root.verifying_key().to_bytes());
+                let actor = person_id_for_root(root.verifying_key().to_bytes());
                 let mut workspace = crate::test_support::Workspace::new(
                     crate::test_support::WorkspaceId::from_u128(5),
                     "read mode",
                 );
-                workspace.set_owner(&principal);
+                workspace.set_owner(&actor);
                 let route = CrdtRoute::record(
                     "so.tilo.word-processor",
                     workspace.id().to_string(),
@@ -1154,7 +1154,7 @@ mod owner_commit_tests {
             checkout,
             reveal: None,
         };
-        let principal = person_id_for_root(cert.user_public_key);
+        let actor = person_id_for_root(cert.user_public_key);
         let context = HostContext::prepare(
             definition,
             HostContextInputs {
@@ -1165,7 +1165,7 @@ mod owner_commit_tests {
                 permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
                 ),
-                author: ui::permissions::MemberId::person(principal.clone()),
+                author: ui::permissions::MemberId::person(actor.clone()),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,
@@ -1264,7 +1264,7 @@ mod owner_commit_tests {
                 &action.resource,
                 &action.action,
                 Some("Added through the broker"),
-                &principal,
+                &actor,
             )
             .unwrap();
         loop {
@@ -1319,7 +1319,7 @@ mod owner_commit_tests {
                     &action.resource,
                     &action.action,
                     None,
-                    &principal
+                    &actor
                 )
                 .is_err()
         );

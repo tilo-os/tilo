@@ -6,7 +6,7 @@ use super::{BrokerActor, ExecutionScope};
 /// from someone else by naming them in the envelope: whatever invoker the
 /// caller put in `context` is discarded, the actor is the admitted `actor`,
 /// and the participant is derived from what the host admitted:
-/// - a host-minted execution: its private view, subordinate to its principal;
+/// - a host-minted execution: its private view, subordinate to its actor;
 /// - anyone else: no participant (the actor's default view).
 ///
 /// The invoker names the actor's kind and, for an agent or an app acting
@@ -181,7 +181,7 @@ mod tests {
             );
         }
 
-        phase an_execution_cannot_borrow_another_principal_or_agent_view;
+        phase an_execution_cannot_borrow_another_actor_or_agent_view;
         {
             let caller = tilo_actions::remote::Caller::local_person("person:owner").in_new_execution();
             let execution =

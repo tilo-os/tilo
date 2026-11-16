@@ -543,7 +543,7 @@ impl<'a> Validator<'a> {
                 self.key(&resource.id)?;
                 self.key(&resource.ty)
             }
-            Value::Principal(who) => {
+            Value::Actor(who) => {
                 self.key(&who.id)?;
                 self.string(&who.name)
             }
@@ -788,7 +788,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Int, Value::Int(_))
         | (Type::Float, Value::Float(_) | Value::Int(_))
         | (Type::Bool, Value::Bool(_) | Value::Int(_))
-        | (Type::Principal, Value::Principal(_))
+        | (Type::Actor, Value::Actor(_))
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
         | (Type::Picture, Value::Picture(_))

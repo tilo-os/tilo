@@ -1,5 +1,5 @@
 //! Joins that name a participant: an Agent's exact identity, and a
-//! Person's presentation handle that never becomes their principal.
+//! Person's presentation handle that never becomes their actor.
 use super::*;
 
 struct ParticipantJoinFixture {
@@ -8,19 +8,19 @@ struct ParticipantJoinFixture {
     client: runtime_collab::CollabClient,
     presentation: Vec<u8>,
     route: CrdtRoute,
-    principal: String,
+    actor: String,
 }
 
 impl ParticipantJoinFixture {
     fn new(agents: &[String]) -> Self {
         let root = SigningKey::from_bytes(&[101; 32]);
         let device = SigningKey::from_bytes(&[102; 32]);
-        let principal = person_id_for_root(root.verifying_key().to_bytes());
+        let actor = person_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceId::from_u128(101),
             "Exact Agent identity",
         );
-        workspace.set_owner(principal.clone());
+        workspace.set_owner(actor.clone());
         let route = CrdtRoute::cluster(workspace.id().to_string());
         for agent in agents {
             workspace.allow_agent(agent, crate::test_support::KindSet::READ);
@@ -61,7 +61,7 @@ impl ParticipantJoinFixture {
             client: wire_client(connection, outgoing),
             presentation,
             route,
-            principal,
+            actor,
         }
     }
 }
@@ -156,7 +156,7 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 assert!(fixture.state.channels.lock().unwrap().is_empty());
             }
             // The same long string is still a Person's bounded presentation
-            // handle: it never becomes that Person's certified principal.
+            // handle: it never becomes that Person's certified actor.
             let person = fixture
                 .client
                 .join_channel_as_kind(
@@ -182,7 +182,7 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 .unwrap();
             assert!(matches!(event_rx.try_recv().unwrap(),
                 CollabEvent::RemotePresenceUpdate { member, payload: PresencePayload::Arrived, .. }
-                    if member == collab_types::MemberId::person(fixture.principal.clone())));
+                    if member == collab_types::MemberId::person(fixture.actor.clone())));
         })
         .await;
 }

@@ -41,7 +41,7 @@ type VoiceChannel {
 type Message {
     body: RichText
     reply_to: Option<Message>
-    reactions: Map<Emoji, Set<Principal>>
+    reactions: Map<Emoji, Set<Actor>>
     pinned: Bool = false
     thread: Option<Thread>
 

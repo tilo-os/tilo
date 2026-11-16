@@ -383,7 +383,7 @@ impl StatePeer {
     }
     /// Whether the device `source` may run `action` of `resource` in `app`
     /// here now: the workspace's per-action permission for whatever its
-    /// principal is decides it, never the kind of member a device belongs to.
+    /// actor is decides it, never the kind of member a device belongs to.
     ///
     /// # Errors
     ///

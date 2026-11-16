@@ -20,7 +20,7 @@ fn key() -> VaultKey {
 }
 fn owner() -> Owner {
     Owner {
-        principal: "11".repeat(32),
+        actor: "11".repeat(32),
         device: "fixture-device".into(),
         service: Service::Signal,
         account: "fixture-account".into(),
@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
         for field in 0..5 {
             let mut other = owner();
             match field {
-                0 => other.principal = "22".repeat(32),
+                0 => other.actor = "22".repeat(32),
                 1 => other.device = "other-device".into(),
                 2 => other.account = "other-account".into(),
                 3 => other.linking_generation = 2,

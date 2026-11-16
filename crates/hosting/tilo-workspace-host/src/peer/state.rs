@@ -356,15 +356,15 @@ impl StateDelivery {
         self.cleanup.is_none()
             && self.live.load(std::sync::atomic::Ordering::SeqCst)
             && fanned.holds()
-            && session.trust().principal(peer, workspace_id, now).is_ok()
+            && session.trust().actor(peer, workspace_id, now).is_ok()
             && self.source.as_ref().is_none_or(|source| {
                 source.lease.is_none()
                     && source.alive()
                     && source
                         .trust()
-                        .principal(&source.peer, workspace_id, now)
+                        .actor(&source.peer, workspace_id, now)
                         .is_ok()
-                    && source.trust().principal(peer, workspace_id, now).is_ok()
+                    && source.trust().actor(peer, workspace_id, now).is_ok()
             })
     }
 

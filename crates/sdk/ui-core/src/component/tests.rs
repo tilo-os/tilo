@@ -300,7 +300,7 @@ fn sample(ty: &Type) -> Value {
         Type::Int => Value::Int(1),
         Type::Float => Value::Float(1.0),
         Type::Bool => Value::Bool(true),
-        Type::Principal => Value::Principal {
+        Type::Actor => Value::Actor {
             identity: "ada".into(),
             name: "Ada".into(),
         },

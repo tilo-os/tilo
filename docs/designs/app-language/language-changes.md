@@ -73,7 +73,7 @@ terse views make agent answers cheaper and more reliable.
    node it shows, so a view written in `std` names the item's parts without the caller
    repeating them.
 10. **An item block names the values it draws with:** `std.list(items) { (x, at) -> row(x,
-   at) }` for a parameter typed `(T, Option<Principal>) -> View`. The item and who else is at
+   at) }` for a parameter typed `(T, Option<Actor>) -> View`. The item and who else is at
    it reach the row; the item it stands under the row says itself, as the list item's `parent:`.
 
 Values present themselves: a `Time`, a person or an amount passed to a component renders in the

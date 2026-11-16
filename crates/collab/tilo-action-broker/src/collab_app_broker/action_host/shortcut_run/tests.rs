@@ -108,13 +108,13 @@ impl Fixture {
             certificate: certificate.clone(),
             time: time.clone(),
         });
-        let principal = crate::collab_app_broker::person_id_for_root(certificate.user_public_key);
+        let actor = crate::collab_app_broker::person_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Shortcuts");
-        workspace.set_owner(principal.clone());
+        workspace.set_owner(actor.clone());
         let workspace_id = workspace.id().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
             "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
-            "saved_by": principal,
+            "saved_by": actor,
             "triggers": [
                 {"trigger": "keyboard", "chord": "Super+Shift+E"},
                 {"trigger": "app_opened", "app_id": "notes"}
@@ -196,7 +196,7 @@ impl Fixture {
             },
         };
         *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(principal).in_workspace(&workspace_id);
+        let caller = Caller::local_person(actor).in_workspace(&workspace_id);
         let origin = InvocationCaller::NativePerson {
             invocation,
             workspace: workspace_id.clone(),

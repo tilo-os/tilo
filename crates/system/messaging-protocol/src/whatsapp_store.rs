@@ -124,7 +124,7 @@ impl EncryptedBackend {
         key: VaultKey,
         authority: Option<Arc<dyn StateAuthority>>,
     ) -> Result<Self> {
-        if !owner.valid_principal()
+        if !owner.valid_actor()
             || owner.service != Service::Whatsapp
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)

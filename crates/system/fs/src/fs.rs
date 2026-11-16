@@ -1819,7 +1819,7 @@ impl QuickFS {
 
     /// Present every file on the mount as owned by `uid:gid`, the local person whose files
     /// they are. Without one, each caller sees the files as their own: the mount acts for
-    /// every caller as the one principal it serves. Ownership is only presented: it is not
+    /// every caller as the one actor it serves. Ownership is only presented: it is not
     /// replicated, nothing is chowned, and access is the capability list's to decide.
     #[must_use]
     pub fn with_owner(mut self, owner: Option<(u32, u32)>) -> Self {

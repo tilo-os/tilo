@@ -104,7 +104,7 @@ struct Worker {
 pub struct SignalBroker {
     worker: Arc<Mutex<Worker>>,
     authority: Arc<dyn SignalAuthority>,
-    principal: String,
+    actor: String,
     owner: crate::journal::Owner,
     signal_account: String,
     wire_account: String,
@@ -132,11 +132,11 @@ impl SignalBroker {
         let scope = setup.scope();
         let wire_account = setup.number.ok_or(SendError::Unavailable)?;
         let owner = runtime.owner().clone();
-        let principal = runtime.owner().principal.clone();
+        let actor = runtime.owner().actor.clone();
         Ok(Self {
             worker: Arc::new(Mutex::new(Worker { runtime, history })),
             authority,
-            principal,
+            actor,
             owner,
             signal_account,
             wire_account,
@@ -179,7 +179,7 @@ impl SignalBroker {
             .clone())
     }
     pub fn client(&self) -> MessagingClient {
-        MessagingClient::new(self.principal.clone(), Arc::new(self.clone()))
+        MessagingClient::new(self.actor.clone(), Arc::new(self.clone()))
     }
     pub fn scope(&self) -> &str {
         &self.scope
@@ -190,7 +190,7 @@ impl SignalBroker {
             || route.service != "signal"
             || route.scope != self.scope
             || uuid::Uuid::parse_str(&route.recipient).is_err()
-            || auth.binding.owner.principal != self.principal
+            || auth.binding.owner.actor != self.actor
             || auth.binding.state != LinkState::Linked
         {
             return Err(SendError::Revoked);

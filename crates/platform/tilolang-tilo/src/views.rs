@@ -77,8 +77,8 @@ impl RustViews for DeclaredViews {
         let cx = ViewCx::new(
             target.clone(),
             view.name.to_owned(),
-            tilo_view::Principal {
-                id: crate::instance::wire::principal_id(person),
+            tilo_view::Actor {
+                id: crate::instance::wire::actor_key(person),
                 name: person.id().to_owned(),
             },
             BTreeMap::new(),
@@ -159,8 +159,8 @@ fn value_into_runtime(value: ViewValue) -> Value {
         ViewValue::Ref(target) => ResourceRef::parse_id(&target.id, target.ty.clone())
             .map_or(Value::Unit, |at| Value::resource(&at)),
         // The actor the view drew, by the id the runtime gave it; its name is the host's.
-        ViewValue::Principal(who) => {
-            crate::instance::wire::actor_of_principal(&who.id).map_or(Value::Unit, Value::Actor)
+        ViewValue::Actor(who) => {
+            crate::instance::wire::actor_of_key(&who.id).map_or(Value::Unit, Value::Actor)
         }
         // Its paragraphs as the view set them: each block's kind (a list's items, a heading),
         // marks and attributes, never only its words — a reply's bulleted list stays a list.

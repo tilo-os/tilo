@@ -332,7 +332,7 @@ tilo_test_env::scenario! {
                 .prop("summary", text(summary))
                 .prop(
                     "author",
-                    Value::Principal {
+                    Value::Actor {
                         identity: "ada".into(),
                         name: "Ada".into(),
                     },

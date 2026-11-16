@@ -194,7 +194,7 @@ const MAX_CLIENT_NAME: usize = 64;
 
 /// What a connecting client said about itself in its `initialize`. It is
 /// shown to the person who decides; it is never authority: the client
-/// chooses neither the principal it acts as nor the workspace it acts in.
+/// chooses neither the actor it acts as nor the workspace it acts in.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hello {
     /// The whole `initialize` request, answered once the person admits it.

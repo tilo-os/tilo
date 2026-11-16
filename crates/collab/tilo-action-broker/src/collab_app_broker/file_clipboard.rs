@@ -264,10 +264,10 @@ fn session_person(identity: &super::AdmittedJoinIdentity) -> Option<&str> {
     identity
         .agent_id
         .is_none()
-        .then_some(identity.principal_id.as_str())
+        .then_some(identity.actor_key.as_str())
 }
 
-/// `actor`'s principal when it is an agent acting for `person`, the person
+/// `actor`'s actor when it is an agent acting for `person`, the person
 /// whose session the writing app runs in: the only actor a write is ever
 /// attributed to. A person, an app, a bot, an agent acting for somebody else
 /// or for nobody is refused.

@@ -869,14 +869,14 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
     // The avatar and the name with the time, over a run's first message. A run's next message
     // keeps an empty avatar placeholder so a person's messages line up under their name once.
     let avatar = ui::AvatarBuilder::new(&cx.key(format!("avatar-{}", message.id)))
-        .who(principal(author, &message.author))
+        .who(actor(author, &message.author))
         .square(false)
         .into();
     let leading: Node = if continues {
         // An empty avatar placeholder: the toolkit's own (a person's face drawn with nothing in
         // it), so a message that continues a run lines up under the first one's avatar.
         ui::AvatarBuilder::new(&cx.key(format!("lead-{}", message.id)))
-            .who(principal(author, &message.author))
+            .who(actor(author, &message.author))
             .placeholder(true)
             .into()
     } else {
@@ -1150,7 +1150,7 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     };
     let shown: Node = ui::QuoteBuilder::new(key, &excerpt)
         .caption(crate::i18n::t("chat-quote-caption"))
-        .author(principal(author, &quote.author))
+        .author(actor(author, &quote.author))
         .into();
     // A quote of a message the page holds names it: pressing the quote shows the message. A
     // quote of one the page does not hold (an earlier part of the chat) is read, not pressed.
@@ -1219,14 +1219,14 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
         .iter()
         .map(|reaction| reaction.emoji.clone())
         .collect();
-    let by: Vec<Vec<tilo_view::Principal>> = message
+    let by: Vec<Vec<tilo_view::Actor>> = message
         .reactions
         .iter()
         .map(|reaction| {
             reaction
                 .who
                 .iter()
-                .map(|id| principal(c.person(id), id))
+                .map(|id| actor(c.person(id), id))
                 .collect()
         })
         .collect();
@@ -1331,8 +1331,8 @@ fn author_label(person: Option<&Person>, id: &str) -> String {
 
 /// A person as a component draws them: their name, or Chat's honest placeholder for someone it
 /// cannot name, never their id.
-fn principal(person: Option<&Person>, id: &str) -> tilo_view::Principal {
-    tilo_view::Principal {
+fn actor(person: Option<&Person>, id: &str) -> tilo_view::Actor {
+    tilo_view::Actor {
         id: person.map_or_else(|| id.to_owned(), |person| person.id.key()),
         name: author_label(person, id),
     }
@@ -1367,7 +1367,7 @@ mod tests {
         ViewCx::new(
             channel.resource(),
             "page",
-            tilo_view::Principal {
+            tilo_view::Actor {
                 id: crate::model::ME.to_owned(),
                 name: "Pat".to_owned(),
             },
@@ -1557,7 +1557,7 @@ mod tests {
                 .expect("the person's avatar");
             assert_eq!(
                 avatar.props.get("who"),
-                Some(&Value::Principal(tilo_view::Principal {
+                Some(&Value::Actor(tilo_view::Actor {
                     id: ME.to_owned(),
                     name: "Quinn Davis".to_owned(),
                 })),

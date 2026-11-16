@@ -308,7 +308,7 @@ pub(super) fn messages_with_client(
     use messages::{MessagesEffect, MessagesShell};
     use tilo_contact_directory::ContactDirectory;
     let mut app = ui::framework::testing::TestApp::<MessagesShell>::for_person_with_lent(
-        &fixture.owner.principal,
+        &fixture.owner.actor,
         client,
     )
     .unwrap();

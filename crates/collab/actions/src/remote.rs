@@ -2479,7 +2479,7 @@ mod tests {
         assert_eq!(
             now(host.invoke(&mallory(), archive(id))),
             Err(ActionHostError::InvocationConflict),
-            "another principal cannot attach to someone else's invocation"
+            "another actor cannot attach to someone else's invocation"
         );
         assert_eq!(host.observe(&mallory(), &id), None);
         assert_eq!(

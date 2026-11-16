@@ -1,4 +1,4 @@
-//! Closed Linux POSIX ACL metadata. Named principals require authenticated mapping.
+//! Closed Linux POSIX ACL metadata. Named actors require authenticated mapping.
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -462,7 +462,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn posix_acls_parse_strictly_and_copy_exactly;
 
-        phase acl_parser_rejects_unmapped_principals_and_malformed_metadata;
+        phase acl_parser_rejects_unmapped_actors_and_malformed_metadata;
         {
             for value in [
                 b"user::rwx\nuser:99:r--\ngroup::r--\nmask::r--\nother::---".as_slice(),

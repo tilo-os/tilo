@@ -170,7 +170,7 @@ impl SignalLinking {
         stream: UnixStream,
     ) -> Result<Arc<Self>, SendError> {
         if owner.service != crate::Service::Signal
-            || !owner.valid_principal()
+            || !owner.valid_actor()
             || !crate::identifier(&owner.device)
             || !crate::identifier(&owner.account)
             || owner.linking_generation == 0
@@ -196,7 +196,7 @@ impl SignalLinking {
     }
     pub fn client(self: &Arc<Self>) -> tilo_messaging::SetupClient {
         tilo_messaging::SetupClient::new(
-            self.owner.principal.clone(),
+            self.owner.actor.clone(),
             tilo_messaging::ServiceAccount::new("signal", &self.owner.account),
             self.owner.linking_generation,
             Arc::new(Setup(self.clone())),

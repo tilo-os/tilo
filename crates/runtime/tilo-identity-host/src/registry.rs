@@ -19,8 +19,7 @@ pub use crate::unsupported_host::registry::IdentityRegistryStore;
 pub(crate) use store::DirStamp;
 #[cfg(not(target_arch = "wasm32"))]
 pub use store::{
-    IdentityRegistryStore, identity_for_workspace, selected_identity_path,
-    selected_principal_id_prompt,
+    IdentityRegistryStore, identity_for_workspace, selected_actor_id_prompt, selected_identity_path,
 };
 
 pub(crate) const REGISTRY_SCHEMA_VERSION: u32 = 1;
@@ -35,7 +34,7 @@ pub struct IdentityProfile {
     pub display_name: String,
     /// Absolute path to the private identity record. Never replicated.
     pub record_path: PathBuf,
-    /// The person principal represented by this identity.
+    /// The person actor represented by this identity.
     pub user_public_key: [u8; 32],
 }
 

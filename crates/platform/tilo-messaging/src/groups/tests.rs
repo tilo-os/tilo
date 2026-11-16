@@ -92,7 +92,7 @@ fn client(fault: u8, host_account: &str) -> (GroupClient, Arc<Host>) {
     });
     (
         GroupClient::new(
-            "principal".into(),
+            "actor".into(),
             ServiceAccount::new("whatsapp", "account-a"),
             host.clone(),
         ),

@@ -244,7 +244,7 @@ impl SignalReceiver {
         stream: UnixStream,
     ) -> Result<Self, OpenError> {
         if owner.service != Service::Signal
-            || !owner.valid_principal()
+            || !owner.valid_actor()
             || !valid_signal_account(&signal_account)
         {
             return Err(OpenError::WrongOwner);

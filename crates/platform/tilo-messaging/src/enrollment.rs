@@ -69,15 +69,15 @@ pub trait EnrollmentHost: Send + Sync {
 }
 #[derive(Clone)]
 pub struct EnrollmentClient {
-    principal: String,
+    actor: String,
     host: Arc<dyn EnrollmentHost>,
 }
 impl EnrollmentClient {
-    pub fn new(principal: String, host: Arc<dyn EnrollmentHost>) -> Self {
-        Self { principal, host }
+    pub fn new(actor: String, host: Arc<dyn EnrollmentHost>) -> Self {
+        Self { actor, host }
     }
-    pub fn principal(&self) -> &str {
-        &self.principal
+    pub fn actor(&self) -> &str {
+        &self.actor
     }
     pub fn supports_sim_selection(&self) -> bool {
         self.host.supports_sim_selection()

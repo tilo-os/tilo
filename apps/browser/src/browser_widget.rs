@@ -5900,10 +5900,10 @@ impl BrowserWidget {
     /// through [`Self::poll_invocation`].
     ///
     /// `invoker` is who the action API admitted the invocation for. A page
-    /// action reaches the engine under that principal's name, so a tab
+    /// action reaches the engine under that actor's name, so a tab
     /// several actors work in tells each what changed since its own last
     /// read and keeps what each did under its name. The name is the admitted
-    /// principal and nothing else ([`ui::webview::PageActor::of`]).
+    /// actor and nothing else ([`ui::webview::PageActor::of`]).
     pub(crate) fn admit_for(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,

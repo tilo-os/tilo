@@ -538,13 +538,13 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
             );
             let (caller, evidence) = local_host_evidence(&env);
             let context = state.certified_person_context(&caller, &evidence).unwrap();
-            assert_eq!(context.principal(), hex::encode(env.cert.user_public_key));
+            assert_eq!(context.actor(), hex::encode(env.cert.user_public_key));
             assert_eq!(
                 context.device(),
                 hex::encode(caller.device_public_key().unwrap())
             );
             context.revalidate().unwrap();
-            let forged = tilo_actions::remote::Caller::local_person(context.principal())
+            let forged = tilo_actions::remote::Caller::local_person(context.actor())
                 .in_workspace(&env.route.cluster_id)
                 .in_new_execution();
             assert!(state.certified_person_context(&forged, &evidence).is_err());
