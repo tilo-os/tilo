@@ -206,11 +206,11 @@ describe("running commands unattended", () => {
     expect(api.last()?.method).toBe("PUT");
     expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/unattended`);
     expect(JSON.parse(api.last()?.body ?? "{}")).toEqual({ on: true });
-    expect((await tilo.workspaces.list())[0]?.unattended).toBe(false);
+    expect((await tilo.workspaces.list()).named(WORKSPACE_ID)?.unattended).toBe(false);
 
     api.unattendedAllowed = true;
     expect(await ask.wait()).toEqual({ workspace: WORKSPACE_ID, unattended: true });
-    expect((await tilo.workspaces.list())[0]?.unattended).toBe(true);
+    expect((await tilo.workspaces.list()).named(WORKSPACE_ID)?.unattended).toBe(true);
   });
 
   it("stays asking when the person does not allow it", async () => {
