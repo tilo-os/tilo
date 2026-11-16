@@ -20,6 +20,24 @@ fn only(app: &TestApp<App>) -> Id {
     app.state().issues.ids().next().cloned().expect("an issue")
 }
 
+/// A workspace host that says where its record is served, so a link to a
+/// resource of it can be made: what its web entry renders.
+fn served() -> ui::tilo_actions::remote::TestHost {
+    ui::tilo_actions::remote::TestHost::new().with_catalogue(|_, query| {
+        Ok(ui::tilo_actions::remote::CataloguePage {
+            locator: Some(ui::tilo_actions::remote::ResourceViewLocator {
+                origin: "https://host.example".into(),
+                workspace: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
+                host_device: "ab".repeat(32),
+                provider: query.provider.unwrap_or_default(),
+                web_entry: Some("https://tilo.so/".into()),
+            }),
+            exhausted: true,
+            ..ui::tilo_actions::remote::CataloguePage::default()
+        })
+    })
+}
+
 tilo_test_env::scenario! {
     fn an_issue_and_a_project_are_made_read_and_changed_through_their_actions;
 
@@ -60,6 +78,51 @@ tilo_test_env::scenario! {
                 .body
                 .text()
                 .contains("Say why")
+        );
+    }
+
+    phase an_issue_has_a_link_of_its_own_that_opens_it;
+    // The view the tracker opens an issue in is what a link names: the link
+    // the framework mints for the issue names the issue, and opening it shows
+    // the issue's page rather than the tracker's list.
+    {
+        let host = served();
+        let _served = ui::RemoteActions::enter(
+            std::sync::Arc::new(host),
+            ui::tilo_actions::remote::Caller::local_person("ada"),
+        );
+        let mut app = open();
+        app.call("create", json!({ "title": "First issue" }))
+            .expect("create");
+        let issue = only(&app);
+        let resource = issue_resource(&issue);
+
+        let answer = app
+            .call_on(&resource, "share-link", json!({}))
+            .unwrap()
+            .unwrap();
+        let url = answer["url"].as_str().expect("a link");
+        let entries = ui::tilo_reference::link::WebEntries::new(vec![
+            ui::tilo_reference::link::WebEntry::new("https://tilo.so/").unwrap(),
+        ]);
+        let (link, damaged) = ui::tilo_reference::link::Link::parse_or_workspace(url, &entries)
+            .expect("the link reads");
+        assert!(damaged.is_none(), "{url}");
+        assert_eq!(
+            link.target
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some(resource.as_str()),
+            "the link names the issue, not the tracker: {url}"
+        );
+        assert_eq!(link.target.view, None, "the issue page is the primary view");
+
+        app.call_on(&resource, "open", json!({}))
+            .expect("open the issue");
+        assert!(
+            app.harness().targets().contains_key("tasks-issue-title"),
+            "the link's view shows the issue"
         );
     }
 

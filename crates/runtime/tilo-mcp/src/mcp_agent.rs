@@ -2917,5 +2917,9 @@ mod level;
 mod tests;
 
 #[cfg(test)]
+#[path = "mcp_agent_link_tests.rs"]
+mod link_tests;
+
+#[cfg(test)]
 #[path = "mcp_agent_publisher_tests.rs"]
 mod publisher_tests;
