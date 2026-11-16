@@ -5008,7 +5008,6 @@ dependencies = [
  "cap-std",
  "chrono",
  "cloud-source",
- "collab-types",
  "ed25519-dalek 3.0.0",
  "file-explorer",
  "fs-protocol",
