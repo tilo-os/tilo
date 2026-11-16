@@ -25,12 +25,7 @@ const report = {site, relay, at: new Date().toISOString()};
 // "before" site's too, which the same mint signs. A browser loads these and no
 // others, as a person's loads what it trusts.
 const siteCertificate = await servedCertificate(site);
-const browser = await launch({args: [
-  pinnedCertificates([siteCertificate, await servedCertificate(relay)]),
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+const browser = await launch({args: [pinnedCertificates([siteCertificate, await servedCertificate(relay)])]});
 // A stranger's browser: nothing kept from an earlier visit, so the entry
 // page opens on its first screen unless the entry takes its place.
 const tab = await browser.tab({firstRun: true});

@@ -66,11 +66,7 @@ const certificatePins = [{certificate: credentials.cert, host: '127.0.0.1'}, awa
 // microphone prompt: the journey sets the page's permission itself, as the
 // person would in the site settings.
 async function open(device, {prompt = true} = {}) {
-  const browser = await launch({args:[pinnedCertificates(certificatePins),
-    '--enable-features=Vulkan',
-    '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--use-fake-device-for-media-stream',
-    ...(prompt ? ['--use-fake-ui-for-media-stream'] : []), '--autoplay-policy=no-user-gesture-required',
-    ]});
+  const browser = await launch({media: prompt ? true : 'ask', args: [pinnedCertificates(certificatePins)]});
   browsers.add(browser);
   if (!prompt) await microphone(browser, 'denied');
   const tab = await browser.tab();
@@ -78,7 +74,7 @@ async function open(device, {prompt = true} = {}) {
   tab.browser = browser;
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
-  await tab.send('Page.bringToFront');
+  await tab.front();
   const bootstrap = {...fixture, ...device};
   const supplied = await tab.send('Runtime.evaluate', {expression:`window.fixture=${JSON.stringify(bootstrap)};void 0`});
   assert.equal(supplied.result?.exceptionDetails, undefined, 'fixture bootstrap failed');

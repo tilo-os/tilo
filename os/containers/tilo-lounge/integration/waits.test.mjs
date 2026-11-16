@@ -4,7 +4,7 @@
 // read the shell's own answer, it would already be done.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {reloaded, settle, settleSearch, searching} from './waits.mjs';
+import {reloaded, settle, settleSearch, searching, STRIP_REST, stripAtRest} from './waits.mjs';
 
 /** A page whose frames never advance and whose search owes nothing: the shell
  * has finished, it is just not drawing. */
@@ -81,6 +81,27 @@ test('the searching predicate reads only the shell’s own answer', async () => 
   const tab = {evaluate: async expression => { seen.push(expression); return true; }};
   assert.equal(await searching(tab), true);
   assert.match(seen.at(-1), /searchSearching/);
+});
+
+/** What the page answers for a navigation snapshot, as the page evaluates
+ * [`STRIP_REST`]: the expression reads `globalThis.tiloMount`. */
+function pageWith(snapshot) {
+  const globalThis = {tiloMount: {navigation: {getSnapshot: () => snapshot}}};
+  return new Function('globalThis', `return ${STRIP_REST}`)(globalThis);
+}
+
+test('the strip is at rest only when the shell says its pan has nowhere to go', () => {
+  // A strip still easing, or one a page does not describe, is not at rest: a
+  // wait on frames would time out on the first, and pass the second unseen.
+  assert.equal(pageWith({desktopPan: {offset: 40, moving: true}}), '');
+  assert.equal(pageWith({desktopPan: {offset: 40}}), '');
+  assert.equal(pageWith({desktopPan: null}), '');
+  // A strip at rest answers its pan, so the caller reads where it stopped.
+  const pan = {workspace: '1', strip: '2', offset: 40, viewport: 800, content: 2000, max: 1200, moving: false};
+  assert.deepEqual(JSON.parse(pageWith({desktopPan: pan})), pan);
+  assert.equal(stripAtRest(pan), true);
+  assert.equal(stripAtRest({...pan, moving: true}), false);
+  assert.equal(stripAtRest(null), false);
 });
 
 test('a settle with idleMs ends on the shell drawing nothing, not on its timeout', async () => {

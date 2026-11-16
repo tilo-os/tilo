@@ -20,9 +20,7 @@ if (!bundle) throw Error('usage: node first-run.mjs BUNDLE_DIR');
 const shots = process.env.SHOTS_DIR;
 
 const server = await serve(resolve(bundle));
-// SwiftShader's WebGPU, as the app-sdk lane runs the bundle: a host GPU in
-// headless Chrome can lose its device mid-run.
-const browser = await launch({args: ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
+const browser = await launch();
 const tab = await browser.tab();
 const failures = [];
 const check = (ok, what) => {

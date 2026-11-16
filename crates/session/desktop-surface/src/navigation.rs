@@ -1511,6 +1511,11 @@ pub struct DesktopPan {
     pub viewport: f64,
     pub content: f64,
     pub max: f64,
+    /// The strip still has to move: a pan easing to its target, fingers moving
+    /// it, or a window waiting to be revealed. A strip at rest draws no more
+    /// frames, so a page or a test that waits on the strip after a search reads
+    /// this rather than counting frames.
+    pub moving: bool,
 }
 
 /// The focused window's primary vertical scroll region, in logical px.
@@ -1898,6 +1903,7 @@ mod tests {
                     viewport: 1.0,
                     content: 2.0,
                     max: 1.0,
+                    moving: false,
                 }),
                 scroll: Some(ScrollState {
                     region: scroll_region(RouteIds { tab: 7, ..active }, "primary"),

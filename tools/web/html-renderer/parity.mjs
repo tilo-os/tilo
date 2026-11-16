@@ -45,8 +45,6 @@ const against = option('--against') ? resolve(option('--against')) : null;
 if (engine !== 'chromium' && !against) throw new Error(`${engine} shows the HTML renderer only: name a Chromium run's shots with --against DIR to compare it with`);
 const apps = JSON.parse(readFileSync(join(bundle, 'apps.json'), 'utf8')).applications
   .map(app => app.id).filter(id => !only || only.includes(id));
-const gpuArgs = process.platform === 'linux' ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : [];
-const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 const [width, height] = phone ? [390, 844] : [1280, 800];
 const scale = phone ? 3 : 1;
 const tag = phone ? `-${width}` : '';
@@ -179,7 +177,7 @@ async function settle(tab) {
 }
 
 async function openPage(server, page) {
-  const opened = await open({engine, width, height, scale, mobile: phone, args: [...gpuArgs, ...sandbox]});
+  const opened = await open({engine, width, height, scale, mobile: phone});
   await opened.tab.colourScheme('light');
   await opened.tab.navigate(`${server.url}/${page}`);
   return {browser: {close: () => opened.close()}, tab: opened.tab};

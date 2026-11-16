@@ -15,8 +15,6 @@ if (!base) throw new Error('usage: node driver.mjs FIXTURE_URL');
 const fixture = async path => (await fetch(new URL(path, base))).text();
 const mark = label => fetch(new URL(`/api/mark/${label}`, base), {method: 'POST'});
 
-const MEDIA = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
-
 const result = {engine: 'chromium'};
 let browser;
 let tab;
@@ -28,11 +26,9 @@ const deadline = setTimeout(() => {
 }, 105_000);
 deadline.unref();
 try {
-  // CI's isolated test container runs as root; Chromium requires this flag
-  // there. The profile contains only generated fixture identities.
   result.stage = 'launch';
   console.error('voice fixture', result.stage);
-  browser = await launch({args: [...MEDIA, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+  browser = await launch({media: true});
   tab = await browser.tab();
   result.stage = 'navigate';
   console.error('voice fixture', result.stage);

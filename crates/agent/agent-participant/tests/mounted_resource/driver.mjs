@@ -90,14 +90,12 @@ try {
   // host's development one as the host's listener presents it. The page loads
   // these and no other.
   browser = await launch({args: [pinnedCertificates([{certificate: credentials.cert, host: '127.0.0.1'},
-      await servedCertificate(fixture.origin)]),
-    '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-    ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+      await servedCertificate(fixture.origin)])]});
   tab = await browser.tab();
   observer = await observe(browser, tab, evidence);
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
-  await tab.send('Page.bringToFront');
+  await tab.front();
   const permission = await browser.send('Browser.setPermission', {origin,
     permission: {name: 'clipboard-read', allowWithoutSanitization:true}, setting:'granted'});
   assert.equal(permission.error, undefined, JSON.stringify(permission.error));

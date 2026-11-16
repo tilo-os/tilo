@@ -66,17 +66,9 @@ const failed = async message => {
   finish(1);
 };
 
-// SwiftShader's WebGPU, as the Lounge's other browser checks run it.
-const browserArgs = [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-];
-
 /** A person's own browser, at `width`×`height` CSS pixels. */
 const person = async (name, {width, height, scale = 1, mobile = false}) => {
-  const browser = await launch({args: browserArgs});
+  const browser = await launch();
   browsers.push(browser);
   const tab = await browser.tab();
   // A file the page could not fetch is what stops it before it can say

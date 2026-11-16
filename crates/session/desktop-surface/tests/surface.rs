@@ -805,6 +805,7 @@ fn pan_moves_the_shown_strip_without_changing_the_saved_tree() {
     assert!(pan.max > 0.0, "five windows overflow 1200 px: {pan:?}");
     assert!(pan.viewport > 0.0 && pan.content >= pan.viewport, "{pan:?}");
     assert!(pan.offset.abs() < 0.5, "starts at home: {pan:?}");
+    assert!(!pan.moving, "a strip at home has nowhere to move: {pan:?}");
 
     let (saved, presented) = (handle.revision(), handle.navigation_revision());
     let target = pan.max / 2.0;
@@ -819,6 +820,10 @@ fn pan_moves_the_shown_strip_without_changing_the_saved_tree() {
     .unwrap();
     let moved = handle.snapshot("g", vec![]).desktop_pan.unwrap();
     assert!((moved.offset - target).abs() < 0.5, "{moved:?}");
+    assert!(
+        !moved.moving,
+        "a pan set where it was asked to sit is at rest: {moved:?}"
+    );
     assert_eq!(handle.revision(), saved, "a pan is not a tree change");
     assert!(
         handle.navigation_revision() > presented,

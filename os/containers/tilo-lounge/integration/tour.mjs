@@ -31,12 +31,7 @@ const mark = clock();
 // and nothing else, as a person's browser loads what it trusts.
 const siteCertificate = await servedCertificate(site);
 const relayCertificate = await servedCertificate(relay);
-const browser = await launch({args: [
-  pinnedCertificates([siteCertificate, relayCertificate]),
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+const browser = await launch({args: [pinnedCertificates([siteCertificate, relayCertificate])]});
 mark('the browser started');
 const report = {site, relay, screens: [], problems: []};
 // The screens are numbered as they are taken, across the three appearances, so

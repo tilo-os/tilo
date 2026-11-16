@@ -25,7 +25,8 @@ export interface DesktopNavigationSnapshot {
     swipe: boolean;
     notifications: boolean;
   };
-  desktopPan: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
+  /** The shown strip's geometry, and `moving`: it still has to move (a pan easing, a reveal waiting). */
+  desktopPan: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number; moving: boolean} | null;
   /** Back and forward through the active tab's own history. */
   history: {canBack: boolean; canForward: boolean} | null;
   scroll: {region: string; offset: number; viewport: number; content: number; max: number} | null;

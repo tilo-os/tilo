@@ -35,7 +35,7 @@ const bundle = pageBundle();
 const server = await serve(web, {also: [bundle.dir]});
 // WebAuthn takes a domain as relying party, never an IP address.
 const origin = server.url.replace('127.0.0.1', 'localhost');
-const browser = await launch({args: process.getuid?.() === 0 ? ['--no-sandbox'] : []});
+const browser = await launch();
 const authenticator = {
   protocol: 'ctap2', ctap2Version: 'ctap2_1', transport: 'internal',
   hasResidentKey: true, hasUserVerification: true, isUserVerified: true,

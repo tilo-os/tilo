@@ -70,13 +70,8 @@ try {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
-  // Headless Linux workers use the same explicit WebGPU backend as the
-  // desktop browser journeys, rather than relying on automatic driver selection.
-  const gpuArgs = process.platform === 'linux'
-    ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
-    : [];
   browser = await launch({args:[pinnedCertificates([{certificate: tls.cert, host: '127.0.0.1'}]),
-    '--window-size=1200,2000', ...gpuArgs, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+    '--window-size=1200,2000']});
   const tab = await browser.tab();
   await tab.navigate(`${origin}/proof.html`);
   await tab.waitFor('!!document.getElementById("app")', {timeout:15000});

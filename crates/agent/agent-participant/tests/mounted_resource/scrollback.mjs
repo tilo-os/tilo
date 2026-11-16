@@ -54,14 +54,11 @@ try {
   // The page's own fixture's certificate and the host's development one: what
   // its two origins present, and the only certificates it accepts.
   browser = await launch({args: [pinnedCertificates([{certificate: credentials.cert, host: '127.0.0.1'},
-      await servedCertificate(fixture.origin)]),
-    '--enable-features=Vulkan',
-    '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-    ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+      await servedCertificate(fixture.origin)])]});
   tab = await browser.tab();
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
-  await tab.send('Page.bringToFront');
+  await tab.front();
   const supplied = await tab.send('Runtime.evaluate', {expression: `window.fixture = ${JSON.stringify(fixture)}; void 0`});
   assert.equal(supplied.result?.exceptionDetails, undefined, 'fixture bootstrap could not be supplied');
   const mounted = await mountChat(tab);

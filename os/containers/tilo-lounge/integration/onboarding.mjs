@@ -64,15 +64,9 @@ const hostOrigin = new URL(relay).origin;
 const siteOrigin = new URL(site).origin;
 
 // A person's tabs share one browser and the flow reads the one behind: the
-// second tab must be let in without the first losing the workspace. A
-// browser freezes or throttles a tab nobody looks at, and a starved machine
-// does it at once, so every tab here answers as the front one does.
-const browserArgs = [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-];
+// second tab must be let in without the first losing the workspace. The
+// browser's baseline leaves every tab answering as the front one does
+// (`launch` in tools/web/chrome.mjs).
 
 const pageText = tab => tab.evaluate(`(document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 1200)`)
   .catch(() => '');
@@ -83,6 +77,7 @@ const state = tab => tab.evaluate(`JSON.stringify({
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
   title: document.title,
+  workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? null,
 })`).then(JSON.parse).catch(error => ({unreachable: String(error?.message ?? error).slice(0, 300)}));
 
 const dump = async (tab, name) => {
@@ -161,7 +156,7 @@ const until = async (tab, expression, what, timeout = stepLimit(4)) => {
  * who has been here before (`setupDone`) opens the site itself, not its first
  * screen: the workspace's own desktop, as the people who run it see it. */
 const visit = async (name, {passkey = false, setupDone = false} = {}) => {
-  const browser = await launch({args: browserArgs});
+  const browser = await launch();
   browsers.push(browser);
   const tab = await browser.tab({firstRun: true});
   tab.log ??= [];
@@ -217,19 +212,15 @@ const person = tab => tab.evaluate(`JSON.stringify({
 })`).then(JSON.parse).catch(() => ({}));
 /** The person's own workspace, as the page titles it: never the Lounge's. */
 const ownWorkspace = tab => tab.evaluate(`/^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`).catch(() => '');
-/** What the page is doing while it is not there yet: the mount's own phase,
- * the frames it drew and the name the workspace answered admission with, so a
- * wait that runs out says which of them it was waiting on. A page waits on its
- * host admitting it and replaying what it made before its shell draws, and
- * gives a host that says nothing two minutes before it calls it unanswered
- * (`whenReady` in peer.mjs): the waits below on the person's own workspace are
- * given as long, never a stopwatch on a frame. */
-const ownProgress = tab => tab.evaluate(`(() => {
+/** The person's own workspace, drawn, as the page publishes it: the shell its
+ * host admitted it to is presented, and the tab is titled after that
+ * workspace, never the Lounge. */
+const OWN_WORKSPACE = `(() => {
   const state = globalThis.tiloMount?.state?.() ?? null;
-  return JSON.stringify({title: document.title, phase: state?.phase ?? null, frames: state?.frames ?? null,
-    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
-})()`).catch(() => '{}');
-const OWN_WORKSPACE_STEPS = 8;
+  const title = document.title ?? '';
+  return state?.phase === 'presented' && state.workspaceName
+    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+})()`;
 
 // -- the desktop -------------------------------------------------------------
 const canvasBox = tab => tab.evaluate(`(() => {
@@ -506,7 +497,7 @@ try {
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
   // Only the tab in front may read the clipboard of a browser here: the
   // operator's is one of several.
-  await operator.tab.send('Page.bringToFront', {}).catch(() => {});
+  await operator.tab.front();
   await operator.tab.send('Emulation.setFocusEmulationEnabled', {enabled: true}).catch(() => {});
   report.clipboardFocused = await operator.tab.evaluate('document.hasFocus()').catch(() => null);
   const clipboardBefore = await operator.tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
@@ -634,11 +625,7 @@ try {
   if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to the agent: ${registered || 'never asked'}`);
   console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
   await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
-  for (const deadline = Date.now() + stepLimit(OWN_WORKSPACE_STEPS); !await ownWorkspace(stranger.tab).catch(() => '');) {
-    if (Date.now() > deadline) await fail(`the tab is titled ${await ownProgress(stranger.tab)}, not after the person's own workspace`);
-    await sleep(250);
-  }
-  report.workspace = await ownWorkspace(stranger.tab);
+  report.workspace = await until(stranger.tab, OWN_WORKSPACE, "the person's own workspace drawn", stepLimit(3));
   report.landed = await person(stranger.tab);
   await dump(stranger.tab, '5-own-workspace');
   mark('tilo login ran and the tab is in the person\'s own workspace');
@@ -674,7 +661,7 @@ try {
   // Kept from the person's own desktop, as "Keep with passkey" does. A
   // passkey is made in the tab a person is looking at: the second tab opened
   // above closed, and this one is in front again before the browser is asked.
-  await stranger.tab.send('Page.bringToFront').catch(() => {});
+  await stranger.tab.front();
   const kept = await stranger.tab.evaluate(`(async () => {
     const id = ${identityModule};
     const person = await id.browserIdentity();
@@ -703,8 +690,7 @@ try {
   const returned = await person(stranger.tab);
   report.returned = returned;
   if (returned.user !== kept.person) await fail(`the passkey signed in ${returned.user}, not ${kept.person}`);
-  await until(stranger.tab, `(() => { const t = document.title; return /^Tilo · /.test(t) && !/lounge/i.test(t); })()`,
-    'the person back in their own workspace', stepLimit(OWN_WORKSPACE_STEPS));
+  await until(stranger.tab, OWN_WORKSPACE, 'the person back in their own workspace', stepLimit(3));
   report.returnedTo = await ownWorkspace(stranger.tab);
   await dump(stranger.tab, '6-passkey-back');
   console.log(`ok: a passkey signed the same person back in, to ${report.returnedTo}`);

@@ -187,7 +187,7 @@ test('a clip encoded on the page plays back, and every seek lands on the exact f
   let browser;
   try {
     try {
-      browser = await launch({args: process.getuid?.() === 0 ? ['--no-sandbox'] : []});
+      browser = await launch();
     } catch (error) {
       if (String(error.message).startsWith('no Chrome')) {
         t.skip('no headless Chrome on this machine');

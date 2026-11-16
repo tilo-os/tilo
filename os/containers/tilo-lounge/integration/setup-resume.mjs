@@ -72,15 +72,9 @@ const check = (ok, what, detail = '') => {
 
 // The flow drives two tabs of one browser and reads the one behind: a setup
 // is one, whichever tab shows it, and a tab that went back says so to the
-// other through storage. A browser throttles or freezes a tab nobody looks
-// at, and a starved machine does it at once, so the step it answers would
-// never come: every tab here answers as the front one does.
-const browser = await launch({args: [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+// other through storage. The browser's baseline leaves every tab answering
+// as the front one does (`launch` in tools/web/chrome.mjs).
+const browser = await launch();
 const finish = async () => {
   mark();
   await Promise.race([Promise.all(pictures), sleep(stepLimit(1))]);
@@ -188,13 +182,16 @@ const inLounge = async tab => {
   const at = await where(tab);
   return !at.screen && /lounge/i.test(at.title);
 };
-// The person's own workspace, as the page says it: the first screen gone, the
-// shell the workspace names drawn, and the tab titled after it. A page waits on
-// its host admitting it and replaying what it made before that shell draws, and
-// gives a host that says nothing two minutes before it calls it unanswered
-// (`whenReady` in peer.mjs): this step is given as long, never a stopwatch on
-// a frame, and what the page was doing is said when it never comes.
-const OWN_WORKSPACE_STEPS = 8;
+// The person's own workspace, drawn, as the page publishes it: the first
+// screen gone, the shell its host admitted it to presented, and the tab
+// titled after that workspace, never the Lounge.
+const OWN_WORKSPACE = `(() => {
+  const state = globalThis.tiloMount?.state?.() ?? null;
+  const title = document.title ?? '';
+  const firstRun = document.documentElement.dataset.firstRun ?? null;
+  return firstRun === null && state?.phase === 'presented' && state.workspaceName
+    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+})()`;
 const forget = tab => tab.evaluate('delete globalThis.__firstFrame').catch(() => {});
 const reload = async tab => { await forget(tab); await tab.reload(); await sleep(50); };
 // Back one entry in the tab's history, as the browser's Back button goes.
@@ -204,7 +201,7 @@ const goBack = async tab => { await forget(tab); await tab.evaluate('history.bac
 // a click on a layer still over it (the screen fading in) lands on that layer
 // and presses nothing.
 const click = async (tab, id) => {
-  await tab.send('Page.bringToFront').catch(() => {});
+  await tab.front();
   const box = JSON.parse(await until(tab, `(() => { const e = document.getElementById(${JSON.stringify(id)});
     if (!e || e.disabled) return ''; const r = e.getBoundingClientRect(); if (!r.width) return '';
     const x = r.x + r.width / 2, y = r.y + r.height / 2;
@@ -228,7 +225,7 @@ const clipboardText = tab => tab.evaluate(
 const copy = async (tab, id) => {
   // The clipboard answers only the tab in front, so read it there, as the
   // click's press needs it in front too.
-  await tab.send('Page.bringToFront').catch(() => {});
+  await tab.front();
   const before = await clipboardText(tab);
   await click(tab, id);
   return until(tab, `navigator.clipboard.readText().then(text =>
@@ -376,20 +373,20 @@ const ran = await agent;
 mark('case 4: tilo login finished');
 check(ran.code === 0, '3. tilo login finished', `${ran.stderr}${ran.stdout}`.slice(-600));
 // 5. Entered: the person's own workspace.
-const own = await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title) && document.title`, stepLimit(OWN_WORKSPACE_STEPS));
+const own = await until(tab, OWN_WORKSPACE, "the person's own workspace drawn", stepLimit(3));
 check(own, '5. entered: the tab lands in the person\'s own workspace', JSON.stringify(await where(tab)));
 shot(tab, 'resume-5-entered');
 check((await setup(tab))?.step === 'done', '5. the setup is kept as done');
 await reload(tab);
 frame = await firstFrame(tab);
 check(frame.step === null, '5. reloaded: no first screen', JSON.stringify(frame));
-check(await until(tab, `/^Tilo · /.test(document.title) && document.title === ${JSON.stringify(own)}`, stepLimit(OWN_WORKSPACE_STEPS)), '5. reloaded: the own workspace again, not the Lounge',
+check(await until(tab, `(${OWN_WORKSPACE}) === ${JSON.stringify(own)}`, stepLimit(3)), '5. reloaded: the own workspace again, not the Lounge',
   JSON.stringify(await where(tab)));
 // Back to the bare entry the person first opened, from which their own
 // workspace was opened.
 await goBack(tab);
 await until(tab, `document.readyState !== 'loading'`, stepLimit(2));
-check(await until(tab, `document.title === ${JSON.stringify(own)}`, stepLimit(OWN_WORKSPACE_STEPS)), '5. back to the bare entry: the own workspace, not the Lounge',
+check(await until(tab, `(${OWN_WORKSPACE}) === ${JSON.stringify(own)}`, stepLimit(3)), '5. back to the bare entry: the own workspace, not the Lounge',
   JSON.stringify(await where(tab)));
 shot(tab, 'resume-5-back');
 await close(tab);
@@ -414,7 +411,7 @@ check(['waiting', 'connected'].includes(frame.step), '6. reopened: the setup it 
 const said = await until(tab, `document.documentElement.dataset.firstRun === 'connected' && document.getElementById('first-run-connected').textContent`, stepLimit(2));
 check(said === 'Claude Code is in your workspace', '6. reopened: "Claude Code is in your workspace"', said ?? await pageText(tab));
 shot(tab, 'resume-6-agent-done-while-closed');
-check(await until(tab, `document.documentElement.dataset.firstRun === undefined && /^Tilo · /.test(document.title) && !/lounge/i.test(document.title)`, stepLimit(OWN_WORKSPACE_STEPS)),
+check(await until(tab, OWN_WORKSPACE, '6. reopened: the own workspace opens', stepLimit(3)),
   '6. reopened: the own workspace opens', JSON.stringify(await where(tab)));
 await close(tab);
 

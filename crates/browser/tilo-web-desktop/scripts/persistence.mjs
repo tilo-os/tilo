@@ -134,8 +134,7 @@ const NODES = `(() => {
 })()`;
 
 const server = process.env.SERVER ? {url: process.env.SERVER, close() {}} : await serve(resolve(bundle));
-// Chrome's synthetic camera answers getUserMedia without a prompt.
-const browser = await launch({args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']});
+const browser = await launch({media: true});
 const results = [];
 const presented = "/frames [1-9]/.test((document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? ''))";
 const text = s => s.replaceAll('{nonce}', nonce);

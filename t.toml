@@ -764,7 +764,7 @@ heavy = true
 name = "accounts-web-storage"
 # Installs Chrome stable with npx: npm and Google's download hosts, at no fixed version.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" > \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/system/accounts/web/run.mjs --no-sandbox\n"
+run = "cargo clippy --locked --target wasm32-unknown-unknown --lib --example account_storage_probe -p accounts -p tilo-secret-vault -p tilo-files -p tilo-secrets -- -D warnings\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" > \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/system/accounts/web/run.mjs\n"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 requires = ["arch=x86_64"]
 
@@ -978,7 +978,7 @@ env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 name = "sdk-web-qualify"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo build --locked -p tilo-app-cli --bin tilo-app\napp=$CARGO_TARGET_DIR/debug/tilo-app\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\" --no-sandbox\n"
+run = "cargo build --locked -p tilo-app-cli --bin tilo-app\napp=$CARGO_TARGET_DIR/debug/tilo-app\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\"\n"
 needs = ["test-assets"]
 env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 git = true

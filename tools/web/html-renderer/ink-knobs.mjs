@@ -40,8 +40,7 @@ const ink = (png, [x0, y0, w, h]) => {
 
 const server = await serve(bundle);
 const shot = async render => {
-  const gpuArgs = process.platform === 'linux' ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : [];
-  const opened = await open({engine: 'chromium', width: 1280, height: 800, args: gpuArgs});
+  const opened = await open({engine: 'chromium', width: 1280, height: 800});
   try {
     await opened.tab.colourScheme('light');
     await opened.tab.navigate(`${server.url}/app.html?app=${app}&render=${render}&theme=light`);

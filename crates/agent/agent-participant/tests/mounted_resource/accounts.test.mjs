@@ -47,7 +47,7 @@ test('mounted fixture seeds both accounts in the entry page’s current namespac
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   let browser;
   try {
-    browser = await launch({args: process.getuid?.() === 0 ? ['--no-sandbox'] : []});
+    browser = await launch();
     const tab = await browser.tab();
     await tab.navigate(`http://127.0.0.1:${server.address().port}/`);
     await tab.waitFor('document.readyState === "complete"', {timeout:5_000});

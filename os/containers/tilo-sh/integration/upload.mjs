@@ -48,7 +48,7 @@ mkdirSync(out, {recursive: true});
 const file = name => join(folder, name);
 const report = {site, relay, folder, steps: {}};
 
-const browser = await launch({args: ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+const browser = await launch();
 const tab = await browser.tab();
 await tab.send('Emulation.setDeviceMetricsOverride', {width: 1600, height: 900, deviceScaleFactor: 1, mobile: false})
   .catch(() => {});

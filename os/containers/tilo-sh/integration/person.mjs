@@ -89,12 +89,8 @@ mkdirSync(out, {recursive: true});
 
 const report = {site, relay};
 // The stack is plain HTTP on this machine: no certificate to accept, as for
-// any person's browser. A software GPU, and no sandbox where this runs as root.
-const browser = await launch({args: [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+// any person's browser.
+const browser = await launch();
 const tab = await browser.tab();
 await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false})
   .catch(() => {});

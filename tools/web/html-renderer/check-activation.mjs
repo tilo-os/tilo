@@ -26,7 +26,6 @@ const dump = process.argv.includes('--dump');
 // refusal is the page's doing or the runtime's.
 const render = process.argv.includes('--render') ? process.argv[process.argv.indexOf('--render') + 1] : 'dom';
 mkdirSync(out, {recursive: true});
-const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 
 // What the note the check opens is made of: long enough that a screen the
 // page did not draw at its first frame arrives with it.
@@ -99,7 +98,7 @@ const PRESS = wanted => `(async () => {
   return {found: true, pressed: answers.filter(answer => answer.result !== 'disabled').length, answers};
 })()`;
 
-const browser = await launch({args: ['--window-size=1280,800', ...sandbox]});
+const browser = await launch({args: ['--window-size=1280,800']});
 const server = await serve(bundle);
 const result = {};
 try {

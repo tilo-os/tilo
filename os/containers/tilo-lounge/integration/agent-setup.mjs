@@ -39,16 +39,10 @@ const mark = clock();
 const report = {site, relay, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
-// As the gate's other pages: a software GPU, a job container's small /dev/shm,
-// and no sandbox where the gate runs as root. The stack is plain http on this
-// machine, so no certificate stands in the page's way.
-const browserArgs = [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  // Chromium's own log on stderr: why a renderer or the GPU process died is said there.
-  '--enable-logging=stderr', '--v=0',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-];
+// The stack is plain http on this machine, so no certificate stands in the
+// page's way; this flow asks for Chromium's own log on stderr, where why a
+// renderer or the GPU process died is said.
+const browserArgs = ['--enable-logging=stderr', '--v=0'];
 
 const finish = async (code, message) => {
   if (message) report.error = message;
@@ -390,28 +384,16 @@ if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.st
 
 // The screen leaves for the person's own workspace.
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', stepLimit(2));
-// Titled after the person's own workspace once it says its name, never the
-// Lounge's: the name is the one the workspace answered this page's admission
-// with, which the shell it starts is given. What the wait is on is the page
-// itself — its host admitting it and its first shell drawing — and the page
-// gives a host that says nothing two minutes before it calls it unanswered
-// (`whenReady` in peer.mjs), so this step is given as long rather than a
-// stopwatch on a frame. What the page was doing is said when it never comes.
+// The person's own workspace, drawn, as the page publishes it: the shell its
+// host admitted it to is presented, and the tab is titled after that
+// workspace, never the Lounge.
 const ownWorkspace = `(() => {
   const state = globalThis.tiloMount?.state?.() ?? null;
   const title = document.title ?? '';
-  return JSON.stringify({title, own: /^Tilo · /.test(title) && !/lounge/i.test(title),
-    phase: state?.phase ?? null, frames: state?.frames ?? null,
-    workspace: state?.workspaceName ?? null, entry: document.documentElement.dataset.entry ?? null});
+  return state?.phase === 'presented' && state.workspaceName
+    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
 })()`;
-let at = {};
-for (const deadline = Date.now() + stepLimit(8); ;) {
-  at = JSON.parse(await first.evaluate(ownWorkspace).catch(() => '{}'));
-  if (at.own) break;
-  if (Date.now() > deadline) await fail(`the tab is titled "${at.title}", not after the person's own workspace: ${JSON.stringify(at)}`);
-  await sleep(250);
-}
-report.workspace = await first.evaluate('document.title');
+report.workspace = await until(first, ownWorkspace, "the person's own workspace drawn", stepLimit(2));
 mark('the agent logged in and the tab is in the person\'s own workspace');
 
 // The agent is present once its MCP server connects, as Claude Code starts it

@@ -118,11 +118,7 @@ const ARRIVED = `['done', 'stopped'].includes(document.documentElement.dataset.a
   && document.documentElement.dataset.arrival`;
 const FRAMES = 'globalThis.tiloMount?.state?.()?.frames ?? 0';
 
-const browser = await launch({args: [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  '--disable-dev-shm-usage',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+const browser = await launch();
 const crashed = new Set();
 browser.on(({method, sessionId}) => {
   if (method === 'Inspector.targetCrashed') crashed.add(sessionId);
@@ -249,7 +245,7 @@ tabs.secondIn = secondArrived === 'done';
 console.log(`TIMING two-tabs second-arrived=${secondArrived ?? 'never'}`);
 // The tab a person acts in is the one in front: a browser holds back the
 // frames of a tab behind another, as it does for a person.
-const front = one => one.send('Page.bringToFront').catch(() => {});
+const front = one => one.front();
 if (tabs.secondIn) {
   await until(second, `(${FRAMES}) > 0`, stepLimit(3));
   await front(tab);

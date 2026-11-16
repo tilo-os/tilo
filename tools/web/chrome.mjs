@@ -259,11 +259,44 @@ function sweepProfiles() {
   }
 }
 
-/** A headless browser on a fresh profile. `TILO_CHROME_ARGS` adds flags of the machine's own,
- * space separated: headless Chrome draws WebGPU with SwiftShader unless told to use the GPU, so a
- * run that wants the machine's GPU (a recording) passes `--enable-gpu --use-angle=vulkan
- * --enable-features=Vulkan --ignore-gpu-blocklist` there. */
-export async function launch({args = []} = {}) {
+/** What every test browser starts with, so a page test passes only the flags
+ * that are its own (a certificate pin list, a window size, a log).
+ *
+ * Software rendering on Linux: headless Chrome draws WebGPU with SwiftShader
+ * unless a machine's GPU is named, and a host GPU in headless Chrome can lose
+ * its device mid-run. A job container's /dev/shm is 64 MiB and a renderer that
+ * runs out of it dies. Tabs a test drives in turn must not be throttled or
+ * frozen as background tabs: a browser a person is not looking at still
+ * answers. A build container runs as root, where Chromium refuses its own
+ * sandbox. */
+const BASELINE = [
+  ...(process.platform === 'linux'
+    ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
+    : []),
+  '--disable-dev-shm-usage',
+  '--disable-background-timer-throttling',
+  '--disable-renderer-backgrounding',
+  '--disable-backgrounding-occluded-windows',
+  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+];
+
+/** A page that captures and plays media: a synthetic microphone and camera
+ * the call really encodes and sends, no prompt before a person would have
+ * pressed Allow, and audio that plays without a gesture. `media: 'ask'` keeps
+ * the prompt for a flow that answers the page's permission itself. */
+const MEDIA = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+  '--autoplay-policy=no-user-gesture-required'];
+const MEDIA_ASKS = ['--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'];
+
+/** A headless browser on a fresh profile. `args` are the flags a test adds to
+ * [`BASELINE`]; `media` is `true` for a page that captures and plays media,
+ * or `'ask'` for one that answers the microphone prompt itself.
+ *
+ * `TILO_CHROME_ARGS` adds flags of the machine's own, space separated, after
+ * every other: a run that wants the machine's GPU (a recording) passes
+ * `--enable-gpu --use-angle=vulkan --enable-features=Vulkan
+ * --ignore-gpu-blocklist` there, and Chromium takes the switch it read last. */
+export async function launch({args = [], media = false} = {}) {
   sweepProfiles();
   const profile = mkdtempSync(join(throwawayDir(), 'tilo-chrome-'));
   const supervised = process.platform === 'linux';
@@ -280,10 +313,8 @@ export async function launch({args = []} = {}) {
     '--use-mock-keychain',
     '--password-store=basic',
     '--enable-unsafe-webgpu',
-    // Tabs a test drives in turn must not be throttled as background tabs.
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows',
+    ...BASELINE,
+    ...(media === 'ask' ? MEDIA_ASKS : media ? MEDIA : []),
     // No crash reporter. In a job container its handler cannot trace the
     // browser's processes ("no ptrace"), and a renderer that asked it for a
     // report then died: about one reload in four in the agent-setup check
@@ -478,6 +509,10 @@ export async function launch({args = []} = {}) {
       send: (method, params) => method === 'Page.captureScreenshot' ? capture(params) : send(method, params, sessionId),
       evaluate,
       waitFor,
+      /** Bring the tab to the front: the browser answers a passkey or a
+       * permission prompt in the tab the person is looking at, and puts a tab
+       * nobody looks at to sleep. A tab already closed has nothing to bring. */
+      front: () => send('Page.bringToFront', {}, sessionId).catch(() => {}),
       navigate: url => send('Page.navigate', {url}, sessionId),
       reload: () => send('Page.reload', {ignoreCache: true}, sessionId),
       screenshot: async () => {

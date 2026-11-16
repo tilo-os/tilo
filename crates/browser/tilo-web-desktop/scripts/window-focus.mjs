@@ -14,9 +14,7 @@ import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node window-focus.mjs BUNDLE_DIR');
 const server = await serve(resolve(bundle));
-// SwiftShader's WebGPU: a host GPU in headless Chrome can lose its device
-// mid-run.
-const browser = await launch({args: ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
+const browser = await launch();
 const tab = await browser.tab();
 await tab.navigate(`${server.url}/`);
 const {evaluate} = tab;

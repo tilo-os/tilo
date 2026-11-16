@@ -12,7 +12,6 @@ import {launch, serve, sleep} from '../chrome.mjs';
 const bundle = resolve(process.argv[2]);
 const out = resolve(process.argv[3]);
 mkdirSync(out, {recursive: true});
-const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 
 // Each field the page shows as its own input: what it is, where it is, and
 // whether it is what the pointer finds there.
@@ -33,7 +32,7 @@ const TREE = `(() => { const found = [];
 const server = await serve(bundle);
 // A passkey's relying party is a domain: localhost is one, 127.0.0.1 is not.
 const origin = server.url.replace('127.0.0.1', 'localhost');
-const browser = await launch({args: ['--window-size=1280,800', ...sandbox]});
+const browser = await launch({args: ['--window-size=1280,800']});
 const result = {};
 try {
   const tab = await browser.tab();

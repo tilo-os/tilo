@@ -85,7 +85,7 @@ case $mode in
     node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import {launch} from './tools/web/chrome.mjs';
-const browser = await launch({args: process.getuid?.() === 0 ? ['--no-sandbox'] : []});
+const browser = await launch();
 try {
   const tab = await browser.tab();
   assert.equal(await tab.evaluate('6 * 7'), 42);

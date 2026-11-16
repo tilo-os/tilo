@@ -233,6 +233,7 @@ const until = async (tab, expression, what, timeout = stepLimit(3), more = null)
     refusal: document.documentElement.dataset.refusal ?? null,
     phase: document.documentElement.dataset.phase ?? null,
     progress: document.documentElement.dataset.arrivalProgress ?? null,
+    workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? null,
     status: document.getElementById('status')?.textContent ?? null,
     waited: ${JSON.stringify(what)},
     search: (() => { const s = globalThis.tiloMount?.state?.(); return s?.searchOpen ? {query: s.searchCard?.query ?? null,
@@ -380,21 +381,16 @@ const search = async (tab, command, query, row, opens = null) => {
     tick();
     return true;
   })()`).catch(() => false);
-  // The shell's search, never one window's: a press that landed in an app's
-  // own search field leaves that window's search up, and the shell's query
-  // typed into it asks that app instead. Whatever is up is closed first (the
-  // chord toggles, so a press over an open search would close it), then the
-  // chord opens the shell's.
+  // A person's search is the shell's, never one window's: the chord opens the
+  // shell's over a window's own (a window's field a press inside the window
+  // left up) and closes only the shell's. What the open search reaches is the
+  // page's own answer (`searchCard.scope`), so the flow reads that instead of
+  // closing searches to make the one it wants the only one.
   const openScope = () => tab.evaluate("globalThis.tiloMount?.state()?.searchOpen ? (globalThis.tiloMount.state().searchCard?.scope ?? 'unknown') : null");
-  for (let tries = 0; tries < 3; tries++) {
-    const scope = await openScope();
-    if (scope === null || scope === 'workspace' || scope === 'unknown') break;
-    await key(tab, 'Escape');
-    await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the ${scope} search closing`, stepLimit(2));
-  }
+  const shellSearch = scope => scope === 'workspace' || scope === 'everywhere';
   // The shell keeps the search up until what it opened has arrived, and the
-  // chord toggles it: it is opened only when it is down.
-  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
+  // chord toggles the shell's own: it is pressed only when the shell's is down.
+  if (!shellSearch(await openScope())) {
     await click(tab, SHELL.empty.x, SHELL.empty.y);
     await key(tab, 'k', command);
   }
@@ -403,7 +399,8 @@ const search = async (tab, command, query, row, opens = null) => {
   // shell did not answer is the shell's, not the key's, and a failure that
   // waited a minute to say "closed" never said which it was.
   const opened = await tab.evaluate(
-    'globalThis.__tiloWait?.(() => !!globalThis.tiloMount?.state()?.searchOpen, 3000) ?? false',
+    `globalThis.__tiloWait?.(() => { const s = globalThis.tiloMount?.state?.() ?? null;
+      return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); }, 3000) ?? false`,
   ).catch(() => false);
   if (!opened) {
     const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
@@ -411,7 +408,9 @@ const search = async (tab, command, query, row, opens = null) => {
   }
   // A wait that runs out exits the flow from inside `until`: the chord and the
   // frames after it are read into its failure line there.
-  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3), async () => {
+  await until(tab, `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
+    return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`,
+    `the shell's search for "${query}"`, stepLimit(3), async () => {
     const trail = await tab.evaluate('JSON.stringify((globalThis.__pressTrail ?? []).slice(0, 40))').catch(() => '[]');
     const chords = await tab.evaluate('JSON.stringify((globalThis.__chordStates ?? []).slice(-6))').catch(() => '[]');
     return `the chord opened nothing after ${Date.now() - chorded} ms: the chord as it arrived and after: ${chords}; frames after it [ms, phase, open, frames, revision, scope, focus, pending]: ${trail}`;
@@ -725,7 +724,7 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
   {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"});
 const anotherBrowser = async () => {
-  const launched = await launch({args: browserArgs});
+  const launched = await launch(browserArgs);
   browsers.push(launched);
   const tab = await launched.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', shellMetrics).catch(() => {});
@@ -862,24 +861,11 @@ const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
   return out;
 })())`).then(JSON.parse);
 
-// SwiftShader's WebGPU, as the app SDK's lane runs the bundle: a host GPU in
-// headless Chrome can lose its device mid-run.
-const browserArgs = [
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
-  // A person's call is heard through a microphone and played through a
-  // speaker: this machine has no person at it, so the browser carries both —
-  // a synthetic microphone the call really encodes and sends, and no prompt
-  // before a person would have pressed Allow.
-  '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
-  '--autoplay-policy=no-user-gesture-required',
-  // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
-  '--disable-dev-shm-usage',
-  // A browser a person is not looking at still answers: a shell slowed down to
-  // save power answers the next key late.
-  '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
-  '--disable-backgrounding-occluded-windows',
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-];
+// A person's call is heard through a microphone and played through a
+// speaker: this machine has no person at it, so the browser carries both —
+// a synthetic microphone the call really encodes and sends, and no prompt
+// before a person would have pressed Allow.
+const browserArgs = {media: true};
 const browsers = [];
 const mark = clock();
 try {
@@ -1304,21 +1290,12 @@ try {
   // browser: no page scroll, zoom or history.
   const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
   const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
-  // Where the strip comes to rest: the same place on three reads a few frames apart.
-  const restingPan = async tab => {
-    let last = null;
-    let same = 0;
-    for (let reads = 0; reads < 100 && same < 2; reads++) {
-      // A strip still moving draws frames; one at rest draws none, and that
-      // is where it rests.
-      const how = await drawn(tab, 2);
-      const now = await panOf(tab);
-      if (how === 'idle') return now;
-      same = now && last && now.offset === last.offset ? same + 1 : 0;
-      last = now;
-    }
-    return last;
-  };
+  // The strip at rest, as the shell publishes it: its pan has nowhere left to
+  // go (no slide easing, no window waiting to be revealed). A strip at rest
+  // draws no more frames, so a wait on this ends on the shell's own state
+  // rather than on a count of frames that a finished shell never advances.
+  const rest = async tab => JSON.parse(await until(tab, waits.STRIP_REST, 'the strip at rest', stepLimit(3)));
+  const restingPan = tab => rest(tab);
   const namesOf = async tab => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
     await settle(tab, 1);
@@ -1351,7 +1328,7 @@ try {
         await during();
       }
     }
-    await drawn(tab, 2);
+    await rest(tab);
   };
   const rightClick = async (tab, x, y) => {
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
@@ -1550,9 +1527,6 @@ try {
     // strip pans by the gesture and the windows stay as they were.
     centre = await centreOf(a.tab);
     await search(a.tab, a.command, 'notes', 'Notes');
-    // The strip slides to Notes, or already did within the search's own
-    // frames: a strip already at rest draws nothing more, and that is no hang.
-    await drawn(a.tab, 2);
     // Where Notes' own window is once the strip is at rest: with a few windows
     // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
@@ -1595,7 +1569,6 @@ try {
     // whose sideways wheel the strip takes, as it should.
     // The search slides the strip to Sheets: the swipe waits until it is at rest.
     await search(a.tab, a.command, 'sheets', 'Sheets');
-    await drawn(a.tab, 2);
     // Where B2 is, read once the strip is at rest: read while it still slides,
     // the fingers would land wherever B2 was, on another window by then.
     const keptPan = await restingPan(a.tab);

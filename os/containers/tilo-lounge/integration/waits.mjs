@@ -64,6 +64,19 @@ export const searching = tab => tab.evaluate('globalThis.tiloMount?.state()?.sea
 /** Whether the open search is up, as the page publishes it. */
 export const searchOpen = tab => tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen');
 
+/** The shown strip at rest, as the page publishes it: its pan has nowhere left
+ * to go — no slide easing, no window waiting to be revealed — so the page
+ * answers the pan as JSON. A strip still moving draws frames; one at rest
+ * draws none, so a wait that counted frames would time out on a shell that has
+ * finished. Empty while the strip still has to move. */
+export const STRIP_REST = `(() => {
+  const pan = globalThis.tiloMount?.navigation?.getSnapshot?.()?.desktopPan ?? null;
+  return pan && pan.moving === false ? JSON.stringify(pan) : '';
+})()`;
+
+/** Whether the `desktopPan` a page publishes says the strip is at rest. */
+export const stripAtRest = pan => Boolean(pan) && pan.moving === false;
+
 /**
  * Wait until the shell has presented `by` more frames, or says it owes none: a
  * shell with nothing to draw presents none — it waits for what changes — so a

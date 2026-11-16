@@ -8,8 +8,7 @@ import {inspectArtifact} from './artifact.mjs';
 import {serve,launch} from '../../../../tools/web/chrome.mjs';
 const root=resolve(fileURLToPath(new URL('../../../..',import.meta.url)));
 const output=resolve(process.argv[2]??join(root,'target/browser-compute'));
-const chromeArgs=process.argv.slice(3);
-assert.ok(chromeArgs.every(arg=>arg==='--no-sandbox'),'only explicit --no-sandbox is supported for root CI containers');
+assert.ok(process.argv.length<=3,'qualification takes no browser flags: the shared baseline in tools/web/chrome.mjs starts the browser');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Read the actual post-bindgen WASM memory section, not build-script intent.
 const wasm=readFileSync(join(output,'pkg/compute/tilo_browser_compute_bg.wasm'));
@@ -23,7 +22,7 @@ writeFileSync(join(output,'hang-fixture.mjs'),'onmessage=()=>{while(true){}};');
 writeFileSync(join(output,'trap-fixture.mjs'),'const instance=new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,7,8,1,4,116,114,97,112,0,0,10,5,1,3,0,0,11])));onmessage=()=>instance.exports.trap();');
 const server=await serve(output);let browser;
 try{
-  browser=await launch({args:chromeArgs});const tab=await browser.tab();await tab.navigate(server.url);await tab.waitFor('document.readyState === "complete"');
+  browser=await launch();const tab=await browser.tab();await tab.navigate(server.url);await tab.waitFor('document.readyState === "complete"');
   const result=await tab.evaluate("import('./browser-page.mjs').then(m=>m.qualify())");
   assert.equal(result.workerResults,4+result.work.iterations); // 3 formats + after-cancel + actual workload
   const sources={};

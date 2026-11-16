@@ -1580,13 +1580,9 @@ function watchMemory(tab) {
 // One pin for the run's certificate: the page's HTTPS stack loads it, and QUIC verifies it apart
 // from that stack on the host's WebTransport link, which the same key covers.
 const browser = await launch({args: [pinnedCertificates([{certificate: tls.cert, host: '127.0.0.1'}]),
-  // A build container runs as root, where Chromium refuses its own sandbox.
-  ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   // The host's packet relay is plain http (the browser's own WebTransport
   // would be https behind an ingress): this lets the page dial it as it is.
-  '--webtransport-developer-mode',
-  // SwiftShader's WebGPU: a host GPU in headless Chrome can lose its device mid-run.
-  '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
+  '--webtransport-developer-mode']});
 // A page of its own, for reading what a shot shows (the shell's tone).
 const scratch = await browser.tab();
 await scratch.navigate('about:blank');

@@ -1,5 +1,5 @@
 // Production account storage in one origin, two authenticated profile Dir scopes.
-// Run: node crates/system/accounts/web/run.mjs [--no-build] [--no-sandbox]
+// Run: node crates/system/accounts/web/run.mjs [--no-build]
 import {execFileSync} from 'node:child_process';
 import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -23,7 +23,7 @@ writeFileSync(join(out,'index.html'),`<!doctype html><script type="module">
 import init,* as probe from './probe.js'; await init(); globalThis.probe=probe; globalThis.probeReady=true;
 </script>`);
 server=await serve(out);
-browser=await launch({args:process.argv.includes('--no-sandbox')?['--no-sandbox']:[]});
+browser=await launch();
 const tab=async()=>{const t=await browser.tab();await t.navigate(server.url+'/index.html');await t.waitFor('globalThis.probeReady === true');return t;};
 const invoke=(t,name,...args)=>t.evaluate(`Promise.resolve(probe.${name}(...${JSON.stringify(args)})).then(value=>value??null).catch(error=>{throw new Error(String(error));})`);
 const attempt=(t,handle)=>t.evaluate(`(()=>{try{probe.save(${JSON.stringify(handle)});return 'committed';}catch(e){return String(e);}})()`);

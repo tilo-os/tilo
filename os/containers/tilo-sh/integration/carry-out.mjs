@@ -55,7 +55,7 @@ const sha256 = path => new Promise((done, fail) => {
   createReadStream(path).on('data', chunk => hash.update(chunk)).on('end', () => done(hash.digest('hex'))).on('error', fail);
 });
 
-const browser = await launch({args: ['--disable-dev-shm-usage', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+const browser = await launch();
 const tab = await browser.tab();
 await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
 await browser.send('Browser.setDownloadBehavior', {behavior: 'allow', downloadPath: downloads, eventsEnabled: true});

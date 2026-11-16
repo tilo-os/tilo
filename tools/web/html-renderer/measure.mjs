@@ -15,13 +15,6 @@ const rounds = Number(process.argv[process.argv.indexOf('--rounds') + 1]) || 1;
 // --quick, --select, --phone and --wheel (or QUICK=1 and so on) run one part.
 const part = name => Boolean(process.env[name.toUpperCase()]) || process.argv.includes(`--${name}`);
 mkdirSync(out, {recursive: true});
-// SwiftShader, unless `TILO_CHROME_ARGS` points the browser at the machine's GPU
-// (with `VK_DRIVER_FILES` choosing its driver), as a measurement of what a
-// visitor sees wants.
-const gpuArgs = process.platform === 'linux' && !process.env.TILO_CHROME_ARGS
-  ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
-  : [];
-const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 
 const pct = (values, p) => {
   if (!values.length) return null;
@@ -156,7 +149,7 @@ const LATENCIES = `(() => {
 })()`;
 
 async function run({page, render, width, height, dark = false, shot, interact = true}) {
-  const browser = await launch({args: [`--window-size=${width},${height}`, ...gpuArgs, ...sandbox]});
+  const browser = await launch({args: [`--window-size=${width},${height}`]});
   const server = await serve(bundle);
   const result = {page, render, width, height, dark};
   try {

@@ -60,6 +60,12 @@ impl Revealing {
         self.asked.is_some() && !self.busy(now)
     }
 
+    /// Whether a window waits to come into view at all, and so the strip has
+    /// yet to move for it.
+    pub(super) fn waiting(&self) -> bool {
+        self.asked.is_some()
+    }
+
     /// When a waiting window may come into view: once the person's hands have rested.
     pub(super) fn due(&self) -> Option<Instant> {
         self.asked?;

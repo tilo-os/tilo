@@ -1987,6 +1987,16 @@ impl GroupRow {
         self.drawn_pan_x(self.leading_pan())
     }
 
+    /// Whether the strip still has to move: a pan easing to its target, or
+    /// fingers moving it. A strip at rest draws no more frames for its pan, so
+    /// a host or a test that waits on the strip coming to rest reads this
+    /// rather than counting frames.
+    pub fn strip_moving(&self, now: Instant) -> bool {
+        self.pans().into_iter().any(|pan| {
+            pan.animating() || pan.strip_pan_origin.is_some() || pan.direct_pan_moving(now)
+        })
+    }
+
     /// Where a strip whose viewport is `viewport` draws: the viewport and a
     /// 16 px pad above and below it that keeps shadow and glow sprites
     /// (ambient_pad=50, bloom_pad=120, see `TileHost::draw_steady_state`)
@@ -8051,6 +8061,10 @@ mod tests {
                     0.0,
                     "the pan is applied by ticks, not the call"
                 );
+                assert!(
+                    anim.strip_moving(t0),
+                    "a pan that has to ease still has to move"
+                );
                 let snap = crate::tokens::Motion::default().durations.base();
                 anim.tick_snap_at(t0 + snap / 2);
                 let mid = anim.scroll_x();
@@ -8063,6 +8077,10 @@ mod tests {
                     anim.scroll_x(),
                     expected,
                     "the animated pan must settle on the same target the teleporting variant picks"
+                );
+                assert!(
+                    !anim.strip_moving(t0 + Duration::from_secs(1)),
+                    "a pan that landed has nowhere left to go"
                 );
             }
 

@@ -125,9 +125,7 @@ async function click(tab, x, y) {
 }
 
 async function run({page, render}) {
-  const gpuArgs = render === 'gpu' && !process.env.TILO_CHROME_ARGS
-    ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : [];
-  const browser = await launch({args: ['--window-size=1280,800', ...gpuArgs, ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
+  const browser = await launch({args: ['--window-size=1280,800']});
   // The measurement pages are served beside the bundle's own files.
   const server = await serve(bundle, {also: [dirname(fileURLToPath(import.meta.url))]});
   const result = {page, render: render ?? 'plain'};

@@ -22,7 +22,6 @@ const tracing = process.argv.includes('--trace');
 // text is set at three device pixels per point.
 const phone = process.argv.includes('--phone');
 const [width, height] = phone ? [390, 844] : [1280, 800];
-const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
 // Which browser's build runs the page: Chromium is the only one here with the
 // toolkit's canvas, but a key's cost is the HTML path's, so the other engines
 // measure the same page.
@@ -150,7 +149,7 @@ function stages(events) {
 }
 
 async function measured({page, render, width, height, seed}) {
-  const opened = await openBrowser({engine, width, height, scale: phone ? 3 : 1, mobile: phone, args: sandbox});
+  const opened = await openBrowser({engine, width, height, scale: phone ? 3 : 1, mobile: phone});
   const browser = opened.protocol;
   const tab = opened.tab;
   const server = await serve(bundle);

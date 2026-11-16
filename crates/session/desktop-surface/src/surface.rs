@@ -1727,6 +1727,10 @@ impl DesktopSurface {
             let shared = self.shared.borrow();
             (navigation::active_route(&shared.tree), shared.tree.active)
         };
+        // The strip still owes a reveal, or a window waits on the person's hands before it is
+        // brought into view: either way the strip has yet to move.
+        let revealing = self.reveal.is_some() || self.shared.borrow().revealing.waiting();
+        let now = ui::time::now();
         let mut next = self.shared.borrow().presentation.clone();
         next.pan = self.shown.zip(self.shown_row_ref()).map(|(strip, row)| {
             let viewport = row.get_rect().width();
@@ -1747,6 +1751,7 @@ impl DesktopSurface {
                     row.content_width().max(viewport)
                 },
                 max,
+                moving: revealing || row.strip_moving(now),
             }
         });
         let host = active.and_then(|ids| {

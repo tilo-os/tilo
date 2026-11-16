@@ -286,22 +286,21 @@ export function classifyAdapter(info) {
 }
 
 /**
- * Chrome's flags for a run on `renderer` by user `uid`: no frame-rate limit
- * or vsync; SwiftShader's Vulkan and ANGLE on SwiftShader (as
- * crates/browser/tilo-web-desktop/scripts/navigation.mjs starts it), or, for a
- * hardware run, the vulkan backend a machine's own driver serves WebGPU from
- * (headless Chrome settles on SwiftShader without it); no sandbox for root (a
- * CI container), which Chrome refuses otherwise. The adapter check still
- * proves which renderer ran: a hardware run on a machine whose Vulkan driver
- * offers WebGPU no adapter is reported invalid, never measured as a GPU.
+ * Chrome's flags for a run on `renderer`: no frame-rate limit or vsync, and the
+ * renderer it measures named explicitly — SwiftShader's Vulkan and ANGLE on
+ * SwiftShader, which the shared baseline (tools/web/chrome.mjs) starts on
+ * Linux but no other machine, or the vulkan backend a machine's own driver
+ * serves WebGPU from. They come after the baseline's, and Chromium takes the
+ * switch it read last. The adapter check still proves which renderer ran: a
+ * run whose driver offers WebGPU no adapter is reported invalid, never
+ * measured as a GPU.
  */
-export function chromeFlags(renderer, uid) {
+export function chromeFlags(renderer) {
   return ['--disable-frame-rate-limit', '--disable-gpu-vsync',
     ...(renderer === 'swiftshader'
       ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
       : ['--enable-features=Vulkan', '--use-vulkan=native', '--use-angle=vulkan',
-        '--ignore-gpu-blocklist', '--disable-gpu-driver-bug-workarounds']),
-    ...(uid === 0 ? ['--no-sandbox'] : [])];
+        '--ignore-gpu-blocklist', '--disable-gpu-driver-bug-workarounds'])];
 }
 
 /** Intervals between consecutive presented frames, from their timestamps. */
@@ -1176,7 +1175,7 @@ async function main() {
   options.split = existsSync(split) ? JSON.parse(readFileSync(split, 'utf8')) : null;
   const listed = Object.keys(JSON.parse(readFileSync(join(options.bundle, 'build.json'), 'utf8')).files);
   const server = await serve(options.bundle);
-  const flags = chromeFlags(options.renderer, process.getuid?.());
+  const flags = chromeFlags(options.renderer);
   const browser = await launch({args: flags});
   try {
     const version = (await browser.send('Browser.getVersion')).result;

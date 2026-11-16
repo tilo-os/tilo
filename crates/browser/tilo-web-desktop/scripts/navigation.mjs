@@ -25,8 +25,7 @@ const watchdog = setTimeout(() => {
 }, 600_000);
 let progress = 'loading';
 const server = await serve(resolve(bundle));
-// Software Vulkan, as the CI mount test runs Chrome.
-const browser = await launch({args: ['--no-sandbox', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
+const browser = await launch();
 // A tab showing the desktop at `deviceScaleFactor`, once it has presented.
 async function desktop(deviceScaleFactor, options) {
   const tab = await browser.tab(options);
