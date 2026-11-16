@@ -42,9 +42,10 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         if version.housekeeping {
             continue;
         }
+        let session = version.run.as_deref();
         if let Some(last) = entries.last_mut()
-            && version.run.is_some()
-            && last.session == version.run
+            && session.is_some()
+            && last.session.as_deref() == session
             && last.author == version.author
         {
             last.steps = last.steps.saturating_add(1);
