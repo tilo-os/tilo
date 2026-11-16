@@ -285,7 +285,9 @@ pub struct ChatApp {
     /// The attachment the person opened over the conversation, and the copy
     /// they asked to save.
     pub(crate) attachment_view: Option<crate::attachment_view::AttachmentView>,
-    pub(crate) attachment_save: Option<crate::attachment_view::AttachmentSave>,
+    /// Where the window runs a save while the person chooses where it goes;
+    /// none outside a window.
+    pub(crate) jobs: Option<ui::framework::Jobs<crate::Chat>>,
     pub(crate) attachment_picker_pending: Option<u64>,
     pub(crate) attachment_picker_generation: u64,
     pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
@@ -743,7 +745,7 @@ impl ChatApp {
             attachment_result_rx,
             attachment_status: None,
             attachment_view: None,
-            attachment_save: None,
+            jobs: None,
             attachment_picker_pending: None,
             attachment_picker_generation: 0,
             attachment_picker_result_tx,
@@ -2453,7 +2455,6 @@ impl Widget for ChatApp {
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let workspace_changed = self.take_workspace();
-        self.settle_attachment_save();
         // The call's video tile is the one child laid out: dragged, handed
         // off or following the grid, it is placed again where it went.
         if self

@@ -43,25 +43,6 @@ pub(crate) struct AttachmentView {
     pub(crate) saved: Option<SavedCopy>,
 }
 
-/// A save in flight: the dialog the host is showing, then the write to the
-/// place chosen in it.
-pub(crate) struct AttachmentSave {
-    pub(crate) step: SaveStep,
-    pub(crate) blob: String,
-    pub(crate) msg: Id,
-}
-
-/// Where an [`AttachmentSave`] is.
-pub(crate) enum SaveStep {
-    /// The person is choosing where the copy goes.
-    Choosing(ui::portal::DestinationChannel),
-    /// The copy is being written to `destination`.
-    Writing {
-        channel: ui::portal::SaveChannel,
-        destination: ui::portal::SaveDestination,
-    },
-}
-
 impl AttachmentView {
     pub(crate) fn new(msg: Id, attachment: usize) -> Self {
         Self {
@@ -112,113 +93,73 @@ impl ChatApp {
         let Some(att) = self.attachment_of(msg, attachment) else {
             return;
         };
-        if self.attachment_save.is_some() {
+        let Some(jobs) = &self.jobs else {
             return;
-        }
-        let name = att.label().to_owned();
+        };
         let pick = ui::portal::PickRequest::save(
             &crate::i18n::t("chat-attachment-save-title"),
             &crate::i18n::t("chat-attachment-save-accept"),
-            &name,
+            att.label(),
         )
-        .thread_name("chat-attachment-save")
-        .send_save_destination();
-        self.attachment_save = Some(AttachmentSave {
-            step: SaveStep::Choosing(pick),
-            blob: att.blob().unwrap_or_default().to_owned(),
-            msg: msg.to_owned(),
-        });
-    }
-
-    /// Take what the save dialog, then the write, answered, once each.
-    pub(crate) fn settle_attachment_save(&mut self) {
-        let Some(save) = self.attachment_save.take() else {
-            return;
-        };
-        let failed = |reason: Option<String>| {
-            let failed = crate::i18n::t("chat-attachment-save-failed");
-            Some(reason.map_or_else(|| failed.clone(), |reason| format!("{failed}: {reason}")))
-        };
-        match save.step {
-            SaveStep::Choosing(pick) => {
-                let destination = match pick.try_recv() {
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        self.attachment_save = Some(AttachmentSave {
-                            step: SaveStep::Choosing(pick),
-                            ..save
-                        });
-                        return;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.attachment_status = failed(None);
-                        return;
-                    }
-                    Ok(ui::portal::DestinationOutcome::Chosen(destination)) => destination,
-                    Ok(ui::portal::DestinationOutcome::Cancelled) => return,
-                    Ok(ui::portal::DestinationOutcome::Failed(reason)) => {
-                        self.attachment_status = failed(Some(reason));
-                        return;
-                    }
+        .thread_name("chat-attachment-save");
+        let blob = att.blob().unwrap_or_default().to_owned();
+        let msg = msg.to_owned();
+        jobs.start::<crate::ChatWindow>("attachment-save", move |cx| {
+            Ok(cx.choose_destination(pick, move |window, chosen, cx| {
+                let Some(destination) = chosen else {
+                    return Ok(ui::framework::Effected::done());
                 };
                 // The bytes were verified when they arrived; a copy is written
                 // only where the person chose, and never invented when the
                 // store has none (a demo attachment is a picture with no file
                 // behind it).
-                let Some(bytes) = self.content.read(&save.blob) else {
-                    self.attachment_status = Some(crate::i18n::t("chat-attachment-not-on-device"));
-                    return;
+                let Some(bytes) = window.state().content.read(&blob) else {
+                    window.state().attachment_status =
+                        Some(crate::i18n::t("chat-attachment-not-on-device"));
+                    return Ok(ui::framework::Effected::done());
                 };
-                let channel = destination.write(bytes);
-                self.attachment_save = Some(AttachmentSave {
-                    step: SaveStep::Writing {
-                        channel,
-                        destination,
-                    },
-                    ..save
-                });
-                // A write that answers at once is taken now.
-                self.settle_attachment_save();
-            }
-            SaveStep::Writing {
-                channel,
-                destination,
-            } => match channel.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    self.attachment_save = Some(AttachmentSave {
-                        step: SaveStep::Writing {
-                            channel,
-                            destination,
-                        },
-                        ..save
-                    });
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.attachment_status = failed(None);
-                }
-                Ok(ui::portal::SaveOutcome::Cancelled) => {}
-                Ok(ui::portal::SaveOutcome::Failed(reason)) => {
-                    self.attachment_status = failed(Some(reason));
-                }
-                Ok(ui::portal::SaveOutcome::Saved) => {
-                    // Only a copy with a path on this device can be shown in
-                    // its folder; one the browser keeps is in its downloads.
-                    if let Some(path) = destination.location()
-                        && let Some(view) = self.attachment_view.as_mut()
-                        && view.msg == save.msg
-                    {
-                        view.saved = Some(SavedCopy {
-                            name: crate::i18n::t("chat-attachment-saved"),
-                            target: path.to_string_lossy().into_owned(),
-                        });
-                    }
-                    self.attachment_status = Some(format!(
-                        "{}: {}",
-                        crate::i18n::t("chat-attachment-saved"),
-                        destination.name()
-                    ));
-                }
-            },
+                let place = destination.clone();
+                Ok(
+                    cx.write_destination(&place, bytes, move |window, written, _| {
+                        window.state().saved_attachment(&msg, &destination, written);
+                        Ok(ui::framework::Effected::done())
+                    }),
+                )
+            }))
+        });
+    }
+
+    /// Say how writing the copy of an attachment of the message `msg` to
+    /// `destination` went.
+    fn saved_attachment(
+        &mut self,
+        msg: &str,
+        destination: &ui::portal::SaveDestination,
+        written: Result<(), String>,
+    ) {
+        if let Err(reason) = written {
+            self.attachment_status = Some(format!(
+                "{}: {reason}",
+                crate::i18n::t("chat-attachment-save-failed")
+            ));
+            return;
         }
+        // Only a copy with a path on this device can be shown in its folder;
+        // one the browser keeps is in its downloads.
+        if let Some(path) = destination.location()
+            && let Some(view) = self.attachment_view.as_mut()
+            && view.msg == msg
+        {
+            view.saved = Some(SavedCopy {
+                name: crate::i18n::t("chat-attachment-saved"),
+                target: path.to_string_lossy().into_owned(),
+            });
+        }
+        self.attachment_status = Some(format!(
+            "{}: {}",
+            crate::i18n::t("chat-attachment-saved"),
+            destination.name()
+        ));
     }
 
     /// Show the saved copy's folder in the desktop's file manager.

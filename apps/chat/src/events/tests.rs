@@ -2775,35 +2775,39 @@ fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
 /// the page cannot reach, and offers no folder to show it in.
 #[test]
 fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
-    let (mut app, mut doc) = app_with_doc();
-    let bytes = b"%PDF-1.7 the plan".to_vec();
-    let blob = app.content.put(&bytes).unwrap();
-    let msg = app.messages[0].id.clone();
-    app.messages[0].attachments = vec![tilo_reference::Attached::File {
-        name: "plan.pdf".into(),
-        blob,
-        size: u64::try_from(bytes.len()).unwrap(),
-    }];
-    app.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg.clone(), 0));
+    use crate::testing::MountedChat as _;
     let host = std::sync::Arc::new(PathlessHost::default());
     let services = ui::host::HostServices::null().with_files(host.clone());
-    ui::host::scoped(&services, || {
-        app.on_hit(
-            Hit::Attachment {
-                msg,
-                attachment: 0,
-                action: ui::widget::conversation::AttachmentAction::Save,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.settle_attachment_save();
-    });
+    let _host = ui::host::enter(&services);
+    let mut window = ui::framework::testing::TestApp::<crate::ChatShell>::new().unwrap();
+    window
+        .call_on(
+            &crate::testing::chain(),
+            "post",
+            serde_json::json!({"channel": "c_chat", "text": "The plan"}),
+        )
+        .unwrap();
+    window.settle();
+    let bytes = b"%PDF-1.7 the plan".to_vec();
+    {
+        let mut app = window.chat();
+        let blob = app.content.put(&bytes).unwrap();
+        let msg = app.messages[0].id.clone();
+        app.messages[0].attachments = vec![tilo_reference::Attached::File {
+            name: "plan.pdf".into(),
+            blob,
+            size: u64::try_from(bytes.len()).unwrap(),
+        }];
+        app.attachment_view = Some(crate::attachment_view::AttachmentView::new(msg.clone(), 0));
+        app.begin_attachment_save(&msg, 0);
+    }
+    window.settle();
     assert_eq!(
         *host.written.lock().unwrap(),
         vec![("plan.pdf".to_owned(), bytes)],
         "the bytes went where the host keeps them"
     );
-    assert!(app.attachment_save.is_none(), "the save is done");
+    let app = window.chat();
     assert!(
         app.attachment_status
             .as_deref()

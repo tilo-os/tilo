@@ -297,6 +297,7 @@ impl ResourceApp for ChatShell {
         if live {
             app.follow_preferences(cx.settings());
         }
+        app.jobs = Some(cx.window_jobs::<ChatWindow>());
         let chat: SharedChat = Rc::new(RefCell::new(app));
         let window = ChatWindow::new(Rc::clone(&chat));
         #[cfg(feature = "samples")]
