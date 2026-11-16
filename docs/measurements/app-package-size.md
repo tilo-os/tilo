@@ -79,11 +79,20 @@ or removed once its target holds. To re-seed the budgets from the registry,
 run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
 `entries.json` is `https://apps.tilo.so/entries`.
 
-To see what makes an app large, build it as a release does but keep the symbol tables;
-`nm -S --size-sort -C` on the app then lists what it compiled itself;
-a toolkit type's generic code there (a widget, a dialog, a serde instance) is code every app
-using it compiles again, and is usually cheapest to fix in the toolkit. A warm build after a
-toolkit change takes about five minutes on sixteen cores.
+To read what an app carries, build as a release does with the symbol tables kept
+(`TILO_THIN_KEEP_SYMBOLS=1 dist/apps/package-apps.sh`) and sum them by crate:
+
+```sh
+tools/perf/tapp_symbol_sizes.py measure target/thin-app \
+    --plan "$TILO_APP_RELEASE_OUT/plan.json" --out head.json
+tools/perf/tapp_symbol_sizes.py diff base.json head.json --app so.tilo.browser
+```
+
+The sum is named code only; the shipped tapp also holds unwind tables, read-only data and the
+package format. A crate's bytes in one app are what that app instantiates of it: the toolkit
+type's generic code there (a widget, a dialog, a serde instance) is code every app using it
+compiles again, and is usually cheapest to fix in the toolkit. A warm build after a toolkit
+change takes about five minutes on sixteen cores.
 
 The symbol table undercounts such code: a small generic function is also inlined at each call,
 so a fix often saves several times what `nm` shows for it. What has paid most so far:
@@ -103,5 +112,76 @@ Not every erasure pays. Routing `Widget`'s default methods through a trait objec
 larger: the per-type copies of a leaf widget's defaults were identical, so the linker already
 folded them into one, and each widget's vtable gained two entries.
 
+Every crate in the runtime's graph is provided to an app, re-exported or not: giving
+`runtime-dylib` a `pub use serde_json`, `pub use serde` and `pub use tilo_resource` between two
+symbols builds changed 84 bytes across the 65 tapps. What an app's symbol table shows under a
+shared crate's name is what the app instantiates of it, not a copy of it: of the 1,635
+`tilo_resource` symbols in Calendar's binary six are non-generic, and none of its 974 `tilo_ui`,
+220 `tilo_app` and 527 `serde_json` ones are.
+
 `tools/binary-budget.toml` is different: it is a weekly guard against static
 linking in release binaries, not this KPI.
+
+## What the apps gained, 2026-11-09 to 11-15
+
+The budgets were last raised at 9ee2d3e1439 (run ra2f0869c96). Four days later 25 tapps were
+over them. Symbols builds at a4106fe8b0c (the first commit that day that compiles: code-editor
+did not, for 52 minutes) and at 0c8ae209a88, summed by crate with
+`tools/perf/tapp_symbol_sizes.py`, attribute the growth. Named code is what `nm` sees; a tapp is
+larger by its unwind tables, read-only data and the package format.
+
+| app | budget | shipped | over | named code 11-09 | named code 11-15 | own crate | tilo_resource | serde_json | core + alloc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| browser | 3,276,800 | 3,901,440 | +624,640 | 1,841,759 | 2,262,552 | +184,689 | +36,206 | +16,698 | +96,289 |
+| mail | 3,866,624 | 4,194,816 | +328,192 | 2,046,296 | 2,314,242 | +30,829 | +22,435 | +102,422 | +28,288 |
+| tasks | 2,686,976 | 2,969,600 | +282,624 | 1,609,550 | 1,810,409 | +9,498 | +26,756 | +21,976 | +50,982 |
+| calendar | 2,752,512 | 2,981,376 | +228,864 | 1,588,919 | 1,770,317 | +2,601 | +10,572 | +100,236 | +12,757 |
+| ebook | 2,490,368 | 2,698,240 | +207,872 | 1,417,038 | 1,587,559 | +8,339 | +5,683 | +97,994 | +10,942 |
+| notes | 2,293,760 | 2,446,336 | +152,576 | 1,264,180 | 1,405,165 | +13,023 | +12,653 | +11,851 | +45,381 |
+| chat | 4,390,912 | 4,515,328 | +124,416 | 2,562,583 | 2,698,611 | +10,362 | +3,456 | +17,342 | +22,048 |
+| discord | 2,162,688 | 2,270,720 | +108,032 | 1,176,930 | 1,229,467 | -1,867 | +16,030 | +4,625 | +28,047 |
+| messages | 2,162,688 | 2,240,000 | +77,312 | 1,274,188 | 1,347,562 | +2,756 | +7,373 | +908 | +20,524 |
+| video-editor | 2,293,760 | 2,370,560 | +76,800 | 1,331,499 | 1,369,113 | +24,294 | +384 | +5 | +10,777 |
+| snippets | 1,310,720 | 1,356,800 | +46,080 | 675,593 | 703,583 | -1,124 | +621 | -9 | +10,899 |
+| clocks | 1,507,328 | 1,545,728 | +38,400 | 770,347 | 799,621 | +2,588 | +1,402 | +161 | +12,457 |
+| shortcuts | 2,228,224 | 2,263,040 | +34,816 | 1,190,967 | 1,217,913 | +5,498 | +1,045 | -37 | +10,268 |
+| code-editor | 3,604,480 | 3,638,272 | +33,792 | 2,100,555 | 2,146,906 | +3,922 | +5,106 | +177 | +12,552 |
+| passwords | 1,835,008 | 1,866,752 | +31,744 | 1,053,147 | 1,091,444 | +9,400 | +810 | +82 | +11,891 |
+| db-client | 4,390,912 | 4,422,144 | +31,232 | 3,126,259 | 3,189,925 | +1,778 | +1,352 | -25 | +4,471 |
+| totp | 1,376,256 | 1,405,952 | +29,696 | 747,597 | 770,440 | -637 | +928 | -14 | +5,356 |
+| terminal | 1,900,544 | 1,922,560 | +22,016 | 1,068,174 | 1,087,292 | +2,632 | +2,621 | +264 | +3,800 |
+| contacts | 1,900,544 | 1,914,880 | +14,336 | 995,005 | 1,012,003 | +859 | +1,724 | +47 | +6,529 |
+| remote | 2,949,120 | 2,962,432 | +13,312 | 2,001,831 | 2,020,867 | +616 | +1,171 | +1 | +8,591 |
+| maps | 1,572,864 | 1,583,104 | +10,240 | 882,102 | 892,608 | -1,796 | +1,460 | +189 | +3,974 |
+| feeds | 1,703,936 | 1,712,640 | +8,704 | 921,643 | 930,135 | +417 | +720 | -52 | +5,772 |
+| backups | 1,441,792 | 1,445,888 | +4,096 | 705,677 | 739,299 | +4,054 | +876 | +43 | +11,948 |
+| pdf-viewer | 2,359,296 | 2,362,368 | +3,072 | 1,346,419 | 1,368,317 | +13,266 | +1,752 | +3,521 | +13,058 |
+| weather | 1,048,576 | 1,049,600 | +1,024 | 548,648 | 550,421 | -383 | +696 | -50 | +3,127 |
+
+What the columns say:
+
+- **Own crate**: Browser's page forms, page record and page review (+184,689), Video Editor's
+  inspector and timeline drawing (+24,294), Pdf Viewer's page rendering (+13,266), Notes'
+  metadata and notebook (+13,023), Mail's own mailbox per member and page sends (+30,829),
+  Tasks' import inbox (+9,498) and its model crate (+55,098 in `tasks_model`).
+- **`serde_json`** is where the shared growth sits: Calendar's own crate grew 2,601 bytes and
+  its serde instances 100,236; Ebook 8,339 and 97,994; Mail 30,829 and 102,422. Each record and
+  action type an app reads out of a `Value` compiles
+  `<Map<String, Value> as Deserializer>::deserialize_any` for its own visitor again, 1.5 to
+  6 KB a type, and nested shared types (`tilo_document::action::RichTextAction` in Calendar,
+  10 instances of 1.5 to 1.9 KB) are instantiated in the app that reads them. The types are the
+  apps'; the machinery is one set of code compiled again in each of the 65 tapps.
+- **`core` and `alloc`** are the fallout of those instances: drop glue, iterators and
+  formatting for the same types.
+- **Two tapps carry a dependency of their own.** Db Client links the bundled SQLite itself (a C
+  library an app calls, so the runtime cannot hold it) and its rusqlite bump 0.37 to 0.41
+  brought a newer SQLite: 30 KB of `sqlite3_*` code in the ten largest new symbols. Remote
+  links its SSH client (russh, with the curve crate its new key type needs) for 9 KB. Neither
+  is shared with a second tapp, so an engine library would only move them.
+- **None of this is a dependency carried whole.** Every crate an app names that the runtime
+  links is provided by it, so the only way to cut these bytes is a non-generic entry point in
+  the SDK for the shared types the apps read (a `from_value` on the runtime's own action and
+  document types that the apps' derives call instead of instantiating the visitor). That is a
+  change of its own; the raise in
+  `tools/perf/tapp-size-budget/raises/apps-features-2026-11-09-to-11-15.toml` covers the growth
+  measured here.
