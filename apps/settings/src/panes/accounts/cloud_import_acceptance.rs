@@ -575,7 +575,7 @@ fn authorization_keeps_sync_writable(
     // must not be any freeze to expire while it owns the authorization step.
     assert!(flow.busy());
     let ino = volume.resolve("during-authorization.txt").unwrap();
-    let writer = volume.open_file(ino, true, false).unwrap();
+    let writer = volume.open_file(ino, true, false, false).unwrap();
     volume.write(writer, 0, b"retained").unwrap();
     volume.release(writer).unwrap();
     assert_eq!(volume.pending(), 1);
