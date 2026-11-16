@@ -209,7 +209,7 @@ impl AppBrokerState {
         let shortcut = self.saved_shortcut(caller, workspace, shortcut_id)?;
         // The one rule arming holds too: started for its saver only, the
         // person a device of theirs proved saved it in this workspace.
-        let actor = BrokerActor::for_caller(caller).id;
+        let actor = BrokerActor::for_caller(caller);
         let revocations = self
             .membership
             .as_ref()
@@ -220,7 +220,8 @@ impl AppBrokerState {
             &shortcut,
             &revocations,
             tilo_clock::unix_now_ns(),
-        ) != Some(actor)
+        )
+        .is_none_or(|saver| actor.member().person_id() != Some(saver.as_str()))
         {
             return Err(ActionHostError::NotPermitted);
         }
@@ -347,7 +348,7 @@ impl AppBrokerState {
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
         let hooks = hooks(runtime.clone(), start.run);
-        let actor = BrokerActor::for_caller(caller).id;
+        let actor = BrokerActor::for_caller(caller).member().clone();
         let _lifecycle = self
             .lifecycle
             .read()

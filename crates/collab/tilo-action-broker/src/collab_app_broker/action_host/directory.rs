@@ -339,7 +339,7 @@ impl AppBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &root.cluster_id, request),
+            &self.witness_binding(actor.member(), &root.cluster_id, request),
         )?;
         let surface = PublishedSurface {
             peer_id: root.peer_id,

@@ -251,7 +251,7 @@ impl ProfileGrants {
                 workspace,
                 tilo_desktop_model::WorkspaceEffectReceipt::recorded(
                     tilo_actions::InvocationId::new(),
-                    &request.person,
+                    &tilo_actions::MemberId::person(request.person.clone()),
                     context,
                     tilo_actions::EffectReceiptStatus::Succeeded,
                     i64::try_from(now).unwrap_or(i64::MAX),
@@ -281,7 +281,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
         &self,
         workspace: &str,
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {

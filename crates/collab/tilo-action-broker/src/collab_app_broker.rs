@@ -123,7 +123,9 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{ActionKind, Answer, Authority, TreePath, WorkspacePolicy, roles};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, MemberId, TreePath, WorkspacePolicy, roles,
+};
 use ui::presence::PresenceKey;
 
 use crate::collab_broker::{
@@ -356,8 +358,7 @@ impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
         let actor = match &self.agent_id {
             Some(agent) => {
-                let actor = BrokerActor::agent(format!("agent:{agent}"))
-                    .for_person(self.principal_id.clone());
+                let actor = BrokerActor::agent(agent.clone()).for_person(self.principal_id.clone());
                 let actor = if self.session_delegated {
                     actor.session_delegated()
                 } else {
@@ -789,7 +790,7 @@ struct PendingInvocation {
     update: tilo_actions::InvocationUpdate,
     prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
-    actor: String,
+    actor: MemberId,
     cancellable: bool,
     retryable_on_disconnect: bool,
     execution: tilo_actions::ExecutionMode,
@@ -1395,13 +1396,9 @@ impl AppBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
-        if record.prepared_effect.is_some()
-            && record
-                .intent
-                .get("actor")
-                .and_then(serde_json::Value::as_str)
-                != Some(current.broker_actor().id.as_str())
-        {
+        let actor = serde_json::to_value(current.broker_actor().member())
+            .map_err(|error| error.to_string())?;
+        if record.prepared_effect.is_some() && record.intent.get("actor") != Some(&actor) {
             return Err("prepared invocation actor differs from current caller".into());
         }
         let now = self.checked_policy_time(caller.policy_time.as_ref())?.1 / 1_000_000_000;
@@ -2429,7 +2426,7 @@ struct Witness {
 /// Arguments are hashed so the registry never retains disclosure contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WitnessBinding {
-    actor: String,
+    actor: MemberId,
     provider: String,
     workspace: String,
     revision: Option<String>,
@@ -2455,7 +2452,7 @@ struct ConfirmationGrant {
     /// Binds the exact arguments without retaining secrets or other raw user
     /// input in the grant registry.
     argument_digest: [u8; 32],
-    actor: String,
+    actor: MemberId,
     expires: std::time::Instant,
 }
 
@@ -3666,13 +3663,13 @@ impl AppBrokerState {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &str,
+        actor: &MemberId,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.record_completion(
             id,
             InvocationOwner::Local {
-                actor: actor.to_owned(),
+                actor: actor.clone(),
             },
             update,
         );
@@ -4451,7 +4448,7 @@ impl AppBrokerState {
                 resource: resource.to_string(),
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
-                actor: actor.id.clone(),
+                actor: actor.member().clone(),
                 host_witnessed: None,
                 expires: now
                     .checked_add(std::time::Duration::from_secs(60))
@@ -4847,7 +4844,7 @@ impl AppBrokerState {
                 resource: resource.to_string(),
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
-                actor: actor.to_string(),
+                actor: MemberId::person(actor),
                 host_witnessed: None,
                 expires: tilo_clock::now()
                     .checked_add(std::time::Duration::from_secs(60))
@@ -5073,7 +5070,8 @@ impl AppBrokerState {
         // In native workspaces an agent acts only in an agent session that still goes, never on
         // a workspace grant alone.
         let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
-        if actor.is_agent && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id) {
+        if actor.is_agent() && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id)
+        {
             match (durable, &session) {
                 (None, Some(Ok(_))) => {}
                 (None, Some(Err(ended))) => return Err(ended.clone()),
@@ -5100,12 +5098,8 @@ impl AppBrokerState {
             // for them (an MCP session their device handed over): never
             // another actor.
             let admitted_actor = match &admitted.agent_id {
-                Some(agent) => {
-                    actor.is_agent
-                        && actor.id.strip_prefix("agent:")
-                            == Some(agent.strip_prefix("agent:").unwrap_or(agent))
-                }
-                None => !actor.is_agent && actor.id == admitted.principal_id,
+                Some(agent) => actor.member().agent_id() == Some(delegated_agent_name(agent)),
+                None => actor.member().person_id() == Some(admitted.principal_id.as_str()),
             };
             if caller.workspace != offered.0.route.cluster_id || !admitted_actor {
                 return Err("original caller does not match the invocation route or actor".into());
@@ -5125,8 +5119,8 @@ impl AppBrokerState {
         {
             self.current_native_person(workspace, certificate)?;
             if workspace != &offered.0.route.cluster_id
-                || actor.is_agent
-                || actor.id != person_id_for_root(certificate.user_public_key)
+                || actor.member().person_id()
+                    != Some(person_id_for_root(certificate.user_public_key).as_str())
             {
                 return Err(
                     "original native person does not match the invocation route or actor".into(),
@@ -5344,7 +5338,7 @@ impl AppBrokerState {
                 || grant.resource != offered.1.resource
                 || grant.action != offered.1.action
                 || grant.argument_digest != argument_digest(argument)
-                || grant.actor != actor.id
+                || grant.actor != *actor.member()
                 || grant.host_witnessed.as_ref().is_some_and(|binding| {
                     binding.workspace != offered.0.route.cluster_id
                         || Some(binding.invocation)
@@ -5518,7 +5512,7 @@ impl AppBrokerState {
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
             prepared_effect: Arc::default(),
             last_sequence: 0,
-            actor: actor.id.clone(),
+            actor: actor.member().clone(),
             cancellable: offered.1.contract.execution.cancellable(),
             retryable_on_disconnect: matches!(
                 offered.1.contract.retry,
@@ -5602,7 +5596,7 @@ impl AppBrokerState {
         };
         serde_json::json!({ "request": request,
             "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-            "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
+            "context": receipt_context, "actor": actor.member(), "app_id": offered.0.app_id,
             "record_id": offered.0.route.record_id,
             "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
             "action": offered.1.action, "revision": revision })
@@ -5798,7 +5792,7 @@ impl AppBrokerState {
         // acting for them carries the answer the person gave on their device.
         let witnessed = match evidence {
             Some(Confirmation::Witnessed(token)) => {
-                binding.actor == actor.id()
+                binding.actor == *actor.member()
                     && binding.resource == offered.resource
                     && binding.action == offered.action
                     && binding.argument_digest == argument_digest(argument)
@@ -5869,7 +5863,7 @@ impl AppBrokerState {
                 resource: offered.resource.clone(),
                 action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
-                actor: actor.id.clone(),
+                actor: actor.member().clone(),
                 host_witnessed: None,
                 expires,
             },
@@ -5988,9 +5982,12 @@ impl AppBrokerState {
             })
     }
 
-    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+    pub fn invocation_statuses(
+        &self,
+        actor: &MemberId,
+    ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.invocation_statuses_for_owner(&InvocationOwner::Local {
-            actor: actor.into(),
+            actor: actor.clone(),
         })
     }
 
@@ -6026,12 +6023,12 @@ impl AppBrokerState {
     pub(crate) fn request_cancellation(
         &self,
         id: u64,
-        actor: &str,
+        actor: &MemberId,
     ) -> Result<invocation_journal::Durable, String> {
         self.request_cancellation_for_owner(
             id,
             &InvocationOwner::Local {
-                actor: actor.into(),
+                actor: actor.clone(),
             },
         )
     }
@@ -6080,11 +6077,11 @@ impl AppBrokerState {
         Ok(durable)
     }
 
-    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &MemberId) -> bool {
         self.can_cancel_for_owner(
             id,
             &InvocationOwner::Local {
-                actor: actor.into(),
+                actor: actor.clone(),
             },
         )
     }
@@ -6302,10 +6299,6 @@ impl AppBrokerState {
             || collab_types::MemberId::person(admitted.principal_id.clone()),
             |agent| collab_types::MemberId::agent(agent.clone()),
         )
-    }
-
-    fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
-        Self::member_id(admitted).key()
     }
 
     fn revalidate_admission(
@@ -7104,95 +7097,6 @@ impl AppBrokerState {
             return Err("native context has no exact authenticated self member".into());
         }
         Ok(members)
-    }
-
-    /// Complete certified membership currently backing native Context
-    /// subscribers, normalized for host chrome (which has no app-local
-    /// `is_self`). Conflicting certified snapshots fail closed to empty.
-    /// Resolve an exact certified participant to its canonical workspace key.
-    /// Both the native roster and current owner-backed membership must agree.
-    pub fn certified_agent_identity(
-        &self,
-        workspace: &str,
-        actor: &str,
-    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
-        if !self
-            .certified_people_in_workspace(workspace)
-            .iter()
-            .any(|row| row.id.key() == actor && !row.id.is_person())
-        {
-            return None;
-        }
-        // An agent the workspace's record of its agents names.
-        if let Some(agent) = actor.strip_prefix("agent:").filter(|agent| {
-            self.services.agents.as_deref().is_some_and(|roster| {
-                roster
-                    .listed(workspace)
-                    .iter()
-                    .any(|listed| listed.id == *agent)
-            })
-        }) {
-            return Some(ui::collaboration::CertifiedAgentIdentity {
-                participant_id: actor.to_owned(),
-                agent_key: agent.to_owned(),
-            });
-        }
-        let now = self.policy_now_ns().ok()? / 1_000_000_000;
-        self.membership
-            .as_ref()?
-            .decide_in_workspace(workspace, |workspace| {
-                workspace?
-                    .agent_members_at(now)
-                    .into_iter()
-                    .find_map(|(agent, _)| {
-                        let participant_id = format!("agent:{agent}");
-                        (participant_id == actor).then_some(
-                            ui::collaboration::CertifiedAgentIdentity {
-                                participant_id,
-                                agent_key: agent,
-                            },
-                        )
-                    })
-            })
-            .ok()
-            .flatten()
-    }
-
-    pub(crate) fn certified_people_in_workspace(
-        &self,
-        workspace: &str,
-    ) -> Vec<ui::collaboration::Member> {
-        let Ok(channels) = self.channels.lock() else {
-            return Vec::new();
-        };
-        let mut people = std::collections::BTreeMap::<String, ui::collaboration::Member>::new();
-        for (channel, subscribers) in channels.iter() {
-            let route = CrdtRoute::from_channel_key(channel);
-            if route.cluster_id != workspace {
-                continue;
-            }
-            for native in subscribers
-                .context
-                .iter()
-                .filter_map(|subscriber| subscriber.native.as_ref())
-            {
-                for participant in &native.roster {
-                    let mut participant = participant.clone();
-                    participant.is_self = false;
-                    if let Some(held) = people.get(&participant.id.key()) {
-                        if held.name != participant.name
-                            || held.packed_colour() != participant.packed_colour()
-                            || held.id.is_person() != participant.id.is_person()
-                        {
-                            return Vec::new();
-                        }
-                    } else {
-                        people.insert(participant.id.key(), participant);
-                    }
-                }
-            }
-        }
-        people.into_values().collect()
     }
 
     fn native_roster_for_subscriber(
@@ -8207,7 +8111,11 @@ impl<'a> DirectoryQuestion<'a> {
     }
 
     fn disclosed_to(&self, actor: &BrokerActor, publishing_person: Option<&str>) -> bool {
-        !self.private_view || (!actor.is_agent && publishing_person == Some(actor.id.as_str()))
+        !self.private_view
+            || actor
+                .member()
+                .person_id()
+                .is_some_and(|me| publishing_person == Some(me))
     }
 }
 
@@ -8591,7 +8499,7 @@ fn handle_signed_op_send_for_artifact(
             if !state.durable_owner_required {
                 state.publisher().signed_document(route, envelope.clone());
             }
-            let from_user_id = AppBrokerState::participant_id(verified_identity);
+            let from_user_id = AppBrokerState::member_id(verified_identity).key();
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),
                 from_user_id,
@@ -10327,7 +10235,7 @@ pub mod tests {
             assert!(state.is_stopped());
             assert!(facade.invocation_host().is_err());
             assert!(facade.surfaces().is_empty());
-            assert!(facade.statuses("owner").is_empty());
+            assert!(facade.statuses(&tilo_actions::MemberId::person("owner")).is_empty());
             let reopened = InvocationJournal::open(&config.journal_root)
                 .expect("stopped broker releases the invocation-journal writer");
             drop(reopened);
@@ -11822,9 +11730,11 @@ pub mod tests {
                         on_behalf_of: None,
                     };
                     let binding = || {
-                        fixture
-                            .state
-                            .witness_binding("person", &fixture.cluster_id, &request)
+                        fixture.state.witness_binding(
+                            &tilo_actions::MemberId::person("person"),
+                            &fixture.cluster_id,
+                            &request,
+                        )
                     };
                     let original = binding();
                     let token = fixture.state.witness_confirmation(&original).unwrap();
@@ -12744,8 +12654,8 @@ pub mod tests {
                 .expect("the keeper is admitted before their agent is");
             admit_kept_agent(&kept, &workspace_id, &mut admitted, "scribe")
                 .expect("the record names the keeper of the agent it runs");
-            assert_eq!(admitted.broker_actor().id, "agent:scribe");
-            assert!(admitted.broker_actor().is_agent);
+            assert_eq!(admitted.broker_actor().member(), &MemberId::agent("scribe"));
+            assert!(admitted.broker_actor().is_agent());
             let answer = |kind| {
                 admitted
                     .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
@@ -13071,7 +12981,10 @@ pub mod tests {
         let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
         admitted.display_handle = Some(tide.into());
-        assert_eq!(AppBrokerState::participant_id(&admitted), person);
+        assert_eq!(
+            AppBrokerState::member_id(&admitted),
+            MemberId::person(person.clone())
+        );
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = AppBrokerState::new_configured(
@@ -13159,7 +13072,7 @@ pub mod tests {
                 agent.colour,
                 ui::presence::member_hue(&agent.id, Some(&person)),
                 "{}",
-                agent.id.key()
+                agent.id
             );
         }
 
@@ -13180,18 +13093,6 @@ pub mod tests {
             stream.try_recv(),
             Ok(ContextUpdate::Snapshot { .. })
         ));
-        assert_eq!(
-            state.certified_agent_identity(&workspace_id, &format!("agent:{tide}")),
-            Some(ui::collaboration::CertifiedAgentIdentity {
-                participant_id: format!("agent:{tide}"),
-                agent_key: tide.into(),
-            }),
-        );
-        assert!(
-            state
-                .certified_agent_identity(&workspace_id, &person)
-                .is_none()
-        );
         let forged = collab_types::Member::of_software(
             collab_types::MemberId::agent("forged"),
             "forged",
@@ -13297,17 +13198,6 @@ pub mod tests {
         assert!(
             !matches!(pending.await, Ok(Some(_))),
             "revocation must terminate an already waiting native read"
-        );
-        assert!(
-            state
-                .certified_agent_identity(&workspace_id, &format!("agent:{tide}"))
-                .is_none(),
-            "an empty certified roster immediately revokes marker activation identity"
-        );
-        assert!(
-            state
-                .certified_agent_identity(&workspace_id, "agent:forged")
-                .is_none()
         );
     }
 
@@ -14342,9 +14232,13 @@ pub mod tests {
             .cancellation_fence
             .clone();
         assert!(!retained_cancellation.load(Ordering::Acquire));
-        assert!(state.request_cancellation(refresh.id, "stranger").is_err());
+        assert!(
+            state
+                .request_cancellation(refresh.id, &tilo_actions::MemberId::person("stranger"))
+                .is_err()
+        );
         state
-            .request_cancellation(refresh.id, "owner")
+            .request_cancellation(refresh.id, &tilo_actions::MemberId::person("owner"))
             .expect("owner can request cooperative cancellation")
             .wait_blocking()
             .expect("the request is durable");
@@ -14645,7 +14539,7 @@ pub mod tests {
             caller: None,
             activity: None,
             owner: InvocationOwner::Local {
-                actor: "agent:Scribe".into(),
+                actor: tilo_actions::MemberId::agent("Scribe"),
             },
             original: None,
             policy_time: None,
@@ -14655,7 +14549,7 @@ pub mod tests {
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
             prepared_effect: Arc::default(),
             last_sequence: 0,
-            actor: "agent:Scribe".into(),
+            actor: tilo_actions::MemberId::agent("Scribe"),
             cancellable: false,
             retryable_on_disconnect: false,
             execution: tilo_actions::ExecutionMode::Immediate,
@@ -14719,7 +14613,7 @@ pub mod tests {
             2,
             "invocation identity deduplicates retry delivery"
         );
-        assert_eq!(receipts[0].actor, "agent:Scribe");
+        assert_eq!(receipts[0].actor, tilo_actions::MemberId::agent("Scribe"));
         assert_eq!(
             receipts[0]
                 .context

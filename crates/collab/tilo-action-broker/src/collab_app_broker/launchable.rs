@@ -17,6 +17,7 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
+use tilo_action_policy::MemberId;
 use tilo_lock::MutexRecover as _;
 
 /// Prefix of the provider token naming a retained launchable surface.
@@ -111,14 +112,14 @@ const REMEMBERED_ACTORS: usize = 1024;
 #[derive(Default)]
 struct ActorViews {
     /// `(workspace, actor)` → (app, when it was noted).
-    views: HashMap<(String, String), (String, u64)>,
+    views: HashMap<(String, MemberId), (String, u64)>,
     clock: u64,
 }
 
 impl ActorViews {
-    fn note(&mut self, workspace: &str, actor: &str, app_id: &str) {
+    fn note(&mut self, workspace: &str, actor: &MemberId, app_id: &str) {
         self.clock = self.clock.wrapping_add(1);
-        let key = (workspace.to_owned(), actor.to_owned());
+        let key = (workspace.to_owned(), actor.clone());
         if !self.views.contains_key(&key) && self.views.len() >= REMEMBERED_ACTORS {
             let oldest = self
                 .views
@@ -132,9 +133,9 @@ impl ActorViews {
         self.views.insert(key, (app_id.to_owned(), self.clock));
     }
 
-    fn of(&self, workspace: &str, actor: &str) -> Option<&str> {
+    fn of(&self, workspace: &str, actor: &MemberId) -> Option<&str> {
         self.views
-            .get(&(workspace.to_owned(), actor.to_owned()))
+            .get(&(workspace.to_owned(), actor.clone()))
             .map(|(app, _)| app.as_str())
     }
 }
@@ -278,12 +279,12 @@ impl LaunchableCatalogue {
 
     /// `actor` just ran an action of `app_id` in `workspace`: that view is
     /// where it works now.
-    pub(super) fn note_view(&self, workspace: &str, actor: &str, app_id: &str) {
+    pub(super) fn note_view(&self, workspace: &str, actor: &MemberId, app_id: &str) {
         self.views.lock_recover().note(workspace, actor, app_id);
     }
 
     /// The app whose view `actor` last worked in, in `workspace`.
-    pub(super) fn view_of(&self, workspace: &str, actor: &str) -> Option<String> {
+    pub(super) fn view_of(&self, workspace: &str, actor: &MemberId) -> Option<String> {
         self.views
             .lock_recover()
             .of(workspace, actor)
@@ -1236,7 +1237,7 @@ mod tests {
                 appearance: None,
                 on_behalf_of: None,
             };
-            let binding = state.witness_binding("agent:scribe", &workspace, &request);
+            let binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             let witnessed = state.witness_confirmation(&binding).unwrap();
             request.confirmation = Some(Confirmation::Witnessed(witnessed));
             let call = |request: &InvokeRequest| {
@@ -1263,7 +1264,7 @@ mod tests {
                 call(&request).err(),
                 Some(ActionHostError::confirmation_required())
             );
-            let mut other_binding = state.witness_binding("agent:scribe", &workspace, &request);
+            let mut other_binding = state.witness_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             other_binding.action = "empty-trash".into();
             request.confirmation = Some(Confirmation::Witnessed(
                 state.witness_confirmation(&other_binding).unwrap(),
@@ -1504,7 +1505,7 @@ mod tests {
         invoke(&state, &client, "5", "new-window", None).unwrap();
         let delivered = app.try_recv().unwrap();
         let accepted = events.try_recv().unwrap();
-        assert_eq!(accepted.actor, "agent:mcp-1");
+        assert_eq!(accepted.actor, tilo_actions::MemberId::agent("mcp-1"));
         assert!(matches!(
             heard.try_recv().unwrap(),
             CollabEvent::RemotePresenceUpdate {
@@ -1542,7 +1543,7 @@ mod tests {
                 CollabEvent::RemotePresenceUpdate {
                     payload: PresencePayload::Interaction(interaction), ..
                 } if interaction.invocation == delivered.invocation
-                    && interaction.actor.by.key() == "agent:mcp-1"
+                    && interaction.actor.by == tilo_actions::Actor::member(tilo_actions::MemberId::agent("mcp-1"))
                     && interaction.phase == tilo_actions::InteractionPhase::Committed
             ),
             "the view receives the running action's actual outcome"

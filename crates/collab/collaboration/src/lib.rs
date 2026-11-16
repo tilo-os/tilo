@@ -705,14 +705,6 @@ impl runtime_collab::event::EndpointCustody for SdkCustody {
 /// session's brokers share.
 pub type CollabEvent = runtime_collab::event::CollabEvent<SdkCustody>;
 
-/// Explicit correlation supplied by owner-backed membership, never decoded
-/// from a participant label or an actor-id prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertifiedAgentIdentity {
-    pub participant_id: String,
-    pub agent_key: String,
-}
-
 /// The colour a roster row's packed `0x00RRGGBB` names: the presence
 /// hue nearest it, `None` for `0` or a grey.
 #[must_use]

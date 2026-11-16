@@ -387,18 +387,6 @@ impl AppActionBroker {
         self.state.hosted_workspaces()
     }
 
-    /// Exact current owner-backed agent identity while the session is live.
-    pub fn certified_agent_identity(
-        &self,
-        workspace: &str,
-        actor: &str,
-    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
-        self.state
-            .while_live(|state| Ok(state.certified_agent_identity(workspace, actor)))
-            .ok()
-            .flatten()
-    }
-
     /// Retain discovery without extending the owning session's lifetime.
     #[must_use]
     pub fn downgrade(&self) -> WeakAppActionBroker {
@@ -774,7 +762,7 @@ impl AppActionBroker {
     pub fn record_completion_for_test(
         &self,
         id: u64,
-        actor: &str,
+        actor: &tilo_action_policy::MemberId,
         update: tilo_actions::InvocationUpdate,
     ) {
         self.state.record_completion_for_test(id, actor, update);
@@ -817,7 +805,10 @@ impl AppActionBroker {
         self.state.surface_changes()
     }
 
-    pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+    pub fn statuses(
+        &self,
+        actor: &tilo_action_policy::MemberId,
+    ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state
             .while_live(|state| Ok(state.invocation_statuses(actor)))
             .unwrap_or_default()
@@ -826,13 +817,13 @@ impl AppActionBroker {
     /// Request cooperative cancellation for an owned invocation, answered
     /// once the request is durable. Blocks the calling thread for that
     /// write, so never call it on the broker's loop.
-    pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
+    pub fn cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> Result<(), String> {
         self.state
             .while_live(|state| state.request_cancellation(id, actor))?
             .wait_blocking()
     }
 
-    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::MemberId) -> bool {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
             .unwrap_or(false)
@@ -937,17 +928,6 @@ impl BrokerHandle {
         sink: FanoutSink,
     ) -> Arc<WorkspaceSubscription> {
         self.fanout.subscribe_workspaces(workspaces, sink)
-    }
-
-    /// Exact current owner-backed agent identity for a native participant.
-    pub fn certified_agent_identity(
-        &self,
-        workspace: &str,
-        actor: &str,
-    ) -> Option<ui::collaboration::CertifiedAgentIdentity> {
-        self.fanout
-            .app_broker()?
-            .certified_agent_identity(workspace, actor)
     }
 
     /// The bound collaboration socket.

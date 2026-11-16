@@ -69,9 +69,9 @@ impl JoinedChannel {
                 "only an agent acting for this session's person is attributed",
                 attributed_agent(&actor, session_person(&self.verified_identity)).ok()
             );
-            (actor.id().to_owned(), agent)
+            (actor.member().clone(), agent)
         } else {
-            (self.verified_identity.broker_actor().id().to_owned(), None)
+            (self.verified_identity.broker_actor().member().clone(), None)
         };
         let local_action = action.to_owned();
         let (peer, admitted) = (self.peer_id, self.verified_identity.clone());
@@ -272,14 +272,8 @@ fn session_person(identity: &super::AdmittedJoinIdentity) -> Option<&str> {
 /// attributed to. A person, an app, a bot, an agent acting for somebody else
 /// or for nobody is refused.
 fn attributed_agent(actor: &super::BrokerActor, person: Option<&str>) -> Result<String, String> {
-    let agent = tilo_actions::MemberId::parse(actor.id());
-    match (
-        person,
-        agent.as_ref().and_then(tilo_actions::MemberId::agent_id),
-    ) {
-        (Some(person), Some(agent))
-            if actor.is_agent() && actor.for_person.as_deref() == Some(person) =>
-        {
+    match (person, actor.member().agent_id()) {
+        (Some(person), Some(agent)) if actor.for_person.as_deref() == Some(person) => {
             Ok(agent.to_owned())
         }
         _ => Err("only an agent acting for this session's person is attributed".into()),
@@ -355,7 +349,7 @@ mod attribution_tests {
     /// actor always comes from custody, so what is checked here is whom.
     #[test]
     fn writes_are_attributed_only_to_an_agent_acting_for_the_session_person() {
-        let scribe = BrokerActor::agent("agent:scribe").for_person("ada");
+        let scribe = BrokerActor::agent("scribe").for_person("ada");
         assert_eq!(attributed_agent(&scribe, Some("ada")), Ok("scribe".into()));
         assert_eq!(
             attributed_agent(&scribe.clone().session_delegated(), Some("ada")),
@@ -364,10 +358,10 @@ mod attribution_tests {
         for (actor, person) in [
             (scribe.clone(), Some("bea")),
             (scribe, None),
-            (BrokerActor::agent("agent:scribe"), Some("ada")),
+            (BrokerActor::agent("scribe"), Some("ada")),
             (BrokerActor::person("ada"), Some("ada")),
             (
-                BrokerActor::agent("app:so.tilo.notes").for_person("ada"),
+                BrokerActor::person("ada").through_app("so.tilo.notes"),
                 Some("ada"),
             ),
             (BrokerActor::bot("helper", "ada"), Some("ada")),

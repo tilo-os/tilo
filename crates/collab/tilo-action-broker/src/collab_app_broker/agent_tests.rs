@@ -762,7 +762,7 @@ use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeReq
 /// A host's own step that is a turn's (`for_turns`): the session's arrangement, out here.
 #[derive(Default)]
 struct TurnSteps {
-    taken: Mutex<Vec<String>>,
+    taken: Mutex<Vec<tilo_actions::MemberId>>,
 }
 
 impl crate::services::HostStepServices for TurnSteps {
@@ -805,7 +805,7 @@ impl crate::services::HostStepServices for TurnSteps {
         self.taken
             .lock()
             .unwrap()
-            .push(request.actor.id().to_owned());
+            .push(request.actor.member().clone());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -840,7 +840,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             stray_invoke(&f.state, &agent, 92).expect("the turn takes the session's step");
             assert_eq!(
                 steps.taken.lock().unwrap().as_slice(),
-                ["agent:scribe"],
+                [tilo_actions::MemberId::agent("scribe")],
                 "the step ran once, as the turn's agent"
             );
 

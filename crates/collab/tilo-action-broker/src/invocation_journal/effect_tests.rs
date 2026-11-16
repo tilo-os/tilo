@@ -14,13 +14,13 @@ fn fixture(
         workspace: uuid::Uuid::new_v4().to_string(),
         host: journal.host(),
         owner: InvocationOwner::Local {
-            actor: "person".into(),
+            actor: tilo_actions::MemberId::person("person"),
         },
         invocation: tilo_actions::InvocationId::new(),
     };
     let context = tilo_actions::ActionContext::default();
     let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,
-        "context":context,"actor":"person"});
+        "context":context,"actor":{"person":"person"}});
     assert!(journal.admit(key.clone(), intent, 1).unwrap());
     let update = InvocationUpdate::Succeeded {
         invocation: key.invocation,
@@ -28,7 +28,7 @@ fn fixture(
     };
     let mut receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
         key.invocation,
-        "person",
+        &tilo_actions::MemberId::person("person"),
         context,
         tilo_actions::EffectReceiptStatus::Succeeded,
         tilo_clock::unix_now_i64(),
@@ -192,7 +192,7 @@ fn corrupt_prepared(
         "workspace" => {
             row["prepared_effect"]["workspace"] = uuid::Uuid::new_v4().to_string().into();
         }
-        "actor" => row["intent"]["actor"] = "other".into(),
+        "actor" => row["intent"]["actor"] = serde_json::json!({"person": "other"}),
         "invocation" => {
             row["prepared_effect"]["invocation"] = uuid::Uuid::new_v4().to_string().into();
         }
@@ -228,7 +228,7 @@ fn admit_agent(journal: &mut InvocationJournal, workspace: &str) -> InvocationKe
         invocation: tilo_actions::InvocationId::new(),
     };
     let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,
-        "context":tilo_actions::ActionContext::default(),"actor":"agent:scribe"});
+        "context":tilo_actions::ActionContext::default(),"actor":{"agent":"scribe"}});
     assert!(journal.admit(key.clone(), intent, 2).unwrap());
     key
 }

@@ -173,7 +173,7 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
         &self,
         workspace: &str,
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_action_policy::MemberId,
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String>;

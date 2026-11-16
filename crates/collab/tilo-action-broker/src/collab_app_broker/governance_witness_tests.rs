@@ -129,7 +129,11 @@ fn invoke(
         .map(|_| ())
 }
 
-fn witness(state: &AppBrokerState, actor: &str, request: &InvokeRequest) -> Confirmation {
+fn witness(
+    state: &AppBrokerState,
+    actor: &tilo_actions::MemberId,
+    request: &InvokeRequest,
+) -> Confirmation {
     Confirmation::Witnessed(
         state
             .witness_confirmation(&state.witness_binding(
@@ -154,7 +158,7 @@ tilo_test_env::scenario! {
             "publication",
         ] {
             let (state, service, owner, mut request) = broker(true);
-            let mut binding = state.witness_binding("owner", owner.workspace().unwrap(), &request);
+            let mut binding = state.witness_binding(&tilo_actions::MemberId::person("owner"), owner.workspace().unwrap(), &request);
             match changed {
                 "provider" => binding.provider = "another-provider".into(),
                 "workspace" => binding.workspace = "another-workspace".into(),
@@ -172,7 +176,7 @@ tilo_test_env::scenario! {
                 "a witness for another {changed} never confirms this invocation",
             );
             assert!(service.calls.lock().unwrap().is_empty());
-            request.confirmation = Some(witness(&state, "owner", &request));
+            request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &request));
             invoke(&state, &owner, &request).expect("the exact answer remains usable");
             assert_eq!(service.calls.lock().unwrap().len(), 1);
         }
@@ -181,7 +185,7 @@ tilo_test_env::scenario! {
     phase unrelated_publication_changes_preserve_host_governance_witness;
     {
         let (state, service, owner, mut request) = broker(true);
-        request.confirmation = Some(witness(&state, "owner", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &request));
         state.surfaces_changed();
         state.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
             peer_id: 123,
@@ -200,7 +204,7 @@ tilo_test_env::scenario! {
             invoke(&state, &owner, &request),
             Err(ActionHostError::confirmation_required())
         );
-        request.confirmation = Some(witness(&state, "owner", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &request));
         let mut changed = request.clone();
         changed.argument = InvokeArgument::Json(
             serde_json::from_value(serde_json::json!({"hashes": ["other"]})).unwrap(),
@@ -235,34 +239,34 @@ tilo_test_env::scenario! {
     phase owner_governance_witness_does_not_replace_current_policy_or_custody;
     {
         let (state, service, owner, mut request) = broker(true);
-        request.confirmation = Some(witness(&state, "someone-else", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("someone-else"), &request));
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionHostError::confirmation_required())
         );
         let mut other_address = request.clone();
         other_address.target.address.resource = "another-resource".into();
-        request.confirmation = Some(witness(&state, "owner", &other_address));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &other_address));
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionHostError::confirmation_required())
         );
         other_address = request.clone();
         other_address.target.address.action = "different-action".into();
-        request.confirmation = Some(witness(&state, "owner", &other_address));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &other_address));
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionHostError::confirmation_required())
         );
         let agent = Caller::local_agent("limited").in_workspace(owner.workspace().unwrap());
-        request.confirmation = Some(witness(&state, "agent:limited", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::agent("limited"), &request));
         assert_eq!(
             invoke(&state, &agent, &request),
             Err(ActionHostError::NotPermitted),
             "even a grant and exact witness cannot confer direct owner custody"
         );
         let other = Caller::local_person("other").in_workspace(owner.workspace().unwrap());
-        request.confirmation = Some(witness(&state, "other", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("other"), &request));
         assert!(invoke(&state, &other, &request).is_err());
         request.target.address.resource = "not-published".into();
         request.confirmation = Some(Confirmation::Confirmed);
@@ -292,7 +296,7 @@ tilo_test_env::scenario! {
             invoke(&state, &person, &request).unwrap();
             service.calls.lock().unwrap().clear();
             request.invocation = tilo_actions::InvocationId::new();
-            let issued_before_change = witness(&state, "guest", &request);
+            let issued_before_change = witness(&state, &tilo_actions::MemberId::person("guest"), &request);
             tree.write().workspaces[0].answer(Grantee::person("guest"), &path, KindSet::ALL, answer);
             request.confirmation = None;
             // Canonical governance checks confirmation before current policy.
@@ -330,7 +334,7 @@ tilo_test_env::scenario! {
     phase expired_owner_witness_cannot_confirm_governance;
     {
         let (state, service, owner, mut request) = broker(true);
-        let confirmation = witness(&state, "owner", &request);
+        let confirmation = witness(&state, &tilo_actions::MemberId::person("owner"), &request);
         let Confirmation::Witnessed(token) = &confirmation else {
             panic!("not exercised by this test")
         };
@@ -364,7 +368,7 @@ tilo_test_env::scenario! {
     {
         let (state, service, owner, mut request) = broker(false);
         request.target.address.resource = "legacy-service-validates-this".into();
-        request.confirmation = Some(witness(&state, "owner", &request));
+        request.confirmation = Some(witness(&state, &tilo_actions::MemberId::person("owner"), &request));
         let Some(Confirmation::Witnessed(token)) = request.confirmation.as_ref() else {
             panic!("not exercised by this test")
         };

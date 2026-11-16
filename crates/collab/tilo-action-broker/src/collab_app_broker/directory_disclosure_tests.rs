@@ -880,7 +880,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
             }),
         }
     };
-    let agent = BrokerActor::agent("agent:claude-code");
+    let agent = BrokerActor::agent("claude-code");
     let read = row(&[tilo_actions::RECORD_READ_TAG]);
     let question = directory_row_question(&read).unwrap();
     assert!(question.disclosed_to(&agent, Some("publisher")));

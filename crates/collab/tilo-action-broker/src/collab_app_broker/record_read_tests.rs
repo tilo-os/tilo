@@ -439,7 +439,10 @@ tilo_test_env::scenario! {
         let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
         assert_eq!(workspace, &f.workspace);
         assert_eq!(applied, &change(NOTES));
-        assert_eq!(invoker.acting.by.key(), "agent:scribe");
+        assert_eq!(
+            invoker.acting.by,
+            tilo_actions::Actor::member(tilo_actions::MemberId::agent("scribe"))
+        );
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some(f.person.as_str()));
     }

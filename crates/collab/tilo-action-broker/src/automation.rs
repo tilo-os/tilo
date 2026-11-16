@@ -559,8 +559,8 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
 pub struct SaveContext<'a> {
     /// What the saving person is offered now.
     pub catalog: &'a ActionCatalog,
-    /// The saving person's policy id; recorded as the shortcut's saver.
-    pub saver: &'a str,
+    /// Who saves it; a person is recorded as the shortcut's saver.
+    pub saver: &'a tilo_action_policy::MemberId,
     /// The chords already taken on this device.
     pub keymap: &'a ShortcutConfig,
     /// What the desktop calls a fixed shortcut, in the person's language.
@@ -627,7 +627,7 @@ pub fn plan_library(
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
     let mut shortcut = shortcut;
-    shortcut.saved_by = Some(context.saver.to_string());
+    shortcut.saved_by = context.saver.person_id().map(str::to_owned);
     // The device that stores it signs it; whatever proof came in is not its.
     shortcut.saved_proof = None;
     let exists = saved.iter().any(|other| other.id == shortcut.id);
@@ -1100,8 +1100,7 @@ pub struct FinishedShortcutRun {
     /// The workspace the shortcut is saved in.
     pub workspace: String,
     pub shortcut: Shortcut,
-    /// Policy id of the person or agent who invoked it.
-    pub invoker: String,
+    pub invoker: tilo_action_policy::MemberId,
     pub report: RunReport,
 }
 
@@ -1247,7 +1246,7 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
 pub fn readable_folder(
     workspace: &Workspace,
     capability: &str,
-    saver: &str,
+    saver: &tilo_action_policy::MemberId,
 ) -> Result<std::path::PathBuf, String> {
     let granted = workspace
         .sandbox
@@ -1257,9 +1256,12 @@ pub fn readable_folder(
     let collab_types::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
-    if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
+    let Some(saver) = saver
+        .person_id()
+        .filter(|saver| workspace.role_of(saver).is_some() && !workspace.is_blocked(saver))
+    else {
         return Err("the saver is not a member of the workspace".into());
-    }
+    };
     let acting = tilo_action_policy::Acting::person(saver);
     if workspace.sandbox_decide_as_at(
         &acting,

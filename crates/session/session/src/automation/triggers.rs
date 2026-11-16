@@ -632,12 +632,12 @@ pub fn watched_folders(
         else {
             continue;
         };
-        let saver = armed.saver.as_str();
+        let saver = tilo_actions::MemberId::person(armed.saver.clone());
         for trigger in &armed.shortcut.triggers {
             let TriggerSpec::FileChanged { capability } = trigger else {
                 continue;
             };
-            if let Ok(path) = readable_folder(workspace, capability, saver) {
+            if let Ok(path) = readable_folder(workspace, capability, &saver) {
                 folders.push(WatchedFolder {
                     workspace: armed.workspace.clone(),
                     capability: capability.clone(),

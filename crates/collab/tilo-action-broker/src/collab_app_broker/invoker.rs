@@ -25,7 +25,7 @@ pub(super) fn host_set_invoker(
         .map(|execution| execution.participant(actor))
         .transpose()?;
     // A Shortcut's step is admitted as its person: the invoker stays them.
-    let admitting = caller.filter(|caller| caller.acting().by.key() == actor.id);
+    let admitting = caller.filter(|caller| caller.acting().by.member_id() == Some(actor.member()));
     // Without a caller, the admitted actor says whom an agent acts for.
     let admitted = admitting.map_or_else(|| actor.shown(), |caller| caller.acting().clone());
 
@@ -109,7 +109,7 @@ mod tests {
 
         phase an_agent_gets_no_participant_from_the_envelope;
         {
-            let actor = BrokerActor::agent("agent:alpha");
+            let actor = BrokerActor::agent("alpha");
             let context = host_set_invoker(Some(forged()), &actor, None, None)
                 .unwrap()
                 .unwrap();
@@ -119,7 +119,7 @@ mod tests {
             );
             assert_eq!(invoker_participant(Some(&context)), None);
             // An agent acting for a person names them, with no caller to say so.
-            let started = BrokerActor::agent("agent:alpha").for_person("owner");
+            let started = BrokerActor::agent("alpha").for_person("owner");
             let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
             let invoker = context.and_then(|context| context.invoker).unwrap();
             assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
@@ -210,7 +210,7 @@ mod tests {
         {
             let laptop = tilo_actions::InvokerDevice::certified([0x5c; 32], "Studio laptop");
             let elsewhere = tilo_actions::InvokerDevice::certified([0x66; 32], "Somewhere else");
-            let actor = BrokerActor::agent("agent:alpha");
+            let actor = BrokerActor::agent("alpha");
             let said = || {
                 Some(
                     tilo_actions::ActionContext::default()

@@ -140,7 +140,10 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
     let accepted = events.try_recv().unwrap();
     assert_eq!(accepted.execution, caller.execution_id().unwrap());
     assert_eq!(accepted.invocation, request.invocation);
-    assert_eq!(accepted.actor, "a1".repeat(32));
+    assert_eq!(
+        accepted.actor,
+        tilo_actions::MemberId::person("a1".repeat(32))
+    );
     assert_eq!(accepted.peer_id, 7);
     assert_eq!(accepted.route.record_id, "record-a");
     assert_eq!(accepted.address, request.target.address);
@@ -1261,7 +1264,10 @@ tilo_test_env::scenario! {
             let delivery = app.try_recv().unwrap();
             let invoker =
                 tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
-            assert_eq!(invoker.acting.by.key(), "a1".repeat(32));
+            assert_eq!(
+                invoker.acting.by,
+                tilo_actions::Actor::member(tilo_actions::MemberId::person("a1".repeat(32)))
+            );
             let participant = invoker.participant.expect("a run owns a participant view");
             assert_ne!(participant, forged);
             participants.push(participant);

@@ -271,11 +271,10 @@ pub trait LauncherServices: Send + Sync {
 }
 
 /// One checked change to a workspace's saved shortcuts. The broker mints
-/// `invocation` and has checked the change against what `actor` (a policy
-/// id) is offered.
+/// `invocation` and has checked the change against what `actor` is offered.
 pub struct ShortcutLibraryRequest {
     pub workspace: String,
-    pub actor: String,
+    pub actor: tilo_action_policy::MemberId,
     pub change: crate::automation::ShortcutChange,
     /// The provenance the change leaves in workspace activity.
     pub context: tilo_actions::ActionContext,
@@ -668,10 +667,10 @@ pub struct FileClipboardContext {
     pub(crate) app_id: String,
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
-    pub(crate) owner: String,
+    pub(crate) owner: tilo_action_policy::MemberId,
     /// The agent behind this command, when the broker's custody of its
     /// original invocation names an agent acting for the person whose
-    /// session Files runs in (`agent:<id>`). Presentation only.
+    /// session Files runs in. Presentation only.
     pub(crate) attributed_agent: Option<String>,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
@@ -696,7 +695,7 @@ impl FileClipboardContext {
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
-    pub fn owner(&self) -> &str {
+    pub fn owner(&self) -> &tilo_action_policy::MemberId {
         &self.owner
     }
     /// The id of the agent whose invocation this command continues,

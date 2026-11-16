@@ -330,7 +330,7 @@ impl SessionOwner {
                     Some(_) => return Err("effect receipt is immutable".into()),
                     None => tilo_desktop_model::projection::project_effect_receipts(
                         &mut doc,
-                        &receipt.actor,
+                        &hex::encode(self.key.verifying_key().to_bytes()),
                         std::slice::from_ref(&receipt),
                     )
                     .map_err(|e| e.to_string())?,

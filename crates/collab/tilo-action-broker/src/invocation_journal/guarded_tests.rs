@@ -6,7 +6,7 @@ use super::*;
 use serde_json::{Value, json};
 fn fixture(update: Value) -> Value {
     json!({"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{
-      "key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},
+      "key":{"workspace":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":{"person":"person"}}},"invocation":"00000000-0000-0000-0000-000000000004"},
       "intent":{},"wire_id":1,"update":update,"uncertain":false,"cancellation_requested":false,
       "guarded_read":{"version":1,"selection_digest":"11".repeat(32)} }]})
 }

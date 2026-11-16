@@ -142,7 +142,7 @@ impl AppBrokerState {
         // One answer covers both gates of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
-            &self.witness_binding(policy.id(), workspace_id, request),
+            &self.witness_binding(policy.member(), workspace_id, request),
         );
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
@@ -731,7 +731,7 @@ mod identity_admin_tests {
     /// asked to start and answers when the test completes it.
     #[derive(Default)]
     struct Host {
-        started: Mutex<Vec<(String, String, String)>>,
+        started: Mutex<Vec<(String, tilo_actions::MemberId, String)>>,
         answers: Mutex<Vec<Completer<HostStepOutcome>>>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
     }
@@ -791,7 +791,7 @@ mod identity_admin_tests {
             }
             self.started.lock().unwrap().push((
                 request.workspace.to_owned(),
-                request.actor.id().to_owned(),
+                request.actor.member().clone(),
                 request.address.action.clone(),
             ));
             let (answer, pending) = pending();
@@ -1379,7 +1379,11 @@ mod identity_admin_tests {
             .expect("admitted");
             assert_eq!(
                 *host.started.lock().unwrap(),
-                [(workspace, owner, identity_admin::REMOVE.to_owned())]
+                [(
+                    workspace,
+                    tilo_actions::MemberId::person(owner),
+                    identity_admin::REMOVE.to_owned()
+                )]
             );
             let job = state
                 .remote_job(&person, &receipt.invocation)

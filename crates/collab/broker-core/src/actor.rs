@@ -21,8 +21,7 @@ pub fn person_id_for_root(user_public_key: [u8; 32]) -> String {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
-    pub id: String,
-    pub is_agent: bool,
+    pub member: MemberId,
     /// A person acting from a foreign device in a workspace it does not govern.
     pub capped: bool,
     /// The person an agent acts for, when one delegated it: the agent then
@@ -53,25 +52,17 @@ pub struct BrokerActor {
 impl BrokerActor {
     #[must_use]
     pub fn person(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            is_agent: false,
-            capped: false,
-            for_person: None,
-            session_delegated: false,
-            turn: None,
-            app: None,
-            app_kinds: None,
-            session: None,
-            ceiling: None,
-        }
+        Self::of_member(MemberId::person(id))
     }
 
     #[must_use]
     pub fn agent(id: impl Into<String>) -> Self {
+        Self::of_member(MemberId::agent(id))
+    }
+
+    fn of_member(member: MemberId) -> Self {
         Self {
-            id: id.into(),
-            is_agent: true,
+            member,
             capped: false,
             for_person: None,
             session_delegated: false,
@@ -87,18 +78,7 @@ impl BrokerActor {
     /// it may do only what both its grant and that person may.
     #[must_use]
     pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
-        Self {
-            id: format!("bot:{installation}"),
-            is_agent: false,
-            capped: false,
-            for_person: Some(installer.into()),
-            session_delegated: false,
-            turn: None,
-            app: None,
-            app_kinds: None,
-            session: None,
-            ceiling: None,
-        }
+        Self::of_member(MemberId::bot(installation)).for_person(installer)
     }
 
     /// The actor `caller` is, as its transport admitted it: the one admission
@@ -114,7 +94,7 @@ impl BrokerActor {
     fn actor_of(caller: &Caller) -> Self {
         let acting = caller.acting();
         if let Some(agent) = acting.agent_id() {
-            let agent = Self::agent(format!("agent:{agent}"));
+            let agent = Self::agent(agent);
             // A person's own device handed this connection to the agent
             // (`Caller::delegated_to`); an agent member the host admitted
             // acts for the person who admitted it, with no more than the
@@ -157,13 +137,10 @@ impl BrokerActor {
     /// the person it acts for.
     #[must_use]
     pub fn shown(&self) -> Acting {
-        if !self.is_agent {
-            return Acting::person(self.id.clone());
-        }
-        let agent = Acting::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id));
+        let shown = Acting::member(self.member.clone());
         match &self.for_person {
-            Some(person) => agent.acting_for(Acting::person(person.clone())),
-            None => agent,
+            Some(person) if self.is_agent() => shown.acting_for(Acting::person(person.clone())),
+            _ => shown,
         }
     }
 
@@ -224,15 +201,14 @@ impl BrokerActor {
         self.session.as_deref()
     }
 
-    /// The policy principal id (`agent:`-prefixed for an agent).
     #[must_use]
-    pub fn id(&self) -> &str {
-        &self.id
+    pub fn member(&self) -> &MemberId {
+        &self.member
     }
 
     #[must_use]
     pub fn is_agent(&self) -> bool {
-        self.is_agent
+        self.member.is_agent()
     }
 
     /// The app the person acts through, when their session runs one.
@@ -277,23 +253,13 @@ impl BrokerActor {
     /// Who this actor is when it is not a person.
     #[must_use]
     pub fn delegate(&self) -> Option<tilo_action_policy::Actor> {
-        // A person's policy id is lowercase hex, so it never starts with
-        // `bot:` and the prefix cannot misread a person.
-        if let Some(bot) = self.id.strip_prefix("bot:") {
-            return Some(tilo_action_policy::Actor::Member(MemberId::bot(bot)));
-        }
-        self.is_agent.then(|| {
-            tilo_action_policy::Actor::Member(MemberId::agent(
-                self.id.strip_prefix("agent:").unwrap_or(&self.id),
-            ))
-        })
+        (!self.member.is_person()).then(|| tilo_action_policy::Actor::Member(self.member.clone()))
     }
 
     /// Who this actor is.
     #[must_use]
     pub fn actor(&self) -> tilo_action_policy::Actor {
-        self.delegate()
-            .unwrap_or_else(|| tilo_action_policy::Actor::Member(MemberId::person(self.id.clone())))
+        tilo_action_policy::Actor::Member(self.member.clone())
     }
 
     /// Who this actor's actions are: a person, an agent or bot acting for the
@@ -303,7 +269,7 @@ impl BrokerActor {
     pub fn acting(&self) -> Acting {
         let acting = match (self.delegate(), &self.for_person) {
             (None, Some(person)) => Acting::person(person.clone()),
-            (None, None) => Acting::person(self.id.clone()),
+            (None, None) => Acting::member(self.member.clone()),
             (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
                 Acting::member(member).acting_for(Acting::person(person.clone()))
             }
@@ -374,7 +340,7 @@ impl BrokerActor {
     /// the only actor a host lets govern a workspace.
     #[must_use]
     pub fn direct_person(&self) -> Option<&str> {
-        self.direct().then_some(self.id.as_str())
+        self.direct().then(|| self.member.person_id()).flatten()
     }
 
     /// The answer for an action of `kind` at `node` in `workspace` at `now`.
@@ -439,7 +405,7 @@ impl BrokerActor {
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
         let refused = || "caller no longer authorized for invocation".to_owned();
-        let record = if self.is_agent {
+        let record = if self.is_agent() {
             None
         } else {
             Some(canonical_record(&surface.route.record_id)?)
@@ -521,7 +487,7 @@ mod tests {
     #[test]
     fn an_agent_sessions_change_names_the_session() {
         let session = format!("{}s1", crate::services::AGENT_SESSION_PREFIX);
-        let acting = BrokerActor::agent("agent:a1")
+        let acting = BrokerActor::agent("a1")
             .for_person("p1")
             .in_session(session.clone())
             .acting();

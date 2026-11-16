@@ -375,7 +375,7 @@ impl AppBrokerState {
         let mut context = context;
         context.group = caller.agent_session();
         let owner = InvocationOwner::Local {
-            actor: actor.id.clone(),
+            actor: actor.member().clone(),
         };
         let (tx, completion) = std::sync::mpsc::channel();
         let pending = PendingInvocation {
@@ -402,7 +402,7 @@ impl AppBrokerState {
             update: tilo_actions::InvocationUpdate::Accepted { invocation },
             prepared_effect: Arc::default(),
             last_sequence: 0,
-            actor: actor.id.clone(),
+            actor: actor.member().clone(),
             cancellable: action.contract.execution.cancellable(),
             retryable_on_disconnect: false,
             execution: action.contract.execution.clone(),

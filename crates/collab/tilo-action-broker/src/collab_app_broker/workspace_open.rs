@@ -682,7 +682,7 @@ mod tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: hex::encode([41; 32]),
+                    actor: tilo_actions::MemberId::person(hex::encode([41; 32])),
                 },
                 invocation: request.invocation,
             };

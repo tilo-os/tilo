@@ -768,7 +768,7 @@ mod owner_commit_tests {
                 device: f.owner.device().device_public_key,
             },
         };
-        let actor = person_id_for_root(f.owner.peer().owner());
+        let actor = tilo_actions::MemberId::person(person_id_for_root(f.owner.peer().owner()));
         let context =
             tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
@@ -1505,7 +1505,9 @@ mod owner_commit_tests {
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     prepared_effect: Arc::default(),
                     last_sequence: 0,
-                    actor: person_id_for_root(f.owner.peer().owner()),
+                    actor: tilo_actions::MemberId::person(person_id_for_root(
+                        f.owner.peer().owner(),
+                    )),
                     cancellable: false,
                     retryable_on_disconnect: false,
                     execution: tilo_actions::ExecutionMode::Immediate,
@@ -1558,7 +1560,7 @@ mod owner_commit_tests {
             root: f.owner.peer().owner(),
             device: f.owner.device().device_public_key,
         };
-        pending.actor = person_id_for_root(f.owner.peer().owner());
+        pending.actor = tilo_actions::MemberId::person(person_id_for_root(f.owner.peer().owner()));
         pending.prepared_effect = Arc::default();
         let state = f.state.clone();
         let retry_pending = pending.clone();
@@ -1753,7 +1755,7 @@ mod owner_commit_tests {
     fn prepare_owner_effect_claiming(
         f: &OwnerFixture,
         caller: &VerifiedActionCaller,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
     ) -> Result<invocation_journal::PreparedEffect, String> {
         prepare_owner_effect_as(f, caller, actor).map(|(_, _, prepared)| prepared)
     }
@@ -1770,7 +1772,7 @@ mod owner_commit_tests {
             let root = canonical_tempdir();
             let f = owner_fixture(root.path());
             let caller = delegated_owner_caller(&f, "mcp-7");
-            assert_eq!(caller.admitted.broker_actor().id, "agent:mcp-7");
+            assert_eq!(caller.admitted.broker_actor().member(), &tilo_actions::MemberId::agent("mcp-7"));
             let (key, request, prepared) = prepare_owner_effect(&f, &caller);
             assert_eq!(
                 key.owner,
@@ -1789,7 +1791,7 @@ mod owner_commit_tests {
                     _ => unreachable!(),
                 })
                 .unwrap();
-            assert_eq!(receipt.actor, "agent:mcp-7", "the receipt names who acted");
+            assert_eq!(receipt.actor, tilo_actions::MemberId::agent("mcp-7"), "the receipt names who acted");
             assert_eq!(
                 prepared.update,
                 tilo_actions::InvocationUpdate::Succeeded {
@@ -1805,15 +1807,15 @@ mod owner_commit_tests {
 
         phase a_delegated_agents_effect_terminal_naming_anyone_else_is_refused;
         {
-            for mistaken in [None, Some("agent:mcp-8"), Some("agent:")] {
+            for mistaken in [None, Some(tilo_actions::MemberId::agent("mcp-8")), Some(tilo_actions::MemberId::agent(""))] {
                 let root = canonical_tempdir();
                 let f = owner_fixture(root.path());
                 let caller = delegated_owner_caller(&f, "mcp-7");
                 // The person themselves, another agent, or a nameless agent: none
                 // of them acted, so none may be named.
-                let person = person_id_for_root(f.owner.peer().owner());
-                let actor = mistaken.unwrap_or(&person);
-                let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
+                let actor = mistaken
+                    .unwrap_or_else(|| tilo_actions::MemberId::person(person_id_for_root(f.owner.peer().owner())));
+                let refusal = prepare_owner_effect_claiming(&f, &caller, &actor)
                     .expect_err("a mismatched actor is still refused");
                 assert_eq!(
                     refusal, "prepared effect payload differs from admitted terminal",
@@ -1913,7 +1915,7 @@ mod owner_commit_tests {
         tilo_peer_state::owner_commit::OwnerCommitRequest,
         invocation_journal::PreparedEffect,
     ) {
-        let actor = caller.admitted.broker_actor().id;
+        let actor = caller.admitted.broker_actor().member().clone();
         prepare_owner_effect_as(f, caller, &actor).unwrap()
     }
 
@@ -1922,7 +1924,7 @@ mod owner_commit_tests {
     fn prepare_owner_effect_as(
         f: &OwnerFixture,
         caller: &VerifiedActionCaller,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
     ) -> Result<
         (
             InvocationKey,

@@ -591,7 +591,7 @@ async fn save_shortcut(
 ) -> Result<(), String> {
     let (key, device) = tilo_identity_host::broker::trusted_current_device(&request.workspace)
         .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?;
-    if request.actor != hex::encode(device.user_public_key) {
+    if request.actor.person_id() != Some(hex::encode(device.user_public_key).as_str()) {
         return Err("a shortcut is saved from its saver's own device".into());
     }
     let change = match &request.change {

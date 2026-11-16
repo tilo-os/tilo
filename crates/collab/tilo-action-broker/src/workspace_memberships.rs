@@ -269,7 +269,7 @@ impl AppBrokerState {
             argument,
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), workspace, original_request),
+            &self.witness_binding(actor.member(), workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             surface.peer_id,

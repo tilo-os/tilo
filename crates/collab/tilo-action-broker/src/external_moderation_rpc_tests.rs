@@ -140,7 +140,7 @@ mod external_moderation_rpc_tests {
             let (actor, origin) = self.caller();
             let surface = self.state.surfaces.lock().unwrap()[&peer].clone();
             let binding = self.state.offered_witness_binding(
-                actor.id(),
+                actor.member(),
                 &(surface, offered.clone()),
                 Some(argument),
                 tilo_actions::InvocationId::new(),
@@ -340,7 +340,7 @@ mod external_moderation_rpc_tests {
                     let exact = argument(&operation);
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
                     let binding = workspace.state.offered_witness_binding(
-                        actor.id(),
+                        actor.member(),
                         &(surface, offered.clone()),
                         Some(&exact),
                         tilo_actions::InvocationId::new(),
@@ -453,7 +453,7 @@ mod external_moderation_rpc_tests {
                     let exact = argument(&operation(action == "appeal"));
                     let surface = workspace.state.surfaces.lock().unwrap()[&980].clone();
                     let binding = workspace.state.offered_witness_binding(
-                        actor.id(),
+                        actor.member(),
                         &(surface, offered.clone()),
                         Some(&exact),
                         tilo_actions::InvocationId::new(),

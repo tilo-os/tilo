@@ -773,12 +773,14 @@ async fn both_routes_decide_every_callers_actions_alike() {
     for (who, caller) in &callers {
         let actor = BrokerActor::for_caller(caller);
         let named = caller.acting();
-        if actor.id() != named.by.key() || actor.acting_for() != named.acted_for_person() {
+        if Some(actor.member()) != named.by.member_id()
+            || actor.acting_for() != named.acted_for_person()
+        {
             differences.push(format!(
                 "{who}: the broker acts as {} for {:?}, the host names {} for {:?}",
-                actor.id(),
+                actor.member(),
                 actor.acting_for(),
-                named.by.key(),
+                named.by,
                 named.acted_for_person()
             ));
         }

@@ -748,7 +748,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &workspace_id,
                     invocation,
-                    "agent-1",
+                    &tilo_actions::MemberId::person("agent-1"),
                     context.clone(),
                     status.clone(),
                 )
@@ -759,7 +759,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &WorkspaceId::new().to_string(),
                     invocation,
-                    "a",
+                    &tilo_actions::MemberId::person("a"),
                     context,
                     status
                 )
@@ -797,7 +797,7 @@ tilo_test_env::scenario! {
                 .record_effect(
                     &workspace_id,
                     invocation,
-                    "agent-1",
+                    &tilo_actions::MemberId::person("agent-1"),
                     tilo_actions::ActionContext::default(),
                     status
                 )
@@ -963,7 +963,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
             .any(|grant| grant.id.as_str() == id)
     );
     let receipt = workspace.effect_receipts.last().unwrap();
-    assert_eq!(receipt.actor, "owner");
+    assert_eq!(receipt.actor, tilo_actions::MemberId::person("owner"));
     let Some(tilo_actions::Did::Verb(verb)) = &receipt.context.what else {
         panic!("the grant is recorded as a verb: {:?}", receipt.context);
     };

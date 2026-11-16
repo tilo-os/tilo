@@ -4,7 +4,7 @@ struct NativeFacadeHostSteps {
     provider: &'static str,
     resource: &'static str,
     action: &'static str,
-    started: Arc<Mutex<Vec<(String, String)>>>,
+    started: Arc<Mutex<Vec<(String, tilo_actions::MemberId)>>>,
 }
 
 impl crate::services::HostStepServices for NativeFacadeHostSteps {
@@ -33,7 +33,7 @@ impl crate::services::HostStepServices for NativeFacadeHostSteps {
         self.started
             .lock()
             .unwrap()
-            .push((request.workspace.into(), request.actor.id().into()));
+            .push((request.workspace.into(), request.actor.member().clone()));
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -126,7 +126,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                 vec![
                     (
                         env.route.cluster_id.clone(),
-                        original.admitted.principal_id.clone()
+                        tilo_actions::MemberId::person(original.admitted.principal_id.clone())
                     );
                     2
                 ],

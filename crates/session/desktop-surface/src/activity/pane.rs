@@ -1640,7 +1640,7 @@ impl WorkspaceActivityPane {
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.effect_receipts.iter())
-            .map(|receipt| (receipt.invocation.0.to_string(), receipt.actor.clone()))
+            .map(|receipt| (receipt.invocation.0.to_string(), receipt.actor.key()))
             .collect::<HashMap<_, _>>();
         for entry in &mut entries {
             let Some(actor) = entry
@@ -1674,7 +1674,7 @@ impl WorkspaceActivityPane {
                 if represented_receipts.contains(&receipt.invocation.0.to_string()) {
                     continue;
                 }
-                let actor = receipt.actor.clone();
+                let actor = receipt.actor.key();
                 entries.push(HistoryEntry {
                     id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
                     author: ui::history_source::author_coloured(

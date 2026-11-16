@@ -34,8 +34,7 @@ pub(crate) const CONTENT_PUTS_FILE: &str = "content-puts.jsonl";
 pub(crate) struct ContentPutRecord {
     /// Seconds since the Unix epoch, on the broker's policy clock.
     pub(crate) at: u64,
-    /// The broker actor that put it (`agent:<id>`, a person's id).
-    pub(crate) actor: String,
+    pub(crate) actor: tilo_action_policy::MemberId,
     pub(crate) workspace: String,
     pub(crate) hash: String,
     pub(crate) len: u64,

@@ -132,7 +132,8 @@ impl AppBrokerState {
             app_id,
         } = forward;
         let actor = self.caller_actor(caller, &workspace);
-        self.launchable.note_view(&workspace, actor.id(), &app_id);
+        self.launchable
+            .note_view(&workspace, actor.member(), &app_id);
         let (done, answer) = pending();
         let caller = caller.clone();
         host.invoke(&caller, request)

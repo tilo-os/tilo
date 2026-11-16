@@ -25,7 +25,7 @@ const DESKTOP_PROVIDER: &str = "test-desktop";
 /// A desktop whose one step lists its windows.
 #[derive(Default)]
 struct Desktop {
-    started: Mutex<Vec<String>>,
+    started: Mutex<Vec<tilo_actions::MemberId>>,
     /// Whether its steps are an agent session's own.
     for_agent_sessions: bool,
     /// Whether its steps are a turn's (the session's own, as a session's shell publishes them).
@@ -72,7 +72,7 @@ impl crate::services::HostStepServices for Desktop {
         self.started
             .lock()
             .unwrap()
-            .push(request.actor.id().to_owned());
+            .push(request.actor.member().clone());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))
@@ -292,8 +292,10 @@ async fn an_application_is_told_the_device_an_agent_session_came_from() {
             .unwrap();
             let invoker = delivered_invoker(&stream.next().await.unwrap());
             assert_eq!(
-                invoker.acting.by.key(),
-                format!("agent:{}", agent.delegation.agent_id)
+                invoker.acting.by,
+                tilo_actions::Actor::member(tilo_actions::MemberId::agent(
+                    agent.delegation.agent_id.clone()
+                ))
             );
             assert_eq!(invoker.device, Some(laptop), "the device the host verified");
             drop(f);
@@ -394,7 +396,9 @@ async fn an_agent_session_takes_host_and_session_steps_while_it_goes() {
                 assert!(went_on(&receipt), "{receipt:?}");
                 assert_eq!(
                     desktop.started.lock().unwrap().as_slice(),
-                    [format!("agent:{}", agent.delegation.agent_id)]
+                    [tilo_actions::MemberId::agent(
+                        agent.delegation.agent_id.clone()
+                    )]
                 );
                 end(&f);
                 assert!(

@@ -2397,7 +2397,7 @@ impl AppBrokerState {
                     .is_some_and(|app| app.as_str() == route.app_id),
                 _ => false,
             };
-            if !own_app && (expected.id != actual.id || expected.is_agent != actual.is_agent) {
+            if !own_app && expected.member() != actual.member() {
                 return Err(ActionHostError::NotPermitted);
             }
         }
@@ -2436,7 +2436,7 @@ impl AppBrokerState {
                 }
                 tracing::warn!(
                     %app_id,
-                    caller = %policy.id,
+                    caller = %policy.member(),
                     owner = workspace.owner().map_or("none", |owner| owner.as_str()),
                     "an app's launch was refused: the workspace does not let the caller open it"
                 );
@@ -2519,7 +2519,7 @@ impl AppBrokerState {
             return LaunchPlace::Focus;
         }
         self.launchable
-            .view_of(workspace, &BrokerActor::for_caller(caller).id)
+            .view_of(workspace, BrokerActor::for_caller(caller).member())
             .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id })
     }
 
@@ -2885,7 +2885,7 @@ impl AppBrokerState {
             argument.as_deref(),
             &actor,
             request.confirmation.as_ref(),
-            &self.witness_binding(actor.id(), &workspace, original_request),
+            &self.witness_binding(actor.member(), &workspace, original_request),
         )?;
         self.start_invocation_confirmed_for_origin(
             peer_id,
@@ -2904,7 +2904,8 @@ impl AppBrokerState {
             origin.cloned(),
         )
         .map(|staged| {
-            self.launchable.note_view(&workspace, &actor.id, &app_id);
+            self.launchable
+                .note_view(&workspace, actor.member(), &app_id);
             Started::Staged(staged)
         })
         .map_err(refusal)
@@ -3018,7 +3019,7 @@ impl AppBrokerState {
             tilo_action_policy::Answer::Deny => {
                 tracing::warn!(
                     app,
-                    caller = %policy.id,
+                    caller = %policy.member(),
                     owner = workspace.owner().map_or("none", |owner| owner.as_str()),
                     action = %descriptor.address.action,
                     "an action was refused: the workspace does not grant it to the caller"
@@ -3255,7 +3256,7 @@ impl AppBrokerState {
             );
         }
         answered_when_durable(
-            self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
+            self.request_cancellation(job, BrokerActor::for_caller(caller).member())
                 .map_err(|reason| ActionHostError::NotCancellable { reason }),
         )
     }
@@ -3577,7 +3578,7 @@ mod app_close_tests {
                 workspace,
                 host: journal.host(),
                 owner: super::super::InvocationOwner::Local {
-                    actor: hex::encode([31; 32]),
+                    actor: tilo_actions::MemberId::person(hex::encode([31; 32])),
                 },
                 invocation: request.invocation,
             };
@@ -3751,7 +3752,7 @@ mod device_pairing_tests {
     /// to start and answers when the test completes it.
     #[derive(Default)]
     struct Host {
-        started: Mutex<Vec<(String, String, String)>>,
+        started: Mutex<Vec<(String, tilo_actions::MemberId, String)>>,
         answers: Mutex<Vec<Completer<HostStepOutcome>>>,
     }
 
@@ -3801,7 +3802,7 @@ mod device_pairing_tests {
         fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             self.started.lock().unwrap().push((
                 request.workspace.to_owned(),
-                request.actor.id().to_owned(),
+                request.actor.member().clone(),
                 request.address.action.clone(),
             ));
             let (answer, pending) = pending();
@@ -3893,7 +3894,7 @@ mod device_pairing_tests {
             *host.started.lock().unwrap(),
             [(
                 workspace.clone(),
-                owner.clone(),
+                tilo_actions::MemberId::person(owner.clone()),
                 device_pairing::APPROVE.to_owned()
             )]
         );

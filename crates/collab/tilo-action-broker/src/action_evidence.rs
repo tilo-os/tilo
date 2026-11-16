@@ -67,7 +67,7 @@ pub struct AdmissionFacts {
     pub invocation: InvocationId,
     pub actor: VerifiedActor,
     /// Host-verified effective actor, including a delegated agent's identity.
-    pub actor_id: String,
+    pub actor_id: tilo_actions::MemberId,
     pub app_id: String,
     pub record_id: String,
     pub resource: String,
@@ -479,7 +479,7 @@ mod tests {
                 device: [4; 32],
                 agent: Some("agent".into()),
             },
-            actor_id: "agent:agent".into(),
+            actor_id: tilo_actions::MemberId::agent("agent"),
             app_id: "notes".into(),
             record_id: "record".into(),
             resource: "document/body".into(),
@@ -682,6 +682,8 @@ mod tests {
                         agent: Some("other".into()),
                     })
                     .unwrap(),
+                    "actor_id" => serde_json::to_value(tilo_actions::MemberId::agent("other"))
+                        .unwrap(),
                     _ => Value::String(format!("changed-{value}")),
                 };
                 let expected: AdmissionFacts = serde_json::from_value(changed).unwrap();
@@ -733,7 +735,7 @@ mod tests {
             );
             assert!(
                 serde_json::from_value::<VerifiedActor>(
-                    serde_json::json!({"Local":{"actor":"person"}})
+                    serde_json::json!({"Local":{"actor":{"person":"person"}}})
                 )
                 .is_err()
             );

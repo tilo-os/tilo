@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEffectReceipt {
     pub invocation: tilo_actions::InvocationId,
-    pub actor: String,
+    pub actor: tilo_actions::MemberId,
     pub context: tilo_actions::ActionContext,
     pub status: tilo_actions::EffectReceiptStatus,
     pub completed_at: i64,
@@ -23,7 +23,7 @@ impl WorkspaceEffectReceipt {
     #[must_use]
     pub fn redacted(
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
         mut context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
@@ -40,7 +40,7 @@ impl WorkspaceEffectReceipt {
     #[must_use]
     pub fn recorded(
         invocation: tilo_actions::InvocationId,
-        actor: &str,
+        actor: &tilo_actions::MemberId,
         mut context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
@@ -51,7 +51,7 @@ impl WorkspaceEffectReceipt {
         ];
         Self {
             invocation,
-            actor: bounded_receipt_text(actor, 160),
+            actor: actor.clone(),
             context: bounded_receipt_context(context),
             status,
             completed_at,
@@ -64,8 +64,7 @@ impl WorkspaceEffectReceipt {
     pub fn is_redacted(&self) -> bool {
         let facets = &self.context.facets;
         !self.invocation.0.is_nil()
-            && !self.actor.is_empty()
-            && self.actor == bounded_receipt_text(&self.actor, 160)
+            && actor_is_bounded(&self.actor)
             && self.completed_at >= 0
             && self.context == bounded_receipt_context(self.context.clone())
             && facets.len() == 2
@@ -76,6 +75,14 @@ impl WorkspaceEffectReceipt {
                 facet.key == "tilo.invocation" && facet.value == self.invocation.0.to_string()
             })
     }
+}
+
+/// Whether `actor` names someone in no more than 160 characters, none of them control
+/// characters.
+#[must_use]
+pub fn actor_is_bounded(actor: &tilo_actions::MemberId) -> bool {
+    let id = actor.id();
+    !id.is_empty() && id.chars().count() <= 160 && !id.chars().any(char::is_control)
 }
 
 fn bounded_receipt_text(value: &str, max: usize) -> String {
@@ -143,7 +150,7 @@ mod effect_receipt_redaction_tests {
         };
         let receipt = super::WorkspaceEffectReceipt::redacted(
             invocation,
-            "person",
+            &tilo_actions::MemberId::person("person"),
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
             0,

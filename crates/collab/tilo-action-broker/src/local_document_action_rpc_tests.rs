@@ -392,7 +392,10 @@ async fn local_report_admission(
                 opening
                     .verify(evidence.public_receipt(), &exact_intent)
                     .unwrap();
-                assert_ne!(facts.actor_id, "app-claimed-other-person");
+                assert_ne!(
+                    facts.actor_id,
+                    tilo_actions::MemberId::person("app-claimed-other-person")
+                );
                 assert!(retained["context"].get("invoker").is_none());
                 // Every reported byte and the original parent/child mapping is
                 // private, committed intent, not replaceable receipt decoration.
