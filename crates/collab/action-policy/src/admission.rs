@@ -1,4 +1,4 @@
-//! Admitting one invocation: the decision every door that runs an action
+//! Admitting one invocation: the decision every action API that runs an action
 //! takes from the grants' answers, the same on every host.
 //!
 //! [`decide`](crate::decide) answers whether a party may take an action of

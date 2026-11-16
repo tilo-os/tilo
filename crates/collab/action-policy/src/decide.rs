@@ -1,4 +1,4 @@
-//! The one decision every door, host and receiver makes.
+//! The one decision every action API, host and receiver makes.
 
 use tilo_app_id::AppId;
 
@@ -422,7 +422,7 @@ impl<'g> Verdict<'g> {
         self
     }
 
-    /// The `Once` grants this verdict relied on. A door that runs the action
+    /// The `Once` grants this verdict relied on. An action API that runs the action
     /// revokes them.
     pub fn once_grants(&self) -> impl Iterator<Item = &'g Grant> + '_ {
         self.parts
@@ -432,7 +432,7 @@ impl<'g> Verdict<'g> {
     }
 
     /// The `Once` grants a run on this verdict spends: those it relied on,
-    /// unless it refuses. The door that runs the action hands them to
+    /// unless it refuses. The API that runs the action hands them to
     /// [`crate::WorkspacePolicy::spend`] (or its host's revocation of them), so a
     /// grant given for one use is gone after it.
     #[must_use]

@@ -1,4 +1,4 @@
-//! One acting's standing in one workspace, as owned data a host hands to a door
+//! One acting's standing in one workspace, as owned data a host hands to an action API
 //! or an app: who acted, the workspace's policy, and the grants the host made
 //! for the acting's software.
 

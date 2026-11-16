@@ -272,7 +272,7 @@ impl fmt::Display for Grantee {
     into = "StoredLifetime"
 )]
 pub enum Lifetime {
-    /// For one use; the door that used it revokes it.
+    /// For one use; the API that used it revokes it.
     Once,
     /// While the session lasts.
     Session(String),

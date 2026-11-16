@@ -120,7 +120,7 @@ impl Builder {
             self.evidence(draft.as_ref());
         }
 
-        // How door::encode collects the input: the declared encoding, or the
+        // How api::encode collects the input: the declared encoding, or the
         // builder bound to the spec's target, whose draft covers it.
         match action.input() {
             ActionInput::Immediate(Some(encoded)) => {

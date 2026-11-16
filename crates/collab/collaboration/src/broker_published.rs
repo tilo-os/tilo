@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 
 /// How long a change of a published resource waits for the broker's answer:
-/// the worker replies as soon as the door took it, so this bounds a lost
+/// the worker replies as soon as the API took it, so this bounds a lost
 /// connection, not slow work.
 const PUBLISHED_CHANGE_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -28,7 +28,7 @@ static PUBLISHED_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::O
 /// [`Self::open`] watches it on the broker's worker, so [`Self::latest`]
 /// hands the newest reading without waiting on the frame thread, and
 /// [`Self::invoke`] takes an action with its arguments and waits for the
-/// door's answer. [`Self::attach`] has the watch wake the view showing the
+/// API's answer. [`Self::attach`] has the watch wake the view showing the
 /// reading, as a locked query's does. Clones share one watch: the last one
 /// dropped ends it.
 #[derive(Clone)]

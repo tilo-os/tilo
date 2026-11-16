@@ -4,7 +4,7 @@
 //!
 //! A receipt carries the signed invitation it redeemed, so that every device
 //! checks the admission itself, whoever wrote it. The invitations a public
-//! workspace's door hands out differ only in whom they name and when: each
+//! workspace's entry hands out differ only in whom they name and when: each
 //! carries the same issuer certificate and the same signed transport
 //! details, about two kilobytes, which a workspace of hundreds would hold
 //! hundreds of times. A receipt therefore keeps the bytes of its invitation

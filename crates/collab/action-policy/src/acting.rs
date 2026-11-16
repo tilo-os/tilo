@@ -1,4 +1,4 @@
-//! Who made a change: one tree, and the one admission every door takes.
+//! Who made a change: one tree, and the one admission every action API takes.
 
 use crate::{
     Actor, Admission, Answer, Asker, Authority, Context, Grant, GrantId, Grantee, Invoked,

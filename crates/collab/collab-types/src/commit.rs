@@ -53,8 +53,8 @@ pub const MAX_COMMIT_BYTES: usize = 256 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitAuthor {
-    /// Who invoked the action, when it came through a door that admitted them. `None` for a
-    /// change nothing but its device accounts for.
+    /// Who invoked the action, when it came through an action API that admitted them. `None` for
+    /// a change nothing but its device accounts for.
     pub actor: Option<tilo_action_policy::Actor>,
     /// The device key that signed the part carrying this commit. Every part
     /// of one commit is signed by this key, and a receiver refuses a part
@@ -129,7 +129,7 @@ pub struct WorkspaceCommit {
     /// When the action was made, in milliseconds since the Unix epoch, as the
     /// author's device read the clock.
     pub at_ms: u64,
-    /// The invocation the action ran under, when an admitted door ran it.
+    /// The invocation the action ran under, when an admitted action API ran it.
     pub invocation: Option<uuid::Uuid>,
     /// The run the action was invoked in, when it was invoked in one: an
     /// agent run, a task, a command line. Undo takes a run's steps back as

@@ -121,7 +121,7 @@ pub fn event_of(
 }
 
 /// The verb's full arguments: the recorded action's JSON payload, out of
-/// the envelope a door records it in (`{"op": {..}, "at": ..}`) and
+/// the envelope an action API records it in (`{"op": {..}, "at": ..}`) and
 /// unwrapped from its variant tag (`{"action": .., "args": {..}}` or
 /// `{"variant": {..}}`), else the entry's plain arguments.
 fn arguments_of(context: &ActionContext) -> Map<String, Value> {

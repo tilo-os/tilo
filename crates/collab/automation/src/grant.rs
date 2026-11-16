@@ -342,7 +342,7 @@ impl Permission {
     /// it on the item, and every member decides the change there.
     ///
     /// A field edit is granted anywhere in the resource too, even where its
-    /// program names the field: a door publishes and admits a field edit at
+    /// program names the field: an action API publishes and admits a field edit at
     /// the resource, before it reads the edit's path, so a rule reaching
     /// only one field would never be offered. What the edit may change is
     /// the record's to say: its read-only fields take no field edit.
@@ -982,7 +982,7 @@ mod tests {
             assert!(unused_rules(&shortcut).is_empty());
         }
 
-        phase a_field_edit_is_granted_where_the_doors_decide_it;
+        phase a_field_edit_is_granted_where_the_action_apis_decide_it;
         // A field edit whose program names the field it changes is granted
         // that field of any item, and decided where the workspace decides it.
         {

@@ -27,7 +27,7 @@ pub struct CommitHistory {
     pub device: [u8; 32],
     /// When it was made, in milliseconds since the Unix epoch.
     pub at_ms: u64,
-    /// The invocation it ran under, when an admitted door ran it.
+    /// The invocation it ran under, when an admitted action API ran it.
     pub invocation: Option<uuid::Uuid>,
     /// The run it was invoked in, when it was invoked in one.
     pub run: Option<collab_types::CommitGroup>,

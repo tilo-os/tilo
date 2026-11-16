@@ -3,7 +3,7 @@
 //! A person who shares something they work on (a note shown live in a chat
 //! channel) lets the workspace's members see it, or also change it. That is not
 //! a promise kept by the sharing app: a share is grants on the shared
-//! resource's own node, decided by [`crate::decide`] at every door and by
+//! resource's own node, decided by [`crate::decide`] at every action API and by
 //! every receiver like any other grant, and revoked when the share ends.
 //!
 //! - **One resource.** A share names one record

@@ -867,7 +867,7 @@ impl PersonalStore {
         }
         let mut metadata_changed = false;
         // A device the person revoked is admitted to nothing it says, and
-        // told what it was refused instead of being dropped at the door: a
+        // told what it was refused instead of being dropped at the API: a
         // person whose device was taken away learns why their writes stop.
         if !self.revocations.is_revoked(&self.root, &source) {
             let held = self

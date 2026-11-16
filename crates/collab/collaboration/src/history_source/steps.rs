@@ -1,6 +1,6 @@
 //! Undo, redo, restore and checkpoints written into the document itself, so
 //! anyone who can invoke an action can use them: a person, a script, an
-//! agent over the action door.
+//! agent over the action API.
 //!
 //! [`UndoLog`](crate::state::UndoLog) is the process's own stack: it knows
 //! only what this window did, and only while it runs. The verbs here read

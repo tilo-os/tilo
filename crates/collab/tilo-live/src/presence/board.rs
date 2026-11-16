@@ -443,7 +443,7 @@ impl Board {
     }
 
     /// Speak for `runs` here: the runs this device executes (an agent its
-    /// person admitted at this device's door), each with its face. Each is a
+    /// person admitted at this device's entry), each with its face. Each is a
     /// member of its own on this board, as another device's runs are, and is
     /// said on the presence track for everyone here; a run spoken for before
     /// and missing from `runs` leaves. Whether what is known here changed.

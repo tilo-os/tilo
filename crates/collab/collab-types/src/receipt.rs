@@ -152,7 +152,7 @@ pub fn claim_node(
     }
 }
 
-/// `workspace › app › kind › record [› item] › field… › field-edit`, as the door
+/// `workspace › app › kind › record [› item] › field… › field-edit`, as the API
 /// decides a field edit: the collection field holding an item is not a node.
 fn edit_node(resource: TreePath, path: &[PathStep]) -> TreePath {
     let mut tree = resource;

@@ -14,7 +14,7 @@ use automerge::transaction::Transactable as _;
 
 impl StatePeer {
     /// Host-local SDK publication after its certified connection was admitted.
-    /// No wire message can select this door. Unlike a retained checkpoint, an
+    /// No wire message can select this path. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
     /// A write that is the whole record, sealed, is the one exception: it
     /// names the record on its own, so a device that keeps a record's channel

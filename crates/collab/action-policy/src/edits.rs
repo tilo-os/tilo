@@ -1,6 +1,6 @@
 //! When a generic field edit asks for confirmation.
 //!
-//! Every door decides it the same way, from the edit alone: no app code is
+//! Every action API decides it the same way, from the edit alone: no app code is
 //! needed to read a field edit. Removing an item of a collection asks, as a
 //! delete verb does, unless the record publishes that collection's removals
 //! as quiet. Any edit of a field the record publishes as guarded asks: one

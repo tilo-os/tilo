@@ -738,7 +738,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_device_speaks_for_the_agents_it_admitted;
-    // An agent its person admitted at this device's door is a member of its own
+    // An agent its person admitted at this device's entry is a member of its own
     // here, spoken for by this device: listed beside everyone else, said on the
     // track under its run, and taken down as it leaves. A board that hears the
     // device lists the agent under that device alone.

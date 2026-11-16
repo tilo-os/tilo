@@ -97,10 +97,10 @@ const KEPT_OFF_PREFIX: &str = "kept_off:";
 const COMMUNITY_PREFIX: &str = "c:";
 
 /// What this person decided about the community at a site: one decision per
-/// person, so none of their devices asks their community's door again.
+/// person, so none of their devices asks their community's entry again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommunityState {
-    /// The join is being asked for: the door is asked, and it has not landed
+    /// The join is being asked for: the API is asked, and it has not landed
     /// here yet.
     Pending,
     /// The person decided: they are in the community, or were in it and left.
@@ -401,7 +401,7 @@ impl WorkspaceDirectory {
     }
 
     /// Record what this person decided about the community at `site`:
-    /// `Pending` before their community's door is asked, `Decided` once it let
+    /// `Pending` before their community's entry is asked, `Decided` once it let
     /// them in. Idempotent, so a decision already made is not written again.
     /// Whether it changed anything.
     ///

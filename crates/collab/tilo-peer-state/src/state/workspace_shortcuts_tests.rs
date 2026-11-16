@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
         let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
         let workspace = governor.core.workspace.clone();
         let water = signed(&workspace, "water", &cert, &device);
-        // What the session's action door writes when a person saves a shortcut.
+        // What the session's action API writes when a person saves a shortcut.
         let save = WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
             ShortcutChange::Save(Box::new(water.clone())),
         ));

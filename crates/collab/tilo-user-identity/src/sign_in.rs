@@ -185,7 +185,7 @@ mod tests {
             let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
             let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
             let cert = device(&root, &key);
-            let audience = "https://door.example";
+            let audience = "https://entry.example";
             let proof = SignInProof::sign(cert.clone(), &key, audience, [7; 32]).unwrap();
             let none = RevocationList::new();
             assert_eq!(
@@ -226,7 +226,7 @@ mod tests {
             let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
             let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
             let cert = device(&root, &key);
-            let proof = SignInProof::sign(cert, &key, "https://door.example", [7; 32]).unwrap();
+            let proof = SignInProof::sign(cert, &key, "https://entry.example", [7; 32]).unwrap();
             let mut entry = crate::RevocationEntry {
                 user_public_key: root.verifying_key().to_bytes(),
                 revoked_device_public_key: key.verifying_key().to_bytes(),
@@ -238,7 +238,7 @@ mod tests {
             let mut revoked = RevocationList::new();
             revoked.insert(entry).unwrap();
             assert_eq!(
-                proof.verify("https://door.example", &[7; 32], &revoked, 10),
+                proof.verify("https://entry.example", &[7; 32], &revoked, 10),
                 Err(SignInError::Revoked)
             );
         }

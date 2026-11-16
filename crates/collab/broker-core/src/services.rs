@@ -450,7 +450,7 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
         Err("this owner action requires asynchronous execution".into())
     }
 
-    /// Start a potentially asynchronous owner action without blocking the door.
+    /// Start a potentially asynchronous owner action without blocking the API.
     /// The default preserves synchronous governance implementations.
     fn start(
         &self,
@@ -525,7 +525,7 @@ pub trait RecordIndexChanges: Send + Sync {
 /// reference.
 pub const CONTENT_PUT_SCOPE: &str = "tilo.content";
 
-/// The device content store, as the content put door writes to it
+/// The device content store, as the content put API writes to it
 /// (`tilo_actions::remote::ContentPuts`). Actions carry intent and
 /// references; bytes travel by session transport into the content store.
 pub trait ContentStoreServices: Send + Sync {

@@ -15,7 +15,7 @@ use crate::{
 use tilo_actions::remote::InvokeArgument;
 
 /// Run `shortcut` again from `from`, on top of what `origin` recorded. A
-/// continued run is a run of its own, as the door starts one: the steps
+/// continued run is a run of its own, as the API starts one: the steps
 /// before `from` are taken from `origin`'s record, and `from` and the rest
 /// run under this run's own invocations.
 fn continue_from(

@@ -12,7 +12,7 @@ description = "Who may invoke which action: grants over the published tree and t
 name = "tilo_action_policy"
 path = "src/lib.rs"
 
-# Pure data and pure functions: every door, every host, the relay and the
+# Pure data and pure functions: every action API, every host, the relay and the
 # browser decide with this crate; tilo-clock's types accept the browser's
 # wall clock as well as the native one.
 

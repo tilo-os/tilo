@@ -6,7 +6,7 @@
 //! [`roles::agent_policy::ROLE_CAP`], narrowed by the bound the agent's record
 //! keeps ([`roles::agent_grants`]).
 //!
-//! Every one of those four facts is checked here, in one place, so every door
+//! Every one of those four facts is checked here, in one place, so every action API
 //! and every receiver asks the same question:
 //!
 //! 1. the turn names a cause, and the cause was authored by the person;
@@ -14,7 +14,7 @@
 //! 3. the turn has not ended ([`Looked::ended`]: its work is done or stopped);
 //! 4. the action's kind is within the person's grants at its heads ∩
 //!    [`roles::agent_policy::ROLE_CAP`] ∩ the agent's recorded bound — which
-//!    [`roles::agent_grants`] turns into grants the door decides with.
+//!    [`roles::agent_grants`] turns into grants the API decides with.
 //!
 //! A cause that has not reached the receiver yet is not a refusal: the op waits
 //! for it ([`Held::waits`]), the same way an op from a late joiner does.

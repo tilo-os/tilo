@@ -1154,7 +1154,7 @@ tilo_test_env::scenario! {
                 assert!(
                     view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
                         .is_err(),
-                    "the plaintext-only door must retain its encrypted refusal"
+                    "the plaintext-only path must retain its encrypted refusal"
                 );
                 assert!(
                     view.read_document_with_history(

@@ -2,7 +2,7 @@
 //!
 //! A test that drives a window and a Shortcut that a person replays are the
 //! same shape: ordered steps, each one an action the app publishes (invoked
-//! through the one door), a few steps that touch the surface itself, and
+//! through the one action API), a few steps that touch the surface itself, and
 //! assertions on what the run left behind. Defining them here, over the same
 //! [`Shortcut`], is what keeps them one vocabulary: a saved Shortcut runs as a
 //! scenario and a scenario's action steps are the Shortcut's own
@@ -50,10 +50,10 @@ pub mod tree;
 /// format's.
 pub const SCENARIO_FORMAT_VERSION: u32 = 1;
 
-/// Every door code a scenario may expect a step to be refused with, spelled
-/// as the door spells them: one list, so a step that expects a refusal names
-/// a code the door can actually answer.
-pub const DOOR_CODES: &[&str] = &[
+/// Every action API code a scenario may expect a step to be refused with, spelled
+/// as the API spells them: one list, so a step that expects a refusal names
+/// a code the API can actually answer.
+pub const REFUSAL_CODES: &[&str] = &[
     "unknown_action",
     "invalid_arguments",
     "action_unavailable",
@@ -61,12 +61,12 @@ pub const DOOR_CODES: &[&str] = &[
     "action_failed",
 ];
 
-/// Whether `code` is one the door answers a refusal with
-/// ([`DOOR_CODES`]), so a step's `expect_error` can be checked when the
+/// Whether `code` is one the API answers a refusal with
+/// ([`REFUSAL_CODES`]), so a step's `expect_error` can be checked when the
 /// scenario is read rather than only when it runs.
 #[must_use]
-pub fn is_door_code(code: &str) -> bool {
-    DOOR_CODES.contains(&code)
+pub fn is_refusal_code(code: &str) -> bool {
+    REFUSAL_CODES.contains(&code)
 }
 
 /// One scenario: a named program over the Shortcut step model.
@@ -209,12 +209,12 @@ impl Scenario {
     }
 
     /// Every code this scenario expects a step to be refused with, refused
-    /// here when the door has no such code: a scenario that expects a
+    /// here when the API has no such code: a scenario that expects a
     /// refusal that cannot happen passes only by the step not being refused,
     /// which is the opposite of what it was written to prove.
     ///
     /// # Errors
-    /// [`FormatError::UnknownDoorCode`] naming the step and the code.
+    /// [`FormatError::UnknownRefusalCode`] naming the step and the code.
     pub fn check_codes(&self) -> Result<(), FormatError> {
         for (index, step) in self.steps.iter().enumerate() {
             let codes: Vec<&str> = match step {
@@ -227,8 +227,8 @@ impl Scenario {
                 }
             };
             for code in codes {
-                if !is_door_code(code) {
-                    return Err(FormatError::UnknownDoorCode {
+                if !is_refusal_code(code) {
+                    return Err(FormatError::UnknownRefusalCode {
                         step: index,
                         code: code.to_owned(),
                     });
@@ -268,8 +268,8 @@ pub enum FormatError {
         "the scenario was written in format {0}, and this reads format {SCENARIO_FORMAT_VERSION}"
     )]
     UnsupportedVersion(u32),
-    #[error("step {step} expects `{code}`, and the door refuses with no such code")]
-    UnknownDoorCode { step: usize, code: String },
+    #[error("step {step} expects `{code}`, and the API refuses with no such code")]
+    UnknownRefusalCode { step: usize, code: String },
     #[error("the scenario is not readable: {0}")]
     Malformed(String),
 }
@@ -315,7 +315,7 @@ pub struct Invocation {
     /// The name and avatar a bot shows for this one action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Binding>,
-    /// Expect the door to refuse with this code instead of running.
+    /// Expect the API to refuse with this code instead of running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_error: Option<String>,
     /// Keep what the action answered under this name, for a later step's
@@ -404,7 +404,7 @@ pub enum Assert {
     },
     /// A retained widget's accessibility surface.
     Semantic { target: String },
-    /// The door refuses an action with this code.
+    /// The API refuses an action with this code.
     Error { code: String },
 }
 
@@ -603,14 +603,14 @@ mod tests {
             assert!(text.contains(r#""format":1"#), "{text}");
         }
 
-        phase the_codes_a_step_may_expect_are_the_door_s_own;
+        phase the_codes_a_step_may_expect_are_the_action_api_s_own;
         {
-            // Every refusal a scenario can expect is one the door answers with,
-            // and every code the door answers with is expectable: a shorter list
+            // Every refusal a scenario can expect is one the API answers with,
+            // and every code the API answers with is expectable: a shorter list
             // would make a real refusal unwritable, a longer one would let a step
             // expect something that never happens.
             let address = tilo_actions::ActionAddress::new("r", "a");
-            let door = [
+            let refusals = [
                 tilo_actions::ApiError::Unknown(address.clone()),
                 tilo_actions::ApiError::MissingArgument(address.clone()),
                 tilo_actions::ApiError::UnexpectedArgument(address),
@@ -623,15 +623,15 @@ mod tests {
                 tilo_actions::ApiError::UnregisteredType("x".into()),
                 tilo_actions::ApiError::Failed("x".into()),
             ];
-            for error in &door {
+            for error in &refusals {
                 assert!(
-                    is_door_code(error.code()),
-                    "the door answers `{}`, and a step cannot expect it",
+                    is_refusal_code(error.code()),
+                    "the API answers `{}`, and a step cannot expect it",
                     error.code()
                 );
             }
-            assert!(!is_door_code("ok"));
-            assert!(!is_door_code(""));
+            assert!(!is_refusal_code("ok"));
+            assert!(!is_refusal_code(""));
         }
 
         phase text_that_is_not_the_canonical_spelling_is_refused;
@@ -664,7 +664,7 @@ mod tests {
             ));
         }
 
-        phase a_step_expecting_a_refusal_the_door_cannot_make_is_refused_when_read;
+        phase a_step_expecting_a_refusal_the_action_api_cannot_make_is_refused_when_read;
         {
             let mut scenario = scenario();
             scenario.steps.push(ScenarioStep::Expect(Assert::Error {
@@ -674,13 +674,13 @@ mod tests {
             let text = String::from_utf8(crate::program::canonical_json(&text)).unwrap();
             assert_eq!(
                 Scenario::from_json(&text),
-                Err(FormatError::UnknownDoorCode {
+                Err(FormatError::UnknownRefusalCode {
                     step: 4,
                     code: "not_our_verb".into(),
                 }),
-                "a refusal the door cannot answer would make the step unreachable"
+                "a refusal the API cannot answer would make the step unreachable"
             );
-            // A code the door does answer is a scenario like any other.
+            // A code the API does answer is a scenario like any other.
             scenario.steps[4] = ScenarioStep::Expect(Assert::Error {
                 code: "action_unavailable".into(),
             });

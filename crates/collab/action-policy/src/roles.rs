@@ -807,7 +807,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///    needs a new agent key.
 ///
 /// A member still admits an agent's ops by its delegation's workspaces and
-/// expiry only: the app scope of its record is enforced by the turn's door.
+/// expiry only: the app scope of its record is enforced by the turn's action API.
 pub mod agent_policy {
     use crate::Role;
 
@@ -835,7 +835,7 @@ pub mod agent_policy {
 /// change, never more than the cap allows, never more than its record bounds it
 /// to, and never the workspace's governance.
 ///
-/// This is the only place an agent's authority is made: a door or a receiver
+/// This is the only place an agent's authority is made: an action API or a receiver
 /// hands it the person whose message caused the turn, and the bound it holds
 /// for the agent's record ([`crate::turn::authority`]).
 #[must_use]

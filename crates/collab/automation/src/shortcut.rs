@@ -80,7 +80,7 @@ pub struct SavedProof {
 pub const SAVED_SHORTCUT_DOMAIN: &str = "tilo-shortcut-saved-v1";
 
 impl Shortcut {
-    /// The address that runs this shortcut through the action door.
+    /// The address that runs this shortcut through the action API.
     #[must_use]
     pub fn action_address(&self) -> ActionAddress {
         crate::shortcut_run_address(&self.id)
@@ -220,7 +220,7 @@ pub enum StepKind {
         args: BTreeMap<String, Binding>,
         /// The name and avatar a bot shows for this one action
         /// ([`tilo_actions::Appearance`]), such as a bridge posting a
-        /// Discord user's message under their name. Only a bot's door
+        /// Discord user's message under their name. Only a bot's action API
         /// admits one; it never changes who the author is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         appearance: Option<Binding>,
@@ -272,11 +272,11 @@ pub enum StepKind {
         output: Option<serde_json::Value>,
     },
     /// Read one record of the workspace as it is now, through the record
-    /// door every reader reads records through: `record` of `app` (empty for
+    /// API every reader reads records through: `record` of `app` (empty for
     /// the app's record of the workspace; a chain's head for its newest
     /// part), or with `joined` the chain of parts whose base it is. `record`
     /// may name it from the run with `{{...}}` placeholders, as a template
-    /// does: the record an event changed. The output is the door's answer,
+    /// does: the record an event changed. The output is the API's answer,
     /// `{revision, records: [{record, value | absent | arriving}]}`. A read
     /// changes nothing; what the run does with it, it does through actions.
     Read {

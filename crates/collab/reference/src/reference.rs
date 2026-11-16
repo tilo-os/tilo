@@ -97,7 +97,7 @@ pub struct ResourceRef {
     #[model(atom)]
     pub kind: String,
     /// The publishing app's own resource id, so an address minted from a
-    /// selection and one surveyed through the door are the same address.
+    /// selection and one surveyed through the API are the same address.
     #[model(atom)]
     pub id: String,
     /// Human, localisable label for the chip. Never the address.

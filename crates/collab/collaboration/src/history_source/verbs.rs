@@ -1,6 +1,6 @@
 //! The resource's history as actions every app answers, native or
 //! tilolang, so the people, scripts and agents working on it can look back,
-//! compare and take back through the same door they edit through:
+//! compare and take back through the same action API they edit through:
 //!
 //! - `undo` / `redo`: the caller's own last steps (an agent's are those of
 //!   its run), or a named agent run's;
@@ -330,7 +330,7 @@ type MakeEdit =
 /// The history verbs that change one part of a chain, each naming the part
 /// (`part`): what a chain publishes beside its parts' own actions, so the
 /// people, agents and the workspace's moderation take back steps in a part
-/// through the same door as in any record.
+/// through the same action API as in any record.
 pub fn part_edit_specs() -> Vec<ActionSpec> {
     edit_specs_with(part_edit)
 }
@@ -586,7 +586,7 @@ fn by(version: &Version) -> String {
 /// field paths, values and verb arguments), to which `item`, by which
 /// `actor` (the acting tree, and for an agent with a name the `name` and
 /// `colour` it shows by), in which `run`, through which
-/// `invocation` of the action door, as part of which undo `step` (its
+/// `invocation` of the action API, as part of which undo `step` (its
 /// gesture), and what kind of action and change it was. The invocation and
 /// the step are what a caller that ran an action finds its own changes by,
 /// to take exactly those back (`undo` with `step`).

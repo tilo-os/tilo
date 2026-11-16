@@ -35,7 +35,7 @@ pub enum GovernanceRow {
     Membership,
     /// Device rows and the display names beside them.
     Identities,
-    /// The workspace's name, its saved grant sets and its door.
+    /// The workspace's name, its saved grant sets and its entry.
     Settings,
     /// The media policy.
     Media,

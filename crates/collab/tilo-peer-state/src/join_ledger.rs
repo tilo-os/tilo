@@ -671,11 +671,11 @@ impl JoinLedger {
 
     /// The signed invitation still redeemable at `now` that names only
     /// `person`, as the workspace issued it: what a workspace that takes
-    /// people by invitation answers its door with when the person it
+    /// people by invitation answers its entry with when the person it
     /// invited asks. `None` while no such invitation stands.
     ///
     /// The invitation the workspace's own inviter made is the whole answer:
-    /// its role and lifetime are the inviter's decision, and a door handing
+    /// its role and lifetime are the inviter's decision, and an action API handing
     /// it back mints nothing.
     #[must_use]
     pub fn invitation_for(&self, person: [u8; 32], now: u64) -> Option<IssuedInvitation> {

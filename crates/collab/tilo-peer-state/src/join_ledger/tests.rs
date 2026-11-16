@@ -334,7 +334,7 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     };
     assert_eq!(named(&joined_ada), "Ada");
     // A key made to act for her joins too, saying what the key goes by, as
-    // the door hands it over: it names the key, never Ada.
+    // the API hands it over: it names the key, never Ada.
     let backend_key = SigningKey::from_bytes(&[53; 32]);
     let mut backend = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),

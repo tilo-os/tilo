@@ -6,14 +6,14 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Shortcuts: typed pipelines over Tilo's action door."
+description = "Shortcuts: typed pipelines over Tilo's action API."
 
 [lib]
 name = "tilo_automation"
 path = "src/lib.rs"
 
 # Shortcuts: typed pipelines of actions, checked against the descriptors the
-# action door publishes and run through `tilo_actions::remote::ActionHost`.
+# action API publishes and run through `tilo_actions::remote::ActionHost`.
 # Pure data and logic with no I/O, no runtime and no UI dependency.
 
 [dependencies]

@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
         assert_eq!(event.shortcut.as_deref(), Some("tidy"));
         assert_eq!(event.arguments["text"], "hi");
         assert_eq!(verbs_of(&event.did), vec!["post"]);
-        // As a door records it: the operation in an envelope with its time.
+        // As an action API records it: the operation in an envelope with its time.
         context.action = Some(EncodedAction {
             type_id: "chat.workspace".into(),
             payload: br#"{"op":{"action":"react","args":{"message":"m1","emoji":"x"}},"at":0}"#

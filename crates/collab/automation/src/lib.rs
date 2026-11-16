@@ -1,4 +1,4 @@
-//! # Shortcuts: typed pipelines over the action door
+//! # Shortcuts: typed pipelines over the action API
 //!
 //! A [`Shortcut`] is a small program whose every effect is an ordinary
 //! published action: the same `(app, resource, action)` addresses a person
@@ -75,8 +75,8 @@ pub use run::{
 };
 pub use saved::{SavedShortcut, decode_saved};
 pub use scenario::{
-    Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
-    ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,
+    Assert, FormatError, Holds, Input, Invocation, REFUSAL_CODES, SCENARIO_FORMAT_VERSION,
+    Scenario, ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_refusal_code,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,

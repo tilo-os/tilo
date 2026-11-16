@@ -1,6 +1,6 @@
 //! Running an offloadable invocation on another device of the workspace.
 //!
-//! An action that declares an offload runs where the door
+//! An action that declares an offload runs where the API
 //! ([`tilo_actions::offload::ActionOffload`]) sends it. A route built on the
 //! offer round sends it to the device that wins the round: it asks the
 //! workspace's other devices what would run ([`Route`]) and what it reads

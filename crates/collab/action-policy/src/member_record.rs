@@ -4,7 +4,7 @@
 //! with it to that member's devices, and to nobody else's.
 //!
 //! Its id names the member, `member:<root>:<kind>`, with `<root>` the
-//! lowercase hex of their user root key, so every door decides it alike
+//! lowercase hex of their user root key, so every action API decides it alike
 //! without a grant: only that person reads or changes it, whatever their
 //! role, and no other member does, the workspace's owner included
 //! ([`crate::Party::decide`]).

@@ -154,7 +154,7 @@ impl EarlierIds {
 }
 
 /// What this process was told of renamed apps: the table a decision made without one of its own
-/// (`Context::with_earlier_ids`) reads, so every door, validator and host honours a grant
+/// (`Context::with_earlier_ids`) reads, so every action API, validator and host honours a grant
 /// written under an app's earlier id once whoever loads apps here registered them.
 static HELD: RwLock<EarlierIds> = RwLock::new(EarlierIds {
     by_app: BTreeMap::new(),

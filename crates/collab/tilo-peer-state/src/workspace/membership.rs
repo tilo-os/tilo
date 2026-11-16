@@ -472,7 +472,7 @@ type Writer<'a> = (
     &'a Context<'a>,
 );
 
-/// The workspace's name and its settings — its saved grant sets and its door —
+/// The workspace's name and its settings — its saved grant sets and its entry —
 /// as the batch changes them: the name a valid one, given by someone who
 /// governs the workspace (a Moderator or above, or one granted its settings);
 /// the settings by one granted its settings.

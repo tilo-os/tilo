@@ -3,7 +3,7 @@
 //! Authority is granted over the published tree of workspaces, apps,
 //! resources, items and actions. A [`Grant`] names a [`Grantee`], a node ([`TreePath`]),
 //! the kinds of action it covers ([`KindSet`]), an [`Answer`] and a
-//! [`Lifetime`]. [`decide`] is the one function every door, host and receiver
+//! [`Lifetime`]. [`decide`] is the one function every action API, host and receiver
 //! uses: the most specific covering node wins, at the same node Deny beats Ask
 //! beats Allow, and no grant means Deny.
 //!

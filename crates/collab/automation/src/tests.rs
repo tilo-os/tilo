@@ -1462,10 +1462,10 @@ fn read_step(id: &str, record: &str, joined: bool) -> Step {
 tilo_test_env::scenario! {
     fn a_run_reaches_only_what_its_grant_allows;
 
-    phase a_read_step_reads_records_through_the_door_inside_the_grant;
+    phase a_read_step_reads_records_through_the_api_inside_the_grant;
     // A record read is a step of its own: inside the grant it answers the
-    // record door's reading, outside it nothing is read, and a refusal at the
-    // door is the step's failure.
+    // record API's reading, outside it nothing is read, and a refusal at the
+    // API is the step's failure.
     {
         let host = FakeHost::new();
         let mut reads = shortcut(

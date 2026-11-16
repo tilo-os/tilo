@@ -110,19 +110,19 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Whether `person`'s recent actions are a burst of deletions worth a
     /// look without a report.
-    pub fn bursting(door: &mut impl WorkspaceApi, person: &str) -> bool {
-        let since = door.now_ms().saturating_sub(BURST_WINDOW_MS);
-        burst(&door.activity(person, since), BURST_COUNT, BURST_WINDOW_MS)
+    pub fn bursting(api: &mut impl WorkspaceApi, person: &str) -> bool {
+        let since = api.now_ms().saturating_sub(BURST_WINDOW_MS);
+        burst(&api.activity(person, since), BURST_COUNT, BURST_WINDOW_MS)
     }
 
     /// Looks into `person`: their open reports, their recent actions and
     /// earlier decisions. The host asks [`Self::verdict`] on it away from the
     /// workspace, then [`Self::enforce`]s the answer, so the workspace is never held
     /// while the model thinks.
-    pub fn look(door: &mut impl WorkspaceApi, moderation: &Moderation, person: &str) -> Look {
-        let now = door.now_ms();
+    pub fn look(api: &mut impl WorkspaceApi, moderation: &Moderation, person: &str) -> Look {
+        let now = api.now_ms();
         let reports: Vec<_> = moderation.open_reports_on(person).collect();
-        let activity = door.activity(person, now.saturating_sub(LOOKBACK_MS));
+        let activity = api.activity(person, now.saturating_sub(LOOKBACK_MS));
         let case = Case {
             person: person.to_owned(),
             reports: reports
@@ -189,7 +189,7 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Carries `verdict` out on the workspace and records it with its reasoning.
     pub fn enforce(
-        door: &mut impl WorkspaceApi,
+        api: &mut impl WorkspaceApi,
         look: Look,
         verdict: Verdict,
         model: String,
@@ -212,12 +212,12 @@ impl<J: Judge> ModerationAgent<J> {
                 );
                 let until = now.saturating_add(minutes.saturating_mul(60_000));
                 until_ms = Some(until);
-                door.govern(Change::Restrict {
+                api.govern(Change::Restrict {
                     person: person.to_owned(),
                     until_ms: u64::try_from(until).unwrap_or_default(),
                 })
             }
-            Outcome::Ban => door.govern(Change::Ban {
+            Outcome::Ban => api.govern(Change::Ban {
                 person: person.to_owned(),
             }),
         };
@@ -229,7 +229,7 @@ impl<J: Judge> ModerationAgent<J> {
             until_ms = None;
         }
         let reverted = if verdict.revert && outcome != Outcome::NoAction {
-            revert(door, &case.activity, &run, &mut failures)
+            revert(api, &case.activity, &run, &mut failures)
         } else {
             Vec::new()
         };
@@ -245,7 +245,7 @@ impl<J: Judge> ModerationAgent<J> {
                 reverted,
             },
         };
-        if let Err(why) = door.decide(decision.clone()) {
+        if let Err(why) = api.decide(decision.clone()) {
             failures.push(format!("recording the decision: {why}"));
         }
         Enforced { decision, failures }
@@ -256,28 +256,26 @@ impl<J: Judge> ModerationAgent<J> {
     ///
     /// # Errors
     /// Each part that failed, with why; the others are still done.
-    pub fn restore(door: &mut impl WorkspaceApi, decision: &Decision) -> Result<(), Vec<String>> {
+    pub fn restore(api: &mut impl WorkspaceApi, decision: &Decision) -> Result<(), Vec<String>> {
         let mut failures = Vec::new();
         let person = decision.person.clone();
         let lifted = match decision.outcome {
             Outcome::NoAction => Ok(()),
             Outcome::Restrict => {
-                let lapsed = decision
-                    .until_ms
-                    .is_some_and(|until| until <= door.now_ms());
+                let lapsed = decision.until_ms.is_some_and(|until| until <= api.now_ms());
                 if lapsed {
                     Ok(())
                 } else {
-                    door.govern(Change::Unrestrict { person })
+                    api.govern(Change::Unrestrict { person })
                 }
             }
-            Outcome::Ban => door.govern(Change::Unban { person }),
+            Outcome::Ban => api.govern(Change::Unban { person }),
         };
         if let Err(why) = lifted {
             failures.push(format!("lifting: {why}"));
         }
         for reverted in &decision.reverted {
-            if let Err(why) = door.invoke(
+            if let Err(why) = api.invoke(
                 &reverted.app,
                 &reverted.record,
                 "undo",
@@ -299,7 +297,7 @@ impl<J: Judge> ModerationAgent<J> {
 /// history names, `undo { by, to }` back to the version before their first
 /// change there, or `undo { by, steps }` when that change began the record.
 fn revert(
-    door: &mut impl WorkspaceApi,
+    api: &mut impl WorkspaceApi,
     activity: &[Activity],
     run: &str,
     failures: &mut Vec<String>,
@@ -333,7 +331,7 @@ fn revert(
             Some(to) => serde_json::json!({ "by": actor, "to": to }),
             None => serde_json::json!({ "by": actor, "steps": changes.len() }),
         };
-        match door.invoke(app, record, "undo", args, run) {
+        match api.invoke(app, record, "undo", args, run) {
             Ok(()) => {
                 let count = reverted
                     .entry((app.to_owned(), record.to_owned()))

@@ -752,7 +752,7 @@ impl WorkspacePolicy {
     }
 
     /// Whether `actor_person` (acting through `actor`) may make `change`,
-    /// without making it: what a door asks before it commits the change by
+    /// without making it: what an action API asks before it commits the change by
     /// its own means.
     ///
     /// # Errors

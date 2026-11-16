@@ -1599,7 +1599,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// Read `record` of `app` (joined, its chain of parts; named from the run,
-    /// with placeholders) through the host's record door, as the run's caller
+    /// with placeholders) through the host's record API, as the run's caller
     /// reads it, inside the shortcut's grant.
     fn read(&self, app: &str, record: &str, joined: bool) -> Result<Option<Value>, StepFailure> {
         let record = match crate::shortcut::read_record_binding(record) {
@@ -1789,7 +1789,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         }
     }
 
-    /// The appearance `binding` evaluates to, in the exact form a door
+    /// The appearance `binding` evaluates to, in the exact form an action API
     /// admits: a value that breaks a rule fails the step rather than being
     /// cleaned up, so what readers see is what the program asked for.
     fn appearance(&self, binding: &Binding) -> Result<tilo_actions::Appearance, StepFailure> {

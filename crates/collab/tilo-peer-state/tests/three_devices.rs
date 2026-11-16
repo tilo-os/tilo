@@ -724,7 +724,7 @@ async fn a_link_admits_into_the_owner_and_the_owner_publishes_it() {
 /// person's own machine — reads the same listing and the same invitation-only
 /// entry from the change alone.
 #[tokio::test]
-async fn the_door_a_device_settles_is_the_door_another_device_reads() {
+async fn the_entry_a_device_settles_is_the_entry_another_device_reads() {
     let directory = tempfile::tempdir().unwrap();
     let (_root_a, key_a, cert_a) = device(81, 82, "A's desktop");
     let (_root_b, key_b, cert_b) = device(83, 84, "B's desktop");

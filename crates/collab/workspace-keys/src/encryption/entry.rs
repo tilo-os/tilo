@@ -1,4 +1,4 @@
-//! A device's groups as it enters a workspace through its door
+//! A device's groups as it enters a workspace through its entry
 //! ([`tilo_relay_protocol::entering`]-style entries): before it holds anything
 //! of the workspace's governance, it asks for the keys of the workspace's
 //! group.

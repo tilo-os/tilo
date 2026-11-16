@@ -1,7 +1,7 @@
 //! A stateless, causal review for exact-item restoration. The full change
 //! hashes bind both the target and the live document; a checkpoint name is
 //! resolved once, never again when the caller restores. This is a write
-//! precondition, not a grant or a substitute for action-door admission.
+//! precondition, not a grant or a substitute for action-API admission.
 
 use super::{HistoryEdit, HistoryView, VIEW_TYPE, edit, invalid};
 use automerge::transaction::Transactable;

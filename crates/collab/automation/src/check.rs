@@ -378,7 +378,7 @@ impl Checker<'_> {
                     self.value(&named, scope, path);
                 }
                 self.read(path, app, record, *joined);
-                // The door's answer: every reader reads a record so.
+                // The API's answer: every reader reads a record so.
                 let answer = serde_json::json!({"type": "object", "properties": {
                     "revision": {"type": "string"},
                     "records": {"type": "array", "items": {"type": "object", "properties": {

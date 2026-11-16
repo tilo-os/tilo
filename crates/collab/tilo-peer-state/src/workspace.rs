@@ -393,7 +393,7 @@ fn held_bytes(value: &Value<'_>) -> Vec<u8> {
 }
 
 /// The workspace's settings as stored: its name, its saved grant sets and its
-/// door.
+/// entry.
 /// Whatever a key holds counts, so a value of another shape than a writer
 /// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
