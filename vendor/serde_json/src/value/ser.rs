@@ -212,9 +212,8 @@ impl serde::Serializer for Serializer {
     where
         T: ?Sized + Serialize,
     {
-        let mut values = Map::new();
-        values.insert(String::from(variant), tri!(to_value(value)));
-        Ok(Value::Object(values))
+        let value = tri!(to_value(value));
+        Ok(single(variant, value))
     }
 
     #[inline]
@@ -324,6 +323,67 @@ pub struct SerializeStructVariant {
     map: Map<String, Value>,
 }
 
+/// The object `{variant: value}`.
+#[inline(never)]
+fn single(variant: &'static str, value: Value) -> Value {
+    let mut values = Map::new();
+    values.insert(String::from(variant), value);
+    Value::Object(values)
+}
+
+#[inline(never)]
+fn push(vec: &mut Vec<Value>, value: Value) {
+    vec.push(value);
+}
+
+#[inline(never)]
+fn insert(map: &mut Map<String, Value>, key: &'static str, value: Value) {
+    map.insert(String::from(key), value);
+}
+
+impl SerializeMap {
+    /// The struct field `key` set to `value`. A raw value's only field is its JSON text, read
+    /// back here.
+    #[inline(never)]
+    fn field(&mut self, key: &'static str, value: Value) -> Result<()> {
+        match self {
+            SerializeMap::Map { map, .. } => {
+                insert(map, key, value);
+                Ok(())
+            }
+            #[cfg(feature = "arbitrary_precision")]
+            SerializeMap::Number { .. } => unreachable!(),
+            #[cfg(feature = "raw_value")]
+            SerializeMap::RawValue { out_value } => match value {
+                Value::String(json) if key == crate::raw::TOKEN => {
+                    *out_value = Some(tri!(crate::from_str(&json)));
+                    Ok(())
+                }
+                _ => Err(Error::syntax(ErrorCode::ExpectedSomeValue, 0, 0)),
+            },
+        }
+    }
+
+    /// The value of the key `serialize_key` stored.
+    #[inline(never)]
+    fn value(&mut self, value: Value) {
+        match self {
+            SerializeMap::Map { map, next_key } => {
+                // Panic because this indicates a bug in the program rather than an
+                // expected failure.
+                let key = next_key
+                    .take()
+                    .expect("serialize_value called before serialize_key");
+                map.insert(key, value);
+            }
+            #[cfg(feature = "arbitrary_precision")]
+            SerializeMap::Number { .. } => unreachable!(),
+            #[cfg(feature = "raw_value")]
+            SerializeMap::RawValue { .. } => unreachable!(),
+        }
+    }
+}
+
 impl serde::ser::SerializeSeq for SerializeVec {
     type Ok = Value;
     type Error = Error;
@@ -332,7 +392,8 @@ impl serde::ser::SerializeSeq for SerializeVec {
     where
         T: ?Sized + Serialize,
     {
-        self.vec.push(tri!(to_value(value)));
+        let value = tri!(to_value(value));
+        push(&mut self.vec, value);
         Ok(())
     }
 
@@ -381,7 +442,8 @@ impl serde::ser::SerializeTupleVariant for SerializeTupleVariant {
     where
         T: ?Sized + Serialize,
     {
-        self.vec.push(tri!(to_value(value)));
+        let value = tri!(to_value(value));
+        push(&mut self.vec, value);
         Ok(())
     }
 
@@ -418,20 +480,9 @@ impl serde::ser::SerializeMap for SerializeMap {
     where
         T: ?Sized + Serialize,
     {
-        match self {
-            SerializeMap::Map { map, next_key } => {
-                let key = next_key.take();
-                // Panic because this indicates a bug in the program rather than an
-                // expected failure.
-                let key = key.expect("serialize_value called before serialize_key");
-                map.insert(key, tri!(to_value(value)));
-                Ok(())
-            }
-            #[cfg(feature = "arbitrary_precision")]
-            SerializeMap::Number { .. } => unreachable!(),
-            #[cfg(feature = "raw_value")]
-            SerializeMap::RawValue { .. } => unreachable!(),
-        }
+        let value = tri!(to_value(value));
+        self.value(value);
+        Ok(())
     }
 
     fn end(self) -> Result<Value> {
@@ -655,27 +706,18 @@ impl serde::ser::SerializeStruct for SerializeMap {
     where
         T: ?Sized + Serialize,
     {
-        match self {
-            SerializeMap::Map { .. } => serde::ser::SerializeMap::serialize_entry(self, key, value),
-            #[cfg(feature = "arbitrary_precision")]
-            SerializeMap::Number { out_value } => {
+        #[cfg(feature = "arbitrary_precision")]
+        {
+            if let SerializeMap::Number { out_value } = self {
                 if key == crate::number::TOKEN {
                     *out_value = Some(tri!(value.serialize(NumberValueEmitter)));
-                    Ok(())
-                } else {
-                    Err(invalid_number())
+                    return Ok(());
                 }
-            }
-            #[cfg(feature = "raw_value")]
-            SerializeMap::RawValue { out_value } => {
-                if key == crate::raw::TOKEN {
-                    *out_value = Some(tri!(value.serialize(RawValueEmitter)));
-                    Ok(())
-                } else {
-                    Err(invalid_raw_value())
-                }
+                return Err(invalid_number());
             }
         }
+        let value = tri!(to_value(value));
+        self.field(key, value)
     }
 
     fn end(self) -> Result<Value> {
@@ -701,7 +743,8 @@ impl serde::ser::SerializeStructVariant for SerializeStructVariant {
     where
         T: ?Sized + Serialize,
     {
-        self.map.insert(String::from(key), tri!(to_value(value)));
+        let value = tri!(to_value(value));
+        insert(&mut self.map, key, value);
         Ok(())
     }
 
@@ -885,179 +928,3 @@ impl serde::ser::Serializer for NumberValueEmitter {
     }
 }
 
-#[cfg(feature = "raw_value")]
-struct RawValueEmitter;
-
-#[cfg(feature = "raw_value")]
-fn invalid_raw_value() -> Error {
-    Error::syntax(ErrorCode::ExpectedSomeValue, 0, 0)
-}
-
-#[cfg(feature = "raw_value")]
-impl serde::ser::Serializer for RawValueEmitter {
-    type Ok = Value;
-    type Error = Error;
-
-    type SerializeSeq = Impossible<Value, Error>;
-    type SerializeTuple = Impossible<Value, Error>;
-    type SerializeTupleStruct = Impossible<Value, Error>;
-    type SerializeTupleVariant = Impossible<Value, Error>;
-    type SerializeMap = Impossible<Value, Error>;
-    type SerializeStruct = Impossible<Value, Error>;
-    type SerializeStructVariant = Impossible<Value, Error>;
-
-    fn serialize_bool(self, _v: bool) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_i8(self, _v: i8) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_i16(self, _v: i16) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_i32(self, _v: i32) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_i64(self, _v: i64) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_u8(self, _v: u8) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_u16(self, _v: u16) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_u32(self, _v: u32) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_u64(self, _v: u64) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_f32(self, _v: f32) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_f64(self, _v: f64) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_char(self, _v: char) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_str(self, value: &str) -> Result<Value> {
-        crate::from_str(value)
-    }
-
-    fn serialize_bytes(self, _value: &[u8]) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_none(self) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_some<T>(self, _value: &T) -> Result<Value>
-    where
-        T: ?Sized + Serialize,
-    {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_unit(self) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<Value> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_newtype_struct<T>(self, _name: &'static str, _value: &T) -> Result<Value>
-    where
-        T: ?Sized + Serialize,
-    {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_newtype_variant<T>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> Result<Value>
-    where
-        T: ?Sized + Serialize,
-    {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleStruct> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_tuple_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleVariant> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
-        Err(invalid_raw_value())
-    }
-
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant> {
-        Err(invalid_raw_value())
-    }
-
-    fn collect_str<T>(self, value: &T) -> Result<Self::Ok>
-    where
-        T: ?Sized + Display,
-    {
-        self.serialize_str(&value.to_string())
-    }
-}

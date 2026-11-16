@@ -86,17 +86,20 @@
 /// `serde_json::Value`.
 ///
 /// The type derives with `#[serde(remote = "Self")]`, which makes its
-/// derived code inherent functions. Writing runs them as derived, so the
-/// bytes stay what the derive writes. Reading runs them once, against a
-/// `Value`, in this crate: every format and every crate that reads the type
-/// then shares that one copy instead of compiling the type's whole
-/// deserializer (and, for an internally tagged enum, its buffered copy)
-/// again for each deserializer it meets. Only for types every encoding of
-/// which is JSON: a `Value` needs a self-describing format. `custom` leaves
-/// `from_json_value` to the type.
+/// derived code inherent functions. Writing runs them as derived. Reading
+/// runs them once, against a `Value`, in the crate that declares the type:
+/// every format and every crate that reads the type then shares that one
+/// copy instead of compiling the type's whole deserializer (and, for an
+/// internally tagged enum, its buffered copy) again for each deserializer it
+/// meets. Only for types every encoding of which is JSON: a `Value` needs a
+/// self-describing format. `custom` leaves `from_json_value` to the type.
+/// `write` also writes through one `Value`, built by a function compiled in
+/// the declaring crate, so a crate that writes the type compiles none of its
+/// serializer either; the JSON is the same.
+#[macro_export]
 macro_rules! read_through_json_value {
     ($ty:ty) => {
-        read_through_json_value!($ty, custom);
+        $crate::read_through_json_value!($ty, custom);
 
         impl $ty {
             #[inline(never)]
@@ -112,6 +115,33 @@ macro_rules! read_through_json_value {
             }
         }
 
+        $crate::read_through_json_value!($ty, read);
+    };
+    ($ty:ty, write) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self.to_json_value() {
+                    Ok(value) => serde::Serialize::serialize(&value, serializer),
+                    Err(error) => Err(serde::ser::Error::custom(error)),
+                }
+            }
+        }
+
+        $crate::read_through_json_value!($ty, read);
+
+        impl $ty {
+            #[inline(never)]
+            fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+                Self::deserialize(value)
+            }
+
+            #[inline(never)]
+            fn to_json_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+                Self::serialize(self, serde_json::value::Serializer)
+            }
+        }
+    };
+    ($ty:ty, read) => {
         impl<'de> serde::Deserialize<'de> for $ty {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;

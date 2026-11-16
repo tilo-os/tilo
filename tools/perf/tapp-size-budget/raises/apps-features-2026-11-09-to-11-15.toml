@@ -4,20 +4,8 @@ run = "r1a9de479eb"
 [apps."so.tilo.backups"]
 x86_64 = 65536
 
-[apps."so.tilo.browser"]
-x86_64 = 720896
-
-[apps."so.tilo.calendar"]
-x86_64 = 262144
-
-[apps."so.tilo.chat"]
-x86_64 = 196608
-
 [apps."so.tilo.clocks"]
 x86_64 = 65536
-
-[apps."so.tilo.code-editor"]
-x86_64 = 131072
 
 [apps."so.tilo.contacts"]
 x86_64 = 65536
@@ -28,23 +16,14 @@ x86_64 = 131072
 [apps."so.tilo.discord"]
 x86_64 = 131072
 
-[apps."so.tilo.ebook"]
-x86_64 = 262144
-
 [apps."so.tilo.feeds"]
 x86_64 = 65536
-
-[apps."so.tilo.mail"]
-x86_64 = 393216
 
 [apps."so.tilo.maps"]
 x86_64 = 65536
 
 [apps."so.tilo.messages"]
 x86_64 = 131072
-
-[apps."so.tilo.notes"]
-x86_64 = 196608
 
 [apps."so.tilo.passwords"]
 x86_64 = 65536
@@ -60,9 +39,6 @@ x86_64 = 65536
 
 [apps."so.tilo.snippets"]
 x86_64 = 65536
-
-[apps."so.tilo.tasks"]
-x86_64 = 327680
 
 [apps."so.tilo.terminal"]
 x86_64 = 65536

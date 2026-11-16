@@ -3,28 +3,12 @@ run = "ra2f0869c96"
 
 [apps."so.tilo.activity"]
 x86_64 = 65536
-[apps."so.tilo.api-tester"]
-x86_64 = 196608
 [apps."so.tilo.backups"]
 x86_64 = 393216
-[apps."so.tilo.browser"]
-x86_64 = 1114112
 [apps."so.tilo.calculator"]
 x86_64 = 65536
-[apps."so.tilo.calendar"]
-x86_64 = 393216
-[apps."so.tilo.camera"]
-x86_64 = 196608
-[apps."so.tilo.canvas"]
-x86_64 = 589824
-[apps."so.tilo.chat"]
-x86_64 = 983040
-[apps."so.tilo.chip-design"]
-x86_64 = 196608
 [apps."so.tilo.clocks"]
 x86_64 = 262144
-[apps."so.tilo.code-editor"]
-x86_64 = 851968
 [apps."so.tilo.contacts"]
 x86_64 = 262144
 [apps."so.tilo.containers"]
@@ -39,8 +23,6 @@ x86_64 = 524288
 x86_64 = 262144
 [apps."so.tilo.disks"]
 x86_64 = 196608
-[apps."so.tilo.ebook"]
-x86_64 = 196608
 [apps."so.tilo.feeds"]
 x86_64 = 196608
 [apps."so.tilo.firewall"]
@@ -53,8 +35,6 @@ x86_64 = 131072
 x86_64 = 196608
 [apps."so.tilo.logs"]
 x86_64 = 131072
-[apps."so.tilo.mail"]
-x86_64 = 983040
 [apps."so.tilo.maps"]
 x86_64 = 196608
 [apps."so.tilo.messages"]
@@ -63,18 +43,12 @@ x86_64 = 786432
 x86_64 = 262144
 [apps."so.tilo.monitor"]
 x86_64 = 131072
-[apps."so.tilo.music"]
-x86_64 = 196608
-[apps."so.tilo.notes"]
-x86_64 = 262144
 [apps."so.tilo.osk"]
 x86_64 = 131072
 [apps."so.tilo.passwords"]
 x86_64 = 655360
 [apps."so.tilo.pdf-viewer"]
 x86_64 = 131072
-[apps."so.tilo.photos"]
-x86_64 = 196608
 [apps."so.tilo.poker"]
 x86_64 = 65536
 [apps."so.tilo.print-centre"]
@@ -87,14 +61,10 @@ x86_64 = 131072
 x86_64 = 131072
 [apps."so.tilo.shortcuts"]
 x86_64 = 327680
-[apps."so.tilo.slides"]
-x86_64 = 131072
 [apps."so.tilo.snippets"]
 x86_64 = 262144
 [apps."so.tilo.speed-test"]
 x86_64 = 65536
-[apps."so.tilo.tasks"]
-x86_64 = 1179648
 [apps."so.tilo.terminal"]
 x86_64 = 327680
 [apps."so.tilo.themes"]

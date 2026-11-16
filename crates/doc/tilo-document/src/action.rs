@@ -151,6 +151,7 @@ pub enum ImportFormat {
 /// deletion, paragraph splitting, Find & Replace, and agent-authored edits all
 /// enter through these same envelopes; caret and selection updates remain local.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(remote = "Self")]
 pub enum RichTextAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
     /// `ins` empty). The deterministic text primitive.
@@ -569,6 +570,8 @@ pub enum RichTextAction {
         file_digest: String,
     },
 }
+
+tilo_actions::read_through_json_value!(RichTextAction, write);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActionDomain {

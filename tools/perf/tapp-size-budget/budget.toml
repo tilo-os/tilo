@@ -74,7 +74,7 @@ x86_64 = 1048576
 aarch64 = 1179648
 
 [apps."so.tilo.browser"]
-x86_64 = 1966080
+x86_64 = 3932160
 aarch64 = 1900544
 
 [apps."so.tilo.calculator"]
@@ -82,23 +82,23 @@ x86_64 = 720896
 aarch64 = 720896
 
 [apps."so.tilo.calendar"]
-x86_64 = 2359296
+x86_64 = 2818048
 aarch64 = 2031616
 
 [apps."so.tilo.camera"]
-x86_64 = 1900544
+x86_64 = 1835008
 aarch64 = 1769472
 
 [apps."so.tilo.canvas"]
-x86_64 = 4456448
+x86_64 = 4849664
 aarch64 = 4128768
 
 [apps."so.tilo.chat"]
-x86_64 = 3407872
+x86_64 = 4521984
 aarch64 = 3145728
 
 [apps."so.tilo.chip-design"]
-x86_64 = 1835008
+x86_64 = 1966080
 aarch64 = 1703936
 
 [apps."so.tilo.clocks"]
@@ -106,7 +106,7 @@ x86_64 = 1245184
 aarch64 = 1179648
 
 [apps."so.tilo.code-editor"]
-x86_64 = 2752512
+x86_64 = 3670016
 aarch64 = 2490368
 
 [apps."so.tilo.contacts"]
@@ -114,7 +114,7 @@ x86_64 = 1638400
 aarch64 = 1638400
 
 [apps."so.tilo.console"]
-x86_64 = 6000000
+x86_64 = 1376256
 aarch64 = 6000000
 
 [apps."so.tilo.containers"]
@@ -142,7 +142,7 @@ x86_64 = 1507328
 aarch64 = 1376256
 
 [apps."so.tilo.ebook"]
-x86_64 = 2293760
+x86_64 = 2555904
 aarch64 = 2097152
 
 [apps."so.tilo.feeds"]
@@ -170,7 +170,7 @@ x86_64 = 2555904
 aarch64 = 2490368
 
 [apps."so.tilo.launcher"]
-x86_64 = 6000000
+x86_64 = 720896
 aarch64 = 6000000
 
 [apps."so.tilo.logs"]
@@ -178,7 +178,7 @@ x86_64 = 786432
 aarch64 = 786432
 
 [apps."so.tilo.mail"]
-x86_64 = 2752512
+x86_64 = 4063232
 aarch64 = 2555904
 
 [apps."so.tilo.maps"]
@@ -198,11 +198,11 @@ x86_64 = 1179648
 aarch64 = 1179648
 
 [apps."so.tilo.music"]
-x86_64 = 3145728
+x86_64 = 2883584
 aarch64 = 2883584
 
 [apps."so.tilo.notes"]
-x86_64 = 2031616
+x86_64 = 2293760
 aarch64 = 1966080
 
 [apps."so.tilo.osk"]
@@ -218,7 +218,7 @@ x86_64 = 2228224
 aarch64 = 2031616
 
 [apps."so.tilo.photos"]
-x86_64 = 2424832
+x86_64 = 2293760
 aarch64 = 2228224
 
 [apps."so.tilo.poker"]
@@ -254,7 +254,7 @@ x86_64 = 1900544
 aarch64 = 1769472
 
 [apps."so.tilo.slides"]
-x86_64 = 1835008
+x86_64 = 1703936
 aarch64 = 1769472
 
 [apps."so.tilo.snippets"]
@@ -270,7 +270,7 @@ x86_64 = 2883584
 aarch64 = 2686976
 
 [apps."so.tilo.tasks"]
-x86_64 = 1507328
+x86_64 = 2555904
 aarch64 = 1572864
 
 [apps."so.tilo.terminal"]

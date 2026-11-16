@@ -9,7 +9,6 @@ aarch64 = 65536
 aarch64 = 65536
 
 [apps."so.tilo.browser"]
-x86_64 = 196608
 aarch64 = 131072
 
 [apps."so.tilo.calculator"]

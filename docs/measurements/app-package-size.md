@@ -180,9 +180,31 @@ What the columns say:
   links its SSH client (russh, with the curve crate its new key type needs) for 9 KB. Neither
   is shared with a second tapp, so an engine library would only move them.
 - **None of this is a dependency carried whole.** Every crate an app names that the runtime
-  links is provided by it, so the only way to cut these bytes is a non-generic entry point in
-  the SDK for the shared types the apps read (a `from_value` on the runtime's own action and
-  document types that the apps' derives call instead of instantiating the visitor). That is a
-  change of its own; the raise in
-  `tools/perf/tapp-size-budget/raises/apps-features-2026-11-09-to-11-15.toml` covers the growth
-  measured here.
+  links is provided by it, so the only way to cut these bytes is a non-generic entry point for
+  the shared types the apps read.
+
+## Shared types read and written in the runtime, 2026-11-15
+
+Most of the `serde_json` growth above was one type: `tilo_document::action::RichTextAction`,
+whose 53 struct variants each compiled a visitor in every app that edits rich text (through
+`tilo_resource`'s generic vocabulary and child-resource code, instantiated for `RichText`).
+`RichTextAction` now derives its serde code with `#[serde(remote = "Self")]` and
+`tilo_actions::read_through_json_value!(RichTextAction, write)` reads and writes it through
+one `Value`, in functions compiled once in the runtime. The vendored `serde_json` also moved
+the non-generic steps of reading a `Value` (the next element, key and value, the end check,
+an enum's single-key map) and of writing one (inserting a field, element or map value) out of
+every visitor and serializer (`vendor/serde_json/TILO-PATCH.md`).
+
+Named code from symbols builds before and after, with `tools/perf/tapp_symbol_sizes.py`:
+
+| app | before | after | saved | of it `serde_json` |
+| --- | --- | --- | --- | --- |
+| tasks | 1,810,080 | 1,399,904 | 410,176 | 297,728 |
+| mail | 2,314,506 | 2,149,129 | 165,377 | 114,052 |
+| calendar | 1,770,394 | 1,605,098 | 165,296 | 113,476 |
+| ebook | 1,587,402 | 1,422,638 | 164,764 | 113,044 |
+| browser | 2,262,647 | 2,253,515 | 9,132 | 7,896 |
+
+t's app-sizes-x86_64 run ra8e3b25f8a measured the tapps the x86_64 budgets were lowered to
+(Slides' tapp, for one, is 171,008 bytes smaller). The aarch64 budgets wait for a measurement on
+that architecture.

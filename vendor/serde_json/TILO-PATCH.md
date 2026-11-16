@@ -33,6 +33,18 @@ serde_json, where the runtime holds it once and every app calls it:
   read and every error stay the same. `Deserializer::from_str` keeps
   `StrRead`, as its type names it.
 
+- **Reading a type out of a `Value` compiles only its visitor.** The
+  sequence, map and enum readers over a `Value` (owned and borrowed) take
+  their next element, key and value, check that every entry was read and
+  split an enum's single-key map in functions that are not generic. Before,
+  each of those was inlined into every visitor that read a struct, a list or
+  an enum, and every field's value read compiled the map iterator's step.
+- **Writing a type into a `Value` compiles only its `Serialize`.** A struct
+  field, list element or map value is converted with `to_value` and handed to
+  a function that is not generic to insert. A raw value's field is converted
+  the same way and its text read back there, so no field type compiles a
+  serializer that only accepts a raw value's text.
+
 Behaviour is unchanged. A crate's own generic code still compiles what it
 instantiates: a `T: Deserialize` read from a `Value` is the crate's, and so is
 a lookup by a key type the map is generic over (`get`, `remove`).

@@ -207,18 +207,10 @@ fn visit_array<'de, V>(array: Vec<Value>, visitor: V) -> Result<V::Value, Error>
 where
     V: Visitor<'de>,
 {
-    let len = array.len();
     let mut deserializer = SeqDeserializer::new(array);
     let seq = tri!(visitor.visit_seq(&mut deserializer));
-    let remaining = deserializer.iter.len();
-    if remaining == 0 {
-        Ok(seq)
-    } else {
-        Err(serde::de::Error::invalid_length(
-            len,
-            &"fewer elements in array",
-        ))
-    }
+    tri!(deserializer.end());
+    Ok(seq)
 }
 
 impl<'de> serde::Deserializer<'de> for Map<String, Value> {
@@ -228,18 +220,10 @@ impl<'de> serde::Deserializer<'de> for Map<String, Value> {
     where
         V: Visitor<'de>,
     {
-        let len = self.len();
         let mut deserializer = MapDeserializer::new(self);
         let map = tri!(visitor.visit_map(&mut deserializer));
-        let remaining = deserializer.iter.len();
-        if remaining == 0 {
-            Ok(map)
-        } else {
-            Err(serde::de::Error::invalid_length(
-                len,
-                &"fewer elements in map",
-            ))
-        }
+        tri!(deserializer.end());
+        Ok(map)
     }
 
     fn deserialize_enum<V>(
@@ -251,28 +235,7 @@ impl<'de> serde::Deserializer<'de> for Map<String, Value> {
     where
         V: Visitor<'de>,
     {
-        let mut iter = self.into_iter();
-        let (variant, value) = match iter.next() {
-            Some(v) => v,
-            None => {
-                return Err(serde::de::Error::invalid_value(
-                    Unexpected::Map,
-                    &"map with a single key",
-                ));
-            }
-        };
-        // enums are encoded in json as maps with a single key:value pair
-        if iter.next().is_some() {
-            return Err(serde::de::Error::invalid_value(
-                Unexpected::Map,
-                &"map with a single key",
-            ));
-        }
-
-        visitor.visit_enum(EnumDeserializer {
-            variant,
-            value: Some(value),
-        })
+        visitor.visit_enum(tri!(EnumDeserializer::single(self)))
     }
 
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -527,6 +490,24 @@ struct EnumDeserializer {
     value: Option<Value>,
 }
 
+impl EnumDeserializer {
+    /// An enum written as a map with a single key: the variant, and its value.
+    #[inline(never)]
+    fn single(map: Map<String, Value>) -> Result<Self, Error> {
+        let mut iter = map.into_iter();
+        match (iter.next(), iter.next()) {
+            (Some((variant, value)), None) => Ok(EnumDeserializer {
+                variant,
+                value: Some(value),
+            }),
+            _ => Err(serde::de::Error::invalid_value(
+                Unexpected::Map,
+                &"map with a single key",
+            )),
+        }
+    }
+}
+
 impl<'de> EnumAccess<'de> for EnumDeserializer {
     type Error = Error;
     type Variant = VariantDeserializer;
@@ -630,13 +611,34 @@ impl<'de> VariantAccess<'de> for VariantDeserializer {
 }
 
 struct SeqDeserializer {
+    len: usize,
     iter: vec::IntoIter<Value>,
 }
 
 impl SeqDeserializer {
+    #[inline(never)]
     fn new(vec: Vec<Value>) -> Self {
         SeqDeserializer {
+            len: vec.len(),
             iter: vec.into_iter(),
+        }
+    }
+
+    #[inline(never)]
+    fn element(&mut self) -> Option<Value> {
+        self.iter.next()
+    }
+
+    /// Every element was read.
+    #[inline(never)]
+    fn end(self) -> Result<(), Error> {
+        if self.iter.len() == 0 {
+            Ok(())
+        } else {
+            Err(serde::de::Error::invalid_length(
+                self.len,
+                &"fewer elements in array",
+            ))
         }
     }
 }
@@ -648,30 +650,59 @@ impl<'de> SeqAccess<'de> for SeqDeserializer {
     where
         T: DeserializeSeed<'de>,
     {
-        match self.iter.next() {
+        match self.element() {
             Some(value) => seed.deserialize(value).map(Some),
             None => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        match self.iter.size_hint() {
-            (lower, Some(upper)) if lower == upper => Some(upper),
-            _ => None,
-        }
+        Some(self.iter.len())
     }
 }
 
 struct MapDeserializer {
+    len: usize,
     iter: <Map<String, Value> as IntoIterator>::IntoIter,
     value: Option<Value>,
 }
 
 impl MapDeserializer {
+    #[inline(never)]
     fn new(map: Map<String, Value>) -> Self {
         MapDeserializer {
+            len: map.len(),
             iter: map.into_iter(),
             value: None,
+        }
+    }
+
+    /// The next key; its value is kept for `value`.
+    #[inline(never)]
+    fn key(&mut self) -> Option<String> {
+        let (key, value) = self.iter.next()?;
+        self.value = Some(value);
+        Some(key)
+    }
+
+    #[inline(never)]
+    fn value(&mut self) -> Result<Value, Error> {
+        match self.value.take() {
+            Some(value) => Ok(value),
+            None => Err(serde::de::Error::custom("value is missing")),
+        }
+    }
+
+    /// Every entry was read.
+    #[inline(never)]
+    fn end(self) -> Result<(), Error> {
+        if self.iter.len() == 0 {
+            Ok(())
+        } else {
+            Err(serde::de::Error::invalid_length(
+                self.len,
+                &"fewer elements in map",
+            ))
         }
     }
 }
@@ -683,14 +714,12 @@ impl<'de> MapAccess<'de> for MapDeserializer {
     where
         T: DeserializeSeed<'de>,
     {
-        match self.iter.next() {
-            Some((key, value)) => {
-                self.value = Some(value);
-                let key_de = MapKeyDeserializer {
+        match self.key() {
+            Some(key) => seed
+                .deserialize(MapKeyDeserializer {
                     key: Cow::Owned(key),
-                };
-                seed.deserialize(key_de).map(Some)
-            }
+                })
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -699,17 +728,11 @@ impl<'de> MapAccess<'de> for MapDeserializer {
     where
         T: DeserializeSeed<'de>,
     {
-        match self.value.take() {
-            Some(value) => seed.deserialize(value),
-            None => Err(serde::de::Error::custom("value is missing")),
-        }
+        seed.deserialize(tri!(self.value()))
     }
 
     fn size_hint(&self) -> Option<usize> {
-        match self.iter.size_hint() {
-            (lower, Some(upper)) if lower == upper => Some(upper),
-            _ => None,
-        }
+        Some(self.iter.len())
     }
 }
 
@@ -743,18 +766,10 @@ fn visit_array_ref<'de, V>(array: &'de [Value], visitor: V) -> Result<V::Value, 
 where
     V: Visitor<'de>,
 {
-    let len = array.len();
     let mut deserializer = SeqRefDeserializer::new(array);
     let seq = tri!(visitor.visit_seq(&mut deserializer));
-    let remaining = deserializer.iter.len();
-    if remaining == 0 {
-        Ok(seq)
-    } else {
-        Err(serde::de::Error::invalid_length(
-            len,
-            &"fewer elements in array",
-        ))
-    }
+    tri!(deserializer.end());
+    Ok(seq)
 }
 
 impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
@@ -764,18 +779,10 @@ impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
     where
         V: Visitor<'de>,
     {
-        let len = self.len();
         let mut deserializer = MapRefDeserializer::new(self);
         let map = tri!(visitor.visit_map(&mut deserializer));
-        let remaining = deserializer.iter.len();
-        if remaining == 0 {
-            Ok(map)
-        } else {
-            Err(serde::de::Error::invalid_length(
-                len,
-                &"fewer elements in map",
-            ))
-        }
+        tri!(deserializer.end());
+        Ok(map)
     }
 
     fn deserialize_enum<V>(
@@ -787,28 +794,7 @@ impl<'de> serde::Deserializer<'de> for &'de Map<String, Value> {
     where
         V: Visitor<'de>,
     {
-        let mut iter = self.into_iter();
-        let (variant, value) = match iter.next() {
-            Some(v) => v,
-            None => {
-                return Err(serde::de::Error::invalid_value(
-                    Unexpected::Map,
-                    &"map with a single key",
-                ));
-            }
-        };
-        // enums are encoded in json as maps with a single key:value pair
-        if iter.next().is_some() {
-            return Err(serde::de::Error::invalid_value(
-                Unexpected::Map,
-                &"map with a single key",
-            ));
-        }
-
-        visitor.visit_enum(EnumRefDeserializer {
-            variant,
-            value: Some(value),
-        })
+        visitor.visit_enum(tri!(EnumRefDeserializer::single(self)))
     }
 
     fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Error>
@@ -1053,6 +1039,24 @@ struct EnumRefDeserializer<'de> {
     value: Option<&'de Value>,
 }
 
+impl<'de> EnumRefDeserializer<'de> {
+    /// An enum written as a map with a single key: the variant, and its value.
+    #[inline(never)]
+    fn single(map: &'de Map<String, Value>) -> Result<Self, Error> {
+        let mut iter = map.iter();
+        match (iter.next(), iter.next()) {
+            (Some((variant, value)), None) => Ok(EnumRefDeserializer {
+                variant,
+                value: Some(value),
+            }),
+            _ => Err(serde::de::Error::invalid_value(
+                Unexpected::Map,
+                &"map with a single key",
+            )),
+        }
+    }
+}
+
 impl<'de> EnumAccess<'de> for EnumRefDeserializer<'de> {
     type Error = Error;
     type Variant = VariantRefDeserializer<'de>;
@@ -1140,12 +1144,29 @@ impl<'de> VariantAccess<'de> for VariantRefDeserializer<'de> {
 }
 
 struct SeqRefDeserializer<'de> {
+    len: usize,
     iter: slice::Iter<'de, Value>,
 }
 
 impl<'de> SeqRefDeserializer<'de> {
     fn new(slice: &'de [Value]) -> Self {
-        SeqRefDeserializer { iter: slice.iter() }
+        SeqRefDeserializer {
+            len: slice.len(),
+            iter: slice.iter(),
+        }
+    }
+
+    /// Every element was read.
+    #[inline(never)]
+    fn end(&self) -> Result<(), Error> {
+        if self.iter.len() == 0 {
+            Ok(())
+        } else {
+            Err(serde::de::Error::invalid_length(
+                self.len,
+                &"fewer elements in array",
+            ))
+        }
     }
 }
 
@@ -1163,23 +1184,52 @@ impl<'de> SeqAccess<'de> for SeqRefDeserializer<'de> {
     }
 
     fn size_hint(&self) -> Option<usize> {
-        match self.iter.size_hint() {
-            (lower, Some(upper)) if lower == upper => Some(upper),
-            _ => None,
-        }
+        Some(self.iter.len())
     }
 }
 
 struct MapRefDeserializer<'de> {
+    len: usize,
     iter: <&'de Map<String, Value> as IntoIterator>::IntoIter,
     value: Option<&'de Value>,
 }
 
 impl<'de> MapRefDeserializer<'de> {
+    #[inline(never)]
     fn new(map: &'de Map<String, Value>) -> Self {
         MapRefDeserializer {
+            len: map.len(),
             iter: map.into_iter(),
             value: None,
+        }
+    }
+
+    /// The next key; its value is kept for `value`.
+    #[inline(never)]
+    fn key(&mut self) -> Option<&'de str> {
+        let (key, value) = self.iter.next()?;
+        self.value = Some(value);
+        Some(key)
+    }
+
+    #[inline(never)]
+    fn value(&mut self) -> Result<&'de Value, Error> {
+        match self.value.take() {
+            Some(value) => Ok(value),
+            None => Err(serde::de::Error::custom("value is missing")),
+        }
+    }
+
+    /// Every entry was read.
+    #[inline(never)]
+    fn end(&self) -> Result<(), Error> {
+        if self.iter.len() == 0 {
+            Ok(())
+        } else {
+            Err(serde::de::Error::invalid_length(
+                self.len,
+                &"fewer elements in map",
+            ))
         }
     }
 }
@@ -1191,14 +1241,12 @@ impl<'de> MapAccess<'de> for MapRefDeserializer<'de> {
     where
         T: DeserializeSeed<'de>,
     {
-        match self.iter.next() {
-            Some((key, value)) => {
-                self.value = Some(value);
-                let key_de = MapKeyDeserializer {
-                    key: Cow::Borrowed(&**key),
-                };
-                seed.deserialize(key_de).map(Some)
-            }
+        match self.key() {
+            Some(key) => seed
+                .deserialize(MapKeyDeserializer {
+                    key: Cow::Borrowed(key),
+                })
+                .map(Some),
             None => Ok(None),
         }
     }
@@ -1207,17 +1255,11 @@ impl<'de> MapAccess<'de> for MapRefDeserializer<'de> {
     where
         T: DeserializeSeed<'de>,
     {
-        match self.value.take() {
-            Some(value) => seed.deserialize(value),
-            None => Err(serde::de::Error::custom("value is missing")),
-        }
+        seed.deserialize(tri!(self.value()))
     }
 
     fn size_hint(&self) -> Option<usize> {
-        match self.iter.size_hint() {
-            (lower, Some(upper)) if lower == upper => Some(upper),
-            _ => None,
-        }
+        Some(self.iter.len())
     }
 }
 
@@ -1395,10 +1437,8 @@ impl<'de> Visitor<'de> for KeyClassifier {
 
 impl Value {
     #[cold]
-    fn invalid_type<E>(&self, exp: &dyn Expected) -> E
-    where
-        E: serde::de::Error,
-    {
+    #[inline(never)]
+    fn invalid_type(&self, exp: &dyn Expected) -> Error {
         serde::de::Error::invalid_type(self.unexpected(), exp)
     }
 
