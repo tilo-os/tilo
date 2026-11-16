@@ -51,6 +51,7 @@ pub use bot_members::{InstalledBot, RequestedBot};
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;
+pub use local_admission::NotAdmitted;
 mod local_outbox;
 mod membership_error;
 pub use membership_error::MembershipError;

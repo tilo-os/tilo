@@ -21,6 +21,10 @@ pub enum WriteRefusal {
     /// This device's signer did not sign the writes.
     #[error("signing failed: {0}")]
     Unsigned(String),
+    /// The workspace has not admitted what the writes need here yet: they wait, kept, and commit
+    /// once it has.
+    #[error("the writes wait for {0}")]
+    Waiting(crate::admission::MissingPrerequisite),
     /// The workspace is not held here, or its record does not take the writes.
     #[error("{0}")]
     Refused(String),
@@ -381,6 +385,7 @@ impl NativeWorkspaceOwner {
         }
         let store = self.0.store.as_ref();
         let mut full = None;
+        let mut waiting: Option<WriteRefusal> = None;
         let changed = candidate.change(|live, stored| {
             let ready = numbered(live, workspace, device, writes, signed, now)?;
             let mut taken = Vec::new();
@@ -426,7 +431,10 @@ impl NativeWorkspaceOwner {
                     );
                 }
                 publication::append_local(stored, outgoing)?;
-                live.admit_new_local_document(app, record, (**envelope).clone(), now)?;
+                if let Err(refusal) = Self::admit_local_write(live, app, record, envelope, now) {
+                    waiting = matches!(refusal, WriteRefusal::Waiting(_)).then(|| refusal.clone());
+                    return Err(refusal.to_string());
+                }
                 taken.push(request);
                 fresh = true;
             }
@@ -454,9 +462,10 @@ impl NativeWorkspaceOwner {
                 .collect::<Result<Vec<_>, String>>()?;
             Ok((committed, carried))
         });
-        let ((committed, carried), stored) = changed.map_err(|error| match full {
-            Some((app, record)) => WriteRefusal::HistoryFull { app, record },
-            None => WriteRefusal::Refused(error),
+        let ((committed, carried), stored) = changed.map_err(|error| match (full, waiting) {
+            (Some((app, record)), _) => WriteRefusal::HistoryFull { app, record },
+            (None, Some(refusal)) => refusal,
+            (None, None) => WriteRefusal::Refused(error),
         })?;
         if stored.generation != candidate.generation() {
             // One durable publication for every write the turn took.
@@ -466,6 +475,24 @@ impl NativeWorkspaceOwner {
             self.0.kept_here(workspace, &message);
         }
         Ok(committed)
+    }
+
+    /// Admit one local write into the turn's candidate, naming what it waits for when the
+    /// workspace has not admitted it here yet.
+    fn admit_local_write(
+        live: &mut crate::StatePeer,
+        app: &str,
+        record: &str,
+        envelope: &collab_types::SignedOp,
+        now: SystemTime,
+    ) -> Result<(), WriteRefusal> {
+        match live.admit_new_local_document(app, record, envelope.clone(), now) {
+            Ok(()) => Ok(()),
+            Err(crate::NotAdmitted::Waiting(prerequisite)) => {
+                Err(WriteRefusal::Waiting(prerequisite))
+            }
+            Err(crate::NotAdmitted::Refused(reason)) => Err(WriteRefusal::Refused(reason)),
+        }
     }
 }
 

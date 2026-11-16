@@ -182,6 +182,11 @@ impl Task {
                 );
                 return None;
             }
+            Err(WriteRefusal::Waiting(prerequisite)) => {
+                tracing::debug!(app = %route.app_id, record = %route.record, %prerequisite,
+                    "writes wait for what the workspace has not admitted here yet");
+                return None;
+            }
             Err(WriteRefusal::Refused(error)) => {
                 tracing::warn!(app = %route.app_id, record = %route.record, %error,
                     "the workspace refused a write of this device for good");

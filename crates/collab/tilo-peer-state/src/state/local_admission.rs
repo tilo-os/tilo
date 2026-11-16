@@ -1,6 +1,33 @@
 //! Local exact retries use the signed author, never an invented carrier origin.
 
-use super::{AdmissionError, DocumentAdmission, Route, SignedOp, StatePeer, SystemTime};
+use super::{
+    AdmissionError, DocumentAdmission, MissingPrerequisite, Route, SignedOp, StatePeer, SystemTime,
+};
+
+/// Why this device's own write is not in its record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotAdmitted {
+    /// Kept: the workspace has not admitted what it waits for here yet, and
+    /// the write is admitted once it is.
+    Waiting(MissingPrerequisite),
+    /// The record does not take the write, and never will: the reason.
+    Refused(String),
+}
+
+impl std::fmt::Display for NotAdmitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Waiting(prerequisite) => write!(f, "the write waits for {prerequisite}"),
+            Self::Refused(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl From<NotAdmitted> for String {
+    fn from(refusal: NotAdmitted) -> Self {
+        refusal.to_string()
+    }
+}
 
 impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
@@ -193,24 +220,24 @@ impl StatePeer {
     ///
     /// # Errors
     ///
-    /// Returns a message when the write is refused, deferred, incomplete or
-    /// rejected (`not newly admitted`), when its signed sequence is at or
-    /// below the author's replay floor on the route (`signed sequence is
-    /// stale`), or when it leaves no exact admission evidence. None of these
-    /// waits for an asynchronous receipt: the evidence is the exact admission
-    /// index entry written by this same synchronous call.
+    /// [`NotAdmitted::Waiting`] when the workspace has not admitted what the
+    /// write needs here yet, and [`NotAdmitted::Refused`] when it does not
+    /// take it, its signed sequence is at or below the author's replay floor
+    /// on the route, or it leaves no exact admission evidence. Neither waits
+    /// for an asynchronous receipt: the evidence is the exact admission index
+    /// entry written by this same synchronous call.
     pub fn admit_new_local_document(
         &mut self,
         app: &str,
         record: &str,
         envelope: SignedOp,
         now: SystemTime,
-    ) -> Result<(), String> {
+    ) -> Result<(), NotAdmitted> {
         // The evidence is the entry this admission writes, found by its key:
         // comparing the index with a copy of it from before made every write
         // cost every entry the index held since it last settled.
         let evidence = DocumentAdmission::from_op(&self.core.workspace, app, record, &envelope)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| NotAdmitted::Refused(error.to_string()))?;
         // A compaction takes the number of the last write of its author it
         // folds, so that number is held already; what is new is the compaction
         // itself, and its evidence is the mark its fold leaves.
@@ -218,30 +245,35 @@ impl StatePeer {
         let held = !compaction
             && (self.core.exact_admissions.get(&evidence.key).is_some()
                 || self.core.exact_admissions.covers(&evidence.key));
-        let report = self.admit_local(app, record, envelope, now)?;
+        let report = self
+            .admit_local(app, record, envelope, now)
+            .map_err(NotAdmitted::Refused)?;
         let outcome = &report.summary;
         if outcome.duplicate {
-            return Err("native local document signed sequence is stale".into());
+            return Err(NotAdmitted::Refused(
+                "native local document signed sequence is stale".into(),
+            ));
         }
         if outcome.deferred || outcome.incomplete.is_some() || outcome.rejected != 0 {
-            let waiting = match &report.primary {
-                super::InputDisposition::RetryLater(prerequisite) => {
-                    format!(", waiting for {prerequisite}")
-                }
-                _ => String::new(),
-            };
             let incomplete = outcome
                 .incomplete
                 .as_deref()
                 .map_or_else(String::new, |reason| format!(" ({reason})"));
-            return Err(format!(
-                "native local document was deferred, incomplete or rejected, not newly admitted{waiting}{incomplete}"
-            ));
+            return Err(match &report.primary {
+                super::InputDisposition::RetryLater(prerequisite) => {
+                    NotAdmitted::Waiting(prerequisite.clone())
+                }
+                _ => NotAdmitted::Refused(format!(
+                    "native local document was incomplete or rejected, not newly admitted{incomplete}"
+                )),
+            });
         }
         let settled = self.core.exact_admissions.get(&evidence.key) == Some(&evidence.operation_id)
             || (compaction && self.core.exact_admissions.covers(&evidence.key));
         if held || !self.core.exact_selected || !settled {
-            return Err("native local document has no exact admission evidence".into());
+            return Err(NotAdmitted::Refused(
+                "native local document has no exact admission evidence".into(),
+            ));
         }
         Ok(())
     }
@@ -368,6 +400,44 @@ mod tests {
         (peer, *envelope, other, certificate, now)
     }
 
+    /// A local write whose app surface this process does not hold waits for
+    /// it: it is kept as it is, not taken for a write the workspace refuses.
+    #[test]
+    fn a_local_write_that_waits_for_its_app_surface_is_kept() {
+        use collab_types::Surfaces;
+        use collab_types::surface::ContentSurfaces;
+        // No surface this process has is the one the write names.
+        crate::decide_with_surfaces(
+            Surfaces::from_source(std::sync::Arc::new(ContentSurfaces::new(
+                |_: &collab_types::Record<'_>, _: &str| -> Option<Vec<u8>> { None },
+            ))),
+            |_| None,
+        );
+        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
+        peer.select_exact_admissions().unwrap();
+        let bytes = peer.document("test.app", "tab:1").unwrap();
+        let NeighbourMsg::AppDocument { envelope, .. } = peer
+            .clone()
+            .publication_mut()
+            .publish_document("test.app", "tab:1", bytes, &key, now)
+            .unwrap()
+        else {
+            panic!("expected actual signed document publication")
+        };
+        let named = envelope.with_surface(Some([0x42; 32]));
+        let before = peer.document("test.app", "tab:1").unwrap();
+        assert_eq!(
+            peer.admit_new_local_document("test.app", "tab:1", named, now)
+                .unwrap_err(),
+            NotAdmitted::Waiting(MissingPrerequisite::AppSurface)
+        );
+        assert_eq!(
+            peer.document("test.app", "tab:1").unwrap(),
+            before,
+            "a write that waits leaves the record as it was"
+        );
+    }
+
     tilo_test_env::scenario! {
         #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
         fn a_local_write_is_admitted_with_exact_evidence_or_a_fresh_successor;
@@ -443,7 +513,7 @@ mod tests {
             assert_eq!(
                 peer.admit_new_local_document("test.app", "tab:1", *stale, now)
                     .unwrap_err(),
-                "native local document signed sequence is stale"
+                NotAdmitted::Refused("native local document signed sequence is stale".into())
             );
             assert_eq!(peer.durable().unwrap(), before);
 

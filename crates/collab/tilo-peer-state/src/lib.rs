@@ -65,8 +65,8 @@ pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
     InstalledApp, InstalledBot, KeptRecord, MAX_HELD_BYTES, MAX_HELD_INPUTS, Member, MemberId,
-    MemberList, MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord, OpenedWrite,
-    PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    MemberList, MembershipError, NativePublicationCut, NotAdmitted, OpenedHistory, OpenedRecord,
+    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
     ReceiveOutcome, RequestedBot, Reseal, RowError, SealCheckpoint, SeedDocument, SeedState,
