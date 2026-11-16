@@ -896,7 +896,7 @@ workspace-notice-agent-finished-in = { $agent } ist fertig: { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
 } in { $workspace }
-workspace-notice-renamed = Der Arbeitsbereich heißt jetzt { $workspace }
+workspace-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
 answer-app-not-opened = { $app } konnte nicht geöffnet werden

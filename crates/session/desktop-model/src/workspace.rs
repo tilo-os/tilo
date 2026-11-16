@@ -27,10 +27,6 @@ use collab_types::Member;
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
     id: WorkspaceId,
-    /// The workspace's name, as its governance records it: projected onto the shell by the
-    /// device showing it ([`Self::named_as`]), never stored or sent with the layout, so the
-    /// workspace has one name, the one every device and list of it reads.
-    #[serde(skip)]
     pub name: String,
     pub strips: Vec<Strip>,
     /// Whether the workspace shows its strips or its canvas, and where each
@@ -108,6 +104,7 @@ pub struct Workspace {
 #[derive(Deserialize)]
 struct StoredWorkspace {
     id: WorkspaceId,
+    name: String,
     strips: Vec<Strip>,
     #[serde(default)]
     layout: WorkspaceLayout,
@@ -143,7 +140,7 @@ impl From<StoredWorkspace> for Workspace {
         };
         Self {
             id: identity,
-            name: String::new(),
+            name: stored.name,
             strips: stored.strips,
             layout: stored.layout,
             members: stored.members,
@@ -495,10 +492,11 @@ impl Workspace {
         self.id
     }
 
-    /// Project the name the workspace's governance records, `name`, onto this shell: the
-    /// workspace's one name, which the layout keeps none of, so the device showing the workspace
-    /// projects it here from the governance it holds. Naming it what it is already called changes
-    /// nothing. Whether the shell changed.
+    /// Take the name the workspace's governance records, `name`, onto this shell: the workspace's
+    /// one name, which every device and every list of it reads. A shell that landed in the
+    /// workspace before anything named it — served no name, or in one made on another device —
+    /// holds none, and a shell whose copy is older holds the old one; both take the name here.
+    /// Naming it what it is already called changes nothing. Whether the shell changed.
     pub fn named_as(&mut self, name: &str) -> bool {
         let name = name.trim();
         if name.is_empty() || self.name == name {

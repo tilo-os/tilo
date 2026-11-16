@@ -27,5 +27,3 @@ pub mod portable_state;
 pub mod projection;
 #[path = "topology.rs"]
 pub mod topology;
-#[path = "workspace_name.rs"]
-pub mod workspace_name;

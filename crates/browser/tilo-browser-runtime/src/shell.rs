@@ -1406,7 +1406,6 @@ impl BrowserShell {
         if workspace.to_string() != shared.workspace {
             return;
         }
-        shared.asked_name.replace(Some(name.trim().to_owned()));
         let workspace = shared.workspace.clone();
         let notifications = self.chrome.notifications.clone();
         let woken = Arc::clone(&shared.woken);

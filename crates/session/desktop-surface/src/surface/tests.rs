@@ -140,9 +140,6 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
         assert_eq!(workspace.strips.len(), 2);
         assert_eq!(tree.active_strip.get(&workspace.id()), Some(&made));
     });
-    // A valid name is taken for the workspace's governance to record; the shell's name is the
-    // one the governance projects onto it.
-    let named = handle.read(|tree| tree.active_workspace().unwrap().name.clone());
     handle
         .apply_command(&DesktopCommand::RenameWorkspace {
             name: " Lounge ".into(),
@@ -158,7 +155,7 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
         .unwrap();
     handle.read(|tree| {
         let workspace = tree.active_workspace().unwrap();
-        assert_eq!(workspace.name, named);
+        assert_eq!(workspace.name, "Lounge");
         assert_eq!(workspace.strips.len(), 1);
         assert_eq!(
             tree.active_strip.get(&workspace.id()),
@@ -768,18 +765,16 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.focus_tab(stream));
     surface.update(&state, &ui::automerge::ROOT);
     let before = handle.snapshot("g", vec![]).active;
-    let named = local.workspaces[0].name.clone();
     let mut incoming = local;
     incoming.remove_tab(stream);
     incoming.remove_tab(removed);
-    // What the workspace sends carries no name: the one this shell projected stays.
-    incoming.workspaces[0].name = String::new();
+    incoming.workspaces[0].name = "Shared rename".into();
     // Reproduce the browser's inbound snapshot replacement.
     handle.replace_shared_tree(incoming, &[stream]);
     surface.update(&state, &ui::automerge::ROOT);
     assert_eq!(handle.snapshot("g", vec![]).active, before);
     handle.read(|tree| {
-        assert_eq!(tree.workspaces[0].name, named);
+        assert_eq!(tree.workspaces[0].name, "Shared rename");
         let tabs: Vec<_> = tree.workspaces[0].strips[0]
             .window_groups
             .iter()

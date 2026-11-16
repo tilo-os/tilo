@@ -154,8 +154,7 @@ impl Desktop {
     /// in the browser's notifications): what others did in the workspace, agents that finished, and
     /// mentions of this person. A drawn frame hears it too; this is for the tab that draws none.
     pub(super) fn hear_news(&self) {
-        // A rename someone else made is told as the shell takes the workspace's name.
-        let _ = self.follow_workspace_name(self.shared.peer);
+        self.post_workspace_notices();
         self.announce_agents_finished();
         self.tell_mentions();
     }
