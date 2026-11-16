@@ -27,7 +27,7 @@ import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'no
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
 const [site, relay, tiloBin, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !out) {
@@ -49,26 +49,6 @@ const browserArgs = [
   '--enable-logging=stderr', '--v=0',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
-
-// The memory the browser's processes hold, read from /proc as the gate runs the browser beside
-// this script: each renderer and the GPU process (which holds a software GPU's buffers), and what
-// the machine has left. Sampled while a tab runs, so a renderer that dies says what it held.
-const browserMemory = () => {
-  const kib = (text, field) => Number(text.match(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm'))?.[1] ?? 0);
-  const processes = [];
-  for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
-    try {
-      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-      const type = command.match(/--type=([a-z-]+)/)?.[1];
-      if (!type || !['renderer', 'gpu-process'].includes(type)) continue;
-      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
-      processes.push(`${type} ${pid}: ${Math.round(kib(status, 'VmRSS') / 1024)} MiB (peak ${Math.round(kib(status, 'VmHWM') / 1024)} MiB)`);
-    } catch { /* gone between the listing and the read */ }
-  }
-  let available = '?';
-  try { available = `${Math.round(kib(readFileSync('/proc/meminfo', 'utf8'), 'MemAvailable') / 1024)} MiB`; } catch {}
-  return `${processes.join(', ') || 'no renderer or GPU process'}; the machine has ${available} available`;
-};
 
 const finish = async (code, message) => {
   if (message) report.error = message;

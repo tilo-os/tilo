@@ -42,7 +42,7 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {FIRST_RUN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, machine, browserMemory} from './waits.mjs';
 
 const [site, relay, work, tiloBin, ownerSocket] = process.argv.slice(2);
 if (!site || !relay || !work || !tiloBin || !ownerSocket) {
@@ -183,6 +183,7 @@ const visit = async (name, {passkey = false, setupDone = false} = {}) => {
     else if (method === 'Page.javascriptDialogOpening') tab.log.push(`PAGE dialog ${params.type}: ${params.message}`);
     else if (method === 'Inspector.targetCrashed') {
       tab.log.push(`PAGE the renderer crashed; the browser said: ${browser.crashLines?.() || '(nothing)'}`);
+      tab.log.push(`PAGE memory at the crash: ${browserMemory()}`);
       // The browser's own report of how it ended (a signal, or memory) comes
       // a moment after the page's.
       setTimeout(() => tab.log.push(`PAGE why: ${tab.crash?.() ?? 'the browser gave no reason'}`), 1_500).unref?.();

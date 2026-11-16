@@ -8,7 +8,28 @@
 // frames it may also look at are progress only while the shell still owes work.
 
 import {availableParallelism} from 'node:os';
-import {readFileSync} from 'node:fs';
+import {readFileSync, readdirSync} from 'node:fs';
+
+/** The memory the gate's browsers hold, read from /proc while they run: each
+ * renderer and the GPU process (which holds a software GPU's buffers), with
+ * what each holds now and its peak, and what the machine has left. A renderer
+ * that dies says what it held just before. */
+export const browserMemory = () => {
+  const kib = (text, field) => Number(text.match(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm'))?.[1] ?? 0);
+  const processes = [];
+  for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+    try {
+      const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+      const type = command.match(/--type=([a-z-]+)/)?.[1];
+      if (!type || !['renderer', 'gpu-process'].includes(type)) continue;
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+      processes.push(`${type} ${pid}: ${Math.round(kib(status, 'VmRSS') / 1024)} MiB (peak ${Math.round(kib(status, 'VmHWM') / 1024)} MiB)`);
+    } catch { /* gone between the listing and the read */ }
+  }
+  let available = '?';
+  try { available = `${Math.round(kib(readFileSync('/proc/meminfo', 'utf8'), 'MemAvailable') / 1024)} MiB`; } catch {}
+  return `${processes.join(', ') || 'no renderer or GPU process'}; the machine has ${available} available`;
+};
 
 /** How long one step of a page test may take before the run calls it hung
  * and says which step it was: one thing a person does and the page's answer.
