@@ -1056,7 +1056,7 @@ fn files_holding(
     within: &std::path::Path,
 ) -> (Vec<std::path::PathBuf>, usize) {
     let mut holding = Vec::new();
-    let mut inside = 0;
+    let mut inside = 0_usize;
     let mut waiting = vec![dir.to_path_buf()];
     while let Some(next) = waiting.pop() {
         for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
@@ -1072,7 +1072,7 @@ fn files_holding(
                     holding.push(path.clone());
                 }
                 if path.starts_with(within) {
-                    inside += 1;
+                    inside = inside.saturating_add(1);
                 }
             }
         }
