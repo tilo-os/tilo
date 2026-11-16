@@ -279,7 +279,11 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
 /// relay keeps their change of it and their other device takes it in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_writes_their_own_record() {
-    a_viewer_writes_their_own_record_of("so.tilo.settings", "settings.root").await;
+    Box::pin(a_viewer_writes_their_own_record_of(
+        "so.tilo.settings",
+        "settings.root",
+    ))
+    .await;
 }
 
 /// A person's mail is theirs: a Viewer keeps their own mailbox record
@@ -287,7 +291,11 @@ async fn a_viewer_writes_their_own_record() {
 /// fresh workspace no editor ever opened Mail in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_viewer_keeps_their_own_mailbox() {
-    a_viewer_writes_their_own_record_of("so.tilo.mail", "mail.mailbox").await;
+    Box::pin(a_viewer_writes_their_own_record_of(
+        "so.tilo.mail",
+        "mail.mailbox",
+    ))
+    .await;
 }
 
 async fn a_viewer_writes_their_own_record_of(own_app: &str, kind: &str) {
