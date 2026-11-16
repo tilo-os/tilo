@@ -13,7 +13,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, WindowPolicy};
-use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
+use tilo_session_core::surface::{
+    HostFrame, HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost,
+};
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_data_device,
@@ -1786,3 +1788,116 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Seen {
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
+
+#[derive(Default)]
+pub struct HostLog {
+    pub motions: Vec<(f64, f64)>,
+    pub buttons: Vec<(u32, bool)>,
+    pub left: u32,
+    pub keys: Vec<HostKey>,
+    pub wants_keyboard: bool,
+    /// Each Super+X the surface was offered, and whether it was told a client holds the desktop's
+    /// shortcuts.
+    pub taken: Vec<(u32, bool)>,
+    /// The text field the surface draws, when it draws one: what it declares and where its caret
+    /// stands on the shell.
+    pub field: Option<HostTextInput>,
+    /// What the input method did with the field, in order.
+    pub ime: Vec<HostIme>,
+    /// Whether a press anywhere else closes the surface, as an open launcher closes.
+    pub closes_on_press_elsewhere: bool,
+    /// What the surface draws over the windows, by the window each part is of, in the layout.
+    pub covers: Vec<(u64, (i32, i32, i32, i32))>,
+}
+
+/// A hosted surface: one square of one colour. Like any surface host it keeps the frame it drew and
+/// hands that same frame on every pass: a fresh one each time would say it drew everything again.
+pub struct Square {
+    rect: (i32, i32, i32, i32),
+    frame: HostFrame,
+    log: Rc<RefCell<HostLog>>,
+    below: bool,
+}
+
+impl Square {
+    pub fn new(rect: (i32, i32, i32, i32), rgba: [u8; 4], log: Rc<RefCell<HostLog>>) -> Self {
+        let frame = HostFrame::from_pixels(
+            (
+                u32::try_from(rect.2).expect("a whole number of pixels"),
+                u32::try_from(rect.3).expect("a whole number of pixels"),
+            ),
+            rgba.repeat(usize::try_from(rect.2 * rect.3).unwrap()),
+        );
+        Self {
+            rect,
+            frame,
+            log,
+            below: false,
+        }
+    }
+
+    /// The same square, under every window.
+    pub fn below(mut self) -> Self {
+        self.below = true;
+        self
+    }
+}
+
+impl SurfaceHost for Square {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            pose: tilo_session_core::surface::LayerPose::SETTLED,
+            location: (self.rect.0, self.rect.1),
+            size: (self.rect.2, self.rect.3),
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn below_windows(&self) -> bool {
+        self.below
+    }
+
+    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
+        self.log.borrow().covers.clone()
+    }
+
+    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        let (rx, ry, w, h) = self.rect;
+        x >= f64::from(rx) && y >= f64::from(ry) && x < f64::from(rx + w) && y < f64::from(ry + h)
+    }
+
+    fn pointer_motion(&mut self, x: f64, y: f64) {
+        self.log.borrow_mut().motions.push((x, y));
+    }
+
+    fn pointer_leave(&mut self) {
+        self.log.borrow_mut().left += 1;
+    }
+
+    fn pointer_button(&mut self, button: u32, pressed: bool) {
+        self.log.borrow_mut().buttons.push((button, pressed));
+    }
+
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+        let mut log = self.log.borrow_mut();
+        if log.closes_on_press_elsewhere {
+            log.wants_keyboard = false;
+        }
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.log.borrow().wants_keyboard
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.log.borrow_mut().keys.push(key.clone());
+    }
+
+    fn text_input(&self) -> Option<HostTextInput> {
+        self.log.borrow().field
+    }
+
+    fn ime(&mut self, event: HostIme) {
+        self.log.borrow_mut().ime.push(event);
+    }
+}

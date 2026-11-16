@@ -2213,26 +2213,23 @@ impl Widget for DesktopSurface {
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
         self.draw_display_strips(scene, transform, text, theme, presence);
-        // What the strips just drew of their floated windows whole over the windows under them:
-        // the compositor draws those around it rather than under it, so nothing reads through its
-        // bar or its body and its lift shows against them.
+        let hint_places = self.shown_row().map(|row| {
+            ui::widget::draw_child(row, scene, transform, text, theme, presence);
+            row.hint_places()
+        });
+        // What the strips just drew of their floated windows whole over the windows under them,
+        // the shown row's included: the compositor draws those around it rather than under it, so
+        // nothing reads through its bar or its body and its lift shows against them.
         let float_covers: Vec<(TabId, Rect)> = self
             .drawn_strips()
             .into_iter()
             .filter_map(|strip| self.rows.get(&strip))
             .flat_map(|row| row.drawn_covers().iter().copied())
             .collect();
-        {
-            let mut shared = self.shared.borrow_mut();
-            if shared.float_covers != float_covers {
-                shared.float_covers = float_covers;
-            }
-        }
-        let hint_places = self.shown_row().map(|row| {
-            ui::widget::draw_child(row, scene, transform, text, theme, presence);
-            row.hint_places()
-        });
-        self.shared.borrow_mut().hint_places = hint_places.unwrap_or_default();
+        let mut shared = self.shared.borrow_mut();
+        shared.float_covers = float_covers;
+        shared.hint_places = hint_places.unwrap_or_default();
+        drop(shared);
         self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
     }

@@ -794,10 +794,6 @@ fn a_floated_windows_cover_is_where_the_shell_draws_it() {
         (true, true),
         "the whole of its bar and body and the lift it stands on, as the shell draws it: {cover:?}"
     );
-    assert!(
-        policy.placement().covers == covers,
-        "the layout a surface publishes carries the covers"
-    );
 }
 
 #[test]

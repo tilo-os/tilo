@@ -37,7 +37,8 @@ mod typing;
 mod window_icons;
 
 use crate::harness::{
-    Seen, TestClient, headless, mapped_client, mapped_client_without_touch, pump, shown,
+    HostLog, Seen, Square, TestClient, headless, mapped_client, mapped_client_without_touch, pump,
+    shown,
 };
 
 use std::cell::RefCell;
@@ -609,113 +610,6 @@ fn a_click_into_a_window_takes_the_keyboard_from_an_open_launcher() {
     );
 }
 
-#[derive(Default)]
-struct HostLog {
-    motions: Vec<(f64, f64)>,
-    buttons: Vec<(u32, bool)>,
-    left: u32,
-    keys: Vec<HostKey>,
-    wants_keyboard: bool,
-    /// Each Super+X the surface was offered, and whether it was told a client holds the desktop's
-    /// shortcuts.
-    taken: Vec<(u32, bool)>,
-    /// The text field the surface draws, when it draws one: what it declares and where its caret
-    /// stands on the shell.
-    field: Option<HostTextInput>,
-    /// What the input method did with the field, in order.
-    ime: Vec<HostIme>,
-    /// Whether a press anywhere else closes the surface, as an open launcher closes.
-    closes_on_press_elsewhere: bool,
-}
-
-/// A hosted surface: one square of one colour.
-struct Square {
-    rect: (i32, i32, i32, i32),
-    pixels: Vec<u8>,
-    log: Rc<RefCell<HostLog>>,
-    below: bool,
-}
-
-impl Square {
-    fn new(rect: (i32, i32, i32, i32), rgba: [u8; 4], log: Rc<RefCell<HostLog>>) -> Self {
-        let pixel = [rgba[0], rgba[1], rgba[2], rgba[3]];
-        let pixels = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
-        Self {
-            rect,
-            pixels,
-            log,
-            below: false,
-        }
-    }
-
-    /// The same square, under every window.
-    fn below(mut self) -> Self {
-        self.below = true;
-        self
-    }
-}
-
-impl SurfaceHost for Square {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
-            pose: tilo_session_core::surface::LayerPose::SETTLED,
-            location: (self.rect.0, self.rect.1),
-            size: (self.rect.2, self.rect.3),
-            frame: HostFrame::from_pixels(
-                (
-                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
-                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
-                ),
-                self.pixels.clone(),
-            ),
-        }]
-    }
-
-    fn below_windows(&self) -> bool {
-        self.below
-    }
-
-    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
-        let (rx, ry, w, h) = self.rect;
-        x >= f64::from(rx) && y >= f64::from(ry) && x < f64::from(rx + w) && y < f64::from(ry + h)
-    }
-
-    fn pointer_motion(&mut self, x: f64, y: f64) {
-        self.log.borrow_mut().motions.push((x, y));
-    }
-
-    fn pointer_leave(&mut self) {
-        self.log.borrow_mut().left += 1;
-    }
-
-    fn pointer_button(&mut self, button: u32, pressed: bool) {
-        self.log.borrow_mut().buttons.push((button, pressed));
-    }
-
-    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
-        let mut log = self.log.borrow_mut();
-        if log.closes_on_press_elsewhere {
-            log.wants_keyboard = false;
-        }
-    }
-
-    fn wants_keyboard(&self) -> bool {
-        self.log.borrow().wants_keyboard
-    }
-
-    fn key(&mut self, key: &HostKey) {
-        self.log.borrow_mut().keys.push(key.clone());
-    }
-
-    fn text_input(&self) -> Option<HostTextInput> {
-        self.log.borrow().field
-    }
-
-    fn ime(&mut self, event: HostIme) {
-        self.log.borrow_mut().ime.push(event);
-    }
-}
-
 /// The desktop's own key surface, as the session's is: it answers Super+X wherever the keyboard is,
 /// unless a client holds the desktop's shortcuts.
 struct Chords {
@@ -1177,6 +1071,37 @@ fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     assert_eq!(log.borrow().motions, vec![(10.0, 10.0)]);
     assert_eq!(log.borrow().buttons, vec![(BTN_LEFT, true)]);
     assert!(client.seen.buttons.is_empty());
+}
+
+/// What a surface below the windows draws over them for a floating window (its bar and lift) shows
+/// over the windows behind it on a display away from the layout's origin too.
+#[test]
+fn a_cover_for_a_floating_window_shows_on_a_display_away_from_the_origin() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    let output = OutputConfig::new("HEADLESS-1", 640, 480).at(640, 0);
+    compositor.add_output(&output).expect("output");
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    let square = Square::new((640, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
+    compositor.add_host(Rc::new(RefCell::new(square.below())));
+    let _under = mapped_client(&mut compositor, "under", (400, 300), [255, 0, 0, 255]);
+    let _float = mapped_client(&mut compositor, "float", (200, 100), [0, 255, 0, 255]);
+    let (info, (x, y, w, h)) = compositor.windows().pop().expect("the floating window");
+    // The card stands 40 px round the window: its bar above it and its lift around it.
+    let card = (x - 40, y - 40, w + 80, h + 80);
+    log.borrow_mut().covers.push((info.id, card));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let at = |d: i32| frame.pixel((x - 640 + d).unsigned_abs(), (y + d).unsigned_abs());
+    assert_eq!(
+        at(-20),
+        Some([0, 0, 255, 255]),
+        "the card over the window behind"
+    );
+    assert_eq!(
+        at(10),
+        Some([0, 255, 0, 255]),
+        "the floating window on its card"
+    );
 }
 
 /// A floating stack whose focus and closes a test sets, as a desktop's own controls would.

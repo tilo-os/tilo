@@ -84,10 +84,6 @@ pub struct Placement {
     /// fills that display's whole area, the bar's room included, and the
     /// bar steps aside while it does.
     pub fullscreen: Option<u64>,
-    /// Each window floating over the shell, and what the shell covers the
-    /// windows under it with for that window: its bar and body, the whole
-    /// rect they fill, in surface coordinates ([`DesktopPolicy::float_covers`]).
-    pub covers: Vec<(u64, Rect)>,
 }
 
 /// Windows waiting for their tab, shared with the surface's tile source.
@@ -1534,7 +1530,6 @@ impl DesktopPolicy {
         }
         Placement {
             fullscreen: self.handle.read(covering_window),
-            covers: self.float_covers(),
             shown,
             hidden,
             floating,

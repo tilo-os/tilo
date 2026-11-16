@@ -392,12 +392,13 @@ where
         // What this window still shows through: what the shells cover it with for the windows in
         // front of it.
         let visible = outside(bounds, &covers);
-        // Its own cover is over the windows behind it, from here on.
+        // Its own cover is over the windows behind it, from here on: in the layout, so placed
+        // from `origin` as the window is.
         if let Some(cover) = crate::state::describe(state, window)
             .and_then(|info| state.covers.get(&info.id).copied())
         {
             covers.push(Rectangle::new(
-                cover.loc.to_physical_precise_round(scale),
+                (cover.loc.to_f64() - origin).to_physical_precise_round(scale),
                 cover.size.to_physical_precise_round(scale),
             ));
         }
