@@ -45,7 +45,7 @@ const GROUPS: [string, string[]][] = [
     "Resource", "Step", "Surface", "resourceProxy", "kebab", "segments",
     "Listing", "Row", "Action", "Param", "Hit",
   ]],
-  ["Runs", ["Run", "RunGroup", "withinRun", "ActionAnswer", "Event", "ProgramAnswer"]],
+  ["Runs", ["Run", "RunGroup", "withinRun", "ActionAnswer", "RunList", "RunInfo", "Event", "ProgramAnswer"]],
   ["Files", ["Files", "FileBytes", "Upload"]],
   ["Keys", ["WorkspaceKeys", "Key", "MintedKey"]],
   ["Members", ["Members", "Member", "Invitation", "Person"]],
