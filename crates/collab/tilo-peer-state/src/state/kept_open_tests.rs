@@ -367,13 +367,19 @@ tilo_test_env::scenario! {
         let (first, rest) = frames.split_first().unwrap();
         let message = write(&f.host, &f.owner, &keys, first, f.now);
         admit(&mut f.host, &f.owner, message, f.now);
+        // The record reads as it did before the write began to arrive.
         let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
-        assert!(matches!(read, Err(crate::PeerDocumentReadError::Incomplete)));
+        let document = read.unwrap();
+        assert!(document.get(ROOT, "file").unwrap().is_none());
+        assert_eq!(
+            document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("one")
+        );
         assert_eq!(opened, 1, "the first segment alone");
         assert!(kept.is_open(), "what opened before the segments stays kept");
         // Read again while the rest has not come: nothing is opened again.
         let (read, opened) = read_large(&f.host, reader, &keys, &mut kept);
-        assert!(read.is_err());
+        assert!(read.is_ok());
         assert_eq!(opened, 0, "a read while segments arrive opens nothing twice");
         for frame in rest {
             let message = write(&f.host, &f.owner, &keys, frame, f.now);
@@ -390,5 +396,54 @@ tilo_test_env::scenario! {
             document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
             Some("one")
         );
+    }
+
+    phase a_write_its_writer_stopped_sending_is_left_out_once_it_wrote_on;
+    {
+        let mut f = fixture();
+        let keys = f.keys();
+        let reader = f.authority.device_public_key;
+        let mut author = Author::new(&f.host);
+        let message = write(&f.host, &f.owner, &keys, &author.edit("value", "one"), f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        // The record as the workspace holds it, which the writer reads when it starts again.
+        let mut again = Author(author.0.fork());
+        // A file larger than one frame, of which only the first segment ever reached the
+        // workspace: its writer ended while the rest was on its way.
+        let file = noise(collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES * 3 / 2, 7);
+        let frames = DocumentMutation::decode(&author.edit_bytes("file", file))
+            .unwrap()
+            .encode_frames()
+            .unwrap();
+        assert!(frames.len() > 1, "the write goes out as segments");
+        let message = write(&f.host, &f.owner, &keys, &frames[0], f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let compacted = |host: &StatePeer| {
+            super::super::sealed_compaction::merge_sealed(
+                &host.core.documents[&route()],
+                &mut |op| open(&keys, op),
+            )
+        };
+        assert!(
+            compacted(&f.host).is_err(),
+            "while the rest may still come, a compaction does not leave the write out"
+        );
+        // The writer, started again, writes on: the rest of the file never comes.
+        let message = write(&f.host, &f.owner, &keys, &again.edit("value", "two"), f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+        let whole = AutoCommit::load(&compacted(&f.host).unwrap()).unwrap();
+        assert_eq!(
+            whole.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            Some("two")
+        );
+        for kept in [&mut KeptRecord::default(), &mut KeptRecord::default()] {
+            let (read, _) = read_large(&f.host, reader, &keys, kept);
+            let document = read.expect("the record reads without the write that was stopped");
+            assert_eq!(
+                document.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+                Some("two")
+            );
+            assert!(document.get(ROOT, "file").unwrap().is_none());
+        }
     }
 }

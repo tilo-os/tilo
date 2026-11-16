@@ -114,6 +114,13 @@ struct Transfer {
 /// admitted alone, and a reader takes the transfer once it holds all of them.
 /// A transfer is its author's and digest's, so segments of different authors
 /// or transfers never mix.
+///
+/// A writer sends a transfer's segments one after another, before anything
+/// else it writes to the record. One that wrote anything else after some of
+/// them stopped that transfer (it ended, or the record refused a segment), and
+/// its other segments never come: the transfer is let go, and the record reads
+/// without it, as the writer's own later writes do. Kept, every reader waited
+/// for the rest for good and was refused the whole record as incomplete.
 #[derive(Default)]
 pub struct Transfers(BTreeMap<([u8; 32], [u8; 32]), Transfer>);
 
@@ -130,7 +137,14 @@ impl Transfers {
         author: [u8; 32],
         plaintext: &[u8],
     ) -> Result<Option<DocumentMutation>, String> {
-        let segment = match DocumentFrame::decode(plaintext).map_err(|error| error.to_string())? {
+        let frame = DocumentFrame::decode(plaintext).map_err(|error| error.to_string())?;
+        let going_on = match &frame {
+            DocumentFrame::Whole(_) => None,
+            DocumentFrame::Segment(segment) => Some(segment.digest),
+        };
+        self.0
+            .retain(|(writer, digest), _| *writer != author || Some(*digest) == going_on);
+        let segment = match frame {
             DocumentFrame::Whole(mutation) => return Ok(Some(mutation)),
             DocumentFrame::Segment(segment) => segment,
         };
@@ -169,6 +183,15 @@ impl Transfers {
             DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
             DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
         }))
+    }
+
+    /// Whether a transfer of changes still waits for segments: a record read
+    /// without it lacks what it writes. A whole record (a key holder's
+    /// checkpoint) only states again what the record's writes hold.
+    pub fn waits_for_changes(&self) -> bool {
+        self.0
+            .values()
+            .any(|transfer| transfer.kind == DocumentMutationKind::Incremental)
     }
 
     /// Whether a transfer still waits for segments.

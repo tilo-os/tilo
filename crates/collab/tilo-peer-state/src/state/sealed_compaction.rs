@@ -465,7 +465,9 @@ pub(super) fn merge_sealed(
         }
         writes.push((index, mutation));
     }
-    if !transfers.is_empty() {
+    // A checkpoint whose segments stopped coming only states again what the writes hold; a
+    // compaction leaves it out. Changes still arriving are not left out.
+    if transfers.waits_for_changes() {
         return Err("a segmented write of the sealed history is incomplete".into());
     }
     let base = (*document.doc).clone();

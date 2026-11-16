@@ -245,16 +245,14 @@ struct Opened {
 }
 
 impl Opened {
-    /// The record opened, unless a write's segments are not all here yet. What opened before such
-    /// a write is kept all the same: the next read opens only what was admitted since. Dropped,
-    /// every read opened the whole history again, and a reader that follows the record read it so
-    /// on every pass while one of its writes was still arriving, or never would.
-    fn read(&self) -> Result<&Automerge, PeerDocumentReadError> {
-        if self.transfers.is_empty() {
-            Ok(self.document.committed_document())
-        } else {
-            Err(PeerDocumentReadError::Incomplete)
-        }
+    /// The record opened, without a write whose segments are not all here yet, as it read the
+    /// moment before that write began to arrive; its segments are kept for the next read, which
+    /// opens only what was admitted since. A write whose writer stopped sending it (it ended,
+    /// or the workspace refused a segment) never completes: refused while one was arriving,
+    /// the record did not read for any reader, for good. Whatever builds on such a write waits
+    /// for it as a write whose base is still on its way does.
+    fn read(&self) -> &Automerge {
+        self.document.committed_document()
     }
 
     /// Whether `document`'s history continues the one this opened.
@@ -538,5 +536,5 @@ fn open_history<'a>(
         }
     }
     opened.document = merged;
-    kept.0.insert(opened).read()
+    Ok(kept.0.insert(opened).read())
 }
