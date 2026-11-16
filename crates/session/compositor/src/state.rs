@@ -926,7 +926,7 @@ impl State {
             tracing::debug!(refusal, "remote input refused");
             return;
         }
-        self.route_input(event, tilo_clock::now());
+        self.route_input(event, now);
     }
 
     pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant) {
