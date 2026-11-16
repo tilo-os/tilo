@@ -86,7 +86,7 @@ const LIBRARY_RESOURCE: &str = "shortcuts";
 pub enum InvocationStatus {
     Running,
     /// It finished: what it reported, and the steps that fell short when
-    /// any did (`RunReport::degraded_summary`).
+    /// any did (`InvocationReport::degraded_summary`).
     Completed {
         value: Option<Value>,
         degraded: Option<String>,

@@ -369,7 +369,7 @@ where
         match runner.step().await {
             Ok(reports) => {
                 for report in reports {
-                    if report.outcome != tilo_automation::RunOutcome::Completed {
+                    if report.outcome != tilo_automation::InvocationOutcome::Completed {
                         eprintln!("  [{what}] run {}: {:?}", report.trigger, report.outcome);
                     }
                 }
