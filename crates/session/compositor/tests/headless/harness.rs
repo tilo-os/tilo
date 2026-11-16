@@ -1807,7 +1807,7 @@ pub struct HostLog {
     /// Whether a press anywhere else closes the surface, as an open launcher closes.
     pub closes_on_press_elsewhere: bool,
     /// What the surface draws over the windows, by the window each part is of, in the layout.
-    pub covers: Vec<(u64, (i32, i32, i32, i32))>,
+    pub covers: Vec<tilo_session_core::surface::WindowCover>,
 }
 
 /// A hosted surface: one square of one colour. Like any surface host it keeps the frame it drew and
@@ -1857,7 +1857,7 @@ impl SurfaceHost for Square {
         self.below
     }
 
-    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
+    fn drawn_over_windows(&self) -> Vec<tilo_session_core::surface::WindowCover> {
         self.log.borrow().covers.clone()
     }
 

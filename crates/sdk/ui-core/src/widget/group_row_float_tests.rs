@@ -369,13 +369,8 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
         "and the window's body under it: bar {bar:?} against card {card:?}"
     );
     assert_eq!(
-        cover.union(card),
-        cover,
-        "the cover holds the whole card, bar and body: {cover:?} against {card:?}"
-    );
-    assert!(
-        cover.width() > card.width() && cover.height() > card.height(),
-        "and the lift it stands on, so the windows under it are drawn around that too: \
-         {cover:?} against {card:?}"
+        cover, card,
+        "the cover is the card, bar and body, and not the shadow round it, which the windows \
+         under it show through"
     );
 }

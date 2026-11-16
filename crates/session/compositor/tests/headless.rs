@@ -50,12 +50,12 @@ use std::time::{Duration, Instant};
 use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::{
     Arrangement, Compositor, GestureEvent, IconArtwork, InputEvent, KeyboardLayout, LayoutPoint,
-    LayoutRect, OutputConfig, PadAction, StackPolicy, Switch, TabletEvent, TabletPadEvent,
+    LayoutRect, OutputConfig, PadAction, Shadow, StackPolicy, Switch, TabletEvent, TabletPadEvent,
     TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
     WindowInfo, WindowPolicy,
 };
 use tilo_session_core::surface::{
-    BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowPicture,
+    BackdropImage, BackdropRequest, HostKey, KeyClaim, WindowCover, WindowPicture,
 };
 use tilo_session_core::surface::{
     HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
@@ -1094,37 +1094,69 @@ fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     assert!(client.seen.buttons.is_empty());
 }
 
-/// What a surface below the windows draws over them for a floating window (its bar and lift) shows
-/// over the windows behind it on a display away from the layout's origin too.
+/// The window behind a floating window's card shows right up to the card, under the shadow the card
+/// casts: only the card itself hides it, not the room its shadow takes. So on a display away from
+/// the layout's origin too.
 #[test]
-fn a_cover_for_a_floating_window_shows_on_a_display_away_from_the_origin() {
+fn the_window_behind_a_floating_card_shows_under_its_shadow() {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
     let output = OutputConfig::new("HEADLESS-1", 640, 480).at(640, 0);
     compositor.add_output(&output).expect("output");
     // The layout starts at its top left corner, so a display away from it has one beside it.
     let left = OutputConfig::new("HEADLESS-2", 640, 480);
     compositor.add_output(&left).expect("output");
+    // The shell draws the windows' own cards, as the session's does.
+    compositor.set_window_frame(WindowFrame::corners(0.0));
     let log = Rc::new(RefCell::new(HostLog::default()));
     let square = Square::new((640, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log));
     compositor.add_host(Rc::new(RefCell::new(square.below())));
     let _under = mapped_client(&mut compositor, "under", (400, 300), [255, 0, 0, 255]);
     let _float = mapped_client(&mut compositor, "float", (200, 100), [0, 255, 0, 255]);
-    let (info, (x, y, w, h)) = compositor.windows().pop().expect("the floating window");
-    // The card stands 40 px round the window: its bar above it and its lift around it.
-    let card = (x - 40, y - 40, w + 80, h + 80);
-    log.borrow_mut().covers.push((info.id, card));
+    let mut windows = compositor.windows();
+    let (info, (x, y, w, h)) = windows.pop().expect("the floating window");
+    let (_, under) = windows.pop().expect("the window behind");
+    // The card stands 10 px round the window and casts a soft shadow.
+    let card = (x - 10, y - 10, w + 20, h + 20);
+    log.borrow_mut().covers.push(WindowCover {
+        window: info.id,
+        rect: card,
+        shadows: vec![WindowFrame {
+            radius: 0.0,
+            shadow: Some(Shadow {
+                offset_y: 0.0,
+                blur: 16.0,
+                rgba: [0, 0, 0, 128],
+            }),
+            edge: None,
+        }],
+    });
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    let at = |d: i32| frame.pixel((x - 640 + d).unsigned_abs(), (y + d).unsigned_abs());
-    assert_eq!(
-        at(-20),
-        Some([0, 0, 255, 255]),
-        "the card over the window behind"
+    let pixel = |px: i32, py: i32| {
+        frame
+            .pixel((px - 640).unsigned_abs(), py.unsigned_abs())
+            .expect("on the output")
+    };
+    let (px, py) = (card.0 - 3, y + h / 2);
+    assert!(
+        px > under.0 + 16 && py > under.1 + 16 && py < under.1 + under.3 - 16,
+        "the point beside the card is on the window behind: {under:?} {card:?}"
+    );
+    let beside = pixel(px, py);
+    assert!(
+        beside[1] == 0 && beside[2] == 0 && beside[0] > 100 && beside[0] < 240,
+        "beside the card the window behind shows, darkened by the shadow: {beside:?}"
     );
     assert_eq!(
-        at(10),
-        Some([0, 255, 0, 255]),
-        "the floating window on its card"
+        pixel(card.0 + 3, py),
+        [0, 0, 255, 255],
+        "the card over the window behind"
+    );
+    let far = pixel(under.0 + 20, under.1 + under.3 - 20);
+    assert_eq!(
+        far,
+        [255, 0, 0, 255],
+        "away from the card it stands as it is"
     );
 }
 

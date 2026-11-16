@@ -386,9 +386,10 @@ where
         }
     }
     let mut elements = Vec::new();
-    // What the shells draw over the windows: one a window in front of another stands on lies over it,
-    // so everything behind is drawn around it.
+    // What the shells draw over the windows: the card a window in front of another stands on lies
+    // over it, so everything behind is drawn around the card and under the shadows it casts.
     let mut covers: Vec<Rectangle<i32, Physical>> = Vec::new();
+    let mut lifts: Vec<(Rectangle<f64, Logical>, &[crate::WindowFrame])> = Vec::new();
     for (front, window) in stack.into_iter().enumerate() {
         let window = &window;
         for gone in closing.get(front).into_iter().flatten() {
@@ -410,11 +411,33 @@ where
         // What this window still shows through: what the shells cover it with for the windows in
         // front of it.
         let visible = area.map_or_else(Vec::new, |area| outside(area, &covers));
+        // The shadows of the cards in front darken what shows of it, in front of it.
+        let shown = Rectangle::new(
+            (location.to_f64() - origin).to_physical_precise_round(scale),
+            window.geometry().size.to_physical_precise_round(scale),
+        );
+        for piece in visible.iter().filter_map(|piece| piece.intersection(shown)) {
+            for &(card, shadows) in &lifts {
+                elements.extend(crate::effects::lift(
+                    renderer,
+                    &state.frame_images,
+                    (card, shadows),
+                    scale,
+                    piece,
+                ));
+            }
+        }
         // Its own cover is over the windows behind it, from here on.
-        if let Some(cover) = crate::state::describe(state, window)
-            .and_then(|info| state.covers.get(&info.id).copied())
+        if let Some(cover) =
+            crate::state::describe(state, window).and_then(|info| state.covers.get(&info.id))
         {
-            covers.push(physical(cover, origin, scale));
+            let (x, y, width, height) = cover.rect;
+            let rect = Rectangle::new((x, y).into(), (width, height).into());
+            covers.push(physical(rect, origin, scale));
+            lifts.push((
+                Rectangle::new(rect.loc.to_f64() - origin, rect.size.to_f64()),
+                &cover.shadows,
+            ));
         }
         // What the window drew is kept while it stands, so its close has a frame to animate even
         // once its surface is gone.

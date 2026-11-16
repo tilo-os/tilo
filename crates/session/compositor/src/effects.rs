@@ -531,40 +531,93 @@ where
     };
     // The shadow and the edge sit under the window, so they come after it.
     let unscaled_size = size.to_f64();
-    let image = framing.images.image(
+    elements.extend(frame_element(
+        renderer,
+        framing.images,
         &framing.frame,
         (unscaled_size.w, unscaled_size.h),
+        unscaled.loc.to_f64(),
         output_scale,
-    );
-    if let Some(image) = image {
-        let at = unscaled.loc.to_f64() + Point::<f64, Physical>::from(image.origin);
-        let logical = Size::<i32, Logical>::from((
-            window_frame::pixels(image.size.0 / output_scale),
-            window_frame::pixels(image.size.1 / output_scale),
-        ));
-        let element = MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            at,
-            &image.buffer,
-            Some(placement.opacity),
-            None,
-            Some(logical),
-            Kind::Unspecified,
-        );
-        match element {
-            Ok(element) => {
-                let scaled =
-                    RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
-                if let Some(element) =
-                    CropRenderElement::from_element(scaled, output_scale, placement.clip)
-                {
-                    elements.push(OutputRenderElement::Frame(element));
-                }
-            }
-            Err(error) => tracing::warn!(?error, "window frame: buffer not imported"),
-        }
-    }
+        placement,
+    ));
     elements
+}
+
+/// The shadow and edge `frame` draws round a window or card of `size` (logical) whose top left is
+/// at `at` (physical) on an output of `output_scale` , moved, scaled, faded and clipped as
+/// `placement` says.
+fn frame_element<R>(
+    renderer: &mut R,
+    images: &FrameImages,
+    frame: &WindowFrame,
+    size: (f64, f64),
+    at: Point<f64, Physical>,
+    output_scale: f64,
+    placement: &Placement,
+) -> Option<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let image = images.image(frame, size, output_scale)?;
+    let logical = Size::<i32, Logical>::from((
+        window_frame::pixels(image.size.0 / output_scale),
+        window_frame::pixels(image.size.1 / output_scale),
+    ));
+    let element = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        at + Point::<f64, Physical>::from(image.origin),
+        &image.buffer,
+        Some(placement.opacity),
+        None,
+        Some(logical),
+        Kind::Unspecified,
+    )
+    .inspect_err(|error| tracing::warn!(?error, "window frame: buffer not imported"))
+    .ok()?;
+    let scaled = RescaleRenderElement::from_element(element, placement.pivot, placement.scale);
+    CropRenderElement::from_element(scaled, output_scale, placement.clip)
+        .map(OutputRenderElement::Frame)
+}
+
+/// The shadows a floating window's card (`card` , output-local logical) casts, each a frame round
+/// it, clipped to `clip` : what they darken of a window behind it.
+pub(crate) fn lift<R>(
+    renderer: &mut R,
+    images: &FrameImages,
+    (card, shadows): (Rectangle<f64, Logical>, &[WindowFrame]),
+    output_scale: f64,
+    clip: Rectangle<i32, Physical>,
+) -> Vec<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let at = card.loc.to_physical_precise_round(output_scale);
+    let placement = Placement {
+        at: card.loc,
+        pivot: at,
+        scale: 1.0,
+        opacity: 1.0,
+        clip,
+        radius: 0.0,
+    };
+    // Bottom first, as they are listed, so the last is in front.
+    shadows
+        .iter()
+        .rev()
+        .filter_map(|frame| {
+            frame_element(
+                renderer,
+                images,
+                frame,
+                (card.size.w, card.size.h),
+                at.to_f64(),
+                output_scale,
+                &placement,
+            )
+        })
+        .collect()
 }
 
 /// `content`, standing at `location` (its geometry's top left, output-local

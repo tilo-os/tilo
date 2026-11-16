@@ -283,6 +283,23 @@ fn layout_rect(rect: ui::kurbo::Rect, origin: (i32, i32)) -> LayoutRect {
 
 /// `rect` of the surface, as it stands in the logical layout where the desktop's origin is
 /// `(ox, oy)`.
+/// A toolkit shadow round a card of `radius` , as the compositor draws it.
+fn frame_of(shadow: &ui::tokens::Shadow, radius: f64) -> tilo_compositor::WindowFrame {
+    let colour = |color: vello::peniko::Color| color.to_rgba8().to_u8_array();
+    tilo_compositor::WindowFrame {
+        radius,
+        shadow: (shadow.blur > 0.0).then(|| tilo_compositor::Shadow {
+            offset_y: f64::from(shadow.offset_y),
+            blur: f64::from(shadow.blur),
+            rgba: colour(shadow.color),
+        }),
+        edge: shadow.outline.map(|line| tilo_compositor::Edge {
+            width: f64::from(line.width),
+            rgba: colour(line.color),
+        }),
+    }
+}
+
 fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> (i32, i32, i32, i32) {
     (
         ox.saturating_add(round(rect.x0)),
@@ -800,18 +817,26 @@ impl SurfaceHost for DesktopHost {
         true
     }
 
-    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
-        // The desktop draws a floating window's bar and lift itself, under the windows, so the windows
-        // it covers are drawn around it.
+    fn drawn_over_windows(&self) -> Vec<tilo_session_core::surface::WindowCover> {
+        // The desktop draws a floating window's card itself, under the windows, so the windows it
+        // covers are drawn around it, and under the shadows it casts.
         let desktop = self.desktop.borrow();
-        let (ox, oy) = desktop.host.placement().origin;
+        let origin = desktop.host.placement().origin;
+        let theme = desktop.host.host().theme();
         desktop
             .policy
             .float_covers()
             .into_iter()
-            .map(|(window, cover)| {
-                let (x, y, width, height) = placed(cover, (ox, oy));
-                (window, (x, y, width, height))
+            .map(|(window, card)| {
+                let radius = ui::widget::floating_surface::card_radius(card, theme);
+                tilo_session_core::surface::WindowCover {
+                    window,
+                    rect: placed(card, origin),
+                    shadows: ui::surface::floating_lift(theme)
+                        .iter()
+                        .map(|shadow| frame_of(shadow, radius))
+                        .collect(),
+                }
             })
             .collect()
     }

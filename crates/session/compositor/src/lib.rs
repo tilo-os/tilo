@@ -2133,15 +2133,12 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         // What the surfaces draw over the windows, by the window each part is of: a floating window
-        // stands over the ones beneath it whole, so they are drawn around what the shell covers them
-        // with for it, and a press there is the shell's.
+        // stands over the ones beneath it whole, so they are drawn around the card the shell covers
+        // them with for it and under its shadows, and a press on the card is the shell's.
         let mut covers = std::collections::BTreeMap::new();
         for host in &self.data.state.hosts {
-            for (window, (x, y, width, height)) in host.drawn_over_windows() {
-                covers.insert(
-                    window,
-                    Rectangle::new((x, y).into(), (width, height).into()),
-                );
+            for cover in host.drawn_over_windows() {
+                covers.insert(cover.window, cover);
             }
         }
         if self.data.state.covers != covers {

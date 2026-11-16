@@ -695,7 +695,6 @@ pub fn floating_shadow(
     alpha: f32,
     theme: &Theme,
 ) {
-    let elevation = &theme.tokens.elevation;
     // A body tinted less than half shows what is below it nearly clear, so its own shadow
     // must not show through it: the shadow falls outside it only.
     let floating = theme.finish(crate::tokens::SurfaceRole::Floating);
@@ -713,7 +712,7 @@ pub fn floating_shadow(
     if let Some(outside) = &outside {
         scene.push_clip_layer(Fill::EvenOdd, transform, outside);
     }
-    for layer in [elevation.contact, elevation.floating] {
+    for layer in floating_lift(theme) {
         shadow(
             scene,
             transform,
@@ -729,14 +728,11 @@ pub fn floating_shadow(
 
 const CLEAR_TINT: f32 = 0.5;
 
-/// Every pixel [`floating_shadow`] can paint for a surface at `rect`, the surface's own
-/// included.
-pub fn floating_shadow_bounds(rect: Rect, theme: &Theme) -> Rect {
+/// The shadows [`floating_shadow`] paints, bottom first: the contact layer under the wide one.
+#[must_use]
+pub fn floating_lift(theme: &Theme) -> [crate::tokens::Shadow; 2] {
     let elevation = &theme.tokens.elevation;
     [elevation.contact, elevation.floating]
-        .iter()
-        .filter_map(|layer| shadow_bounds(rect, layer))
-        .fold(rect, |all, layer| all.union(layer))
 }
 
 /// The 1 px inner hairline a floating surface carries on its outermost pixel row

@@ -235,9 +235,9 @@ pub struct State {
     /// The frames of the windows that are framed differently, by id.
     pub(crate) window_frames: std::collections::HashMap<u64, crate::window_frame::WindowFrame>,
     /// The cards the shell draws in front of the windows, by the window each one is the card of:
-    /// the shell draws a floating window's bar and its lift around it, and the window beneath the
-    /// card is drawn around it, as a window under a floating one is.
-    pub(crate) covers: std::collections::BTreeMap<u64, smithay::utils::Rectangle<i32, Logical>>,
+    /// the shell draws a floating window's bar and body round it, and the windows beneath the card
+    /// are drawn around it, as a window under a floating one is, and under its shadows.
+    pub(crate) covers: std::collections::BTreeMap<u64, tilo_session_core::surface::WindowCover>,
     /// The part of the layout each window is cut to, by id, as the policy arranged it: a window
     /// draws and takes the pointer there only ([`crate::policy::Arrangement::clip`]).
     pub(crate) clips: std::collections::HashMap<u64, smithay::utils::Rectangle<i32, Logical>>,
@@ -819,8 +819,11 @@ impl State {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, Point<i32, Logical>)> {
-        let size = |cover: &smithay::utils::Rectangle<i32, Logical>| {
-            smithay::utils::Rectangle::new(cover.loc.to_f64(), cover.size.to_f64())
+        let size = |&(x, y, width, height): &(i32, i32, i32, i32)| {
+            smithay::utils::Rectangle::<f64, Logical>::new(
+                (f64::from(x), f64::from(y)).into(),
+                (f64::from(width), f64::from(height)).into(),
+            )
         };
         let mut covers: Vec<smithay::utils::Rectangle<f64, Logical>> = Vec::new();
         for window in self.space.elements().rev() {
@@ -841,7 +844,7 @@ impl State {
             if let Some(info) = describe(self, window)
                 && let Some(cover) = self.covers.get(&info.id)
             {
-                covers.push(size(cover));
+                covers.push(size(&cover.rect));
             }
         }
         None

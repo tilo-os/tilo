@@ -92,9 +92,9 @@ impl GroupRow {
         &self.floats
     }
 
-    /// Each floating window the row just drew whole over what is under it — the card it
-    /// shows: its bar and its body as one window, and the shadow that lifts it, as one rect
-    /// in the surface's coordinates.
+    /// Each floating window the row just drew whole over what is under it: the card it shows,
+    /// its bar and its body as one opaque rounded rect ([`card_radius`]), in the surface's
+    /// coordinates. The shadow that lifts it ([`crate::surface::floating_lift`]) lies outside it.
     #[must_use]
     pub fn drawn_covers(&self) -> &[(u64, Rect)] {
         &self.drawn_covers
@@ -346,8 +346,7 @@ impl GroupRow {
                 );
             } else {
                 let tab = self.groups[i].active_tab_id();
-                self.drawn_covers
-                    .push((tab, crate::surface::floating_shadow_bounds(card, theme)));
+                self.drawn_covers.push((tab, card));
             }
             self.groups[i].set_edge_by_card(true);
             paint_floating_window_card(scene, transform, card, theme, |scene, on| {

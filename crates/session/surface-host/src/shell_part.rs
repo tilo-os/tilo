@@ -167,12 +167,6 @@ fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
     })
 }
 
-/// The shell package's ids lock, as it ships.
-#[must_use]
-pub const fn shell_ids() -> &'static str {
-    SHELL_IDS
-}
-
 /// Every file of the shell package this build ships, by the name the package knows it by
 /// (`app.tl`, `strips.tl`, …) and its source: the same copy [`compile_shell`] compiles, so
 /// "make it mine" copies exactly the style a person is looking at (`shell.md` §6). Its

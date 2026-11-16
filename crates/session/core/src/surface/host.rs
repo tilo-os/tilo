@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
     BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, Region, Scroll,
-    WindowPicture,
+    WindowCover, WindowPicture,
 };
 
 /// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
@@ -742,11 +742,11 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
-    /// What this surface draws over the windows, by the window each part is of, in the logical
-    /// layout: a floating window's bar and body, whole and opaque. A surface below the windows draws
-    /// nothing over them but this: the windows under it are drawn around it, and a point on it
-    /// belongs to this surface rather than to the window beneath.
-    fn drawn_over_windows(&self) -> Vec<(u64, (i32, i32, i32, i32))> {
+    /// What this surface draws over the windows, by the window each part is of: a floating window's
+    /// card. A surface below the windows draws nothing over them but this: the windows under a card
+    /// are drawn around it and under its shadows, and a point on it belongs to this surface rather
+    /// than to the window beneath.
+    fn drawn_over_windows(&self) -> Vec<WindowCover> {
         Vec::new()
     }
 
@@ -850,7 +850,7 @@ impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
         wants_keyboard() -> bool;
         text_input() -> Option<HostTextInput>;
         window_pictures() -> Vec<WindowPicture>;
-        drawn_over_windows() -> Vec<(u64, (i32, i32, i32, i32))>;
+        drawn_over_windows() -> Vec<WindowCover>;
         backdrops() -> Vec<BackdropRequest>;
         next_deadline() -> Option<std::time::Instant>;
         cursor() -> CursorIcon;

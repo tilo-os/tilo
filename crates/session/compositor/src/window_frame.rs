@@ -33,92 +33,7 @@ use std::collections::HashMap;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Physical, Rectangle, Transform};
-
-/// A drop shadow: the outline of the window, blurred, offset down.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Shadow {
-    /// How far below the window it sits, logical pixels.
-    pub offset_y: f64,
-    /// Its blur radius, logical pixels (a Gaussian of half that as its standard deviation, as CSS
-    /// and the design tokens mean it).
-    pub blur: f64,
-    /// Its colour, straight alpha.
-    pub rgba: [u8; 4],
-}
-
-/// The hairline that marks where a window ends, drawn just outside it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Edge {
-    /// Its width, logical pixels.
-    pub width: f64,
-    /// Its colour, straight alpha.
-    pub rgba: [u8; 4],
-}
-
-/// How every window is drawn on the desktop.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WindowFrame {
-    /// Corner radius, logical pixels; zero for square corners.
-    pub radius: f64,
-    /// The shadow under the window, if it casts one.
-    pub shadow: Option<Shadow>,
-    /// The hairline around the window, if it has one.
-    pub edge: Option<Edge>,
-}
-
-impl WindowFrame {
-    /// No corners, no shadow, no edge: a window drawn as its buffer is (a window that fills the
-    /// display, which the display can scan out).
-    #[must_use]
-    pub const fn square() -> Self {
-        Self {
-            radius: 0.0,
-            shadow: None,
-            edge: None,
-        }
-    }
-
-    /// A window whose host paints it whole — its card, the lift under it and the edge around it, in
-    /// the host's own colours: the compositor only shapes its corners to the host's card and draws
-    /// nothing around it. The shell's tiles are drawn this way.
-    #[must_use]
-    pub const fn corners(radius: f64) -> Self {
-        Self {
-            radius,
-            shadow: None,
-            edge: None,
-        }
-    }
-
-    /// Whether this draws nothing around a window.
-    #[must_use]
-    pub fn is_square(&self) -> bool {
-        self.radius <= 0.0
-            && self.shadow.is_none_or(|shadow| shadow.rgba[3] == 0)
-            && self
-                .edge
-                .is_none_or(|edge| edge.rgba[3] == 0 || edge.width <= 0.0)
-    }
-}
-
-impl Default for WindowFrame {
-    /// The window tile the design language draws: what every app had around it before it was a
-    /// foreign window.
-    fn default() -> Self {
-        Self {
-            radius: 14.0,
-            shadow: Some(Shadow {
-                offset_y: 2.0,
-                blur: 16.0,
-                rgba: [0, 0, 0, 71],
-            }),
-            edge: Some(Edge {
-                width: 1.0,
-                rgba: [255, 255, 255, 36],
-            }),
-        }
-    }
-}
+pub use tilo_session_core::surface::{Edge, Shadow, WindowFrame};
 
 /// The shadow reaches this many standard deviations before it is cut, where the toolkit's blur
 /// stops painting it too.
@@ -293,13 +208,14 @@ impl Raster {
             for column in 0..texels.0 {
                 let x = f64::from(column) + 0.5 - left;
                 let y = f64::from(row) + 0.5 - top;
-                // Behind the window is the shadow's silhouette, offset down;
-                // the edge follows the window's own. A shadow sits under the
-                // window only, never above its top edge, and never inside it:
-                // the window's own buffer is drawn there.
+                // Behind the window is the shadow's silhouette, offset down and
+                // blurred as the toolkit blurs it, so a card the shell lifts casts
+                // the same shadow on a window as on the shell; the edge follows the
+                // window's own. Never inside it: the window's own buffer is drawn
+                // there.
                 let inside = distance(x, y, width, height, radius);
                 let shadow_alpha = match (shadow_colour, shadow) {
-                    (Some(colour), Some(_)) if y >= 0.0 && inside > -1.0 => {
+                    (Some(colour), Some(_)) if inside > -1.0 => {
                         let below = distance(x, y - offset, width, height, radius);
                         let covered = if spread > 0.0 {
                             0.5 * erfc(below / spread)
