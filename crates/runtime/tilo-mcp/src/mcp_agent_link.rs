@@ -210,12 +210,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Show the record `provider` names as a window on the person's layout, as a collaborator's
-    /// open does: its app's `open` on it, asked of the host as a step of this call's run. The host
-    /// leaves a record a window already shows where the people put it. A provider that is no
-    /// record (a window of a device) names the app `app_id`'s own record; an empty `app_id` then
-    /// names nothing. Whether it showed is no matter to the call, which answers once the host took
-    /// the open and never waits for the window: a record the host cannot show is still what the
-    /// agent changed, and each page watching shows the change in its own way.
+    /// open does: its app's `open` on it, a call of this call's step, so one run lists the write
+    /// and the window it showed. The host leaves a record a window already shows where the people
+    /// put it. A provider that is no record (a window of a device) names the app `app_id`'s own
+    /// record; an empty `app_id` then names nothing. Whether it showed is no matter to the call,
+    /// which answers once the host took the open and never waits for the window: a record the host
+    /// cannot show is still what the agent changed, and each page watching shows the change in its
+    /// own way.
     pub(super) async fn show(&self, provider: &str, app_id: &str) {
         use tilo_actions::remote::{
             APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
@@ -243,10 +244,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             invocation,
             target,
             argument: InvokeArgument::None,
-            // The run it is a step of names the window; showing it is no step of the run's
-            // own to take back.
+            // A call of this call's step, so one run lists what the call changed and the window
+            // it showed. The open takes no step of its own: what it writes is the window's place,
+            // which the run's undo leaves alone.
             context: self.context().map(|context| tilo_actions::ActionContext {
                 group: context.group,
+                gesture: context.gesture,
                 ..tilo_actions::ActionContext::default()
             }),
             confirmation: None,
