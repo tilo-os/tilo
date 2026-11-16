@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use serde_json::{Map, json};
+use serde_json::{Map, Value, json};
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::OVERLAYS;
 
@@ -355,15 +355,11 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
-    let mut repl = Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
 
-    // The traditional desktop, through the shell's own record.
-    let (answer, failed) = repl.run(
-        &mut session,
-        "shell.apply(shell.shell, layout: shell.Layout.windows_desktop)",
-    );
-    assert!(!failed, "the listing is the traditional one: {answer}");
+    // The traditional desktop, through the chrome's own preset action.
+    session
+        .run_shell_action("apply", vec![Value::from("windows_desktop")])
+        .unwrap_or_else(|why| panic!("the shell shows the traditional desktop: {why}"));
     until(&mut session, "the traditional desktop", |session| {
         preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
     });
@@ -397,7 +393,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // stands on the bar's row, not on the window's. A note whose body also says "Pin" (its own
     // header) would satisfy a search for the word anywhere; what this step proves is that the bar
     // holds it, so it presses the bar's menu and reads the row it opens.
-    let name = crate::common::window_name_of(&session, &note);
+    let name = crate::common::place_title(&session, &note);
     // The bar draws the window the layout names once the shell has read it: the place is
     // published as the session arranges it, and the next frame carries it to the bar.
     until(
