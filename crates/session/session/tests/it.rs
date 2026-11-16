@@ -97,8 +97,6 @@ mod directory;
 mod display_settings;
 #[path = "displays.rs"]
 mod displays;
-#[path = "door_find_loop.rs"]
-mod door_find_loop;
 #[path = "fabric.rs"]
 mod fabric;
 #[path = "file_clipboard.rs"]
@@ -107,6 +105,8 @@ mod file_clipboard;
 mod files_link;
 #[path = "files_tree.rs"]
 mod files_tree;
+#[path = "find_off_loop.rs"]
+mod find_off_loop;
 #[path = "find_records.rs"]
 mod find_records;
 #[path = "firstboot.rs"]
@@ -169,8 +169,8 @@ mod origin_connector;
 mod overlays;
 #[path = "overlays_styles.rs"]
 mod overlays_styles;
-#[path = "owner_door.rs"]
-mod owner_door;
+#[path = "owner_control.rs"]
+mod owner_control;
 #[path = "palette_captures.rs"]
 mod palette_captures;
 #[path = "panel_services.rs"]
