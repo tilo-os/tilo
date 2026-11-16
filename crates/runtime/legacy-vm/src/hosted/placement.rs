@@ -121,6 +121,9 @@ pub type ReadLoad = Box<dyn Fn(&str) -> Option<HostLoad> + Send + Sync>;
 /// How long a waiting VM counts as demand after it last asked.
 const WAITING_FOR_MS: u64 = 15_000;
 
+/// Reads which VMs a host holds, from its Status at an address; `None` when it does not answer.
+pub type ReadVms = Box<dyn Fn(&str) -> Option<Vec<String>> + Send + Sync>;
+
 /// Places VMs on the hosts [`Scale`] names, and scales them.
 pub struct Placer {
     record_path: PathBuf,
@@ -130,6 +133,7 @@ pub struct Placer {
     scale: Box<dyn Scale>,
     read: ReadLoad,
     clock: super::vm::Clock,
+    held: ReadVms,
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -162,7 +166,15 @@ impl Placer {
             scale,
             read,
             clock,
+            held: Box::new(read_vms),
         })
+    }
+
+    /// Read which VMs each host holds with `held` rather than over the network.
+    #[must_use]
+    pub fn with_held(mut self, held: ReadVms) -> Self {
+        self.held = held;
+        self
     }
 
     fn views(&self) -> Result<Vec<HostView>, String> {
@@ -270,7 +282,83 @@ impl Placer {
     pub fn handle(&self, request: Request) -> Reply {
         match request {
             Request::Place { vm } => self.place(&vm),
+            Request::Branch { vm, from } => self.branch(&vm, &from),
+            Request::Delete {
+                workspace,
+                environment,
+            } => self.delete(&workspace, &environment),
             _ => Reply::Error("a placer answers Place only".to_owned()),
+        }
+    }
+
+    /// Where a branch of `from`'s VM into `vm` lives ([`Request::Branch`]): on the host that holds
+    /// `from`'s, since a disk is copied only inside its host's filesystem. The branch is placed
+    /// there and that host is the answer ([`Reply::Placed`]); whoever asked has that host make
+    /// it, on its own socket. A placer changes no host: it records where a VM lives.
+    pub fn branch(&self, vm: &VmRequest, from: &str) -> Reply {
+        let id = format!("{}/{}", vm.workspace, vm.environment);
+        let (record, host) = {
+            let mut record = lock(&self.record);
+            let Some(holder) = record
+                .placed
+                .get(&format!("{from}/{}", vm.environment))
+                .cloned()
+            else {
+                return Reply::NoVm {
+                    workspace: from.to_owned(),
+                };
+            };
+            match record.placed.get(&id) {
+                Some(placed) if *placed == holder => return Reply::Placed { host: holder },
+                Some(placed) => {
+                    return Reply::Error(format!(
+                        "workspace {} already has a VM, on {placed}; a branch is made as a new \
+                         one",
+                        vm.workspace
+                    ));
+                }
+                None => {}
+            }
+            record.placed.insert(id, holder.clone());
+            (record.clone(), holder)
+        };
+        self.save(&record)
+            .map_or_else(Reply::Error, |()| Reply::Placed { host })
+    }
+
+    /// Forget where the VM lives ([`Request::Delete`]), once the host that held it no longer
+    /// lists it: whoever asked deleted it there, on that host's own socket. While the host lists
+    /// it, or does not answer, the VM stays placed. One placed nowhere is done.
+    pub fn delete(&self, workspace: &str, environment: &str) -> Reply {
+        let id = format!("{workspace}/{environment}");
+        let placed = lock(&self.record).placed.get(&id).cloned();
+        let Some(holder) = placed else {
+            return Reply::Done;
+        };
+        let address = match self.scale.hosts() {
+            Ok(hosts) => hosts
+                .into_iter()
+                .find(|host| host.name == holder)
+                .map(|host| host.status),
+            Err(error) => return Reply::Error(format!("the hosts cannot be counted: {error}")),
+        };
+        match address.and_then(|address| (self.held)(&address)) {
+            None => Reply::Busy(format!(
+                "{holder}, which holds the VM of workspace {workspace}, does not answer; ask \
+                 again once it is up"
+            )),
+            Some(vms) if vms.contains(&id) => Reply::Error(format!(
+                "{holder} still holds the VM of workspace {workspace}: delete it there first"
+            )),
+            Some(_) => {
+                let record = {
+                    let mut record = lock(&self.record);
+                    record.placed.remove(&id);
+                    record.clone()
+                };
+                self.save(&record)
+                    .map_or_else(Reply::Error, |()| Reply::Done)
+            }
         }
     }
 }
@@ -321,6 +409,26 @@ impl Scale for FixedHosts {
             );
         }
         Ok(())
+    }
+}
+
+/// The VMs a host holds, read from its status listener at `address`, or `None` when it does not
+/// answer.
+#[must_use]
+pub fn read_vms(address: &str) -> Option<Vec<String>> {
+    use std::net::ToSocketAddrs as _;
+    let socket = address.to_socket_addrs().ok()?.next()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&socket, Duration::from_secs(2)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    control::FRAMING
+        .write_value(&mut stream, &Request::Status)
+        .ok()?;
+    match control::FRAMING
+        .read_value::<_, Reply>(&mut stream)
+        .ok()??
+    {
+        Reply::Status { vms, .. } => Some(vms.into_iter().map(|vm| vm.vm).collect()),
+        _ => None,
     }
 }
 
@@ -658,5 +766,142 @@ mod tests {
         for wrong in ["vm-host-0", "=127.0.0.1:7701", "vm-host-0=", ""] {
             assert!(FixedHosts::parse(wrong).is_err(), "{wrong:?} names a host");
         }
+    }
+
+    type Held = Arc<Mutex<BTreeMap<String, Vec<String>>>>;
+
+    /// A placer of two hosts whose Status lists what the test sets: the first host full, so `ws1`
+    /// is placed on the second, and then with room.
+    fn two_hosts(dir: &Path) -> (Placer, Held) {
+        let loads = Arc::new(Mutex::new(BTreeMap::from([
+            (
+                "addr-0".to_owned(),
+                HostLoad {
+                    budget_mib: Some(12 * GIB),
+                    awake_mib: 12 * GIB,
+                    waiting_mib: 0,
+                },
+            ),
+            (
+                "addr-1".to_owned(),
+                HostLoad {
+                    budget_mib: Some(12 * GIB),
+                    awake_mib: 0,
+                    waiting_mib: 0,
+                },
+            ),
+        ])));
+        let held: Held = Arc::default();
+        let (reader, listing) = (Arc::clone(&loads), Arc::clone(&held));
+        let placer = Placer::new(
+            &dir.join("placements.json"),
+            2,
+            Box::new(FixedHosts::parse("vm-host-0=addr-0,vm-host-1=addr-1").unwrap()),
+            Box::new(move |address| reader.lock().unwrap().get(address).copied()),
+            Arc::new(|| 1_000),
+        )
+        .unwrap()
+        .with_held(Box::new(move |address| {
+            listing.lock().unwrap().get(address).cloned()
+        }));
+        assert_eq!(placer.place(&vm_request("ws1")), on("vm-host-1"));
+        loads.lock().unwrap().get_mut("addr-0").unwrap().awake_mib = 0;
+        (placer, held)
+    }
+
+    fn vm_request(workspace: &str) -> VmRequest {
+        VmRequest {
+            workspace: workspace.into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size: VmSize::Small,
+        }
+    }
+
+    fn on(host: &str) -> Reply {
+        Reply::Placed { host: host.into() }
+    }
+
+    fn branch(workspace: &str, from: &str) -> Request {
+        Request::Branch {
+            vm: vm_request(workspace),
+            from: from.into(),
+        }
+    }
+
+    fn delete(workspace: &str) -> Request {
+        Request::Delete {
+            workspace: workspace.into(),
+            environment: "default".into(),
+        }
+    }
+
+    #[test]
+    fn a_branch_is_placed_on_its_sources_host_and_the_placer_makes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (placer, _) = two_hosts(dir.path());
+        assert_eq!(
+            placer.handle(branch("ws2", "ws-none")),
+            Reply::NoVm {
+                workspace: "ws-none".into()
+            },
+            "a workspace placed nowhere has no VM to branch"
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws2")),
+            on("vm-host-0"),
+            "and nothing was placed for it"
+        );
+        assert_eq!(
+            placer.handle(branch("ws3", "ws1")),
+            on("vm-host-1"),
+            "the host holding the source is the one to ask"
+        );
+        assert_eq!(
+            placer.place(&vm_request("ws3")),
+            on("vm-host-1"),
+            "the branch runs where its disk is, though another host has room"
+        );
+        assert_eq!(placer.handle(branch("ws3", "ws1")), on("vm-host-1"));
+        let Reply::Error(message) = placer.handle(branch("ws2", "ws1")) else {
+            panic!("a workspace placed on another host already has its VM there");
+        };
+        assert!(
+            message.contains("ws2 already has a VM, on vm-host-0"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_deleted_vm_is_forgotten_once_its_host_no_longer_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (placer, held) = two_hosts(dir.path());
+        assert!(
+            matches!(placer.handle(delete("ws1")), Reply::Busy(_)),
+            "a host that does not answer may still hold it"
+        );
+        held.lock()
+            .unwrap()
+            .insert("addr-1".into(), vec!["ws1/default".into()]);
+        let Reply::Error(message) = placer.handle(delete("ws1")) else {
+            panic!("a VM its host holds is not forgotten");
+        };
+        assert!(
+            message.contains("vm-host-1 still holds the VM of workspace ws1"),
+            "{message}"
+        );
+        assert_eq!(placer.place(&vm_request("ws1")), on("vm-host-1"));
+        held.lock().unwrap().insert("addr-1".into(), Vec::new());
+        assert_eq!(placer.handle(delete("ws1")), Reply::Done);
+        assert_eq!(
+            placer.place(&vm_request("ws1")),
+            on("vm-host-0"),
+            "a deleted VM is placed as a new one"
+        );
+        assert_eq!(
+            placer.handle(delete("ws-none")),
+            Reply::Done,
+            "placed nowhere"
+        );
     }
 }

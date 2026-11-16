@@ -181,6 +181,7 @@ impl From<EnsureError> for BrowserError {
             EnsureError::Invalid(message) => Self::Invalid(message),
             EnsureError::Refused(refusal) => Self::Refused(refusal),
             EnsureError::Moving => Self::Session(EnsureError::Moving.to_string()),
+            EnsureError::NoVm(workspace) => Self::Invalid(no_vm_yet(&workspace)),
         }
     }
 }
@@ -210,6 +211,8 @@ pub enum EnsureError {
     /// Waking it would take the host's VMs past its memory budget: it
     /// waits for room ([`BUSY`]).
     HostFull,
+    /// The workspace named has no VM, so there is nothing to branch from.
+    NoVm(String),
 }
 
 impl std::fmt::Display for EnsureError {
@@ -223,6 +226,7 @@ impl std::fmt::Display for EnsureError {
                  run the command again in a minute",
             ),
             Self::HostFull => f.write_str(BUSY),
+            Self::NoVm(workspace) => f.write_str(&no_vm_yet(workspace)),
         }
     }
 }
@@ -923,7 +927,7 @@ impl Service {
         let source = vms
             .get(&format!("{from}/{}", request.environment))
             .cloned()
-            .ok_or_else(|| EnsureError::Invalid(no_vm_yet(from)))?;
+            .ok_or_else(|| EnsureError::NoVm(from.to_owned()))?;
         if source.account != request.account {
             return Err(EnsureError::Invalid(format!(
                 "the VM of workspace {from} belongs to another account"
@@ -1021,7 +1025,7 @@ impl Service {
                 )
                 .map(drop)
                 .map_err(EnsureError::Vm),
-            Ok(false) => Err(EnsureError::Invalid(no_vm_yet(&from))),
+            Ok(false) => Err(EnsureError::NoVm(from)),
             Err(error) => Err(error),
         };
         if made.is_err()
@@ -1274,6 +1278,7 @@ impl Service {
     fn answer_branch(&self, vm: &VmRequest, from: &str) -> Reply {
         match self.branch(vm, from) {
             Ok(()) => Reply::Done,
+            Err(EnsureError::NoVm(workspace)) => Reply::NoVm { workspace },
             Err(EnsureError::Refused(refusal)) => Reply::Refused(refusal),
             Err(EnsureError::HostFull) => Reply::Busy(format!(
                 "the VM of workspace {from} is asleep, and this host has no room to wake it for \
@@ -2262,13 +2267,15 @@ mod tests {
         existing(&config, "ws-unbooted", "acct-1", None);
         let service = open_at(&config, 0);
         for from in ["ws-none", "ws-unbooted"] {
-            let message = error(branch(&service, "ws2", "acct-1", VmSize::Small, from));
-            assert!(
-                message.starts_with(&format!("workspace {from} has no Linux VM yet")),
-                "{message}"
+            assert_eq!(
+                branch(&service, "ws2", "acct-1", VmSize::Small, from),
+                Reply::NoVm {
+                    workspace: from.into()
+                },
+                "said in a way the relay tells apart"
             );
             assert!(
-                !config.files("ws2", "default").state.exists(),
+                !config.state.join("vms").join("ws2").exists(),
                 "nothing was made"
             );
         }
@@ -2501,5 +2508,66 @@ mod tests {
             held(&service),
             [("ws1/default".into(), "acct-1".into(), "Off".into())]
         );
+    }
+
+    /// The placer and a host as they run: the placer reads the host's Status and changes nothing on
+    /// it, and whoever asked branches and deletes on the host's own socket.
+    #[test]
+    fn a_placer_places_a_branch_and_forgets_a_vm_its_host_no_longer_holds() {
+        use super::super::placement::{FixedHosts, Placer, read_load};
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        with_disk(&config, "ws1", "acct-1", VmSize::Small, b"one", &[]);
+        let service = Arc::new(open_at(&config, 0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        service.serve_status(listener);
+        let placer = Placer::new(
+            &dir.path().join("placements.json"),
+            1,
+            Box::new(FixedHosts::parse(&format!("vm-host-0={address}")).unwrap()),
+            Box::new(read_load),
+            Arc::new(|| 1_000),
+        )
+        .unwrap();
+        let on_host = Reply::Placed {
+            host: "vm-host-0".into(),
+        };
+        assert_eq!(
+            placer.place(&request("ws1", "acct-1", VmSize::Small)),
+            on_host
+        );
+        assert_eq!(
+            placer.handle(Request::Branch {
+                vm: request("ws2", "acct-1", VmSize::Small),
+                from: "ws1".into(),
+            }),
+            on_host
+        );
+        assert!(
+            !config.state.join("vms").join("ws2").exists(),
+            "the placer made nothing on the host"
+        );
+        assert_eq!(
+            branch(&service, "ws2", "acct-1", VmSize::Small, "ws1"),
+            Reply::Done
+        );
+        let forget = || {
+            placer.handle(Request::Delete {
+                workspace: "ws2".into(),
+                environment: "default".into(),
+            })
+        };
+        let Reply::Error(message) = forget() else {
+            panic!("a VM its host holds stays placed");
+        };
+        assert!(message.contains("vm-host-0 still holds"), "{message}");
+        assert!(
+            config.files("ws2", "default").disk().is_file(),
+            "and is not deleted"
+        );
+        assert_eq!(delete(&service, "ws2"), Reply::Done);
+        assert_eq!(forget(), Reply::Done);
     }
 }

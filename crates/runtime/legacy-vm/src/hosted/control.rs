@@ -185,6 +185,11 @@ pub enum Reply {
         opened_ms: Option<u64>,
         provider: String,
     },
+    /// Workspace `workspace` has no VM to branch: nothing was made, and the branch's workspace
+    /// starts as any new one does, at its first Linux command.
+    NoVm {
+        workspace: String,
+    },
 }
 
 /// The socket's frames are postcard, which encodes neither the ledger's

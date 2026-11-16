@@ -713,5 +713,8 @@ fn ask(flags: &Flags, request: &Request) -> Result<ExitCode, String> {
         }
         Reply::Refused(refusal) => Err(refusal.message),
         Reply::Busy(message) | Reply::Error(message) => Err(message),
+        Reply::NoVm { workspace } => Err(format!(
+            "workspace {workspace} has no Linux VM yet, so there is nothing to branch"
+        )),
     }
 }
