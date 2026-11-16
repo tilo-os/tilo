@@ -29,7 +29,6 @@ use std::time::Duration;
 
 use runtime_portal::environment_door::{self, Request};
 use serde_json::{Map, Value, json};
-use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_service::Questions;
@@ -38,6 +37,7 @@ use tilo_sheets::portal::{Dialog, PortalEffect};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use crate::common::publisher;
 use crate::common::{HEIGHT, WIDTH};
 
 /// The person at the shell, who owns its workspaces.
@@ -346,20 +346,6 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
     (session, questions, door)
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 /// Press `effect` on the sheet publishing it, as the person would.

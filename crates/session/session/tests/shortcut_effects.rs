@@ -21,10 +21,10 @@ use std::time::Duration;
 use tilo_compositor::{InputEvent, OutputConfig};
 /// The platform search the shell opens on its chord.
 const HOST_SEARCH: &str = "tilo.host:search";
+use crate::common::tree::window;
 use tilo_desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
-    AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    AppKind, Layout, Strip, StripId, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
@@ -61,21 +61,6 @@ const KEY_LEFT_CTRL: u32 = 29;
 const KEY_LEFT_SHIFT: u32 = 42;
 const KEY_LEFT_ALT: u32 = 56;
 const KEY_LEFT_META: u32 = 125;
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
 
 /// The shell the session starts on: one strip of two windows, the first with two tabs.
 fn layout_tree() -> Layout {

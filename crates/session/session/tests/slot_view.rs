@@ -26,9 +26,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::InputEvent;
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::Layout;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::slots::BINDINGS;
 use tilo_session::{ActionPlane, Options, Session};
@@ -79,54 +77,8 @@ view menu(m: desktop.WindowMenu) {
   }
 }
 "#;
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
-/// The shell the session starts on: one window, in front.
-fn layout_tree() -> Layout {
-    let tabs = vec![window(20, "Notes", "so.tilo.notes")];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
-
-/// The probe's binary: the probe this package's own tests start.
-fn probe_binary() -> PathBuf {
-    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
-}
+use crate::common::probe::{probe_binary, reading, until_reported};
+use crate::common::tree::layout_tree;
 
 /// The session the probe talks to: headless, its plane on `socket` , showing one window, keeping
 /// the person's settings as the session does.
@@ -140,32 +92,6 @@ fn session_with(socket: &Path, tree: Layout) -> Session {
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
-}
-
-/// The session's turns until the probe has reported.
-fn until_reported(session: &mut Session, report: &Path) -> String {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.settle_services();
-        session.step(REFRESH).expect("a turn of the session");
-        if let Ok(report) = std::fs::read_to_string(report) {
-            return report;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the probe reported nothing: {:?}",
-            session.surfaces().names()
-        );
-    }
-}
-
-/// The reading named on the line that starts with `prefix` .
-fn reading(report: &str, prefix: &str) -> Value {
-    let line = report
-        .lines()
-        .find_map(|line| line.strip_prefix(prefix))
-        .unwrap_or_else(|| panic!("the probe reported no `{prefix}`: {report}"));
-    serde_json::from_str(line).expect("a reading is JSON")
 }
 
 /// The rows the menu offers, as the reading gives them.

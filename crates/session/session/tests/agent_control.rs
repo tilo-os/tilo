@@ -18,11 +18,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_actions::ResourceSpec;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 
+use crate::common::publisher;
 use crate::common::{control, private_home};
 
 /// A headless session with the MCP server open, and its questions asked on the session's sheets.
@@ -90,20 +90,6 @@ impl Program {
         let _ = self.leave.send(());
         let _ = self.ended.join();
     }
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 /// Press `effect` on the sheet publishing it, as the person would.

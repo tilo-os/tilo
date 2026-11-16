@@ -10,124 +10,16 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_compositor::OutputConfig;
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::i18n::t;
-use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::{self, testing};
-use tilo_session::{Options, Session};
+use tilo_session::Session;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use crate::common::{HEIGHT, WIDTH};
-
-/// The workspace this computer holds, and the person deletes.
-const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
-
-/// `key` 's certificate as a device of the person whose root key is `root` .
-fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
-    cert
-}
-
-/// This computer's person: a device of theirs, certified for their own root key, kept in an
-/// identity root of the test's own.
-fn this_computer(
-    env: &mut tilo_test_env::ScopedEnv,
-) -> (tempfile::TempDir, SigningKey, DeviceCert) {
-    let root = tempfile::tempdir().expect("an identity root");
-    let paths = tilo_user_identity::IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
-    let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
-        .expect("this computer's device key");
-    let cert = certified(&person, &device, "The laptop");
-    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
-        .expect("this computer's certificate");
-    env.set("TILO_IDENTITY_ROOT", root.path());
-    (root, device, cert)
-}
-
-/// This computer's copy of `workspace` under `state` , held as `cert` 's device in a workspace the
-/// same device governs, with nobody else in it.
-fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, key: &SigningKey) {
-    let owner = owner::open_file(
-        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-    )
-    .expect("an owner for this device's workspace");
-    let governor = testing::enroll_interactive_governor_in(&owner, key, cert, WORKSPACE)
-        .expect("this device governs the workspace it hosts");
-    let host = governor.workspace_host().device_public_key;
-    let frames: Vec<Vec<u8>> = governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect();
-    for frame in frames {
-        owner
-            .receive(
-                workspace,
-                TransportOrigin::RetainedRelayDelta(host),
-                postcard::from_bytes(&frame).expect("a publication is a message"),
-                SystemTime::now(),
-            )
-            .expect("the host admits the workspace's people");
-    }
-}
-
-/// The person a root key names, as a workspace writes its owner.
-fn principal(root: &[u8; 32]) -> String {
-    hex::encode(root)
-}
-
-/// A shell showing the workspace, known by its id, owned by the person.
-fn shell(root: &[u8; 32]) -> Layout {
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Shell");
-    workspace.set_owner(principal(root));
-    Layout {
-        workspaces: vec![workspace.clone()],
-        active: workspace.id(),
-        ..Layout::default()
-    }
-}
-
-/// A session of this computer taking part in the collaboration plane, keeping what it holds under
-/// `state` , on the shell showing the workspace.
-fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
-    let mut session = crate::common::headless_on(
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        Options {
-            collab: true,
-            person: "Ada".to_owned(),
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-    );
-    session.handle().replace_tree(shell(root));
-    for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("a frame");
-    }
-    session
-}
+use crate::common::held::{WORKSPACE, hosted_session, this_computer, workspace_held_here};
 
 fn settle(session: &mut Session) {
     for _ in 0..6 {
@@ -196,9 +88,8 @@ fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let state = tempfile::tempdir().expect("a state directory");
-    workspace_held_here(state.path(), workspace, &cert, &key);
+    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
     let mut session = hosted_session(state.path(), &cert.user_public_key);
     settle(&mut session);
     let shown = front(&session);
@@ -240,9 +131,8 @@ fn the_persons_yes_deletes_the_workspace() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let state = tempfile::tempdir().expect("a state directory");
-    workspace_held_here(state.path(), workspace, &cert, &key);
+    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
     let mut session = hosted_session(state.path(), &cert.user_public_key);
     settle(&mut session);
     let shown = front(&session);
@@ -287,9 +177,8 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_identity, key, cert) = this_computer(home.env());
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let state = tempfile::tempdir().expect("a state directory");
-    workspace_held_here(state.path(), workspace, &cert, &key);
+    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
     let mut session = hosted_session(state.path(), &cert.user_public_key);
     settle(&mut session);
 

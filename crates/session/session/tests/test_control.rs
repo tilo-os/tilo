@@ -27,13 +27,14 @@ use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use crate::common::tree::window;
 use crate::common::{CANVAS, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
 
 /// Click the shell's control `name` through the test-control socket, as the person does: the
@@ -646,22 +647,6 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         written(&shot, title) > 20,
         "the place's title is drawn where it is laid out, {title:?}"
     );
-}
-
-/// A window on the shell: one tab of an app, named by its title.
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
 }
 
 /// A shell of one strip holding `windows`, each in a group of its own, the last in front.

@@ -16,13 +16,13 @@
               lives until the app it starts is done"
 )]
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
+use crate::common::probe::{probe_binary, reading, until_reported};
+use crate::common::tree::{holds, layout_tree};
 use serde_json::{Value, json};
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::Layout;
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::surfaces::Surface;
 use tilo_session::{ActionPlane, Options, Session};
@@ -30,54 +30,6 @@ use tilo_test_env::ScopedEnv;
 
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
-/// The shell the session starts on: one window, in front.
-fn layout_tree() -> Layout {
-    let tabs = vec![window(20, "Notes", "so.tilo.notes")];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
-
-/// The probe's binary: the probe this package's own tests start.
-fn probe_binary() -> PathBuf {
-    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
-}
 
 /// The session the probe talks to: headless, its plane on `socket` , showing one window.
 fn session_with(socket: &Path, tree: Layout) -> Session {
@@ -89,44 +41,6 @@ fn session_with(socket: &Path, tree: Layout) -> Session {
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
-}
-
-/// The session's turns until the probe has reported.
-fn until_reported(session: &mut Session, report: &Path) -> String {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        session.settle_services();
-        session.step(REFRESH).expect("a turn of the session");
-        if let Ok(report) = std::fs::read_to_string(report) {
-            return report;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the probe reported nothing: {:?}",
-            session.surfaces().names()
-        );
-    }
-}
-
-/// The reading named on the line that starts with `prefix` .
-fn reading(report: &str, prefix: &str) -> Value {
-    let line = report
-        .lines()
-        .find_map(|line| line.strip_prefix(prefix))
-        .unwrap_or_else(|| panic!("the probe reported no `{prefix}`: {report}"));
-    serde_json::from_str(line).expect("a reading is JSON")
-}
-
-/// Whether the shell still holds the window `tab` .
-fn holds(session: &Session, tab: u64) -> bool {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|shown| shown.id == tab)
-    })
 }
 
 #[test]

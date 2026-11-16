@@ -21,6 +21,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::common::publisher;
 use tilo_actions::ResourceSpec;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
@@ -71,20 +72,6 @@ fn app(home: &tilo_test_env::TestHome, key: &str, name: &str, copies: &[&Path]) 
             .expect("the entry");
     }
     desktop_id
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 /// Whether the session publishes the app `desktop_id` , which it does while the person has that

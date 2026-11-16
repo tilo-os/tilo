@@ -18,8 +18,13 @@
 
 pub mod audio;
 pub mod dev_apps;
+pub mod directory;
+pub mod files;
+pub mod held;
 pub mod people;
 pub mod personal;
+pub mod probe;
+pub mod tree;
 pub mod window;
 
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -1243,4 +1248,18 @@ pub fn styles(session: &Session) -> Vec<tilo_session::styles::Style> {
         .read("session:styles")
         .and_then(|styles| serde_json::from_value(styles["offered"].clone()).ok())
         .expect("the session publishes its styles")
+}
+
+/// The resource publishing `action` among everything the session publishes.
+pub fn publisher(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
 }

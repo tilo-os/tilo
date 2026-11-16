@@ -13,13 +13,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::common::publisher;
 use tilo_compositor::OutputConfig;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_onboarding_host::identity::IdentityProblem;
 use tilo_onboarding_host::identity_provisioning::IDENTITY_RECOVERY_ENV;
 use tilo_session::firstboot::{OneShot, one_shot};
 use tilo_session::startup::{self, Identity};
-use tilo_session::{BeforeShell, Options, Session};
+use tilo_session::{BeforeShell, Options};
 use tilo_user_identity::{DeviceCertError, IdentityPaths, persist};
 
 /// The unit the image ships for the machine's own first-boot setup.
@@ -121,20 +122,6 @@ fn machine() -> Machine {
         _env: env,
         _root: root,
     }
-}
-
-/// The resource publishing `action` , while the session publishes it at all.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 #[test]

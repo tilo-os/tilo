@@ -15,7 +15,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ed25519_dalek::Signer as _;
 use runtime_collab::{
     CollabClient, PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
@@ -25,12 +24,12 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
+use crate::common::held::{WORKSPACE, presentation, principal};
+
 /// What Settings is called in the workspace.
 const SETTINGS: &str = "so.tilo.settings";
 /// The record of Settings the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bb";
-/// The workspace the shell shows and the app is launched in.
-const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 const SSID: &str = "Home";
 const PASSWORD: &str = "a passphrase sealed to the person's devices";
@@ -76,11 +75,6 @@ fn person() -> Person {
     }
 }
 
-/// The person `root` certifies, as a workspace names its owner.
-fn principal(root: &[u8; 32]) -> String {
-    hex::encode(root)
-}
-
 /// A shell showing the workspace, known by its id, owned by the person.
 fn shell(person: &Person) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
@@ -91,23 +85,6 @@ fn shell(person: &Person) -> Layout {
         active: workspace.id(),
         ..Layout::default()
     }
-}
-
-/// What an app presents to join `channel` : the certificate, and the device's proof that it is the
-/// certificate's.
-fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: WORKSPACE.to_owned(),
-        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                WORKSPACE,
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("a presentation encodes")
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker refuses to serve one

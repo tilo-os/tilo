@@ -20,138 +20,25 @@
               lives until the app it serves is done"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ed25519_dalek::Signer as _;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
-use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::owner::{self, testing};
 use tilo_session::apps::Apps;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
-use tilo_user_identity::{DeviceCert, IdentityPaths};
+
+use crate::common::held::{Fixture, WORKSPACE, fixture, layout, presentation, principal};
+use tilo_user_identity::DeviceCert;
 
 /// The app whose capture this is.
 const TASKS: &str = "so.tilo.lang.tasks";
-/// The workspace the session holds, as the shell names it.
-const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
-
-/// This device's identity and the workspace it hosts, where the session reads them.
-struct Fixture {
-    device: ed25519_dalek::SigningKey,
-    cert: DeviceCert,
-    /// The state directory the session keeps its workspaces under.
-    state: PathBuf,
-    // The identity's environment and files, restored and removed last: the session and the app read
-    // them while they run.
-    _env: tilo_test_env::ScopedEnv,
-    _root: tempfile::TempDir,
-}
-
-fn fixture() -> Fixture {
-    let root = tempfile::tempdir().expect("a directory for the identity");
-    let xdg = root.path().join("config");
-    let system = root.path().join("system");
-    let state = root.path().join("state");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", &xdg)
-        .set("TILO_IDENTITY_ROOT", &system)
-        .set(FILE_SECRETS_ENV, "1");
-    let personal = xdg.join("tilo/identity");
-    let paths = IdentityPaths::under(&system);
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
-        &personal,
-        &paths,
-        IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
-    let _profile = tilo_identity_host::registry::identity_for_workspace(WORKSPACE)
-        .expect("the identity registry")
-        .expect("the workspace is answered by this device's person");
-    let device = tilo_user_identity::persist::load_device_key(&paths).expect("this device's key");
-    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this device's certificate");
-    hold_workspace(&state, &device, &cert);
-    Fixture {
-        device,
-        cert,
-        state,
-        _env: env,
-        _root: root,
-    }
-}
-
-/// The workspace's owner, as this device holds it in `state` : what the session opens when it
-/// starts, with this device the one governing the workspace.
-fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &DeviceCert) {
-    let owner = owner::open_file(
-        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-    )
-    .expect("an owner for this device's workspace");
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let governor = testing::enroll_interactive_governor_in(&owner, device, cert, WORKSPACE)
-        .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as the publication a
-    // host's own workspace makes.
-    let host = governor.workspace_host().device_public_key;
-    let frames: Vec<Vec<u8>> = governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect();
-    for frame in frames {
-        owner
-            .receive(
-                workspace,
-                TransportOrigin::RetainedRelayDelta(host),
-                postcard::from_bytes(&frame).expect("a publication is a message"),
-                std::time::SystemTime::now(),
-            )
-            .expect("the host admits the workspace's people");
-    }
-}
-
-/// The person `root` certifies, as a workspace names its owner.
-fn principal(root: &[u8; 32]) -> String {
-    hex::encode(root)
-}
-
-/// A shell showing the workspace, known by its id, owned by the person.
-fn shell(fixture: &Fixture) -> Layout {
-    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let mut workspace = Workspace::new(workspace, "Shell");
-    workspace.set_owner(principal(&fixture.cert.user_public_key));
-    Layout {
-        workspaces: vec![workspace.clone()],
-        active: workspace.id(),
-        ..Layout::default()
-    }
-}
-
-/// What the app presents to join the workspace's channel: the certificate, and the device's proof
-/// that it is the certificate's.
-fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: WORKSPACE.to_owned(),
-        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                WORKSPACE,
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("a presentation encodes")
-}
 
 /// A connection to the session's plane as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path) -> CollabClient {
@@ -195,7 +82,9 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
         launch: Some(Rc::clone(&apps)),
         ..Options::default()
     });
-    session.handle().replace_tree(shell(fixture));
+    session
+        .handle()
+        .replace_tree(layout(WORKSPACE, &principal(&fixture.cert.user_public_key)));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }

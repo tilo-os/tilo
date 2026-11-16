@@ -37,7 +37,6 @@ use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
-use tilo_desktop::verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -49,10 +48,17 @@ use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
-use tilo_sheets::directory::{ListingAction, Status};
+use tilo_sheets::directory::ListingAction;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+use crate::common::directory::{
+    community_site, held, layout, look_up_site, open_directory, pointer_here, recorded_layout,
+    tile_here,
+};
+use crate::common::held::{certified, this_computer_with_an_identity};
+use crate::common::publisher;
 
 /// The origin the deployment's ingress publishes for the service: what its pages and its links
 /// name. On this machine it is the address the service is reached at, because the service
@@ -270,27 +276,6 @@ struct Member {
     cert: DeviceCert,
 }
 
-/// `key` 's certificate as a device of the person whose root key is `root` .
-fn certified(
-    root: &ed25519_dalek::SigningKey,
-    key: &ed25519_dalek::SigningKey,
-    label: &str,
-    capabilities: DeviceCapabilities,
-) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities,
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
-    cert
-}
-
 fn random_key() -> [u8; 32] {
     let mut key = [0; 32];
     getrandom::fill(&mut key).expect("a key");
@@ -424,60 +409,6 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
     }
 }
 
-/// The strips and windows a shared desktop holds, as a shell shows them, in order: each strip by its
-/// name and the titles of the windows in it.
-fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
-    let mut layout: Vec<(String, Vec<String>)> = desktop
-        .tree
-        .workspaces
-        .first()
-        .map(|workspace| {
-            workspace
-                .strips
-                .iter()
-                .map(|strip| {
-                    (
-                        strip.name.clone(),
-                        strip
-                            .window_groups
-                            .iter()
-                            .flat_map(|group| group.tabs.iter().map(|tab| tab.title.clone()))
-                            .collect(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    layout.retain(|(_, windows): &(String, Vec<String>)| !windows.is_empty());
-    layout
-}
-
-/// The strips and windows a shell shows in `workspace` , as [`recorded_layout`] gives a shared
-/// desktop's: what every device showing it should see.
-fn layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .find(|held| held.id().to_string() == workspace)
-            .map(|held| {
-                held.strips
-                    .iter()
-                    .map(|strip| {
-                        (
-                            strip.name.clone(),
-                            strip
-                                .window_groups
-                                .iter()
-                                .flat_map(|group| group.tabs.iter().map(|tab| tab.title.clone()))
-                                .collect(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
-}
-
 /// A desktop session of this computer, taking part in the collaboration plane, keeping the
 /// workspaces it holds beside `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
@@ -486,36 +417,6 @@ fn collaborative_session(state: &std::path::Path) -> Session {
         state: Some(state.to_path_buf()),
         ..Options::default()
     })
-}
-
-/// This computer's person: an identity of its own in `home` 's configuration and a device certified
-/// for it, kept in `home` too so it lives as long as the test.
-fn this_computer_with_an_identity(
-    home: &mut tilo_test_env::TestHome,
-) -> (std::path::PathBuf, [u8; 32]) {
-    let root = home.root().join("system");
-    let identity_dir = home.config().join("tilo").join("identity");
-    tilo_identity_host::provisioning::ensure_collaboration_identity(
-        &identity_dir,
-        &tilo_user_identity::IdentityPaths::under(&root),
-        tilo_identity_host::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
-    home.env().set("TILO_IDENTITY_ROOT", &root);
-    let person = runtime_identity::list_identities(&identity_dir)
-        .expect("this computer's identities")
-        .into_iter()
-        .next()
-        .expect("an identity")
-        .public_key;
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
-            group_public_key: person,
-            display_name: "Ada".to_owned(),
-            avatar_color: [40, 80, 120],
-        },
-    ))));
-    (root, person)
 }
 
 /// The site's `entry.json` , as the web entry image writes it from its `TILO_WEB_HOME_*` : the home
@@ -546,75 +447,6 @@ fn site(service: &WorkspaceService) -> Responder {
             _ => Reply::status(404),
         })
     })
-}
-
-/// Point this computer at the community site `site` for the test's lifetime,
-/// as a site named in `community.toml` is. Returns the configuration's
-/// directory, which goes with it.
-fn community_site(env: &mut tilo_test_env::ScopedEnv, site: &str) -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a directory for the configuration");
-    let config = dir.path().join("community.toml");
-    std::fs::write(&config, format!("site = \"{site}\"\n")).expect("the configuration is written");
-    env.set("TILO_COMMUNITY_CONFIG", &config);
-    dir
-}
-
-/// The key the session's directory sheet publishes `action` under.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
-}
-
-/// Open "Join a workspace…" and wait until the directories answered.
-fn open_directory(session: &mut Session) {
-    session
-        .invoke(CHROME_RESOURCE, "join-workspace", &serde_json::Map::new())
-        .expect("the session opens the directory");
-    session.step(Duration::from_millis(1)).unwrap();
-    wait_until_the_directory_answered(session);
-}
-
-/// Run the session until the sheet's directories answered the read it is on.
-fn wait_until_the_directory_answered(session: &mut Session) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let standing = session
-            .workspace_directory()
-            .expect("the session hosts the workspace directory")
-            .directory()
-            .status;
-        if standing != Status::Loading {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the directory answered"
-        );
-        session.step(Duration::from_millis(10)).unwrap();
-    }
-}
-
-/// Read the site `site` in the open sheet, as the person typing its address into its search field
-/// does, and wait until it answered.
-fn look_up_site(session: &mut Session, site: &str) {
-    let sheet = publisher(session, "look").expect("the directory sheet looks a site up");
-    let arguments = serde_json::json!({ "text": site })
-        .as_object()
-        .expect("an object")
-        .clone();
-    session
-        .invoke(&sheet, "look", &arguments)
-        .expect("the session reads the site");
-    session.step(Duration::from_millis(1)).unwrap();
-    wait_until_the_directory_answered(session);
 }
 
 /// The row the sheet lists the workspace `key` under.
@@ -667,45 +499,6 @@ fn ask_to_join(session: &mut Session, key: &str) {
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
     crate::common::until(session, what, |session| done(session));
-}
-
-/// The workspaces this computer holds: the shell's id, the name shown and the workspace's id.
-fn held(session: &Session) -> Vec<(String, String, String)> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .map(|held| {
-                (
-                    held.id().to_string(),
-                    held.name.clone(),
-                    held.id().to_string(),
-                )
-            })
-            .collect()
-    })
-}
-
-/// Where the shell draws the tile of window `tab` : `None` while it is not shown.
-fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
-    session
-        .handle()
-        .shown_tiles()
-        .into_iter()
-        .find(|(shown, _)| *shown == tab)
-        .map(|(_, rect)| rect)
-}
-
-/// Whether the shell drew someone's pointer at `(x, y)` of the tile of `tab` .
-fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
-    session
-        .drawn_peer_pointers()
-        .iter()
-        .any(|(_, (at_x, at_y))| {
-            tile_here(session, tab).is_some_and(|tile| {
-                (at_x - (tile.x0 + f64::from(x))).abs() < 0.5
-                    && (at_y - (tile.y0 + f64::from(y))).abs() < 0.5
-            })
-        })
 }
 
 /// Wait until the shell draws the member's pointer at `(x, y)` over the tile of `tab` , pointing

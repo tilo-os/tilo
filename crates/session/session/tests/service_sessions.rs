@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use accounts::{AccountId, AccountStore, SecretVault};
 use browser_continuity::sessions::{Cookie, SameSite, Service, SessionCookies};
-use ed25519_dalek::Signer as _;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
@@ -32,6 +31,8 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
+use crate::common::held::{WORKSPACE, presentation, principal};
+
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
 /// The keeper of the person's accounts.
@@ -40,8 +41,6 @@ const SETTINGS: &str = "so.tilo.settings";
 const MAIL: &str = "so.tilo.mail";
 /// Browser's record in the workspace: the route its app connection joins.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bf";
-/// The workspace the session holds, as the shell names it.
-const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The secret the person's email account is sealed with.
 const PASSWORD: &str = "an app password only custody is released";
 /// What the selected website session's cookie holds.
@@ -244,11 +243,6 @@ fn hold_workspace(state: &Path, keys: &Keys) {
     }
 }
 
-/// The person `root` certifies, as a workspace names its owner.
-fn principal(root: &[u8; 32]) -> String {
-    hex::encode(root)
-}
-
 /// A shell showing the workspace, known by its id, owned by the person.
 fn shell(keys: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
@@ -259,23 +253,6 @@ fn shell(keys: &Keys) -> Layout {
         active: workspace.id(),
         ..Layout::default()
     }
-}
-
-/// What an app presents to join the workspace's channel: the certificate, and the device's proof
-/// that it is the certificate's.
-fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: WORKSPACE.to_owned(),
-        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                WORKSPACE,
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("a presentation encodes")
 }
 
 /// A directory for the plane's socket that only this user reaches: the broker refuses to serve one

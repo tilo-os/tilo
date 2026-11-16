@@ -12,8 +12,8 @@
 
 use std::time::Duration;
 
+use crate::common::publisher;
 use futures_util::FutureExt as _;
-use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_portal::consent::AccessQuestion;
 use tilo_session::{Options, Session};
@@ -33,20 +33,6 @@ fn asking() -> (Session, tilo_service::Questions) {
         },
     );
     (session, questions)
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 /// The question that is on the portal sheet now.

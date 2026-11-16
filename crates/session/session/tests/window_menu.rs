@@ -16,11 +16,10 @@
 
 use std::time::Duration;
 
+use crate::common::tree::{holds, layout_tree, window};
 use serde_json::{Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::{Layout, StripId, WindowGroup, WindowWidth};
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 
@@ -52,49 +51,6 @@ const WIDTHS: [&str; 7] = [
     "Wider",
     "Narrower",
 ];
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
-
-/// The shell the session starts on: one window, in front, on one strip.
-fn layout_tree() -> Layout {
-    let tabs = vec![window(20, "Notes", "so.tilo.notes")];
-    let group = WindowGroup {
-        id: 3,
-        active_tab: tabs[0].id,
-        tabs,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    };
-    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
-    workspace.strips = vec![Strip {
-        id: StripId(2),
-        name: "Main".into(),
-        window_groups: vec![group],
-    }];
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Default::default()
-    };
-    tree.active_strip
-        .insert(WorkspaceId::from_u128(1), StripId(2));
-    tree.active_group.insert(StripId(2), 3);
-    tree
-}
 
 /// A headless session showing `tree` , with a turn taken so its shell has laid the windows out.
 fn session_with(tree: Layout) -> Session {
@@ -174,18 +130,6 @@ fn under(reading: &Value, id: &str) -> Vec<String> {
 /// The window's tab as the session publishes it, or `None` while the menu is closed.
 fn menu_tab(reading: &Value) -> Option<String> {
     reading["tab"].as_str().map(str::to_owned)
-}
-
-/// Whether the shell still holds the window `tab` .
-fn holds(session: &Session, tab: u64) -> bool {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .any(|shown| shown.id == tab)
-    })
 }
 
 tilo_test_env::scenario! {

@@ -27,17 +27,15 @@
 )]
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use fs::namespace::{Namespace, ROOT_INO};
-use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{FilesTree, ROOT_ID, Tree};
+use fs::namespace::ROOT_INO;
 use tilo_lock::MutexRecover as _;
-use tilo_resource::Resource as _;
 use tilo_session::Session;
 use tilo_user_identity::IdentityPaths;
 
+use crate::common::files::{Mounted, contents, mount_on, namespace};
 use crate::common::personal::{self, Other, Personal};
 
 /// The app whose person record a workspace's tree is.
@@ -343,41 +341,6 @@ fn wait_held(
     });
 }
 
-/// Every path `namespace`'s tree holds as the record reads it — the projection
-/// the Files app renders — sorted, each folder's contents by its folder's path.
-fn contents(namespace: &Mounted) -> Vec<String> {
-    fn walk(tree: &Tree, parent: &str, prefix: &str, found: &mut Vec<String>) {
-        for (id, entry) in tree.children(parent) {
-            let name = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
-            let path = if prefix.is_empty() {
-                name
-            } else {
-                format!("{prefix}/{name}")
-            };
-            found.push(path.clone());
-            if entry.kind == FileNodeKind::Directory {
-                walk(tree, id, &path, found);
-            }
-        }
-    }
-    let bytes = namespace.lock_recover().save();
-    let document = automerge::AutoCommit::load(&bytes).expect("the tree's document loads");
-    let tree = FilesTree::read(&document).expect("the tree reads");
-    let mut found = Vec::new();
-    walk(&tree, ROOT_ID, "", &mut found);
-    found.sort();
-    found
-}
-
-/// A tree document this device mounts, as the daemon serving the mount holds it.
-type Mounted = Arc<Mutex<Namespace>>;
-
-/// A tree document nothing has mounted yet, as a device mounts a workspace it
-/// holds no tree of.
-fn namespace(author: &str) -> Mounted {
-    Arc::new(Mutex::new(Namespace::new(author).expect("a tree document")))
-}
-
 /// Publish `namespace` on `cluster` as `paths`'s device, as the files daemon
 /// serving the mount does.
 fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::task::JoinHandle<()> {
@@ -398,39 +361,6 @@ fn mount(namespace: &Mounted, cluster: &str, paths: &IdentityPaths) -> tokio::ta
         credentials,
         tilo_paths::xdg::service_socket("collab"),
         tilo_paths::xdg::service_socket("identity"),
-    )
-}
-
-/// Publish `namespace` on `cluster` as `device`'s mount does: the daemon of
-/// that device, on the collaboration socket its session serves.
-fn mount_on(
-    device: &crate::common::people::Device,
-    namespace: &Mounted,
-    cluster: &str,
-) -> tokio::task::JoinHandle<()> {
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock reads after the epoch")
-        .as_nanos();
-    let credentials = fs::identity::load_certified_mount_identity(
-        &device.identity(),
-        u64::try_from(now_ns).expect("the clock reads a time a certificate holds"),
-    )
-    .expect("this device's certificate is valid")
-    .into_parts()
-    .1;
-    fs::tree_record::spawn(
-        Arc::clone(namespace),
-        cluster.to_owned(),
-        credentials,
-        device
-            .directory()
-            .join("runtime")
-            .join("tilo/services/collab.sock"),
-        device
-            .directory()
-            .join("runtime")
-            .join("tilo/services/identity.sock"),
     )
 }
 

@@ -17,7 +17,6 @@
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable as _;
-use ed25519_dalek::Signer as _;
 use runtime_collab::CollabClient;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
@@ -26,12 +25,12 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
+use crate::common::held::{WORKSPACE, presentation, principal};
+
 /// The app whose record the channel carries.
 const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000aa";
-/// The workspace the shell shows and the channel is in.
-const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
 /// The person's keys: the identity store's device, and a second device of theirs the store enrolled
 /// when it was paired.
@@ -110,28 +109,6 @@ fn person() -> Person {
         _env: env,
         _root: root,
     }
-}
-
-/// The person `root` certifies, as a workspace names its owner.
-fn principal(root: &[u8; 32]) -> String {
-    hex::encode(root)
-}
-
-/// What an app presents to join `route` 's channel: the certificate, and the device's proof that it
-/// is the certificate's.
-fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
-    runtime_collab::CertifiedJoinIdentity {
-        workspace_id: WORKSPACE.to_owned(),
-        device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
-        proof: device
-            .sign(&runtime_identity::collaboration_join_signing_bytes(
-                WORKSPACE,
-            ))
-            .to_bytes()
-            .to_vec(),
-    }
-    .encode()
-    .expect("a presentation encodes")
 }
 
 /// A shell showing the workspace, known by its id, owned by the person.

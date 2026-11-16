@@ -21,6 +21,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::common::publisher;
 use futures_util::FutureExt as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
@@ -89,20 +90,6 @@ fn prompt(session: &Session) -> Prompt {
         Body::Secret(prompt) => prompt,
         other => panic!("not a secret prompt: {other:?}"),
     }
-}
-
-/// The resource publishing `action` among everything the session publishes.
-fn publisher(session: &Session, action: &str) -> Option<String> {
-    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.actions.iter().any(|offered| offered.id == action) {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                find(&resource.children, action)
-            }
-        })
-    }
-    find(&session.resources(), action)
 }
 
 fn arguments(value: Value) -> Map<String, Value> {

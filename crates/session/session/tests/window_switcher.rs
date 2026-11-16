@@ -21,11 +21,12 @@
 
 use std::time::{Duration, Instant};
 
+use crate::common::tree::window;
 use crate::common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::window_switcher::SwitcherView;
 use tilo_desktop_model::{
-    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::{Options, Session};
 use ui::kurbo::Rect;
@@ -42,21 +43,6 @@ const KEY_END: u32 = 107;
 
 /// One frame at the display's refresh.
 const REFRESH: Duration = Duration::from_millis(1);
-
-fn window(id: u64, title: &str, app: &str) -> Tab {
-    Tab {
-        id,
-        title: title.into(),
-        tile: TileContent::LocalApp {
-            app_id: app.into(),
-            label: title.into(),
-            note: String::new(),
-        },
-        app_title: None,
-        view: String::new(),
-        pinned: false,
-    }
-}
 
 fn group(id: u64, tab: Tab) -> WindowGroup {
     WindowGroup {
