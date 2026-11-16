@@ -122,34 +122,24 @@ const checkPage = async (tab, name) => {
     await fail(`the page failed while ${name}: ${found.slice(0, 5).join(' | ')}`);
   }
 };
-/** Wait until the page answers `expression` true, or say what it was doing. */
 /** Wait until the page answers `expression` something other than an empty
  * string, or say '' when it never did: for reading what a card says next, or
  * what went wrong, without the wait failing the run. */
-const poll = async (tab, expression, timeout = stepLimit(4)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => '');
-    if (value) return value;
-    if (Date.now() > deadline) return '';
-    await sleep(200);
-  }
-};
-/** Wait until the page answers `expression` true, or say what it was doing. */
+const poll = async (tab, expression, timeout = stepLimit(4)) =>
+  tab.waitFor(expression, {timeout}).catch(() => '');
+/** Wait until the page answers `expression` true, or say what it was doing.
+ * The page does the waiting: it reads the expression again on each change it
+ * shows, and the wait carries on in the next document after a navigation. */
 const until = async (tab, expression, what, timeout = stepLimit(4)) => {
-  const deadline = Date.now() + timeout;
+  const value = await tab.waitFor(expression, {timeout}).catch(() => false);
+  if (value) return value;
+  // A tab that stopped answering (its renderer gone, a dialog up) answers
+  // none of these: each is given a step's time, not the flow's.
   const answered = work => Promise.race([work, sleep(stepLimit(1)).then(() => null)]);
-  for (;;) {
-    const value = await answered(tab.evaluate(expression).catch(() => false));
-    if (value) return value;
-    if (Date.now() > deadline) {
-      const seen = await answered(state(tab));
-      const text = await answered(pageText(tab));
-      const cards = await answered(tab.evaluate(`[...document.querySelectorAll('.tilo-entry-card, [data-card]')].map(card => card.innerText.trim()).filter(Boolean).join(' | ')`).catch(() => ''));
-      await fail(`${what} never happened: ${seen === null ? 'the tab did not answer' : JSON.stringify(seen)} — "${(text ?? '').slice(0, 400)}"${cards ? ` — on screen: ${cards.slice(0, 600)}` : ''}`);
-    }
-    await sleep(200);
-  }
+  const seen = await answered(state(tab));
+  const text = await answered(pageText(tab));
+  const cards = await answered(tab.evaluate(`[...document.querySelectorAll('.tilo-entry-card, [data-card]')].map(card => card.innerText.trim()).filter(Boolean).join(' | ')`).catch(() => ''));
+  await fail(`${what} never happened: ${seen === null ? 'the tab did not answer' : JSON.stringify(seen)} — "${(text ?? '').slice(0, 400)}"${cards ? ` — on screen: ${cards.slice(0, 600)}` : ''}`);
 };
 /** A page of the person's own: a browser of its own, and a tab that has not
  * been to the site before, so the site treats it as a first visit. A person
@@ -232,6 +222,8 @@ const clickAt = async (tab, x, y) => {
     tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y}),
     ...['mousePressed', 'mouseReleased'].map(type => tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1})),
   ]);
+  // The press is the page's to take on its next frame, and what it opened is
+  // read after this (the waits themselves end on the page's changes).
   await sleep(400);
 };
 const key = async (tab, name, modifiers = 0) => {
@@ -248,6 +240,8 @@ const type = async (tab, text) => {
     tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch}),
     tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch}),
   ]));
+  // The shell reads the query on its next frame; the wait that follows is on
+  // its own answer to it.
   await sleep(600);
 };
 /** The rows the command palette offers once it has answered `query`. */
@@ -270,15 +264,9 @@ const search = async (tab, query, title) => {
   }
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search opening', stepLimit(3));
   await type(tab, query);
-  let rows = [];
-  const deadline = Date.now() + stepLimit(4);
-  for (;;) {
-    rows = await searchRows(tab, query).catch(() => []);
-    if (rows[0]?.title === title) break;
-    if (Date.now() > deadline) {
-      await fail(`the palette offers no "${title}" first for "${query}": ${JSON.stringify(rows.map(row => row.title))}`);
-    }
-    await sleep(300);
+  const rows = await searchRows(tab, query).catch(() => []);
+  if (rows[0]?.title !== title) {
+    await fail(`the palette offers no "${title}" first for "${query}": ${JSON.stringify(rows.map(row => row.title))}`);
   }
   await key(tab, 'Enter');
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after "${title}"`, stepLimit(4));
@@ -286,25 +274,26 @@ const search = async (tab, query, title) => {
 };
 /** A real pointer press on the desktop's node named `name`, once it is drawn. */
 const pressName = async (tab, name) => {
-  for (const deadline = Date.now() + stepLimit(3); Date.now() < deadline;) {
-    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    const box = JSON.parse(await tab.evaluate(`(() => {
-      const found = [];
-      const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
-      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
-      const root = globalThis.tiloMount?.state()?.semantics?.root;
-      if (root) walk(root);
-      const hit = found.find(n => n.name === ${JSON.stringify(name)} && n.bounds);
-      if (!hit) return '';
-      const b = Array.isArray(hit.bounds) ? hit.bounds : [hit.bounds.x0 ?? hit.bounds.x, hit.bounds.y0 ?? hit.bounds.y,
-        hit.bounds.x1 ?? hit.bounds.x + hit.bounds.width, hit.bounds.y1 ?? hit.bounds.y + hit.bounds.height];
-      const corner = globalThis.tiloMount.canvas.getBoundingClientRect();
-      return JSON.stringify({x: Math.round(corner.left + (b[0] + b[2]) / 2), y: Math.round(corner.top + (b[1] + b[3]) / 2)});
-    })()`).catch(() => ''));
-    if (box) { await clickAt(tab, box.x, box.y); return true; }
-    await sleep(300);
-  }
-  return false;
+  // The tree the shell publishes is asked for once; every change to it wakes
+  // the wait.
+  await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+  const shown = await poll(tab, `(() => {
+    const found = [];
+    const node = n => { found.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    const hit = found.find(n => n.name === ${JSON.stringify(name)} && n.bounds);
+    if (!hit) return '';
+    const b = Array.isArray(hit.bounds) ? hit.bounds : [hit.bounds.x0 ?? hit.bounds.x, hit.bounds.y0 ?? hit.bounds.y,
+      hit.bounds.x1 ?? hit.bounds.x + hit.bounds.width, hit.bounds.y1 ?? hit.bounds.y + hit.bounds.height];
+    const corner = globalThis.tiloMount.canvas.getBoundingClientRect();
+    return JSON.stringify({x: Math.round(corner.left + (b[0] + b[2]) / 2), y: Math.round(corner.top + (b[1] + b[3]) / 2)});
+  })()`, stepLimit(3));
+  if (!shown) return false;
+  const box = JSON.parse(shown);
+  await clickAt(tab, box.x, box.y);
+  return true;
 };
 /** A click on the DOM control `id`, as a person's own press on it. */
 const pressId = async (tab, id) => {
@@ -423,9 +412,19 @@ const tilo = async (env, args) => new Promise(resolve => {
 /** What the first screen copies, read from the clipboard: a person's click
  * writes it inside the gesture, and the browser lands the write a moment
  * later, so a prompt an earlier copy left there is not this one. */
-const copied = async (tab, before) => until(tab,
-  `navigator.clipboard.readText().then(text => text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
-  'the prompt on the clipboard', stepLimit(4));
+const copied = async (tab, before) => {
+  const read = `navigator.clipboard.readText().then(text =>
+    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+  // The clipboard is the browser's, not the page's: a write landing is no
+  // change the page tells anyone about, so this is the one wait here that
+  // reads on a clock, and it holds a few steps.
+  for (const deadline = Date.now() + stepLimit(4); Date.now() < deadline;) {
+    const text = await tab.evaluate(read).catch(() => '');
+    if (text) return text;
+    await sleep(200);
+  }
+  await fail('the prompt never reached the clipboard');
+};
 const commandOf = prompt => {
   const match = prompt.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})(?: --site (\S+?))?(?:,|\s|$)/);
   return match ? {code: match[1], site: match[2] ?? null} : null;
@@ -514,25 +513,21 @@ try {
   console.log(`ok: one press put an invite link on the operator's clipboard (${report.copiedLink})`);
   mark('one press handed the operator an invite link to give away');
 
+  // The card is on the page before its list is: read it once it has answered
+  // with rows, with nobody on it, or with what went wrong.
   const cardSeen = async () => {
-    for (const deadline = Date.now() + stepLimit(6); Date.now() < deadline;) {
-      // The card is on the page before its list is: read it once it has
-      // answered with rows, with nobody on it, or with what went wrong.
-      const shown = await operator.tab.evaluate(`(() => {
-        const card = document.querySelector('.tilo-waiting');
-        if (!card) return '';
-        const error = card.querySelector('.tilo-entry-error');
-        const rows = [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim());
-        const empty = card.querySelector('.tilo-waiting-none');
-        if (!rows.length && !empty && !(error && !error.hidden)) return '';
-        return JSON.stringify({contacts: rows,
-          said: error && !error.hidden ? error.textContent.trim() : null,
-          buttons: [...card.querySelectorAll('li button')].map(node => node.textContent.trim())});
-      })()`).catch(() => '');
-      if (shown) return JSON.parse(shown);
-      await sleep(300);
-    }
-    return null;
+    const shown = await poll(operator.tab, `(() => {
+      const card = document.querySelector('.tilo-waiting');
+      if (!card) return '';
+      const error = card.querySelector('.tilo-entry-error');
+      const rows = [...card.querySelectorAll('.tilo-waiting-contact')].map(node => node.textContent.trim());
+      const empty = card.querySelector('.tilo-waiting-none');
+      if (!rows.length && !empty && !(error && !error.hidden)) return '';
+      return JSON.stringify({contacts: rows,
+        said: error && !error.hidden ? error.textContent.trim() : null,
+        buttons: [...card.querySelectorAll('li button')].map(node => node.textContent.trim())});
+    })()`, stepLimit(6));
+    return shown ? JSON.parse(shown) : null;
   };
   // The waiting card is the workspace's own action, offered to whoever it
   // lets invite: it is in the operator's search once the role reached them.
@@ -687,13 +682,10 @@ try {
       problem: document.getElementById('first-run-problem')?.textContent ?? null,
       top: (() => { const at = document.elementFromPoint(innerWidth / 2, innerHeight / 3); return at ? at.tagName + '#' + at.id + '.' + at.className : null; })()};
   })())`;
-  let signInPrompt = '';
-  for (const deadline = Date.now() + stepLimit(6); !(signInPrompt = await returning.tab.evaluate(signInShown).catch(() => ''));) {
-    if (Date.now() > deadline) {
-      await dump(returning.tab, '5-sign-in-with-agent');
-      await fail(`"Sign in with your agent" showed no sign-in prompt: ${await returning.tab.evaluate(signInScreen).catch(error => error.message)}`);
-    }
-    await sleep(250);
+  const signInPrompt = await poll(returning.tab, signInShown, stepLimit(6));
+  if (!signInPrompt) {
+    await dump(returning.tab, '5-sign-in-with-agent');
+    await fail(`"Sign in with your agent" showed no sign-in prompt: ${await returning.tab.evaluate(signInScreen).catch(error => error.message)}`);
   }
   report.signInPrompt = signInPrompt;
   await dump(returning.tab, '5-sign-in-with-agent');

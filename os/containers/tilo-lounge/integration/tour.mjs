@@ -129,6 +129,8 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   let logSeen = 0;
   const names = async () => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    // The tree is built in a task of its own after the frame it describes, so
+    // the status that carries it is a later one than the request's.
     await sleep(300);
     return JSON.parse(await tab.evaluate(`(() => {
       const out = [];
@@ -209,7 +211,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // screen a still shell drew nothing for.
   const quiet = async (ms = 400) => {
     const began = Date.now();
-    const how = await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, idleMs: 2500, sleep, timeoutMs: 20_000});
+    const how = await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, idleMs: 2500, timeoutMs: 20_000});
     quietHow[how] = (quietHow[how] ?? 0) + 1;
     await sleep(ms);
     quietMs += Date.now() - began;
@@ -268,7 +270,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await key('k', mac ? 4 : 2);
     await tab.waitFor('!!globalThis.tiloMount?.state()?.searchOpen', {timeout: 60_000});
     await type(query);
-    await waits.settleSearch(tab, {sleep, timeoutMs: 30_000});
+    await waits.settleSearch(tab, {timeoutMs: 30_000});
     // A source answers on a worker, so the card may still be filling in when the frames moved:
     // wait for it to say it owes nothing, which is when it has the rows a person presses.
     await tab.waitFor('globalThis.tiloMount?.state()?.searchSearching !== true', {timeout: 30_000})

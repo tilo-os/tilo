@@ -65,22 +65,33 @@ try {
   assert.equal(mounted.error, undefined, JSON.stringify(mounted));
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   const semantics = async () => JSON.stringify(await tab.evaluate('(mount.requestSemantics(), mount.state().semantics)'));
+  const SEMANTICS = 'JSON.stringify(mount.state().semantics)';
   const last = `2.${fixture.perPart - 1}`;
   // When each part's messages first show, and whether an earlier part was
-  // ever said to be on its way meanwhile.
-  const seen = {};
-  const started = Date.now();
+  // ever said to be on its way meanwhile: the page tells every change it
+  // shows (`globalThis.tiloChanges`), so it notes each one as it arrives,
+  // where the driver looking on a clock could miss a state the page drew and
+  // replaced between two looks.
+  await tab.evaluate(`(() => {
+    globalThis.__seen = {};
+    globalThis.__seenAt = performance.now();
+    const note = () => {
+      const text = ${SEMANTICS};
+      for (const [name, needle] of [['head', ': 2.0"'], ['part1', ': 1.0"'],
+        ['arriving', ${JSON.stringify(ARRIVING)}], ['unavailable', ${JSON.stringify(UNAVAILABLE)}]]) {
+        if (globalThis.__seen[name] === undefined && text.includes(needle)) {
+          globalThis.__seen[name] = Math.round(performance.now() - globalThis.__seenAt);
+        }
+      }
+    };
+    globalThis.__seenWatch ??= globalThis.tiloChanges.listen(note);
+    note();
+    return true;
+  })()`);
+  await tab.waitFor(`(${SEMANTICS}).includes(${JSON.stringify(`: ${last}"`)})`, {timeout: 60_000})
+    .catch(async () => { throw Error(`the head never showed in 60 s: ${await semantics()}`); });
+  const seen = await tab.evaluate('JSON.stringify(globalThis.__seen)').then(JSON.parse);
   let shown;
-  for (;;) {
-    shown = await semantics();
-    for (const [name, found] of [['head', holds(shown, '2.0')], ['part1', holds(shown, '1.0')],
-      ['arriving', shown.includes(ARRIVING)], ['unavailable', shown.includes(UNAVAILABLE)]]) {
-      if (found && seen[name] === undefined) seen[name] = Date.now() - started;
-    }
-    if (holds(shown, last)) break;
-    assert.ok(Date.now() - started < 60_000, 'the head shows');
-    await sleep(50);
-  }
   stage('first-seen', seen);
   // Nothing earlier is asked for before the reader scrolls, however long
   // the page settles: no part 1, and nothing said to be on its way.
@@ -112,17 +123,20 @@ try {
   })()`);
   stage('wheel-at', box);
   const wheelUp = () => tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: box.x, y: box.y, deltaX: 0, deltaY: -3000});
-  // Scroll back until `done` holds of what the page says, noting whether
-  // it ever said the part was on its way.
-  let sawArriving = false;
+  // Scroll back until the page shows `needle`, noting whether it ever said
+  // the part was on its way (the recorder above saw it, not this wait).
   const first = text => [...text.matchAll(/: (\d\.\d+)"/g)].slice(0, 2).map(m => m[1]);
-  const scrollUntil = async (what, done, limit) => {
+  const sawArriving = async () => (await tab.evaluate('globalThis.__seen?.arriving !== undefined')) === true;
+  const scrollUntil = async (what, needle, limit) => {
     const until = Date.now() + limit;
     let reported = Date.now();
     for (;;) {
+      // The page's own word for what it shows, waited for as it changes, and
+      // progress said every ten seconds while it still does not.
+      const found = await tab.waitFor(`(${SEMANTICS}).includes(${JSON.stringify(needle)})`,
+        {timeout: Math.max(1, Math.min(until - Date.now(), 10_000))}).catch(() => false);
       shown = await semantics();
-      sawArriving ||= shown.includes(ARRIVING);
-      if (done(shown)) return;
+      if (found) return;
       if (Date.now() - reported > 10_000) {
         reported = Date.now();
         stage('scrolling', {what, first: first(shown), arriving: shown.includes(ARRIVING),
@@ -134,18 +148,17 @@ try {
       }
       // The page takes a notch as a line, however far it says to go.
       for (let notch = 0; notch < 50; notch++) await wheelUp();
-      await sleep(100);
     }
   };
-  await scrollUntil('part 1 arrived', text => holds(text, '1.0'), 150_000);
+  await scrollUntil('part 1 arrived', ': 1.0"', 150_000);
   assert.ok(!shown.includes(UNAVAILABLE), 'the part the host has is not unavailable');
-  stage('earlier-part-arrived', {sawArriving});
+  stage('earlier-part-arrived', {sawArriving: await sawArriving()});
   writeFileSync(join(evidence, 'part-1.png'), await tab.screenshot());
 
-  await scrollUntil('the missing part said so', text => text.includes(UNAVAILABLE), 150_000);
+  await scrollUntil('the missing part said so', UNAVAILABLE, 150_000);
   assert.ok(!holds(shown, '0.0'), 'nothing of the part the host never had shows');
   assert.ok(!shown.includes(ARRIVING), 'nothing is loading once the hosts said they have none');
-  stage('missing-part-unavailable', {sawArriving});
+  stage('missing-part-unavailable', {sawArriving: await sawArriving()});
   writeFileSync(join(evidence, 'unavailable.png'), await tab.screenshot());
   // It stays said: no retry, no spinner coming back.
   await sleep(2_000);

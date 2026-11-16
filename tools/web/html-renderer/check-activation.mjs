@@ -11,7 +11,7 @@
 // usage: node tools/web/html-renderer/check-activation.mjs BUNDLE_DIR [--names LABEL,LABEL] [--dump]
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
-import {launch, serve, sleep} from '../chrome.mjs';
+import {launch, nextChange, serve, sleep} from '../chrome.mjs';
 
 const bundle = resolve(process.argv[2]);
 const out = process.argv[3] ?? bundle;
@@ -107,12 +107,11 @@ try {
   await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
   await tab.navigate(`${server.url}/app.html?app=so.tilo.notes&render=${render}`);
   await tab.waitFor('!!window.mount && !!window.renderMarks', {timeout: 60000});
-  let last = -1;
+  // Until the page presents nothing more (a spell of no change at all), or
+  // 15 s: the page tells every change it shows, so this ends on its own quiet
+  // rather than on a count of looks.
   for (let i = 0; i < 60; i++) {
-    await sleep(250);
-    const seen = await tab.evaluate('window.renderMarks.presented.length');
-    if (seen === last && i > 4) break;
-    last = seen;
+    if (await tab.evaluate(nextChange(250)).catch(() => false) === false) break;
   }
   // What the page offers before the note arrives.
   const first = await tab.evaluate(MIRROR);

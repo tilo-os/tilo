@@ -153,15 +153,11 @@ const close = async tab => {
   await Promise.race([Promise.all(owed.get(tab) ?? []), sleep(stepLimit(1))]);
   await tab.close();
 };
-const until = async (tab, expression, timeout = stepLimit(3)) => {
-  const deadline = Date.now() + timeout;
-  for (;;) {
-    const value = await tab.evaluate(expression).catch(() => null);
-    if (value) return value;
-    if (Date.now() > deadline) return null;
-    await sleep(200);
-  }
-};
+// Wait until `expression` holds in the page, or answer null: the page reads
+// the expression again on each change it shows, and the wait carries on in the
+// next document when a reload or a step back replaces this one.
+const until = async (tab, expression, timeout = stepLimit(3)) =>
+  tab.waitFor(expression, {timeout}).catch(() => null);
 const firstFrame = tab => until(tab, 'globalThis.__firstFrame && JSON.stringify(globalThis.__firstFrame)', stepLimit(2))
   .then(text => { mark(`case ${caseNo ?? 1}: a page's first frame`); return JSON.parse(text ?? '{}'); });
 const setup = tab => tab.evaluate(`localStorage.getItem('tilo-setup')`).then(text => JSON.parse(text ?? 'null')).catch(() => null);
@@ -193,9 +189,11 @@ const OWN_WORKSPACE = `(() => {
     && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
 })()`;
 const forget = tab => tab.evaluate('delete globalThis.__firstFrame').catch(() => {});
-const reload = async tab => { await forget(tab); await tab.reload(); await sleep(50); };
+// The mark gone, the waits that follow read the first frame of the document
+// the reload or the step back brings, never this one's.
+const reload = async tab => { await forget(tab); await tab.reload(); };
 // Back one entry in the tab's history, as the browser's Back button goes.
-const goBack = async tab => { await forget(tab); await tab.evaluate('history.back()').catch(() => {}); await sleep(300); };
+const goBack = async tab => { await forget(tab); await tab.evaluate('history.back()').catch(() => {}); };
 // A person's click: on the tab in front, as only that one may use the clipboard.
 // A person's click on the button `id`, once it is what stands at its centre:
 // a click on a layer still over it (the screen fading in) lands on that layer
@@ -228,8 +226,17 @@ const copy = async (tab, id) => {
   await tab.front();
   const before = await clipboardText(tab);
   await click(tab, id);
-  return until(tab, `navigator.clipboard.readText().then(text =>
-    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`, stepLimit(1));
+  // The clipboard is the browser's, not the page's: a write landing is no
+  // change the page tells anyone about, so this is the one wait here that
+  // reads on a clock, and it holds a step.
+  const read = `navigator.clipboard.readText().then(text =>
+    text.match(/(?:tilo|sh -s) login /) && text !== ${JSON.stringify(before)} ? text : '', () => '')`;
+  for (const deadline = Date.now() + stepLimit(1); Date.now() < deadline;) {
+    const text = await tab.evaluate(read).catch(() => '');
+    if (text) return text;
+    await sleep(200);
+  }
+  return null;
 };
 const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');

@@ -30,7 +30,7 @@
 // the slowest reloads either way.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, nextChange} from '../../../../tools/web/chrome.mjs';
 import {shellMetrics, machine, stepLimit} from './waits.mjs';
 
 const [site, out, timesArg] = process.argv.slice(2);
@@ -124,15 +124,36 @@ browser.on(({method, sessionId}) => {
   if (method === 'Inspector.targetCrashed') crashed.add(sessionId);
 });
 
+// Wait until `expression` holds in the page, or `null` when the tab crashed or
+// `ms` passed. The page does the waiting (it reads the expression again on each
+// change it shows), and a renderer that died has no state to wait on, so it
+// ends the wait at once instead of at its deadline.
 const until = async (tab, expression, ms) => {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    if (crashed.has(tab.sessionId)) return null;
-    const value = await Promise.race([tab.evaluate(expression).catch(() => null), sleep(2_000).then(() => null)]);
-    if (value) return value;
-    if (Date.now() > deadline) return null;
-    await sleep(50);
-  }
+  let stop = () => {};
+  const died = new Promise(resolve => {
+    if (crashed.has(tab.sessionId)) return resolve(null);
+    const listening = browser.on(({method, sessionId}) => {
+      if (method !== 'Inspector.targetCrashed' || sessionId !== tab.sessionId) return;
+      listening();
+      resolve(null);
+    });
+    stop = listening;
+  });
+  const value = await Promise.race([
+    tab.waitFor(expression, {timeout: ms}).catch(() => null),
+    died,
+  ]);
+  stop();
+  return value || null;
+};
+
+// The wait that ends in the document a reload brings: a reload keeps answering
+// from the old document until the new one replaces it, so the document the
+// wait starts in is marked and the wait holds only in another one.
+const reloadedInto = async (tab, expression, ms) => {
+  const mark = `__reloadDocument${Math.random().toString(36).slice(2)}`;
+  await tab.evaluate(`globalThis.${mark} = true`).catch(() => {});
+  return until(tab, `globalThis.${mark} !== true && (${expression})`, ms);
 };
 
 const committed = new Map();
@@ -170,19 +191,22 @@ for (let n = 1; n <= times; n += 1) {
   // they say whether a frame still drawing is what holds the new page back.
   const idle = process.env.TILO_RELOADS_IDLE !== '0' && n % 2 === 0;
   if (idle) {
-    let frames = Number(await tab.evaluate(FRAMES).catch(() => 0));
-    for (let still = Date.now(), until = Date.now() + stepLimit(3); Date.now() < until && Date.now() - still < 10_000;) {
-      await sleep(250);
-      const now = Number(await tab.evaluate(FRAMES).catch(() => frames));
-      if (now !== frames) { frames = now; still = Date.now(); }
+    // Nothing drawn for ten seconds, as the page tells it: the shell publishes
+    // a status on every frame, so a quiet spell is a wait that no change came,
+    // and one that drew again starts the spell over.
+    for (let deadline = Date.now() + stepLimit(3); Date.now() < deadline;) {
+      const left = Math.min(10_000, deadline - Date.now());
+      if (await tab.evaluate(nextChange(left)).catch(() => false) === false) break;
     }
   }
   await tab.evaluate(`sessionStorage.setItem('tilo-reload-release-gpu', '${release ? 1 : 0}')`).catch(() => {});
   const asked = Date.now();
   await tab.reload().catch(() => {});
-  const came = await until(tab, ARRIVED, stepLimit(6));
+  const came = await reloadedInto(tab, ARRIVED, stepLimit(6));
   const result = crashed.has(tab.sessionId) ? 'crashed' : !came ? 'never-arrived' : came === 'stopped' ? 'stopped' : 'ok';
   const arrivedAt = Date.now();
+  // The wait above ended in the reloaded document, so its frames are read
+  // there directly: the old document is gone.
   const drew = result === 'ok' ? await until(tab, `(${FRAMES}) > 0`, stepLimit(3)) : null;
   const before = JSON.parse(await tab.evaluate(BEFORE).catch(() => 'null') ?? 'null') ?? {};
   const locks = JSON.parse(await tab.evaluate(DEVICE_LOCKS).catch(() => '[]') ?? '[]');
@@ -261,7 +285,7 @@ if (tabs.secondIn) {
   console.log(`TIMING two-tabs first=${await tab.evaluate(WINDOWS).catch(() => '?')} second=${await second.evaluate(WINDOWS).catch(() => '?')}`);
   const before = JSON.parse(await tab.evaluate(DEVICE_LOCKS).catch(() => '[]') ?? '[]');
   await tab.reload().catch(() => {});
-  tabs.reloadedIn = (await until(tab, ARRIVED, stepLimit(6))) === 'done';
+  tabs.reloadedIn = (await reloadedInto(tab, ARRIVED, stepLimit(6))) === 'done';
   const after = JSON.parse(await tab.evaluate(DEVICE_LOCKS).catch(() => '[]') ?? '[]');
   tabs.sameDevice = before.length === 2 && after.length === 2 && JSON.stringify(before.sort()) === JSON.stringify(after.sort());
   console.log(`TIMING two-tabs reloaded=${tabs.reloadedIn} locks-before=${before.join(',')} locks-after=${after.join(',')}`);
