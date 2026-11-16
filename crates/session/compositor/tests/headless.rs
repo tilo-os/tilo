@@ -356,6 +356,31 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A surface app's answer wakes the session's loop from another thread. When it lands after the
+/// session read its answers this pass, and a dispatch that waits for nothing (the one of
+/// `catch_up` before a frame) spends the loop's wake-up, the next wait still ends at once:
+/// quick settings opened to paste waited ~100 ms, or seconds, for an answer it had.
+#[test]
+fn a_wake_spent_by_a_catch_up_still_ends_the_next_wait() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let waker = compositor.waker();
+    compositor.dispatch(Duration::ZERO).unwrap();
+    waker.wake_by_ref();
+    compositor.catch_up().unwrap();
+    let wait = Duration::from_secs(5);
+    let started = std::time::Instant::now();
+    compositor.dispatch(wait).unwrap();
+    assert!(
+        started.elapsed() < wait / 2,
+        "the wait after a wake ran {:?}",
+        started.elapsed()
+    );
+    // Once read, the wake is spent: the wait after it waits again.
+    let started = std::time::Instant::now();
+    compositor.dispatch(Duration::from_millis(200)).unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(150));
+}
+
 #[test]
 fn clients_connect_through_the_listening_socket() {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {

@@ -419,6 +419,12 @@ pub struct Compositor {
     /// The display name this session published for the login while it runs
     /// ([`Compositor::listen`]): the file goes with the compositor.
     published_display: Option<PublishedDisplay>,
+    /// A [`Compositor::waker`] woke the loop and no wait of [`Compositor::dispatch`] has ended on
+    /// it yet. The loop's own wake-up is spent by any dispatch, the one of
+    /// [`Compositor::catch_up`] too: one that lands after the session read what woke it, and is
+    /// spent before the session waits again, would leave what it brought unread until something
+    /// else ends the wait.
+    woken: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Compositor {
@@ -459,6 +465,7 @@ impl Compositor {
             recorder: tilo_frame_metrics::FrameRecorder::from_env(),
             ticking: false,
             published_display: None,
+            woken: Arc::default(),
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -918,6 +925,12 @@ impl Compositor {
     /// answers; with `None` , wait for an event however long that takes.
     pub fn dispatch(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
         let timeout: Option<Duration> = timeout.into();
+        // What a waker brought since the last wait is read without waiting for anything else.
+        let timeout = if self.woken.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            Some(Duration::ZERO)
+        } else {
+            timeout
+        };
         let started = Instant::now();
         // A held key's next repeat for a hosted surface wakes the loop.
         let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
@@ -2616,7 +2629,10 @@ impl Compositor {
     /// due frame.
     #[must_use]
     pub fn waker(&self) -> std::task::Waker {
-        std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
+        std::task::Waker::from(std::sync::Arc::new(LoopWaker {
+            signal: self.event_loop.get_signal(),
+            woken: Arc::clone(&self.woken),
+        }))
     }
 }
 
@@ -2634,16 +2650,21 @@ impl Drop for ReadableWatch {
     }
 }
 
-/// Wakes the compositor's loop.
-struct LoopWaker(smithay::reexports::calloop::LoopSignal);
+/// Wakes the compositor's loop, and has its next wait end at once even when another dispatch
+/// spends the loop's wake-up first.
+struct LoopWaker {
+    signal: smithay::reexports::calloop::LoopSignal,
+    woken: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl std::task::Wake for LoopWaker {
     fn wake(self: std::sync::Arc<Self>) {
-        self.0.wakeup();
+        self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &std::sync::Arc<Self>) {
-        self.0.wakeup();
+        self.woken.store(true, std::sync::atomic::Ordering::Release);
+        self.signal.wakeup();
     }
 }
 
