@@ -70,7 +70,9 @@ invited into, or one already deleted, answers `not_found` ([errors](errors.md)).
 A branch is a new workspace of your own that starts with everything one of yours holds: its records,
 with their history, and the files they name. From then on the two go apart, and nothing merges back.
 What is tied to people stays behind: the conversations in Chat, each person's own places, and the
-members. You are the branch's only member. The source's labels stay behind too; give the branch its own.
+members. You are the branch's only member. The source's labels stay behind too; give the branch its own. A
+source that runs commands unattended passes that on: the branch starts with it on, for the keys made for
+the branch alone ([approvals](approvals.md#commands-in-a-workspaces-machine)).
 
 So set a workspace up once, then branch it for each task or each customer:
 

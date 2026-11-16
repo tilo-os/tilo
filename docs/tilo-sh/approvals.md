@@ -14,6 +14,8 @@ allow runs once.
 | Making a workspace, minting a key | no: the key already reaches what it is making |
 | Asking for a key to be *created* | yes: a new grant of authority is the person's to give |
 | A page action in Browser: navigate, fill in, select, click, read back | no, with the key's page scope |
+| A command in the workspace's Linux machine (`terminal#run`) | yes, unless the person let that workspace run commands unattended and the key reaches that workspace alone |
+| Letting a workspace run commands unattended | yes: only the person turns it on |
 | Something leaving: a submission, a form the page posts, a download it starts, a mail | yes, always |
 
 ## How a call waits
@@ -64,6 +66,75 @@ try {
   // await error.wait() follows it until they decide, and answers the key.
 }
 ```
+
+## Commands in a workspace's machine
+
+Each command a key runs in a workspace's Linux machine asks the person first, every time. That keeps an
+agent from doing anything there alone, which is also what stops one from working on its own in a workspace
+made for it.
+
+So a person may let one workspace of their own run commands **unattended**: the keys made for that
+workspace alone then run commands in its machine without asking. Turning it on is itself a question: any
+key of theirs that reaches the workspace may ask, the call answers pending, and only the person's answer
+on their own device turns it on. A key never turns it on for itself, and a refusal leaves it off. Turning it
+off asks nobody and holds from the next command.
+
+It holds for that workspace and the branches made from it, which start with it on: allow it once on a
+template, branch the template per task, and mint each branch a key that works there alone. Each branch's
+setting is its own from then on.
+
+What stays as it was:
+
+- A key reaching all of the person's workspaces, their own backend's included, is asked before each
+  command, everywhere.
+- Every other action that asks still asks: running a recorded command again, Browser submissions, uploads
+  and passwords, mail, opening a Linux app, asking for a key.
+- A command that runs unasked is in [History](runs-and-history.md) as the key's run, as an asked one is,
+  and undone the same way. A workspace whose plan does not cover its machine still refuses the command.
+
+A workspace's listing says `unattended` while it is on.
+
+```python example=run-unattended
+from tilo import AskPending, Tilo
+
+tilo = Tilo()
+template = tilo.workspaces.create("Release checks template")
+
+try:
+    template_ws = tilo.workspace(template.id)
+    print("now:", template_ws.unattended())
+except AskPending as ask:
+    print("waiting for the person to let it run commands unattended")
+    print("ask:", ask.invocation_id)
+    # ask.wait() follows it until they decide: {"workspace": ..., "unattended": True}.
+
+# Turning it off again asks nobody.
+print("off:", tilo.workspace(template.id).unattended(on=False))
+```
+
+```typescript example=run-unattended
+import { AskPending, Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();
+const template = await tilo.workspaces.create("Release checks template");
+
+try {
+  console.log("now:", await tilo.workspace(template.id).unattended());
+} catch (error) {
+  if (!(error instanceof AskPending)) {
+    throw error;
+  }
+  console.log("waiting for the person to let it run commands unattended");
+  console.log("ask:", error.invocationId);
+  // await error.wait() follows it until they decide: { workspace, unattended: true }.
+}
+
+// Turning it off again asks nobody.
+console.log("off:", await tilo.workspace(template.id).unattended(false));
+```
+
+From the command line, `tilo account workspaces unattended <workspace>` asks and waits for the answer;
+`--off` turns it off.
 
 ## The hosted Browser
 
