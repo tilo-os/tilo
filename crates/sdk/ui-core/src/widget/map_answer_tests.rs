@@ -327,8 +327,7 @@ fn a_found_list_in_its_place_hugs_its_rows() {
 }
 
 /// The person asked near the bottom of the canvas, and the agent's turn opened a long inbox
-/// beside it: the camera frames the two together, as visible as the viewport lets them, centred
-/// top to bottom, never the turn at the foot with the viewport empty above it and the inbox
+/// beside it: the camera pans the least that brings the two into view together, never the inbox
 /// running past the edge. It only pans.
 #[test]
 fn a_turn_and_the_place_it_opened_are_framed_together() {
@@ -372,10 +371,9 @@ fn a_turn_and_the_place_it_opened_are_framed_together() {
     );
     let seen = both.seen_rect().expect("laid out");
     let group = turn.union(inbox);
-    let (above, below) = (group.y0 - seen.y0, seen.y1 - group.y1);
     assert!(
-        (above - below).abs() <= 1.0,
-        "centred top to bottom: {above} above, {below} below"
+        (seen.y1 - group.y1 - ARRIVAL_MARGIN).abs() <= 1.0,
+        "the least pan: the pair's foot a margin over the viewport's, {group:?} in {seen:?}"
     );
     assert!(
         (both.camera().zoom - zoom).abs() < f64::EPSILON,
@@ -383,10 +381,11 @@ fn a_turn_and_the_place_it_opened_are_framed_together() {
     );
 }
 
-/// A short turn and a short place it opened, asked near the foot of the canvas: both fit, so the
-/// pair is centred rather than left hanging at the bottom edge with the top half empty.
+/// A short turn and a short place it opened, asked near the foot of the canvas, running past it:
+/// the camera pans the least that brings both in, no further, so what the person was looking at
+/// moves as little as it can.
 #[test]
-fn a_short_pair_asked_at_the_foot_is_centred() {
+fn a_short_pair_asked_at_the_foot_is_panned_the_least() {
     let _frame = crate::motion::pin_frame();
     let old = pointed((40.0, 520.0));
     let both = Map::new()
@@ -407,12 +406,68 @@ fn a_short_pair_asked_at_the_foot_is_centred() {
         .union(both.area_of("tasks").expect("the tasks"));
     let seen = both.seen_rect().expect("laid out");
     assert!(in_view(&both, group), "both in view: {group:?} in {seen:?}");
-    let (above, below) = (group.y0 - seen.y0, seen.y1 - group.y1);
+    // The pan went no further than the pair needed as it stood (its list measured at its most
+    // first, then at its rows): the pair stays near the foot it was asked at, never centred.
     assert!(
-        (above - below).abs() <= 1.0,
-        "centred top to bottom: {above} above, {below} below; turn {:?}, tasks {:?}, seen {seen:?}",
+        seen.y1 - group.y1 < group.y0 - seen.y0,
+        "the least pan, not a centring: turn {:?}, tasks {:?}, seen {seen:?}",
         both.area_of("turn"),
         both.area_of("tasks"),
+    );
+    assert!(
+        both.camera().origin.x.abs() < 0.5,
+        "nothing across needed a pan: {:?}",
+        both.camera()
+    );
+}
+
+/// A turn that stands whole in view moves nothing, however close it comes to the viewport's
+/// edge: the camera is the person's until something new is out of sight (`canvas.md` §7).
+#[test]
+fn an_answer_standing_in_view_moves_nothing() {
+    let _frame = crate::motion::pin_frame();
+    let old = pointed((300.0, 100.0));
+    let resting = old.camera();
+    // Its trailing edge 8 pixels inside the viewport's, nearer than the margin a pan keeps.
+    let mut map = answer("turn", (300.0, 100.0), (492.0, 480.0), "Hi! What can I do?");
+    drop(old);
+    lay_out(&mut map);
+    draw(&mut map);
+    lay_out(&mut map);
+    assert_eq!(map.answer.as_deref(), Some("turn"), "the turn answers");
+    assert!(in_view(&map, map.area_of("turn").expect("the turn")));
+    assert!(
+        map.camera().same(resting),
+        "the camera stayed where the person had it: {:?} from {resting:?}",
+        map.camera()
+    );
+}
+
+/// The caret the person's click puts at the viewport's trailing edge stands there, its field
+/// running past the edge: the pointing itself never moves the camera, only the answer it brings.
+#[test]
+fn the_caret_never_moves_the_camera() {
+    let _frame = crate::motion::pin_frame();
+    let old = pointed((700.0, 560.0));
+    let resting = old.camera();
+    let caret = PinPlace {
+        x: 700.0,
+        y: 560.0,
+        width: 420.0,
+        height: Some(40.0),
+        band: 0.0,
+        hug: false,
+        grows: false,
+    };
+    let mut map = Map::new().pin("caret", caret, words("remind me"));
+    drop(old);
+    lay_out(&mut map);
+    draw(&mut map);
+    lay_out(&mut map);
+    assert!(
+        map.camera().same(resting),
+        "the click moved nothing: {:?} from {resting:?}",
+        map.camera()
     );
 }
 

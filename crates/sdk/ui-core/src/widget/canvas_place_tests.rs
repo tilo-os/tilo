@@ -184,3 +184,59 @@ fn text_rect(widget: &dyn Widget, said: &str) -> Option<Rect> {
         .into_iter()
         .find_map(|child| text_rect(child, said))
 }
+
+/// A place's caption longer than its width — a turn's caption is the person's whole question —
+/// wraps and is said in full, a quiet line over the surface: never cut short with an ellipsis.
+/// The band grows to hold it, so the caption still stands wholly over the surface.
+#[test]
+fn a_long_caption_wraps_and_is_said_in_full() {
+    let question = "remind me to call mum tomorrow at 6pm and tell her about the trip";
+    let laid = |name: &str| {
+        let place = CanvasPlace::from_props(
+            "p",
+            PlaceProps {
+                name: Some(name.into()),
+                carries: Some("chat.workspace.turns:q1".into()),
+                ..PlaceProps::default()
+            },
+        );
+        let mut map = Map::new().pin(
+            "p",
+            PinPlace {
+                x: 40.0,
+                y: 100.0,
+                width: 260.0,
+                height: Some(200.0),
+                band: PLACE_BAND,
+                hug: false,
+                grows: false,
+            },
+            Box::new(place),
+        );
+        let mut text = crate::font_catalog::fixture_renderer();
+        crate::widget::layout::lay_out_detached(
+            &mut map,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            &crate::Theme::dark(),
+            &mut text,
+        )
+        .expect("the map lays out");
+        let caption = text_rect(&map, name).expect("the place's caption");
+        let ground = ground_rect(&map).expect("the place's ground");
+        (caption, ground)
+    };
+    let (line, _) = laid("hi");
+    let (caption, ground) = laid(question);
+    assert!(
+        caption.height() >= 2.0 * line.height() - 0.5,
+        "the caption wraps to as many lines as it needs: {caption:?}, one line is {line:?}"
+    );
+    assert!(
+        caption.y0 >= 100.0 - PLACE_BAND - 0.5 && caption.y1 <= ground.y0 + 0.5,
+        "it stands over the surface, the band grown to hold it: {caption:?} over {ground:?}"
+    );
+    assert!(
+        caption.x1 <= 300.0 + 0.5,
+        "within the place's width: {caption:?}"
+    );
+}

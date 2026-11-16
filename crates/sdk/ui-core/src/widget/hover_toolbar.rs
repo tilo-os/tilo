@@ -78,7 +78,7 @@ impl HoverToolbar {
     /// [`Self::above`], with `caption` standing at the band's leading end at rest as well as on
     /// hover: what the content is, said quietly while its controls are away (a place on a canvas
     /// names what it shows). The band is as tall either way, so nothing moves when the controls
-    /// come.
+    /// come; a caption longer than a line wraps, and the band grows to say it in full.
     #[must_use]
     pub fn above_captioned(
         row: Element,
@@ -123,7 +123,8 @@ impl HoverToolbar {
             Stands::Above(height) => {
                 // The band is as tall as it is told whatever the controls are, so the content
                 // under it stands where its pin says; the controls sit at its trailing end, on
-                // its foot.
+                // its foot. A caption longer than a line wraps, and the band grows down to hold
+                // all of it: the caption is said in full, never cut short.
                 let mut bar = Stack::row()
                     .fill_width()
                     .fill_height()
@@ -132,6 +133,7 @@ impl HoverToolbar {
                     .align(Align::End);
                 // The caption takes the band's room up to the controls, at its leading end,
                 // a tight step above the content's edge as the controls stand.
+                let captioned = caption.is_some();
                 if let Some(caption) = caption {
                     let mut said = crate::widget::arrange::Slot::new(caption);
                     said.fit = crate::widget::arrange::Fit::fill(1.0);
@@ -144,8 +146,12 @@ impl HoverToolbar {
                 )]
                 let tall = crate::widget::arrange::Length::Dp(height as f32);
                 let mut band = crate::widget::arrange::Slot::new(Box::new(bar));
-                band.fit = crate::widget::arrange::Fit::fill(1.0)
-                    .height(crate::widget::arrange::Sizing::hug().min(tall).max(tall));
+                let sizing = crate::widget::arrange::Sizing::hug().min(tall);
+                band.fit = crate::widget::arrange::Fit::fill(1.0).height(if captioned {
+                    sizing
+                } else {
+                    sizing.max(tall)
+                });
                 let column = Stack::stack()
                     .fill_width()
                     .fill_height()
