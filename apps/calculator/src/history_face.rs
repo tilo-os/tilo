@@ -468,6 +468,7 @@ mod tests {
                 }),
                 ..ActionContext::default()
             }),
+            target: None,
         }
     }
 
