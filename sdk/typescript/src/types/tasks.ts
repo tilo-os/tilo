@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -106,6 +108,118 @@ export interface TrackerArea {
   people: Person[];
 }
 
+/** The arguments of `create`. */
+export interface CreateArgs {
+  title: string;
+  parent?: string;
+  body?: string;
+  status?: Status;
+  assignee?: string;
+  url?: string;
+}
+
+/** The arguments of `create-area`. */
+export interface CreateAreaArgs {
+  name: string;
+  kind?: Kind;
+}
+
+/** The arguments of `rename`. */
+export interface RenameArgs {
+  issue: string;
+  title: string;
+}
+
+/** The arguments of `rename-area`. */
+export interface RenameAreaArgs {
+  area: string;
+  name: string;
+}
+
+/** The arguments of `set-kind`. */
+export interface SetKindArgs {
+  area: string;
+  kind: Kind;
+}
+
+/** The arguments of `involve`. */
+export interface InvolveArgs {
+  area: string;
+  name: string;
+  role?: string;
+}
+
+/** The arguments of `remove-person`. */
+export interface RemovePersonArgs {
+  area: string;
+  person: string;
+}
+
+/** The arguments of `move-under`. */
+export interface MoveUnderArgs {
+  issue: string;
+  parent?: string;
+}
+
+/** The arguments of `assign`. */
+export interface AssignArgs {
+  issue: string;
+  assignee?: string;
+}
+
+/** The arguments of `add-label`. */
+export interface AddLabelArgs {
+  issue: string;
+  label: string;
+}
+
+/** The arguments of `place`. */
+export interface PlaceArgs {
+  issue: string;
+  status: Status;
+  before?: string;
+}
+
+/** The arguments of `comment`. */
+export interface CommentArgs {
+  issue: string;
+  text: string;
+}
+
+/** The arguments of `link`. */
+export interface LinkArgs {
+  issue: string;
+  app: string;
+  kind: string;
+  resource: string;
+  label: string;
+  record?: string;
+}
+
+/** The arguments of `link-note`. */
+export interface LinkNoteArgs {
+  issue: string;
+  note: unknown;
+}
+
+/** The arguments of `delete`. */
+export interface DeleteArgs {
+  issue: string;
+}
+
+/** The arguments of `plan`. */
+export interface PlanArgs {
+  issue: string;
+  area?: Area;
+  priority?: number;
+  due_ms?: number;
+}
+
+/** The arguments of `import`. */
+export interface ImportArgs {
+  tasks: Imported[];
+}
+
 /** Tasks — `tasks.tracker`. */
 export interface Tracker extends tilo.Resource {
   issues: Issue[];
@@ -120,52 +234,76 @@ export interface Tracker extends tilo.Resource {
     assignee?: string;
     url?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  createMany(items: CreateArgs[]): Promise<tilo.ActionAnswer[]>;
   createArea(args: {
     name: string;
     kind?: Kind;
   }): Promise<tilo.Run | void>;
+  /** Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  createAreaMany(items: CreateAreaArgs[]): Promise<tilo.ActionAnswer[]>;
   rename(args: {
     issue: string;
     title: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   renameArea(args: {
     area: string;
     name: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `rename-area` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  renameAreaMany(items: RenameAreaArgs[]): Promise<tilo.ActionAnswer[]>;
   setKind(args: {
     area: string;
     kind: Kind;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-kind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setKindMany(items: SetKindArgs[]): Promise<tilo.ActionAnswer[]>;
   involve(args: {
     area: string;
     name: string;
     role?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `involve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  involveMany(items: InvolveArgs[]): Promise<tilo.ActionAnswer[]>;
   removePerson(args: {
     area: string;
     person: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removePersonMany(items: RemovePersonArgs[]): Promise<tilo.ActionAnswer[]>;
   moveUnder(args: {
     issue: string;
     parent?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `move-under` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  moveUnderMany(items: MoveUnderArgs[]): Promise<tilo.ActionAnswer[]>;
   assign(args: {
     issue: string;
     assignee?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  assignMany(items: AssignArgs[]): Promise<tilo.ActionAnswer[]>;
   addLabel(args: {
     issue: string;
     label: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-label` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addLabelMany(items: AddLabelArgs[]): Promise<tilo.ActionAnswer[]>;
   place(args: {
     issue: string;
     status: Status;
     before?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `place` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  placeMany(items: PlaceArgs[]): Promise<tilo.ActionAnswer[]>;
   comment(args: {
     issue: string;
     text: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  commentMany(items: CommentArgs[]): Promise<tilo.ActionAnswer[]>;
   link(args: {
     issue: string;
     app: string;
@@ -174,22 +312,32 @@ export interface Tracker extends tilo.Resource {
     label: string;
     record?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  linkMany(items: LinkArgs[]): Promise<tilo.ActionAnswer[]>;
   linkNote(args: {
     issue: string;
     note: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `link-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  linkNoteMany(items: LinkNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     issue: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   plan(args: {
     issue: string;
     area?: Area;
     priority?: number;
     due_ms?: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  planMany(items: PlanArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     tasks: Imported[];
   }): Promise<tilo.Run | void>;
+  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   newProject(): Promise<void>;
 }
 

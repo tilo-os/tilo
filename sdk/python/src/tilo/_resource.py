@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import AsyncIterator, Iterator, Mapping, MutableMapping, Sequence
+import json
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from typing import Any
 
+from ._endpoint import SURFACE_HEADER, segments as resource_path
 from ._errors import ProtocolError
 from ._models import Event
 
@@ -40,8 +42,13 @@ OWN = frozenset(
         "watch",
         "action",
         "has",
+        "many",
     }
 )
+
+# A bulk call's bounds: at most this many members, and about this much JSON, per call.
+MANY_MEMBERS = 500
+MANY_BYTES = 4 * 1024 * 1024
 
 
 def kebab(name: str) -> str:
@@ -221,6 +228,52 @@ class Resource:
         """`action`, by its name in the app's own words."""
         return self.action(name, **args)
 
+    def many(self, action: str, items: Sequence[Mapping[str, Any]]) -> Any:
+        """Run `action` for each of `items`, a few calls at most.
+
+        Each call applies up to 500 items (and about 4 MiB of JSON) as one
+        all-or-nothing step, so if any one of them refuses none of that call
+        applies. Every call is the same run: History lists it once and one undo
+        takes it back. An empty list sends nothing. Answers the list of each
+        call's answer.
+        """
+        return self._workspace.client.handoff(self._many(action, items))
+
+    async def _many(
+        self, action: str, items: Sequence[Mapping[str, Any]]
+    ) -> list[dict[str, Any]]:
+        members = _members(action, items)
+        if not members:
+            return []
+        endpoint = await self._workspace._endpoint()
+        if endpoint.group() is not None:
+            return await self._grouped(endpoint, members)
+        # The chunks are one run, as `async with ws.run(...)` would make them one.
+        from ._workspace import RunOpening
+
+        async with RunOpening(self._workspace, f"{action} ({len(members)})"):
+            return await self._grouped(endpoint, members)
+
+    async def _grouped(self, endpoint: Any, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        surface = self._surface()
+        headers = {SURFACE_HEADER: surface} if surface is not None else None
+        answers: list[dict[str, Any]] = []
+        for chunk in _chunks(members):
+            answer = await endpoint.json(
+                "POST",
+                endpoint.path("resources", resource_path(self.path), "actions", "group"),
+                json={"actions": chunk},
+                headers=headers,
+            )
+            # Names the run on the workspace's record; a person's ask is raised here.
+            endpoint.follow(answer, f"{self.path}#group")
+            if answer.get("status") == "pending":
+                run = answer.get("run")
+                if isinstance(run, str) and run:
+                    answer = dict(await endpoint.wait(run))
+            answers.append(dict(answer))
+        return answers
+
     def edit(self, *steps: Any, op: str = "set", value: Any = None) -> Any:
         """A field edit: the steps name the field, its map keys and its items."""
         return self._workspace.client.handoff(
@@ -269,6 +322,36 @@ class Resource:
 
     def __repr__(self) -> str:
         return f"Resource({self.path!r})"
+
+
+def _members(action: str, items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`items` as the group action's members: each an action's arguments."""
+    members: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ProtocolError(
+                f"a bulk call runs an action on each object of arguments, not on {item!r}"
+            )
+        members.append({"action": action, "args": dict(item)})
+    return members
+
+
+def _chunks(members: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
+    """`members` in the calls a bulk call sends: at most `MANY_MEMBERS` and `MANY_BYTES`."""
+    chunk: list[dict[str, Any]] = []
+    size = 0
+    for member in members:
+        try:
+            weight = len(json.dumps(member, separators=(",", ":")).encode())
+        except (TypeError, ValueError) as error:
+            raise ProtocolError(f"an action's arguments are not JSON: {error}") from None
+        if chunk and (len(chunk) >= MANY_MEMBERS or size + weight > MANY_BYTES):
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(member)
+        size += weight + 1
+    if chunk:
+        yield chunk
 
 
 def segments(steps: Sequence[Any]) -> list[dict[str, Any]]:

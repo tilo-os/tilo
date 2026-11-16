@@ -9,18 +9,27 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
     "Language",
     "Snippet",
     "Library",
+    "NewSnippetArgs",
+    "DuplicateArgs",
+    "DeleteArgs",
+    "RecordUseArgs",
+    "RenameFolderArgs",
+    "RenameTagArgs",
+    "RemoveTagArgs",
 ]
 
 Language = Literal["text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile"]
@@ -34,6 +43,45 @@ class Snippet(TypedDict):
     language: Language
     tags: list[str]
     uses: int
+
+NewSnippetArgs = TypedDict("NewSnippetArgs", {
+    "title": "str",
+    "folder": NotRequired["str | None"],
+})
+"""The arguments of `new-snippet`."""
+
+DuplicateArgs = TypedDict("DuplicateArgs", {
+    "snippet": "str",
+    "title": NotRequired["str | None"],
+})
+"""The arguments of `duplicate`."""
+
+DeleteArgs = TypedDict("DeleteArgs", {
+    "snippet": "str",
+})
+"""The arguments of `delete`."""
+
+RecordUseArgs = TypedDict("RecordUseArgs", {
+    "snippet": "str",
+})
+"""The arguments of `record-use`."""
+
+RenameFolderArgs = TypedDict("RenameFolderArgs", {
+    "folder": "str",
+    "to": "str",
+})
+"""The arguments of `rename-folder`."""
+
+RenameTagArgs = TypedDict("RenameTagArgs", {
+    "tag": "str",
+    "to": "str",
+})
+"""The arguments of `rename-tag`."""
+
+RemoveTagArgs = TypedDict("RemoveTagArgs", {
+    "tag": "str",
+})
+"""The arguments of `remove-tag`."""
 
 class Library(Resource):
     """Snippet library — `snippets.library`."""
@@ -52,6 +100,10 @@ class Library(Resource):
             args["folder"] = folder
         return self.action("new-snippet", **args)
 
+    def new_snippet_many(self, items: list[NewSnippetArgs]) -> list[dict[str, Any]]:
+        """Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-snippet", items)
+
     def duplicate(self,
         *,
         snippet: str,
@@ -64,13 +116,25 @@ class Library(Resource):
             args["title"] = title
         return self.action("duplicate", **args)
 
+    def duplicate_many(self, items: list[DuplicateArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("duplicate", items)
+
     def delete(self, *, snippet: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete", snippet=snippet)
 
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete", items)
+
     def record_use(self, *, snippet: str) -> Run | None:
         """Runs the app's action."""
         return self.action("record-use", snippet=snippet)
+
+    def record_use_many(self, items: list[RecordUseArgs]) -> list[dict[str, Any]]:
+        """Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-use", items)
 
     def rename_folder(self,
         *,
@@ -80,6 +144,10 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("rename-folder", folder=folder, to=to)
 
+    def rename_folder_many(self, items: list[RenameFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-folder", items)
+
     def rename_tag(self,
         *,
         tag: str,
@@ -88,8 +156,16 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("rename-tag", tag=tag, to=to)
 
+    def rename_tag_many(self, items: list[RenameTagArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-tag", items)
+
     def remove_tag(self, *, tag: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-tag", tag=tag)
+
+    def remove_tag_many(self, items: list[RemoveTagArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-tag", items)
 
 

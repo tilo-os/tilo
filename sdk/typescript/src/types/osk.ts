@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -33,6 +35,15 @@ export interface Lesson {
   transitions: unknown[];
   kept: string[];
   touch: unknown[];
+}
+
+/** The arguments of `learn`. */
+export interface LearnArgs {
+  lesson: Lesson;
+}
+
+/** The arguments of `forget`. */
+export interface ForgetArgs {
 }
 
 /** On-screen keyboard — `osk.keyboard`. */
@@ -73,7 +84,11 @@ export interface Learned extends tilo.Resource {
   learn(args: {
     lesson: Lesson;
   }): Promise<tilo.Run | void>;
+  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(): Promise<tilo.Run | void>;
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `osk.learned` kind at `path`. */

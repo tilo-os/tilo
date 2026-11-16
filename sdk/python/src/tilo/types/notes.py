@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -23,6 +25,22 @@ __all__ = [
     "Page",
     "Tag",
     "Notebook",
+    "RenameArgs",
+    "DeleteArgs",
+    "MoveNoteArgs",
+    "MoveUpArgs",
+    "MoveDownArgs",
+    "IndentArgs",
+    "OutdentArgs",
+    "DuplicateArgs",
+    "NewTagArgs",
+    "TagArgs",
+    "DeleteTagArgs",
+    "KeepImageArgs",
+    "PlaceImageArgs",
+    "ImportMarkdownArgs",
+    "ImportMarkdownFilesArgs",
+    "WriteNoteArgs",
 ]
 
 class MarkdownFile(TypedDict):
@@ -53,6 +71,98 @@ class Page(TypedDict):
 
 class Tag(TypedDict):
     name: str
+
+RenameArgs = TypedDict("RenameArgs", {
+    "page": "str",
+    "title": "str",
+})
+"""The arguments of `rename`."""
+
+DeleteArgs = TypedDict("DeleteArgs", {
+    "page": "str",
+})
+"""The arguments of `delete`."""
+
+MoveNoteArgs = TypedDict("MoveNoteArgs", {
+    "page": "str",
+    "parent": NotRequired["str | None"],
+    "before": NotRequired["str | None"],
+})
+"""The arguments of `move-note`."""
+
+MoveUpArgs = TypedDict("MoveUpArgs", {
+    "page": "str",
+})
+"""The arguments of `move-up`."""
+
+MoveDownArgs = TypedDict("MoveDownArgs", {
+    "page": "str",
+})
+"""The arguments of `move-down`."""
+
+IndentArgs = TypedDict("IndentArgs", {
+    "page": "str",
+})
+"""The arguments of `indent`."""
+
+OutdentArgs = TypedDict("OutdentArgs", {
+    "page": "str",
+})
+"""The arguments of `outdent`."""
+
+DuplicateArgs = TypedDict("DuplicateArgs", {
+    "page": "str",
+})
+"""The arguments of `duplicate`."""
+
+NewTagArgs = TypedDict("NewTagArgs", {
+    "name": "str",
+})
+"""The arguments of `new-tag`."""
+
+TagArgs = TypedDict("TagArgs", {
+    "page": "str",
+    "name": "str",
+})
+"""The arguments of `tag`."""
+
+DeleteTagArgs = TypedDict("DeleteTagArgs", {
+    "tag": "str",
+})
+"""The arguments of `delete-tag`."""
+
+KeepImageArgs = TypedDict("KeepImageArgs", {
+    "bytes": "Any",
+})
+"""The arguments of `keep-image`."""
+
+PlaceImageArgs = TypedDict("PlaceImageArgs", {
+    "page": "str",
+    "bytes": "Any",
+    "alt": NotRequired["str | None"],
+})
+"""The arguments of `place-image`."""
+
+ImportMarkdownArgs = TypedDict("ImportMarkdownArgs", {
+    "title": "str",
+    "markdown": "str",
+    "images": "list[Any]",
+    "note": NotRequired["str | None"],
+    "path": NotRequired["str | None"],
+    "origin": NotRequired["Origin | None"],
+})
+"""The arguments of `import-markdown`."""
+
+ImportMarkdownFilesArgs = TypedDict("ImportMarkdownFilesArgs", {
+    "files": "list[MarkdownFile]",
+})
+"""The arguments of `import-markdown-files`."""
+
+WriteNoteArgs = TypedDict("WriteNoteArgs", {
+    "page": "str",
+    "markdown": "str",
+})
+"""The arguments of `write-note`."""
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
@@ -92,9 +202,17 @@ class Notebook(Resource):
         """Runs the app's action."""
         return self.action("rename", page=page, title=title)
 
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename", items)
+
     def delete(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete", page=page)
+
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete", items)
 
     def move_note(self,
         *,
@@ -111,29 +229,57 @@ class Notebook(Resource):
             args["before"] = before
         return self.action("move-note", **args)
 
+    def move_note_many(self, items: list[MoveNoteArgs]) -> list[dict[str, Any]]:
+        """Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-note", items)
+
     def move_up(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("move-up", page=page)
+
+    def move_up_many(self, items: list[MoveUpArgs]) -> list[dict[str, Any]]:
+        """Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-up", items)
 
     def move_down(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("move-down", page=page)
 
+    def move_down_many(self, items: list[MoveDownArgs]) -> list[dict[str, Any]]:
+        """Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-down", items)
+
     def indent(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("indent", page=page)
+
+    def indent_many(self, items: list[IndentArgs]) -> list[dict[str, Any]]:
+        """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("indent", items)
 
     def outdent(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("outdent", page=page)
 
+    def outdent_many(self, items: list[OutdentArgs]) -> list[dict[str, Any]]:
+        """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("outdent", items)
+
     def duplicate(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("duplicate", page=page)
 
+    def duplicate_many(self, items: list[DuplicateArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("duplicate", items)
+
     def new_tag(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("new-tag", name=name)
+
+    def new_tag_many(self, items: list[NewTagArgs]) -> list[dict[str, Any]]:
+        """Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-tag", items)
 
     def tag(self,
         *,
@@ -143,13 +289,25 @@ class Notebook(Resource):
         """Runs the app's action."""
         return self.action("tag", page=page, name=name)
 
+    def tag_many(self, items: list[TagArgs]) -> list[dict[str, Any]]:
+        """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("tag", items)
+
     def delete_tag(self, *, tag: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-tag", tag=tag)
 
+    def delete_tag_many(self, items: list[DeleteTagArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-tag", items)
+
     def keep_image(self, *, bytes: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("keep-image", bytes=bytes)
+
+    def keep_image_many(self, items: list[KeepImageArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("keep-image", items)
 
     def place_image(self,
         *,
@@ -164,6 +322,10 @@ class Notebook(Resource):
         if alt is not None:
             args["alt"] = alt
         return self.action("place-image", **args)
+
+    def place_image_many(self, items: list[PlaceImageArgs]) -> list[dict[str, Any]]:
+        """Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("place-image", items)
 
     def create_page(self,
         *,
@@ -202,9 +364,17 @@ class Notebook(Resource):
             args["origin"] = origin
         return self.action("import-markdown", **args)
 
+    def import_markdown_many(self, items: list[ImportMarkdownArgs]) -> list[dict[str, Any]]:
+        """Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import-markdown", items)
+
     def import_markdown_files(self, *, files: list[MarkdownFile]) -> Run | None:
         """Runs the app's action."""
         return self.action("import-markdown-files", files=files)
+
+    def import_markdown_files_many(self, items: list[ImportMarkdownFilesArgs]) -> list[dict[str, Any]]:
+        """Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import-markdown-files", items)
 
     def append_to_note(self,
         *,
@@ -225,6 +395,10 @@ class Notebook(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("write-note", page=page, markdown=markdown)
+
+    def write_note_many(self, items: list[WriteNoteArgs]) -> list[dict[str, Any]]:
+        """Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("write-note", items)
 
     def export_markdown_content(self,
         *,

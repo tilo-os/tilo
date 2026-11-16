@@ -9,23 +9,46 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
     "TypstFile",
     "Workspace",
+    "NewFileArgs",
+    "SavedAtArgs",
+    "CloseFileArgs",
 ]
 
 class TypstFile(TypedDict):
     name: str
     path: str | None
     source: str
+
+NewFileArgs = TypedDict("NewFileArgs", {
+    "name": "str",
+    "path": NotRequired["str | None"],
+    "source": NotRequired["str | None"],
+})
+"""The arguments of `new-file`."""
+
+SavedAtArgs = TypedDict("SavedAtArgs", {
+    "file": "str",
+    "path": "str",
+})
+"""The arguments of `saved-at`."""
+
+CloseFileArgs = TypedDict("CloseFileArgs", {
+    "file": "str",
+})
+"""The arguments of `close-file`."""
 
 class Workspace(Resource):
     """Typst workspace — `typst-editor.workspace`."""
@@ -47,6 +70,10 @@ class Workspace(Resource):
             args["source"] = source
         return self.action("new-file", **args)
 
+    def new_file_many(self, items: list[NewFileArgs]) -> list[dict[str, Any]]:
+        """Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-file", items)
+
     def saved_at(self,
         *,
         file: str,
@@ -55,9 +82,17 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("saved-at", file=file, path=path)
 
+    def saved_at_many(self, items: list[SavedAtArgs]) -> list[dict[str, Any]]:
+        """Runs `saved-at` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("saved-at", items)
+
     # the app's `load` action is the SDK's own: run it with `action("load")`.
     def close_file(self, *, file: str) -> Run | None:
         """Runs the app's action."""
         return self.action("close-file", file=file)
+
+    def close_file_many(self, items: list[CloseFileArgs]) -> list[dict[str, Any]]:
+        """Runs `close-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("close-file", items)
 
 

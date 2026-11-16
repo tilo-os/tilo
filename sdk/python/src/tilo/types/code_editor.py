@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -26,6 +28,20 @@ __all__ = [
     "RunRequest",
     "Terminal",
     "Project",
+    "NewFileArgs",
+    "NewFolderArgs",
+    "RenameArgs",
+    "MoveEntryArgs",
+    "ReplaceTextArgs",
+    "ReplaceRangeArgs",
+    "DeleteArgs",
+    "RecordEntryArgs",
+    "RecordTextArgs",
+    "RecordTargetArgs",
+    "RecordRelaySessionArgs",
+    "ClaimPaneArgs",
+    "StopArgs",
+    "RecordRunArgs",
 ]
 
 class Entry(TypedDict):
@@ -77,6 +93,101 @@ class Terminal(TypedDict):
     runs: list[Run]
     requests: Any
 
+NewFileArgs = TypedDict("NewFileArgs", {
+    "name": NotRequired["str | None"],
+    "folder": NotRequired["str | None"],
+    "text": NotRequired["str | None"],
+})
+"""The arguments of `new-file`."""
+
+NewFolderArgs = TypedDict("NewFolderArgs", {
+    "name": NotRequired["str | None"],
+    "folder": NotRequired["str | None"],
+})
+"""The arguments of `new-folder`."""
+
+RenameArgs = TypedDict("RenameArgs", {
+    "entry": "str",
+    "name": "str",
+})
+"""The arguments of `rename`."""
+
+MoveEntryArgs = TypedDict("MoveEntryArgs", {
+    "entry": "str",
+    "folder": NotRequired["str | None"],
+    "before": NotRequired["str | None"],
+})
+"""The arguments of `move-entry`."""
+
+ReplaceTextArgs = TypedDict("ReplaceTextArgs", {
+    "file": "str",
+    "text": "str",
+})
+"""The arguments of `replace-text`."""
+
+ReplaceRangeArgs = TypedDict("ReplaceRangeArgs", {
+    "at": "Any",
+    "text": "str",
+})
+"""The arguments of `replace-range`."""
+
+DeleteArgs = TypedDict("DeleteArgs", {
+    "entry": "str",
+})
+"""The arguments of `delete`."""
+
+RecordEntryArgs = TypedDict("RecordEntryArgs", {
+    "id": "str",
+    "kind": "EntryKind",
+    "name": "str",
+    "folder": NotRequired["str | None"],
+    "language": "str",
+})
+"""The arguments of `record-entry`."""
+
+RecordTextArgs = TypedDict("RecordTextArgs", {
+    "file": "str",
+    "text": "str",
+})
+"""The arguments of `record-text`."""
+
+RecordTargetArgs = TypedDict("RecordTargetArgs", {
+    "target": "str",
+    "device": NotRequired["str | None"],
+})
+"""The arguments of `record-target`."""
+
+RecordRelaySessionArgs = TypedDict("RecordRelaySessionArgs", {
+    "session": NotRequired["str | None"],
+})
+"""The arguments of `record-relay-session`."""
+
+ClaimPaneArgs = TypedDict("ClaimPaneArgs", {
+    "pane": "str",
+    "device": NotRequired["str | None"],
+})
+"""The arguments of `claim-pane`."""
+
+StopArgs = TypedDict("StopArgs", {
+})
+"""The arguments of `stop`."""
+
+RecordRunArgs = TypedDict("RecordRunArgs", {
+    "command": "str",
+    "cwd": "str",
+    "started_ms": "int",
+    "ended_ms": "int",
+    "exit": "int",
+    "output": NotRequired["Any | None"],
+    "truncated": "bool",
+    "tool": "str",
+    "undoable": "bool",
+    "items": "list[Any]",
+    "request": NotRequired["str | None"],
+    "run": "str",
+})
+"""The arguments of `record-run`."""
+
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
     __surface__ = "so.tilo.code-editor@a337d60d96a31d9c"
@@ -103,6 +214,10 @@ class Project(Resource):
             args["text"] = text
         return self.action("new-file", **args)
 
+    def new_file_many(self, items: list[NewFileArgs]) -> list[dict[str, Any]]:
+        """Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-file", items)
+
     def new_folder(self,
         *,
         name: str | None = None,
@@ -116,6 +231,10 @@ class Project(Resource):
             args["folder"] = folder
         return self.action("new-folder", **args)
 
+    def new_folder_many(self, items: list[NewFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-folder", items)
+
     def rename(self,
         *,
         entry: str,
@@ -123,6 +242,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("rename", entry=entry, name=name)
+
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename", items)
 
     def move_entry(self,
         *,
@@ -139,6 +262,10 @@ class Project(Resource):
             args["before"] = before
         return self.action("move-entry", **args)
 
+    def move_entry_many(self, items: list[MoveEntryArgs]) -> list[dict[str, Any]]:
+        """Runs `move-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-entry", items)
+
     def replace_text(self,
         *,
         file: str,
@@ -146,6 +273,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("replace-text", file=file, text=text)
+
+    def replace_text_many(self, items: list[ReplaceTextArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("replace-text", items)
 
     def replace_range(self,
         *,
@@ -155,9 +286,17 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("replace-range", at=at, text=text)
 
+    def replace_range_many(self, items: list[ReplaceRangeArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("replace-range", items)
+
     def delete(self, *, entry: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete", entry=entry)
+
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete", items)
 
     def record_entry(self,
         *,
@@ -177,6 +316,10 @@ class Project(Resource):
         args["language"] = language
         return self.action("record-entry", **args)
 
+    def record_entry_many(self, items: list[RecordEntryArgs]) -> list[dict[str, Any]]:
+        """Runs `record-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-entry", items)
+
     def record_text(self,
         *,
         file: str,
@@ -184,6 +327,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("record-text", file=file, text=text)
+
+    def record_text_many(self, items: list[RecordTextArgs]) -> list[dict[str, Any]]:
+        """Runs `record-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-text", items)
 
     def record_target(self,
         *,
@@ -197,6 +344,10 @@ class Project(Resource):
             args["device"] = device
         return self.action("record-target", **args)
 
+    def record_target_many(self, items: list[RecordTargetArgs]) -> list[dict[str, Any]]:
+        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-target", items)
+
     def record_relay_session(self,
         *,
         session: str | None = None,
@@ -206,6 +357,10 @@ class Project(Resource):
         if session is not None:
             args["session"] = session
         return self.action("record-relay-session", **args)
+
+    def record_relay_session_many(self, items: list[RecordRelaySessionArgs]) -> list[dict[str, Any]]:
+        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-relay-session", items)
 
     def claim_pane(self,
         *,
@@ -218,6 +373,10 @@ class Project(Resource):
         if device is not None:
             args["device"] = device
         return self.action("claim-pane", **args)
+
+    def claim_pane_many(self, items: list[ClaimPaneArgs]) -> list[dict[str, Any]]:
+        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("claim-pane", items)
 
     def run(self, *, command: str) -> Any | Run:
         """Runs the app's action."""
@@ -238,6 +397,10 @@ class Project(Resource):
     def stop(self) -> Run | None:
         """Runs the app's action."""
         return self.action("stop")
+
+    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stop", items)
 
     def record_run(self,
         *,
@@ -271,6 +434,10 @@ class Project(Resource):
             args["request"] = request
         args["run"] = run
         return self.action("record-run", **args)
+
+    def record_run_many(self, items: list[RecordRunArgs]) -> list[dict[str, Any]]:
+        """Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-run", items)
 
     def reveal(self,
         *,

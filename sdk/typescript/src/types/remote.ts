@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -40,6 +42,26 @@ export interface Connection {
 /** One of "ssh", "vnc", "rdp", "tilo". */
 export type ConnectionKind = "ssh" | "vnc" | "rdp" | "tilo";
 
+/** The arguments of `add-connection`. */
+export interface AddConnectionArgs {
+  name: string;
+  host: string;
+  kind: ConnectionKind;
+  port?: number;
+  user?: string;
+}
+
+/** The arguments of `delete-connection`. */
+export interface DeleteConnectionArgs {
+  connection: string;
+}
+
+/** The arguments of `mark-used`. */
+export interface MarkUsedArgs {
+  connection: string;
+  at_ms: number;
+}
+
 /** Remote connections — `remote.connection-list`. */
 export interface ConnectionList extends tilo.Resource {
   connections: Connection[];
@@ -50,13 +72,19 @@ export interface ConnectionList extends tilo.Resource {
     port?: number;
     user?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addConnectionMany(items: AddConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteConnection(args: {
     connection: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteConnectionMany(items: DeleteConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   markUsed(args: {
     connection: string;
     at_ms: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `mark-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  markUsedMany(items: MarkUsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `remote.connection-list` kind at `path`. */

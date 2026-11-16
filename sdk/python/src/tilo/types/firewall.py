@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -27,6 +29,13 @@ __all__ = [
     "ZoneKind",
     "Config",
     "Applied",
+    "StartArgs",
+    "StopArgs",
+    "EnterPanicModeArgs",
+    "ExitPanicModeArgs",
+    "DeleteRuleArgs",
+    "ImportArgs",
+    "AppliedArgs",
 ]
 
 Action = Literal["allow", "deny"]
@@ -54,6 +63,39 @@ Target = Literal["default", "accept", "reject", "drop"]
 
 ZoneKind = Literal["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"]
 
+StartArgs = TypedDict("StartArgs", {
+})
+"""The arguments of `start`."""
+
+StopArgs = TypedDict("StopArgs", {
+})
+"""The arguments of `stop`."""
+
+EnterPanicModeArgs = TypedDict("EnterPanicModeArgs", {
+})
+"""The arguments of `enter-panic-mode`."""
+
+ExitPanicModeArgs = TypedDict("ExitPanicModeArgs", {
+})
+"""The arguments of `exit-panic-mode`."""
+
+DeleteRuleArgs = TypedDict("DeleteRuleArgs", {
+    "zone": "ZoneKind",
+    "rule": "str",
+})
+"""The arguments of `delete-rule`."""
+
+ImportArgs = TypedDict("ImportArgs", {
+    "config": "Any",
+})
+"""The arguments of `import`."""
+
+AppliedArgs = TypedDict("AppliedArgs", {
+    "device": "str",
+    "config": "str",
+})
+"""The arguments of `applied`."""
+
 class Config(Resource):
     """Firewall — `firewall.config`."""
     __surface__ = "so.tilo.firewall@8f6272b1c59a5183"
@@ -72,17 +114,33 @@ class Config(Resource):
         """Runs the app's action."""
         return self.action("start")
 
+    def start_many(self, items: list[StartArgs]) -> list[dict[str, Any]]:
+        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("start", items)
+
     def stop(self) -> Run | None:
         """Runs the app's action."""
         return self.action("stop")
+
+    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stop", items)
 
     def enter_panic_mode(self) -> Run | None:
         """Runs the app's action."""
         return self.action("enter-panic-mode")
 
+    def enter_panic_mode_many(self, items: list[EnterPanicModeArgs]) -> list[dict[str, Any]]:
+        """Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("enter-panic-mode", items)
+
     def exit_panic_mode(self) -> Run | None:
         """Runs the app's action."""
         return self.action("exit-panic-mode")
+
+    def exit_panic_mode_many(self, items: list[ExitPanicModeArgs]) -> list[dict[str, Any]]:
+        """Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("exit-panic-mode", items)
 
     def delete_rule(self,
         *,
@@ -92,9 +150,17 @@ class Config(Resource):
         """Runs the app's action."""
         return self.action("delete-rule", zone=zone, rule=rule)
 
+    def delete_rule_many(self, items: list[DeleteRuleArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-rule", items)
+
     def import_(self, *, config: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("import", config=config)
+
+    def import_many(self, items: list[ImportArgs]) -> list[dict[str, Any]]:
+        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import", items)
 
     def read_blocked(self) -> None:
         """Runs the app's action."""
@@ -113,5 +179,9 @@ class Applied(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("applied", device=device, config=config)
+
+    def applied_many(self, items: list[AppliedArgs]) -> list[dict[str, Any]]:
+        """Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("applied", items)
 
 

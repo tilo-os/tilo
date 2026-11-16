@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -194,6 +196,355 @@ export interface PersonAccount {
   tint: number;
 }
 
+/** The arguments of `choose-theme`. */
+export interface ChooseThemeArgs {
+  theme: string;
+}
+
+/** The arguments of `set-dark-mode`. */
+export interface SetDarkModeArgs {
+  on: boolean;
+}
+
+/** The arguments of `step-magnifier`. */
+export interface StepMagnifierArgs {
+  step: string;
+}
+
+/** The arguments of `set-screen-reader`. */
+export interface SetScreenReaderArgs {
+  on: boolean;
+}
+
+/** The arguments of `set-key-repeat`. */
+export interface SetKeyRepeatArgs {
+  rate: number;
+}
+
+/** The arguments of `choose-layout`. */
+export interface ChooseLayoutArgs {
+  layout: string;
+}
+
+/** The arguments of `set-layouts`. */
+export interface SetLayoutsArgs {
+  layouts: string[];
+  active: string;
+}
+
+/** The arguments of `set-paste-shortcut`. */
+export interface SetPasteShortcutArgs {
+  app: string;
+  shortcut: string;
+}
+
+/** The arguments of `set-keyboard-layouts`. */
+export interface SetKeyboardLayoutsArgs {
+  keyboard: string;
+  profile: KeyboardProfile;
+}
+
+/** The arguments of `use-shared-layouts`. */
+export interface UseSharedLayoutsArgs {
+  keyboard: string;
+}
+
+/** The arguments of `set-keyboard-model`. */
+export interface SetKeyboardModelArgs {
+  model: string;
+}
+
+/** The arguments of `show-keyboard-layout`. */
+export interface ShowKeyboardLayoutArgs {
+  layout?: string;
+}
+
+/** The arguments of `inspect-keyboard`. */
+export interface InspectKeyboardArgs {
+  level: number;
+  extra_levels: boolean;
+  key: string;
+}
+
+/** The arguments of `set-tablet-output`. */
+export interface SetTabletOutputArgs {
+  device: string;
+  output: string;
+}
+
+/** The arguments of `set-tablet-keep-aspect`. */
+export interface SetTabletKeepAspectArgs {
+  device: string;
+  on: boolean;
+}
+
+/** The arguments of `set-tablet-left-handed`. */
+export interface SetTabletLeftHandedArgs {
+  device: string;
+  on: boolean;
+}
+
+/** The arguments of `set-tablet-tip-feel`. */
+export interface SetTabletTipFeelArgs {
+  device: string;
+  feel: number;
+}
+
+/** The arguments of `set-tablet-button`. */
+export interface SetTabletButtonArgs {
+  device: string;
+  button: string;
+  action: string;
+}
+
+/** The arguments of `set-tablet-eraser`. */
+export interface SetTabletEraserArgs {
+  device: string;
+  action: string;
+}
+
+/** The arguments of `set-pad-button`. */
+export interface SetPadButtonArgs {
+  device: string;
+  button: number;
+  action: string;
+}
+
+/** The arguments of `set-pad-dial`. */
+export interface SetPadDialArgs {
+  device: string;
+  dial: string;
+  index: number;
+  mode: number;
+  action: string;
+}
+
+/** The arguments of `set-suspend-plugged-in`. */
+export interface SetSuspendPluggedInArgs {
+  minutes: number;
+}
+
+/** The arguments of `set-suspend-on-battery`. */
+export interface SetSuspendOnBatteryArgs {
+  minutes: number;
+}
+
+/** The arguments of `record-automatic-updates`. */
+export interface RecordAutomaticUpdatesArgs {
+  on: boolean;
+}
+
+/** The arguments of `record-update-check`. */
+export interface RecordUpdateCheckArgs {
+  at: string;
+}
+
+/** The arguments of `set-do-not-disturb`. */
+export interface SetDoNotDisturbArgs {
+  on: boolean;
+}
+
+/** The arguments of `mute-app`. */
+export interface MuteAppArgs {
+  app: string;
+  duration: string;
+}
+
+/** The arguments of `set-mono-output`. */
+export interface SetMonoOutputArgs {
+  on: boolean;
+}
+
+/** The arguments of `set-echo-cancellation`. */
+export interface SetEchoCancellationArgs {
+  on: boolean;
+}
+
+/** The arguments of `remember-output-device`. */
+export interface RememberOutputDeviceArgs {
+  device: string;
+}
+
+/** The arguments of `remember-input-device`. */
+export interface RememberInputDeviceArgs {
+  device: string;
+}
+
+/** The arguments of `set-automatic-brightness`. */
+export interface SetAutomaticBrightnessArgs {
+  on: boolean;
+}
+
+/** The arguments of `set-rotation-lock`. */
+export interface SetRotationLockArgs {
+  locked: boolean;
+}
+
+/** The arguments of `allow-continuity`. */
+export interface AllowContinuityArgs {
+  on: boolean;
+}
+
+/** The arguments of `allow-capability`. */
+export interface AllowCapabilityArgs {
+  capability: string;
+  on: boolean;
+}
+
+/** The arguments of `rebind`. */
+export interface RebindArgs {
+  shortcut: string;
+  chord: string;
+}
+
+/** The arguments of `reset`. */
+export interface ResetArgs {
+  shortcuts: string[];
+}
+
+/** The arguments of `reset-all`. */
+export interface ResetAllArgs {
+}
+
+/** The arguments of `set-action-chords`. */
+export interface SetActionChordsArgs {
+  chords: unknown;
+}
+
+/** The arguments of `bind`. */
+export interface BindArgs {
+  slot: string;
+  app: string;
+  view: string;
+  on?: string;
+}
+
+/** The arguments of `reset`. */
+export interface ShellViewsResetArgs {
+  slot: string;
+  on?: string;
+}
+
+/** The arguments of `set-providers`. */
+export interface SetProvidersArgs {
+  config: unknown;
+}
+
+/** The arguments of `follow-local-models`. */
+export interface FollowLocalModelsArgs {
+  profile: unknown;
+}
+
+/** The arguments of `set-providers`. */
+export interface HostedAgentProvidersSetProvidersArgs {
+  hosted: unknown;
+}
+
+/** The arguments of `set-default-app-handler`. */
+export interface SetDefaultAppHandlerArgs {
+  kind: string;
+  app: string;
+}
+
+/** The arguments of `arrange-displays`. */
+export interface ArrangeDisplaysArgs {
+  arrangement: unknown;
+}
+
+/** The arguments of `set-automatic-display-input`. */
+export interface SetAutomaticDisplayInputArgs {
+  on: boolean;
+}
+
+/** The arguments of `set-layouts`. */
+export interface OskSourcesSetLayoutsArgs {
+  layouts: string[];
+  active: string;
+}
+
+/** The arguments of `route-through`. */
+export interface RouteThroughArgs {
+  device: string;
+  on: boolean;
+}
+
+/** The arguments of `set-kill-switch`. */
+export interface SetKillSwitchArgs {
+  on: boolean;
+}
+
+/** The arguments of `stop`. */
+export interface StopArgs {
+  device: string;
+}
+
+/** The arguments of `set-profile-kill-switch`. */
+export interface SetProfileKillSwitchArgs {
+  profile: string;
+  on: boolean;
+  allow_local?: boolean;
+}
+
+/** The arguments of `release-profile`. */
+export interface ReleaseProfileArgs {
+  profile: string;
+}
+
+/** The arguments of `count-data-used`. */
+export interface CountDataUsedArgs {
+  readings: Reading[];
+  at: number;
+  offset: number;
+  boot?: string;
+}
+
+/** The arguments of `reset-data-used`. */
+export interface ResetDataUsedArgs {
+  connection?: string;
+}
+
+/** The arguments of `forget-data-used`. */
+export interface ForgetDataUsedArgs {
+  connection?: string;
+}
+
+/** The arguments of `set-accept-own-devices`. */
+export interface SetAcceptOwnDevicesArgs {
+  on: boolean;
+}
+
+/** The arguments of `set-act-without-asking`. */
+export interface SetActWithoutAskingArgs {
+  on: boolean;
+}
+
+/** The arguments of `publish-browser-identity`. */
+export interface PublishBrowserIdentityArgs {
+  root: string;
+  origin: string;
+  display_name: string;
+}
+
+/** The arguments of `save-account`. */
+export interface SaveAccountArgs {
+  id: string;
+  type_id: string;
+  display_name: string;
+  config: unknown;
+  enabled: boolean;
+  tint: number;
+}
+
+/** The arguments of `remove-account`. */
+export interface RemoveAccountArgs {
+  account: string;
+}
+
+/** The arguments of `set-active-account`. */
+export interface SetActiveAccountArgs {
+  account: string;
+}
+
 /** Settings — `settings.root`. */
 export interface Root extends tilo.Resource {
   inspectInputSources(args?: {
@@ -250,9 +601,13 @@ export interface Appearance extends tilo.Resource {
   chooseTheme(args: {
     theme: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  chooseThemeMany(items: ChooseThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   setDarkMode(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setDarkModeMany(items: SetDarkModeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.appearance` kind at `path`. */
@@ -300,9 +655,13 @@ export interface Accessibility extends tilo.Resource {
   stepMagnifier(args: {
     step: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  stepMagnifierMany(items: StepMagnifierArgs[]): Promise<tilo.ActionAnswer[]>;
   setScreenReader(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setScreenReaderMany(items: SetScreenReaderArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.accessibility` kind at `path`. */
@@ -349,17 +708,25 @@ export interface Input extends tilo.Resource {
   setKeyRepeat(args: {
     rate: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setKeyRepeatMany(items: SetKeyRepeatArgs[]): Promise<tilo.ActionAnswer[]>;
   chooseLayout(args: {
     layout: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  chooseLayoutMany(items: ChooseLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   setLayouts(args: {
     layouts: string[];
     active: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setLayoutsMany(items: SetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setPasteShortcut(args: {
     app: string;
     shortcut: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setPasteShortcutMany(items: SetPasteShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.input` kind at `path`. */
@@ -382,50 +749,74 @@ export interface InputDevice extends tilo.Resource {
     keyboard: string;
     profile: KeyboardProfile;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   useSharedLayouts(args: {
     keyboard: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  useSharedLayoutsMany(items: UseSharedLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setKeyboardModel(args: {
     model: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setKeyboardModelMany(items: SetKeyboardModelArgs[]): Promise<tilo.ActionAnswer[]>;
   showKeyboardLayout(args?: {
     layout?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  showKeyboardLayoutMany(items: ShowKeyboardLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectKeyboard(args: {
     level: number;
     extra_levels: boolean;
     key: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  inspectKeyboardMany(items: InspectKeyboardArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletOutput(args: {
     device: string;
     output: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletOutputMany(items: SetTabletOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletKeepAspect(args: {
     device: string;
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletKeepAspectMany(items: SetTabletKeepAspectArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletLeftHanded(args: {
     device: string;
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletLeftHandedMany(items: SetTabletLeftHandedArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletTipFeel(args: {
     device: string;
     feel: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletTipFeelMany(items: SetTabletTipFeelArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletButton(args: {
     device: string;
     button: string;
     action: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletButtonMany(items: SetTabletButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletEraser(args: {
     device: string;
     action: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTabletEraserMany(items: SetTabletEraserArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadButton(args: {
     device: string;
     button: number;
     action: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setPadButtonMany(items: SetPadButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadDial(args: {
     device: string;
     dial: string;
@@ -433,6 +824,8 @@ export interface InputDevice extends tilo.Resource {
     mode: number;
     action: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setPadDialMany(items: SetPadDialArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.input-device` kind at `path`. */
@@ -471,9 +864,13 @@ export interface Power extends tilo.Resource {
   setSuspendPluggedIn(args: {
     minutes: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setSuspendPluggedInMany(items: SetSuspendPluggedInArgs[]): Promise<tilo.ActionAnswer[]>;
   setSuspendOnBattery(args: {
     minutes: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setSuspendOnBatteryMany(items: SetSuspendOnBatteryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.power` kind at `path`. */
@@ -513,9 +910,13 @@ export interface Updates extends tilo.Resource {
   recordAutomaticUpdates(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordAutomaticUpdatesMany(items: RecordAutomaticUpdatesArgs[]): Promise<tilo.ActionAnswer[]>;
   recordUpdateCheck(args: {
     at: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordUpdateCheckMany(items: RecordUpdateCheckArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.updates` kind at `path`. */
@@ -536,10 +937,14 @@ export interface Notifications extends tilo.Resource {
   setDoNotDisturb(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setDoNotDisturbMany(items: SetDoNotDisturbArgs[]): Promise<tilo.ActionAnswer[]>;
   muteApp(args: {
     app: string;
     duration: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  muteAppMany(items: MuteAppArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.notifications` kind at `path`. */
@@ -556,9 +961,13 @@ export interface Audio extends tilo.Resource {
   setMonoOutput(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setMonoOutputMany(items: SetMonoOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setEchoCancellation(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setEchoCancellationMany(items: SetEchoCancellationArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.audio` kind at `path`. */
@@ -573,9 +982,13 @@ export interface AudioDevice extends tilo.Resource {
   rememberOutputDevice(args: {
     device: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rememberOutputDeviceMany(items: RememberOutputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberInputDevice(args: {
     device: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rememberInputDeviceMany(items: RememberInputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.audio-device` kind at `path`. */
@@ -591,9 +1004,13 @@ export interface Display extends tilo.Resource {
   setAutomaticBrightness(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAutomaticBrightnessMany(items: SetAutomaticBrightnessArgs[]): Promise<tilo.ActionAnswer[]>;
   setRotationLock(args: {
     locked: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setRotationLockMany(items: SetRotationLockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.display` kind at `path`. */
@@ -644,10 +1061,14 @@ export interface Continuity extends tilo.Resource {
   allowContinuity(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  allowContinuityMany(items: AllowContinuityArgs[]): Promise<tilo.ActionAnswer[]>;
   allowCapability(args: {
     capability: string;
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  allowCapabilityMany(items: AllowCapabilityArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.continuity` kind at `path`. */
@@ -663,13 +1084,21 @@ export interface Shortcuts extends tilo.Resource {
     shortcut: string;
     chord: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rebindMany(items: RebindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     shortcuts: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetMany(items: ResetArgs[]): Promise<tilo.ActionAnswer[]>;
   resetAll(): Promise<tilo.Run | void>;
+  /** Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetAllMany(items: ResetAllArgs[]): Promise<tilo.ActionAnswer[]>;
   setActionChords(args: {
     chords: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setActionChordsMany(items: SetActionChordsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.shortcuts` kind at `path`. */
@@ -687,10 +1116,14 @@ export interface ShellViews extends tilo.Resource {
     view: string;
     on?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  bindMany(items: BindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     slot: string;
     on?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetMany(items: ShellViewsResetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `shell-views` kind at `path`. */
@@ -724,9 +1157,13 @@ export interface AgentProviders extends tilo.Resource {
   setProviders(args: {
     config: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setProvidersMany(items: SetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
   followLocalModels(args: {
     profile: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  followLocalModelsMany(items: FollowLocalModelsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.agent-providers` kind at `path`. */
@@ -740,6 +1177,8 @@ export interface HostedAgentProviders extends tilo.Resource {
   setProviders(args: {
     hosted: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setProvidersMany(items: HostedAgentProvidersSetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.hosted-agent-providers` kind at `path`. */
@@ -754,6 +1193,8 @@ export interface DefaultApps extends tilo.Resource {
     kind: string;
     app: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setDefaultAppHandlerMany(items: SetDefaultAppHandlerArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.default-apps` kind at `path`. */
@@ -777,6 +1218,8 @@ export interface DisplayArrangement extends tilo.Resource {
   arrangeDisplays(args: {
     arrangement: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  arrangeDisplaysMany(items: ArrangeDisplaysArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.display-arrangement` kind at `path`. */
@@ -790,6 +1233,8 @@ export interface AutomaticDisplay extends tilo.Resource {
   setAutomaticDisplayInput(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAutomaticDisplayInputMany(items: SetAutomaticDisplayInputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.automatic-display` kind at `path`. */
@@ -821,6 +1266,8 @@ export interface OskSources extends tilo.Resource {
     layouts: string[];
     active: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setLayoutsMany(items: OskSourcesSetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.osk-sources` kind at `path`. */
@@ -839,9 +1286,13 @@ export interface DeviceVpn extends tilo.Resource {
     device: string;
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  routeThroughMany(items: RouteThroughArgs[]): Promise<tilo.ActionAnswer[]>;
   setKillSwitch(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setKillSwitchMany(items: SetKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `stop` action is named as a field of this kind: run it with
   // `action("stop")`.
   setProfileKillSwitch(args: {
@@ -849,9 +1300,13 @@ export interface DeviceVpn extends tilo.Resource {
     on: boolean;
     allow_local?: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setProfileKillSwitchMany(items: SetProfileKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   releaseProfile(args: {
     profile: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  releaseProfileMany(items: ReleaseProfileArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.device-vpn` kind at `path`. */
@@ -882,12 +1337,18 @@ export interface NetworkUsage extends tilo.Resource {
     offset: number;
     boot?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  countDataUsedMany(items: CountDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   resetDataUsed(args?: {
     connection?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetDataUsedMany(items: ResetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetDataUsed(args?: {
     connection?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetDataUsedMany(items: ForgetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.network-usage` kind at `path`. */
@@ -902,9 +1363,13 @@ export interface McpServer extends tilo.Resource {
   setAcceptOwnDevices(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAcceptOwnDevicesMany(items: SetAcceptOwnDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
   setActWithoutAsking(args: {
     on: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setActWithoutAskingMany(items: SetActWithoutAskingArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `settings.mcp-server` kind at `path`. */
@@ -921,6 +1386,8 @@ export interface Accounts extends tilo.Resource {
     origin: string;
     display_name: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
     id: string;
     type_id: string;
@@ -929,12 +1396,18 @@ export interface Accounts extends tilo.Resource {
     enabled: boolean;
     tint: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `tilo.accounts` kind at `path`. */

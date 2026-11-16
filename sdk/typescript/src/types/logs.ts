@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -25,6 +27,10 @@ export const SURFACE = "so.tilo.logs@2428af2372c28388";
 /** One of "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug". */
 export type Priority = "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug";
 
+/** The arguments of `clear-filters`. */
+export interface ClearFiltersArgs {
+}
+
 /** System journal — `logs.journal`. */
 export interface Journal extends tilo.Resource {
   severity: Priority;
@@ -32,6 +38,8 @@ export interface Journal extends tilo.Resource {
   boot: string;
   search: string;
   clearFilters(): Promise<tilo.Run | void>;
+  /** Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearFiltersMany(items: ClearFiltersArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
   setLiveTail(args?: {
     enabled?: boolean;

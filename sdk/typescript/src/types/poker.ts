@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -67,6 +69,48 @@ export interface Player {
 /** One of "idle", "preflop", "flop", "turn", "river", "done". */
 export type Street = "idle" | "preflop" | "flop" | "turn" | "river" | "done";
 
+/** The arguments of `sit`. */
+export interface SitArgs {
+  seat: number;
+}
+
+/** The arguments of `leave`. */
+export interface LeaveArgs {
+}
+
+/** The arguments of `deal`. */
+export interface DealArgs {
+}
+
+/** The arguments of `fold`. */
+export interface FoldArgs {
+}
+
+/** The arguments of `call`. */
+export interface CallArgs {
+}
+
+/** The arguments of `raise`. */
+export interface RaiseArgs {
+  to: number;
+}
+
+/** The arguments of `all-in`. */
+export interface AllInArgs {
+}
+
+/** The arguments of `show`. */
+export interface ShowArgs {
+}
+
+/** The arguments of `skip`. */
+export interface SkipArgs {
+}
+
+/** The arguments of `rebuy`. */
+export interface RebuyArgs {
+}
+
 /** Poker table — `so.tilo.poker.table`. */
 export interface Table extends tilo.Resource {
   players: Record<string, Player>;
@@ -75,17 +119,37 @@ export interface Table extends tilo.Resource {
   sit(args: {
     seat: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  sitMany(items: SitArgs[]): Promise<tilo.ActionAnswer[]>;
   leave(): Promise<tilo.Run | void>;
+  /** Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  leaveMany(items: LeaveArgs[]): Promise<tilo.ActionAnswer[]>;
   deal(): Promise<tilo.Run | void>;
+  /** Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  dealMany(items: DealArgs[]): Promise<tilo.ActionAnswer[]>;
   fold(): Promise<tilo.Run | void>;
+  /** Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  foldMany(items: FoldArgs[]): Promise<tilo.ActionAnswer[]>;
   call(): Promise<tilo.Run | void>;
+  /** Runs `call` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  callMany(items: CallArgs[]): Promise<tilo.ActionAnswer[]>;
   raise(args: {
     to: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  raiseMany(items: RaiseArgs[]): Promise<tilo.ActionAnswer[]>;
   allIn(): Promise<tilo.Run | void>;
+  /** Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  allInMany(items: AllInArgs[]): Promise<tilo.ActionAnswer[]>;
   show(): Promise<tilo.Run | void>;
+  /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
   skip(): Promise<tilo.Run | void>;
+  /** Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  skipMany(items: SkipArgs[]): Promise<tilo.ActionAnswer[]>;
   rebuy(): Promise<tilo.Run | void>;
+  /** Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rebuyMany(items: RebuyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `so.tilo.poker.table` kind at `path`. */

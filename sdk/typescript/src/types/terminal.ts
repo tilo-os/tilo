@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -69,6 +71,61 @@ export interface Remembered {
   run: string;
 }
 
+/** The arguments of `stop`. */
+export interface StopArgs {
+}
+
+/** The arguments of `record-run`. */
+export interface RecordRunArgs {
+  command: string;
+  cwd: string;
+  started_ms: number;
+  ended_ms: number;
+  exit: number;
+  truncated: boolean;
+  tool: string;
+  undoable: boolean;
+  items: unknown[];
+  run: string;
+  output?: unknown;
+  request?: string;
+}
+
+/** The arguments of `record-target`. */
+export interface RecordTargetArgs {
+  target: string;
+  device?: string;
+}
+
+/** The arguments of `record-relay-session`. */
+export interface RecordRelaySessionArgs {
+  session?: string;
+}
+
+/** The arguments of `claim-pane`. */
+export interface ClaimPaneArgs {
+  pane: string;
+  device?: string;
+}
+
+/** The arguments of `remember`. */
+export interface RememberArgs {
+  command: string;
+  cwd: string;
+  exit: number;
+  ended_ms: number;
+  actor: string;
+  session: string;
+  run: string;
+  environment?: string;
+}
+
+/** The arguments of `used`. */
+export interface UsedArgs {
+  device: string;
+  target: string;
+}
+
 /** Terminal — `terminal.session`. */
 export interface Session extends tilo.Resource {
   readonly target: string | null;
@@ -88,6 +145,8 @@ export interface Session extends tilo.Resource {
     test: string;
   }): Promise<unknown | tilo.Run>;
   stop(): Promise<tilo.Run | void>;
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   recordRun(args: {
     command: string;
     cwd: string;
@@ -102,17 +161,25 @@ export interface Session extends tilo.Resource {
     output?: unknown;
     request?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordRunMany(items: RecordRunArgs[]): Promise<tilo.ActionAnswer[]>;
   recordTarget(args: {
     target: string;
     device?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordTargetMany(items: RecordTargetArgs[]): Promise<tilo.ActionAnswer[]>;
   recordRelaySession(args?: {
     session?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordRelaySessionMany(items: RecordRelaySessionArgs[]): Promise<tilo.ActionAnswer[]>;
   claimPane(args: {
     pane: string;
     device?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  claimPaneMany(items: ClaimPaneArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectSession(): Promise<void>;
   readScreen(): Promise<void>;
   inspectEditor(): Promise<void>;
@@ -144,6 +211,8 @@ export interface History extends tilo.Resource {
     run: string;
     environment?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `terminal.history` kind at `path`. */
@@ -158,6 +227,8 @@ export interface RecentEnvironments extends tilo.Resource {
     device: string;
     target: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  usedMany(items: UsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `terminal.recent-environments` kind at `path`. */

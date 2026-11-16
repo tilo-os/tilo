@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -22,6 +24,10 @@ __all__ = [
     "SavedConnection",
     "SavedQuery",
     "Workspace",
+    "AddConnectionArgs",
+    "RemoveConnectionArgs",
+    "SaveQueryArgs",
+    "RemoveQueryArgs",
 ]
 
 Engine = Literal["sqlite", "postgres", "mysql"]
@@ -38,6 +44,31 @@ class SavedConnection(TypedDict):
 class SavedQuery(TypedDict):
     name: str
     sql: str
+
+AddConnectionArgs = TypedDict("AddConnectionArgs", {
+    "name": "str",
+    "engine": "str",
+    "location": NotRequired["str | None"],
+    "database": NotRequired["str | None"],
+    "user": NotRequired["str | None"],
+})
+"""The arguments of `add-connection`."""
+
+RemoveConnectionArgs = TypedDict("RemoveConnectionArgs", {
+    "connection": "str",
+})
+"""The arguments of `remove-connection`."""
+
+SaveQueryArgs = TypedDict("SaveQueryArgs", {
+    "name": "str",
+    "sql": NotRequired["str | None"],
+})
+"""The arguments of `save-query`."""
+
+RemoveQueryArgs = TypedDict("RemoveQueryArgs", {
+    "query": "str",
+})
+"""The arguments of `remove-query`."""
 
 class Workspace(Resource):
     """Database — `db-client.workspace`."""
@@ -66,9 +97,17 @@ class Workspace(Resource):
             args["user"] = user
         return self.action("add-connection", **args)
 
+    def add_connection_many(self, items: list[AddConnectionArgs]) -> list[dict[str, Any]]:
+        """Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-connection", items)
+
     def remove_connection(self, *, connection: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-connection", connection=connection)
+
+    def remove_connection_many(self, items: list[RemoveConnectionArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-connection", items)
 
     def save_query(self,
         *,
@@ -82,8 +121,16 @@ class Workspace(Resource):
             args["sql"] = sql
         return self.action("save-query", **args)
 
+    def save_query_many(self, items: list[SaveQueryArgs]) -> list[dict[str, Any]]:
+        """Runs `save-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-query", items)
+
     def remove_query(self, *, query: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-query", query=query)
+
+    def remove_query_many(self, items: list[RemoveQueryArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-query", items)
 
 

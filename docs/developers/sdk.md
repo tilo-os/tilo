@@ -61,6 +61,9 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
   cases carry fields → an object tagged by the case, as the app's schema encodes it.
 - An assignment is a field edit: `form.form_values["surname"] = "Doe"`. A method call is the
   action, the same one a click or an agent runs.
+- An undoable action that answers nothing also has a bulk form, `create_many` /
+  `createMany`, taking a list of a generated arguments type (`CreateArgs`): see
+  [Bulk calls](#bulk-calls).
 - A class is the SDK's own resource, so a name it already answers to (a field called `path`,
   an action called `refresh`) is reached through `fields[…]` and `action("…")` instead; the
   generated file says so where it is.
@@ -103,6 +106,39 @@ A client connection is an agent run, named for its key ("visa-backend #3"). Peop
 the workspace see it live, with its own name and colour, and it appears in each resource's
 history. `async with ws.run("Fill Jane's application") as run:` groups the steps inside into
 one run, which a person can undo as a whole, as one tilolang call is one step.
+
+## Bulk calls
+
+A record publishes a `group` action: several of its other actions, applied in order as one
+all-or-nothing step. The SDK sends it whenever a script fills a record from a list. The
+generated bulk method takes a list of the action's arguments, each typed (`CreateArgs`):
+
+```python
+tracker = await Tracker(ws, "tasks/Tracker").load()
+answers = await tracker.create_many([
+    {"title": "Ship the backlog", "status": "todo"},
+    {"title": "Write the migration", "status": "todo"},
+])
+```
+
+```ts
+const tracker = tasks.tracker(ws, "tasks/Tracker");
+const answers = await tracker.createMany([
+  { title: "Ship the backlog", status: "todo" },
+  { title: "Write the migration", status: "todo" },
+]);
+```
+
+`res.many("create", items)` is the same call without generated types. A list of 1,200 items
+is three calls: at most 500 items and about 4 MiB of JSON each, and a member is never
+split. Each call is one step, so if one of its members refuses, nothing of that call
+applies; the calls before it stand, because they were steps of their own. All the calls of
+one bulk call carry one `Tilo-Run`, so History lists the work once and one undo takes it
+back; inside `ws.run(...)` they join that run instead. A bulk call answers each call's
+answer, in order, and an empty list sends nothing.
+
+A read, or an action that answers a value (the record it made, a file it exported), has no
+bulk form: `group` reports no member's answer, so the value would be lost.
 
 ## Links for people
 

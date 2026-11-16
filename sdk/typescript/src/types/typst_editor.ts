@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -28,6 +30,24 @@ export interface TypstFile {
   source: string;
 }
 
+/** The arguments of `new-file`. */
+export interface NewFileArgs {
+  name: string;
+  path?: string;
+  source?: string;
+}
+
+/** The arguments of `saved-at`. */
+export interface SavedAtArgs {
+  file: string;
+  path: string;
+}
+
+/** The arguments of `close-file`. */
+export interface CloseFileArgs {
+  file: string;
+}
+
 /** Typst workspace — `typst-editor.workspace`. */
 export interface Workspace extends tilo.Resource {
   files: TypstFile[];
@@ -36,14 +56,20 @@ export interface Workspace extends tilo.Resource {
     path?: string;
     source?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  newFileMany(items: NewFileArgs[]): Promise<tilo.ActionAnswer[]>;
   savedAt(args: {
     file: string;
     path: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `saved-at` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  savedAtMany(items: SavedAtArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `load` action is the SDK's own: run it with `action("load")`.
   closeFile(args: {
     file: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `close-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  closeFileMany(items: CloseFileArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `typst-editor.workspace` kind at `path`. */

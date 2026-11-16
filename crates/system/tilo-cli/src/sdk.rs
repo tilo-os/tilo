@@ -33,7 +33,7 @@ const MANIFEST_FILE: &str = "tilo-app.toml";
 /// The names the SDK's own resource answers to, which an app's field or action of the same
 /// name cannot be reached by: `document.path` is the resource's path whatever field the app
 /// declares.
-const OWN: [&str; 16] = [
+const OWN: [&str; 17] = [
     "workspace",
     "path",
     "kind",
@@ -50,6 +50,7 @@ const OWN: [&str; 16] = [
     "watch",
     "action",
     "has",
+    "many",
 ];
 
 const PYTHON_WORDS: [&str; 36] = [
@@ -268,6 +269,14 @@ struct Action {
     result: Option<Ty>,
     kind: ActionKind,
     doc: String,
+    /// The named arguments type of its bulk call (`create_many`, `createMany`),
+    /// when it has one.
+    many: Option<Many>,
+}
+
+/// A bulk call's generated arguments type: `CreateArgs`, the list's item.
+struct Many {
+    args: String,
 }
 
 struct Param {
@@ -342,6 +351,7 @@ fn types_of(app: &App) -> Result<Types> {
             actions,
         });
     }
+    types.name_many_types();
     Ok(types)
 }
 
@@ -406,6 +416,45 @@ impl Types {
             }
         }
         names
+    }
+}
+
+impl Types {
+    /// Give every action a bulk call can carry a name for its arguments type:
+    /// `create` is `CreateArgs`. A group reports no member's value, so only an
+    /// undoable action that answers none has one.
+    fn name_many_types(&mut self) {
+        let mut taken: Vec<String> = self
+            .declarations
+            .iter()
+            .map(|declaration| match declaration {
+                Declaration::Record { name, .. } | Declaration::Cases { name, .. } => name.clone(),
+            })
+            .chain(self.classes.iter().map(|class| class.name.clone()))
+            .collect();
+        for class in &mut self.classes {
+            for action in &mut class.actions {
+                if action.kind != ActionKind::Undoable
+                    || action.result.is_some()
+                    || OWN.contains(&action.id.as_str())
+                {
+                    continue;
+                }
+                let base = format!("{}Args", camel(&action.id));
+                let mut name = if taken.contains(&base) {
+                    format!("{}{base}", class.name)
+                } else {
+                    base.clone()
+                };
+                let mut count = 2_u32;
+                while taken.contains(&name) {
+                    name = format!("{base}{count}");
+                    count = count.saturating_add(1);
+                }
+                taken.push(name.clone());
+                action.many = Some(Many { args: name });
+            }
+        }
     }
 }
 
@@ -544,6 +593,7 @@ fn action_of(verb: &VerbSurface, resolver: &Resolver<'_>) -> Action {
         }),
         kind: verb.kind,
         doc: verb.description.clone().unwrap_or_default(),
+        many: None,
     }
 }
 
@@ -805,7 +855,9 @@ fn python_module(app: &App, types: &Types) -> String {
             .to_owned(),
         "action whose name is one the class already has is run with `action(\"…\")`, which"
             .to_owned(),
-        "the file says where it is.".to_owned(),
+        "the file says where it is. An undoable action that answers nothing also has a".to_owned(),
+        "`<action>_many`, which applies it to every argument object of a list in a few".to_owned(),
+        "all-or-nothing steps, all of them one run.".to_owned(),
     ];
     out.push_str("\"\"\"");
     for (index, line) in head.iter().enumerate() {
@@ -819,7 +871,7 @@ fn python_module(app: &App, types: &Types) -> String {
     }
     out.push_str("\"\"\"\n\n");
     out.push_str("from __future__ import annotations\n\n");
-    out.push_str("from typing import Any, Literal, TypedDict\n");
+    out.push_str("from typing import Any, Literal, NotRequired, TypedDict\n");
     let _ = writeln!(out, "from tilo import Resource, Run\n");
     let mut all: Vec<String> = types
         .declarations
@@ -829,6 +881,13 @@ fn python_module(app: &App, types: &Types) -> String {
         })
         .collect();
     all.extend(types.classes.iter().map(|class| class.name.clone()));
+    all.extend(
+        types
+            .classes
+            .iter()
+            .flat_map(|class| class.actions.iter())
+            .filter_map(|action| action.many.as_ref().map(|many| many.args.clone())),
+    );
     out.push_str("__all__ = [\n");
     for name in &all {
         let _ = writeln!(out, "    \"{name}\",");
@@ -836,6 +895,13 @@ fn python_module(app: &App, types: &Types) -> String {
     out.push_str("]\n\n");
     for declaration in &types.declarations {
         python_declaration(&mut out, declaration);
+    }
+    for class in &types.classes {
+        for action in &class.actions {
+            if let Some(many) = &action.many {
+                python_args(&mut out, &many.args, action);
+            }
+        }
     }
     let surface = tilo_api::v1::surface_version(&app.id, &app.surface);
     for class in &types.classes {
@@ -1014,6 +1080,21 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
         taken.push(name);
         python_action(out, action);
         out.push('\n');
+        if let Some(many) = &action.many {
+            let bulk = python_name(&format!("{}_many", action.snake));
+            if taken.contains(&bulk) {
+                let _ = writeln!(
+                    out,
+                    "    # the app's `{id}` has a bulk call named as a field of this kind:\n\
+                     \x20   # run each with `action(\"{id}\")`.",
+                    id = action.id
+                );
+                continue;
+            }
+            taken.push(bulk);
+            python_many(out, action, many);
+            out.push('\n');
+        }
     }
     out.push('\n');
 }
@@ -1110,6 +1191,44 @@ fn python_action(out: &mut String, action: &Action) {
         }
     }
     let _ = writeln!(out, "        return self.action(\"{}\", **args)", action.id);
+}
+
+/// The arguments of a bulk call, as the wire takes them: each parameter under its own
+/// name, `NotRequired` when it may be left out.
+fn python_args(out: &mut String, name: &str, action: &Action) {
+    // The mapping form, since `from __future__ import annotations` leaves a class form's
+    // `NotRequired` unread: a TypedDict made here knows its optional keys.
+    let _ = writeln!(out, "{name} = TypedDict(\"{name}\", {{");
+    for param in &action.params {
+        let ty = python_type(&param.ty);
+        let value = if param.required {
+            format!("\"{ty}\"")
+        } else {
+            format!("NotRequired[\"{ty}\"]")
+        };
+        let _ = writeln!(out, "    \"{}\": {value},", param.wire);
+    }
+    out.push_str("})\n");
+    let text = format!("The arguments of `{}`.", action.id);
+    doc(out, &text, 0);
+    out.push('\n');
+}
+
+/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one run.
+fn python_many(out: &mut String, action: &Action, many: &Many) {
+    let name = python_name(&format!("{}_many", action.snake));
+    let _ = writeln!(
+        out,
+        "    def {name}(self, items: list[{}]) -> list[dict[str, Any]]:",
+        many.args
+    );
+    let text = format!(
+        "Runs `{}` for each of `items`: one all-or-nothing step per call, all of them one \
+         run that History lists once and one undo takes back.",
+        action.id
+    );
+    doc(out, &text, 2);
+    let _ = writeln!(out, "        return self.many(\"{}\", items)", action.id);
 }
 
 /// What an action answers: what the app declares, and the `Run` that follows one still
@@ -1229,7 +1348,10 @@ fn typescript_module(app: &App, types: &Types) -> String {
             .to_owned(),
         "name is one the interface already has is run with `action(\"…\")`, which the file"
             .to_owned(),
-        "says where it is.".to_owned(),
+        "says where it is. An undoable action that answers nothing also has a `<action>Many`,\n\
+         which applies it to every argument object of a list in a few all-or-nothing steps,\n\
+         all of them one run."
+            .to_owned(),
     ];
     let head: Vec<&str> = head.iter().map(String::as_str).collect();
     comment_block(&mut out, &head);
@@ -1246,6 +1368,13 @@ fn typescript_module(app: &App, types: &Types) -> String {
     );
     for declaration in &types.declarations {
         typescript_declaration(&mut out, declaration);
+    }
+    for class in &types.classes {
+        for action in &class.actions {
+            if let Some(many) = &action.many {
+                typescript_args_decl(&mut out, &many.args, action);
+            }
+        }
     }
     for class in &types.classes {
         typescript_class(&mut out, class);
@@ -1371,6 +1500,16 @@ fn typescript_class(out: &mut String, class: &Class) {
             );
             continue;
         }
+        // A name ending in `Many` is how a bulk call of the action before it is reached.
+        if action.camel.ends_with("Many") {
+            let _ = writeln!(
+                out,
+                "  // the app's `{id}` action is named as the SDK's bulk calls (`<action>Many`):\n\
+                 \x20 // run it with `action(\"{id}\")`.",
+                id = action.id
+            );
+            continue;
+        }
         if taken.contains(&action.camel) {
             let _ = writeln!(
                 out,
@@ -1382,6 +1521,20 @@ fn typescript_class(out: &mut String, class: &Class) {
         }
         taken.push(action.camel.clone());
         typescript_action(out, action);
+        if let Some(many) = &action.many {
+            let bulk = format!("{}Many", action.camel);
+            if taken.contains(&bulk) {
+                let _ = writeln!(
+                    out,
+                    "  // the app's `{id}` has a bulk call named as a field of this kind: run\n\
+                     \x20 // each with `action(\"{id}\")`.",
+                    id = action.id
+                );
+                continue;
+            }
+            taken.push(bulk);
+            typescript_many(out, action, many);
+        }
     }
     out.push_str("}\n\n");
     let made = factory(class);
@@ -1441,18 +1594,64 @@ fn typescript_action(out: &mut String, action: &Action) {
 /// What an action's arguments object is: each parameter under the name the wire takes it by.
 fn typescript_args(required: &[&Param], optional: &[&Param]) -> String {
     let mut out = String::from("{\n");
+    for line in typescript_arg_lines(required, optional) {
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str("  }");
+    out
+}
+
+/// Each of an action's arguments as an object's field: the wire's name, optional ones
+/// absent rather than null.
+fn typescript_arg_lines(required: &[&Param], optional: &[&Param]) -> Vec<String> {
+    let mut lines = Vec::new();
     for param in required {
-        let _ = writeln!(out, "    {}: {};", param.wire, typescript_type(&param.ty));
+        lines.push(format!("{}: {};", param.wire, typescript_type(&param.ty)));
     }
     for param in optional {
         let inner = match &param.ty {
             Ty::Option(item) => typescript_type(item),
             other => typescript_type(other),
         };
-        let _ = writeln!(out, "    {}?: {inner};", param.wire);
+        lines.push(format!("{}?: {inner};", param.wire));
     }
-    out.push_str("  }");
-    out
+    lines
+}
+
+/// The arguments of a bulk call, as the wire takes them.
+fn typescript_args_decl(out: &mut String, name: &str, action: &Action) {
+    let text = format!("The arguments of `{}`.", action.id);
+    let _ = writeln!(out, "/** {text} */");
+    let _ = writeln!(out, "export interface {name} {{");
+    let required: Vec<&Param> = action
+        .params
+        .iter()
+        .filter(|param| param.required)
+        .collect();
+    let optional: Vec<&Param> = action
+        .params
+        .iter()
+        .filter(|param| !param.required)
+        .collect();
+    for line in typescript_arg_lines(&required, &optional) {
+        let _ = writeln!(out, "  {line}");
+    }
+    out.push_str("}\n\n");
+}
+
+/// The bulk call of `action`: `items`, one all-or-nothing step per call, all one run.
+fn typescript_many(out: &mut String, action: &Action, many: &Many) {
+    let text = one_line(&format!(
+        "Runs `{}` for each of `items`: one all-or-nothing step per call, all of them one run \
+         that History lists once and one undo takes back.",
+        action.id
+    ));
+    let _ = writeln!(out, "  /** {text} */");
+    let _ = writeln!(
+        out,
+        "  {}Many(items: {}[]): Promise<tilo.ActionAnswer[]>;",
+        action.camel, many.args
+    );
 }
 
 /// What an action answers: what the app declares, and the `Run` that follows one still
@@ -1475,6 +1674,13 @@ mod tests {
     fn pdf_viewer() -> App {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/pdf-viewer");
         app_of(&dir).expect("the PDF Viewer's surface reads")
+    }
+
+    /// The Tasks app, as this checkout commits it: the app whose tracker creates
+    /// issues without answering a value.
+    fn tasks() -> App {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tasks");
+        app_of(&dir).expect("the Tasks surface reads")
     }
 
     fn python_of(app: &App) -> String {
@@ -1569,6 +1775,64 @@ mod tests {
         {
             let ts = typescript_of(&pdf_viewer());
             assert!(!ts.contains("  refresh("), "{ts}");
+        }
+
+        phase an_undoable_action_that_answers_nothing_gets_a_python_bulk_call;
+        // `create` changes the tracker and answers nothing, so it is one step of a group:
+        // `create_many` takes the list of its arguments, each typed.
+        {
+            let python = python_of(&tasks());
+            assert!(
+                python.contains(
+                    "CreateArgs = TypedDict(\"CreateArgs\", {\n    \"title\": \"str\",\n    \
+                     \"parent\": NotRequired[\"str | None\"],\n    \"body\": \
+                     NotRequired[\"str | None\"],"
+                ),
+                "{python}"
+            );
+            assert!(
+                python.contains(
+                    "    def create_many(self, items: list[CreateArgs]) -> list[dict[str, Any]]:\n"
+                ),
+                "{python}"
+            );
+            assert!(
+                python.contains("        return self.many(\"create\", items)\n"),
+                "{python}"
+            );
+            assert!(python.contains("    \"CreateArgs\",\n"), "{python}");
+        }
+
+        phase the_same_bulk_call_in_typescript;
+        {
+            let ts = typescript_of(&tasks());
+            assert!(
+                ts.contains(
+                    "export interface CreateArgs {\n  title: string;\n  parent?: string;\n  \
+                     body?: string;\n  status?: Status;\n"
+                ),
+                "{ts}"
+            );
+            assert!(
+                ts.contains(
+                    "  createMany(items: CreateArgs[]): Promise<tilo.ActionAnswer[]>;\n"
+                ),
+                "{ts}"
+            );
+        }
+
+        phase a_read_action_has_no_bulk_call;
+        // A read answers its value, which a group cannot carry back to the caller.
+        {
+            let python = python_of(&tasks());
+            assert!(!python.contains("new_project_many"), "{python}");
+            let ts = typescript_of(&pdf_viewer());
+            assert!(
+                ts.contains(
+                    "  deletePageMany(items: DeletePageArgs[]): Promise<tilo.ActionAnswer[]>;"
+                ),
+                "{ts}"
+            );
         }
     }
 }

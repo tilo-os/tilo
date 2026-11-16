@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -28,17 +30,33 @@ export interface Report {
   case: string | null;
 }
 
+/** The arguments of `draft-report`. */
+export interface DraftReportArgs {
+  app_id: string;
+}
+
+/** The arguments of `record-moderation-case`. */
+export interface RecordModerationCaseArgs {
+  app_id: string;
+  case_id: string;
+  status: string;
+}
+
 /** App Store — `store.catalog`. */
 export interface Catalog extends tilo.Resource {
   reports: Record<string, Report>;
   draftReport(args: {
     app_id: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `draft-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  draftReportMany(items: DraftReportArgs[]): Promise<tilo.ActionAnswer[]>;
   recordModerationCase(args: {
     app_id: string;
     case_id: string;
     status: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-moderation-case` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordModerationCaseMany(items: RecordModerationCaseArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectCatalogue(args?: {
     app?: string;
   }): Promise<void>;

@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -75,6 +77,15 @@ export interface UserAccount {
   username: string;
 }
 
+/** The arguments of `select-source`. */
+export interface SelectSourceArgs {
+  source: Source;
+}
+
+/** The arguments of `clear-source`. */
+export interface ClearSourceArgs {
+}
+
 /** Image sources — `imager.sources`. */
 export interface Sources extends tilo.Resource {
   readonly source: Source | null;
@@ -83,7 +94,11 @@ export interface Sources extends tilo.Resource {
   selectSource(args: {
     source: Source;
   }): Promise<tilo.Run | void>;
+  /** Runs `select-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  selectSourceMany(items: SelectSourceArgs[]): Promise<tilo.ActionAnswer[]>;
   clearSource(): Promise<tilo.Run | void>;
+  /** Runs `clear-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearSourceMany(items: ClearSourceArgs[]): Promise<tilo.ActionAnswer[]>;
   status(): Promise<void>;
   exportConfig(): Promise<void>;
   rescan(): Promise<void>;

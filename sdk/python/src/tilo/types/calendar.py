@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -42,6 +44,21 @@ __all__ = [
     "Calendar",
     "Accounts",
     "Identities",
+    "NewEventArgs",
+    "PublishBrowserIdentityArgs",
+    "SaveAccountArgs",
+    "RemoveAccountArgs",
+    "SetActiveAccountArgs",
+    "ProjectContactArgs",
+    "RemoveContactArgs",
+    "ConfirmEndpointArgs",
+    "ConfirmAccountArgs",
+    "ReplaceEndpointArgs",
+    "ReplaceAccountArgs",
+    "ProjectPhonesArgs",
+    "ProjectEmailsArgs",
+    "ProjectContactsArgs",
+    "ForgetEndpointArgs",
 ]
 
 class Attendee(TypedDict):
@@ -203,6 +220,111 @@ class Projected(TypedDict):
     emails: list[str]
     photo: str
 
+NewEventArgs = TypedDict("NewEventArgs", {
+    "event": "EventData",
+})
+"""The arguments of `new-event`."""
+
+PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
+    "root": "str",
+    "origin": "str",
+    "display_name": "str",
+})
+"""The arguments of `publish-browser-identity`."""
+
+SaveAccountArgs = TypedDict("SaveAccountArgs", {
+    "id": "str",
+    "type_id": "str",
+    "display_name": "str",
+    "config": "Any",
+    "enabled": "bool",
+    "tint": "int",
+})
+"""The arguments of `save-account`."""
+
+RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
+    "account": "str",
+})
+"""The arguments of `remove-account`."""
+
+SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
+    "account": "str",
+})
+"""The arguments of `set-active-account`."""
+
+ProjectContactArgs = TypedDict("ProjectContactArgs", {
+    "person": "str",
+    "label": "str",
+})
+"""The arguments of `project-contact`."""
+
+RemoveContactArgs = TypedDict("RemoveContactArgs", {
+    "person": "str",
+})
+"""The arguments of `remove-contact`."""
+
+ConfirmEndpointArgs = TypedDict("ConfirmEndpointArgs", {
+    "person": "str",
+    "endpoint": "str",
+    "service": "str",
+    "recipient": "str",
+})
+"""The arguments of `confirm-endpoint`."""
+
+ConfirmAccountArgs = TypedDict("ConfirmAccountArgs", {
+    "person": "str",
+    "endpoint": "str",
+    "service": "str",
+    "scope": "str",
+    "recipient": "str",
+    "revision": "str",
+})
+"""The arguments of `confirm-account`."""
+
+ReplaceEndpointArgs = TypedDict("ReplaceEndpointArgs", {
+    "person": "str",
+    "previous": "str",
+    "endpoint": "str",
+    "service": "str",
+    "recipient": "str",
+})
+"""The arguments of `replace-endpoint`."""
+
+ReplaceAccountArgs = TypedDict("ReplaceAccountArgs", {
+    "person": "str",
+    "previous": "str",
+    "endpoint": "str",
+    "service": "str",
+    "scope": "str",
+    "recipient": "str",
+    "revision": "str",
+})
+"""The arguments of `replace-account`."""
+
+ProjectPhonesArgs = TypedDict("ProjectPhonesArgs", {
+    "person": "str",
+    "phones": "list[str]",
+})
+"""The arguments of `project-phones`."""
+
+ProjectEmailsArgs = TypedDict("ProjectEmailsArgs", {
+    "person": "str",
+    "emails": "list[str]",
+})
+"""The arguments of `project-emails`."""
+
+ProjectContactsArgs = TypedDict("ProjectContactsArgs", {
+    "people": "list[Projected]",
+    "removed": "list[str]",
+})
+"""The arguments of `project-contacts`."""
+
+ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
+    "person": "str",
+    "endpoint": "str",
+})
+"""The arguments of `forget-endpoint`."""
+
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
     __surface__ = "so.tilo.calendar@0489bf8990ba967c"
@@ -222,6 +344,10 @@ class Calendar(Resource):
     def new_event(self, *, event: EventData) -> Run | None:
         """Runs the app's action."""
         return self.action("new-event", event=event)
+
+    def new_event_many(self, items: list[NewEventArgs]) -> list[dict[str, Any]]:
+        """Runs `new-event` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-event", items)
 
     def new_task(self, *, task: TaskData) -> Run | None:
         """Runs the app's action."""
@@ -358,6 +484,10 @@ class Accounts(Resource):
         """Runs the app's action."""
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
+    def publish_browser_identity_many(self, items: list[PublishBrowserIdentityArgs]) -> list[dict[str, Any]]:
+        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("publish-browser-identity", items)
+
     def save_account(self,
         *,
         id: str,
@@ -370,13 +500,25 @@ class Accounts(Resource):
         """Runs the app's action."""
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
+    def save_account_many(self, items: list[SaveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-account", items)
+
     def remove_account(self, *, account: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
 
+    def remove_account_many(self, items: list[RemoveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-account", items)
+
     def set_active_account(self, *, account: str) -> Run | None:
         """Runs the app's action."""
         return self.action("set-active-account", account=account)
+
+    def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-active-account", items)
 
 
 class Identities(Resource):
@@ -392,9 +534,17 @@ class Identities(Resource):
         """Runs the app's action."""
         return self.action("project-contact", person=person, label=label)
 
+    def project_contact_many(self, items: list[ProjectContactArgs]) -> list[dict[str, Any]]:
+        """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("project-contact", items)
+
     def remove_contact(self, *, person: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-contact", person=person)
+
+    def remove_contact_many(self, items: list[RemoveContactArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-contact", items)
 
     def confirm_endpoint(self,
         *,
@@ -405,6 +555,10 @@ class Identities(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
+
+    def confirm_endpoint_many(self, items: list[ConfirmEndpointArgs]) -> list[dict[str, Any]]:
+        """Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("confirm-endpoint", items)
 
     def confirm_account(self,
         *,
@@ -418,6 +572,10 @@ class Identities(Resource):
         """Runs the app's action."""
         return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
+    def confirm_account_many(self, items: list[ConfirmAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("confirm-account", items)
+
     def replace_endpoint(self,
         *,
         person: str,
@@ -428,6 +586,10 @@ class Identities(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
+
+    def replace_endpoint_many(self, items: list[ReplaceEndpointArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("replace-endpoint", items)
 
     def replace_account(self,
         *,
@@ -442,6 +604,10 @@ class Identities(Resource):
         """Runs the app's action."""
         return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
+    def replace_account_many(self, items: list[ReplaceAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("replace-account", items)
+
     def project_phones(self,
         *,
         person: str,
@@ -449,6 +615,10 @@ class Identities(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("project-phones", person=person, phones=phones)
+
+    def project_phones_many(self, items: list[ProjectPhonesArgs]) -> list[dict[str, Any]]:
+        """Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("project-phones", items)
 
     def project_emails(self,
         *,
@@ -458,6 +628,10 @@ class Identities(Resource):
         """Runs the app's action."""
         return self.action("project-emails", person=person, emails=emails)
 
+    def project_emails_many(self, items: list[ProjectEmailsArgs]) -> list[dict[str, Any]]:
+        """Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("project-emails", items)
+
     def project_contacts(self,
         *,
         people: list[Projected],
@@ -466,6 +640,10 @@ class Identities(Resource):
         """Runs the app's action."""
         return self.action("project-contacts", people=people, removed=removed)
 
+    def project_contacts_many(self, items: list[ProjectContactsArgs]) -> list[dict[str, Any]]:
+        """Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("project-contacts", items)
+
     def forget_endpoint(self,
         *,
         person: str,
@@ -473,5 +651,9 @@ class Identities(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("forget-endpoint", person=person, endpoint=endpoint)
+
+    def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
+        """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget-endpoint", items)
 
 

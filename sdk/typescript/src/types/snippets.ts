@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -36,6 +38,45 @@ export interface Snippet {
   uses: number;
 }
 
+/** The arguments of `new-snippet`. */
+export interface NewSnippetArgs {
+  title: string;
+  folder?: string;
+}
+
+/** The arguments of `duplicate`. */
+export interface DuplicateArgs {
+  snippet: string;
+  title?: string;
+}
+
+/** The arguments of `delete`. */
+export interface DeleteArgs {
+  snippet: string;
+}
+
+/** The arguments of `record-use`. */
+export interface RecordUseArgs {
+  snippet: string;
+}
+
+/** The arguments of `rename-folder`. */
+export interface RenameFolderArgs {
+  folder: string;
+  to: string;
+}
+
+/** The arguments of `rename-tag`. */
+export interface RenameTagArgs {
+  tag: string;
+  to: string;
+}
+
+/** The arguments of `remove-tag`. */
+export interface RemoveTagArgs {
+  tag: string;
+}
+
 /** Snippet library — `snippets.library`. */
 export interface Library extends tilo.Resource {
   snippets: Snippet[];
@@ -43,27 +84,41 @@ export interface Library extends tilo.Resource {
     title: string;
     folder?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  newSnippetMany(items: NewSnippetArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicate(args: {
     snippet: string;
     title?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  duplicateMany(items: DuplicateArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     snippet: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   recordUse(args: {
     snippet: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordUseMany(items: RecordUseArgs[]): Promise<tilo.ActionAnswer[]>;
   renameFolder(args: {
     folder: string;
     to: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  renameFolderMany(items: RenameFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   renameTag(args: {
     tag: string;
     to: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  renameTagMany(items: RenameTagArgs[]): Promise<tilo.ActionAnswer[]>;
   removeTag(args: {
     tag: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeTagMany(items: RemoveTagArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `snippets.library` kind at `path`. */

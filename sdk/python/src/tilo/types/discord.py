@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -59,6 +61,24 @@ __all__ = [
     "Context",
     "Links",
     "Guild",
+    "ConnectArgs",
+    "ObserveLayoutArgs",
+    "MapArgs",
+    "UnmapArgs",
+    "BeginConnectArgs",
+    "OfferLinkArgs",
+    "OfferSignInArgs",
+    "CompleteLinkArgs",
+    "SetSignInArgs",
+    "RenameLinkArgs",
+    "SetLinkPhotoArgs",
+    "UnlinkArgs",
+    "BlockPersonaArgs",
+    "UnblockPersonaArgs",
+    "RememberAvatarArgs",
+    "FinishImportArgs",
+    "SettleEmojiArgs",
+    "ReportVoiceArgs",
 ]
 
 class AnswerInteractionOp(TypedDict):
@@ -285,6 +305,130 @@ class Links(TypedDict):
     workspace: str
     host_device: str
 
+ConnectArgs = TypedDict("ConnectArgs", {
+    "guild_id": "str",
+    "name": "str",
+    "only_channel": NotRequired["str | None"],
+    "mirror_channels": NotRequired["bool | None"],
+    "map_roles": NotRequired["bool | None"],
+})
+"""The arguments of `connect`."""
+
+ObserveLayoutArgs = TypedDict("ObserveLayoutArgs", {
+    "bot_user": "str",
+    "channels": "list[ChannelInfo]",
+    "roles": "list[RoleInfo]",
+    "emojis": "list[EmojiInfo]",
+})
+"""The arguments of `observe-layout`."""
+
+MapArgs = TypedDict("MapArgs", {
+    "kind": "MappedKind",
+    "tilo": "str",
+    "discord": "str",
+    "origin": "Origin",
+    "persona": NotRequired["str | None"],
+    "root": NotRequired["str | None"],
+})
+"""The arguments of `map`."""
+
+UnmapArgs = TypedDict("UnmapArgs", {
+    "kind": "MappedKind",
+    "tilo": "str",
+    "keep_apart": NotRequired["bool | None"],
+})
+"""The arguments of `unmap`."""
+
+BeginConnectArgs = TypedDict("BeginConnectArgs", {
+    "state_sha256": "str",
+})
+"""The arguments of `begin-connect`."""
+
+OfferLinkArgs = TypedDict("OfferLinkArgs", {
+    "check": "str",
+    "discord_user": "str",
+    "user_name": "str",
+    "display_name": NotRequired["str | None"],
+    "avatar": NotRequired["str | None"],
+    "interaction": NotRequired["str | None"],
+})
+"""The arguments of `offer-link`."""
+
+OfferSignInArgs = TypedDict("OfferSignInArgs", {
+    "check": "str",
+    "discord_user": "str",
+    "user_name": "str",
+    "display_name": NotRequired["str | None"],
+    "avatar": NotRequired["str | None"],
+    "state_sha256": "str",
+})
+"""The arguments of `offer-sign-in`."""
+
+CompleteLinkArgs = TypedDict("CompleteLinkArgs", {
+    "proof": "str",
+})
+"""The arguments of `complete-link`."""
+
+SetSignInArgs = TypedDict("SetSignInArgs", {
+    "page": "str",
+})
+"""The arguments of `set-sign-in`."""
+
+RenameLinkArgs = TypedDict("RenameLinkArgs", {
+    "discord_user": "str",
+    "user_name": "str",
+    "display_name": NotRequired["str | None"],
+    "avatar": NotRequired["str | None"],
+})
+"""The arguments of `rename-link`."""
+
+SetLinkPhotoArgs = TypedDict("SetLinkPhotoArgs", {
+    "discord_user": "str",
+    "avatar": "str",
+    "photo": "str",
+})
+"""The arguments of `set-link-photo`."""
+
+UnlinkArgs = TypedDict("UnlinkArgs", {
+    "discord_user": "str",
+})
+"""The arguments of `unlink`."""
+
+BlockPersonaArgs = TypedDict("BlockPersonaArgs", {
+    "discord_user": "str",
+})
+"""The arguments of `block-persona`."""
+
+UnblockPersonaArgs = TypedDict("UnblockPersonaArgs", {
+    "discord_user": "str",
+})
+"""The arguments of `unblock-persona`."""
+
+RememberAvatarArgs = TypedDict("RememberAvatarArgs", {
+    "hash": "str",
+    "blob": "str",
+})
+"""The arguments of `remember-avatar`."""
+
+FinishImportArgs = TypedDict("FinishImportArgs", {
+    "tilo_only": "list[str]",
+})
+"""The arguments of `finish-import`."""
+
+SettleEmojiArgs = TypedDict("SettleEmojiArgs", {
+    "tilo": "str",
+    "result": "DiscordResult",
+    "picture": NotRequired["str | None"],
+    "was": NotRequired["str | None"],
+    "deleted": NotRequired["bool | None"],
+})
+"""The arguments of `settle-emoji`."""
+
+ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
+    "problem": NotRequired["str | None"],
+})
+"""The arguments of `report-voice`."""
+
 class Guild(Resource):
     """Discord server — `discord.guild`."""
     __surface__ = "so.tilo.discord@3d8469c4024dfffb"
@@ -344,6 +488,10 @@ class Guild(Resource):
             args["map_roles"] = map_roles
         return self.action("connect", **args)
 
+    def connect_many(self, items: list[ConnectArgs]) -> list[dict[str, Any]]:
+        """Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("connect", items)
+
     def observe_layout(self,
         *,
         bot_user: str,
@@ -353,6 +501,10 @@ class Guild(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("observe-layout", bot_user=bot_user, channels=channels, roles=roles, emojis=emojis)
+
+    def observe_layout_many(self, items: list[ObserveLayoutArgs]) -> list[dict[str, Any]]:
+        """Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("observe-layout", items)
 
     # the app's `map` action is named as a field of this kind: run it with
     # `action("map")`.
@@ -369,6 +521,10 @@ class Guild(Resource):
         if keep_apart is not None:
             args["keep_apart"] = keep_apart
         return self.action("unmap", **args)
+
+    def unmap_many(self, items: list[UnmapArgs]) -> list[dict[str, Any]]:
+        """Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("unmap", items)
 
     def send(self, *, op: SendOp) -> Any | Run:
         """Runs the app's action."""
@@ -443,6 +599,10 @@ class Guild(Resource):
         """Runs the app's action."""
         return self.action("begin-connect", state_sha256=state_sha256)
 
+    def begin_connect_many(self, items: list[BeginConnectArgs]) -> list[dict[str, Any]]:
+        """Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("begin-connect", items)
+
     def offer_link(self,
         *,
         check: str,
@@ -465,6 +625,10 @@ class Guild(Resource):
             args["interaction"] = interaction
         return self.action("offer-link", **args)
 
+    def offer_link_many(self, items: list[OfferLinkArgs]) -> list[dict[str, Any]]:
+        """Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("offer-link", items)
+
     def offer_sign_in(self,
         *,
         check: str,
@@ -486,13 +650,25 @@ class Guild(Resource):
         args["state_sha256"] = state_sha256
         return self.action("offer-sign-in", **args)
 
+    def offer_sign_in_many(self, items: list[OfferSignInArgs]) -> list[dict[str, Any]]:
+        """Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("offer-sign-in", items)
+
     def complete_link(self, *, proof: str) -> Run | None:
         """Runs the app's action."""
         return self.action("complete-link", proof=proof)
 
+    def complete_link_many(self, items: list[CompleteLinkArgs]) -> list[dict[str, Any]]:
+        """Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("complete-link", items)
+
     def set_sign_in(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("set-sign-in", page=page)
+
+    def set_sign_in_many(self, items: list[SetSignInArgs]) -> list[dict[str, Any]]:
+        """Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-sign-in", items)
 
     def answer_interaction(self, *, op: AnswerInteractionOp) -> Any | Run:
         """Runs the app's action."""
@@ -515,6 +691,10 @@ class Guild(Resource):
             args["avatar"] = avatar
         return self.action("rename-link", **args)
 
+    def rename_link_many(self, items: list[RenameLinkArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-link", items)
+
     def set_link_photo(self,
         *,
         discord_user: str,
@@ -524,17 +704,33 @@ class Guild(Resource):
         """Runs the app's action."""
         return self.action("set-link-photo", discord_user=discord_user, avatar=avatar, photo=photo)
 
+    def set_link_photo_many(self, items: list[SetLinkPhotoArgs]) -> list[dict[str, Any]]:
+        """Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-link-photo", items)
+
     def unlink(self, *, discord_user: str) -> Run | None:
         """Runs the app's action."""
         return self.action("unlink", discord_user=discord_user)
+
+    def unlink_many(self, items: list[UnlinkArgs]) -> list[dict[str, Any]]:
+        """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("unlink", items)
 
     def block_persona(self, *, discord_user: str) -> Run | None:
         """Runs the app's action."""
         return self.action("block-persona", discord_user=discord_user)
 
+    def block_persona_many(self, items: list[BlockPersonaArgs]) -> list[dict[str, Any]]:
+        """Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("block-persona", items)
+
     def unblock_persona(self, *, discord_user: str) -> Run | None:
         """Runs the app's action."""
         return self.action("unblock-persona", discord_user=discord_user)
+
+    def unblock_persona_many(self, items: list[UnblockPersonaArgs]) -> list[dict[str, Any]]:
+        """Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("unblock-persona", items)
 
     def remember_avatar(self,
         *,
@@ -544,9 +740,17 @@ class Guild(Resource):
         """Runs the app's action."""
         return self.action("remember-avatar", hash=hash, blob=blob)
 
+    def remember_avatar_many(self, items: list[RememberAvatarArgs]) -> list[dict[str, Any]]:
+        """Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remember-avatar", items)
+
     def finish_import(self, *, tilo_only: list[str]) -> Run | None:
         """Runs the app's action."""
         return self.action("finish-import", tilo_only=tilo_only)
+
+    def finish_import_many(self, items: list[FinishImportArgs]) -> list[dict[str, Any]]:
+        """Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("finish-import", items)
 
     def apply_emoji(self, *, op: EmojiSpec) -> Any | Run:
         """Runs the app's action."""
@@ -576,6 +780,10 @@ class Guild(Resource):
             args["deleted"] = deleted
         return self.action("settle-emoji", **args)
 
+    def settle_emoji_many(self, items: list[SettleEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("settle-emoji", items)
+
     def report_voice(self,
         *,
         problem: str | None = None,
@@ -585,6 +793,10 @@ class Guild(Resource):
         if problem is not None:
             args["problem"] = problem
         return self.action("report-voice", **args)
+
+    def report_voice_many(self, items: list[ReportVoiceArgs]) -> list[dict[str, Any]]:
+        """Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("report-voice", items)
 
     def my_link(self) -> None:
         """Runs the app's action."""

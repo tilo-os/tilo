@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -26,6 +28,13 @@ __all__ = [
     "Session",
     "History",
     "RecentEnvironments",
+    "StopArgs",
+    "RecordRunArgs",
+    "RecordTargetArgs",
+    "RecordRelaySessionArgs",
+    "ClaimPaneArgs",
+    "RememberArgs",
+    "UsedArgs",
 ]
 
 ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
@@ -69,6 +78,61 @@ class Remembered(TypedDict):
     actor: str
     session: str
     run: str
+
+StopArgs = TypedDict("StopArgs", {
+})
+"""The arguments of `stop`."""
+
+RecordRunArgs = TypedDict("RecordRunArgs", {
+    "command": "str",
+    "cwd": "str",
+    "started_ms": "int",
+    "ended_ms": "int",
+    "exit": "int",
+    "output": NotRequired["Any | None"],
+    "truncated": "bool",
+    "tool": "str",
+    "undoable": "bool",
+    "items": "list[Any]",
+    "request": NotRequired["str | None"],
+    "run": "str",
+})
+"""The arguments of `record-run`."""
+
+RecordTargetArgs = TypedDict("RecordTargetArgs", {
+    "target": "str",
+    "device": NotRequired["str | None"],
+})
+"""The arguments of `record-target`."""
+
+RecordRelaySessionArgs = TypedDict("RecordRelaySessionArgs", {
+    "session": NotRequired["str | None"],
+})
+"""The arguments of `record-relay-session`."""
+
+ClaimPaneArgs = TypedDict("ClaimPaneArgs", {
+    "pane": "str",
+    "device": NotRequired["str | None"],
+})
+"""The arguments of `claim-pane`."""
+
+RememberArgs = TypedDict("RememberArgs", {
+    "command": "str",
+    "cwd": "str",
+    "environment": NotRequired["str | None"],
+    "exit": "int",
+    "ended_ms": "int",
+    "actor": "str",
+    "session": "str",
+    "run": "str",
+})
+"""The arguments of `remember`."""
+
+UsedArgs = TypedDict("UsedArgs", {
+    "device": "str",
+    "target": "str",
+})
+"""The arguments of `used`."""
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
@@ -118,6 +182,10 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("stop")
 
+    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stop", items)
+
     def record_run(self,
         *,
         command: str,
@@ -151,6 +219,10 @@ class Session(Resource):
         args["run"] = run
         return self.action("record-run", **args)
 
+    def record_run_many(self, items: list[RecordRunArgs]) -> list[dict[str, Any]]:
+        """Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-run", items)
+
     def record_target(self,
         *,
         target: str,
@@ -163,6 +235,10 @@ class Session(Resource):
             args["device"] = device
         return self.action("record-target", **args)
 
+    def record_target_many(self, items: list[RecordTargetArgs]) -> list[dict[str, Any]]:
+        """Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-target", items)
+
     def record_relay_session(self,
         *,
         session: str | None = None,
@@ -172,6 +248,10 @@ class Session(Resource):
         if session is not None:
             args["session"] = session
         return self.action("record-relay-session", **args)
+
+    def record_relay_session_many(self, items: list[RecordRelaySessionArgs]) -> list[dict[str, Any]]:
+        """Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-relay-session", items)
 
     def claim_pane(self,
         *,
@@ -184,6 +264,10 @@ class Session(Resource):
         if device is not None:
             args["device"] = device
         return self.action("claim-pane", **args)
+
+    def claim_pane_many(self, items: list[ClaimPaneArgs]) -> list[dict[str, Any]]:
+        """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("claim-pane", items)
 
     def inspect_session(self) -> None:
         """Runs the app's action."""
@@ -254,6 +338,10 @@ class History(Resource):
         args["run"] = run
         return self.action("remember", **args)
 
+    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
+        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remember", items)
+
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
@@ -267,5 +355,9 @@ class RecentEnvironments(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("used", device=device, target=target)
+
+    def used_many(self, items: list[UsedArgs]) -> list[dict[str, Any]]:
+        """Runs `used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("used", items)
 
 

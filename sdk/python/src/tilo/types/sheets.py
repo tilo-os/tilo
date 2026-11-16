@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -36,6 +38,21 @@ __all__ = [
     "Sheet",
     "TimeStyle",
     "Workbook",
+    "SetTitleArgs",
+    "DuplicateSheetArgs",
+    "DeleteSheetArgs",
+    "InsertRowsArgs",
+    "InsertColumnsArgs",
+    "DeleteColumnsArgs",
+    "ImportSheetsArgs",
+    "AddChartArgs",
+    "EditChartArgs",
+    "DeleteChartArgs",
+    "RenameSheetArgs",
+    "CommentArgs",
+    "ReplyArgs",
+    "EditCommentArgs",
+    "DeleteCommentArgs",
 ]
 
 class Area(TypedDict):
@@ -121,6 +138,101 @@ class Sheet(TypedDict):
 
 TimeStyle = Literal["Language", "H24", "H12"]
 
+SetTitleArgs = TypedDict("SetTitleArgs", {
+    "title": "str",
+})
+"""The arguments of `set-title`."""
+
+DuplicateSheetArgs = TypedDict("DuplicateSheetArgs", {
+    "sheet": "str",
+})
+"""The arguments of `duplicate-sheet`."""
+
+DeleteSheetArgs = TypedDict("DeleteSheetArgs", {
+    "sheet": "str",
+})
+"""The arguments of `delete-sheet`."""
+
+InsertRowsArgs = TypedDict("InsertRowsArgs", {
+    "sheet": "str",
+    "at": "int",
+    "count": NotRequired["int | None"],
+})
+"""The arguments of `insert-rows`."""
+
+InsertColumnsArgs = TypedDict("InsertColumnsArgs", {
+    "sheet": "str",
+    "at": "str",
+    "count": NotRequired["int | None"],
+})
+"""The arguments of `insert-columns`."""
+
+DeleteColumnsArgs = TypedDict("DeleteColumnsArgs", {
+    "sheet": "str",
+    "columns": "list[str]",
+})
+"""The arguments of `delete-columns`."""
+
+ImportSheetsArgs = TypedDict("ImportSheetsArgs", {
+    "sheets": "list[ImportedSheet]",
+    "source": NotRequired["str | None"],
+    "title": NotRequired["str | None"],
+})
+"""The arguments of `import-sheets`."""
+
+AddChartArgs = TypedDict("AddChartArgs", {
+    "sheet": "str",
+    "range": "str",
+    "kind": "str",
+    "title": "str",
+})
+"""The arguments of `add-chart`."""
+
+EditChartArgs = TypedDict("EditChartArgs", {
+    "sheet": "str",
+    "chart": "str",
+    "title": "str",
+    "kind": NotRequired["Any | None"],
+    "range": NotRequired["Any | None"],
+})
+"""The arguments of `edit-chart`."""
+
+DeleteChartArgs = TypedDict("DeleteChartArgs", {
+    "sheet": "str",
+    "chart": "str",
+})
+"""The arguments of `delete-chart`."""
+
+RenameSheetArgs = TypedDict("RenameSheetArgs", {
+    "sheet": "str",
+    "name": "str",
+})
+"""The arguments of `rename-sheet`."""
+
+CommentArgs = TypedDict("CommentArgs", {
+    "sheet": "str",
+    "range": "str",
+    "text": "str",
+})
+"""The arguments of `comment`."""
+
+ReplyArgs = TypedDict("ReplyArgs", {
+    "comment": "str",
+    "text": "str",
+})
+"""The arguments of `reply`."""
+
+EditCommentArgs = TypedDict("EditCommentArgs", {
+    "comment": "str",
+    "body": "str",
+})
+"""The arguments of `edit-comment`."""
+
+DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
+    "comment": "str",
+})
+"""The arguments of `delete-comment`."""
+
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
     __surface__ = "so.tilo.sheets@be9693405e43cb95"
@@ -161,6 +273,10 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("set-title", title=title)
 
+    def set_title_many(self, items: list[SetTitleArgs]) -> list[dict[str, Any]]:
+        """Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-title", items)
+
     def set_records(self,
         *,
         sheet: str,
@@ -194,9 +310,17 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("duplicate-sheet", sheet=sheet)
 
+    def duplicate_sheet_many(self, items: list[DuplicateSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("duplicate-sheet", items)
+
     def delete_sheet(self, *, sheet: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-sheet", sheet=sheet)
+
+    def delete_sheet_many(self, items: list[DeleteSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-sheet", items)
 
     def set_cells(self,
         *,
@@ -262,6 +386,10 @@ class Workbook(Resource):
             args["count"] = count
         return self.action("insert-rows", **args)
 
+    def insert_rows_many(self, items: list[InsertRowsArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("insert-rows", items)
+
     def delete_rows(self,
         *,
         sheet: str,
@@ -284,6 +412,10 @@ class Workbook(Resource):
             args["count"] = count
         return self.action("insert-columns", **args)
 
+    def insert_columns_many(self, items: list[InsertColumnsArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("insert-columns", items)
+
     def delete_columns(self,
         *,
         sheet: str,
@@ -291,6 +423,10 @@ class Workbook(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-columns", sheet=sheet, columns=columns)
+
+    def delete_columns_many(self, items: list[DeleteColumnsArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-columns", items)
 
     def import_sheets(self,
         *,
@@ -307,6 +443,10 @@ class Workbook(Resource):
             args["title"] = title
         return self.action("import-sheets", **args)
 
+    def import_sheets_many(self, items: list[ImportSheetsArgs]) -> list[dict[str, Any]]:
+        """Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import-sheets", items)
+
     def add_chart(self,
         *,
         sheet: str,
@@ -316,6 +456,10 @@ class Workbook(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("add-chart", sheet=sheet, range=range, kind=kind, title=title)
+
+    def add_chart_many(self, items: list[AddChartArgs]) -> list[dict[str, Any]]:
+        """Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-chart", items)
 
     def edit_chart(self,
         *,
@@ -336,6 +480,10 @@ class Workbook(Resource):
             args["range"] = range
         return self.action("edit-chart", **args)
 
+    def edit_chart_many(self, items: list[EditChartArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-chart", items)
+
     def delete_chart(self,
         *,
         sheet: str,
@@ -344,6 +492,10 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("delete-chart", sheet=sheet, chart=chart)
 
+    def delete_chart_many(self, items: list[DeleteChartArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-chart", items)
+
     def rename_sheet(self,
         *,
         sheet: str,
@@ -351,6 +503,10 @@ class Workbook(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("rename-sheet", sheet=sheet, name=name)
+
+    def rename_sheet_many(self, items: list[RenameSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-sheet", items)
 
     def comment(self,
         *,
@@ -361,6 +517,10 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("comment", sheet=sheet, range=range, text=text)
 
+    def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
+        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("comment", items)
+
     def reply(self,
         *,
         comment: str,
@@ -368,6 +528,10 @@ class Workbook(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("reply", comment=comment, text=text)
+
+    def reply_many(self, items: list[ReplyArgs]) -> list[dict[str, Any]]:
+        """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reply", items)
 
     def edit_comment(self,
         *,
@@ -377,9 +541,17 @@ class Workbook(Resource):
         """Runs the app's action."""
         return self.action("edit-comment", comment=comment, body=body)
 
+    def edit_comment_many(self, items: list[EditCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-comment", items)
+
     def delete_comment(self, *, comment: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-comment", comment=comment)
+
+    def delete_comment_many(self, items: list[DeleteCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-comment", items)
 
     def export_xlsx_content(self) -> None:
         """Runs the app's action."""

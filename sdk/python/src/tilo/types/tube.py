@@ -9,23 +9,70 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
     "Reply",
     "Library",
     "WatchHistory",
+    "ReplyToCommentArgs",
+    "RetractArgs",
+    "RecordArgs",
+    "ProgressArgs",
+    "ImportArgs",
+    "ForgetArgs",
+    "ClearArgs",
 ]
 
 class Reply(TypedDict):
     comment: str
     text: str
+
+ReplyToCommentArgs = TypedDict("ReplyToCommentArgs", {
+    "comment": "str",
+    "text": "str",
+})
+"""The arguments of `reply-to-comment`."""
+
+RetractArgs = TypedDict("RetractArgs", {
+    "reply": "str",
+})
+"""The arguments of `retract`."""
+
+RecordArgs = TypedDict("RecordArgs", {
+    "video": "str",
+    "at_ms": "int",
+})
+"""The arguments of `record`."""
+
+ProgressArgs = TypedDict("ProgressArgs", {
+    "video": "str",
+    "position_ms": "int",
+    "duration_ms": "int",
+})
+"""The arguments of `progress`."""
+
+ImportArgs = TypedDict("ImportArgs", {
+    "watched": "list[Any]",
+})
+"""The arguments of `import`."""
+
+ForgetArgs = TypedDict("ForgetArgs", {
+    "video": "str",
+})
+"""The arguments of `forget`."""
+
+ClearArgs = TypedDict("ClearArgs", {
+})
+"""The arguments of `clear`."""
 
 class Library(Resource):
     """Tube — `tube.library`."""
@@ -44,9 +91,17 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("reply-to-comment", comment=comment, text=text)
 
+    def reply_to_comment_many(self, items: list[ReplyToCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reply-to-comment", items)
+
     def retract(self, *, reply: str) -> Run | None:
         """Runs the app's action."""
         return self.action("retract", reply=reply)
+
+    def retract_many(self, items: list[RetractArgs]) -> list[dict[str, Any]]:
+        """Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("retract", items)
 
     def open_video(self, *, video: str) -> None:
         """Runs the app's action."""
@@ -127,6 +182,10 @@ class WatchHistory(Resource):
         """Runs the app's action."""
         return self.action("record", video=video, at_ms=at_ms)
 
+    def record_many(self, items: list[RecordArgs]) -> list[dict[str, Any]]:
+        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record", items)
+
     def progress(self,
         *,
         video: str,
@@ -136,16 +195,32 @@ class WatchHistory(Resource):
         """Runs the app's action."""
         return self.action("progress", video=video, position_ms=position_ms, duration_ms=duration_ms)
 
+    def progress_many(self, items: list[ProgressArgs]) -> list[dict[str, Any]]:
+        """Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("progress", items)
+
     def import_(self, *, watched: list[Any]) -> Run | None:
         """Runs the app's action."""
         return self.action("import", watched=watched)
+
+    def import_many(self, items: list[ImportArgs]) -> list[dict[str, Any]]:
+        """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import", items)
 
     def forget(self, *, video: str) -> Run | None:
         """Runs the app's action."""
         return self.action("forget", video=video)
 
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget", items)
+
     def clear(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear")
+
+    def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
+        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear", items)
 
 

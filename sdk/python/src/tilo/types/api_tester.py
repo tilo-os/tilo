@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -29,6 +31,21 @@ __all__ = [
     "Sent",
     "Variable",
     "Workspace",
+    "NewRequestArgs",
+    "NewCollectionArgs",
+    "DeleteCollectionArgs",
+    "AddRequestArgs",
+    "SaveRequestArgs",
+    "OpenRequestArgs",
+    "DeleteRequestArgs",
+    "NewEnvironmentArgs",
+    "DeleteEnvironmentArgs",
+    "UseEnvironmentArgs",
+    "AddVariableArgs",
+    "OpenSentArgs",
+    "SaveSentArgs",
+    "DeleteSentArgs",
+    "RecordSentArgs",
 ]
 
 AuthScheme = Literal["none", "bearer", "basic", "api_key"]
@@ -82,6 +99,92 @@ class Variable(TypedDict):
     enabled: bool
     secret: bool
 
+NewRequestArgs = TypedDict("NewRequestArgs", {
+})
+"""The arguments of `new-request`."""
+
+NewCollectionArgs = TypedDict("NewCollectionArgs", {
+    "name": "str",
+})
+"""The arguments of `new-collection`."""
+
+DeleteCollectionArgs = TypedDict("DeleteCollectionArgs", {
+    "collection": "str",
+})
+"""The arguments of `delete-collection`."""
+
+AddRequestArgs = TypedDict("AddRequestArgs", {
+    "collection": "str",
+    "name": "str",
+})
+"""The arguments of `add-request`."""
+
+SaveRequestArgs = TypedDict("SaveRequestArgs", {
+    "collection": "str",
+    "name": NotRequired["str | None"],
+})
+"""The arguments of `save-request`."""
+
+OpenRequestArgs = TypedDict("OpenRequestArgs", {
+    "collection": "str",
+    "request": "str",
+})
+"""The arguments of `open-request`."""
+
+DeleteRequestArgs = TypedDict("DeleteRequestArgs", {
+    "collection": "str",
+    "request": "str",
+})
+"""The arguments of `delete-request`."""
+
+NewEnvironmentArgs = TypedDict("NewEnvironmentArgs", {
+    "name": "str",
+})
+"""The arguments of `new-environment`."""
+
+DeleteEnvironmentArgs = TypedDict("DeleteEnvironmentArgs", {
+    "environment": "str",
+})
+"""The arguments of `delete-environment`."""
+
+UseEnvironmentArgs = TypedDict("UseEnvironmentArgs", {
+    "environment": "str",
+})
+"""The arguments of `use-environment`."""
+
+AddVariableArgs = TypedDict("AddVariableArgs", {
+    "environment": "str",
+    "key": "str",
+    "value": NotRequired["str | None"],
+    "secret": NotRequired["bool | None"],
+})
+"""The arguments of `add-variable`."""
+
+OpenSentArgs = TypedDict("OpenSentArgs", {
+    "sent": "str",
+})
+"""The arguments of `open-sent`."""
+
+SaveSentArgs = TypedDict("SaveSentArgs", {
+    "collection": "str",
+    "sent": "str",
+    "name": NotRequired["str | None"],
+})
+"""The arguments of `save-sent`."""
+
+DeleteSentArgs = TypedDict("DeleteSentArgs", {
+    "sent": "str",
+})
+"""The arguments of `delete-sent`."""
+
+RecordSentArgs = TypedDict("RecordSentArgs", {
+    "method": "str",
+    "url": "str",
+    "status": "int",
+    "duration_ms": "int",
+})
+"""The arguments of `record-sent`."""
+
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
     __surface__ = "so.tilo.api-tester@d6b32f527d6a5c3a"
@@ -102,13 +205,25 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("new-request")
 
+    def new_request_many(self, items: list[NewRequestArgs]) -> list[dict[str, Any]]:
+        """Runs `new-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-request", items)
+
     def new_collection(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("new-collection", name=name)
 
+    def new_collection_many(self, items: list[NewCollectionArgs]) -> list[dict[str, Any]]:
+        """Runs `new-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-collection", items)
+
     def delete_collection(self, *, collection: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-collection", collection=collection)
+
+    def delete_collection_many(self, items: list[DeleteCollectionArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-collection", items)
 
     def add_request(self,
         *,
@@ -117,6 +232,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("add-request", collection=collection, name=name)
+
+    def add_request_many(self, items: list[AddRequestArgs]) -> list[dict[str, Any]]:
+        """Runs `add-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-request", items)
 
     def save_request(self,
         *,
@@ -130,6 +249,10 @@ class Workspace(Resource):
             args["name"] = name
         return self.action("save-request", **args)
 
+    def save_request_many(self, items: list[SaveRequestArgs]) -> list[dict[str, Any]]:
+        """Runs `save-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-request", items)
+
     def open_request(self,
         *,
         collection: str,
@@ -137,6 +260,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("open-request", collection=collection, request=request)
+
+    def open_request_many(self, items: list[OpenRequestArgs]) -> list[dict[str, Any]]:
+        """Runs `open-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-request", items)
 
     def delete_request(self,
         *,
@@ -146,17 +273,33 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("delete-request", collection=collection, request=request)
 
+    def delete_request_many(self, items: list[DeleteRequestArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-request", items)
+
     def new_environment(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("new-environment", name=name)
+
+    def new_environment_many(self, items: list[NewEnvironmentArgs]) -> list[dict[str, Any]]:
+        """Runs `new-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-environment", items)
 
     def delete_environment(self, *, environment: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-environment", environment=environment)
 
+    def delete_environment_many(self, items: list[DeleteEnvironmentArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-environment", items)
+
     def use_environment(self, *, environment: str) -> Run | None:
         """Runs the app's action."""
         return self.action("use-environment", environment=environment)
+
+    def use_environment_many(self, items: list[UseEnvironmentArgs]) -> list[dict[str, Any]]:
+        """Runs `use-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("use-environment", items)
 
     def add_variable(self,
         *,
@@ -175,9 +318,17 @@ class Workspace(Resource):
             args["secret"] = secret
         return self.action("add-variable", **args)
 
+    def add_variable_many(self, items: list[AddVariableArgs]) -> list[dict[str, Any]]:
+        """Runs `add-variable` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-variable", items)
+
     def open_sent(self, *, sent: str) -> Run | None:
         """Runs the app's action."""
         return self.action("open-sent", sent=sent)
+
+    def open_sent_many(self, items: list[OpenSentArgs]) -> list[dict[str, Any]]:
+        """Runs `open-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-sent", items)
 
     def save_sent(self,
         *,
@@ -193,9 +344,17 @@ class Workspace(Resource):
             args["name"] = name
         return self.action("save-sent", **args)
 
+    def save_sent_many(self, items: list[SaveSentArgs]) -> list[dict[str, Any]]:
+        """Runs `save-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-sent", items)
+
     def delete_sent(self, *, sent: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-sent", sent=sent)
+
+    def delete_sent_many(self, items: list[DeleteSentArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-sent", items)
 
     def record_sent(self,
         *,
@@ -206,5 +365,9 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("record-sent", method=method, url=url, status=status, duration_ms=duration_ms)
+
+    def record_sent_many(self, items: list[RecordSentArgs]) -> list[dict[str, Any]]:
+        """Runs `record-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-sent", items)
 
 

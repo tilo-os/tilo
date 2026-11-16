@@ -9,17 +9,24 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
     "Filter",
+    "ClearFiltersArgs",
 ]
+
+ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
+})
+"""The arguments of `clear-filters`."""
 
 class Filter(Resource):
     """Workspace activity — `activity.filter`."""
@@ -32,5 +39,9 @@ class Filter(Resource):
     def clear_filters(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-filters")
+
+    def clear_filters_many(self, items: list[ClearFiltersArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-filters", items)
 
 

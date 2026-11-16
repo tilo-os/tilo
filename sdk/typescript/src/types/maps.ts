@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -99,6 +101,64 @@ export interface DownloadedRegion {
   tiles: number;
 }
 
+/** The arguments of `accept-places`. */
+export interface AcceptPlacesArgs {
+  places: Place[];
+}
+
+/** The arguments of `commit-search`. */
+export interface CommitSearchArgs {
+  query: string;
+}
+
+/** The arguments of `clear-recents`. */
+export interface ClearRecentsArgs {
+}
+
+/** The arguments of `accept-route`. */
+export interface AcceptRouteArgs {
+  route: Route;
+  origin_name: string;
+  dest_name: string;
+  mode: TravelMode;
+  origin?: LatLon;
+  dest?: LatLon;
+}
+
+/** The arguments of `clear-route`. */
+export interface ClearRouteArgs {
+}
+
+/** The arguments of `accept-transit`. */
+export interface AcceptTransitArgs {
+  transit: TransitJourney[];
+  origin_name: string;
+  dest_name: string;
+  origin?: LatLon;
+  dest?: LatLon;
+}
+
+/** The arguments of `clear-transit`. */
+export interface ClearTransitArgs {
+}
+
+/** The arguments of `record`. */
+export interface RecordArgs {
+  device: string;
+  region: DownloadedRegion;
+}
+
+/** The arguments of `forget`. */
+export interface ForgetArgs {
+  device: string;
+  area: string;
+}
+
+/** The arguments of `clear`. */
+export interface ClearArgs {
+  device: string;
+}
+
 /** Maps — `maps.workspace`. */
 export interface Workspace extends tilo.Resource {
   places: Place[];
@@ -110,10 +170,16 @@ export interface Workspace extends tilo.Resource {
   acceptPlaces(args: {
     places: Place[];
   }): Promise<tilo.Run | void>;
+  /** Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  acceptPlacesMany(items: AcceptPlacesArgs[]): Promise<tilo.ActionAnswer[]>;
   commitSearch(args: {
     query: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  commitSearchMany(items: CommitSearchArgs[]): Promise<tilo.ActionAnswer[]>;
   clearRecents(): Promise<tilo.Run | void>;
+  /** Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearRecentsMany(items: ClearRecentsArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptRoute(args: {
     route: Route;
     origin_name: string;
@@ -122,7 +188,11 @@ export interface Workspace extends tilo.Resource {
     origin?: LatLon;
     dest?: LatLon;
   }): Promise<tilo.Run | void>;
+  /** Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  acceptRouteMany(items: AcceptRouteArgs[]): Promise<tilo.ActionAnswer[]>;
   clearRoute(): Promise<tilo.Run | void>;
+  /** Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearRouteMany(items: ClearRouteArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptTransit(args: {
     transit: TransitJourney[];
     origin_name: string;
@@ -130,7 +200,11 @@ export interface Workspace extends tilo.Resource {
     origin?: LatLon;
     dest?: LatLon;
   }): Promise<tilo.Run | void>;
+  /** Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  acceptTransitMany(items: AcceptTransitArgs[]): Promise<tilo.ActionAnswer[]>;
   clearTransit(): Promise<tilo.Run | void>;
+  /** Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearTransitMany(items: ClearTransitArgs[]): Promise<tilo.ActionAnswer[]>;
   search(args: {
     query: string;
   }): Promise<void>;
@@ -166,13 +240,19 @@ export interface OfflineAreas extends tilo.Resource {
     device: string;
     region: DownloadedRegion;
   }): Promise<tilo.Run | void>;
+  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     area: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clear(args: {
     device: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `maps.offline-areas` kind at `path`. */

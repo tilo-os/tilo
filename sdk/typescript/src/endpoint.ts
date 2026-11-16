@@ -122,6 +122,11 @@ export function withinRun<T>(group: RunGroup, body: () => Promise<T>): Promise<T
   return storage.run(group, body);
 }
 
+/** The run the current call is a step of, when one is open. */
+export function currentGroup(): RunGroup | null {
+  return storage.getStore() ?? null;
+}
+
 /** What one request may carry besides its method and path. */
 export interface RequestOptions {
   /** A JSON body, as the API takes it. */
@@ -280,6 +285,40 @@ export class Endpoint {
       return new Run(this, answer.run ?? "", answer.path ?? path);
     }
     return resultOf(answer);
+  }
+
+  /**
+   * Several actions of the resource at `path` as one: `{actions: […]}` to its
+   * `group` action, answering that call's answer. A call the host has not
+   * settled is followed to its answer; one that waits for the person throws
+   * the ask.
+   */
+  async group(
+    path: string,
+    members: Array<{ action: string; args: Record<string, unknown> }>,
+    surface: string | null,
+  ): Promise<ActionAnswer> {
+    const headers: Record<string, string> = {};
+    if (surface !== null) {
+      headers["tilo-surface"] = surface;
+    }
+    const answer = actionAnswerOf(
+      await this.answer("POST", routes.action(this.id, path, "group"), {
+        json: { actions: members },
+        headers,
+      }),
+    );
+    const group = storage.getStore();
+    if (group !== undefined && this.workspace !== null && group.workspace === this.workspace) {
+      group.note(answer);
+    }
+    if (answer.status === "pending") {
+      if (answer.ask !== null) {
+        throw this.askOf(answer);
+      }
+      return this.wait(answer.run ?? "");
+    }
+    return answer;
   }
 
   /** The `AskPending` an answer that waits for the person is. */

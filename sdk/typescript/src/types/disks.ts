@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -22,6 +24,12 @@ import type * as tilo from "tilo-sdk";
  * describe. */
 export const SURFACE = "so.tilo.disks@d7ae32858694d31a";
 
+/** The arguments of `name-drive`. */
+export interface NameDriveArgs {
+  serial: string;
+  name?: string;
+}
+
 /** Storage devices — `disks.system`. */
 export interface System extends tilo.Resource {
   names: Record<string, string>;
@@ -29,6 +37,8 @@ export interface System extends tilo.Resource {
     serial: string;
     name?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `name-drive` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  nameDriveMany(items: NameDriveArgs[]): Promise<tilo.ActionAnswer[]>;
   rescan(): Promise<void>;
   select(args: {
     device: string;

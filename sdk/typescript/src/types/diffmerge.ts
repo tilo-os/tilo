@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -41,6 +43,45 @@ export interface MergeInputs {
   theirs: string;
 }
 
+/** The arguments of `open-comparison`. */
+export interface OpenComparisonArgs {
+  left_label: string;
+  left: string;
+  right_label: string;
+  right: string;
+}
+
+/** The arguments of `open-merge`. */
+export interface OpenMergeArgs {
+  base_label: string;
+  base: string;
+  ours_label: string;
+  ours: string;
+  theirs_label: string;
+  theirs: string;
+}
+
+/** The arguments of `take-ours`. */
+export interface TakeOursArgs {
+  hunk: number;
+}
+
+/** The arguments of `take-theirs`. */
+export interface TakeTheirsArgs {
+  hunk: number;
+}
+
+/** The arguments of `take-both`. */
+export interface TakeBothArgs {
+  hunk: number;
+}
+
+/** The arguments of `resolve`. */
+export interface ResolveArgs {
+  hunk: number;
+  text: string;
+}
+
 /** Diff & Merge — `diffmerge.session`. */
 export interface Session extends tilo.Resource {
   readonly comparison: Comparison | null;
@@ -54,6 +95,8 @@ export interface Session extends tilo.Resource {
     right_label: string;
     right: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `open-comparison` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  openComparisonMany(items: OpenComparisonArgs[]): Promise<tilo.ActionAnswer[]>;
   openMerge(args: {
     base_label: string;
     base: string;
@@ -62,19 +105,29 @@ export interface Session extends tilo.Resource {
     theirs_label: string;
     theirs: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `open-merge` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  openMergeMany(items: OpenMergeArgs[]): Promise<tilo.ActionAnswer[]>;
   takeOurs(args: {
     hunk: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `take-ours` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  takeOursMany(items: TakeOursArgs[]): Promise<tilo.ActionAnswer[]>;
   takeTheirs(args: {
     hunk: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `take-theirs` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  takeTheirsMany(items: TakeTheirsArgs[]): Promise<tilo.ActionAnswer[]>;
   takeBoth(args: {
     hunk: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `take-both` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  takeBothMany(items: TakeBothArgs[]): Promise<tilo.ActionAnswer[]>;
   resolve(args: {
     hunk: number;
     text: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `resolve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resolveMany(items: ResolveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `diffmerge.session` kind at `path`. */

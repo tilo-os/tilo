@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -25,6 +27,22 @@ __all__ = [
     "WorldClock",
     "Collection",
     "OnDevices",
+    "AddWorldClockArgs",
+    "RemoveWorldClockArgs",
+    "AddAlarmArgs",
+    "SetAlarmEnabledArgs",
+    "EditAlarmArgs",
+    "RemoveAlarmArgs",
+    "AddTimerArgs",
+    "PauseTimerArgs",
+    "ResumeTimerArgs",
+    "AddMinuteArgs",
+    "RemoveTimerArgs",
+    "StartStopwatchArgs",
+    "PauseStopwatchArgs",
+    "LapArgs",
+    "ResetStopwatchArgs",
+    "KeepArgs",
 ]
 
 class Alarm(TypedDict):
@@ -52,6 +70,93 @@ class WorldClock(TypedDict):
     city: str
     timezone: str
 
+AddWorldClockArgs = TypedDict("AddWorldClockArgs", {
+    "city": "str",
+    "timezone": "str",
+})
+"""The arguments of `add-world-clock`."""
+
+RemoveWorldClockArgs = TypedDict("RemoveWorldClockArgs", {
+    "world_clock": "str",
+})
+"""The arguments of `remove-world-clock`."""
+
+AddAlarmArgs = TypedDict("AddAlarmArgs", {
+    "label": "str",
+    "hour": "int",
+    "minute": "int",
+    "weekdays": "list[WeekdayKey]",
+})
+"""The arguments of `add-alarm`."""
+
+SetAlarmEnabledArgs = TypedDict("SetAlarmEnabledArgs", {
+    "alarm": "str",
+    "enabled": "bool",
+})
+"""The arguments of `set-alarm-enabled`."""
+
+EditAlarmArgs = TypedDict("EditAlarmArgs", {
+    "alarm": "str",
+    "label": "str",
+    "hour": "int",
+    "minute": "int",
+    "weekdays": "list[WeekdayKey]",
+})
+"""The arguments of `edit-alarm`."""
+
+RemoveAlarmArgs = TypedDict("RemoveAlarmArgs", {
+    "alarm": "str",
+})
+"""The arguments of `remove-alarm`."""
+
+AddTimerArgs = TypedDict("AddTimerArgs", {
+    "label": "str",
+    "seconds": "int",
+})
+"""The arguments of `add-timer`."""
+
+PauseTimerArgs = TypedDict("PauseTimerArgs", {
+    "timer": "str",
+})
+"""The arguments of `pause-timer`."""
+
+ResumeTimerArgs = TypedDict("ResumeTimerArgs", {
+    "timer": "str",
+})
+"""The arguments of `resume-timer`."""
+
+AddMinuteArgs = TypedDict("AddMinuteArgs", {
+    "timer": "str",
+})
+"""The arguments of `add-minute`."""
+
+RemoveTimerArgs = TypedDict("RemoveTimerArgs", {
+    "timer": "str",
+})
+"""The arguments of `remove-timer`."""
+
+StartStopwatchArgs = TypedDict("StartStopwatchArgs", {
+})
+"""The arguments of `start-stopwatch`."""
+
+PauseStopwatchArgs = TypedDict("PauseStopwatchArgs", {
+})
+"""The arguments of `pause-stopwatch`."""
+
+LapArgs = TypedDict("LapArgs", {
+})
+"""The arguments of `lap`."""
+
+ResetStopwatchArgs = TypedDict("ResetStopwatchArgs", {
+})
+"""The arguments of `reset-stopwatch`."""
+
+KeepArgs = TypedDict("KeepArgs", {
+    "device": "str",
+    "kept": "Any",
+})
+"""The arguments of `keep`."""
+
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
     __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
@@ -71,9 +176,17 @@ class Collection(Resource):
         """Runs the app's action."""
         return self.action("add-world-clock", city=city, timezone=timezone)
 
+    def add_world_clock_many(self, items: list[AddWorldClockArgs]) -> list[dict[str, Any]]:
+        """Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-world-clock", items)
+
     def remove_world_clock(self, *, world_clock: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-world-clock", world_clock=world_clock)
+
+    def remove_world_clock_many(self, items: list[RemoveWorldClockArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-world-clock", items)
 
     def add_alarm(self,
         *,
@@ -85,6 +198,10 @@ class Collection(Resource):
         """Runs the app's action."""
         return self.action("add-alarm", label=label, hour=hour, minute=minute, weekdays=weekdays)
 
+    def add_alarm_many(self, items: list[AddAlarmArgs]) -> list[dict[str, Any]]:
+        """Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-alarm", items)
+
     def set_alarm_enabled(self,
         *,
         alarm: str,
@@ -92,6 +209,10 @@ class Collection(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-alarm-enabled", alarm=alarm, enabled=enabled)
+
+    def set_alarm_enabled_many(self, items: list[SetAlarmEnabledArgs]) -> list[dict[str, Any]]:
+        """Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-alarm-enabled", items)
 
     def edit_alarm(self,
         *,
@@ -104,9 +225,17 @@ class Collection(Resource):
         """Runs the app's action."""
         return self.action("edit-alarm", alarm=alarm, label=label, hour=hour, minute=minute, weekdays=weekdays)
 
+    def edit_alarm_many(self, items: list[EditAlarmArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-alarm", items)
+
     def remove_alarm(self, *, alarm: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-alarm", alarm=alarm)
+
+    def remove_alarm_many(self, items: list[RemoveAlarmArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-alarm", items)
 
     def add_timer(self,
         *,
@@ -116,37 +245,73 @@ class Collection(Resource):
         """Runs the app's action."""
         return self.action("add-timer", label=label, seconds=seconds)
 
+    def add_timer_many(self, items: list[AddTimerArgs]) -> list[dict[str, Any]]:
+        """Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-timer", items)
+
     def pause_timer(self, *, timer: str) -> Run | None:
         """Runs the app's action."""
         return self.action("pause-timer", timer=timer)
+
+    def pause_timer_many(self, items: list[PauseTimerArgs]) -> list[dict[str, Any]]:
+        """Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("pause-timer", items)
 
     def resume_timer(self, *, timer: str) -> Run | None:
         """Runs the app's action."""
         return self.action("resume-timer", timer=timer)
 
+    def resume_timer_many(self, items: list[ResumeTimerArgs]) -> list[dict[str, Any]]:
+        """Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("resume-timer", items)
+
     def add_minute(self, *, timer: str) -> Run | None:
         """Runs the app's action."""
         return self.action("add-minute", timer=timer)
+
+    def add_minute_many(self, items: list[AddMinuteArgs]) -> list[dict[str, Any]]:
+        """Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-minute", items)
 
     def remove_timer(self, *, timer: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-timer", timer=timer)
 
+    def remove_timer_many(self, items: list[RemoveTimerArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-timer", items)
+
     def start_stopwatch(self) -> Run | None:
         """Runs the app's action."""
         return self.action("start-stopwatch")
+
+    def start_stopwatch_many(self, items: list[StartStopwatchArgs]) -> list[dict[str, Any]]:
+        """Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("start-stopwatch", items)
 
     def pause_stopwatch(self) -> Run | None:
         """Runs the app's action."""
         return self.action("pause-stopwatch")
 
+    def pause_stopwatch_many(self, items: list[PauseStopwatchArgs]) -> list[dict[str, Any]]:
+        """Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("pause-stopwatch", items)
+
     def lap(self) -> Run | None:
         """Runs the app's action."""
         return self.action("lap")
 
+    def lap_many(self, items: list[LapArgs]) -> list[dict[str, Any]]:
+        """Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("lap", items)
+
     def reset_stopwatch(self) -> Run | None:
         """Runs the app's action."""
         return self.action("reset-stopwatch")
+
+    def reset_stopwatch_many(self, items: list[ResetStopwatchArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset-stopwatch", items)
 
 
 class OnDevices(Resource):
@@ -161,5 +326,9 @@ class OnDevices(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("keep", device=device, kept=kept)
+
+    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
+        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("keep", items)
 
 

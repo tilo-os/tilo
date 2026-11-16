@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -45,6 +47,63 @@ export interface TimestampAnnotation {
   text: string;
 }
 
+/** The arguments of `create-playlist`. */
+export interface CreatePlaylistArgs {
+  name: string;
+}
+
+/** The arguments of `delete-playlist`. */
+export interface DeletePlaylistArgs {
+  playlist: string;
+}
+
+/** The arguments of `add-to-playlist`. */
+export interface AddToPlaylistArgs {
+  playlist: string;
+  media_ref: string;
+  title: string;
+}
+
+/** The arguments of `add-to-watch-later`. */
+export interface AddToWatchLaterArgs {
+  media_ref: string;
+  title: string;
+}
+
+/** The arguments of `add-annotation`. */
+export interface AddAnnotationArgs {
+  media_ref: string;
+  time_ms: number;
+  text?: string;
+}
+
+/** The arguments of `delete-annotation`. */
+export interface DeleteAnnotationArgs {
+  annotation: string;
+}
+
+/** The arguments of `set-transport`. */
+export interface SetTransportArgs {
+  media_ref: string;
+  playing: boolean;
+  position_ms: number;
+  rate: number;
+  epoch_ms: number;
+}
+
+/** The arguments of `keep`. */
+export interface KeepArgs {
+  device: string;
+  rows: unknown;
+}
+
+/** The arguments of `stood`. */
+export interface StoodArgs {
+  device: string;
+  id: string;
+  position_ms: number;
+}
+
 /** Video Player — `video-player.library`. */
 export interface Library extends tilo.Resource {
   playlists: Playlist[];
@@ -54,26 +113,38 @@ export interface Library extends tilo.Resource {
   createPlaylist(args: {
     name: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  createPlaylistMany(items: CreatePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   deletePlaylist(args: {
     playlist: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deletePlaylistMany(items: DeletePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   addToPlaylist(args: {
     playlist: string;
     media_ref: string;
     title: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-to-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addToPlaylistMany(items: AddToPlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   addToWatchLater(args: {
     media_ref: string;
     title: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-to-watch-later` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addToWatchLaterMany(items: AddToWatchLaterArgs[]): Promise<tilo.ActionAnswer[]>;
   addAnnotation(args: {
     media_ref: string;
     time_ms: number;
     text?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addAnnotationMany(items: AddAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteAnnotation(args: {
     annotation: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteAnnotationMany(items: DeleteAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   setTransport(args: {
     media_ref: string;
     playing: boolean;
@@ -81,6 +152,8 @@ export interface Library extends tilo.Resource {
     rate: number;
     epoch_ms: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-transport` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setTransportMany(items: SetTransportArgs[]): Promise<tilo.ActionAnswer[]>;
   openVideo(args?: {
     path?: string;
   }): Promise<void>;
@@ -99,11 +172,15 @@ export interface Recent extends tilo.Resource {
     device: string;
     rows: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
   stood(args: {
     device: string;
     id: string;
     position_ms: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  stoodMany(items: StoodArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `video-player.recent` kind at `path`. */

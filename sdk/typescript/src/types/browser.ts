@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -121,6 +123,97 @@ export interface AddressProfile {
   country: string;
 }
 
+/** The arguments of `add-bookmark`. */
+export interface AddBookmarkArgs {
+  url: string;
+  title?: string;
+}
+
+/** The arguments of `remove-bookmark`. */
+export interface RemoveBookmarkArgs {
+  bookmark: string;
+}
+
+/** The arguments of `set-site-protection`. */
+export interface SetSiteProtectionArgs {
+  origin: string;
+  enabled: boolean;
+}
+
+/** The arguments of `remember-forms`. */
+export interface RememberFormsArgs {
+  origin: string;
+  page: string;
+  forms: RememberedForm[];
+  whole: boolean;
+  at: number;
+}
+
+/** The arguments of `forget-form`. */
+export interface ForgetFormArgs {
+  origin: string;
+  signature: string;
+}
+
+/** The arguments of `forget-site-forms`. */
+export interface ForgetSiteFormsArgs {
+  origin: string;
+}
+
+/** The arguments of `forget-all-forms`. */
+export interface ForgetAllFormsArgs {
+}
+
+/** The arguments of `add-bookmark`. */
+export interface PersonalBookmarksAddBookmarkArgs {
+  url: string;
+  title: string;
+}
+
+/** The arguments of `remove-bookmark`. */
+export interface PersonalBookmarksRemoveBookmarkArgs {
+  url: string;
+  observed_tags: string[];
+}
+
+/** The arguments of `import-bookmarks`. */
+export interface ImportBookmarksArgs {
+  bundle: string;
+}
+
+/** The arguments of `remove-imported-node`. */
+export interface RemoveImportedNodeArgs {
+  source: string;
+  id: string;
+}
+
+/** The arguments of `visit`. */
+export interface VisitArgs {
+  url: string;
+  title: string;
+  at: number;
+}
+
+/** The arguments of `import-history-bundle`. */
+export interface ImportHistoryBundleArgs {
+  bundle: string;
+}
+
+/** The arguments of `name-visit`. */
+export interface NameVisitArgs {
+  url: string;
+  title: string;
+}
+
+/** The arguments of `forget`. */
+export interface ForgetArgs {
+  url: string;
+}
+
+/** The arguments of `clear-history`. */
+export interface ClearHistoryArgs {
+}
+
 /** Browser — `browser.application`. */
 export interface Application extends tilo.Resource {
   bookmarks: Bookmark[];
@@ -131,13 +224,19 @@ export interface Application extends tilo.Resource {
     url: string;
     title?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addBookmarkMany(items: AddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     bookmark: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeBookmarkMany(items: RemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   setSiteProtection(args: {
     origin: string;
     enabled: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setSiteProtectionMany(items: SetSiteProtectionArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberForms(args: {
     origin: string;
     page: string;
@@ -145,14 +244,22 @@ export interface Application extends tilo.Resource {
     whole: boolean;
     at: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  rememberFormsMany(items: RememberFormsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetForm(args: {
     origin: string;
     signature: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetFormMany(items: ForgetFormArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetSiteForms(args: {
     origin: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetSiteFormsMany(items: ForgetSiteFormsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetAllForms(): Promise<tilo.Run | void>;
+  /** Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetAllFormsMany(items: ForgetAllFormsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `browser.application` kind at `path`. */
@@ -171,17 +278,25 @@ export interface PersonalBookmarks extends tilo.Resource {
     url: string;
     title: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addBookmarkMany(items: PersonalBookmarksAddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     url: string;
     observed_tags: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeBookmarkMany(items: PersonalBookmarksRemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   importBookmarks(args: {
     bundle: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importBookmarksMany(items: ImportBookmarksArgs[]): Promise<tilo.ActionAnswer[]>;
   removeImportedNode(args: {
     source: string;
     id: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeImportedNodeMany(items: RemoveImportedNodeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `browser.personal-bookmarks` kind at `path`. */
@@ -200,17 +315,27 @@ export interface BrowsingHistory extends tilo.Resource {
     title: string;
     at: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  visitMany(items: VisitArgs[]): Promise<tilo.ActionAnswer[]>;
   importHistoryBundle(args: {
     bundle: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importHistoryBundleMany(items: ImportHistoryBundleArgs[]): Promise<tilo.ActionAnswer[]>;
   nameVisit(args: {
     url: string;
     title: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  nameVisitMany(items: NameVisitArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     url: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clearHistory(): Promise<tilo.Run | void>;
+  /** Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearHistoryMany(items: ClearHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `browser.browsing-history` kind at `path`. */

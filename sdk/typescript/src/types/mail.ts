@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -173,6 +175,126 @@ export interface NewCopy {
   uid_validity: number;
 }
 
+/** The arguments of `publish-browser-identity`. */
+export interface PublishBrowserIdentityArgs {
+  root: string;
+  origin: string;
+  display_name: string;
+}
+
+/** The arguments of `save-account`. */
+export interface SaveAccountArgs {
+  id: string;
+  type_id: string;
+  display_name: string;
+  config: unknown;
+  enabled: boolean;
+  tint: number;
+}
+
+/** The arguments of `remove-account`. */
+export interface RemoveAccountArgs {
+  account: string;
+}
+
+/** The arguments of `set-active-account`. */
+export interface SetActiveAccountArgs {
+  account: string;
+}
+
+/** The arguments of `project-contact`. */
+export interface ProjectContactArgs {
+  person: string;
+  label: string;
+}
+
+/** The arguments of `remove-contact`. */
+export interface RemoveContactArgs {
+  person: string;
+}
+
+/** The arguments of `confirm-endpoint`. */
+export interface ConfirmEndpointArgs {
+  person: string;
+  endpoint: string;
+  service: string;
+  recipient: string;
+}
+
+/** The arguments of `confirm-account`. */
+export interface ConfirmAccountArgs {
+  person: string;
+  endpoint: string;
+  service: string;
+  scope: string;
+  recipient: string;
+  revision: string;
+}
+
+/** The arguments of `replace-endpoint`. */
+export interface ReplaceEndpointArgs {
+  person: string;
+  previous: string;
+  endpoint: string;
+  service: string;
+  recipient: string;
+}
+
+/** The arguments of `replace-account`. */
+export interface ReplaceAccountArgs {
+  person: string;
+  previous: string;
+  endpoint: string;
+  service: string;
+  scope: string;
+  recipient: string;
+  revision: string;
+}
+
+/** The arguments of `project-phones`. */
+export interface ProjectPhonesArgs {
+  person: string;
+  phones: string[];
+}
+
+/** The arguments of `project-emails`. */
+export interface ProjectEmailsArgs {
+  person: string;
+  emails: string[];
+}
+
+/** The arguments of `project-contacts`. */
+export interface ProjectContactsArgs {
+  people: Projected[];
+  removed: string[];
+}
+
+/** The arguments of `forget-endpoint`. */
+export interface ForgetEndpointArgs {
+  person: string;
+  endpoint: string;
+}
+
+/** The arguments of `trust`. */
+export interface TrustArgs {
+  sender: string;
+}
+
+/** The arguments of `distrust`. */
+export interface DistrustArgs {
+  sender: string;
+}
+
+/** The arguments of `keep-copies`. */
+export interface KeepCopiesArgs {
+  copies: NewCopy[];
+}
+
+/** The arguments of `forget-copies`. */
+export interface ForgetCopiesArgs {
+  messages: string[];
+}
+
 /** Mail — `mail.mailbox`. */
 export interface Mailbox extends tilo.Resource {
   messages: MessageState[];
@@ -294,6 +416,8 @@ export interface Accounts extends tilo.Resource {
     origin: string;
     display_name: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
     id: string;
     type_id: string;
@@ -302,12 +426,18 @@ export interface Accounts extends tilo.Resource {
     enabled: boolean;
     tint: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `tilo.accounts` kind at `path`. */
@@ -322,15 +452,21 @@ export interface Identities extends tilo.Resource {
     person: string;
     label: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  projectContactMany(items: ProjectContactArgs[]): Promise<tilo.ActionAnswer[]>;
   removeContact(args: {
     person: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeContactMany(items: RemoveContactArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmEndpoint(args: {
     person: string;
     endpoint: string;
     service: string;
     recipient: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  confirmEndpointMany(items: ConfirmEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmAccount(args: {
     person: string;
     endpoint: string;
@@ -339,6 +475,8 @@ export interface Identities extends tilo.Resource {
     recipient: string;
     revision: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  confirmAccountMany(items: ConfirmAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceEndpoint(args: {
     person: string;
     previous: string;
@@ -346,6 +484,8 @@ export interface Identities extends tilo.Resource {
     service: string;
     recipient: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  replaceEndpointMany(items: ReplaceEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceAccount(args: {
     person: string;
     previous: string;
@@ -355,22 +495,32 @@ export interface Identities extends tilo.Resource {
     recipient: string;
     revision: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  replaceAccountMany(items: ReplaceAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   projectPhones(args: {
     person: string;
     phones: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  projectPhonesMany(items: ProjectPhonesArgs[]): Promise<tilo.ActionAnswer[]>;
   projectEmails(args: {
     person: string;
     emails: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  projectEmailsMany(items: ProjectEmailsArgs[]): Promise<tilo.ActionAnswer[]>;
   projectContacts(args: {
     people: Projected[];
     removed: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  projectContactsMany(items: ProjectContactsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetEndpoint(args: {
     person: string;
     endpoint: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetEndpointMany(items: ForgetEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `tilo.contacts.identities` kind at `path`. */
@@ -384,9 +534,13 @@ export interface TrustedSenders extends tilo.Resource {
   trust(args: {
     sender: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `trust` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  trustMany(items: TrustArgs[]): Promise<tilo.ActionAnswer[]>;
   distrust(args: {
     sender: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `distrust` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  distrustMany(items: DistrustArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `mail.trusted-senders` kind at `path`. */
@@ -400,9 +554,13 @@ export interface Copies extends tilo.Resource {
   keepCopies(args: {
     copies: NewCopy[];
   }): Promise<tilo.Run | void>;
+  /** Runs `keep-copies` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  keepCopiesMany(items: KeepCopiesArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetCopies(args: {
     messages: string[];
   }): Promise<tilo.Run | void>;
+  /** Runs `forget-copies` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  forgetCopiesMany(items: ForgetCopiesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `mail.copies` kind at `path`. */

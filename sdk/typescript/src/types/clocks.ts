@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -52,6 +54,93 @@ export interface WorldClock {
   timezone: string;
 }
 
+/** The arguments of `add-world-clock`. */
+export interface AddWorldClockArgs {
+  city: string;
+  timezone: string;
+}
+
+/** The arguments of `remove-world-clock`. */
+export interface RemoveWorldClockArgs {
+  world_clock: string;
+}
+
+/** The arguments of `add-alarm`. */
+export interface AddAlarmArgs {
+  label: string;
+  hour: number;
+  minute: number;
+  weekdays: WeekdayKey[];
+}
+
+/** The arguments of `set-alarm-enabled`. */
+export interface SetAlarmEnabledArgs {
+  alarm: string;
+  enabled: boolean;
+}
+
+/** The arguments of `edit-alarm`. */
+export interface EditAlarmArgs {
+  alarm: string;
+  label: string;
+  hour: number;
+  minute: number;
+  weekdays: WeekdayKey[];
+}
+
+/** The arguments of `remove-alarm`. */
+export interface RemoveAlarmArgs {
+  alarm: string;
+}
+
+/** The arguments of `add-timer`. */
+export interface AddTimerArgs {
+  label: string;
+  seconds: number;
+}
+
+/** The arguments of `pause-timer`. */
+export interface PauseTimerArgs {
+  timer: string;
+}
+
+/** The arguments of `resume-timer`. */
+export interface ResumeTimerArgs {
+  timer: string;
+}
+
+/** The arguments of `add-minute`. */
+export interface AddMinuteArgs {
+  timer: string;
+}
+
+/** The arguments of `remove-timer`. */
+export interface RemoveTimerArgs {
+  timer: string;
+}
+
+/** The arguments of `start-stopwatch`. */
+export interface StartStopwatchArgs {
+}
+
+/** The arguments of `pause-stopwatch`. */
+export interface PauseStopwatchArgs {
+}
+
+/** The arguments of `lap`. */
+export interface LapArgs {
+}
+
+/** The arguments of `reset-stopwatch`. */
+export interface ResetStopwatchArgs {
+}
+
+/** The arguments of `keep`. */
+export interface KeepArgs {
+  device: string;
+  kept: unknown;
+}
+
 /** Clocks — `clocks.collection`. */
 export interface Collection extends tilo.Resource {
   world_clocks: WorldClock[];
@@ -62,19 +151,27 @@ export interface Collection extends tilo.Resource {
     city: string;
     timezone: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addWorldClockMany(items: AddWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   removeWorldClock(args: {
     world_clock: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeWorldClockMany(items: RemoveWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   addAlarm(args: {
     label: string;
     hour: number;
     minute: number;
     weekdays: WeekdayKey[];
   }): Promise<tilo.Run | void>;
+  /** Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addAlarmMany(items: AddAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   setAlarmEnabled(args: {
     alarm: string;
     enabled: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  setAlarmEnabledMany(items: SetAlarmEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
   editAlarm(args: {
     alarm: string;
     label: string;
@@ -82,29 +179,51 @@ export interface Collection extends tilo.Resource {
     minute: number;
     weekdays: WeekdayKey[];
   }): Promise<tilo.Run | void>;
+  /** Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  editAlarmMany(items: EditAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAlarm(args: {
     alarm: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeAlarmMany(items: RemoveAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   addTimer(args: {
     label: string;
     seconds: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addTimerMany(items: AddTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   pauseTimer(args: {
     timer: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  pauseTimerMany(items: PauseTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   resumeTimer(args: {
     timer: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resumeTimerMany(items: ResumeTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   addMinute(args: {
     timer: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  addMinuteMany(items: AddMinuteArgs[]): Promise<tilo.ActionAnswer[]>;
   removeTimer(args: {
     timer: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  removeTimerMany(items: RemoveTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   startStopwatch(): Promise<tilo.Run | void>;
+  /** Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  startStopwatchMany(items: StartStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
   pauseStopwatch(): Promise<tilo.Run | void>;
+  /** Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  pauseStopwatchMany(items: PauseStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
   lap(): Promise<tilo.Run | void>;
+  /** Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  lapMany(items: LapArgs[]): Promise<tilo.ActionAnswer[]>;
   resetStopwatch(): Promise<tilo.Run | void>;
+  /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetStopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `clocks.collection` kind at `path`. */
@@ -119,6 +238,8 @@ export interface OnDevices extends tilo.Resource {
     device: string;
     kept: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `clocks.on-devices` kind at `path`. */

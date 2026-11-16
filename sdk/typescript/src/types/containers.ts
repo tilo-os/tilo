@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -31,10 +33,16 @@ export interface CreateDraft {
   command: string;
 }
 
+/** The arguments of `clear-create`. */
+export interface ClearCreateArgs {
+}
+
 /** Containers — `containers.engine`. */
 export interface Engine extends tilo.Resource {
   draft: CreateDraft;
   clearCreate(): Promise<tilo.Run | void>;
+  /** Runs `clear-create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearCreateMany(items: ClearCreateArgs[]): Promise<tilo.ActionAnswer[]>;
   create(): Promise<void>;
 }
 

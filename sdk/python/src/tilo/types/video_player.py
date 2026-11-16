@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -24,6 +26,15 @@ __all__ = [
     "TimestampAnnotation",
     "Library",
     "Recent",
+    "CreatePlaylistArgs",
+    "DeletePlaylistArgs",
+    "AddToPlaylistArgs",
+    "AddToWatchLaterArgs",
+    "AddAnnotationArgs",
+    "DeleteAnnotationArgs",
+    "SetTransportArgs",
+    "KeepArgs",
+    "StoodArgs",
 ]
 
 class Playlist(TypedDict):
@@ -45,6 +56,63 @@ class TimestampAnnotation(TypedDict):
     time_ms: int
     text: str
 
+CreatePlaylistArgs = TypedDict("CreatePlaylistArgs", {
+    "name": "str",
+})
+"""The arguments of `create-playlist`."""
+
+DeletePlaylistArgs = TypedDict("DeletePlaylistArgs", {
+    "playlist": "str",
+})
+"""The arguments of `delete-playlist`."""
+
+AddToPlaylistArgs = TypedDict("AddToPlaylistArgs", {
+    "playlist": "str",
+    "media_ref": "str",
+    "title": "str",
+})
+"""The arguments of `add-to-playlist`."""
+
+AddToWatchLaterArgs = TypedDict("AddToWatchLaterArgs", {
+    "media_ref": "str",
+    "title": "str",
+})
+"""The arguments of `add-to-watch-later`."""
+
+AddAnnotationArgs = TypedDict("AddAnnotationArgs", {
+    "media_ref": "str",
+    "time_ms": "int",
+    "text": NotRequired["str | None"],
+})
+"""The arguments of `add-annotation`."""
+
+DeleteAnnotationArgs = TypedDict("DeleteAnnotationArgs", {
+    "annotation": "str",
+})
+"""The arguments of `delete-annotation`."""
+
+SetTransportArgs = TypedDict("SetTransportArgs", {
+    "media_ref": "str",
+    "playing": "bool",
+    "position_ms": "int",
+    "rate": "float",
+    "epoch_ms": "int",
+})
+"""The arguments of `set-transport`."""
+
+KeepArgs = TypedDict("KeepArgs", {
+    "device": "str",
+    "rows": "Any",
+})
+"""The arguments of `keep`."""
+
+StoodArgs = TypedDict("StoodArgs", {
+    "device": "str",
+    "id": "str",
+    "position_ms": "int",
+})
+"""The arguments of `stood`."""
+
 class Library(Resource):
     """Video Player — `video-player.library`."""
     __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
@@ -60,9 +128,17 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("create-playlist", name=name)
 
+    def create_playlist_many(self, items: list[CreatePlaylistArgs]) -> list[dict[str, Any]]:
+        """Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-playlist", items)
+
     def delete_playlist(self, *, playlist: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-playlist", playlist=playlist)
+
+    def delete_playlist_many(self, items: list[DeletePlaylistArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-playlist", items)
 
     def add_to_playlist(self,
         *,
@@ -73,6 +149,10 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("add-to-playlist", playlist=playlist, media_ref=media_ref, title=title)
 
+    def add_to_playlist_many(self, items: list[AddToPlaylistArgs]) -> list[dict[str, Any]]:
+        """Runs `add-to-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-to-playlist", items)
+
     def add_to_watch_later(self,
         *,
         media_ref: str,
@@ -80,6 +160,10 @@ class Library(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("add-to-watch-later", media_ref=media_ref, title=title)
+
+    def add_to_watch_later_many(self, items: list[AddToWatchLaterArgs]) -> list[dict[str, Any]]:
+        """Runs `add-to-watch-later` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-to-watch-later", items)
 
     def add_annotation(self,
         *,
@@ -95,9 +179,17 @@ class Library(Resource):
             args["text"] = text
         return self.action("add-annotation", **args)
 
+    def add_annotation_many(self, items: list[AddAnnotationArgs]) -> list[dict[str, Any]]:
+        """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-annotation", items)
+
     def delete_annotation(self, *, annotation: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-annotation", annotation=annotation)
+
+    def delete_annotation_many(self, items: list[DeleteAnnotationArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-annotation", items)
 
     def set_transport(self,
         *,
@@ -109,6 +201,10 @@ class Library(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-transport", media_ref=media_ref, playing=playing, position_ms=position_ms, rate=rate, epoch_ms=epoch_ms)
+
+    def set_transport_many(self, items: list[SetTransportArgs]) -> list[dict[str, Any]]:
+        """Runs `set-transport` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-transport", items)
 
     def open_video(self,
         *,
@@ -138,6 +234,10 @@ class Recent(Resource):
         """Runs the app's action."""
         return self.action("keep", device=device, rows=rows)
 
+    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
+        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("keep", items)
+
     def stood(self,
         *,
         device: str,
@@ -146,5 +246,9 @@ class Recent(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("stood", device=device, id=id, position_ms=position_ms)
+
+    def stood_many(self, items: list[StoodArgs]) -> list[dict[str, Any]]:
+        """Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stood", items)
 
 

@@ -11,6 +11,7 @@ export const OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
 export const INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789";
 export const TODO = "notes/Todo";
 export const PDF = "pdf-viewer/application.pdf";
+export const TASKS = "tasks/Tracker";
 export const SURFACE = "so.tilo.notes@0123456789abcdef";
 
 /** The link a record's host mints for the record `path` names. */
@@ -72,8 +73,13 @@ export class FakeApi {
       page_count: 3,
       form_values: { surname: "Doe", given_name: "Jane" },
     },
+    [TASKS]: { issues: {} },
   };
-  kinds: Record<string, string> = { [TODO]: "notes.Page", [PDF]: "pdf-viewer.Document" };
+  kinds: Record<string, string> = {
+    [TODO]: "notes.Page",
+    [PDF]: "pdf-viewer.Document",
+    [TASKS]: "tasks.tracker",
+  };
   actions: Record<string, Answer[]> = {
     [TODO]: [
       {
@@ -92,6 +98,8 @@ export class FakeApi {
   };
   calls: Recorded[] = [];
   edits: { resource: string; edit: Answer }[] = [];
+  /** The bulk calls the SDK made: each resource, and the members it sent. */
+  groups: { resource: string; actions: Answer[] }[] = [];
   uploads: Uint8Array[] = [];
   contents = new Map<string, Uint8Array>();
   keys: Answer[] = [
@@ -429,6 +437,18 @@ export class FakeApi {
     const args = JSON.parse(call.body || "{}") as Answer;
     const run = `inv-${this.calls.length}`;
     const whole = `${path}#${action}`;
+    if (action === "group") {
+      const members = Array.isArray(args.actions) ? (args.actions as Answer[]) : [];
+      this.groups.push({ resource: path, actions: members });
+      return this.json({
+        status: "ok",
+        run,
+        path: whole,
+        result: { applied: members.length },
+        resources: [path],
+        link: linkTo(path),
+      });
+    }
     if (path === TODO && !["append-paragraph", "field-edit", "ask"].includes(action)) {
       return this.refuse("unknown_action", 404, `no action ${action} of ${path}`);
     }

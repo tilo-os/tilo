@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -88,6 +90,68 @@ __all__ = [
     "NetworkUsage",
     "McpServer",
     "Accounts",
+    "ChooseThemeArgs",
+    "SetDarkModeArgs",
+    "StepMagnifierArgs",
+    "SetScreenReaderArgs",
+    "SetKeyRepeatArgs",
+    "ChooseLayoutArgs",
+    "SetLayoutsArgs",
+    "SetPasteShortcutArgs",
+    "SetKeyboardLayoutsArgs",
+    "UseSharedLayoutsArgs",
+    "SetKeyboardModelArgs",
+    "ShowKeyboardLayoutArgs",
+    "InspectKeyboardArgs",
+    "SetTabletOutputArgs",
+    "SetTabletKeepAspectArgs",
+    "SetTabletLeftHandedArgs",
+    "SetTabletTipFeelArgs",
+    "SetTabletButtonArgs",
+    "SetTabletEraserArgs",
+    "SetPadButtonArgs",
+    "SetPadDialArgs",
+    "SetSuspendPluggedInArgs",
+    "SetSuspendOnBatteryArgs",
+    "RecordAutomaticUpdatesArgs",
+    "RecordUpdateCheckArgs",
+    "SetDoNotDisturbArgs",
+    "MuteAppArgs",
+    "SetMonoOutputArgs",
+    "SetEchoCancellationArgs",
+    "RememberOutputDeviceArgs",
+    "RememberInputDeviceArgs",
+    "SetAutomaticBrightnessArgs",
+    "SetRotationLockArgs",
+    "AllowContinuityArgs",
+    "AllowCapabilityArgs",
+    "RebindArgs",
+    "ResetArgs",
+    "ResetAllArgs",
+    "SetActionChordsArgs",
+    "BindArgs",
+    "ShellViewsResetArgs",
+    "SetProvidersArgs",
+    "FollowLocalModelsArgs",
+    "HostedAgentProvidersSetProvidersArgs",
+    "SetDefaultAppHandlerArgs",
+    "ArrangeDisplaysArgs",
+    "SetAutomaticDisplayInputArgs",
+    "OskSourcesSetLayoutsArgs",
+    "RouteThroughArgs",
+    "SetKillSwitchArgs",
+    "StopArgs",
+    "SetProfileKillSwitchArgs",
+    "ReleaseProfileArgs",
+    "CountDataUsedArgs",
+    "ResetDataUsedArgs",
+    "ForgetDataUsedArgs",
+    "SetAcceptOwnDevicesArgs",
+    "SetActWithoutAskingArgs",
+    "PublishBrowserIdentityArgs",
+    "SaveAccountArgs",
+    "RemoveAccountArgs",
+    "SetActiveAccountArgs",
 ]
 
 ColorFilter = Literal["none", "grayscale", "inverted", "grayscale_inverted"]
@@ -228,6 +292,355 @@ class PersonAccount(TypedDict):
     enabled: bool
     tint: int
 
+ChooseThemeArgs = TypedDict("ChooseThemeArgs", {
+    "theme": "str",
+})
+"""The arguments of `choose-theme`."""
+
+SetDarkModeArgs = TypedDict("SetDarkModeArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-dark-mode`."""
+
+StepMagnifierArgs = TypedDict("StepMagnifierArgs", {
+    "step": "str",
+})
+"""The arguments of `step-magnifier`."""
+
+SetScreenReaderArgs = TypedDict("SetScreenReaderArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-screen-reader`."""
+
+SetKeyRepeatArgs = TypedDict("SetKeyRepeatArgs", {
+    "rate": "float",
+})
+"""The arguments of `set-key-repeat`."""
+
+ChooseLayoutArgs = TypedDict("ChooseLayoutArgs", {
+    "layout": "str",
+})
+"""The arguments of `choose-layout`."""
+
+SetLayoutsArgs = TypedDict("SetLayoutsArgs", {
+    "layouts": "list[str]",
+    "active": "str",
+})
+"""The arguments of `set-layouts`."""
+
+SetPasteShortcutArgs = TypedDict("SetPasteShortcutArgs", {
+    "app": "str",
+    "shortcut": "str",
+})
+"""The arguments of `set-paste-shortcut`."""
+
+SetKeyboardLayoutsArgs = TypedDict("SetKeyboardLayoutsArgs", {
+    "keyboard": "str",
+    "profile": "KeyboardProfile",
+})
+"""The arguments of `set-keyboard-layouts`."""
+
+UseSharedLayoutsArgs = TypedDict("UseSharedLayoutsArgs", {
+    "keyboard": "str",
+})
+"""The arguments of `use-shared-layouts`."""
+
+SetKeyboardModelArgs = TypedDict("SetKeyboardModelArgs", {
+    "model": "str",
+})
+"""The arguments of `set-keyboard-model`."""
+
+ShowKeyboardLayoutArgs = TypedDict("ShowKeyboardLayoutArgs", {
+    "layout": NotRequired["str | None"],
+})
+"""The arguments of `show-keyboard-layout`."""
+
+InspectKeyboardArgs = TypedDict("InspectKeyboardArgs", {
+    "level": "int",
+    "extra_levels": "bool",
+    "key": "str",
+})
+"""The arguments of `inspect-keyboard`."""
+
+SetTabletOutputArgs = TypedDict("SetTabletOutputArgs", {
+    "device": "str",
+    "output": "str",
+})
+"""The arguments of `set-tablet-output`."""
+
+SetTabletKeepAspectArgs = TypedDict("SetTabletKeepAspectArgs", {
+    "device": "str",
+    "on": "bool",
+})
+"""The arguments of `set-tablet-keep-aspect`."""
+
+SetTabletLeftHandedArgs = TypedDict("SetTabletLeftHandedArgs", {
+    "device": "str",
+    "on": "bool",
+})
+"""The arguments of `set-tablet-left-handed`."""
+
+SetTabletTipFeelArgs = TypedDict("SetTabletTipFeelArgs", {
+    "device": "str",
+    "feel": "float",
+})
+"""The arguments of `set-tablet-tip-feel`."""
+
+SetTabletButtonArgs = TypedDict("SetTabletButtonArgs", {
+    "device": "str",
+    "button": "str",
+    "action": "str",
+})
+"""The arguments of `set-tablet-button`."""
+
+SetTabletEraserArgs = TypedDict("SetTabletEraserArgs", {
+    "device": "str",
+    "action": "str",
+})
+"""The arguments of `set-tablet-eraser`."""
+
+SetPadButtonArgs = TypedDict("SetPadButtonArgs", {
+    "device": "str",
+    "button": "int",
+    "action": "str",
+})
+"""The arguments of `set-pad-button`."""
+
+SetPadDialArgs = TypedDict("SetPadDialArgs", {
+    "device": "str",
+    "dial": "str",
+    "index": "int",
+    "mode": "int",
+    "action": "str",
+})
+"""The arguments of `set-pad-dial`."""
+
+SetSuspendPluggedInArgs = TypedDict("SetSuspendPluggedInArgs", {
+    "minutes": "int",
+})
+"""The arguments of `set-suspend-plugged-in`."""
+
+SetSuspendOnBatteryArgs = TypedDict("SetSuspendOnBatteryArgs", {
+    "minutes": "int",
+})
+"""The arguments of `set-suspend-on-battery`."""
+
+RecordAutomaticUpdatesArgs = TypedDict("RecordAutomaticUpdatesArgs", {
+    "on": "bool",
+})
+"""The arguments of `record-automatic-updates`."""
+
+RecordUpdateCheckArgs = TypedDict("RecordUpdateCheckArgs", {
+    "at": "str",
+})
+"""The arguments of `record-update-check`."""
+
+SetDoNotDisturbArgs = TypedDict("SetDoNotDisturbArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-do-not-disturb`."""
+
+MuteAppArgs = TypedDict("MuteAppArgs", {
+    "app": "str",
+    "duration": "str",
+})
+"""The arguments of `mute-app`."""
+
+SetMonoOutputArgs = TypedDict("SetMonoOutputArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-mono-output`."""
+
+SetEchoCancellationArgs = TypedDict("SetEchoCancellationArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-echo-cancellation`."""
+
+RememberOutputDeviceArgs = TypedDict("RememberOutputDeviceArgs", {
+    "device": "str",
+})
+"""The arguments of `remember-output-device`."""
+
+RememberInputDeviceArgs = TypedDict("RememberInputDeviceArgs", {
+    "device": "str",
+})
+"""The arguments of `remember-input-device`."""
+
+SetAutomaticBrightnessArgs = TypedDict("SetAutomaticBrightnessArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-automatic-brightness`."""
+
+SetRotationLockArgs = TypedDict("SetRotationLockArgs", {
+    "locked": "bool",
+})
+"""The arguments of `set-rotation-lock`."""
+
+AllowContinuityArgs = TypedDict("AllowContinuityArgs", {
+    "on": "bool",
+})
+"""The arguments of `allow-continuity`."""
+
+AllowCapabilityArgs = TypedDict("AllowCapabilityArgs", {
+    "capability": "str",
+    "on": "bool",
+})
+"""The arguments of `allow-capability`."""
+
+RebindArgs = TypedDict("RebindArgs", {
+    "shortcut": "str",
+    "chord": "str",
+})
+"""The arguments of `rebind`."""
+
+ResetArgs = TypedDict("ResetArgs", {
+    "shortcuts": "list[str]",
+})
+"""The arguments of `reset`."""
+
+ResetAllArgs = TypedDict("ResetAllArgs", {
+})
+"""The arguments of `reset-all`."""
+
+SetActionChordsArgs = TypedDict("SetActionChordsArgs", {
+    "chords": "Any",
+})
+"""The arguments of `set-action-chords`."""
+
+BindArgs = TypedDict("BindArgs", {
+    "slot": "str",
+    "app": "str",
+    "view": "str",
+    "on": NotRequired["str | None"],
+})
+"""The arguments of `bind`."""
+
+ShellViewsResetArgs = TypedDict("ShellViewsResetArgs", {
+    "slot": "str",
+    "on": NotRequired["str | None"],
+})
+"""The arguments of `reset`."""
+
+SetProvidersArgs = TypedDict("SetProvidersArgs", {
+    "config": "Any",
+})
+"""The arguments of `set-providers`."""
+
+FollowLocalModelsArgs = TypedDict("FollowLocalModelsArgs", {
+    "profile": "Any",
+})
+"""The arguments of `follow-local-models`."""
+
+HostedAgentProvidersSetProvidersArgs = TypedDict("HostedAgentProvidersSetProvidersArgs", {
+    "hosted": "Any",
+})
+"""The arguments of `set-providers`."""
+
+SetDefaultAppHandlerArgs = TypedDict("SetDefaultAppHandlerArgs", {
+    "kind": "str",
+    "app": "str",
+})
+"""The arguments of `set-default-app-handler`."""
+
+ArrangeDisplaysArgs = TypedDict("ArrangeDisplaysArgs", {
+    "arrangement": "Any",
+})
+"""The arguments of `arrange-displays`."""
+
+SetAutomaticDisplayInputArgs = TypedDict("SetAutomaticDisplayInputArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-automatic-display-input`."""
+
+OskSourcesSetLayoutsArgs = TypedDict("OskSourcesSetLayoutsArgs", {
+    "layouts": "list[str]",
+    "active": "str",
+})
+"""The arguments of `set-layouts`."""
+
+RouteThroughArgs = TypedDict("RouteThroughArgs", {
+    "device": "str",
+    "on": "bool",
+})
+"""The arguments of `route-through`."""
+
+SetKillSwitchArgs = TypedDict("SetKillSwitchArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-kill-switch`."""
+
+StopArgs = TypedDict("StopArgs", {
+    "device": "str",
+})
+"""The arguments of `stop`."""
+
+SetProfileKillSwitchArgs = TypedDict("SetProfileKillSwitchArgs", {
+    "profile": "str",
+    "on": "bool",
+    "allow_local": NotRequired["bool | None"],
+})
+"""The arguments of `set-profile-kill-switch`."""
+
+ReleaseProfileArgs = TypedDict("ReleaseProfileArgs", {
+    "profile": "str",
+})
+"""The arguments of `release-profile`."""
+
+CountDataUsedArgs = TypedDict("CountDataUsedArgs", {
+    "readings": "list[Reading]",
+    "boot": NotRequired["str | None"],
+    "at": "int",
+    "offset": "int",
+})
+"""The arguments of `count-data-used`."""
+
+ResetDataUsedArgs = TypedDict("ResetDataUsedArgs", {
+    "connection": NotRequired["str | None"],
+})
+"""The arguments of `reset-data-used`."""
+
+ForgetDataUsedArgs = TypedDict("ForgetDataUsedArgs", {
+    "connection": NotRequired["str | None"],
+})
+"""The arguments of `forget-data-used`."""
+
+SetAcceptOwnDevicesArgs = TypedDict("SetAcceptOwnDevicesArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-accept-own-devices`."""
+
+SetActWithoutAskingArgs = TypedDict("SetActWithoutAskingArgs", {
+    "on": "bool",
+})
+"""The arguments of `set-act-without-asking`."""
+
+PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
+    "root": "str",
+    "origin": "str",
+    "display_name": "str",
+})
+"""The arguments of `publish-browser-identity`."""
+
+SaveAccountArgs = TypedDict("SaveAccountArgs", {
+    "id": "str",
+    "type_id": "str",
+    "display_name": "str",
+    "config": "Any",
+    "enabled": "bool",
+    "tint": "int",
+})
+"""The arguments of `save-account`."""
+
+RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
+    "account": "str",
+})
+"""The arguments of `remove-account`."""
+
+SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
+    "account": "str",
+})
+"""The arguments of `set-active-account`."""
+
 class Root(Resource):
     """Settings — `settings.root`."""
     __surface__ = "so.tilo.settings@ee82969e4c06ecce"
@@ -322,9 +735,17 @@ class Appearance(Resource):
         """Runs the app's action."""
         return self.action("choose-theme", theme=theme)
 
+    def choose_theme_many(self, items: list[ChooseThemeArgs]) -> list[dict[str, Any]]:
+        """Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("choose-theme", items)
+
     def set_dark_mode(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-dark-mode", on=on)
+
+    def set_dark_mode_many(self, items: list[SetDarkModeArgs]) -> list[dict[str, Any]]:
+        """Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-dark-mode", items)
 
 
 class AppearanceDevice(Resource):
@@ -375,9 +796,17 @@ class Accessibility(Resource):
         """Runs the app's action."""
         return self.action("step-magnifier", step=step)
 
+    def step_magnifier_many(self, items: list[StepMagnifierArgs]) -> list[dict[str, Any]]:
+        """Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("step-magnifier", items)
+
     def set_screen_reader(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-screen-reader", on=on)
+
+    def set_screen_reader_many(self, items: list[SetScreenReaderArgs]) -> list[dict[str, Any]]:
+        """Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-screen-reader", items)
 
 
 class AccessibilityDevice(Resource):
@@ -439,9 +868,17 @@ class Input(Resource):
         """Runs the app's action."""
         return self.action("set-key-repeat", rate=rate)
 
+    def set_key_repeat_many(self, items: list[SetKeyRepeatArgs]) -> list[dict[str, Any]]:
+        """Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-key-repeat", items)
+
     def choose_layout(self, *, layout: str) -> Run | None:
         """Runs the app's action."""
         return self.action("choose-layout", layout=layout)
+
+    def choose_layout_many(self, items: list[ChooseLayoutArgs]) -> list[dict[str, Any]]:
+        """Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("choose-layout", items)
 
     def set_layouts(self,
         *,
@@ -451,6 +888,10 @@ class Input(Resource):
         """Runs the app's action."""
         return self.action("set-layouts", layouts=layouts, active=active)
 
+    def set_layouts_many(self, items: list[SetLayoutsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-layouts", items)
+
     def set_paste_shortcut(self,
         *,
         app: str,
@@ -458,6 +899,10 @@ class Input(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-paste-shortcut", app=app, shortcut=shortcut)
+
+    def set_paste_shortcut_many(self, items: list[SetPasteShortcutArgs]) -> list[dict[str, Any]]:
+        """Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-paste-shortcut", items)
 
 
 class InputDevice(Resource):
@@ -502,13 +947,25 @@ class InputDevice(Resource):
         """Runs the app's action."""
         return self.action("set-keyboard-layouts", keyboard=keyboard, profile=profile)
 
+    def set_keyboard_layouts_many(self, items: list[SetKeyboardLayoutsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-keyboard-layouts", items)
+
     def use_shared_layouts(self, *, keyboard: str) -> Run | None:
         """Runs the app's action."""
         return self.action("use-shared-layouts", keyboard=keyboard)
 
+    def use_shared_layouts_many(self, items: list[UseSharedLayoutsArgs]) -> list[dict[str, Any]]:
+        """Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("use-shared-layouts", items)
+
     def set_keyboard_model(self, *, model: str) -> Run | None:
         """Runs the app's action."""
         return self.action("set-keyboard-model", model=model)
+
+    def set_keyboard_model_many(self, items: list[SetKeyboardModelArgs]) -> list[dict[str, Any]]:
+        """Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-keyboard-model", items)
 
     def show_keyboard_layout(self,
         *,
@@ -520,6 +977,10 @@ class InputDevice(Resource):
             args["layout"] = layout
         return self.action("show-keyboard-layout", **args)
 
+    def show_keyboard_layout_many(self, items: list[ShowKeyboardLayoutArgs]) -> list[dict[str, Any]]:
+        """Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("show-keyboard-layout", items)
+
     def inspect_keyboard(self,
         *,
         level: int,
@@ -529,6 +990,10 @@ class InputDevice(Resource):
         """Runs the app's action."""
         return self.action("inspect-keyboard", level=level, extra_levels=extra_levels, key=key)
 
+    def inspect_keyboard_many(self, items: list[InspectKeyboardArgs]) -> list[dict[str, Any]]:
+        """Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("inspect-keyboard", items)
+
     def set_tablet_output(self,
         *,
         device: str,
@@ -536,6 +1001,10 @@ class InputDevice(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-tablet-output", device=device, output=output)
+
+    def set_tablet_output_many(self, items: list[SetTabletOutputArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-output", items)
 
     def set_tablet_keep_aspect(self,
         *,
@@ -545,6 +1014,10 @@ class InputDevice(Resource):
         """Runs the app's action."""
         return self.action("set-tablet-keep-aspect", device=device, on=on)
 
+    def set_tablet_keep_aspect_many(self, items: list[SetTabletKeepAspectArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-keep-aspect", items)
+
     def set_tablet_left_handed(self,
         *,
         device: str,
@@ -553,6 +1026,10 @@ class InputDevice(Resource):
         """Runs the app's action."""
         return self.action("set-tablet-left-handed", device=device, on=on)
 
+    def set_tablet_left_handed_many(self, items: list[SetTabletLeftHandedArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-left-handed", items)
+
     def set_tablet_tip_feel(self,
         *,
         device: str,
@@ -560,6 +1037,10 @@ class InputDevice(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-tablet-tip-feel", device=device, feel=feel)
+
+    def set_tablet_tip_feel_many(self, items: list[SetTabletTipFeelArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-tip-feel", items)
 
     def set_tablet_button(self,
         *,
@@ -570,6 +1051,10 @@ class InputDevice(Resource):
         """Runs the app's action."""
         return self.action("set-tablet-button", device=device, button=button, action=action)
 
+    def set_tablet_button_many(self, items: list[SetTabletButtonArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-button", items)
+
     def set_tablet_eraser(self,
         *,
         device: str,
@@ -577,6 +1062,10 @@ class InputDevice(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-tablet-eraser", device=device, action=action)
+
+    def set_tablet_eraser_many(self, items: list[SetTabletEraserArgs]) -> list[dict[str, Any]]:
+        """Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-tablet-eraser", items)
 
     def set_pad_button(self,
         *,
@@ -586,6 +1075,10 @@ class InputDevice(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-pad-button", device=device, button=button, action=action)
+
+    def set_pad_button_many(self, items: list[SetPadButtonArgs]) -> list[dict[str, Any]]:
+        """Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-pad-button", items)
 
     def set_pad_dial(self,
         *,
@@ -597,6 +1090,10 @@ class InputDevice(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-pad-dial", device=device, dial=dial, index=index, mode=mode, action=action)
+
+    def set_pad_dial_many(self, items: list[SetPadDialArgs]) -> list[dict[str, Any]]:
+        """Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-pad-dial", items)
 
 
 class TextAssistance(Resource):
@@ -629,9 +1126,17 @@ class Power(Resource):
         """Runs the app's action."""
         return self.action("set-suspend-plugged-in", minutes=minutes)
 
+    def set_suspend_plugged_in_many(self, items: list[SetSuspendPluggedInArgs]) -> list[dict[str, Any]]:
+        """Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-suspend-plugged-in", items)
+
     def set_suspend_on_battery(self, *, minutes: int) -> Run | None:
         """Runs the app's action."""
         return self.action("set-suspend-on-battery", minutes=minutes)
+
+    def set_suspend_on_battery_many(self, items: list[SetSuspendOnBatteryArgs]) -> list[dict[str, Any]]:
+        """Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-suspend-on-battery", items)
 
 
 class Widgets(Resource):
@@ -667,9 +1172,17 @@ class Updates(Resource):
         """Runs the app's action."""
         return self.action("record-automatic-updates", on=on)
 
+    def record_automatic_updates_many(self, items: list[RecordAutomaticUpdatesArgs]) -> list[dict[str, Any]]:
+        """Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-automatic-updates", items)
+
     def record_update_check(self, *, at: str) -> Run | None:
         """Runs the app's action."""
         return self.action("record-update-check", at=at)
+
+    def record_update_check_many(self, items: list[RecordUpdateCheckArgs]) -> list[dict[str, Any]]:
+        """Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-update-check", items)
 
 
 class Notifications(Resource):
@@ -688,6 +1201,10 @@ class Notifications(Resource):
         """Runs the app's action."""
         return self.action("set-do-not-disturb", on=on)
 
+    def set_do_not_disturb_many(self, items: list[SetDoNotDisturbArgs]) -> list[dict[str, Any]]:
+        """Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-do-not-disturb", items)
+
     def mute_app(self,
         *,
         app: str,
@@ -695,6 +1212,10 @@ class Notifications(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("mute-app", app=app, duration=duration)
+
+    def mute_app_many(self, items: list[MuteAppArgs]) -> list[dict[str, Any]]:
+        """Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("mute-app", items)
 
 
 class Audio(Resource):
@@ -715,9 +1236,17 @@ class Audio(Resource):
         """Runs the app's action."""
         return self.action("set-mono-output", on=on)
 
+    def set_mono_output_many(self, items: list[SetMonoOutputArgs]) -> list[dict[str, Any]]:
+        """Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-mono-output", items)
+
     def set_echo_cancellation(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-echo-cancellation", on=on)
+
+    def set_echo_cancellation_many(self, items: list[SetEchoCancellationArgs]) -> list[dict[str, Any]]:
+        """Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-echo-cancellation", items)
 
 
 class AudioDevice(Resource):
@@ -736,9 +1265,17 @@ class AudioDevice(Resource):
         """Runs the app's action."""
         return self.action("remember-output-device", device=device)
 
+    def remember_output_device_many(self, items: list[RememberOutputDeviceArgs]) -> list[dict[str, Any]]:
+        """Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remember-output-device", items)
+
     def remember_input_device(self, *, device: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remember-input-device", device=device)
+
+    def remember_input_device_many(self, items: list[RememberInputDeviceArgs]) -> list[dict[str, Any]]:
+        """Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remember-input-device", items)
 
 
 class Display(Resource):
@@ -758,9 +1295,17 @@ class Display(Resource):
         """Runs the app's action."""
         return self.action("set-automatic-brightness", on=on)
 
+    def set_automatic_brightness_many(self, items: list[SetAutomaticBrightnessArgs]) -> list[dict[str, Any]]:
+        """Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-automatic-brightness", items)
+
     def set_rotation_lock(self, *, locked: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-rotation-lock", locked=locked)
+
+    def set_rotation_lock_many(self, items: list[SetRotationLockArgs]) -> list[dict[str, Any]]:
+        """Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-rotation-lock", items)
 
 
 class NightLight(Resource):
@@ -834,6 +1379,10 @@ class Continuity(Resource):
         """Runs the app's action."""
         return self.action("allow-continuity", on=on)
 
+    def allow_continuity_many(self, items: list[AllowContinuityArgs]) -> list[dict[str, Any]]:
+        """Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("allow-continuity", items)
+
     def allow_capability(self,
         *,
         capability: str,
@@ -841,6 +1390,10 @@ class Continuity(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("allow-capability", capability=capability, on=on)
+
+    def allow_capability_many(self, items: list[AllowCapabilityArgs]) -> list[dict[str, Any]]:
+        """Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("allow-capability", items)
 
 
 class Shortcuts(Resource):
@@ -863,17 +1416,33 @@ class Shortcuts(Resource):
         """Runs the app's action."""
         return self.action("rebind", shortcut=shortcut, chord=chord)
 
+    def rebind_many(self, items: list[RebindArgs]) -> list[dict[str, Any]]:
+        """Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rebind", items)
+
     def reset(self, *, shortcuts: list[str]) -> Run | None:
         """Runs the app's action."""
         return self.action("reset", shortcuts=shortcuts)
+
+    def reset_many(self, items: list[ResetArgs]) -> list[dict[str, Any]]:
+        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset", items)
 
     def reset_all(self) -> Run | None:
         """Runs the app's action."""
         return self.action("reset-all")
 
+    def reset_all_many(self, items: list[ResetAllArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset-all", items)
+
     def set_action_chords(self, *, chords: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("set-action-chords", chords=chords)
+
+    def set_action_chords_many(self, items: list[SetActionChordsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-action-chords", items)
 
 
 class ShellViews(Resource):
@@ -904,6 +1473,10 @@ class ShellViews(Resource):
             args["on"] = on
         return self.action("bind", **args)
 
+    def bind_many(self, items: list[BindArgs]) -> list[dict[str, Any]]:
+        """Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("bind", items)
+
     def reset(self,
         *,
         slot: str,
@@ -915,6 +1488,10 @@ class ShellViews(Resource):
         if on is not None:
             args["on"] = on
         return self.action("reset", **args)
+
+    def reset_many(self, items: list[ShellViewsResetArgs]) -> list[dict[str, Any]]:
+        """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset", items)
 
 
 class DesktopControls(Resource):
@@ -941,9 +1518,17 @@ class AgentProviders(Resource):
         """Runs the app's action."""
         return self.action("set-providers", config=config)
 
+    def set_providers_many(self, items: list[SetProvidersArgs]) -> list[dict[str, Any]]:
+        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-providers", items)
+
     def follow_local_models(self, *, profile: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("follow-local-models", profile=profile)
+
+    def follow_local_models_many(self, items: list[FollowLocalModelsArgs]) -> list[dict[str, Any]]:
+        """Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("follow-local-models", items)
 
 
 class HostedAgentProviders(Resource):
@@ -957,6 +1542,10 @@ class HostedAgentProviders(Resource):
     def set_providers(self, *, hosted: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("set-providers", hosted=hosted)
+
+    def set_providers_many(self, items: list[HostedAgentProvidersSetProvidersArgs]) -> list[dict[str, Any]]:
+        """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-providers", items)
 
 
 class DefaultApps(Resource):
@@ -974,6 +1563,10 @@ class DefaultApps(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("set-default-app-handler", kind=kind, app=app)
+
+    def set_default_app_handler_many(self, items: list[SetDefaultAppHandlerArgs]) -> list[dict[str, Any]]:
+        """Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-default-app-handler", items)
 
 
 class Clock(Resource):
@@ -994,6 +1587,10 @@ class DisplayArrangement(Resource):
         """Runs the app's action."""
         return self.action("arrange-displays", arrangement=arrangement)
 
+    def arrange_displays_many(self, items: list[ArrangeDisplaysArgs]) -> list[dict[str, Any]]:
+        """Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("arrange-displays", items)
+
 
 class AutomaticDisplay(Resource):
     """Automatic display input — `settings.automatic-display`."""
@@ -1006,6 +1603,10 @@ class AutomaticDisplay(Resource):
     def set_automatic_display_input(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-automatic-display-input", on=on)
+
+    def set_automatic_display_input_many(self, items: list[SetAutomaticDisplayInputArgs]) -> list[dict[str, Any]]:
+        """Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-automatic-display-input", items)
 
 
 class DisplayChange(Resource):
@@ -1061,6 +1662,10 @@ class OskSources(Resource):
         """Runs the app's action."""
         return self.action("set-layouts", layouts=layouts, active=active)
 
+    def set_layouts_many(self, items: list[OskSourcesSetLayoutsArgs]) -> list[dict[str, Any]]:
+        """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-layouts", items)
+
 
 class DeviceVpn(Resource):
     """Your devices as a VPN — `settings.device-vpn`."""
@@ -1091,9 +1696,17 @@ class DeviceVpn(Resource):
         """Runs the app's action."""
         return self.action("route-through", device=device, on=on)
 
+    def route_through_many(self, items: list[RouteThroughArgs]) -> list[dict[str, Any]]:
+        """Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("route-through", items)
+
     def set_kill_switch(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-kill-switch", on=on)
+
+    def set_kill_switch_many(self, items: list[SetKillSwitchArgs]) -> list[dict[str, Any]]:
+        """Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-kill-switch", items)
 
     # the app's `stop` action is named as a field of this kind: run it with
     # `action("stop")`.
@@ -1111,9 +1724,17 @@ class DeviceVpn(Resource):
             args["allow_local"] = allow_local
         return self.action("set-profile-kill-switch", **args)
 
+    def set_profile_kill_switch_many(self, items: list[SetProfileKillSwitchArgs]) -> list[dict[str, Any]]:
+        """Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-profile-kill-switch", items)
+
     def release_profile(self, *, profile: str) -> Run | None:
         """Runs the app's action."""
         return self.action("release-profile", profile=profile)
+
+    def release_profile_many(self, items: list[ReleaseProfileArgs]) -> list[dict[str, Any]]:
+        """Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("release-profile", items)
 
 
 class Identity(Resource):
@@ -1156,6 +1777,10 @@ class NetworkUsage(Resource):
         args["offset"] = offset
         return self.action("count-data-used", **args)
 
+    def count_data_used_many(self, items: list[CountDataUsedArgs]) -> list[dict[str, Any]]:
+        """Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("count-data-used", items)
+
     def reset_data_used(self,
         *,
         connection: str | None = None,
@@ -1166,6 +1791,10 @@ class NetworkUsage(Resource):
             args["connection"] = connection
         return self.action("reset-data-used", **args)
 
+    def reset_data_used_many(self, items: list[ResetDataUsedArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset-data-used", items)
+
     def forget_data_used(self,
         *,
         connection: str | None = None,
@@ -1175,6 +1804,10 @@ class NetworkUsage(Resource):
         if connection is not None:
             args["connection"] = connection
         return self.action("forget-data-used", **args)
+
+    def forget_data_used_many(self, items: list[ForgetDataUsedArgs]) -> list[dict[str, Any]]:
+        """Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget-data-used", items)
 
 
 class McpServer(Resource):
@@ -1193,9 +1826,17 @@ class McpServer(Resource):
         """Runs the app's action."""
         return self.action("set-accept-own-devices", on=on)
 
+    def set_accept_own_devices_many(self, items: list[SetAcceptOwnDevicesArgs]) -> list[dict[str, Any]]:
+        """Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-accept-own-devices", items)
+
     def set_act_without_asking(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-act-without-asking", on=on)
+
+    def set_act_without_asking_many(self, items: list[SetActWithoutAskingArgs]) -> list[dict[str, Any]]:
+        """Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-act-without-asking", items)
 
 
 class Accounts(Resource):
@@ -1213,6 +1854,10 @@ class Accounts(Resource):
         """Runs the app's action."""
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
+    def publish_browser_identity_many(self, items: list[PublishBrowserIdentityArgs]) -> list[dict[str, Any]]:
+        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("publish-browser-identity", items)
+
     def save_account(self,
         *,
         id: str,
@@ -1225,12 +1870,24 @@ class Accounts(Resource):
         """Runs the app's action."""
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
+    def save_account_many(self, items: list[SaveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-account", items)
+
     def remove_account(self, *, account: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
 
+    def remove_account_many(self, items: list[RemoveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-account", items)
+
     def set_active_account(self, *, account: str) -> Run | None:
         """Runs the app's action."""
         return self.action("set-active-account", account=account)
+
+    def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
+        """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-active-account", items)
 
 

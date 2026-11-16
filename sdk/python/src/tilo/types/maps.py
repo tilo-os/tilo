@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -31,6 +33,16 @@ __all__ = [
     "DownloadedRegion",
     "Workspace",
     "OfflineAreas",
+    "AcceptPlacesArgs",
+    "CommitSearchArgs",
+    "ClearRecentsArgs",
+    "AcceptRouteArgs",
+    "ClearRouteArgs",
+    "AcceptTransitArgs",
+    "ClearTransitArgs",
+    "RecordArgs",
+    "ForgetArgs",
+    "ClearArgs",
 ]
 
 Category = Literal["landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other"]
@@ -100,6 +112,64 @@ class DownloadedRegion(TypedDict):
     z1: int
     tiles: int
 
+AcceptPlacesArgs = TypedDict("AcceptPlacesArgs", {
+    "places": "list[Place]",
+})
+"""The arguments of `accept-places`."""
+
+CommitSearchArgs = TypedDict("CommitSearchArgs", {
+    "query": "str",
+})
+"""The arguments of `commit-search`."""
+
+ClearRecentsArgs = TypedDict("ClearRecentsArgs", {
+})
+"""The arguments of `clear-recents`."""
+
+AcceptRouteArgs = TypedDict("AcceptRouteArgs", {
+    "route": "Route",
+    "origin": NotRequired["LatLon | None"],
+    "origin_name": "str",
+    "dest": NotRequired["LatLon | None"],
+    "dest_name": "str",
+    "mode": "TravelMode",
+})
+"""The arguments of `accept-route`."""
+
+ClearRouteArgs = TypedDict("ClearRouteArgs", {
+})
+"""The arguments of `clear-route`."""
+
+AcceptTransitArgs = TypedDict("AcceptTransitArgs", {
+    "transit": "list[TransitJourney]",
+    "origin": NotRequired["LatLon | None"],
+    "origin_name": "str",
+    "dest": NotRequired["LatLon | None"],
+    "dest_name": "str",
+})
+"""The arguments of `accept-transit`."""
+
+ClearTransitArgs = TypedDict("ClearTransitArgs", {
+})
+"""The arguments of `clear-transit`."""
+
+RecordArgs = TypedDict("RecordArgs", {
+    "device": "str",
+    "region": "DownloadedRegion",
+})
+"""The arguments of `record`."""
+
+ForgetArgs = TypedDict("ForgetArgs", {
+    "device": "str",
+    "area": "str",
+})
+"""The arguments of `forget`."""
+
+ClearArgs = TypedDict("ClearArgs", {
+    "device": "str",
+})
+"""The arguments of `clear`."""
+
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
     __surface__ = "so.tilo.maps@1d336b57d5b8f8c7"
@@ -123,13 +193,25 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("accept-places", places=places)
 
+    def accept_places_many(self, items: list[AcceptPlacesArgs]) -> list[dict[str, Any]]:
+        """Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("accept-places", items)
+
     def commit_search(self, *, query: str) -> Run | None:
         """Runs the app's action."""
         return self.action("commit-search", query=query)
 
+    def commit_search_many(self, items: list[CommitSearchArgs]) -> list[dict[str, Any]]:
+        """Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("commit-search", items)
+
     def clear_recents(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-recents")
+
+    def clear_recents_many(self, items: list[ClearRecentsArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-recents", items)
 
     def accept_route(self,
         *,
@@ -152,9 +234,17 @@ class Workspace(Resource):
         args["mode"] = mode
         return self.action("accept-route", **args)
 
+    def accept_route_many(self, items: list[AcceptRouteArgs]) -> list[dict[str, Any]]:
+        """Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("accept-route", items)
+
     def clear_route(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-route")
+
+    def clear_route_many(self, items: list[ClearRouteArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-route", items)
 
     def accept_transit(self,
         *,
@@ -175,9 +265,17 @@ class Workspace(Resource):
         args["dest_name"] = dest_name
         return self.action("accept-transit", **args)
 
+    def accept_transit_many(self, items: list[AcceptTransitArgs]) -> list[dict[str, Any]]:
+        """Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("accept-transit", items)
+
     def clear_transit(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-transit")
+
+    def clear_transit_many(self, items: list[ClearTransitArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-transit", items)
 
     def search(self, *, query: str) -> None:
         """Runs the app's action."""
@@ -229,6 +327,10 @@ class OfflineAreas(Resource):
         """Runs the app's action."""
         return self.action("record", device=device, region=region)
 
+    def record_many(self, items: list[RecordArgs]) -> list[dict[str, Any]]:
+        """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record", items)
+
     def forget(self,
         *,
         device: str,
@@ -237,8 +339,16 @@ class OfflineAreas(Resource):
         """Runs the app's action."""
         return self.action("forget", device=device, area=area)
 
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget", items)
+
     def clear(self, *, device: str) -> Run | None:
         """Runs the app's action."""
         return self.action("clear", device=device)
+
+    def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
+        """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear", items)
 
 

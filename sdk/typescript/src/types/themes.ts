@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -81,6 +83,34 @@ export interface Theme {
   origin: string | null;
 }
 
+/** The arguments of `new-theme`. */
+export interface NewThemeArgs {
+  id: string;
+  base: string;
+}
+
+/** The arguments of `import-theme`. */
+export interface ImportThemeArgs {
+  id: string;
+  document: string;
+}
+
+/** The arguments of `reset`. */
+export interface ResetArgs {
+  theme: string;
+}
+
+/** The arguments of `delete`. */
+export interface DeleteArgs {
+  theme: string;
+}
+
+/** The arguments of `switch-polarity`. */
+export interface SwitchPolarityArgs {
+  theme: string;
+  dark: boolean;
+}
+
 /** Themes — `themes.studio`. */
 export interface Studio extends tilo.Resource {
   themes: Theme[];
@@ -88,20 +118,30 @@ export interface Studio extends tilo.Resource {
     id: string;
     base: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `new-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  newThemeMany(items: NewThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   importTheme(args: {
     id: string;
     document: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `import-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importThemeMany(items: ImportThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     theme: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  resetMany(items: ResetArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     theme: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   switchPolarity(args: {
     theme: string;
     dark: boolean;
   }): Promise<tilo.Run | void>;
+  /** Runs `switch-polarity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  switchPolarityMany(items: SwitchPolarityArgs[]): Promise<tilo.ActionAnswer[]>;
   export(args: {
     theme: string;
   }): Promise<void>;

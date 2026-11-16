@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -100,6 +102,11 @@ export interface Tag {
   message: string | null;
 }
 
+/** The arguments of `record-repository`. */
+export interface RecordRepositoryArgs {
+  shared: SharedRepo;
+}
+
 /** Repository — `git_client.repo`. */
 export interface Repo extends tilo.Resource {
   repository: string;
@@ -107,6 +114,8 @@ export interface Repo extends tilo.Resource {
   recordRepository(args: {
     shared: SharedRepo;
   }): Promise<tilo.Run | void>;
+  /** Runs `record-repository` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordRepositoryMany(items: RecordRepositoryArgs[]): Promise<tilo.ActionAnswer[]>;
   diffLayout(): Promise<void>;
   syntaxHighlight(): Promise<void>;
   showWhitespace(): Promise<void>;

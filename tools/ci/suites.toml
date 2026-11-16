@@ -2189,7 +2189,13 @@ package = "tilo-cli"
 # Every program moved off PATH must be installed in /usr/libexec/tilo with its
 # old command name linked to tilo; the alias table is checked against the
 # image's component manifest.
-inputs = ["os/components.toml", "apps/pdf-viewer/surface.toml", "apps/pdf-viewer/tilo-app.toml"]
+inputs = [
+  "os/components.toml",
+  "apps/pdf-viewer/surface.toml",
+  "apps/pdf-viewer/tilo-app.toml",
+  "apps/tasks/surface.toml",
+  "apps/tasks/tilo-app.toml",
+]
 readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/sdk.rs"]
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
@@ -2227,6 +2233,10 @@ check = "sdk-python"
 
 [[covered]]
 suite = "sdk/python/tests/test_workspace.py"
+check = "sdk-python"
+
+[[covered]]
+suite = "sdk/python/tests/test_many.py"
 check = "sdk-python"
 
 [[unrequired]]

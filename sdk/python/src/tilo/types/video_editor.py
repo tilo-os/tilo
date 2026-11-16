@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -36,6 +38,40 @@ __all__ = [
     "Transform",
     "Transition",
     "Project",
+    "SetFrameSizeArgs",
+    "SetFrameRateArgs",
+    "SetRenderRangeArgs",
+    "MarkInArgs",
+    "MarkOutArgs",
+    "ClearMarksArgs",
+    "AddMarkerArgs",
+    "PlaceTwoAnglesArgs",
+    "UnplaceTwoAnglesArgs",
+    "RemoveMarkerArgs",
+    "AddTrackArgs",
+    "ResetMixArgs",
+    "TrimLanesArgs",
+    "DeleteTrackArgs",
+    "PlaceClipArgs",
+    "DeleteMediaArgs",
+    "UseAsProjectFormatArgs",
+    "DeleteArgs",
+    "RippleDeleteArgs",
+    "SplitClipArgs",
+    "TrimInClipArgs",
+    "TrimOutClipArgs",
+    "SetSpeedArgs",
+    "ToggleReverseArgs",
+    "ResetSpeedArgs",
+    "SetParamArgs",
+    "AddEffectArgs",
+    "RemoveEffectArgs",
+    "MoveEffectArgs",
+    "SetEffectAmountArgs",
+    "ClearEffectsArgs",
+    "UnlinkArgs",
+    "LinkAudioArgs",
+    "LinkWithArgs",
 ]
 
 class ChromaKey(TypedDict):
@@ -162,6 +198,196 @@ class Transform(TypedDict):
 
 Transition = Literal["none", "cross_dissolve", "fade_in", "dip_to_black", "wipe"]
 
+SetFrameSizeArgs = TypedDict("SetFrameSizeArgs", {
+    "width": "int",
+    "height": "int",
+})
+"""The arguments of `set-frame-size`."""
+
+SetFrameRateArgs = TypedDict("SetFrameRateArgs", {
+    "fps": "float",
+})
+"""The arguments of `set-frame-rate`."""
+
+SetRenderRangeArgs = TypedDict("SetRenderRangeArgs", {
+    "start": "float",
+    "end": "float",
+})
+"""The arguments of `set-render-range`."""
+
+MarkInArgs = TypedDict("MarkInArgs", {
+    "at": "float",
+})
+"""The arguments of `mark-in`."""
+
+MarkOutArgs = TypedDict("MarkOutArgs", {
+    "at": "float",
+})
+"""The arguments of `mark-out`."""
+
+ClearMarksArgs = TypedDict("ClearMarksArgs", {
+})
+"""The arguments of `clear-marks`."""
+
+AddMarkerArgs = TypedDict("AddMarkerArgs", {
+    "at": "float",
+    "name": "str",
+})
+"""The arguments of `add-marker`."""
+
+PlaceTwoAnglesArgs = TypedDict("PlaceTwoAnglesArgs", {
+    "at": "float",
+})
+"""The arguments of `place-two-angles`."""
+
+UnplaceTwoAnglesArgs = TypedDict("UnplaceTwoAnglesArgs", {
+    "at": "float",
+})
+"""The arguments of `unplace-two-angles`."""
+
+RemoveMarkerArgs = TypedDict("RemoveMarkerArgs", {
+    "marker": "str",
+})
+"""The arguments of `remove-marker`."""
+
+AddTrackArgs = TypedDict("AddTrackArgs", {
+    "kind": "TrackKind",
+})
+"""The arguments of `add-track`."""
+
+ResetMixArgs = TypedDict("ResetMixArgs", {
+    "track": "str",
+})
+"""The arguments of `reset-mix`."""
+
+TrimLanesArgs = TypedDict("TrimLanesArgs", {
+    "tracks": "list[str]",
+    "db": "float",
+    "headroom": "float",
+})
+"""The arguments of `trim-lanes`."""
+
+DeleteTrackArgs = TypedDict("DeleteTrackArgs", {
+    "track": "str",
+})
+"""The arguments of `delete-track`."""
+
+PlaceClipArgs = TypedDict("PlaceClipArgs", {
+    "media": "str",
+    "track": "str",
+    "start": "float",
+})
+"""The arguments of `place-clip`."""
+
+DeleteMediaArgs = TypedDict("DeleteMediaArgs", {
+    "media": "str",
+})
+"""The arguments of `delete-media`."""
+
+UseAsProjectFormatArgs = TypedDict("UseAsProjectFormatArgs", {
+    "media": "str",
+})
+"""The arguments of `use-as-project-format`."""
+
+DeleteArgs = TypedDict("DeleteArgs", {
+    "clip": "str",
+})
+"""The arguments of `delete`."""
+
+RippleDeleteArgs = TypedDict("RippleDeleteArgs", {
+    "clip": "str",
+})
+"""The arguments of `ripple-delete`."""
+
+SplitClipArgs = TypedDict("SplitClipArgs", {
+    "clip": "str",
+    "at": "float",
+})
+"""The arguments of `split-clip`."""
+
+TrimInClipArgs = TypedDict("TrimInClipArgs", {
+    "clip": "str",
+    "at": "float",
+})
+"""The arguments of `trim-in-clip`."""
+
+TrimOutClipArgs = TypedDict("TrimOutClipArgs", {
+    "clip": "str",
+    "at": "float",
+})
+"""The arguments of `trim-out-clip`."""
+
+SetSpeedArgs = TypedDict("SetSpeedArgs", {
+    "clip": "str",
+    "rate": "float",
+})
+"""The arguments of `set-speed`."""
+
+ToggleReverseArgs = TypedDict("ToggleReverseArgs", {
+    "clip": "str",
+})
+"""The arguments of `toggle-reverse`."""
+
+ResetSpeedArgs = TypedDict("ResetSpeedArgs", {
+    "clip": "str",
+})
+"""The arguments of `reset-speed`."""
+
+SetParamArgs = TypedDict("SetParamArgs", {
+    "clip": "str",
+    "param": "str",
+    "at": "float",
+    "value": "float",
+})
+"""The arguments of `set-param`."""
+
+AddEffectArgs = TypedDict("AddEffectArgs", {
+    "clip": "str",
+    "effect": "EffectKind",
+})
+"""The arguments of `add-effect`."""
+
+RemoveEffectArgs = TypedDict("RemoveEffectArgs", {
+    "clip": "str",
+    "effect": "str",
+})
+"""The arguments of `remove-effect`."""
+
+MoveEffectArgs = TypedDict("MoveEffectArgs", {
+    "clip": "str",
+    "effect": "str",
+    "up": "bool",
+})
+"""The arguments of `move-effect`."""
+
+SetEffectAmountArgs = TypedDict("SetEffectAmountArgs", {
+    "clip": "str",
+    "effect": "str",
+    "amount": "float",
+})
+"""The arguments of `set-effect-amount`."""
+
+ClearEffectsArgs = TypedDict("ClearEffectsArgs", {
+    "clip": "str",
+})
+"""The arguments of `clear-effects`."""
+
+UnlinkArgs = TypedDict("UnlinkArgs", {
+    "clip": "str",
+})
+"""The arguments of `unlink`."""
+
+LinkAudioArgs = TypedDict("LinkAudioArgs", {
+    "clip": "str",
+})
+"""The arguments of `link-audio`."""
+
+LinkWithArgs = TypedDict("LinkWithArgs", {
+    "clip": "str",
+    "other": "str",
+})
+"""The arguments of `link-with`."""
+
 class Project(Resource):
     """Project — `video-editor.project`."""
     __surface__ = "so.tilo.video-editor@c1e632de27d6ebcf"
@@ -185,9 +411,17 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("set-frame-size", width=width, height=height)
 
+    def set_frame_size_many(self, items: list[SetFrameSizeArgs]) -> list[dict[str, Any]]:
+        """Runs `set-frame-size` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-frame-size", items)
+
     def set_frame_rate(self, *, fps: float) -> Run | None:
         """Runs the app's action."""
         return self.action("set-frame-rate", fps=fps)
+
+    def set_frame_rate_many(self, items: list[SetFrameRateArgs]) -> list[dict[str, Any]]:
+        """Runs `set-frame-rate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-frame-rate", items)
 
     def set_render_range(self,
         *,
@@ -197,6 +431,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("set-render-range", start=start, end=end)
 
+    def set_render_range_many(self, items: list[SetRenderRangeArgs]) -> list[dict[str, Any]]:
+        """Runs `set-render-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-render-range", items)
+
     # the app's `mark-in` action is named as a field of this kind: run it with
     # `action("mark-in")`.
     # the app's `mark-out` action is named as a field of this kind: run it with
@@ -204,6 +442,10 @@ class Project(Resource):
     def clear_marks(self) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-marks")
+
+    def clear_marks_many(self, items: list[ClearMarksArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-marks", items)
 
     def add_title(self,
         *,
@@ -332,25 +574,49 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("add-marker", at=at, name=name)
 
+    def add_marker_many(self, items: list[AddMarkerArgs]) -> list[dict[str, Any]]:
+        """Runs `add-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-marker", items)
+
     def place_two_angles(self, *, at: float) -> Run | None:
         """Runs the app's action."""
         return self.action("place-two-angles", at=at)
+
+    def place_two_angles_many(self, items: list[PlaceTwoAnglesArgs]) -> list[dict[str, Any]]:
+        """Runs `place-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("place-two-angles", items)
 
     def unplace_two_angles(self, *, at: float) -> Run | None:
         """Runs the app's action."""
         return self.action("unplace-two-angles", at=at)
 
+    def unplace_two_angles_many(self, items: list[UnplaceTwoAnglesArgs]) -> list[dict[str, Any]]:
+        """Runs `unplace-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("unplace-two-angles", items)
+
     def remove_marker(self, *, marker: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-marker", marker=marker)
+
+    def remove_marker_many(self, items: list[RemoveMarkerArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-marker", items)
 
     def add_track(self, *, kind: TrackKind) -> Run | None:
         """Runs the app's action."""
         return self.action("add-track", kind=kind)
 
+    def add_track_many(self, items: list[AddTrackArgs]) -> list[dict[str, Any]]:
+        """Runs `add-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-track", items)
+
     def reset_mix(self, *, track: str) -> Run | None:
         """Runs the app's action."""
         return self.action("reset-mix", track=track)
+
+    def reset_mix_many(self, items: list[ResetMixArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset-mix", items)
 
     def trim_lanes(self,
         *,
@@ -361,9 +627,17 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("trim-lanes", tracks=tracks, db=db, headroom=headroom)
 
+    def trim_lanes_many(self, items: list[TrimLanesArgs]) -> list[dict[str, Any]]:
+        """Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("trim-lanes", items)
+
     def delete_track(self, *, track: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-track", track=track)
+
+    def delete_track_many(self, items: list[DeleteTrackArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-track", items)
 
     def place_clip(self,
         *,
@@ -374,21 +648,41 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("place-clip", media=media, track=track, start=start)
 
+    def place_clip_many(self, items: list[PlaceClipArgs]) -> list[dict[str, Any]]:
+        """Runs `place-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("place-clip", items)
+
     def delete_media(self, *, media: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-media", media=media)
+
+    def delete_media_many(self, items: list[DeleteMediaArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-media` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-media", items)
 
     def use_as_project_format(self, *, media: str) -> Run | None:
         """Runs the app's action."""
         return self.action("use-as-project-format", media=media)
 
+    def use_as_project_format_many(self, items: list[UseAsProjectFormatArgs]) -> list[dict[str, Any]]:
+        """Runs `use-as-project-format` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("use-as-project-format", items)
+
     def delete(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete", clip=clip)
 
+    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete", items)
+
     def ripple_delete(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("ripple-delete", clip=clip)
+
+    def ripple_delete_many(self, items: list[RippleDeleteArgs]) -> list[dict[str, Any]]:
+        """Runs `ripple-delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("ripple-delete", items)
 
     def split_clip(self,
         *,
@@ -398,6 +692,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("split-clip", clip=clip, at=at)
 
+    def split_clip_many(self, items: list[SplitClipArgs]) -> list[dict[str, Any]]:
+        """Runs `split-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("split-clip", items)
+
     def trim_in_clip(self,
         *,
         clip: str,
@@ -405,6 +703,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("trim-in-clip", clip=clip, at=at)
+
+    def trim_in_clip_many(self, items: list[TrimInClipArgs]) -> list[dict[str, Any]]:
+        """Runs `trim-in-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("trim-in-clip", items)
 
     def trim_out_clip(self,
         *,
@@ -414,6 +716,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("trim-out-clip", clip=clip, at=at)
 
+    def trim_out_clip_many(self, items: list[TrimOutClipArgs]) -> list[dict[str, Any]]:
+        """Runs `trim-out-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("trim-out-clip", items)
+
     def set_speed(self,
         *,
         clip: str,
@@ -422,13 +728,25 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("set-speed", clip=clip, rate=rate)
 
+    def set_speed_many(self, items: list[SetSpeedArgs]) -> list[dict[str, Any]]:
+        """Runs `set-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-speed", items)
+
     def toggle_reverse(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("toggle-reverse", clip=clip)
 
+    def toggle_reverse_many(self, items: list[ToggleReverseArgs]) -> list[dict[str, Any]]:
+        """Runs `toggle-reverse` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("toggle-reverse", items)
+
     def reset_speed(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("reset-speed", clip=clip)
+
+    def reset_speed_many(self, items: list[ResetSpeedArgs]) -> list[dict[str, Any]]:
+        """Runs `reset-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reset-speed", items)
 
     def set_param(self,
         *,
@@ -440,6 +758,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("set-param", clip=clip, param=param, at=at, value=value)
 
+    def set_param_many(self, items: list[SetParamArgs]) -> list[dict[str, Any]]:
+        """Runs `set-param` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-param", items)
+
     def add_effect(self,
         *,
         clip: str,
@@ -448,6 +770,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("add-effect", clip=clip, effect=effect)
 
+    def add_effect_many(self, items: list[AddEffectArgs]) -> list[dict[str, Any]]:
+        """Runs `add-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-effect", items)
+
     def remove_effect(self,
         *,
         clip: str,
@@ -455,6 +781,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-effect", clip=clip, effect=effect)
+
+    def remove_effect_many(self, items: list[RemoveEffectArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-effect", items)
 
     def move_effect(self,
         *,
@@ -465,6 +795,10 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("move-effect", clip=clip, effect=effect, up=up)
 
+    def move_effect_many(self, items: list[MoveEffectArgs]) -> list[dict[str, Any]]:
+        """Runs `move-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-effect", items)
+
     def set_effect_amount(self,
         *,
         clip: str,
@@ -474,17 +808,33 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("set-effect-amount", clip=clip, effect=effect, amount=amount)
 
+    def set_effect_amount_many(self, items: list[SetEffectAmountArgs]) -> list[dict[str, Any]]:
+        """Runs `set-effect-amount` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-effect-amount", items)
+
     def clear_effects(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("clear-effects", clip=clip)
+
+    def clear_effects_many(self, items: list[ClearEffectsArgs]) -> list[dict[str, Any]]:
+        """Runs `clear-effects` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("clear-effects", items)
 
     def unlink(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("unlink", clip=clip)
 
+    def unlink_many(self, items: list[UnlinkArgs]) -> list[dict[str, Any]]:
+        """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("unlink", items)
+
     def link_audio(self, *, clip: str) -> Run | None:
         """Runs the app's action."""
         return self.action("link-audio", clip=clip)
+
+    def link_audio_many(self, items: list[LinkAudioArgs]) -> list[dict[str, Any]]:
+        """Runs `link-audio` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("link-audio", items)
 
     def link_with(self,
         *,
@@ -493,6 +843,10 @@ class Project(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("link-with", clip=clip, other=other)
+
+    def link_with_many(self, items: list[LinkWithArgs]) -> list[dict[str, Any]]:
+        """Runs `link-with` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("link-with", items)
 
     def export_timeline_content(self) -> None:
         """Runs the app's action."""

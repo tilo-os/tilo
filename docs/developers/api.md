@@ -127,6 +127,11 @@ with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Til
   Nothing ran yet when `ask` is there: the person is being asked on their device.
 - **`422`** the app refused or it failed: the error shape, with the action's row as `action`.
 
+Every record also publishes `group`: `{"actions": [{"action": "create", "args": {...}}, …]}`
+applies those actions of the record in order as one all-or-nothing step — one transaction,
+one undo, and History records each member, attributed to the caller. If any member refuses,
+nothing applies. A group answers no `result`: its members' values are not carried back.
+
 ## Runs
 
 `{run}` is an invocation id from an action's answer, or a listed run's `id`.

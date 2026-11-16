@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -21,6 +23,24 @@ import type * as tilo from "tilo-sdk";
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
 export const SURFACE = "so.tilo.hex-editor@232e3b35ec6f1f92";
+
+/** The arguments of `insert-bytes`. */
+export interface InsertBytesArgs {
+  offset: number;
+  bytes: string;
+}
+
+/** The arguments of `overwrite-bytes`. */
+export interface OverwriteBytesArgs {
+  offset: number;
+  bytes: string;
+}
+
+/** The arguments of `delete-bytes`. */
+export interface DeleteBytesArgs {
+  offset: number;
+  len: number;
+}
 
 /** Hex document — `hex-editor.document`. */
 export interface Document extends tilo.Resource {
@@ -32,14 +52,20 @@ export interface Document extends tilo.Resource {
     offset: number;
     bytes: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `insert-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  insertBytesMany(items: InsertBytesArgs[]): Promise<tilo.ActionAnswer[]>;
   overwriteBytes(args: {
     offset: number;
     bytes: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `overwrite-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  overwriteBytesMany(items: OverwriteBytesArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteBytes(args: {
     offset: number;
     len: number;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteBytesMany(items: DeleteBytesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `hex-editor.document` kind at `path`. */

@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -69,6 +71,22 @@ export interface Track {
   plays: number;
 }
 
+/** The arguments of `create-playlist`. */
+export interface CreatePlaylistArgs {
+  name: string;
+  track?: string;
+}
+
+/** The arguments of `delete-playlist`. */
+export interface DeletePlaylistArgs {
+  playlist: string;
+}
+
+/** The arguments of `import-track`. */
+export interface ImportTrackArgs {
+  song: CatalogueTrack;
+}
+
 /** Music — `music.library`. */
 export interface Library extends tilo.Resource {
   recommendations: Preferences;
@@ -83,12 +101,18 @@ export interface Library extends tilo.Resource {
     name: string;
     track?: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  createPlaylistMany(items: CreatePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   deletePlaylist(args: {
     playlist: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deletePlaylistMany(items: DeletePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   importTrack(args: {
     song: CatalogueTrack;
   }): Promise<tilo.Run | void>;
+  /** Runs `import-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importTrackMany(items: ImportTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   spotifyAccountStatus(): Promise<void>;
   search(args: {
     query: string;

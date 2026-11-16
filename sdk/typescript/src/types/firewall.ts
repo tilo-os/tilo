@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -53,6 +55,39 @@ export type Target = "default" | "accept" | "reject" | "drop";
 /** One of "drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted". */
 export type ZoneKind = "drop" | "block" | "public" | "external" | "dmz" | "work" | "home" | "internal" | "trusted";
 
+/** The arguments of `start`. */
+export interface StartArgs {
+}
+
+/** The arguments of `stop`. */
+export interface StopArgs {
+}
+
+/** The arguments of `enter-panic-mode`. */
+export interface EnterPanicModeArgs {
+}
+
+/** The arguments of `exit-panic-mode`. */
+export interface ExitPanicModeArgs {
+}
+
+/** The arguments of `delete-rule`. */
+export interface DeleteRuleArgs {
+  zone: ZoneKind;
+  rule: string;
+}
+
+/** The arguments of `import`. */
+export interface ImportArgs {
+  config: unknown;
+}
+
+/** The arguments of `applied`. */
+export interface AppliedArgs {
+  device: string;
+  config: string;
+}
+
 /** Firewall — `firewall.config`. */
 export interface Config extends tilo.Resource {
   readonly enabled: boolean;
@@ -60,16 +95,28 @@ export interface Config extends tilo.Resource {
   default_zone: ZoneKind;
   zones: Record<string, StoredZone>;
   start(): Promise<tilo.Run | void>;
+  /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
   stop(): Promise<tilo.Run | void>;
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   enterPanicMode(): Promise<tilo.Run | void>;
+  /** Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  enterPanicModeMany(items: EnterPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
   exitPanicMode(): Promise<tilo.Run | void>;
+  /** Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  exitPanicModeMany(items: ExitPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRule(args: {
     zone: ZoneKind;
     rule: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  deleteRuleMany(items: DeleteRuleArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     config: unknown;
   }): Promise<tilo.Run | void>;
+  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   readBlocked(): Promise<void>;
 }
 
@@ -85,6 +132,8 @@ export interface Applied extends tilo.Resource {
     device: string;
     config: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  appliedMany(items: AppliedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `firewall.applied` kind at `path`. */

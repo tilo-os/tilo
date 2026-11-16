@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -88,6 +90,56 @@ __all__ = [
     "Drafts",
     "WorkspaceEmoji",
     "ChatAgent",
+    "BeginChatArgs",
+    "IntroduceArgs",
+    "CreateCategoryArgs",
+    "CreateChannelArgs",
+    "CreateChannelWithIdArgs",
+    "DeleteCategoryArgs",
+    "MoveChannelArgs",
+    "MoveCategoryArgs",
+    "ArrangeChannelsArgs",
+    "SetChannelCategoryArgs",
+    "RenameChannelArgs",
+    "SetChannelTopicArgs",
+    "ArchiveChannelArgs",
+    "RenameCategoryArgs",
+    "DeleteChannelArgs",
+    "ReportMessageArgs",
+    "ReportPersonArgs",
+    "DecideReportsArgs",
+    "OverturnDecisionArgs",
+    "MarkReadArgs",
+    "SubmitFeedbackArgs",
+    "TriageArgs",
+    "PostArgs",
+    "PostFileArgs",
+    "ShareResourceArgs",
+    "ShareWindowArgs",
+    "StopSharingArgs",
+    "SetShareAccessArgs",
+    "ShareOpenArgs",
+    "DeliverMessageArgs",
+    "EditMessageArgs",
+    "DeleteMessageArgs",
+    "RemoveMessageArgs",
+    "PinArgs",
+    "RetryArgs",
+    "RecordWorkArgs",
+    "CarryCountsArgs",
+    "StreamOutputArgs",
+    "StartDraftArgs",
+    "AddEmojiArgs",
+    "RemoveEmojiArgs",
+    "RemoveAnyEmojiArgs",
+    "CreateAgentArgs",
+    "SetAgentSpendLimitArgs",
+    "RecordAgentSpendArgs",
+    "SetAgentColourArgs",
+    "RenameAgentArgs",
+    "SetAgentModelArgs",
+    "SetAgentBoundArgs",
+    "RetireAgentArgs",
 ]
 
 class Category(TypedDict):
@@ -453,6 +505,335 @@ class Spent(TypedDict):
     day: str
     cost_micros: int
 
+BeginChatArgs = TypedDict("BeginChatArgs", {
+    "name": "str",
+    "initials": "str",
+    "color": "int",
+})
+"""The arguments of `begin-chat`."""
+
+IntroduceArgs = TypedDict("IntroduceArgs", {
+    "name": "str",
+    "initials": "str",
+    "color": "int",
+})
+"""The arguments of `introduce`."""
+
+CreateCategoryArgs = TypedDict("CreateCategoryArgs", {
+    "name": "str",
+})
+"""The arguments of `create-category`."""
+
+CreateChannelArgs = TypedDict("CreateChannelArgs", {
+    "name": "str",
+    "category": NotRequired["str | None"],
+    "kind": NotRequired["ChannelKind | None"],
+    "topic": NotRequired["str | None"],
+})
+"""The arguments of `create-channel`."""
+
+CreateChannelWithIdArgs = TypedDict("CreateChannelWithIdArgs", {
+    "id": "str",
+    "name": "str",
+    "category": NotRequired["str | None"],
+    "kind": NotRequired["ChannelKind | None"],
+    "topic": NotRequired["str | None"],
+    "participants": NotRequired["list[str] | None"],
+})
+"""The arguments of `create-channel-with-id`."""
+
+DeleteCategoryArgs = TypedDict("DeleteCategoryArgs", {
+    "category": "str",
+})
+"""The arguments of `delete-category`."""
+
+MoveChannelArgs = TypedDict("MoveChannelArgs", {
+    "channel": "str",
+    "up": "bool",
+})
+"""The arguments of `move-channel`."""
+
+MoveCategoryArgs = TypedDict("MoveCategoryArgs", {
+    "category": "str",
+    "up": "bool",
+})
+"""The arguments of `move-category`."""
+
+ArrangeChannelsArgs = TypedDict("ArrangeChannelsArgs", {
+    "categories": "list[str]",
+    "channels": "list[ChannelPlace]",
+})
+"""The arguments of `arrange-channels`."""
+
+SetChannelCategoryArgs = TypedDict("SetChannelCategoryArgs", {
+    "channel": "str",
+    "category": NotRequired["str | None"],
+})
+"""The arguments of `set-channel-category`."""
+
+RenameChannelArgs = TypedDict("RenameChannelArgs", {
+    "channel": "str",
+    "name": "str",
+})
+"""The arguments of `rename-channel`."""
+
+SetChannelTopicArgs = TypedDict("SetChannelTopicArgs", {
+    "channel": "str",
+    "topic": "str",
+})
+"""The arguments of `set-channel-topic`."""
+
+ArchiveChannelArgs = TypedDict("ArchiveChannelArgs", {
+    "channel": "str",
+    "archived": "bool",
+})
+"""The arguments of `archive-channel`."""
+
+RenameCategoryArgs = TypedDict("RenameCategoryArgs", {
+    "category": "str",
+    "name": "str",
+})
+"""The arguments of `rename-category`."""
+
+DeleteChannelArgs = TypedDict("DeleteChannelArgs", {
+    "channel": "str",
+})
+"""The arguments of `delete-channel`."""
+
+ReportMessageArgs = TypedDict("ReportMessageArgs", {
+    "message": "str",
+    "author": "str",
+    "reason": "str",
+})
+"""The arguments of `report-message`."""
+
+ReportPersonArgs = TypedDict("ReportPersonArgs", {
+    "person": "str",
+    "reason": "str",
+})
+"""The arguments of `report-person`."""
+
+DecideReportsArgs = TypedDict("DecideReportsArgs", {
+    "id": "str",
+    "person": "str",
+    "reports": "list[str]",
+    "ruling": "Ruling",
+})
+"""The arguments of `decide-reports`."""
+
+OverturnDecisionArgs = TypedDict("OverturnDecisionArgs", {
+    "decision": "str",
+    "note": "str",
+})
+"""The arguments of `overturn-decision`."""
+
+MarkReadArgs = TypedDict("MarkReadArgs", {
+    "channel": "str",
+    "part": "int",
+    "seen": "int",
+})
+"""The arguments of `mark-read`."""
+
+SubmitFeedbackArgs = TypedDict("SubmitFeedbackArgs", {
+    "channel": "str",
+    "submission": "Any",
+})
+"""The arguments of `submit-feedback`."""
+
+TriageArgs = TypedDict("TriageArgs", {
+    "report": "str",
+    "update": "Any",
+})
+"""The arguments of `triage`."""
+
+PostArgs = TypedDict("PostArgs", {
+    "channel": "str",
+    "text": "str",
+    "parent": NotRequired["str | None"],
+    "quoted": NotRequired["Any | None"],
+    "body": NotRequired["list[Any] | None"],
+    "attachments": NotRequired["list[Any] | None"],
+    "mentions": NotRequired["list[Any] | None"],
+    "written": NotRequired["int | None"],
+    "origin": NotRequired["Any | None"],
+})
+"""The arguments of `post`."""
+
+PostFileArgs = TypedDict("PostFileArgs", {
+    "channel": "str",
+    "content": "str",
+    "name": "str",
+    "text": NotRequired["str | None"],
+    "attachment": NotRequired["Attached | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `post-file`."""
+
+ShareResourceArgs = TypedDict("ShareResourceArgs", {
+    "channel": "str",
+    "attached": "ResourceAt",
+    "text": NotRequired["str | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `share-resource`."""
+
+ShareWindowArgs = TypedDict("ShareWindowArgs", {
+    "channel": "str",
+    "attached": "ResourceAt",
+    "access": NotRequired["ShareAccess | None"],
+    "text": NotRequired["str | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `share-window`."""
+
+StopSharingArgs = TypedDict("StopSharingArgs", {
+    "message": "str",
+})
+"""The arguments of `stop-sharing`."""
+
+SetShareAccessArgs = TypedDict("SetShareAccessArgs", {
+    "message": "str",
+    "access": "ShareAccess",
+})
+"""The arguments of `set-share-access`."""
+
+ShareOpenArgs = TypedDict("ShareOpenArgs", {
+    "message": "str",
+    "open": "bool",
+})
+"""The arguments of `share-open`."""
+
+DeliverMessageArgs = TypedDict("DeliverMessageArgs", {
+    "channel": "str",
+    "author": "str",
+    "body": "str",
+    "ts": NotRequired["int | None"],
+})
+"""The arguments of `deliver-message`."""
+
+EditMessageArgs = TypedDict("EditMessageArgs", {
+    "message": "str",
+    "text": "str",
+    "body": NotRequired["list[ClipBlock] | None"],
+    "mentions": NotRequired["list[Mention] | None"],
+})
+"""The arguments of `edit-message`."""
+
+DeleteMessageArgs = TypedDict("DeleteMessageArgs", {
+    "message": "str",
+})
+"""The arguments of `delete-message`."""
+
+RemoveMessageArgs = TypedDict("RemoveMessageArgs", {
+    "message": "str",
+})
+"""The arguments of `remove-message`."""
+
+PinArgs = TypedDict("PinArgs", {
+    "message": "str",
+    "pinned": "bool",
+})
+"""The arguments of `pin`."""
+
+RetryArgs = TypedDict("RetryArgs", {
+    "message": "str",
+    "reply": "str",
+})
+"""The arguments of `retry`."""
+
+RecordWorkArgs = TypedDict("RecordWorkArgs", {
+    "message": "str",
+    "work": "WorkUpdate",
+    "say": NotRequired["str | None"],
+})
+"""The arguments of `record-work`."""
+
+CarryCountsArgs = TypedDict("CarryCountsArgs", {
+    "earlier": "dict[str, dict[str, int]]",
+})
+"""The arguments of `carry-counts`."""
+
+StreamOutputArgs = TypedDict("StreamOutputArgs", {
+    "channel": "str",
+    "reply": "str",
+    "name": NotRequired["str | None"],
+    "event": "Any",
+})
+"""The arguments of `stream-output`."""
+
+StartDraftArgs = TypedDict("StartDraftArgs", {
+    "key": "str",
+})
+"""The arguments of `start-draft`."""
+
+AddEmojiArgs = TypedDict("AddEmojiArgs", {
+    "name": "str",
+    "image": "str",
+})
+"""The arguments of `add-emoji`."""
+
+RemoveEmojiArgs = TypedDict("RemoveEmojiArgs", {
+    "name": "str",
+})
+"""The arguments of `remove-emoji`."""
+
+RemoveAnyEmojiArgs = TypedDict("RemoveAnyEmojiArgs", {
+    "name": "str",
+})
+"""The arguments of `remove-any-emoji`."""
+
+CreateAgentArgs = TypedDict("CreateAgentArgs", {
+    "name": "str",
+    "keeper": NotRequired["str | None"],
+    "id": NotRequired["str | None"],
+    "model": NotRequired["str | None"],
+    "colour": NotRequired["int | None"],
+    "mcp_client": NotRequired["str | None"],
+})
+"""The arguments of `create-agent`."""
+
+SetAgentSpendLimitArgs = TypedDict("SetAgentSpendLimitArgs", {
+    "agent": "str",
+    "limit_micros": NotRequired["int | None"],
+})
+"""The arguments of `set-agent-spend-limit`."""
+
+RecordAgentSpendArgs = TypedDict("RecordAgentSpendArgs", {
+    "agent": "str",
+    "day": "str",
+    "cost_micros": "int",
+})
+"""The arguments of `record-agent-spend`."""
+
+SetAgentColourArgs = TypedDict("SetAgentColourArgs", {
+    "agent": "str",
+    "colour": "int",
+})
+"""The arguments of `set-agent-colour`."""
+
+RenameAgentArgs = TypedDict("RenameAgentArgs", {
+    "agent": "str",
+    "name": "str",
+})
+"""The arguments of `rename-agent`."""
+
+SetAgentModelArgs = TypedDict("SetAgentModelArgs", {
+    "agent": "str",
+    "model": NotRequired["str | None"],
+})
+"""The arguments of `set-agent-model`."""
+
+SetAgentBoundArgs = TypedDict("SetAgentBoundArgs", {
+    "agent": "str",
+    "bound": "list[Bound]",
+})
+"""The arguments of `set-agent-bound`."""
+
+RetireAgentArgs = TypedDict("RetireAgentArgs", {
+    "agent": "str",
+})
+"""The arguments of `retire-agent`."""
+
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
     __surface__ = "so.tilo.chat@09cb0c7e81e867c9"
@@ -482,6 +863,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("begin-chat", name=name, initials=initials, color=color)
 
+    def begin_chat_many(self, items: list[BeginChatArgs]) -> list[dict[str, Any]]:
+        """Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("begin-chat", items)
+
     def introduce(self,
         *,
         name: str,
@@ -491,9 +876,17 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("introduce", name=name, initials=initials, color=color)
 
+    def introduce_many(self, items: list[IntroduceArgs]) -> list[dict[str, Any]]:
+        """Runs `introduce` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("introduce", items)
+
     def create_category(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("create-category", name=name)
+
+    def create_category_many(self, items: list[CreateCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-category", items)
 
     def create_channel(self,
         *,
@@ -512,6 +905,10 @@ class Workspace(Resource):
         if topic is not None:
             args["topic"] = topic
         return self.action("create-channel", **args)
+
+    def create_channel_many(self, items: list[CreateChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-channel", items)
 
     def create_channel_with_id(self,
         *,
@@ -536,9 +933,17 @@ class Workspace(Resource):
             args["participants"] = participants
         return self.action("create-channel-with-id", **args)
 
+    def create_channel_with_id_many(self, items: list[CreateChannelWithIdArgs]) -> list[dict[str, Any]]:
+        """Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-channel-with-id", items)
+
     def delete_category(self, *, category: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-category", category=category)
+
+    def delete_category_many(self, items: list[DeleteCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-category", items)
 
     def move_channel(self,
         *,
@@ -548,6 +953,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("move-channel", channel=channel, up=up)
 
+    def move_channel_many(self, items: list[MoveChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-channel", items)
+
     def move_category(self,
         *,
         category: str,
@@ -556,6 +965,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("move-category", category=category, up=up)
 
+    def move_category_many(self, items: list[MoveCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-category", items)
+
     def arrange_channels(self,
         *,
         categories: list[str],
@@ -563,6 +976,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("arrange-channels", categories=categories, channels=channels)
+
+    def arrange_channels_many(self, items: list[ArrangeChannelsArgs]) -> list[dict[str, Any]]:
+        """Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("arrange-channels", items)
 
     def set_channel_category(self,
         *,
@@ -576,6 +993,10 @@ class Workspace(Resource):
             args["category"] = category
         return self.action("set-channel-category", **args)
 
+    def set_channel_category_many(self, items: list[SetChannelCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-channel-category", items)
+
     def rename_channel(self,
         *,
         channel: str,
@@ -583,6 +1004,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("rename-channel", channel=channel, name=name)
+
+    def rename_channel_many(self, items: list[RenameChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-channel", items)
 
     def set_channel_topic(self,
         *,
@@ -592,6 +1017,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("set-channel-topic", channel=channel, topic=topic)
 
+    def set_channel_topic_many(self, items: list[SetChannelTopicArgs]) -> list[dict[str, Any]]:
+        """Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-channel-topic", items)
+
     def archive_channel(self,
         *,
         channel: str,
@@ -599,6 +1028,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("archive-channel", channel=channel, archived=archived)
+
+    def archive_channel_many(self, items: list[ArchiveChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("archive-channel", items)
 
     def rename_category(self,
         *,
@@ -608,9 +1041,17 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("rename-category", category=category, name=name)
 
+    def rename_category_many(self, items: list[RenameCategoryArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-category", items)
+
     def delete_channel(self, *, channel: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-channel", channel=channel)
+
+    def delete_channel_many(self, items: list[DeleteChannelArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-channel", items)
 
     def report_message(self,
         *,
@@ -621,6 +1062,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("report-message", message=message, author=author, reason=reason)
 
+    def report_message_many(self, items: list[ReportMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("report-message", items)
+
     def report_person(self,
         *,
         person: str,
@@ -628,6 +1073,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("report-person", person=person, reason=reason)
+
+    def report_person_many(self, items: list[ReportPersonArgs]) -> list[dict[str, Any]]:
+        """Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("report-person", items)
 
     def decide_reports(self,
         *,
@@ -639,6 +1088,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("decide-reports", id=id, person=person, reports=reports, ruling=ruling)
 
+    def decide_reports_many(self, items: list[DecideReportsArgs]) -> list[dict[str, Any]]:
+        """Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("decide-reports", items)
+
     def overturn_decision(self,
         *,
         decision: str,
@@ -646,6 +1099,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("overturn-decision", decision=decision, note=note)
+
+    def overturn_decision_many(self, items: list[OverturnDecisionArgs]) -> list[dict[str, Any]]:
+        """Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("overturn-decision", items)
 
     def mark_read(self,
         *,
@@ -656,6 +1113,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("mark-read", channel=channel, part=part, seen=seen)
 
+    def mark_read_many(self, items: list[MarkReadArgs]) -> list[dict[str, Any]]:
+        """Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("mark-read", items)
+
     def submit_feedback(self,
         *,
         channel: str,
@@ -664,6 +1125,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("submit-feedback", channel=channel, submission=submission)
 
+    def submit_feedback_many(self, items: list[SubmitFeedbackArgs]) -> list[dict[str, Any]]:
+        """Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("submit-feedback", items)
+
     def triage(self,
         *,
         report: str,
@@ -671,6 +1136,10 @@ class Workspace(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("triage", report=report, update=update)
+
+    def triage_many(self, items: list[TriageArgs]) -> list[dict[str, Any]]:
+        """Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("triage", items)
 
     def export_content(self,
         *,
@@ -741,6 +1210,10 @@ class Messages(Resource):
             args["origin"] = origin
         return self.action("post", **args)
 
+    def post_many(self, items: list[PostArgs]) -> list[dict[str, Any]]:
+        """Runs `post` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("post", items)
+
     def post_file(self,
         *,
         channel: str,
@@ -763,6 +1236,10 @@ class Messages(Resource):
             args["mentions"] = mentions
         return self.action("post-file", **args)
 
+    def post_file_many(self, items: list[PostFileArgs]) -> list[dict[str, Any]]:
+        """Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("post-file", items)
+
     def share_resource(self,
         *,
         channel: str,
@@ -779,6 +1256,10 @@ class Messages(Resource):
         if mentions is not None:
             args["mentions"] = mentions
         return self.action("share-resource", **args)
+
+    def share_resource_many(self, items: list[ShareResourceArgs]) -> list[dict[str, Any]]:
+        """Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("share-resource", items)
 
     def share_window(self,
         *,
@@ -800,9 +1281,17 @@ class Messages(Resource):
             args["mentions"] = mentions
         return self.action("share-window", **args)
 
+    def share_window_many(self, items: list[ShareWindowArgs]) -> list[dict[str, Any]]:
+        """Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("share-window", items)
+
     def stop_sharing(self, *, message: str) -> Run | None:
         """Runs the app's action."""
         return self.action("stop-sharing", message=message)
+
+    def stop_sharing_many(self, items: list[StopSharingArgs]) -> list[dict[str, Any]]:
+        """Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stop-sharing", items)
 
     def set_share_access(self,
         *,
@@ -812,6 +1301,10 @@ class Messages(Resource):
         """Runs the app's action."""
         return self.action("set-share-access", message=message, access=access)
 
+    def set_share_access_many(self, items: list[SetShareAccessArgs]) -> list[dict[str, Any]]:
+        """Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-share-access", items)
+
     def share_open(self,
         *,
         message: str,
@@ -819,6 +1312,10 @@ class Messages(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("share-open", message=message, open=open)
+
+    def share_open_many(self, items: list[ShareOpenArgs]) -> list[dict[str, Any]]:
+        """Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("share-open", items)
 
     def deliver_message(self,
         *,
@@ -835,6 +1332,10 @@ class Messages(Resource):
         if ts is not None:
             args["ts"] = ts
         return self.action("deliver-message", **args)
+
+    def deliver_message_many(self, items: list[DeliverMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("deliver-message", items)
 
     def edit_message(self,
         *,
@@ -853,13 +1354,25 @@ class Messages(Resource):
             args["mentions"] = mentions
         return self.action("edit-message", **args)
 
+    def edit_message_many(self, items: list[EditMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-message", items)
+
     def delete_message(self, *, message: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-message", message=message)
 
+    def delete_message_many(self, items: list[DeleteMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-message", items)
+
     def remove_message(self, *, message: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-message", message=message)
+
+    def remove_message_many(self, items: list[RemoveMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-message", items)
 
     def pin(self,
         *,
@@ -869,6 +1382,10 @@ class Messages(Resource):
         """Runs the app's action."""
         return self.action("pin", message=message, pinned=pinned)
 
+    def pin_many(self, items: list[PinArgs]) -> list[dict[str, Any]]:
+        """Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("pin", items)
+
     def retry(self,
         *,
         message: str,
@@ -876,6 +1393,10 @@ class Messages(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("retry", message=message, reply=reply)
+
+    def retry_many(self, items: list[RetryArgs]) -> list[dict[str, Any]]:
+        """Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("retry", items)
 
     def record_work(self,
         *,
@@ -891,9 +1412,17 @@ class Messages(Resource):
             args["say"] = say
         return self.action("record-work", **args)
 
+    def record_work_many(self, items: list[RecordWorkArgs]) -> list[dict[str, Any]]:
+        """Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-work", items)
+
     def carry_counts(self, *, earlier: dict[str, dict[str, int]]) -> Run | None:
         """Runs the app's action."""
         return self.action("carry-counts", earlier=earlier)
+
+    def carry_counts_many(self, items: list[CarryCountsArgs]) -> list[dict[str, Any]]:
+        """Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("carry-counts", items)
 
     def stream_output(self,
         *,
@@ -911,6 +1440,10 @@ class Messages(Resource):
         args["event"] = event
         return self.action("stream-output", **args)
 
+    def stream_output_many(self, items: list[StreamOutputArgs]) -> list[dict[str, Any]]:
+        """Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("stream-output", items)
+
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
@@ -920,6 +1453,10 @@ class Drafts(Resource):
     def start_draft(self, *, key: str) -> Run | None:
         """Runs the app's action."""
         return self.action("start-draft", key=key)
+
+    def start_draft_many(self, items: list[StartDraftArgs]) -> list[dict[str, Any]]:
+        """Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("start-draft", items)
 
 
 class WorkspaceEmoji(Resource):
@@ -935,13 +1472,25 @@ class WorkspaceEmoji(Resource):
         """Runs the app's action."""
         return self.action("add-emoji", name=name, image=image)
 
+    def add_emoji_many(self, items: list[AddEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-emoji", items)
+
     def remove_emoji(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-emoji", name=name)
 
+    def remove_emoji_many(self, items: list[RemoveEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-emoji", items)
+
     def remove_any_emoji(self, *, name: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-any-emoji", name=name)
+
+    def remove_any_emoji_many(self, items: list[RemoveAnyEmojiArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-any-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-any-emoji", items)
 
 
 class ChatAgent(Resource):
@@ -973,6 +1522,10 @@ class ChatAgent(Resource):
             args["mcp_client"] = mcp_client
         return self.action("create-agent", **args)
 
+    def create_agent_many(self, items: list[CreateAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-agent", items)
+
     def set_agent_spend_limit(self,
         *,
         agent: str,
@@ -985,6 +1538,10 @@ class ChatAgent(Resource):
             args["limit_micros"] = limit_micros
         return self.action("set-agent-spend-limit", **args)
 
+    def set_agent_spend_limit_many(self, items: list[SetAgentSpendLimitArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-spend-limit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-spend-limit", items)
+
     def record_agent_spend(self,
         *,
         agent: str,
@@ -994,6 +1551,10 @@ class ChatAgent(Resource):
         """Runs the app's action."""
         return self.action("record-agent-spend", agent=agent, day=day, cost_micros=cost_micros)
 
+    def record_agent_spend_many(self, items: list[RecordAgentSpendArgs]) -> list[dict[str, Any]]:
+        """Runs `record-agent-spend` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-agent-spend", items)
+
     def set_agent_colour(self,
         *,
         agent: str,
@@ -1002,6 +1563,10 @@ class ChatAgent(Resource):
         """Runs the app's action."""
         return self.action("set-agent-colour", agent=agent, colour=colour)
 
+    def set_agent_colour_many(self, items: list[SetAgentColourArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-colour", items)
+
     def rename_agent(self,
         *,
         agent: str,
@@ -1009,6 +1574,10 @@ class ChatAgent(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("rename-agent", agent=agent, name=name)
+
+    def rename_agent_many(self, items: list[RenameAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rename-agent", items)
 
     def set_agent_model(self,
         *,
@@ -1022,6 +1591,10 @@ class ChatAgent(Resource):
             args["model"] = model
         return self.action("set-agent-model", **args)
 
+    def set_agent_model_many(self, items: list[SetAgentModelArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-model", items)
+
     def set_agent_bound(self,
         *,
         agent: str,
@@ -1030,8 +1603,16 @@ class ChatAgent(Resource):
         """Runs the app's action."""
         return self.action("set-agent-bound", agent=agent, bound=bound)
 
+    def set_agent_bound_many(self, items: list[SetAgentBoundArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-agent-bound", items)
+
     def retire_agent(self, *, agent: str) -> Run | None:
         """Runs the app's action."""
         return self.action("retire-agent", agent=agent)
+
+    def retire_agent_many(self, items: list[RetireAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `retire-agent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("retire-agent", items)
 
 

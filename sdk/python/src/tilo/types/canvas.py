@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -27,6 +29,23 @@ __all__ = [
     "Recent",
     "Artwork",
     "RecentArtworks",
+    "EditMarksArgs",
+    "RemoveMarksArgs",
+    "ArrangeArgs",
+    "AddLayerArgs",
+    "EditLayerArgs",
+    "RemoveLayerArgs",
+    "SetArtworkArgs",
+    "SaveMediumArgs",
+    "RemoveMediumArgs",
+    "AlignArgs",
+    "SetReferenceArgs",
+    "OpenPictureArgs",
+    "NewArtworkArgs",
+    "OpenArtworkArgs",
+    "CombineArgs",
+    "RememberArgs",
+    "ForgetArgs",
 ]
 
 class Adjust(TypedDict):
@@ -111,6 +130,175 @@ class Recent(TypedDict):
     height: float
     at_ms: int
     thumbnail: str | None
+
+EditMarksArgs = TypedDict("EditMarksArgs", {
+    "pixelated": NotRequired["bool | None"],
+    "ids": "list[str]",
+    "name": NotRequired["str | None"],
+    "shape": NotRequired["Any | None"],
+    "dash": NotRequired["list[float] | None"],
+    "cap": NotRequired["str | None"],
+    "join": NotRequired["str | None"],
+    "blend": NotRequired["str | None"],
+    "shadow": NotRequired["Any | None"],
+    "inner_shadow": NotRequired["Any | None"],
+    "grain": NotRequired["float | None"],
+    "feather": NotRequired["float | None"],
+    "group": NotRequired["str | None"],
+    "clip": NotRequired["str | None"],
+    "fill": NotRequired["str | None"],
+    "gradient": NotRequired["Any | None"],
+    "stroke": NotRequired["str | None"],
+    "stroke_width": NotRequired["float | None"],
+    "opacity": NotRequired["float | None"],
+    "brush": NotRequired["str | None"],
+    "size": NotRequired["float | None"],
+    "brush_size": NotRequired["float | None"],
+    "angle": NotRequired["float | None"],
+    "wet": NotRequired["bool | None"],
+    "params": NotRequired["Any | None"],
+    "move_by": NotRequired["list[float] | None"],
+    "scale": NotRequired["float | None"],
+    "rotate": NotRequired["float | None"],
+    "layer": NotRequired["str | None"],
+    "transform": NotRequired["list[float] | None"],
+    "flip": NotRequired["str | None"],
+    "crop": NotRequired["list[float] | None"],
+    "straighten": NotRequired["float | None"],
+    "adjust": NotRequired["Any | None"],
+    "smooth": NotRequired["float | None"],
+    "simplify": NotRequired["float | None"],
+    "extend": NotRequired["list[list[float]] | None"],
+    "split": NotRequired["list[float] | None"],
+    "merge": NotRequired["bool | None"],
+})
+"""The arguments of `edit-marks`."""
+
+RemoveMarksArgs = TypedDict("RemoveMarksArgs", {
+    "ids": NotRequired["list[str] | None"],
+    "layer": NotRequired["str | None"],
+    "along": NotRequired["list[list[float]] | None"],
+})
+"""The arguments of `remove-marks`."""
+
+ArrangeArgs = TypedDict("ArrangeArgs", {
+    "ids": "list[str]",
+    "to": "str",
+    "of": NotRequired["str | None"],
+})
+"""The arguments of `arrange`."""
+
+AddLayerArgs = TypedDict("AddLayerArgs", {
+    "id": NotRequired["str | None"],
+    "name": "str",
+    "medium": NotRequired["str | None"],
+    "opacity": NotRequired["float | None"],
+    "above": NotRequired["str | None"],
+    "texture": NotRequired["float | None"],
+})
+"""The arguments of `add-layer`."""
+
+EditLayerArgs = TypedDict("EditLayerArgs", {
+    "id": "str",
+    "name": NotRequired["str | None"],
+    "group": NotRequired["str | None"],
+    "medium": NotRequired["str | None"],
+    "opacity": NotRequired["float | None"],
+    "visible": NotRequired["bool | None"],
+    "locked": NotRequired["bool | None"],
+    "to": NotRequired["str | None"],
+    "texture": NotRequired["float | None"],
+    "adjust": NotRequired["Any | None"],
+    "mask": NotRequired["str | None"],
+    "invert": NotRequired["bool | None"],
+    "clip": NotRequired["bool | None"],
+})
+"""The arguments of `edit-layer`."""
+
+RemoveLayerArgs = TypedDict("RemoveLayerArgs", {
+    "id": "str",
+})
+"""The arguments of `remove-layer`."""
+
+SetArtworkArgs = TypedDict("SetArtworkArgs", {
+    "title": NotRequired["str | None"],
+    "width": NotRequired["float | None"],
+    "height": NotRequired["float | None"],
+    "texture": NotRequired["str | None"],
+    "ground_colour": NotRequired["str | None"],
+    "crop": NotRequired["list[float] | None"],
+    "fit": NotRequired["str | None"],
+})
+"""The arguments of `set-artwork`."""
+
+SaveMediumArgs = TypedDict("SaveMediumArgs", {
+    "medium": "Any",
+})
+"""The arguments of `save-medium`."""
+
+RemoveMediumArgs = TypedDict("RemoveMediumArgs", {
+    "id": "str",
+})
+"""The arguments of `remove-medium`."""
+
+AlignArgs = TypedDict("AlignArgs", {
+    "ids": "list[str]",
+    "edge": NotRequired["str | None"],
+    "distribute": NotRequired["str | None"],
+    "to": NotRequired["str | None"],
+})
+"""The arguments of `align`."""
+
+SetReferenceArgs = TypedDict("SetReferenceArgs", {
+    "image": NotRequired["str | None"],
+    "frame": NotRequired["list[float] | None"],
+    "opacity": NotRequired["float | None"],
+    "visible": NotRequired["bool | None"],
+    "remove": NotRequired["bool | None"],
+})
+"""The arguments of `set-reference`."""
+
+OpenPictureArgs = TypedDict("OpenPictureArgs", {
+    "path": "str",
+    "title": NotRequired["str | None"],
+})
+"""The arguments of `open-picture`."""
+
+NewArtworkArgs = TypedDict("NewArtworkArgs", {
+    "title": NotRequired["str | None"],
+    "size": NotRequired["str | None"],
+    "landscape": NotRequired["bool | None"],
+    "width": NotRequired["float | None"],
+    "height": NotRequired["float | None"],
+    "start": NotRequired["str | None"],
+    "texture": NotRequired["str | None"],
+    "ground_colour": NotRequired["str | None"],
+    "medium": NotRequired["str | None"],
+})
+"""The arguments of `new-artwork`."""
+
+OpenArtworkArgs = TypedDict("OpenArtworkArgs", {
+    "file": "str",
+})
+"""The arguments of `open-artwork`."""
+
+CombineArgs = TypedDict("CombineArgs", {
+    "ids": "list[str]",
+    "op": "str",
+})
+"""The arguments of `combine`."""
+
+RememberArgs = TypedDict("RememberArgs", {
+    "device": "str",
+    "recent": "Recent",
+})
+"""The arguments of `remember`."""
+
+ForgetArgs = TypedDict("ForgetArgs", {
+    "device": "str",
+    "path": "str",
+})
+"""The arguments of `forget`."""
 
 class Artwork(Resource):
     """Artwork — `canvas.artwork`."""
@@ -316,6 +504,10 @@ class Artwork(Resource):
             args["merge"] = merge
         return self.action("edit-marks", **args)
 
+    def edit_marks_many(self, items: list[EditMarksArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-marks", items)
+
     def remove_marks(self,
         *,
         ids: list[str] | None = None,
@@ -332,6 +524,10 @@ class Artwork(Resource):
             args["along"] = along
         return self.action("remove-marks", **args)
 
+    def remove_marks_many(self, items: list[RemoveMarksArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-marks", items)
+
     def arrange(self,
         *,
         ids: list[str],
@@ -345,6 +541,10 @@ class Artwork(Resource):
         if of is not None:
             args["of"] = of
         return self.action("arrange", **args)
+
+    def arrange_many(self, items: list[ArrangeArgs]) -> list[dict[str, Any]]:
+        """Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("arrange", items)
 
     def add_layer(self,
         *,
@@ -369,6 +569,10 @@ class Artwork(Resource):
         if texture is not None:
             args["texture"] = texture
         return self.action("add-layer", **args)
+
+    def add_layer_many(self, items: list[AddLayerArgs]) -> list[dict[str, Any]]:
+        """Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-layer", items)
 
     def edit_layer(self,
         *,
@@ -415,9 +619,17 @@ class Artwork(Resource):
             args["clip"] = clip
         return self.action("edit-layer", **args)
 
+    def edit_layer_many(self, items: list[EditLayerArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("edit-layer", items)
+
     def remove_layer(self, *, id: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-layer", id=id)
+
+    def remove_layer_many(self, items: list[RemoveLayerArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-layer", items)
 
     def set_artwork(self,
         *,
@@ -447,13 +659,25 @@ class Artwork(Resource):
             args["fit"] = fit
         return self.action("set-artwork", **args)
 
+    def set_artwork_many(self, items: list[SetArtworkArgs]) -> list[dict[str, Any]]:
+        """Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-artwork", items)
+
     def save_medium(self, *, medium: Any) -> Run | None:
         """Runs the app's action."""
         return self.action("save-medium", medium=medium)
 
+    def save_medium_many(self, items: list[SaveMediumArgs]) -> list[dict[str, Any]]:
+        """Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("save-medium", items)
+
     def remove_medium(self, *, id: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-medium", id=id)
+
+    def remove_medium_many(self, items: list[RemoveMediumArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-medium", items)
 
     def align(self,
         *,
@@ -472,6 +696,10 @@ class Artwork(Resource):
         if to is not None:
             args["to"] = to
         return self.action("align", **args)
+
+    def align_many(self, items: list[AlignArgs]) -> list[dict[str, Any]]:
+        """Runs `align` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("align", items)
 
     def set_reference(self,
         *,
@@ -494,6 +722,10 @@ class Artwork(Resource):
         if remove is not None:
             args["remove"] = remove
         return self.action("set-reference", **args)
+
+    def set_reference_many(self, items: list[SetReferenceArgs]) -> list[dict[str, Any]]:
+        """Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-reference", items)
 
     def import_svg(self,
         *,
@@ -524,6 +756,10 @@ class Artwork(Resource):
         if title is not None:
             args["title"] = title
         return self.action("open-picture", **args)
+
+    def open_picture_many(self, items: list[OpenPictureArgs]) -> list[dict[str, Any]]:
+        """Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-picture", items)
 
     def new_artwork(self,
         *,
@@ -559,9 +795,17 @@ class Artwork(Resource):
             args["medium"] = medium
         return self.action("new-artwork", **args)
 
+    def new_artwork_many(self, items: list[NewArtworkArgs]) -> list[dict[str, Any]]:
+        """Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("new-artwork", items)
+
     def open_artwork(self, *, file: str) -> Run | None:
         """Runs the app's action."""
         return self.action("open-artwork", file=file)
+
+    def open_artwork_many(self, items: list[OpenArtworkArgs]) -> list[dict[str, Any]]:
+        """Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-artwork", items)
 
     def select(self,
         *,
@@ -634,6 +878,10 @@ class Artwork(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("combine", ids=ids, op=op)
+
+    def combine_many(self, items: list[CombineArgs]) -> list[dict[str, Any]]:
+        """Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("combine", items)
 
     def look(self,
         *,
@@ -768,6 +1016,10 @@ class RecentArtworks(Resource):
         """Runs the app's action."""
         return self.action("remember", device=device, recent=recent)
 
+    def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
+        """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remember", items)
+
     def forget(self,
         *,
         device: str,
@@ -775,5 +1027,9 @@ class RecentArtworks(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("forget", device=device, path=path)
+
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget", items)
 
 

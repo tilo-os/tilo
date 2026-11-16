@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -34,6 +36,14 @@ __all__ = [
     "SlideData",
     "TextAlign",
     "Deck",
+    "InsertSlideArgs",
+    "DuplicateSlideArgs",
+    "DeleteSlideArgs",
+    "InsertElementArgs",
+    "DeleteElementArgs",
+    "BringToFrontArgs",
+    "SendToBackArgs",
+    "ReplaceDeckArgs",
 ]
 
 Background = Literal["surface", "accent", "deep"]
@@ -135,6 +145,54 @@ class SlideData(TypedDict):
 
 TextAlign = Literal["left", "center", "right", "justify"]
 
+InsertSlideArgs = TypedDict("InsertSlideArgs", {
+    "at": "int",
+    "slide": "SlideData",
+})
+"""The arguments of `insert-slide`."""
+
+DuplicateSlideArgs = TypedDict("DuplicateSlideArgs", {
+    "slide": "str",
+})
+"""The arguments of `duplicate-slide`."""
+
+DeleteSlideArgs = TypedDict("DeleteSlideArgs", {
+    "slide": "str",
+})
+"""The arguments of `delete-slide`."""
+
+InsertElementArgs = TypedDict("InsertElementArgs", {
+    "slide": "str",
+    "element": "ElementData",
+})
+"""The arguments of `insert-element`."""
+
+DeleteElementArgs = TypedDict("DeleteElementArgs", {
+    "slide": "str",
+    "element": "str",
+})
+"""The arguments of `delete-element`."""
+
+BringToFrontArgs = TypedDict("BringToFrontArgs", {
+    "slide": "str",
+    "element": "str",
+})
+"""The arguments of `bring-to-front`."""
+
+SendToBackArgs = TypedDict("SendToBackArgs", {
+    "slide": "str",
+    "element": "str",
+})
+"""The arguments of `send-to-back`."""
+
+ReplaceDeckArgs = TypedDict("ReplaceDeckArgs", {
+    "title": "str",
+    "palette": "PaletteKind",
+    "look": NotRequired["DeckLook | None"],
+    "slides": "list[SlideData]",
+})
+"""The arguments of `replace-deck`."""
+
 class Deck(Resource):
     """Deck — `slides.deck`."""
     __surface__ = "so.tilo.slides@ecf6ae57e9051fc7"
@@ -170,13 +228,25 @@ class Deck(Resource):
         """Runs the app's action."""
         return self.action("insert-slide", at=at, slide=slide)
 
+    def insert_slide_many(self, items: list[InsertSlideArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("insert-slide", items)
+
     def duplicate_slide(self, *, slide: str) -> Run | None:
         """Runs the app's action."""
         return self.action("duplicate-slide", slide=slide)
 
+    def duplicate_slide_many(self, items: list[DuplicateSlideArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("duplicate-slide", items)
+
     def delete_slide(self, *, slide: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-slide", slide=slide)
+
+    def delete_slide_many(self, items: list[DeleteSlideArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-slide", items)
 
     def move_slide(self,
         *,
@@ -217,6 +287,10 @@ class Deck(Resource):
         """Runs the app's action."""
         return self.action("insert-element", slide=slide, element=element)
 
+    def insert_element_many(self, items: list[InsertElementArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("insert-element", items)
+
     def delete_element(self,
         *,
         slide: str,
@@ -224,6 +298,10 @@ class Deck(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-element", slide=slide, element=element)
+
+    def delete_element_many(self, items: list[DeleteElementArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-element", items)
 
     def bring_to_front(self,
         *,
@@ -233,6 +311,10 @@ class Deck(Resource):
         """Runs the app's action."""
         return self.action("bring-to-front", slide=slide, element=element)
 
+    def bring_to_front_many(self, items: list[BringToFrontArgs]) -> list[dict[str, Any]]:
+        """Runs `bring-to-front` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("bring-to-front", items)
+
     def send_to_back(self,
         *,
         slide: str,
@@ -240,6 +322,10 @@ class Deck(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("send-to-back", slide=slide, element=element)
+
+    def send_to_back_many(self, items: list[SendToBackArgs]) -> list[dict[str, Any]]:
+        """Runs `send-to-back` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("send-to-back", items)
 
     def replace_deck(self,
         *,
@@ -256,6 +342,10 @@ class Deck(Resource):
             args["look"] = look
         args["slides"] = slides
         return self.action("replace-deck", **args)
+
+    def replace_deck_many(self, items: list[ReplaceDeckArgs]) -> list[dict[str, Any]]:
+        """Runs `replace-deck` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("replace-deck", items)
 
     def read_deck(self) -> None:
         """Runs the app's action."""

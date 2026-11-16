@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -25,6 +27,11 @@ __all__ = [
     "Folder",
     "Tree",
     "Recent",
+    "AddBookmarkArgs",
+    "RemoveBookmarkArgs",
+    "NoteArgs",
+    "MovedArgs",
+    "ForgetArgs",
 ]
 
 class Bookmark(TypedDict):
@@ -43,6 +50,38 @@ class Receipt(TypedDict):
 
 RecentUse = Literal["opened", "changed"]
 
+AddBookmarkArgs = TypedDict("AddBookmarkArgs", {
+    "place": "str",
+    "at": NotRequired["int | None"],
+})
+"""The arguments of `add-bookmark`."""
+
+RemoveBookmarkArgs = TypedDict("RemoveBookmarkArgs", {
+    "place": "str",
+})
+"""The arguments of `remove-bookmark`."""
+
+NoteArgs = TypedDict("NoteArgs", {
+    "device": "str",
+    "path": "str",
+    "last_use": "RecentUse",
+    "at_ms": "int",
+})
+"""The arguments of `note`."""
+
+MovedArgs = TypedDict("MovedArgs", {
+    "device": "str",
+    "from": "str",
+    "to": "str",
+})
+"""The arguments of `moved`."""
+
+ForgetArgs = TypedDict("ForgetArgs", {
+    "device": "str",
+    "path": "str",
+})
+"""The arguments of `forget`."""
+
 class Folder(Resource):
     """Folder — `files.folder`."""
     __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
@@ -60,9 +99,17 @@ class Folder(Resource):
             args["at"] = at
         return self.action("add-bookmark", **args)
 
+    def add_bookmark_many(self, items: list[AddBookmarkArgs]) -> list[dict[str, Any]]:
+        """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-bookmark", items)
+
     def remove_bookmark(self, *, place: str) -> Run | None:
         """Runs the app's action."""
         return self.action("remove-bookmark", place=place)
+
+    def remove_bookmark_many(self, items: list[RemoveBookmarkArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("remove-bookmark", items)
 
     def new_folder(self,
         *,
@@ -272,6 +319,10 @@ class Recent(Resource):
         """Runs the app's action."""
         return self.action("note", device=device, path=path, last_use=last_use, at_ms=at_ms)
 
+    def note_many(self, items: list[NoteArgs]) -> list[dict[str, Any]]:
+        """Runs `note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("note", items)
+
     def moved(self,
         *,
         device: str,
@@ -285,6 +336,10 @@ class Recent(Resource):
         args["to"] = to
         return self.action("moved", **args)
 
+    def moved_many(self, items: list[MovedArgs]) -> list[dict[str, Any]]:
+        """Runs `moved` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("moved", items)
+
     def forget(self,
         *,
         device: str,
@@ -292,5 +347,9 @@ class Recent(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("forget", device=device, path=path)
+
+    def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
+        """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("forget", items)
 
 

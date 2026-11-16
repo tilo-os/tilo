@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -53,6 +55,27 @@ __all__ = [
     "Stroke",
     "Document",
     "SignatureProfile",
+    "RecordReadingPositionArgs",
+    "StartPagePlanArgs",
+    "PinSourceArgs",
+    "AdoptExistingArgs",
+    "ImportPagesArgs",
+    "DuplicatePageArgs",
+    "DeletePageArgs",
+    "MovePageArgs",
+    "RotatePageArgs",
+    "AddAnnotationArgs",
+    "DeleteAnnotationArgs",
+    "CreateNoteArgs",
+    "AddNoteArgs",
+    "AddCommentArgs",
+    "ReplyArgs",
+    "DeleteCommentArgs",
+    "AddSignatureArgs",
+    "AddTypedSignatureArgs",
+    "DeleteSignatureArgs",
+    "SetSignerArgs",
+    "SetStrokesArgs",
 ]
 
 class AdoptedAnnotation(TypedDict):
@@ -252,6 +275,123 @@ class PdfText(TypedDict):
 class Stroke(TypedDict):
     xy: list[float]
 
+RecordReadingPositionArgs = TypedDict("RecordReadingPositionArgs", {
+    "page": "str",
+    "fraction": "float",
+    "zoom": "float",
+})
+"""The arguments of `record-reading-position`."""
+
+StartPagePlanArgs = TypedDict("StartPagePlanArgs", {
+    "pages": "int",
+})
+"""The arguments of `start-page-plan`."""
+
+PinSourceArgs = TypedDict("PinSourceArgs", {
+    "source": "Any",
+    "name": "str",
+})
+"""The arguments of `pin-source`."""
+
+AdoptExistingArgs = TypedDict("AdoptExistingArgs", {
+    "source": "str",
+    "markup": "ExistingMarkup",
+})
+"""The arguments of `adopt-existing`."""
+
+ImportPagesArgs = TypedDict("ImportPagesArgs", {
+    "after": NotRequired["str | None"],
+    "pages": "list[PagePlanEntry]",
+})
+"""The arguments of `import-pages`."""
+
+DuplicatePageArgs = TypedDict("DuplicatePageArgs", {
+    "page": "str",
+    "copy": NotRequired["str | None"],
+})
+"""The arguments of `duplicate-page`."""
+
+DeletePageArgs = TypedDict("DeletePageArgs", {
+    "page": "str",
+})
+"""The arguments of `delete-page`."""
+
+MovePageArgs = TypedDict("MovePageArgs", {
+    "page": "str",
+    "after": NotRequired["str | None"],
+})
+"""The arguments of `move-page`."""
+
+RotatePageArgs = TypedDict("RotatePageArgs", {
+    "page": "str",
+})
+"""The arguments of `rotate-page`."""
+
+AddAnnotationArgs = TypedDict("AddAnnotationArgs", {
+    "annotation": "NewAnnotation",
+})
+"""The arguments of `add-annotation`."""
+
+DeleteAnnotationArgs = TypedDict("DeleteAnnotationArgs", {
+    "annotation": "str",
+})
+"""The arguments of `delete-annotation`."""
+
+CreateNoteArgs = TypedDict("CreateNoteArgs", {
+    "note": "NewNote",
+})
+"""The arguments of `create-note`."""
+
+AddNoteArgs = TypedDict("AddNoteArgs", {
+    "text": "str",
+    "page": NotRequired["int | None"],
+})
+"""The arguments of `add-note`."""
+
+AddCommentArgs = TypedDict("AddCommentArgs", {
+    "comment": "NewComment",
+})
+"""The arguments of `add-comment`."""
+
+ReplyArgs = TypedDict("ReplyArgs", {
+    "comment": "str",
+    "text": "str",
+    "id": NotRequired["str | None"],
+    "rich": NotRequired["list[ClipBlock] | None"],
+})
+"""The arguments of `reply`."""
+
+DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
+    "comment": "str",
+})
+"""The arguments of `delete-comment`."""
+
+AddSignatureArgs = TypedDict("AddSignatureArgs", {
+    "signature": "NewSignature",
+})
+"""The arguments of `add-signature`."""
+
+AddTypedSignatureArgs = TypedDict("AddTypedSignatureArgs", {
+    "signer": NotRequired["str | None"],
+    "page": NotRequired["int | None"],
+})
+"""The arguments of `add-typed-signature`."""
+
+DeleteSignatureArgs = TypedDict("DeleteSignatureArgs", {
+    "signature": "str",
+})
+"""The arguments of `delete-signature`."""
+
+SetSignerArgs = TypedDict("SetSignerArgs", {
+    "name": "str",
+})
+"""The arguments of `set-signer`."""
+
+SetStrokesArgs = TypedDict("SetStrokesArgs", {
+    "strokes": "list[list[Any]]",
+})
+"""The arguments of `set-strokes`."""
+
 class Document(Resource):
     """PDF — `pdf.document`."""
     __surface__ = "so.tilo.pdf-viewer@df5c8c476ed389e7"
@@ -293,9 +433,17 @@ class Document(Resource):
         """Runs the app's action."""
         return self.action("record-reading-position", page=page, fraction=fraction, zoom=zoom)
 
+    def record_reading_position_many(self, items: list[RecordReadingPositionArgs]) -> list[dict[str, Any]]:
+        """Runs `record-reading-position` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-reading-position", items)
+
     def start_page_plan(self, *, pages: int) -> Run | None:
         """Runs the app's action."""
         return self.action("start-page-plan", pages=pages)
+
+    def start_page_plan_many(self, items: list[StartPagePlanArgs]) -> list[dict[str, Any]]:
+        """Runs `start-page-plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("start-page-plan", items)
 
     def pin_source(self,
         *,
@@ -305,6 +453,10 @@ class Document(Resource):
         """Runs the app's action."""
         return self.action("pin-source", source=source, name=name)
 
+    def pin_source_many(self, items: list[PinSourceArgs]) -> list[dict[str, Any]]:
+        """Runs `pin-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("pin-source", items)
+
     def adopt_existing(self,
         *,
         source: str,
@@ -312,6 +464,10 @@ class Document(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("adopt-existing", source=source, markup=markup)
+
+    def adopt_existing_many(self, items: list[AdoptExistingArgs]) -> list[dict[str, Any]]:
+        """Runs `adopt-existing` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("adopt-existing", items)
 
     def import_pages(self,
         *,
@@ -325,6 +481,10 @@ class Document(Resource):
         args["pages"] = pages
         return self.action("import-pages", **args)
 
+    def import_pages_many(self, items: list[ImportPagesArgs]) -> list[dict[str, Any]]:
+        """Runs `import-pages` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("import-pages", items)
+
     def duplicate_page(self,
         *,
         page: str,
@@ -337,9 +497,17 @@ class Document(Resource):
             args["copy"] = copy
         return self.action("duplicate-page", **args)
 
+    def duplicate_page_many(self, items: list[DuplicatePageArgs]) -> list[dict[str, Any]]:
+        """Runs `duplicate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("duplicate-page", items)
+
     def delete_page(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-page", page=page)
+
+    def delete_page_many(self, items: list[DeletePageArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-page", items)
 
     def move_page(self,
         *,
@@ -353,21 +521,41 @@ class Document(Resource):
             args["after"] = after
         return self.action("move-page", **args)
 
+    def move_page_many(self, items: list[MovePageArgs]) -> list[dict[str, Any]]:
+        """Runs `move-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("move-page", items)
+
     def rotate_page(self, *, page: str) -> Run | None:
         """Runs the app's action."""
         return self.action("rotate-page", page=page)
+
+    def rotate_page_many(self, items: list[RotatePageArgs]) -> list[dict[str, Any]]:
+        """Runs `rotate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("rotate-page", items)
 
     def add_annotation(self, *, annotation: NewAnnotation) -> Run | None:
         """Runs the app's action."""
         return self.action("add-annotation", annotation=annotation)
 
+    def add_annotation_many(self, items: list[AddAnnotationArgs]) -> list[dict[str, Any]]:
+        """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-annotation", items)
+
     def delete_annotation(self, *, annotation: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-annotation", annotation=annotation)
 
+    def delete_annotation_many(self, items: list[DeleteAnnotationArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-annotation", items)
+
     def create_note(self, *, note: NewNote) -> Run | None:
         """Runs the app's action."""
         return self.action("create-note", note=note)
+
+    def create_note_many(self, items: list[CreateNoteArgs]) -> list[dict[str, Any]]:
+        """Runs `create-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("create-note", items)
 
     def add_note(self,
         *,
@@ -381,9 +569,17 @@ class Document(Resource):
             args["page"] = page
         return self.action("add-note", **args)
 
+    def add_note_many(self, items: list[AddNoteArgs]) -> list[dict[str, Any]]:
+        """Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-note", items)
+
     def add_comment(self, *, comment: NewComment) -> Run | None:
         """Runs the app's action."""
         return self.action("add-comment", comment=comment)
+
+    def add_comment_many(self, items: list[AddCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-comment", items)
 
     def reply(self,
         *,
@@ -402,13 +598,25 @@ class Document(Resource):
             args["rich"] = rich
         return self.action("reply", **args)
 
+    def reply_many(self, items: list[ReplyArgs]) -> list[dict[str, Any]]:
+        """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("reply", items)
+
     def delete_comment(self, *, comment: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-comment", comment=comment)
 
+    def delete_comment_many(self, items: list[DeleteCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-comment", items)
+
     def add_signature(self, *, signature: NewSignature) -> Run | None:
         """Runs the app's action."""
         return self.action("add-signature", signature=signature)
+
+    def add_signature_many(self, items: list[AddSignatureArgs]) -> list[dict[str, Any]]:
+        """Runs `add-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-signature", items)
 
     def add_typed_signature(self,
         *,
@@ -423,9 +631,17 @@ class Document(Resource):
             args["page"] = page
         return self.action("add-typed-signature", **args)
 
+    def add_typed_signature_many(self, items: list[AddTypedSignatureArgs]) -> list[dict[str, Any]]:
+        """Runs `add-typed-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("add-typed-signature", items)
+
     def delete_signature(self, *, signature: str) -> Run | None:
         """Runs the app's action."""
         return self.action("delete-signature", signature=signature)
+
+    def delete_signature_many(self, items: list[DeleteSignatureArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("delete-signature", items)
 
     def read_text(self,
         *,
@@ -467,8 +683,16 @@ class SignatureProfile(Resource):
         """Runs the app's action."""
         return self.action("set-signer", name=name)
 
+    def set_signer_many(self, items: list[SetSignerArgs]) -> list[dict[str, Any]]:
+        """Runs `set-signer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-signer", items)
+
     def set_strokes(self, *, strokes: list[list[Any]]) -> Run | None:
         """Runs the app's action."""
         return self.action("set-strokes", strokes=strokes)
+
+    def set_strokes_many(self, items: list[SetStrokesArgs]) -> list[dict[str, Any]]:
+        """Runs `set-strokes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("set-strokes", items)
 
 

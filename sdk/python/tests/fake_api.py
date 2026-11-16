@@ -15,9 +15,11 @@ from urllib.parse import unquote
 import httpx
 
 from tilo.types.pdf_viewer import Document
+from tilo.types.tasks import Tracker
 
 TODO = "notes/Todo"
 PDF = "pdf-viewer/application.pdf"
+TASKS = "tasks/Tracker"
 
 WORKSPACE_ID = "11111111-2222-3333-4444-555555555555"
 OTHER_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
@@ -90,10 +92,17 @@ class FakeApi:
                 "page_count": 3,
                 "form_values": {"surname": "Doe", "given_name": "Jane"},
             },
+            TASKS: {"issues": {}},
         }
-        self.kinds = {TODO: "notes.Page", PDF: "pdf-viewer.Document"}
+        self.kinds = {
+            TODO: "notes.Page",
+            PDF: "pdf-viewer.Document",
+            TASKS: "tasks.tracker",
+        }
         # Each app's published surface, by app id.
-        self.surfaces = {"pdf-viewer": SURFACE}
+        self.surfaces = {"pdf-viewer": SURFACE, "tasks": Tracker.__surface__}
+        # The bulk calls the SDK made: each resource, and the members it sent.
+        self.groups: list[dict[str, Any]] = []
         self.keys: list[dict[str, Any]] = [
             {
                 "grant": "g-root",
@@ -543,6 +552,19 @@ class FakeApi:
                 [f"write the types again: tilo sdk gen -w {WORKSPACE_ID}"],
             )
         args = json.loads(call["body"] or b"{}")
+        if action == "group":
+            members = args.get("actions")
+            if not isinstance(members, list):
+                return self.refuse(
+                    422, "invalid_arguments", "`actions` is a list of invocations", []
+                )
+            for member in members:
+                at = f"{path}#{member.get('action')}"
+                self.ran[at] = self.ran.get(at, 0) + 1
+            self.groups.append({"path": path, "actions": members})
+            return self.done(
+                f"{path}#group", {"applied": len(members)}, [path], link_to(path)
+            )
         if action == "field-edit":
             self.apply_edit(path, args.get("edit") or {})
             self.ran[at] = self.ran.get(at, 0) + 1

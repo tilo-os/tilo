@@ -12,9 +12,16 @@
  * another surface refuses the call (`SurfaceChanged`) instead of running it.
  */
 
-import type { Event } from "./models.ts";
+import { currentGroup } from "./endpoint.ts";
+import type { ActionAnswer, Event } from "./models.ts";
 import { ProtocolError } from "./errors.ts";
 import type { Workspace } from "./workspace.ts";
+
+/** The suffix a generated bulk call's method carries: `createMany`. */
+const MANY_SUFFIX = "Many";
+/** A bulk call's bounds: at most this many members, and about this much JSON, per call. */
+const MANY_MEMBERS = 500;
+const MANY_BYTES = 4 * 1024 * 1024;
 
 /** One step of a field path: a field's name, a map key, or `{item: id}`. */
 export type Step = string | Record<string, unknown>;
@@ -38,6 +45,8 @@ export interface Resource {
   refresh(): Promise<Resource>;
   flush(): Promise<void>;
   action(name: string, args?: Record<string, unknown>): Promise<unknown>;
+  /** Run an action for each of `items`, a few all-or-nothing calls at most. */
+  many(action: string, items: Record<string, unknown>[]): Promise<ActionAnswer[]>;
   edit(steps: Step[], value: unknown, op?: string): Promise<unknown>;
   remove(...steps: Step[]): Promise<unknown>;
   watch(): AsyncGenerator<Event>;
@@ -139,6 +148,34 @@ function wrapMap(
   });
 }
 
+/** What a bulk call is made of: one action's arguments. */
+interface Member {
+  action: string;
+  args: Record<string, unknown>;
+}
+
+/** `members` in the calls a bulk call sends: at most `MANY_MEMBERS` and `MANY_BYTES`. */
+function chunksOf(members: Member[]): Member[][] {
+  const chunks: Member[][] = [];
+  const encoder = new TextEncoder();
+  let chunk: Member[] = [];
+  let size = 0;
+  for (const member of members) {
+    const weight = encoder.encode(JSON.stringify(member)).length;
+    if (chunk.length > 0 && (chunk.length >= MANY_MEMBERS || size + weight > MANY_BYTES)) {
+      chunks.push(chunk);
+      chunk = [];
+      size = 0;
+    }
+    chunk.push(member);
+    size += weight + 1;
+  }
+  if (chunk.length > 0) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
 function wrap(impl: ResourceImpl, steps: Step[], value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item, index) => wrap(impl, [...steps, String(index)], item));
@@ -227,6 +264,35 @@ class ResourceImpl {
     return this.workspace.call(`${this.path}#${kebab(name)}`, args, this.surface);
   }
 
+  /**
+   * Run `action` for each of `items`, a few calls at most. Each call applies
+   * up to 500 items (and about 4 MiB of JSON) as one all-or-nothing step, so
+   * if any one of them refuses none of that call applies. Every call is the
+   * same run: History lists it once and one undo takes it back. An empty list
+   * sends nothing. Answers each call's answer.
+   */
+  async many(action: string, items: Record<string, unknown>[]): Promise<ActionAnswer[]> {
+    const members = items.map((args) => ({ action, args }));
+    if (members.length === 0) {
+      return [];
+    }
+    const send = async (): Promise<ActionAnswer[]> => {
+      const answers: ActionAnswer[] = [];
+      for (const chunk of chunksOf(members)) {
+        answers.push(
+          await (await this.workspace.endpoint()).group(this.path, chunk, this.surface),
+        );
+      }
+      return answers;
+    };
+    // The chunks are one run, as `ws.run(...)` would make them one; calls
+    // already inside a run join that one instead.
+    if (currentGroup() !== null) {
+      return send();
+    }
+    return this.workspace.run(`${action} (${members.length})`, send);
+  }
+
   async edit(steps: Step[], value: unknown, op = "set"): Promise<unknown> {
     return this.workspace.call(
       `${this.path}#field-edit`,
@@ -286,6 +352,10 @@ class ResourceImpl {
     const key = this.wireKey(name);
     if (this.has(key)) {
       return wrap(this, [key], (this.#answer.fields as Record<string, unknown>)[key]);
+    }
+    if (name.length > MANY_SUFFIX.length && name.endsWith(MANY_SUFFIX)) {
+      const action = kebab(name.slice(0, -MANY_SUFFIX.length));
+      return (items: Record<string, unknown>[] = []) => this.many(action, items);
     }
     return (args: Record<string, unknown> = {}) => this.action(name, args);
   }

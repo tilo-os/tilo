@@ -11,7 +11,9 @@
  * longer answers a `Run`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
- * says where it is.
+ * says where it is. An undoable action that answers nothing also has a `<action>Many`,
+which applies it to every argument object of a list in a few all-or-nothing steps,
+all of them one run.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -32,6 +34,20 @@ export interface Measurement {
   device: string;
 }
 
+/** The arguments of `record`. */
+export interface RecordArgs {
+  ping: number;
+  jitter: number;
+  download: number;
+  upload: number;
+  server: string;
+  device: string;
+}
+
+/** The arguments of `clear`. */
+export interface ClearArgs {
+}
+
 /** Internet speed test — `speed-test.results`. */
 export interface Results extends tilo.Resource {
   readonly results: Measurement[];
@@ -43,7 +59,11 @@ export interface Results extends tilo.Resource {
     server: string;
     device: string;
   }): Promise<tilo.Run | void>;
+  /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   clear(): Promise<tilo.Run | void>;
+  /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The `speed-test.results` kind at `path`. */

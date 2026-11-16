@@ -9,12 +9,14 @@ and its methods are its actions. A method answers what the app declares; an acti
 that takes longer answers a `Run`. A record is the dict the wire carries, and an
 enum whose cases carry fields is an object whose tag the app's schema names. An
 action whose name is one the class already has is run with `action("…")`, which
-the file says where it is.
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one run.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Resource, Run
 
 __all__ = [
@@ -22,6 +24,12 @@ __all__ = [
     "HunkChoice",
     "MergeInputs",
     "Session",
+    "OpenComparisonArgs",
+    "OpenMergeArgs",
+    "TakeOursArgs",
+    "TakeTheirsArgs",
+    "TakeBothArgs",
+    "ResolveArgs",
 ]
 
 class Comparison(TypedDict):
@@ -39,6 +47,45 @@ class MergeInputs(TypedDict):
     ours: str
     theirs_label: str
     theirs: str
+
+OpenComparisonArgs = TypedDict("OpenComparisonArgs", {
+    "left_label": "str",
+    "left": "str",
+    "right_label": "str",
+    "right": "str",
+})
+"""The arguments of `open-comparison`."""
+
+OpenMergeArgs = TypedDict("OpenMergeArgs", {
+    "base_label": "str",
+    "base": "str",
+    "ours_label": "str",
+    "ours": "str",
+    "theirs_label": "str",
+    "theirs": "str",
+})
+"""The arguments of `open-merge`."""
+
+TakeOursArgs = TypedDict("TakeOursArgs", {
+    "hunk": "int",
+})
+"""The arguments of `take-ours`."""
+
+TakeTheirsArgs = TypedDict("TakeTheirsArgs", {
+    "hunk": "int",
+})
+"""The arguments of `take-theirs`."""
+
+TakeBothArgs = TypedDict("TakeBothArgs", {
+    "hunk": "int",
+})
+"""The arguments of `take-both`."""
+
+ResolveArgs = TypedDict("ResolveArgs", {
+    "hunk": "int",
+    "text": "str",
+})
+"""The arguments of `resolve`."""
 
 class Session(Resource):
     """Diff & Merge — `diffmerge.session`."""
@@ -71,6 +118,10 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("open-comparison", left_label=left_label, left=left, right_label=right_label, right=right)
 
+    def open_comparison_many(self, items: list[OpenComparisonArgs]) -> list[dict[str, Any]]:
+        """Runs `open-comparison` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-comparison", items)
+
     def open_merge(self,
         *,
         base_label: str,
@@ -83,17 +134,33 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("open-merge", base_label=base_label, base=base, ours_label=ours_label, ours=ours, theirs_label=theirs_label, theirs=theirs)
 
+    def open_merge_many(self, items: list[OpenMergeArgs]) -> list[dict[str, Any]]:
+        """Runs `open-merge` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("open-merge", items)
+
     def take_ours(self, *, hunk: int) -> Run | None:
         """Runs the app's action."""
         return self.action("take-ours", hunk=hunk)
+
+    def take_ours_many(self, items: list[TakeOursArgs]) -> list[dict[str, Any]]:
+        """Runs `take-ours` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("take-ours", items)
 
     def take_theirs(self, *, hunk: int) -> Run | None:
         """Runs the app's action."""
         return self.action("take-theirs", hunk=hunk)
 
+    def take_theirs_many(self, items: list[TakeTheirsArgs]) -> list[dict[str, Any]]:
+        """Runs `take-theirs` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("take-theirs", items)
+
     def take_both(self, *, hunk: int) -> Run | None:
         """Runs the app's action."""
         return self.action("take-both", hunk=hunk)
+
+    def take_both_many(self, items: list[TakeBothArgs]) -> list[dict[str, Any]]:
+        """Runs `take-both` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("take-both", items)
 
     def resolve(self,
         *,
@@ -102,5 +169,9 @@ class Session(Resource):
     ) -> Run | None:
         """Runs the app's action."""
         return self.action("resolve", hunk=hunk, text=text)
+
+    def resolve_many(self, items: list[ResolveArgs]) -> list[dict[str, Any]]:
+        """Runs `resolve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("resolve", items)
 
 
