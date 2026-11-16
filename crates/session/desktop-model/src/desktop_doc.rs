@@ -268,7 +268,6 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 }
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
-    let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     match ws.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
@@ -670,14 +669,10 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
     let entries = workspace_entries(doc);
     let mut rebuilt: Vec<Workspace> = Vec::with_capacity(entries.len());
     for (id, entry) in &entries {
-        let name = doc.str_at(entry, "name").unwrap_or_default();
+        // The name stays as the shell projected it from the workspace's governance.
         let mut ws = match desktop.workspaces.iter().position(|w| w.id() == *id) {
-            Some(existing) => {
-                let mut existing = desktop.workspaces.remove(existing);
-                existing.name = name;
-                existing
-            }
-            None => Workspace::new(*id, name),
+            Some(existing) => desktop.workspaces.remove(existing),
+            None => Workspace::new(*id, String::new()),
         };
         let (owner, grants) = read_policy(doc, entry);
         if let Some(owner) = owner {

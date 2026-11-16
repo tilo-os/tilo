@@ -167,14 +167,16 @@ fn a_workspace_put_on_the_shell_in_the_background_leaves_the_person_where_they_a
     assert_eq!(front, arrived, "a person who joins a workspace lands in it");
 }
 
-/// Naming the workspace in front takes the name onto the shell and asks the
-/// host to write it where the workspace keeps it, so every other device and
-/// list of it names it the same.
+/// Naming the workspace in front asks the host to write the name where the
+/// workspace keeps it, its governance, so every device and list of it names it
+/// the same; the shell keeps no name of its own and shows the governance's,
+/// projected onto it, until the governance takes the new one.
 #[test]
 fn renaming_the_workspace_asks_the_host_to_keep_the_name() {
     en();
     let (mut chrome, handle) = chrome_over_a_shell();
     let workspace = front_and_held(&handle).0;
+    let named = handle.read(|tree| tree.active_workspace().map(|held| held.name.clone()));
     let rename = ChromeEffect::Rename {
         tab: None,
         group: None,
@@ -185,7 +187,7 @@ fn renaming_the_workspace_asks_the_host_to_keep_the_name() {
     assert_eq!(chrome.perform(&rename), Ok(true));
     assert_eq!(
         handle.read(|tree| tree.active_workspace().map(|held| held.name.clone())),
-        Some("Tilo".to_owned())
+        named
     );
     assert_eq!(
         chrome.take_asks(),

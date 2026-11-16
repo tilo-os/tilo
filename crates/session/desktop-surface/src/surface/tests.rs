@@ -746,16 +746,18 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.focus_tab(stream));
     surface.update(&state, &ui::automerge::ROOT);
     let before = handle.snapshot("g", vec![]).active;
+    let named = local.workspaces[0].name.clone();
     let mut incoming = local;
     incoming.remove_tab(stream);
     incoming.remove_tab(removed);
-    incoming.workspaces[0].name = "Shared rename".into();
+    // What the workspace sends carries no name: the one this shell projected stays.
+    incoming.workspaces[0].name = String::new();
     // Reproduce the browser's inbound snapshot replacement.
     handle.replace_shared_tree(incoming, &[stream]);
     surface.update(&state, &ui::automerge::ROOT);
     assert_eq!(handle.snapshot("g", vec![]).active, before);
     handle.read(|tree| {
-        assert_eq!(tree.workspaces[0].name, "Shared rename");
+        assert_eq!(tree.workspaces[0].name, named);
         let tabs: Vec<_> = tree.workspaces[0].strips[0]
             .window_groups
             .iter()
