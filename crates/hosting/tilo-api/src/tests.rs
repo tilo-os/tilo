@@ -825,6 +825,18 @@ async fn a_key_operates_web_pages_in_browser_unless_its_person_says_no() {
     assert!(!grant.browser_pages);
 }
 
+/// The grants page says, beside the keys, which of them ask before each
+/// command in a workspace's machine: it keeps no workspace's setting itself.
+#[test]
+fn the_grants_page_says_which_keys_ask_before_each_command() {
+    let page = pages::grants(&[], &HashMap::new(), "csrf");
+    assert!(
+        page.contains("unless you let that workspace's own keys run commands unattended")
+            && page.contains("a key for all your workspaces always asks"),
+        "{page}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     const DAY_MS: u64 = 24 * 60 * 60 * 1000;
@@ -891,10 +903,6 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
         "{page}"
     );
     assert!(page.contains("name=\"browser_pages\""), "{page}");
-    assert!(
-        page.contains("unless you let that workspace's own keys run commands unattended"),
-        "what runs unasked in a workspace's machine: {page}"
-    );
     assert!(
         page.contains("The key opens, fills in and clicks the page without asking you"),
         "{page}"
