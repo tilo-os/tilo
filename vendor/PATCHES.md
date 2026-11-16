@@ -1,5 +1,13 @@
 # Patches against upstream
 
+## hexane slab splits give back the capacity they no longer use
+
+`hexane` 1.0.0-alpha.5 loads a column as one slab and splits it on inserts with
+`split_off` and `truncate`, so each left half kept the whole slab's capacity. A
+synced folder's tree, edited once per file written into the folder, grew from
+1 GB to 4 GB in a minute during a git checkout. `vendor/hexane` shrinks the left
+half after a split; see `vendor/hexane/TILO-PATCH.md`.
+
 ## iroh relay handshake without its confirmation's round trip
 
 `iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in

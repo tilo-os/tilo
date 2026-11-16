@@ -458,7 +458,7 @@ doc = false
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "hex-editor" = { path = "../../../apps/hex-editor", default-features = false, features = ["samples"] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
-"hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
+"hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
 "hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
 "hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
@@ -1942,7 +1942,7 @@ doc = false
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "hex-literal-0_3_4" = { package = "hex-literal", version = "^0.3.4", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
-"hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
+"hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
 "hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
 "hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
@@ -3062,7 +3062,7 @@ doc = false
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "hex-editor" = { path = "../../../apps/hex-editor", default-features = false, features = ["samples"] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
-"hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
+"hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
 "hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
 "hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }
@@ -4571,7 +4571,7 @@ doc = false
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
 "hex-literal-0_3_4" = { package = "hex-literal", version = "^0.3.4", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
-"hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
+"hexane-1_0_0-alpha_5" = { package = "hexane", path = "../../../vendor/hexane", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
 "hickory-net-0_26_3" = { package = "hickory-net", version = "^0.26.3", default-features = false, features = ["__https", "__tls", "https-ring", "tls-ring", "tokio"] }
 "hickory-proto-0_26_3" = { package = "hickory-proto", version = "^0.26.3", default-features = false, features = ["access-control", "std"] }

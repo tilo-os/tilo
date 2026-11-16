@@ -3,6 +3,7 @@
 # member names it by path, and a member's dev-dependencies then build with every workspace build.
 exclude = [
     "vendor/leveldb-sys",
+    "vendor/hexane",
     "vendor/buffa-build",
     "vendor/rig-core",
     "tools/web/wasm-split",
@@ -1568,6 +1569,10 @@ lto = "off"
 [patch.crates-io]
 # Chromium origin storage reader: bundled engine provenance in vendor/leveldb-sys.
 leveldb-sys = { path = "vendor/leveldb-sys" }
+# A slab split gives back the capacity its left half no longer uses, so a document edited
+# after it loaded holds what it holds, not every buffer its columns were. See
+# vendor/hexane/TILO-PATCH.md.
+hexane = { path = "vendor/hexane" }
 # Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
 # Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
 rig-core = { path = "vendor/rig-core" }
