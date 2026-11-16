@@ -51,37 +51,37 @@ crate::effects::effect_family!(PersonSettingsEffect => answer);
 pub enum PersonSettingsEffect {
     /// Add the mail account the form names, once the host's sign-in check
     /// passed.
-    #[effect(job, row)]
+    #[effect(job)]
     AddMailAccount,
     /// Remove a mail account and the secret kept with it.
-    #[effect(job, row, destructive)]
+    #[effect(job, destructive)]
     RemoveMailAccount {
         #[param("The account's id, as the list names it")]
         account: String,
     },
     /// Add the provider the form names.
-    #[effect(job, row)]
+    #[effect(job)]
     AddProvider,
     /// Show the field that takes one provider's key.
-    #[effect(row)]
+    #[effect(view)]
     AskProviderKey {
         #[param("The provider's id, as the list names it")]
         provider: String,
     },
     /// Keep the key typed under one provider.
-    #[effect(job, row)]
+    #[effect(job)]
     SaveProviderKey {
         #[param("The provider's id, as the list names it")]
         provider: String,
     },
     /// Remove a provider's key.
-    #[effect(job, row, destructive)]
+    #[effect(job, destructive)]
     RemoveProviderKey {
         #[param("The provider's id, as the list names it")]
         provider: String,
     },
     /// Remove a provider and its key.
-    #[effect(job, row, destructive)]
+    #[effect(job, destructive)]
     RemoveProvider {
         #[param("The provider's id, as the list names it")]
         provider: String,
@@ -369,12 +369,16 @@ impl AccountsModel {
         changed
     }
 
+    /// Ask the host for the list again. The new request counts its
+    /// revisions from the start, so what was seen of the last one is
+    /// forgotten: else its answer reads as already taken.
     fn reread(&mut self) {
         self.listing = Some(self.remote.invoke(
             person_accounts::target(person_accounts::LIST),
             InvokeArgument::None,
             None,
         ));
+        self.seen.set(u64::MAX);
     }
 
     fn account_list(&self, cx: &ViewCx<Settings>) -> SettingsSection {
@@ -436,54 +440,42 @@ impl AccountsModel {
             &SettingsEffect::from(PersonSettingsEffect::AddMailAccount),
         );
         let mut form = vec![
-            field_row(
+            labelled_field(
                 &t("accounts-email"),
-                Box::new(
-                    TextInput::from_state(&self.form_address)
-                        .with_kind(TextInputKind::Email)
-                        .with_id("settings.web.accounts.address"),
-                ),
+                TextInput::from_state(&self.form_address)
+                    .with_kind(TextInputKind::Email)
+                    .with_id("settings.web.accounts.address"),
             ),
-            field_row(
+            labelled_field(
                 &t("settings-web-accounts-incoming"),
-                Box::new(
-                    TextInput::from_state(&self.form_incoming)
-                        .with_kind(TextInputKind::Url)
-                        .with_id("settings.web.accounts.incoming"),
-                ),
+                TextInput::from_state(&self.form_incoming)
+                    .with_kind(TextInputKind::Url)
+                    .with_id("settings.web.accounts.incoming"),
             ),
-            field_row(
+            labelled_field(
                 &t("settings-web-accounts-incoming-port"),
-                Box::new(
-                    TextInput::from_state(&self.form_incoming_port)
-                        .with_kind(TextInputKind::Number)
-                        .with_id("settings.web.accounts.incoming-port"),
-                ),
+                TextInput::from_state(&self.form_incoming_port)
+                    .with_kind(TextInputKind::Number)
+                    .with_id("settings.web.accounts.incoming-port"),
             ),
-            field_row(
+            labelled_field(
                 &t("settings-web-accounts-outgoing"),
-                Box::new(
-                    TextInput::from_state(&self.form_outgoing)
-                        .with_kind(TextInputKind::Url)
-                        .with_id("settings.web.accounts.outgoing"),
-                ),
+                TextInput::from_state(&self.form_outgoing)
+                    .with_kind(TextInputKind::Url)
+                    .with_id("settings.web.accounts.outgoing"),
             ),
-            field_row(
+            labelled_field(
                 &t("settings-web-accounts-outgoing-port"),
-                Box::new(
-                    TextInput::from_state(&self.form_outgoing_port)
-                        .with_kind(TextInputKind::Number)
-                        .with_id("settings.web.accounts.outgoing-port"),
-                ),
+                TextInput::from_state(&self.form_outgoing_port)
+                    .with_kind(TextInputKind::Number)
+                    .with_id("settings.web.accounts.outgoing-port"),
             ),
-            field_row(
+            labelled_field(
                 &t("accounts-password"),
-                Box::new(
-                    TextInput::from_state(&self.form_password)
-                        .with_kind(TextInputKind::Password)
-                        .with_secret(true)
-                        .with_id("settings.web.accounts.password"),
-                ),
+                TextInput::from_state(&self.form_password)
+                    .with_kind(TextInputKind::Password)
+                    .with_secret(true)
+                    .with_id("settings.web.accounts.password"),
             ),
             row(Box::new(
                 Row::new().push(Box::new(add)).push(Box::new(Spacer::new())),
@@ -717,12 +709,16 @@ impl ProvidersModel {
         changed
     }
 
+    /// Ask the host for the list again. The new request counts its
+    /// revisions from the start, so what was seen of the last one is
+    /// forgotten: else its answer reads as already taken.
     fn reread(&mut self) {
         self.listing = Some(self.remote.invoke(
             person_models::target(person_models::LIST),
             InvokeArgument::None,
             None,
         ));
+        self.seen.set(u64::MAX);
     }
 
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
@@ -818,14 +814,12 @@ impl ProvidersModel {
                     provider: provider.id.clone(),
                 }),
             );
-            rows_.push(field_row(
+            rows_.push(labelled_field(
                 &t("settings-web-providers-key"),
-                Box::new(
-                    TextInput::from_state(&self.form_key)
-                        .with_kind(TextInputKind::Password)
-                        .with_secret(true)
-                        .with_id(&format!("settings.web.providers.key.{}", provider.id)),
-                ),
+                TextInput::from_state(&self.form_key)
+                    .with_kind(TextInputKind::Password)
+                    .with_secret(true)
+                    .with_id(&format!("settings.web.providers.key.{}", provider.id)),
             ));
             rows_.push(row(Box::new(
                 Row::new()
@@ -849,21 +843,17 @@ impl ProvidersModel {
         section(
             &t("settings-web-providers-add-title"),
             rows(vec![
-                field_row(
+                labelled_field(
                     &t("settings-web-providers-name"),
-                    Box::new(
-                        TextInput::from_state(&self.form_name)
-                            .with_kind(TextInputKind::Name)
-                            .with_id("settings.web.providers.name"),
-                    ),
+                    TextInput::from_state(&self.form_name)
+                        .with_kind(TextInputKind::Name)
+                        .with_id("settings.web.providers.name"),
                 ),
-                field_row(
+                labelled_field(
                     &t("settings-web-providers-endpoint"),
-                    Box::new(
-                        TextInput::from_state(&self.form_endpoint)
-                            .with_kind(TextInputKind::Url)
-                            .with_id("settings.web.providers.endpoint"),
-                    ),
+                    TextInput::from_state(&self.form_endpoint)
+                        .with_kind(TextInputKind::Url)
+                        .with_id("settings.web.providers.endpoint"),
                 ),
                 note(&t("settings-web-providers-endpoint-hint")),
                 row(Box::new(
@@ -872,6 +862,11 @@ impl ProvidersModel {
             ]),
         )
     }
+}
+
+/// `input` under its label, which also names it to assistive technology.
+fn labelled_field(label: &str, input: TextInput) -> Item {
+    field_row(label, Box::new(input.with_accessible_name(label)))
 }
 
 /// The host's answer to a request that has finished, or `None` while it
@@ -1011,6 +1006,44 @@ mod tests {
         ui::RemoteActions::with_host(door, Caller::local_person("owner"))
     }
 
+    /// The panes bind every request to a button on Settings' own resource,
+    /// so each is offered there: one offered only on a row is never among
+    /// the actions a window permits, and its button stays disabled for
+    /// every role.
+    #[test]
+    fn every_request_is_offered_where_its_button_binds_it() {
+        use ui::tilo_resource::Effect as _;
+        let offered: Vec<String> = PersonSettingsEffect::specs()
+            .into_iter()
+            .map(|spec| spec.id.clone())
+            .collect();
+        for effect in [
+            PersonSettingsEffect::AddMailAccount,
+            PersonSettingsEffect::RemoveMailAccount {
+                account: "ada@example.test".into(),
+            },
+            PersonSettingsEffect::AddProvider,
+            PersonSettingsEffect::AskProviderKey {
+                provider: "openai".into(),
+            },
+            PersonSettingsEffect::SaveProviderKey {
+                provider: "openai".into(),
+            },
+            PersonSettingsEffect::RemoveProviderKey {
+                provider: "openai".into(),
+            },
+            PersonSettingsEffect::RemoveProvider {
+                provider: "openai".into(),
+            },
+        ] {
+            assert!(
+                offered.iter().any(|id| id == effect.id()),
+                "{} is not offered on the resource: {offered:?}",
+                effect.id()
+            );
+        }
+    }
+
     /// The page shows the accounts and providers the host answered, and
     /// never a secret: the reading has no field for one.
     #[test]
@@ -1062,6 +1095,14 @@ mod tests {
         assert!(accounts.poll());
         assert_eq!(accounts.form_password.get(), "");
         assert!(accounts.notice.is_some());
+        // The list is read again, and what the host keeps now shows.
+        accounts.accounts.clear();
+        accounts.poll();
+        assert_eq!(
+            accounts.accounts,
+            vec![account()],
+            "the list is read again after an account is added"
+        );
     }
 
     /// A provider's key goes to the host and is never asked back: the pane
