@@ -604,13 +604,14 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
+    /// As a stored row spells them: `agent:cc` is an agent, a bare key a person.
     fn shell(people: &[(&str, &str)]) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
-        workspace.members_here(
-            people
-                .iter()
-                .map(|(id, name)| Member::named(collab_types::MemberId::person(*id), *name)),
-        );
+        workspace.members_here(people.iter().map(|(key, name)| {
+            let id = collab_types::MemberId::parse(key)
+                .unwrap_or_else(|| collab_types::MemberId::person(*key));
+            Member::named(id, *name)
+        }));
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());
