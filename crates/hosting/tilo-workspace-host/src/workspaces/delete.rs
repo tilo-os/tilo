@@ -70,7 +70,6 @@ impl Workspaces {
         .await
         .map_err(|error| error.to_string())??;
         self.inner.workspaces.lock().await.remove(workspace);
-        self.inner.ids.forget(workspace_id);
         // A workspace gone from here admits nobody at the handshake either.
         self.inner.host.access.forget_workspace(workspace_id);
         self.inner.direct.delete(workspace_id);

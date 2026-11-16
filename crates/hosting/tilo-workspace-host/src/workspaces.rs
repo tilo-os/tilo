@@ -32,7 +32,6 @@ mod bootstrap;
 mod branch;
 pub use branch::{BranchContent, Branched};
 mod channel_governance;
-mod index;
 mod mcp_server;
 pub(crate) use bootstrap::member_bootstrap;
 mod collaboration;
@@ -932,9 +931,9 @@ struct WorkspacesInner {
     #[cfg(test)]
     link_heard_capacity: std::sync::atomic::AtomicUsize,
     dir: PathBuf,
+    /// The workspaces governed here, each under its id spelled out: the one
+    /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
     workspaces: Arc<device_plane::WorkspacesMap>,
-    /// Where each workspace governed here is held, by its id (see [`index`]).
-    ids: index::IdIndex,
     /// The plane the workspaces answer their members' devices on, as this
     /// host's own device ([`device_plane`]).
     plane: tilo_peer_state::actions::ActionPlane,
@@ -1205,7 +1204,6 @@ impl Workspaces {
                 plane,
                 jobs,
                 workspaces,
-                ids: index::IdIndex::default(),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
@@ -1256,7 +1254,6 @@ impl Workspaces {
             );
         }
         *this.inner.workspaces.lock().await = workspaces;
-        this.inner.ids.reset(&this.inner.workspaces).await;
         let workspaces = this
             .inner
             .workspaces
@@ -1436,9 +1433,6 @@ impl Workspaces {
             .lock()
             .await
             .insert(summary.workspace.clone(), Arc::clone(&workspace));
-        self.inner
-            .ids
-            .note(summary.workspace_id, &summary.workspace);
         let mut governed = workspace.lock().await;
         self.settle(&mut governed).await?;
         self.name_own_host(&mut governed).await?;
@@ -1477,7 +1471,6 @@ impl Workspaces {
                 .map_err(|error| error.to_string())?;
         }
         self.inner.workspaces.lock().await.remove(workspace);
-        self.inner.ids.forget(governed.workspace_id());
         self.inner.direct.release(governed.workspace_id());
         self.inner
             .host

@@ -935,32 +935,19 @@ impl Workspaces {
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in workspaces {
-            let workspace = governed.lock().await;
-            if workspace.workspace_id() != workspace_id {
-                continue;
-            }
-            let host = &self.inner.host.cert;
-            let cert = workspace
-                .peer()
-                .certificates()
-                .into_iter()
-                .find(|cert| cert.device_public_key == *device)
-                .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
-            drop(workspace);
-            let asking = speaks_for_themselves(caller)
-                || (cert.capabilities.server_key && asks_as_person(caller, &cert));
-            return (asking && cert.user_public_key == *user).then_some((governed, cert));
-        }
-        None
+        let governed = self.held(workspace_id).await?;
+        let workspace = governed.lock().await;
+        let host = &self.inner.host.cert;
+        let cert = workspace
+            .peer()
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == *device)
+            .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
+        drop(workspace);
+        let asking = speaks_for_themselves(caller)
+            || (cert.capabilities.server_key && asks_as_person(caller, &cert));
+        (asking && cert.user_public_key == *user).then_some((governed, cert))
     }
 
     /// What `caller`, on the device `certificate` when the transport named

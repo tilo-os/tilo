@@ -135,30 +135,26 @@ impl Workspaces {
         }
     }
 
-    /// The uuid of the workspace governed here whose channels are
-    /// `workspace`; `None` for one not governed here.
+    /// The workspace `workspace` governed here, spelled as its listings and
+    /// files name it; `None` for one not governed here.
     pub async fn workspace_identity(&self, workspace: WorkspaceId) -> Option<String> {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .iter()
-            .map(|(identity, governed)| (identity.clone(), governed.clone()))
-            .collect::<Vec<_>>();
-        for (identity, governed) in workspaces {
-            if workspace == governed.lock().await.workspace_id() {
-                return Some(identity);
-            }
-        }
-        None
+        self.held(workspace).await.map(|_| workspace.to_string())
+    }
+
+    /// The workspace governed here under `workspace`: the host keeps each
+    /// under its id spelled out, so this is one lookup, never a walk.
+    pub(super) async fn held(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<Arc<tokio::sync::Mutex<super::GovernedWorkspace>>> {
+        let held = self.inner.workspaces.lock().await;
+        held.get(&workspace.to_string()).cloned()
     }
 
     /// The name of the workspace governed here whose channels are
     /// `workspace`; `None` for one not governed here.
     pub async fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
-        let identity = self.workspace_identity(workspace).await?;
-        let governed = self.inner.workspaces.lock().await.get(&identity)?.clone();
+        let governed = self.held(workspace).await?;
         let name = governed.lock().await.name();
         Some(name)
     }
@@ -168,25 +164,13 @@ impl Workspaces {
     /// the files it keeps for members. `None` for a workspace not governed here
     /// or content it does not keep.
     pub async fn kept_content(&self, workspace: WorkspaceId, hash: &str) -> Option<Vec<u8>> {
+        let identity = self.workspace_identity(workspace).await?;
         let sources = self.inner.content.get();
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .iter()
-            .map(|(identity, governed)| (identity.clone(), governed.clone()))
-            .collect::<Vec<_>>();
-        for (identity, governed) in workspaces {
-            if workspace == governed.lock().await.workspace_id() {
-                return sources.iter().find_map(|source| {
-                    source
-                        .read(&identity, "", hash)
-                        .filter(|bytes| tilo_content::verify(hash, bytes))
-                });
-            }
-        }
-        None
+        sources.iter().find_map(|source| {
+            source
+                .read(&identity, "", hash)
+                .filter(|bytes| tilo_content::verify(hash, bytes))
+        })
     }
 
     /// Every record of `workspace` the governor's copy holds (or of `only`
