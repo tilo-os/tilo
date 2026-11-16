@@ -39,6 +39,8 @@ mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
+#[path = "group_row_follow.rs"]
+mod follow;
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -176,6 +178,8 @@ pub struct GroupRow {
     rect: Rect,
     node_ids: Vec<NodeId>,
     laid_group_ids: Vec<u64>,
+    /// The runs as [`GroupRow::keep_in_view`] last saw them laid out.
+    kept_runs: Vec<follow::RunPlace>,
     last_cursor: Point,
     structure_dirty: bool,
     /// Windows back in their strip whose width must stand where the strip
@@ -914,6 +918,7 @@ impl GroupRow {
             rect: Rect::ZERO,
             node_ids: Vec::new(),
             laid_group_ids: Vec::new(),
+            kept_runs: Vec::new(),
             last_cursor: Point::ZERO,
             structure_dirty: false,
             settle_widths: Vec::new(),
@@ -1910,21 +1915,6 @@ impl GroupRow {
     fn move_timing(&self, source: MotionSource) -> crate::motion::Timing {
         let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         crate::motion::WindowMotion::MOVE.timing(crate::motion::Direction::Enter, motion, source)
-    }
-
-    /// Freeze the in-flight slide at `elapsed`, reporting whether there
-    /// was one to freeze. The curve runs on wall time, but an offscreen
-    /// render costs far more wall time per frame than the curve lasts, so
-    /// a capture harness stepping frames would only see start and end —
-    /// this lets it request a specific point (still production `draw`,
-    /// not a reconstruction). Not gated on `debug_assertions`: `shots`
-    /// walks scenario timelines through this and ships in release.
-    pub fn hold_shift_at(&mut self, elapsed: Duration) -> bool {
-        if self.moves.is_empty() {
-            return false;
-        }
-        self.shift_hold = Some(elapsed);
-        true
     }
 
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {

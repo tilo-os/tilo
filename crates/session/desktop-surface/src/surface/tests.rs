@@ -2708,6 +2708,54 @@ fn revealing_a_window_scrolls_it_into_view_and_leaves_focus_alone() {
     assert!(!handle.reveal_tab(9_999_999), "no window shows that tab");
 }
 
+/// A window the person moves along the strip from its menu stays wholly in view at each step: the
+/// strip follows it rather than leaving it cut at the edge.
+#[test]
+fn a_window_moved_along_the_strip_stays_in_view() {
+    let (surface, handle) = desktop(6);
+    handle.set_viewport_width(1440.0);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1440, 900),
+        Theme::dark(),
+    );
+    frame.relayout();
+    let first = handle.snapshot("g", vec![]).entries[0].route.clone();
+    let tab: TabId = first.tab.parse().unwrap();
+    assert!(handle.focus_tab(tab));
+    play_frames(&mut frame, 60);
+    for step in 1..6 {
+        handle
+            .choose_window_menu(tab, window_menu::MOVE_RIGHT, None)
+            .unwrap();
+        play_frames(&mut frame, 60);
+        assert!(in_view(&frame, tab), "in view after move {step}");
+    }
+    for step in 1..6 {
+        handle
+            .choose_window_menu(tab, window_menu::MOVE_LEFT, None)
+            .unwrap();
+        play_frames(&mut frame, 60);
+        assert!(in_view(&frame, tab), "in view after move back {step}");
+    }
+    // A window moved from its menu while another has the focus takes the focus along.
+    let last: TabId = handle.snapshot("g", vec![]).entries[5]
+        .route
+        .tab
+        .parse()
+        .unwrap();
+    assert!(
+        !in_view(&frame, last),
+        "the last window starts out of sight"
+    );
+    handle
+        .choose_window_menu(last, window_menu::MOVE_LEFT, None)
+        .unwrap();
+    play_frames(&mut frame, 60);
+    assert!(in_view(&frame, last), "the moved window comes into view");
+}
+
 /// Press, carry to `to` in small steps, and let go: the hand that drags a window.
 fn carry(frame: &mut ui::headless::FrameHarness, from: Point, to: Point) {
     frame.send(&ui::synthetic_input::cursor_moved(from.x, from.y));

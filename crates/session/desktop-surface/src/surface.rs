@@ -2118,6 +2118,10 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
+            // The window the person works in stays whole on its display wherever a move or a width
+            // change put it.
+            let focused = self.shared.borrow().tree.active_group_for(*strip);
+            row.keep_in_view(focused, ui::motion::frame_now(), reveal_source());
             let Some((_, group)) = reveal.filter(|(reveal_strip, _)| reveal_strip == strip) else {
                 continue;
             };
