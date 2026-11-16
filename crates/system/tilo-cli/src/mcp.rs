@@ -190,10 +190,22 @@ pub(crate) struct Connection<E> {
     served: tokio::sync::Mutex<Option<Arc<Served>>>,
 }
 
-/// The projection a connection serves, over the session it started on.
+/// The projection a connection serves, over the session it opened on. It holds that session
+/// weakly: the device's one session is [`Shared`]'s, and a session [`Shared`] let go of (it ended,
+/// and the device entered anew) goes then, not with the last agent connection that used it.
 struct Served {
-    session: Arc<Session>,
+    session: std::sync::Weak<Session>,
     server: McpServer<SessionActions>,
+}
+
+impl Served {
+    /// The session this serves over, while it is the device's and serves; or the one the person
+    /// stopped, which every call answers with why.
+    fn current(&self) -> Option<Arc<Session>> {
+        self.session
+            .upgrade()
+            .filter(|session| session.device.is_live() || session.stopped().is_some())
+    }
 }
 
 impl<E: Enter> Connection<E> {
@@ -205,24 +217,30 @@ impl<E: Enter> Connection<E> {
         }
     }
 
-    /// What this connection serves, once the device is in the workspace.
-    async fn served(&self) -> Result<Arc<Served>, String> {
+    /// What this connection serves, and the session it serves over, once the device is in the
+    /// workspace. A connection whose session ended (the host stopped admitting it, or the
+    /// computer slept through it) serves on over the one the device entered in its place, as the
+    /// same agent run.
+    async fn served(&self) -> Result<(Arc<Served>, Arc<Session>), String> {
         let mut held = self.served.lock().await;
-        if let Some(served) = held.as_ref() {
-            return Ok(Arc::clone(served));
+        if let Some(served) = held.as_ref()
+            && let Some(session) = served.current()
+        {
+            return Ok((Arc::clone(served), session));
         }
-        let session = self.shared.session(true).await?;
+        // Only a connection that starts enters again in place of a session the person stopped.
+        let session = self.shared.session(held.is_none()).await?;
         let device = self.shared.device.as_ref().map_err(Clone::clone)?;
-        let served = Arc::new(open(session, device, &self.run)?);
+        let served = Arc::new(open(&session, device, &self.run)?);
         *held = Some(Arc::clone(&served));
         drop(held);
-        Ok(served)
+        Ok((served, session))
     }
 }
 
 /// The projection over the workspace `session` is in, its actions asked of
 /// the workspace's host.
-fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, String> {
+fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, String> {
     let workspace_id = session.device.workspace_id();
     let user: [u8; 32] = hex::decode(&device.user)
         .ok()
@@ -233,7 +251,10 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
     let server = McpServer::new(actions, device.workspace.clone(), person)
         .with_surface(Surface::Agent)
         .with_agent_run(run, device.agent.clone());
-    Ok(Served { session, server })
+    Ok(Served {
+        session: Arc::downgrade(session),
+        server,
+    })
 }
 
 /// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
@@ -339,9 +360,9 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
                 .to_string(),
         );
     }
-    let served = connection.served().await.and_then(|served| {
+    let served = connection.served().await.and_then(|(served, session)| {
         // The person stopped this agent: its session ended for good, and every call says so.
-        match served.session.stopped() {
+        match session.stopped() {
             Some(stopped) => Err(stopped),
             None => Ok(served),
         }
