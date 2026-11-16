@@ -1756,6 +1756,17 @@ start_discord() {
 down() {
   local wipe=
   [[ ${1:-} == --wipe ]] && wipe=1
+  # Whoever stops a stack is named in its log: several programs and people
+  # may share a machine, and a stack that went away while someone used it
+  # must say who asked.
+  mkdir -p "$state/logs"
+  local caller=$PPID callers='' depth
+  for depth in 1 2 3 4; do
+    [[ $caller -gt 1 && -r /proc/$caller/cmdline ]] || break
+    callers+="${callers:+ <- }$caller $(tr '\0' ' ' < "/proc/$caller/cmdline" | cut -c1-200)"
+    caller=$(awk '/^PPid:/ {print $2}' "/proc/$caller/status" 2>/dev/null || echo 1)
+  done
+  printf '%s down%s in %s, called by %s\n' "$(date -u +%FT%TZ)" "${wipe:+ --wipe}" "$PWD" "$callers" >> "$state/logs/down.log"
   local name
   # Both kinds: the native processes, and the image mode's containers and
   # VM host.
