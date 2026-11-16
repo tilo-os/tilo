@@ -32,8 +32,6 @@ use {
     ui_core::record::DocumentCheckout,
 };
 
-use ui_core::permissions::MemberId;
-
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::launch::{Command, Helper, LaunchInput};
