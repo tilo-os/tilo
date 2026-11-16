@@ -2424,9 +2424,9 @@ mod tests {
     fn a_window_opened_before_the_layout_is_read_stays() {
         let (here, there) = (7, 9);
         let mut theirs = tilo_desktop_model::IdMinter::new(there);
-        let (mail, sent) = strip_of(&mut theirs, "Mail");
+        let (chat, sent) = strip_of(&mut theirs, "Chat");
         let mut doc = automerge::AutoCommit::new();
-        lay_out(&mut doc, vec![mail.clone()]);
+        lay_out(&mut doc, vec![chat.clone()]);
 
         let mut ours = tilo_desktop_model::IdMinter::new(here);
         let (notes, opened) = strip_of(&mut ours, "Notes");
@@ -2445,7 +2445,7 @@ mod tests {
         );
 
         let (files, later) = strip_of(&mut theirs, "Files");
-        lay_out(&mut doc, vec![mail, files]);
+        lay_out(&mut doc, vec![chat, files]);
         fold(&mut layout, &doc);
         assert_eq!(
             windows_of(&layout),
