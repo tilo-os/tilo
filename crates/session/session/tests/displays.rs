@@ -335,6 +335,46 @@ fn a_window_opening_beside_one_display_leaves_the_other_alone() {
     );
 }
 
+/// The pixels of `output` along its bottom edge from column `from` to `to`: where the strip's rail
+/// stands.
+fn bottom_edge(session: &mut Session, output: &str, (from, to): (i32, i32)) -> Vec<u8> {
+    let frame = session.compositor().screenshot(output).expect("a frame");
+    let width = usize::try_from(frame.width).unwrap();
+    let height = usize::try_from(frame.height).unwrap();
+    let columns = usize::try_from(from).unwrap() * 4..usize::try_from(to).unwrap() * 4;
+    (height - 16..height)
+        .flat_map(|row| frame.rgba[row * width * 4..][columns.clone()].to_vec())
+        .collect()
+}
+
+/// The strip's rail stands under the strip of the display the person works on, never across the
+/// seam onto the other display.
+#[test]
+fn the_strip_rail_stands_on_the_display_in_use() {
+    let _settled = ui::motion::testing::settled();
+    // One instant for the whole test: the rail a window's opening shows stays up while it is read.
+    tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+        let mut session = docked();
+        let mut client = client(&mut session);
+        let middle = (WIDTH / 2 - 40, WIDTH / 2 + 40);
+        let seam = (0, 40);
+        let empty = (
+            bottom_edge(&mut session, "HEADLESS-1", middle),
+            bottom_edge(&mut session, "HEADLESS-2", seam),
+        );
+        tab(&mut session, &mut client, "org.example.Left");
+        client.pump(&mut session, |session, _| {
+            display_of(session, "org.example.Left") == Some(0)
+                && bottom_edge(session, "HEADLESS-1", middle) != empty.0
+        });
+        assert_eq!(
+            bottom_edge(&mut session, "HEADLESS-2", seam),
+            empty.1,
+            "nothing of the rail stands on the other display"
+        );
+    });
+}
+
 #[test]
 fn new_windows_open_on_the_display_with_focus() {
     let _settled = ui::motion::testing::settled();

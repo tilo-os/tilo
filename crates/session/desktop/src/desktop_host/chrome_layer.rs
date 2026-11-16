@@ -1587,15 +1587,23 @@ impl DesktopChrome {
         false
     }
 
+    /// Where the strip ribbon and rail stand: under the bar on the display the person works on,
+    /// never across the seam.
+    fn navigation_area(&self) -> Rect {
+        self.working_display()
+            .map_or(self.content, |display| display.intersect(self.content))
+    }
+
     /// Read where the person is into the navigator, when the tree, the strip's pan, who is here,
-    /// the overview or the content area changed since it last read.
+    /// the overview or the area it stands in changed since it last read.
     fn observe_navigation(&mut self) {
         let covered = self.overview.is_open();
+        let area = self.navigation_area();
         let seen = (
             self.handle.navigation_revision(),
             self.rules.people_revision(),
             covered,
-            self.content,
+            area,
         );
         if self.navigator_seen.replace(seen) == Some(seen) {
             return;
@@ -1624,7 +1632,7 @@ impl DesktopChrome {
                 may_add: self.may_add_or_rename(true),
             },
         ));
-        self.navigator_frame = StripFrame::of_tree(&tree, self.content, (&shown, scroll), covered);
+        self.navigator_frame = StripFrame::of_tree(&tree, area, (&shown, scroll), covered);
         self.navigator
             .observe(&self.navigator_frame, ui::time::now());
     }
