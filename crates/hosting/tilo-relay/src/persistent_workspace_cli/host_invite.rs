@@ -77,41 +77,40 @@ async fn made(
     } else {
         None
     };
-    let (issued, expires_at_ns) = match held_before {
-        Some(held) => held,
-        None => {
-            let expires_at_ns = now.saturating_add(if owner {
-                OWNER_INVITATION_NS
-            } else {
-                INVITATION_NS
-            });
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"tilo host invitation");
-            hasher.update(workspace.as_bytes());
-            hasher.update(request.as_bytes());
-            hasher.update(&now.to_le_bytes());
-            let issued = workspaces
-                .invite_as_host(
-                    &workspace,
-                    HostInvitation {
-                        request_id: *hasher.finalize().as_bytes(),
-                        role: match role {
-                            InviteRole::Viewer => Role::Viewer,
-                            InviteRole::Commenter => Role::Commenter,
-                            InviteRole::Editor | InviteRole::Administrator | InviteRole::Owner => {
-                                Role::Editor
-                            }
-                        },
-                        administrator: role == InviteRole::Administrator,
-                        owner,
-                        invitee_name,
-                        expires_at_ns,
+    let (issued, expires_at_ns) = if let Some(held) = held_before {
+        held
+    } else {
+        let expires_at_ns = now.saturating_add(if owner {
+            OWNER_INVITATION_NS
+        } else {
+            INVITATION_NS
+        });
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo host invitation");
+        hasher.update(workspace.as_bytes());
+        hasher.update(request.as_bytes());
+        hasher.update(&now.to_le_bytes());
+        let issued = workspaces
+            .invite_as_host(
+                &workspace,
+                HostInvitation {
+                    request_id: *hasher.finalize().as_bytes(),
+                    role: match role {
+                        InviteRole::Viewer => Role::Viewer,
+                        InviteRole::Commenter => Role::Commenter,
+                        InviteRole::Editor | InviteRole::Administrator | InviteRole::Owner => {
+                            Role::Editor
+                        }
                     },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            (issued, expires_at_ns)
-        }
+                    administrator: role == InviteRole::Administrator,
+                    owner,
+                    invitee_name,
+                    expires_at_ns,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        (issued, expires_at_ns)
     };
     let link = link(links, &workspace, &issued.signed_invitation, expires_at_ns).await?;
     Ok(Some(OperatorEvent::Invited {
