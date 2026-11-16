@@ -94,7 +94,7 @@ use crate::host::CatalogueFactory;
 use crate::participant::actions::{Outcome, api_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
-use catch_up::catch_up;
+use catch_up::{catch_up, hold_parts};
 use collab_types::DocumentMutation;
 use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
@@ -828,6 +828,9 @@ struct Mounted {
     /// The records held beside it (the parts of a chain its app keeps), by
     /// route, with the heads of each merged last.
     parts: HashMap<DocumentRoute, Option<Vec<[u8; 32]>>>,
+    /// Parts of the app's chains this record keeps none of (another
+    /// record's chain): refused once, never handed to it again.
+    foreign: std::collections::HashSet<DocumentRoute>,
     used: u64,
 }
 
@@ -2035,6 +2038,7 @@ impl Worker {
                     app,
                     merged: Some(heads),
                     parts: HashMap::new(),
+                    foreign: std::collections::HashSet::new(),
                     used: clock,
                 },
             );
@@ -2044,6 +2048,7 @@ impl Worker {
             .get_mut(route)
             .ok_or_else(|| "the record did not mount".to_string())?;
         mounted.used = clock;
+        hold_parts(route, mounted, state);
         Ok(())
     }
 
