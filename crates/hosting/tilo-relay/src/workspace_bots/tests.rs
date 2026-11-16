@@ -17,6 +17,8 @@ const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
 /// The greeter's installation.
 const GREETER: &str = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
+/// The ticker's installation.
+const TICKER: &str = "5e2c8a41-7b3d-4f69-a8c2-1d0e9b7a6f35";
 
 /// The root `governor()`'s device belongs to, which installs the workspace's bots.
 pub(super) fn owner_root() -> ed25519_dalek::SigningKey {
@@ -418,6 +420,63 @@ fn greeter(channel: &str) -> installed::InstalledBot {
     }
 }
 
+/// A bot that posts `text` in `channel` once every `seconds`, answering
+/// fire times missed while its host was down as `catch_up` says.
+fn ticker(
+    channel: &str,
+    seconds: u64,
+    catch_up: tilo_automation::CatchUp,
+) -> installed::InstalledBot {
+    use tilo_automation::{Binding, Schedule, Selector, Shortcut, Step, StepKind, TriggerSpec};
+    let trigger = TriggerSpec::Schedule {
+        schedule: Schedule::Interval { seconds },
+        catch_up,
+    };
+    let shortcut = Shortcut {
+        id: "ticker".into(),
+        name: "Ticker".into(),
+        inputs: Vec::new(),
+        steps: vec![Step::new(
+            "announce",
+            StepKind::Invoke {
+                action: tilo_actions::ActionKey::new(CHAT, "chat.messages", "post"),
+                resource: Selector::FirstOfKind("chat.messages".into()),
+                args: [
+                    ("channel".to_owned(), Binding::Literal(channel.into())),
+                    ("text".to_owned(), Binding::Literal("tick".into())),
+                ]
+                .into_iter()
+                .collect(),
+                appearance: None,
+            },
+        )],
+        step_timeout_secs: None,
+        output: None,
+        grant: Vec::new(),
+        triggers: vec![trigger],
+        saved_by: None,
+        saved_proof: None,
+    };
+    // Exactly what its steps and triggers need, as a workspace admits a bot.
+    let shortcut = Shortcut {
+        grant: tilo_automation::grant::derived_rules(
+            &shortcut,
+            &tilo_automation::ActionCatalog::new(Vec::new()),
+        ),
+        ..shortcut
+    };
+    installed::InstalledBot {
+        installation: TICKER.into(),
+        entry: "ticker".into(),
+        name: "Ticker".into(),
+        program: String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap())
+            .unwrap(),
+        inputs: serde_json::Map::new(),
+        installed_at_ms: 1,
+        release: String::new(),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     let scratch = tempfile::tempdir().unwrap();
@@ -582,6 +641,163 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     drop(runner);
     // Restarting again repeats nothing.
     assert!(start().await.step().await.unwrap().is_empty());
+}
+
+/// A time just past an hourly fire time, so a minute-long schedule's next
+/// time is a minute away.
+const AFTER_THE_HOUR_MS: u64 = 3_600_001;
+/// The minute-long schedule's first fire time.
+const FIRST_TICK_MS: u64 = 3_660_000;
+/// Its second.
+const SECOND_TICK_MS: u64 = 3_720_000;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scheduled_bot_runs_at_its_time_once_and_again_at_the_next() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        scratch.path().join("ticker.json"),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "its first time has not come"
+    );
+    manual.set(FIRST_TICK_MS - 1);
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "not a millisecond early"
+    );
+    manual.set(FIRST_TICK_MS);
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "{reports:?}, not run: {:?}",
+        runner.dead_letters().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reports[0].outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{reports:?}"
+    );
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "one run per fire time"
+    );
+    let ticks = posts(&workspaces, &workspace)
+        .await
+        .into_iter()
+        .filter(|message| message.text == "tick")
+        .count();
+    assert_eq!(ticks, 1, "the bot posted once");
+    manual.set(SECOND_TICK_MS);
+    assert_eq!(
+        runner.step().await.unwrap().len(),
+        1,
+        "the next time runs again"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_host_runs_a_missed_time_once_when_the_schedule_catches_up() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("ticker.json");
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        ticker(general.as_str(), 60, tilo_automation::CatchUp::RunOnce),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+
+    // Down across a quarter hour of its times: they run once between them.
+    let back_ms = FIRST_TICK_MS + 15 * 60_000;
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(back_ms));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        ticker(general.as_str(), 60, tilo_automation::CatchUp::RunOnce),
+        state,
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    let reports = runner.step().await.unwrap();
+    assert_eq!(
+        reports.len(),
+        1,
+        "once for however many times it missed: {reports:?}"
+    );
+    assert!(runner.step().await.unwrap().is_empty());
+    manual.set(back_ms + 60_000);
+    assert_eq!(
+        runner.step().await.unwrap().len(),
+        1,
+        "the next time comes as scheduled"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_host_skips_the_times_it_missed() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_workspace(&workspaces, &cert).await;
+    let state = scratch.path().join("ticker.json");
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(AFTER_THE_HOUR_MS));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        state.clone(),
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(runner.step().await.unwrap().is_empty());
+    drop(runner);
+
+    let back_ms = FIRST_TICK_MS + 15 * 60_000;
+    let manual = std::sync::Arc::new(tilo_clock::ManualClock::new(back_ms));
+    let mut runner = member_runner(
+        &workspaces,
+        &workspace,
+        &cert,
+        ticker(general.as_str(), 60, tilo_automation::CatchUp::Skip),
+        state,
+    )
+    .await;
+    runner.use_clock(manual.clone());
+    assert!(
+        runner.step().await.unwrap().is_empty(),
+        "a time missed while down is let go"
+    );
+    manual.set(back_ms + 60_000);
+    assert_eq!(
+        runner.step().await.unwrap().len(),
+        1,
+        "the next time is the one that runs"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
