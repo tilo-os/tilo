@@ -177,8 +177,9 @@ struct Opening {
 
 impl Mount {
     /// Show, in each window the session opened on a record, the resource
-    /// its open named, through the resource's own `open` as the person
-    /// would: a note in a notebook rather than the notebook. Any other
+    /// its open named, through the app's own `open` anchored on it, as a
+    /// search hit opens it: a note in a notebook rather than the notebook, a
+    /// Settings page rather than Settings' first one. Any other
     /// action a window asked of an app's resource is invoked in its window
     /// the same way.
     ///
@@ -200,13 +201,17 @@ impl Mount {
                 .into_iter()
                 .chain(desktop.asks.asked.take())
                 .filter(|reveal| {
-                    // An open of the app's own resource is its window.
-                    reveal.action != tilo_actions::remote::APPLICATION_OPEN_ACTION
-                        || crate::desktop::Shared::narrower(
+                    // An open of the app's own resource is its window, unless
+                    // it names where in the app to show.
+                    crate::reveal::asks_window(
+                        &reveal.action,
+                        crate::desktop::Shared::narrower(
                             &reveal.app,
                             &reveal.record,
                             &reveal.resource,
-                        )
+                        ),
+                        &reveal.arguments,
+                    )
                 })
                 .map(|reveal| Opening {
                     reveal,
@@ -230,11 +235,21 @@ impl Mount {
             if opening.tried_at == Some(published) {
                 return opening.until > now;
             }
+            // An `open` is the app's own, anchored on what it shows.
+            let roots = frame
+                .bound_resources_of(Some(tab), None)
+                .unwrap_or_default();
+            let Some((address, arguments)) =
+                crate::reveal::address(&reveal.resource, &reveal.action, &reveal.arguments, &roots)
+            else {
+                opening.tried_at = Some(published);
+                return opening.until > now;
+            };
             let address = ui::bound_dispatch::BoundActionAddress {
                 instance_id: tab,
-                address: tilo_actions::ActionAddress::new(&reveal.resource, &reveal.action),
+                address,
             };
-            match frame.invoke_bound_action(&address, &reveal.arguments) {
+            match frame.invoke_bound_action(&address, &arguments) {
                 Ok(_) => false,
                 Err(error) => {
                     if opening.until <= now {

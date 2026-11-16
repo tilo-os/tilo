@@ -295,6 +295,10 @@ mod disk_key;
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
+// What a window runs when the page asks it to show something: its tests run
+// on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+mod reveal;
 // Where a `settings:` link goes on a page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod settings_link;
