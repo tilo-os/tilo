@@ -589,26 +589,54 @@ pub struct Dialed {
     recv: RecvStream,
 }
 
+/// Why a device opened no line for a key.
+#[derive(Debug)]
+pub enum NotOpened {
+    /// It did not answer, or answered nothing this side reads.
+    Unreachable(String),
+    /// It answered, refusing this key with its reason.
+    Refused(String),
+}
+
+impl NotOpened {
+    /// What kept the line shut, in the server's own words when it said.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Unreachable(why) | Self::Refused(why) => why,
+        }
+    }
+}
+
+impl std::fmt::Display for NotOpened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
 /// Open the server of the device at `addr` from `endpoint`, as the device
 /// `own` certifies, asking to work in `workspace`; with `probe`, only ask
 /// whether it would open.
+///
+/// # Errors
+/// The device does not answer, or it refuses this key with its reason.
 pub async fn open(
     endpoint: &Endpoint,
     addr: EndpointAddr,
     own: &DeviceCert,
     workspace: Option<&str>,
     probe: bool,
-) -> Result<Dialed, String> {
+) -> Result<Dialed, NotOpened> {
     let dialing = async {
         let connection = endpoint
             .connect(addr, ALPN)
             .await
-            .map_err(|error| format!("it does not answer: {error}"))?;
+            .map_err(|error| silent(format!("it does not answer: {error}")))?;
         let (mut send, mut recv) = connection
             .open_bi()
             .await
-            .map_err(|error| format!("it does not answer: {error}"))?;
-        let certificate = postcard::to_allocvec(own).map_err(|error| error.to_string())?;
+            .map_err(|error| silent(format!("it does not answer: {error}")))?;
+        let certificate = postcard::to_allocvec(own).map_err(|error| silent(error.to_string()))?;
         let hello = Hello {
             certificate: hex::encode(certificate),
             workspace: workspace.map(str::to_owned),
@@ -617,12 +645,13 @@ pub async fn open(
         };
         write_line(&mut send, &hello)
             .await
-            .map_err(|error| format!("it does not answer: {error}"))?;
+            .map_err(|error| silent(format!("it does not answer: {error}")))?;
         let line = read_line(&mut recv)
             .await
-            .map_err(|error| format!("its server does not answer: {error}"))?;
-        let answer: Answer = serde_json::from_slice(&line)
-            .map_err(|_| "its server answers in a way this device does not read".to_owned())?;
+            .map_err(|error| silent(format!("its server does not answer: {error}")))?;
+        let answer: Answer = serde_json::from_slice(&line).map_err(|_| {
+            silent("its server answers in a way this device does not read".to_owned())
+        })?;
         match answer {
             Answer::Open | Answer::Here => Ok(Dialed {
                 connection,
@@ -631,18 +660,25 @@ pub async fn open(
             }),
             Answer::Refused { reason } => {
                 connection.close(0_u32.into(), b"refused");
-                Err(reason)
+                Err(NotOpened::Refused(reason))
             }
             Answer::List { .. } => {
                 connection.close(0_u32.into(), b"unasked");
-                Err("its server answered something it was not asked".to_owned())
+                Err(silent(
+                    "its server answered something it was not asked".to_owned(),
+                ))
             }
         }
     };
     let within = if probe { PROBE_WITHIN } else { HELLO_WITHIN };
     tokio::time::timeout(within, dialing)
         .await
-        .unwrap_or_else(|_| Err("it does not answer".to_owned()))
+        .unwrap_or_else(|_| Err(silent("it does not answer".to_owned())))
+}
+
+/// `why` as a device that said nothing this side reads.
+fn silent(why: String) -> NotOpened {
+    NotOpened::Unreachable(why)
 }
 
 /// The person's workspace list as the device at `addr` holds it, read from
@@ -986,7 +1022,7 @@ impl OtherDevices {
             let addr = self.addr(device.device_public_key);
             let own = own.clone();
             let asking = self.runtime.spawn(async move {
-                let addr = addr?;
+                let addr = addr.map_err(NotOpened::Unreachable)?;
                 open(&endpoint, addr, &own, None, true)
                     .await
                     .map(Dialed::close)
@@ -999,9 +1035,11 @@ impl OtherDevices {
             answer: Ok(()),
         }];
         for (device, asking) in asks {
-            let answer = asking
-                .await
-                .unwrap_or_else(|_| Err("asking it stopped".to_owned()));
+            let answer = match asking.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(why)) => Err(why.reason().to_owned()),
+                Err(_) => Err("asking it stopped".to_owned()),
+            };
             reach.push(Reach {
                 device,
                 this: false,
@@ -1038,7 +1076,7 @@ impl OtherDevices {
             let answer = match &dialed {
                 Ok(_) => Answer::Open,
                 Err(reason) => Answer::Refused {
-                    reason: reason.clone(),
+                    reason: reason.to_string(),
                 },
             };
             let told = match serde_json::to_vec(&answer) {

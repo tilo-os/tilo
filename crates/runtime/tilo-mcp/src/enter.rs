@@ -117,11 +117,16 @@ pub async fn enter(
         false,
     )
     .await
-    .map_err(|reason| {
-        tracing::debug!(%reason, name = %address.name, "a key did not enter its workspace");
-        "The computer that hosts this workspace is offline, or didn't let this agent in. Ask the \
-         person to open Tilo on it, then try again."
-            .to_owned()
+    .map_err(|why| match why {
+        crate::devices::NotOpened::Refused(reason) => {
+            format!("{} did not let this key in: {reason}", address.name)
+        }
+        crate::devices::NotOpened::Unreachable(reason) => {
+            tracing::debug!(%reason, name = %address.name, "a key did not enter its workspace");
+            "The computer that hosts this workspace is offline. Ask the person to open Tilo on \
+             it, then try again."
+                .to_owned()
+        }
     })?;
     Ok(Entered::Door(Box::new(DoorLines::new(dialed))))
 }

@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_mcp::devices::{ALPN, PersonalDevices, agent_id, open};
+use tilo_mcp::devices::{ALPN, NotOpened, PersonalDevices, agent_id, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_service::Questions;
@@ -202,7 +202,7 @@ impl ThisBox {
         &self,
         (key, certificate): &(SigningKey, DeviceCert),
         workspace: Option<&str>,
-    ) -> Result<Agent, String> {
+    ) -> Result<Agent, NotOpened> {
         let endpoint = self.runtime.block_on(endpoint(key));
         let dialed = self.runtime.block_on(open(
             &endpoint,
@@ -529,9 +529,9 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 4, "Their laptop");
     let refused = b.dial(&theirs, None).map(|_| ()).unwrap_err();
-    assert!(refused.contains("someone else"), "{refused}");
+    assert!(refused.reason().contains("someone else"), "{refused}");
     let refused = b.dial(&person.lost, None).map(|_| ()).unwrap_err();
-    assert!(refused.contains("removed"), "{refused}");
+    assert!(refused.reason().contains("removed"), "{refused}");
 
     // Nor does it reach a program of this login, which is still asked about.
     let local = Agent::over(UnixStream::connect(&b.socket).unwrap(), None);
@@ -1156,7 +1156,7 @@ impl ShellWithNotes {
     }
 
     /// The agent on `device`, dialing this computer's server and naming the workspace it holds.
-    fn dial(&self, (key, certificate): &(SigningKey, DeviceCert)) -> Result<Agent, String> {
+    fn dial(&self, (key, certificate): &(SigningKey, DeviceCert)) -> Result<Agent, NotOpened> {
         let dialing = self.runtime.block_on(endpoint(key));
         let dialed = self.runtime.block_on(open(
             &dialing,
@@ -1550,6 +1550,6 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 4, "Their laptop");
     let refused = shell.dial(&theirs).map(|_| ()).unwrap_err();
-    assert!(refused.contains("someone else"), "{refused}");
+    assert!(refused.reason().contains("someone else"), "{refused}");
     agent.leave();
 }

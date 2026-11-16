@@ -506,7 +506,11 @@ async fn what_b_refuses_reaches_the_agent_and_ends_its_connection_on_a() {
 
 /// Dial B's server from `key`'s endpoint showing `certificate`, and read what
 /// it says.
-async fn dial(b: &B, key: &SigningKey, certificate: &DeviceCert) -> Result<(), String> {
+async fn dial(
+    b: &B,
+    key: &SigningKey,
+    certificate: &DeviceCert,
+) -> Result<(), tilo_mcp::devices::NotOpened> {
     let endpoint = endpoint(key).await;
     let dialed = open(&endpoint, addr(&b.endpoint), certificate, None, false).await;
     dialed.map(tilo_mcp::devices::Dialed::close)
@@ -519,7 +523,7 @@ async fn a_device_of_another_person_is_refused_before_anyone_is_asked() {
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 3, "Their laptop");
     let refused = dial(&b, &theirs.0, &theirs.1).await.unwrap_err();
-    assert!(refused.contains("someone else"), "{refused}");
+    assert!(refused.reason().contains("someone else"), "{refused}");
     assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
@@ -529,7 +533,7 @@ async fn a_revoked_device_is_refused() {
     let lost = device(&person.root, 4, "Lost phone");
     let b = b(&person, &[&lost.1]).await;
     let refused = dial(&b, &lost.0, &lost.1).await.unwrap_err();
-    assert!(refused.contains("removed"), "{refused}");
+    assert!(refused.reason().contains("removed"), "{refused}");
     assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 
@@ -540,7 +544,7 @@ async fn a_device_showing_another_devices_certificate_is_refused() {
     // The person's own certificate for A, shown by a device that is not A.
     let impostor = SigningKey::from_bytes(&[0x33; 32]);
     let refused = dial(&b, &impostor, &person.a.1).await.unwrap_err();
-    assert!(refused.contains("another device"), "{refused}");
+    assert!(refused.reason().contains("another device"), "{refused}");
     assert!(b.server.arrived.lock().unwrap().is_empty());
 }
 

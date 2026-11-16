@@ -36,7 +36,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use runtime_portal::environment_door::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_mcp::devices::{ALPN, PersonalDevices, open};
+use tilo_mcp::devices::{ALPN, NotOpened, PersonalDevices, open};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
@@ -437,7 +437,7 @@ impl Shell {
 
     /// Dial this box's door from `device`: its connection once the door said it opened, or the
     /// reason it said instead.
-    fn dial(&self, device: &Device) -> Result<Client, String> {
+    fn dial(&self, device: &Device) -> Result<Client, NotOpened> {
         let dialed = self.runtime.block_on(open(
             &device.endpoint,
             self.addr.clone(),
@@ -549,13 +549,13 @@ impl Shell {
     #[track_caller]
     fn once_there_is_room<T>(
         &mut self,
-        mut connect: impl FnMut(&mut Self) -> Result<T, String>,
+        mut connect: impl FnMut(&mut Self) -> Result<T, NotOpened>,
     ) -> T {
         let deadline = Instant::now() + tilo_test_env::hang_bound();
         loop {
             match connect(self) {
                 Ok(served) => return served,
-                Err(told) => says_no_room(&told),
+                Err(told) => says_no_room(told.reason()),
             }
             assert!(
                 Instant::now() < deadline,
@@ -662,7 +662,11 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     let unopened = shell
         .dial(&laptop)
         .expect_err("one past the bound is not told the door opened");
-    assert_eq!(unopened, told, "one refusal, whichever way it came");
+    assert_eq!(
+        unopened.reason(),
+        told,
+        "one refusal, whichever way it came"
+    );
 
     // Inside the environment: the same.
     let turned_away = Inside::start(dev.path(), false);
@@ -685,7 +689,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     let theirs = shell
         .dial(&stranger)
         .expect_err("somebody else's device is refused");
-    assert!(theirs.contains("someone else"), "{theirs}");
+    assert!(theirs.reason().contains("someone else"), "{theirs}");
     let mut outside = Client::connect(dev.path());
     let refused = shell
         .answer(&mut outside)
@@ -736,7 +740,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         if answer.pointer("/result/serverInfo").is_some() {
             Ok(program)
         } else {
-            Err(refusal(&answer))
+            Err(NotOpened::Refused(refusal(&answer)))
         }
     });
     programs.push(program);
@@ -779,14 +783,14 @@ fn connections_from_other_devices_wait_for_the_pass_in_the_doors_places_and_no_m
     let unopened = shell
         .dial(&laptop)
         .expect_err("one more than the door serves is not told the door opened");
-    says_no_room(&unopened);
+    says_no_room(unopened.reason());
     let mut program = shell.program();
 
     // The loop turns. The places are taken, so the program of this login is told so.
     let refused = shell
         .answer(&mut program)
         .expect("one past the bound is told why it is not served");
-    assert_eq!(refusal(&refused), unopened);
+    assert_eq!(refusal(&refused), unopened.reason());
     for agent in &mut waiting {
         shell.introduced(agent);
     }
