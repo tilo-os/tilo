@@ -3071,6 +3071,9 @@ impl GroupRow {
             return true;
         }
         if drag.moved {
+            if lifted && let Some(group) = self.groups.iter_mut().find(|g| g.id == drag.group_id) {
+                group.cancel_press_for_carry();
+            }
             let (target, lane) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
             self.group_reorder_lane = lane;

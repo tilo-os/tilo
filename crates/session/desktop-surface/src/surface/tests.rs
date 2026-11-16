@@ -2791,3 +2791,47 @@ fn a_window_carried_onto_the_other_display_lands_there() {
     }
     assert_eq!(handle.display_of(group), Some(1), "and is not put back");
 }
+
+/// A window's tab dragged onto the other display and let go there opens its window there.
+#[test]
+fn a_tab_dragged_onto_the_other_display_opens_its_window_there() {
+    let (surface, handle) = desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        Theme::dark(),
+    );
+    let display = |id: u32, x: f64| tilo_desktop_model::Display {
+        id,
+        monitor: format!("monitor-{id}"),
+        x,
+        y: 0.0,
+        width: 640.0,
+        height: 800.0,
+        primary: false,
+    };
+    assert!(handle.set_displays(&[display(0, 0.0), display(1, 640.0)]));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
+    let pill = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .and_then(|row| row.groups.first()?.tab_rects().first().copied())
+        .expect("the first window shows its tab");
+    carry(&mut frame, pill.center(), Point::new(960.0, 400.0));
+    let group = handle.read(|tree| {
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|g| g.tabs.iter().any(|t| t.id == tab))
+            .map(|g| g.id)
+    });
+    assert_eq!(
+        group.and_then(|group| handle.display_of(group)),
+        Some(1),
+        "its window stands on the right display"
+    );
+}

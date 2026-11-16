@@ -17,8 +17,8 @@ use std::rc::Rc;
 use shown::ShownTabs;
 
 use tilo_desktop_model::{
-    GroupId, GroupShape, IdMinter, Layout, StripId, Tab, TabId, TileContent, WindowWidth,
-    Workspace, WorkspaceId,
+    GroupId, IdMinter, Layout, StripId, Tab, TabId, TileContent, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use ui::automerge::ObjId;
 use ui::collaboration::PresencePayload;
@@ -1665,19 +1665,7 @@ impl DesktopSurface {
             }
         }
         if let Some(topology) = row.take_pending_topology_change() {
-            let shape: Vec<GroupShape> = topology
-                .into_iter()
-                .map(|group| GroupShape {
-                    id: group.id,
-                    tab_ids: group.tab_ids,
-                    active_tab: group.active_tab,
-                    width: group.width,
-                })
-                .collect();
-            changed |= shared
-                .tree
-                .reconcile_strip_topology(strip_id, &shape)
-                .is_some();
+            changed |= displays::carry_topology(&mut shared.tree, strip_id, row, topology);
         }
         if let Some(request) = search::search_asked(&mut shared.tree, strip_id, new_tab, search_in)
         {

@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{Display, GroupId, Layout, Strip, StripId, TabId};
+use tilo_desktop_model::{Display, GroupId, GroupShape, Layout, Strip, StripId, TabId};
 use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::NodeId;
@@ -141,6 +141,40 @@ pub(crate) fn carry_dropped(
         tree.external_revision = tree.external_revision.wrapping_add(1);
     }
     moved || reordered
+}
+
+/// Mirror the windows a tab moved between along `row` into the tree: their tabs, and, across
+/// several displays, the display a window a tab was let go into stands on, which is the one it was
+/// let go on. Whether the tree changed.
+pub(crate) fn carry_topology(
+    tree: &mut Layout,
+    strip: StripId,
+    row: &GroupRow,
+    topology: Vec<ui::widget::GroupTopology>,
+) -> bool {
+    let shape: Vec<GroupShape> = topology
+        .into_iter()
+        .map(|group| GroupShape {
+            id: group.id,
+            tab_ids: group.tab_ids,
+            active_tab: group.active_tab,
+            width: group.width,
+        })
+        .collect();
+    let before: Vec<GroupId> = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .filter(|s| s.id == strip)
+        .flat_map(|s| s.window_groups.iter().map(|g| g.id))
+        .collect();
+    let mut changed = tree.reconcile_strip_topology(strip, &shape).is_some();
+    for group in shape.iter().map(|g| g.id).filter(|id| !before.contains(id)) {
+        if let Some(display) = row.output_of_group(group) {
+            changed |= tree.outputs.move_group(&tree.workspaces, group, display);
+        }
+    }
+    changed
 }
 
 /// One lane per display of `displays` (in the surface's coordinates), in
