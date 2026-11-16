@@ -122,8 +122,6 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
 }
 
 /// The agent the steps below are attributed to, as an agent's turn names it.
-const AGENT: &str = "agent:assistant";
-
 /// The published root of the seeded app `app` (`so.tilo.lang.mail`): what the agent's steps
 /// show, and what they stand beside.
 fn root_of(session: &Session, app: &str) -> String {
@@ -155,7 +153,12 @@ fn placed_as_agent(
     arguments: serde_json::Value,
 ) -> tilo_session_core::layout::PlaceReading {
     session
-        .invoke_with_actor(AGENT, "shell:layout", "place", &arguments)
+        .invoke_with_actor(
+            &crate::common::agent("assistant"),
+            "shell:layout",
+            "place",
+            &arguments,
+        )
         .unwrap_or_else(|error| panic!("the place runs: {error}"));
     crate::common::wait_for(session, format!("{record} placed"), |session| {
         crate::common::places(session)
@@ -185,7 +188,12 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     );
     let beside = serde_json::json!({"resource": notes_id, "beside": inbox_id});
     let answered = session
-        .invoke_with_actor(AGENT, "shell:layout", "place", &beside)
+        .invoke_with_actor(
+            &crate::common::agent("assistant"),
+            "shell:layout",
+            "place",
+            &beside,
+        )
         .unwrap_or_else(|error| panic!("the place runs: {error}"));
     let notes = crate::common::wait_for(&mut session, "the notes placed", |session| {
         crate::common::places(session)
@@ -220,7 +228,12 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     // steps to take back (`Layout::last_step`) are the person's alone, so none is read here.
 
     session
-        .invoke_with_actor(AGENT, "shell:layout", "place", &beside)
+        .invoke_with_actor(
+            &crate::common::agent("assistant"),
+            "shell:layout",
+            "place",
+            &beside,
+        )
         .unwrap_or_else(|error| panic!("the second place runs: {error}"));
     session.step(Duration::from_millis(1)).expect("a frame");
     let shown = crate::common::places(&session)
@@ -261,7 +274,12 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     );
 
     let place = format!("shell:place:{}", note.key);
-    let refused = session.invoke_with_actor(AGENT, &place, "position", &serde_json::json!({}));
+    let refused = session.invoke_with_actor(
+        &crate::common::agent("assistant"),
+        &place,
+        "position",
+        &serde_json::json!({}),
+    );
     assert!(refused.is_err(), "no point and nothing beside is refused");
     // Nor is half a point a point, the place itself something to stand beside, or a place that is
     // not there; and a position that was refused moves nothing.
@@ -274,7 +292,12 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
             serde_json::json!({"beside": "shell:place:999999"}),
         ),
     ] {
-        let refused = session.invoke_with_actor(AGENT, &place, "position", &arguments);
+        let refused = session.invoke_with_actor(
+            &crate::common::agent("assistant"),
+            &place,
+            "position",
+            &arguments,
+        );
         assert!(refused.is_err(), "{what} is refused: {arguments}");
     }
     session.step(Duration::from_millis(1)).expect("a frame");
@@ -289,7 +312,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
 
     session
         .invoke_with_actor(
-            AGENT,
+            &crate::common::agent("assistant"),
             &place,
             "position",
             &serde_json::json!({"beside": format!("shell:place:{}", inbox.key)}),
@@ -382,7 +405,7 @@ fn moved_and_drawn(session: &mut Session, key: &str, row: Standing) {
 
     session
         .invoke_with_actor(
-            AGENT,
+            &crate::common::agent("assistant"),
             &format!("shell:place:{key}"),
             "position",
             &serde_json::json!({"x": 1600, "y": 0}),

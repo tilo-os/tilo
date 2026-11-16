@@ -266,7 +266,7 @@ impl LayoutDocument {
 
     /// The last step of the layout's history, as who made it and what it did: what the history names
     /// it by.
-    pub fn last_step(&self, person: &str) -> Option<(String, String)> {
+    pub fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)> {
         use tilo_actions::Did;
         let doc = self.doc.borrow();
         let entry = self.undo.borrow().next_undo_as(&doc, Some(&user(person)))?;
@@ -274,7 +274,7 @@ impl LayoutDocument {
         // Who asked for it: the invoker the step records, else the person whose layout it is.
         let who = step
             .invoker
-            .map_or_else(|| person.to_owned(), |invoker| invoker.acting.by.key());
+            .map_or_else(|| user(person).into(), |invoker| invoker.acting.by);
         let what = match step.what {
             Some(Did::Verb(call)) => call.action.action,
             _ => String::new(),

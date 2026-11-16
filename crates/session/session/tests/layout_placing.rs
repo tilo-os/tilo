@@ -251,7 +251,11 @@ fn a_resource_a_view_and_a_point_make_an_layout_entry() {
     assert_eq!((held.canvas_width, held.canvas_height), (720, 520));
     // One attributed, undoable step.
     let who = crate::common::last_step(&mut session, "place");
-    assert_eq!(who, person(), "attributed to the person");
+    assert_eq!(
+        who,
+        crate::common::as_person(&person()),
+        "attributed to the person"
+    );
     session.undo_layout().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
 }
@@ -430,7 +434,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     assert_eq!((strip.canvas_x, strip.canvas_y), (320, 96), "at the caret");
     // Attributed to the person, and undone as one step.
     let who = crate::common::last_step(&mut session, "place");
-    assert_eq!(who, person());
+    assert_eq!(who, crate::common::as_person(&person()));
     let id = number(&placed.key);
     session.undo_layout().expect("undo");
     settle(&mut session, |session| place_of(session, id).is_none());
@@ -710,7 +714,7 @@ fn the_system_open_stands_a_new_place() {
     assert_eq!(entry.shows, app, "it shows the app the resource is of");
     assert_eq!(entry.shown_as, "inbox", "its primary published view");
     let who = crate::common::last_step(&mut session, "place");
-    assert_eq!(who, person());
+    assert_eq!(who, crate::common::as_person(&person()));
 }
 
 /// The live run's failure (shell.md §3, "a place next to where it came from"): an agent that

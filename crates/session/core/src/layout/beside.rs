@@ -4,6 +4,7 @@
 //! beside the conversation that asked (§8.1); a place's `position` names the place it moves next to.
 
 use serde_json::Value as Json;
+use tilo_actions::Actor;
 
 use tilo_desktop_model::CanvasPlace;
 
@@ -140,7 +141,7 @@ impl LayoutActions {
     /// Whether it did; `false` leaves the place to stand where it names.
     pub(super) fn placed_beside(
         &self,
-        asked: &str,
+        asked: &Actor,
         arguments: &serde_json::Map<String, Json>,
         action: &LayoutAction,
     ) -> Result<bool, tilo_actions::ApiError> {

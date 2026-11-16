@@ -137,7 +137,7 @@ impl HostStepServices for SettingsSteps {
         // setting opens beside its conversation, the person's own step beside the place in front.
         let beside = crate::mcp_server::service_steps::turn_beside(request.actor.turn());
         self.steps.invoke_step(
-            request.actor.member().key(),
+            request.actor.member().clone().into(),
             request.address.clone(),
             argument,
             beside,

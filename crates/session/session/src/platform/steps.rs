@@ -20,7 +20,7 @@ pub(crate) trait SessionSteps: Send + Sync {
     /// stands it there (`docs/designs/app-language/one-app-model.md` §3).
     fn invoke_step(
         &self,
-        actor: String,
+        actor: tilo_actions::Actor,
         address: ActionAddress,
         slot: Option<String>,
         beside: String,

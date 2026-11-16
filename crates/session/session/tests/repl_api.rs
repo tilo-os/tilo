@@ -165,10 +165,10 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     let who = crate::common::last_step(session, "place");
     assert_eq!(
         who,
-        tilo_session::identity::own_person(&Options {
+        crate::common::as_person(&tilo_session::identity::own_person(&Options {
             person: PERSON.to_owned(),
             ..Options::default()
-        }),
+        })),
         "the person's step, not an agent's"
     );
 

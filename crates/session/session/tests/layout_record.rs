@@ -213,7 +213,11 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
         "the record holds the move"
     );
     let who = crate::common::last_step(&mut session, "move");
-    assert_eq!(who, person(), "attributed to the person");
+    assert_eq!(
+        who,
+        crate::common::as_person(&person()),
+        "attributed to the person"
+    );
 
     // Undo puts it back.
     undone(&mut session, |session| {
@@ -292,7 +296,11 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
         "only the window the person let go floats"
     );
     let who = crate::common::last_step(&mut session, "float");
-    assert_eq!(who, person(), "attributed to the person");
+    assert_eq!(
+        who,
+        crate::common::as_person(&person()),
+        "attributed to the person"
+    );
 
     // Undo takes the one step back, and redo floats it again.
     undone(&mut session, |session| {
@@ -300,7 +308,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     });
     session
         .invoke_with_actor(
-            &person(),
+            &crate::common::as_person(&person()),
             layout::RECORD_RESOURCE,
             "redo",
             &serde_json::json!({}),
@@ -435,7 +443,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 
     session
         .invoke_with_actor(
-            "agent:reading",
+            &crate::common::agent("reading"),
             &place_resource(window),
             "move",
             &serde_json::json!({"row": row_resource(second)}),
@@ -449,7 +457,11 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
         "the agent's move is in the record"
     );
     let who = crate::common::last_step(&mut session, "move");
-    assert_eq!(who, "agent:reading", "attributed to the agent");
+    assert_eq!(
+        who,
+        crate::common::agent("reading"),
+        "attributed to the agent"
+    );
 
     undone(&mut session, |session| {
         strip_of(session, window).map(|strip| row_of(session, strip)) == Some(from)
@@ -646,7 +658,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     step(&mut session);
     session
         .invoke_with_actor(
-            "agent:reading",
+            &crate::common::agent("reading"),
             &place_resource(window),
             "move",
             &serde_json::json!({"row": row_resource(second)}),
@@ -685,7 +697,11 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         "it applies once the person is done"
     );
     let who = crate::common::last_step(&mut session, "move");
-    assert_eq!(who, "agent:reading", "still attributed to the agent");
+    assert_eq!(
+        who,
+        crate::common::agent("reading"),
+        "still attributed to the agent"
+    );
 }
 
 // An agent's layout leaves a place the person pinned where it is (shell.md §5's default).
@@ -709,7 +725,7 @@ fn a_pinned_place_stays_where_the_person_put_it() {
 
     // The agent's move is refused, and the place stands.
     let refused = session.invoke_with_actor(
-        "agent:reading",
+        &crate::common::agent("reading"),
         &place_resource(window),
         "move",
         &serde_json::json!({"row": row_resource(second)}),

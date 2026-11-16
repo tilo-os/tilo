@@ -427,7 +427,10 @@ mod tests {
             assert!(page.floating(place), "the window floats");
             assert_eq!(
                 page.layout.last_step("ada"),
-                Some(("ada".to_owned(), "float".to_owned())),
+                Some((
+                    tilo_actions::MemberId::person("ada").into(),
+                    "float".to_owned()
+                )),
                 "floating is the person's own step of the layout's history"
             );
 
@@ -464,7 +467,10 @@ mod tests {
             assert!(page.floating(place), "the float ran as the code arrived");
             assert_eq!(
                 page.layout.last_step("ada"),
-                Some(("ada".to_owned(), "float".to_owned())),
+                Some((
+                    tilo_actions::MemberId::person("ada").into(),
+                    "float".to_owned()
+                )),
                 "the float is the person's own step"
             );
             assert!(
@@ -498,7 +504,10 @@ mod tests {
             );
             assert_eq!(
                 page.layout.last_step("ada"),
-                Some(("ada".to_owned(), "move".to_owned())),
+                Some((
+                    tilo_actions::MemberId::person("ada").into(),
+                    "move".to_owned()
+                )),
                 "the move is the person's step of the layout's history"
             );
         }

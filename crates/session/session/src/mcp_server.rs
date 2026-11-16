@@ -1391,7 +1391,7 @@ enum ApiAsk {
     /// (the turn's conversation, or empty for the place in front). No
     /// `reads_only`: the broker decided the step.
     Step {
-        actor: String,
+        actor: tilo_actions::Actor,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
         /// The place the ask is in, by the resource that place shows: the conversation of the
@@ -1483,7 +1483,7 @@ impl crate::platform::steps::SessionSteps for SessionServices {
     /// where the layout and the windows are.
     fn invoke_step(
         &self,
-        actor: String,
+        actor: tilo_actions::Actor,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
         beside: String,
@@ -2108,7 +2108,7 @@ impl Host {
         let Some(agent) = caller.acting().agent_id() else {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         };
-        let actor = format!("agent:{agent}");
+        let actor = tilo_actions::MemberId::agent(agent).into();
         self.invoke_step_at(actor, request, caller.turn())
     }
 
@@ -2140,7 +2140,7 @@ impl Host {
         let Some(person) = caller.acting().person_id() else {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         };
-        let actor = person.to_owned();
+        let actor = tilo_actions::MemberId::person(person).into();
         self.invoke_step_at(actor, request, caller.turn())
     }
 
@@ -2148,7 +2148,7 @@ impl Host {
     /// person at this seat, or an agent reading): where the layout and the windows are.
     fn invoke_step_at(
         &self,
-        actor: String,
+        actor: tilo_actions::Actor,
         request: InvokeRequest,
         turn: Option<&tilo_action_policy::turn::Turn>,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {

@@ -1181,7 +1181,7 @@ impl Layouts {
         &self,
         workspace_id: WorkspaceId,
         person: &str,
-    ) -> Option<(String, String)> {
+    ) -> Option<(tilo_actions::Actor, String)> {
         use tilo_actions::Did;
         // Of two steps made at no known time, the layout's (the later one compared wins).
         let (_, entry) = [Route::view(person), Route::layout()]
@@ -1196,9 +1196,10 @@ impl Layouts {
             .max_by_key(|(at, _)| *at)?;
         let step = entry.step?;
         // Who asked for it: the invoker the step records, else the person whose layout it is.
-        let who = step
-            .invoker
-            .map_or_else(|| person.to_owned(), |invoker| invoker.acting.by.key());
+        let who = step.invoker.map_or_else(
+            || tilo_actions::MemberId::person(person).into(),
+            |invoker| invoker.acting.by,
+        );
         let what = match step.what {
             Some(Did::Verb(call)) => call.action.action,
             _ => String::new(),
@@ -1346,7 +1347,7 @@ impl Layouts {
         &self,
         before: &Layout,
         tree: &Layout,
-        asked: &str,
+        asked: &tilo_actions::Actor,
         action: &tilo_session_core::layout::LayoutAction,
         shows: &[(tilo_desktop_model::TabId, String)],
     ) {
@@ -1359,7 +1360,13 @@ impl Layouts {
         };
         let message = tilo_session_core::layout::step_context(asked, action)
             .change_message()
-            .unwrap_or_else(|| shared_record::change_message(Some(asked)));
+            .unwrap_or_else(|| {
+                shared_record::change_message(
+                    asked
+                        .member_id()
+                        .and_then(tilo_actions::MemberId::person_id),
+                )
+            });
         // What the action did to the person's own view of the workspace (a width, a window made
         // as large as its display) is a step of theirs in that view, written on the next look.
         if let Some(workspace) = tree.active_workspace()
@@ -2205,7 +2212,7 @@ impl tilo_session_core::layout::Layouts for Steps {
         }
     }
 
-    fn last_step(&self, person: &str) -> Option<(String, String)> {
+    fn last_step(&self, person: &str) -> Option<(tilo_actions::Actor, String)> {
         self.layouts.last_step(self.workspace_id()?, person)
     }
 
@@ -2213,7 +2220,7 @@ impl tilo_session_core::layout::Layouts for Steps {
         &self,
         before: &Layout,
         tree: &Layout,
-        asked: &str,
+        asked: &tilo_actions::Actor,
         action: &tilo_session_core::layout::LayoutAction,
         shows: &[(tilo_desktop_model::TabId, String)],
     ) {

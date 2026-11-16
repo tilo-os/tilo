@@ -523,7 +523,7 @@ fn the_keyboard_shows_and_hides_by_its_published_action() {
     // reading of its own would have taken back.
     session
         .invoke_with_actor(
-            "person:ada",
+            &crate::common::as_person("ada"),
             KEYBOARD,
             "set-visible",
             &serde_json::json!({ "visible": false }),
@@ -540,7 +540,7 @@ fn the_keyboard_shows_and_hides_by_its_published_action() {
     // And back, as any step of an agent's that asks for it does.
     session
         .invoke_with_actor(
-            "agent:helper",
+            &crate::common::agent("helper"),
             KEYBOARD,
             "set-visible",
             &serde_json::json!({ "visible": true }),

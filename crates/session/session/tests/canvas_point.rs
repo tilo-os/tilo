@@ -613,7 +613,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     // point, and stands beside the turn, as the MCP server fills it in for a turn's step.
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q2"),
             "shell:layout",
             "place",
@@ -690,7 +690,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     // A `place` into the turn's own strip, as a tab of it.
     session
         .invoke_with_actor(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             "shell:layout",
             "place",
             &serde_json::json!({
@@ -712,7 +712,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     // A `show` of something else in the turn's own place.
     session
         .invoke_with_actor(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             "shell:layout",
             "show",
             &serde_json::json!({
@@ -1178,7 +1178,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
         .layout()
         .borrow_mut()
         .ask(
-            PERSON,
+            &crate::common::as_person(PERSON),
             tilo_session_core::layout::LayoutAction::Close {
                 place: crate::common::number(&inbox.key),
             },
@@ -1293,7 +1293,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let notes = root_of(&session, "so.tilo.lang.notes");
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q1"),
             "shell:layout",
             "place",
@@ -1336,7 +1336,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     let mails = root_of(&session, "so.tilo.lang.mail");
     session
         .invoke_with_actor(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             "shell:layout",
             "place",
             &serde_json::json!({"resource": mails, "x": 6000, "y": 5000}),
@@ -1387,7 +1387,7 @@ fn the_whole_conversation_is_reached_from_the_turns_handle() {
     session
         .layout()
         .borrow_mut()
-        .open_conversation_of(PERSON, &turn.record)
+        .open_conversation_of(&crate::common::as_person(PERSON), &turn.record)
         .unwrap_or_else(|error| panic!("the turn opens its conversation: {error}"));
     let whole = wait_for(&mut session, "the conversation placed", |session| {
         places(session)
@@ -1589,7 +1589,7 @@ fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
     for (message, resource) in [("q5", &notes), ("q6", &mails)] {
         session
             .invoke_in_turn(
-                "agent:assistant",
+                &crate::common::agent("assistant"),
                 (CONVERSATION, message),
                 "shell:layout",
                 "place",
@@ -1643,7 +1643,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
     let mails = root_of(&session, "so.tilo.lang.mail");
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q7"),
             "shell:layout",
             "place",
@@ -1669,7 +1669,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
     // The room is taken: the turn's next step stands beside the turn.
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q7"),
             "shell:layout",
             "place",
@@ -1719,7 +1719,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
     let notes = root_of(&session, "so.tilo.lang.notes");
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q9"),
             "shell:layout",
             "place",
@@ -1748,7 +1748,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
     let mails = root_of(&session, "so.tilo.lang.mail");
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q10"),
             "shell:layout",
             "place",
@@ -1821,7 +1821,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
     let mails = root_of(&session, "so.tilo.lang.mail");
     session
         .invoke_in_turn(
-            "agent:assistant",
+            &crate::common::agent("assistant"),
             (CONVERSATION, "q21"),
             "shell:layout",
             "place",

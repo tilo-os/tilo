@@ -19,8 +19,6 @@ use serde_json::json;
 use tilo_session::Session;
 
 /// The agent taking the story.
-const AGENT: &str = "agent:helper";
-
 /// The resource of kind `kind`, found as an agent finds it: by surveying the catalogue.
 fn found(session: &Session, kind: &str) -> String {
     session
@@ -36,7 +34,7 @@ fn found(session: &Session, kind: &str) -> String {
 /// Run `action` of `resource` as the agent.
 fn act(session: &mut Session, resource: &str, action: &str, arguments: &serde_json::Value) {
     session
-        .invoke_with_actor(AGENT, resource, action, arguments)
+        .invoke_with_actor(&crate::common::agent("helper"), resource, action, arguments)
         .unwrap_or_else(|error| panic!("{resource}#{action}: {error:?}"));
 }
 

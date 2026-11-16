@@ -71,6 +71,16 @@ pub const WIDTH: i32 = 1280;
 pub const HEIGHT: i32 = 800;
 /// The person at the session.
 pub const PERSON: &str = "Pat";
+
+/// The agent `id`, as the one who acts.
+pub fn agent(id: &str) -> ui::tilo_actions::Actor {
+    ui::tilo_actions::MemberId::agent(id).into()
+}
+
+/// The person `id`, as the one who acts.
+pub fn as_person(id: &str) -> ui::tilo_actions::Actor {
+    ui::tilo_actions::MemberId::person(id).into()
+}
 /// The notes app, as a package names it.
 pub const NOTES: &str = "so.tilo.lang.notes";
 /// The mail app, as a package names it.
@@ -661,7 +671,7 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
 /// Who made the last step of the workspace's layout, once the workspace has the change that made
 /// it and it is `verb`'s: a layout's change is written off the loop, so the record holds it a look
 /// or more after the action.
-pub fn last_step(session: &mut Session, verb: &str) -> String {
+pub fn last_step(session: &mut Session, verb: &str) -> ui::tilo_actions::Actor {
     wait_for(
         session,
         "the layout's change to reach the workspace",

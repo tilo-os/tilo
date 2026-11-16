@@ -49,16 +49,15 @@ pub(crate) fn with_turn_beside(
 
 /// Run `address` as `actor` through the session's services, which publish the actions its own
 /// APIs do not: what a service keeps (Chat's `record-work` on a turn's summons, the layout's
-/// place read from a service) is invoked on the same pass, on the record the service writes. The
-/// `actor` an agent names is `agent:<id>`, attributed as it is at an app's record origin; a person
-/// acts as themselves. A step of a `run` is that run's, as an app's action is. `beside` is the
+/// place read from a service) is invoked on the same pass, on the record the service writes, and
+/// attributed to `actor` as it is at an app's record origin. A step of a `run` is that run's, as an app's action is. `beside` is the
 /// place the ask is in — the conversation of the turn an agent asks in — or empty for the place in
 /// front: a resource the step opens stands beside it
 /// (`docs/designs/app-language/one-app-model.md` §3). `done` hears what it ran: at once, or when
 /// the async work it started lands.
 pub(crate) fn invoke_service_step(
     services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-    actor: &str,
+    actor: &tilo_actions::Actor,
     run: Option<&tilo_actions::WorkGroup>,
     address: &tilo_actions::ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
@@ -68,7 +67,7 @@ pub(crate) fn invoke_service_step(
     >,
 ) {
     use tilo_service::Started;
-    let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
+    let invoker = tilo_actions::ActionInvoker::admitted(&actor.clone().into());
     let started = services.borrow_mut().invoke_as_beside(
         &invoker,
         run,
