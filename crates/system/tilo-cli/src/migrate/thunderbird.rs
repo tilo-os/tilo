@@ -16,8 +16,8 @@
 //! A chosen account itself joins the person's accounts: its server settings, the other names
 //! and addresses it sends as, and the password Thunderbird saved for it, through Mail's
 //! `add-account`, which their tab puts to them before it runs. The password travels once, with
-//! the account, into the store that keeps it — the workspace's vault when the workspace runs on
-//! a host, this computer's when Mail here keeps it — and no second vault keeps a copy. It is
+//! the account, into the store that keeps it — the person's vault on the host when the workspace
+//! runs on a host, this computer's when Mail here keeps it — and no second vault keeps a copy. It is
 //! never printed or answered. An account Thunderbird saved no password for asks the person for
 //! it when Mail first signs in.
 
@@ -349,7 +349,7 @@ fn account_arguments(
             fields.insert("identities".into(), json!(identities));
         }
         // The sign-in travels with the account into the store that keeps it
-        // (the workspace's vault when it is kept there), and is never sealed
+        // (the person's vault on the host when it is kept there), and is never sealed
         // into a vault of this computer's beside it.
         if let Some(password) = password {
             fields.insert("password".into(), json!(password));

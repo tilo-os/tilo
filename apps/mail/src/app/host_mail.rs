@@ -163,7 +163,7 @@ impl HostMail {
     }
 
     /// Ask the host to keep `config`'s account, with the sign-in it carries:
-    /// the host proves it and seals it in the workspace's vault, and the
+    /// the host proves it and seals it in the person's vault, and the
     /// next reading shows the account.
     #[cfg(any(not(feature = "live"), test))]
     pub(super) fn add_account(&mut self, config: &crate::model::AccountConfig) {

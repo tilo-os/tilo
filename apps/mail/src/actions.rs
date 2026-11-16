@@ -79,7 +79,7 @@ pub enum MailEffect {
     /// Adds an email account to the person's accounts, as another mail
     /// program kept it: its servers and the other names and addresses it
     /// sends as. A sign-in another program saved travels with it, once, into
-    /// the store the account lives in — the workspace's vault when the
+    /// the store the account lives in — the person's vault when the
     /// account is kept there — and is never written, logged or answered
     /// anywhere. An account without one asks for it in Settings. It reaches
     /// outside the record, so an agent asking for it is put to the person in

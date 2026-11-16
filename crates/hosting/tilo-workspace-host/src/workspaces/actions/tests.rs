@@ -1025,3 +1025,171 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     );
     relay.shutdown().await;
 }
+
+/// `request` of the person's own settings, asked by the device `device`
+/// certifies in the workspace `workspace_id` carries.
+async fn ask_own(
+    host: &HostWorkspaceActions,
+    workspace_id: WorkspaceId,
+    device: &DeviceCert,
+    target: RemoteActionTarget,
+    argument: Value,
+) -> Result<Value, ActionHostError> {
+    let mut request = request("", "", argument);
+    request.target = target;
+    let receipt = settled(
+        host.in_workspace_as(workspace_id, device)
+            .invoke(&caller(device), request),
+    )
+    .await?;
+    match receipt.status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+        other => panic!("a person's own settings answer at once: {other:?}"),
+    }
+}
+
+/// A person's provider keys and mail sign-ins are theirs, not the
+/// workspace's: the host seals them in the person's own vault, and another
+/// administrator of the workspace, its owner included, neither lists them
+/// nor reaches them through any request, nor finds them in a store of theirs.
+#[tokio::test]
+async fn no_other_administrator_reads_a_persons_secrets() {
+    use tilo_actions::remote::person_models;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let (workspace, workspace_id, host) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    workspaces
+        .set_member_role(
+            &workspace,
+            &owner,
+            SetMemberRoleRequest {
+                request_id: [31; 32],
+                user_public_key: bo.user_public_key,
+                role: Role::Moderator,
+            },
+        )
+        .await
+        .unwrap();
+
+    const SECRET: &str = "sk-ada-own-secret";
+    let added = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::target(person_models::ADD_PROVIDER),
+        json!({"name": "Ada's provider", "protocol": "open-ai-compatible", "endpoint": "https://models.example/v1"}),
+    )
+    .await
+    .expect("Ada adds a provider");
+    let provider = added["id"].as_str().expect("the provider's id").to_owned();
+    ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::target(person_models::SET_KEY),
+        json!({"provider": provider, "key": SECRET}),
+    )
+    .await
+    .expect("Ada keeps her key");
+    let hers = ask_own(
+        &host,
+        workspace_id,
+        &ada,
+        person_models::target(person_models::LIST),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hers["providers"][0]["configured"], json!(true), "{hers}");
+
+    for other in [&bo, &owner] {
+        let listed = ask_own(
+            &host,
+            workspace_id,
+            other,
+            person_models::target(person_models::LIST),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["providers"], json!([]), "{listed}");
+        // Naming her provider reaches nothing of hers: it is not theirs.
+        for (verb, argument) in [
+            (
+                person_models::SET_KEY,
+                json!({"provider": provider, "key": "sk-replaced"}),
+            ),
+            (person_models::REMOVE_KEY, json!({"provider": provider})),
+            (
+                person_models::REMOVE_PROVIDER,
+                json!({"provider": provider}),
+            ),
+        ] {
+            let refused = ask_own(
+                &host,
+                workspace_id,
+                other,
+                person_models::target(verb),
+                argument,
+            )
+            .await;
+            assert!(
+                matches!(refused, Err(ActionHostError::Refused { .. })),
+                "{verb}: {refused:?}"
+            );
+        }
+        // Their own store holds no vault entry at all.
+        let theirs = workspaces.person_settings_root(&other.user_public_key);
+        assert!(
+            !accounts::vault_dir_in(&theirs).exists()
+                || accounts::AccountCredentials::open_in(&theirs)
+                    .unwrap()
+                    .get(&accounts::AccountId::from(format!("provider:{provider}")))
+                    .is_none(),
+            "another person's vault holds Ada's key"
+        );
+    }
+
+    // The key is sealed in Ada's own vault and nowhere in the clear; her
+    // vault and its key file sit in her own store, apart from the
+    // workspace's state.
+    let own = workspaces.person_settings_root(&ada.user_public_key);
+    assert!(own.ends_with(hex::encode(ada.user_public_key)));
+    let sealed = accounts::AccountCredentials::open_in(&own)
+        .unwrap()
+        .get(&accounts::AccountId::from(format!("provider:{provider}")))
+        .expect("the key is in Ada's vault");
+    assert_eq!(sealed.password, SECRET);
+    let mut waiting = vec![dir.path().to_path_buf()];
+    let mut vault_files = 0;
+    while let Some(next) = waiting.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.is_dir() {
+                waiting.push(path);
+            } else if metadata.is_file() {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(
+                    !bytes.windows(SECRET.len()).any(|w| w == SECRET.as_bytes()),
+                    "{} carries Ada's key in the clear",
+                    path.display()
+                );
+                if path.starts_with(accounts::vault_dir_in(&own)) {
+                    vault_files += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        vault_files > 0,
+        "Ada's vault keeps its sealed file in her store"
+    );
+}

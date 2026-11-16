@@ -4,17 +4,19 @@
 //! A page has no mail connection and no vault, so the panes that add a mail
 //! account or a provider key from a browser ask the host: it opens the mail
 //! server's session to prove the sign-in, keeps the account and the key in
-//! the workspace's own vault, and answers what it kept. A secret travels in
-//! and never back — a reading says only whether one is kept.
+//! the person's own vault, and answers what it kept. A secret travels in and
+//! never back — a reading says only whether one is kept.
 //!
-//! Both live under `people/<person>/workspace/<workspace>` in the host's
-//! state: the stores are the shared account and settings formats, so a
-//! device that reads them keeps reading the same files, and the vault is the
-//! shared one with an owner-only key file on a host without a keyring.
+//! They are the person's, not any workspace's: one store per person under
+//! `people/<person>` in the host's state, whichever of their workspaces they
+//! ask from, with its own owner-only key file on a host without a keyring.
+//! The stores are the shared account and settings formats, so a device that
+//! reads them keeps reading the same files.
 //!
 //! Only the person themselves asks: a device of theirs, its certificate
-//! naming them. An agent's request is refused here, as the host's own
-//! operations refuse one.
+//! naming them. Another member, an administrator or the workspace's owner
+//! included, reaches only their own store, and an agent's request is refused
+//! here, as the host's own operations refuse one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,26 +40,24 @@ use tilo_user_identity::DeviceCert;
 use super::Workspaces;
 
 impl Workspaces {
-    /// Where this host keeps `person`'s own settings for `workspace`: their
-    /// accounts and their model providers, apart from every other member's
-    /// and every other workspace's.
-    fn person_settings_root(&self, person: &[u8; 32], workspace: &str) -> PathBuf {
-        self.inner
-            .dir
-            .join("person-settings")
-            .join(hex::encode(person))
-            .join(workspace)
+    /// Where this host keeps `person`'s own accounts and model providers,
+    /// with the vault their sign-ins and keys are sealed in: theirs alone,
+    /// apart from every other person's, and the same in each of their
+    /// workspaces.
+    pub(super) fn person_settings_root(&self, person: &[u8; 32]) -> PathBuf {
+        self.inner.dir.join("people").join(hex::encode(person))
     }
 
     /// The person `caller` asks for, on the device `certificate` certifies,
-    /// in `workspace_id`: what a request that keeps a person's own secrets
-    /// needs before it runs. Unknown and forbidden are the same answer.
+    /// from a workspace `workspace_id` names: what a request that keeps a
+    /// person's own secrets needs before it runs. Unknown and forbidden are
+    /// the same answer.
     fn asking_person(
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         workspace_id: Option<collab_types::WorkspaceId>,
-    ) -> Result<([u8; 32], String), ActionHostError> {
-        let workspace = workspace_id.ok_or(ActionHostError::UnknownAction)?;
+    ) -> Result<[u8; 32], ActionHostError> {
+        workspace_id.ok_or(ActionHostError::UnknownAction)?;
         if !caller.acting().is_person() || caller.acting().app().is_some() {
             return Err(ActionHostError::UnknownAction);
         }
@@ -67,7 +67,7 @@ impl Workspaces {
                     && caller.user_public_key() == Some(&certificate.user_public_key)
             })
             .ok_or(ActionHostError::UnknownAction)?;
-        Ok((certificate.user_public_key, workspace.to_string()))
+        Ok(certificate.user_public_key)
     }
 
     /// Answer a [`person_accounts::PROVIDER`] request.
@@ -78,8 +78,8 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
-        let (person, workspace) = Self::asking_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person, &workspace);
+        let person = Self::asking_person(caller, certificate, workspace_id)?;
+        let root = self.person_settings_root(&person);
         match request.target.address.action.as_str() {
             person_accounts::LIST => answer(&mail_accounts(&root)),
             person_accounts::ADD_MAIL => {
@@ -123,8 +123,8 @@ impl Workspaces {
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
-        let (person, workspace) = Self::asking_person(caller, certificate, workspace_id)?;
-        let root = self.person_settings_root(&person, &workspace);
+        let person = Self::asking_person(caller, certificate, workspace_id)?;
+        let root = self.person_settings_root(&person);
         match request.target.address.action.as_str() {
             person_models::LIST => answer(&providers(&root)),
             person_models::ADD_PROVIDER => {
@@ -205,12 +205,12 @@ fn provider_argument(request: &InvokeRequest) -> Result<String, ActionHostError>
         .ok_or_else(|| invalid("the provider is named by its id"))
 }
 
-/// The vault every secret of this person's workspace is kept in.
+/// The person's own vault, every sign-in and key of theirs sealed in it.
 fn credentials(root: &Path) -> Result<accounts::AccountCredentials, String> {
     accounts::AccountCredentials::open_in(root)
 }
 
-/// The mail accounts the workspace keeps, without their secrets.
+/// The mail accounts the person keeps, without their secrets.
 fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
     let store = accounts::AccountStore::load_in(root);
     let vault = credentials(root)?;
@@ -262,7 +262,7 @@ fn port(account: &accounts::Account, name: &str, default: u16) -> u16 {
 }
 
 /// Add `adding` once its server accepted its sign-in: the secret into the
-/// workspace's vault first, then the account into the shared store, so an
+/// person's vault first, then the account into the shared store, so an
 /// account never shows without the sign-in it needs.
 async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, String> {
     add_mail_with(Arc::new(LiveAccountTester), root, adding).await
@@ -597,7 +597,7 @@ async fn mark_with(session: Session, root: &Path, marking: MarkMail) -> Result<(
         .map_err(|_| "the mail session did not finish".to_string())?
 }
 
-/// The providers the workspace keeps, their models and what runs where.
+/// The providers the person keeps, their models and what runs where.
 fn providers(root: &Path) -> Result<ModelProviders, String> {
     let config = provider_config(root);
     let vault = credentials(root)?;
@@ -661,7 +661,7 @@ fn view_of(
     }
 }
 
-/// The model configuration kept for this workspace's person.
+/// The person's own model configuration.
 fn provider_config(root: &Path) -> agent_provider_config::ProviderConfig {
     let store = settings_store::profile(root);
     agent_provider_config::ProviderConfig::load_in(&*store)
@@ -825,7 +825,7 @@ mod tests {
         files
     }
 
-    /// A provider key is kept in the workspace's vault, never in the settings
+    /// A provider key is kept in the person's vault, never in the settings
     /// document, and the read back says only that one is kept.
     #[test]
     fn a_provider_key_is_kept_in_the_vault_and_never_read_back() {
@@ -1074,7 +1074,7 @@ mod mail_session_tests {
     /// reads, sends and changes with it, and refuses an account it does not
     /// keep.
     #[test]
-    fn a_page_reads_and_sends_through_the_accounts_the_workspace_keeps() {
+    fn a_page_reads_and_sends_through_the_accounts_the_person_keeps() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let mut account = accounts::Account::new(
@@ -1303,7 +1303,7 @@ mod mail_session_tests {
         }
     }
 
-    /// An account another mail program moved in lands in the workspace's
+    /// An account another mail program moved in lands in the person's
     /// store with the other names it sends as and the sign-in it carried,
     /// proved before anything keeps it: the sign-in is in the vault and
     /// nowhere in the clear.

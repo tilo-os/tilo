@@ -4,7 +4,7 @@
 //! A browser has no connection to a mail server and no vault of its own, so
 //! the pane a device shows cannot do its own signing-in here. These are the
 //! same two categories, kept by the host: it proves a mail account's
-//! sign-in, seals the password in the workspace's vault, keeps the provider
+//! sign-in, seals the password in the person's own vault there, keeps the provider
 //! keys, and answers what it kept. What the page shows is what it answered;
 //! every change is a request to it, never a file written in the browser.
 //!
@@ -665,8 +665,9 @@ impl ProvidersModel {
             let provider = provider.clone();
             self.saving_key = None;
             match outcome {
+                // The provider's row says its key is saved.
                 Ok(_) => {
-                    self.notice = Some(t("settings-web-providers-key-saved"));
+                    self.notice = None;
                     self.key_for = None;
                     self.form_key.set(String::new());
                     let _ = provider;

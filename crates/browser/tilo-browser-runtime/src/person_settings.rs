@@ -6,7 +6,7 @@
 //! hands them to the session it already holds with the host
 //! ([`SessionActions`]), as it hands the MCP server there: the host keeps
 //! the accounts, proves each sign-in, and seals the secrets in the
-//! workspace's vault. Nothing is stored in the page.
+//! person's own vault there. Nothing is stored in the page.
 
 use std::sync::Arc;
 

@@ -3,7 +3,7 @@
 //!
 //! A page has no vault of its own and no provider key of its own. The host
 //! that runs the workspace keeps the providers the person set up, their API
-//! keys sealed in the workspace's vault, and the model each kind of work
+//! keys sealed in the person's vault, and the model each kind of work
 //! runs on; a page reads them and changes them here. A key travels one way
 //! only: [`SET_KEY`] carries it in, [`ProviderView::configured`] says whether
 //! one is kept, and no reading carries it back.
@@ -23,10 +23,10 @@ pub const RESOURCE: &str = "models";
 pub const LIST: &str = "list";
 /// Add a provider ([`AddProvider`]) and answer it as a [`ProviderView`].
 pub const ADD_PROVIDER: &str = "add-provider";
-/// Keep a provider's API key in the workspace's vault ([`SetKey`]), answering
+/// Keep a provider's API key in the person's vault ([`SetKey`]), answering
 /// the provider as a [`ProviderView`].
 pub const SET_KEY: &str = "set-key";
-/// Remove a provider's key from the workspace's vault (`provider`),
+/// Remove a provider's key from the person's vault (`provider`),
 /// answering the provider as a [`ProviderView`].
 pub const REMOVE_KEY: &str = "remove-key";
 /// Remove a provider and its key (`provider`), answering the providers that
@@ -73,7 +73,7 @@ pub struct ProviderView {
     pub name: String,
     pub protocol: Protocol,
     pub endpoint: String,
-    /// Whether the workspace's vault keeps an API key for it.
+    /// Whether the person's vault keeps an API key for it.
     pub configured: bool,
     pub models: Vec<OfferedModel>,
     /// The model this provider's agent runs when nothing else is chosen.

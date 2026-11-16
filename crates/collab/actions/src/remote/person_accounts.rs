@@ -26,7 +26,7 @@ use super::{ActionAddress, RemoteActionTarget};
 pub const PROVIDER: &str = "tilo.accounts";
 /// The resource the accounts are actions of.
 pub const RESOURCE: &str = "accounts";
-/// The mail accounts the workspace's vault keeps, as a [`MailAccounts`].
+/// The mail accounts the person's vault keeps, as a [`MailAccounts`].
 pub const LIST: &str = "list";
 /// Add a mail account, once its server accepted its sign-in
 /// ([`AddMailAccount`]), and answer it as a [`MailAccount`].
@@ -71,12 +71,12 @@ pub struct MailAccount {
     pub incoming_port: u16,
     pub outgoing_host: String,
     pub outgoing_port: u16,
-    /// Whether the workspace's vault keeps the account's sign-in. A host
+    /// Whether the person's vault keeps the account's sign-in. A host
     /// never answers the secret itself.
     pub has_secret: bool,
 }
 
-/// Every mail account the workspace's vault keeps.
+/// Every mail account the person's vault keeps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailAccounts {
@@ -88,7 +88,7 @@ pub struct MailAccounts {
 }
 
 /// A mail account to add. The password travels here and nowhere back: the
-/// host keeps it in the workspace's vault and answers only [`MailAccount`].
+/// host keeps it in the person's vault and answers only [`MailAccount`].
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddMailAccount {

@@ -1723,6 +1723,14 @@ impl ResourceApp for MailShell {
         COMMANDS
     }
 
+    /// A person's mail is theirs, not the workspace's: each member keeps
+    /// their own mailbox record (its drafts, flags, folders and outbox),
+    /// which only their devices read and which they change whatever their
+    /// role in the workspace.
+    fn member_record() -> bool {
+        true
+    }
+
     /// Only a live window reaches mail servers and the account store; History
     /// shows what each past version of the document held, and a screenshot
     /// its scenario's fixture.
@@ -2649,5 +2657,25 @@ mod reach_tests {
                 "{scenario}: published actions a drive cannot invoke"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod own_record_tests {
+    /// A window naming no record opens the person's own mailbox, never the
+    /// workspace's: a reader of the workspace keeps their own mail like
+    /// anyone else, and no other member reads it.
+    #[test]
+    fn mail_opens_the_persons_own_record() {
+        let definition = ui::framework::definition::<super::MailShell>();
+        let person = ui::permissions::MemberId::person("ad".repeat(32));
+        let own = definition
+            .member_record_of(&person)
+            .expect("each member keeps their own Mail record");
+        let id = own.id.as_str();
+        assert!(
+            id.starts_with("member:") && id.contains(&person.key()) && id.ends_with("mail.mailbox"),
+            "{id}"
+        );
     }
 }
