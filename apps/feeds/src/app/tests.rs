@@ -1620,8 +1620,9 @@ fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
         );
         let bar = ui::window_toolbar::declared().expect("the window bar declares its slots");
         assert_eq!(
-            bar.sidebar, None,
-            "the places' screen holds Back instead of the toggle {width} wide"
+            bar.sidebar,
+            Some(true),
+            "the places' own screen keeps the toggle that puts them away {width} wide"
         );
         assert!(
             bar.leading
