@@ -410,15 +410,30 @@ pub(crate) fn record_heads(
     )
 }
 
-/// The name of the workspace in front on peer `id`'s workspace desktop, once the
-/// workspace delivered or the page published one.
+/// The name the workspace in front is called on peer `id`: its governance's, which every device
+/// and every list of it reads, else the name its desktop carries once the workspace delivered or
+/// the page published one.
 pub(crate) fn workspace_name(id: u32) -> Option<String> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     joined
-        .desktop_value
-        .as_ref()
-        .and_then(tilo_desktop_surface::history_log::workspace_name)
+        .peer
+        .engine()
+        .workspace_name(joined.workspace)
+        .or_else(|| {
+            joined
+                .desktop_value
+                .as_ref()
+                .and_then(tilo_desktop_surface::history_log::workspace_name)
+        })
+}
+
+/// The name `workspace`'s governance records, as this page holds it: the workspace's one name,
+/// which every device and every list of it reads.
+pub(crate) fn governance_name(id: u32, workspace: WorkspaceId) -> Option<String> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    joined.peer.engine().workspace_name(workspace)
 }
 
 /// The workspace's layout document, for the profile's copy of it: what the person's

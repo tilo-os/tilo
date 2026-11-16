@@ -13,7 +13,7 @@ use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer};
+use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for};
 
 /// Ask the host `request` of its workspace administration, and answer what it
 /// said.
@@ -72,4 +72,61 @@ async fn a_page_renames_the_workspace_for_every_list_of_it() {
             .any(|held| held.workspace == WORKSPACE && held.name == "Tilo"),
         "{listed:?}"
     );
+}
+
+/// A page's shell reads the workspace's one name from its governance, not only from the layout
+/// it landed with: a page that landed before anything named it takes the name there, so its bar,
+/// its overview and search call the workspace what it is called.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pages_shell_reads_the_name_the_governance_keeps() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let page = start_peer(
+        host.iroh(),
+        browser.cert,
+        host_device.cert.clone(),
+        browser.key,
+    );
+    page.join_placed(WORKSPACE, "Workspace").unwrap();
+    ready(&[&page]).await;
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    tilo_test_env::within(
+        "the page reads the name its workspace was made with",
+        async {
+            wait_for("the page reading the workspace's name", || {
+                let named = page.engine().workspace_name(workspace);
+                async move { named.filter(|name| name == "Workspace") }
+            })
+            .await;
+        },
+    )
+    .await;
+    ask(
+        &page,
+        WorkspacesRequest::Rename {
+            workspace: WORKSPACE.into(),
+            name: "Tilo".into(),
+        },
+    )
+    .await;
+    // The rename is the workspace's: its governance records it, and the page's shell reads it
+    // there, whatever layout the page landed with.
+    tilo_test_env::within("the page reads the workspace's renamed name", async {
+        let named = wait_for("the page reading the renamed workspace", || {
+            let named = page.engine().workspace_name(workspace);
+            async move { named.filter(|name| name == "Tilo") }
+        })
+        .await;
+        assert_eq!(named, "Tilo");
+    })
+    .await;
 }

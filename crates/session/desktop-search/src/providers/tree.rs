@@ -43,21 +43,40 @@ const TEXT_SCORE: i32 = 12;
 /// The files of one workspace's tree, and the words of those whose content
 /// the host holds.
 pub struct TreeFiles {
-    workspace: String,
+    /// What a row says its file is of: the workspace's name as the shell shows
+    /// it, never the id its records are kept by.
+    workspace: RwLock<String>,
     files: RwLock<Arc<Vec<TreeFile>>>,
     /// The words of each file, by content hash.
     texts: RwLock<Arc<HashMap<String, String>>>,
 }
 
 impl TreeFiles {
-    /// The files of `workspace`'s tree, as the host last read them.
+    /// The files of `workspace`'s tree, as the host last read them: `workspace`
+    /// the workspace's name, which its rows say the files are of.
     #[must_use]
     pub fn new(workspace: impl Into<String>) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: RwLock::new(workspace.into()),
             files: RwLock::default(),
             texts: RwLock::default(),
         }
+    }
+
+    /// Name the workspace whose tree this reads, as the shell shows it now: a
+    /// row says "in <the workspace's name>", never the id its records are kept
+    /// by. Whether it moved.
+    pub fn set_workspace_name(&self, name: impl Into<String>) -> bool {
+        let mut held = self
+            .workspace
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        let name = name.into();
+        if *held == name {
+            return false;
+        }
+        *held = name;
+        true
     }
 
     /// The tree as the host reads it now; whether it moved.
@@ -115,7 +134,7 @@ impl TreeFiles {
             id: file.id.clone(),
             title: file.name.clone(),
             subtitle: None,
-            facts: vec![self.workspace_named().to_owned(), file.path.clone()],
+            facts: vec![self.workspace_named(), file.path.clone()],
             score,
             icon: None,
             faces: Vec::new(),
@@ -126,10 +145,13 @@ impl TreeFiles {
         }
     }
 
-    /// What the workspace's own rows say the files are of: its name when the
-    /// host gave one, else nothing.
-    fn workspace_named(&self) -> &str {
-        &self.workspace
+    /// What the workspace's own rows say the files are of: its name, as the
+    /// shell showed it after the last [`Self::set_workspace_name`].
+    fn workspace_named(&self) -> String {
+        self.workspace
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -248,6 +270,28 @@ mod tests {
         let found = files.query("handbook");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, ResourceKind::File, "never a folder");
+    }
+
+    /// A file's row says which workspace it is of by the workspace's name, as
+    /// the shell shows it: the store the tree is kept by names it by its id, and
+    /// that id is nothing a person knows.
+    #[test]
+    fn a_files_row_names_its_workspace_by_its_name_never_its_id() {
+        let files = TreeFiles::new("");
+        files.set_files(vec![file("plan", "plan.md", Some(&"ab".repeat(32)))]);
+        assert_eq!(
+            files.query("plan")[0].facts[0],
+            "",
+            "a page that landed before the workspace was named says nothing of it"
+        );
+        assert!(files.set_workspace_name("Tilo"));
+        assert_eq!(files.query("plan")[0].facts[0], "Tilo");
+        assert!(
+            !files.set_workspace_name("Tilo"),
+            "the name it already says is no change"
+        );
+        assert!(files.set_workspace_name("Tilo Coffee"));
+        assert_eq!(files.query("plan")[0].facts[0], "Tilo Coffee");
     }
 
     #[test]

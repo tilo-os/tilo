@@ -45,15 +45,16 @@ pub(crate) struct WorkspaceFiles {
 }
 
 impl WorkspaceFiles {
-    /// The files of `workspace`, read through the records the page keeps of it,
-    /// from the content `content` holds.
+    /// The files of the workspace `named`, read through the records the page
+    /// keeps of it, from the content `content` holds: `named` is what its rows
+    /// say the files are of, never the id its records are kept by.
     pub(crate) fn new(
-        workspace: &str,
+        named: &str,
         records: WorkspaceRecords,
         content: tilo_content::ContentStore,
     ) -> Self {
         Self {
-            source: Arc::new(TreeFiles::new(workspace)),
+            source: Arc::new(TreeFiles::new(named)),
             records,
             content,
             read: RefCell::new(Read {
@@ -61,6 +62,12 @@ impl WorkspaceFiles {
                 read: Vec::new(),
             }),
         }
+    }
+
+    /// Say what the workspace is called now, as the shell shows it: what its
+    /// files' rows say they are of.
+    pub(crate) fn named(&self, name: &str) {
+        self.source.set_workspace_name(name);
     }
 
     /// The palette's source, over the tree as this reads it.

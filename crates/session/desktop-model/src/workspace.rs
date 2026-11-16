@@ -492,6 +492,20 @@ impl Workspace {
         self.id
     }
 
+    /// Take the name the workspace's governance records, `name`, onto this shell: the workspace's
+    /// one name, which every device and every list of it reads. A shell that landed in the
+    /// workspace before anything named it — served no name, or in one made on another device —
+    /// holds none, and a shell whose copy is older holds the old one; both take the name here.
+    /// Naming it what it is already called changes nothing. Whether the shell changed.
+    pub fn named_as(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || self.name == name {
+            return false;
+        }
+        name.clone_into(&mut self.name);
+        true
+    }
+
     /// A person's own authority in this workspace.
     #[must_use]
     pub fn person_authority(&self, user: &str) -> Authority<'_> {
@@ -1055,4 +1069,32 @@ impl Default for Workspace {
 /// and nothing orders or parses them.
 fn mint_capability_id() -> String {
     format!("cap-{}", uuid::Uuid::new_v4().simple())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WorkspaceId;
+
+    /// A shell takes the name its workspace's governance records, whether it
+    /// landed before anything named the workspace or its copy is older.
+    #[test]
+    fn a_shell_takes_the_name_its_governance_records() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "");
+        assert!(workspace.named_as("Tilo"), "an unnamed shell takes it");
+        assert_eq!(workspace.name, "Tilo");
+        assert!(!workspace.named_as("Tilo"), "its own name changes nothing");
+        assert!(workspace.named_as("Tilo Coffee"), "a rename reaches it");
+        assert_eq!(workspace.name, "Tilo Coffee");
+        assert!(
+            !workspace.named_as("  "),
+            "a governance that names nothing leaves the name it has"
+        );
+        assert_eq!(workspace.name, "Tilo Coffee");
+        assert!(
+            workspace.named_as(" Tilo "),
+            "the name as written is trimmed"
+        );
+        assert_eq!(workspace.name, "Tilo");
+    }
 }

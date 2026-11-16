@@ -737,6 +737,43 @@ impl Desktop {
         }
     }
 
+    /// Take the workspace's one name onto the shell: its governance records it, and every device
+    /// and every list of the workspace reads it there. A page that landed in the workspace before
+    /// anything named it — served no name, or in one made on another device — keeps the name it
+    /// was given here, so its bar, its overview and search call the workspace what it is called.
+    /// Whether the shell changed.
+    fn follow_workspace_name(&self, peer: Option<u32>) -> bool {
+        let Some(peer) = peer else {
+            return false;
+        };
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&self.workspace) else {
+            return false;
+        };
+        let Some(name) = crate::replication::governance_name(peer, workspace) else {
+            return false;
+        };
+        let already = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.id() == workspace)
+                .is_some_and(|held| held.name == name)
+        });
+        if already {
+            return false;
+        }
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(held) = tree
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id() == workspace)
+        else {
+            return false;
+        };
+        held.named_as(&name);
+        self.handle.replace_tree(tree);
+        true
+    }
+
     /// Serve the shell's search from the session's: what stands over the shell as published actions,
     /// the workspaces it shows, and the rows the person chose, carried out here.
     fn follow_search(&self) {
@@ -748,7 +785,7 @@ impl Desktop {
         let seen = (self.handle.revision(), self.layout.is_in());
         if self.search.seen.replace(Some(seen)) != Some(seen) {
             let resources = self.layout.resources();
-            let (tabs, workspaces) = self.handle.read(|tree| {
+            let (tabs, workspaces, named) = self.handle.read(|tree| {
                 let workspaces = tree
                     .workspaces
                     .iter()
@@ -757,9 +794,17 @@ impl Desktop {
                 (
                     tree.tabs().map(|tab| tab.id).collect::<Vec<_>>(),
                     workspaces,
+                    tree.active_workspace()
+                        .map(|held| held.name.trim().to_owned())
+                        .filter(|name| !name.is_empty()),
                 )
             });
             search.set_workspaces(workspaces);
+            // The workspace's files are the workspace's: their rows say its name, never the id
+            // the records are kept by.
+            if let (Some(files), Some(named)) = (&self.files, named) {
+                files.named(&named);
+            }
             search.observe(&resources, tabs);
         }
         let refused = search.perform_choices(&self.handle, &mut |own| {
@@ -1421,8 +1466,9 @@ fn files_of_the_workspace(
         }
         Err(_) => content.clone(),
     };
+    // The rows say the workspace's files are of its name, which the shell shows.
     Some(Rc::new(crate::page_files::WorkspaceFiles::new(
-        &config.workspace,
+        config.workspace_name.as_deref().unwrap_or_default(),
         records,
         content,
     )))
@@ -2644,8 +2690,10 @@ impl Mount {
             desktop.follow_notice_choices();
             desktop.tell_mentions();
             desktop.serve_activity();
+            let named = desktop.follow_workspace_name(self.peer);
             desktop.follow_search();
-            desktop.refresh_holders(self.peer.is_some())
+            let holders = desktop.refresh_holders(self.peer.is_some());
+            named || holders
         });
         // Desktop commands and peer changes need an update even when the
         // harness itself is idle. Let a scheduled poll consume them first:

@@ -477,6 +477,21 @@ impl Engine {
         self.owner.contains_workspace(workspace)
     }
 
+    /// The name `workspace`'s governance records: the workspace's one name, which every device and
+    /// every list of it reads. `None` for a workspace this device does not hold, or one whose
+    /// governance names it nowhere (a workspace a build before the name was governance made).
+    #[must_use]
+    pub fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view.peer().governance().workspace_name())
+            })
+            .ok()
+            .flatten()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    }
+
     /// The host `workspace` waits on to take this device in, by the name its person gave it,
     /// while this device holds the workspace but is not its member yet: the workspace's record
     /// names another device (the one this machine was copied from) until its host admits this
