@@ -34,6 +34,11 @@ text = "Show this item."
 reason = "What the show tool does, told to an agent."
 
 [[allow]]
+file = "crates/sdk/tilo-app/src/framework/root/open_link.rs"
+text = "Show what a link names, in the app that claims its scheme."
+reason = "What the open-link tool does, told to an agent."
+
+[[allow]]
 file = "crates/sdk/tilo-app/src/runner/presentation.rs"
 text = "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first."
 reason = "What the screenshot tool answers an agent."
