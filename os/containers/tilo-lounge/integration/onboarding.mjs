@@ -78,7 +78,7 @@ const pageText = tab => tab.evaluate(`(document.body?.innerText || '').replace(/
   .catch(() => '');
 const state = tab => tab.evaluate(`JSON.stringify({
   arrival: document.documentElement.dataset.arrival ?? null,
-  entry: document.documentElement.dataset.entry ?? null,
+  refusal: document.documentElement.dataset.refusal ?? null,
   waitList: document.documentElement.dataset.waitList ?? null,
   entry: document.documentElement.dataset.entry ?? null,
   firstRun: document.documentElement.dataset.firstRun ?? null,
@@ -463,12 +463,12 @@ try {
   // -- 1. a stranger at the wait list ----------------------------------------
   const stranger = await visit('stranger', {passkey: true});
   await arrive(stranger, {expected: 'refused'});
-  await until(stranger.tab, `document.documentElement.dataset.entry === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
+  await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, "the entry showing its wait list", stepLimit(6));
   await until(stranger.tab, `document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
   await until(stranger.tab, `!${firstScreenShown}`, 'the setup screen leaving the entry');
   report.waitList = await stranger.tab.evaluate(`({
-    heading: document.getElementById('arrival-entry-heading')?.textContent?.trim() ?? null,
-    body: document.getElementById('arrival-entry-body')?.textContent?.trim() ?? null,
+    heading: document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null,
+    body: document.getElementById('arrival-refusal-body')?.textContent?.trim() ?? null,
     note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
     button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
     signIn: document.getElementById('arrival-sign-in-button')?.textContent?.trim() ?? null,
@@ -693,9 +693,9 @@ try {
   // computer that never had it: the authenticator alone remembers them.
   await stranger.tab.send('Storage.clearDataForOrigin', {origin: siteOrigin, storageTypes: 'all'});
   await arrive(stranger, {expected: 'refused'});
-  await until(stranger.tab, `document.documentElement.dataset.entry === 'wait-list'`, 'the entry after the browser forgot the site', stepLimit(6));
+  await until(stranger.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the entry after the browser forgot the site', stepLimit(6));
   await pressId(stranger.tab, 'arrival-sign-in-button');
-  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.entry) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || '')`,
+  const back = await until(stranger.tab, `(['done', 'stopped'].includes(document.documentElement.dataset.arrival) && !document.documentElement.dataset.refusal) ? 'in' : (document.getElementById('arrival-sign-in-note')?.textContent?.trim() || '')`,
     'the passkey signing the person in', stepLimit(10));
   if (back !== 'in') await fail(`the passkey did not sign the person in: ${back}`);
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey`,
@@ -743,7 +743,7 @@ try {
   // -- 6. a visitor with no invitation is still out --------------------------
   const visitor = await visit('visitor', {passkey: false});
   await arrive(visitor, {expected: 'refused'});
-  await until(visitor.tab, `document.documentElement.dataset.entry === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
+  await until(visitor.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the last visitor meeting the wait list', stepLimit(6));
   const other = 'grace@example.org';
   await visitor.tab.evaluate(`(() => {
     const field = document.getElementById('arrival-wait-email');

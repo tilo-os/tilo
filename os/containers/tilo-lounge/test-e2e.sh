@@ -158,7 +158,7 @@ fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visan entry passkey wait-list onboarding restart)
+all=(signin directory boot people-call people-shell people-menus people-invite share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
 # Run only when named: a person reloading their workspace page twenty times
 # in one browser, counting the reloads that crash or never come back.
 named_only=(reloads)
@@ -237,7 +237,7 @@ export E2E_WORK=$work E2E_BUNDLE=$bundle E2E_SITE=$site_origin E2E_RELAY=$relay_
 # here, beside the flows that waited for it.
 service_complaints() {
   local name file said
-  for name in relay entry web tls; do
+  for name in relay api web tls; do
     file=$state/logs/$name.log
     [[ -s $file ]] || continue
     said=$(sed -E 's/\x1b\[[0-9;]*m//g' "$file" | grep -E '^[0-9T:.-]+Z +(ERROR|WARN) ' \

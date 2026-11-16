@@ -74,7 +74,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
     if (Date.now() > deadline) {
       const shown = await tab.evaluate(`JSON.stringify({
         arrival: document.documentElement.dataset.arrival ?? null,
-        entry: document.documentElement.dataset.entry ?? null,
+        refusal: document.documentElement.dataset.refusal ?? null,
         waitList: document.documentElement.dataset.waitList ?? null,
         entry: document.documentElement.dataset.entry ?? null,
         firstScreen: ${firstScreenShown},
@@ -103,7 +103,7 @@ if (before) {
   report.before = await was.evaluate(`({
     firstScreen: ${firstScreenShown},
     heading: document.querySelector('#first-run h1')?.textContent?.trim() ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
   })`).catch(() => null);
   console.log(`ok: the before shot (${report.before?.heading})`);
   await was.close().catch(() => {});
@@ -111,11 +111,11 @@ if (before) {
 
 // 1. The wait list is the front entry: the setup screen is not over it.
 await tab.navigate(site);
-await until(`document.documentElement.dataset.entry === 'wait-list'`, 'the entry showing its wait list');
+await until(`document.documentElement.dataset.refusal === 'wait-list'`, 'the entry showing its wait list');
 await until(`document.documentElement.dataset.waitList === 'form'`, 'the wait list offering its field');
 await until(`!${firstScreenShown}`, 'the setup screen leaving the entry');
-report.heading = await tab.evaluate(`document.getElementById('arrival-entry-heading')?.textContent?.trim() ?? null`);
-report.body = await tab.evaluate(`document.getElementById('arrival-entry-body')?.textContent?.trim() ?? null`);
+report.heading = await tab.evaluate(`document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null`);
+report.body = await tab.evaluate(`document.getElementById('arrival-refusal-body')?.textContent?.trim() ?? null`);
 report.note = await tab.evaluate(`document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null`);
 report.button = await tab.evaluate(`document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null`);
 report.invite = await tab.evaluate(`document.getElementById('arrival-invite-toggle')?.textContent?.trim() ?? null`);
@@ -160,7 +160,7 @@ await tab.navigate(confirm);
 await until(`document.documentElement.dataset.waitList === 'listed'`, 'the confirmation link listing the address');
 report.listed = await tab.evaluate(`document.getElementById('arrival-wait-done')?.textContent?.trim() ?? null`);
 await tab.navigate(site);
-await until(`document.documentElement.dataset.entry === 'wait-list'`, 'the entry after a reload');
+await until(`document.documentElement.dataset.refusal === 'wait-list'`, 'the entry after a reload');
 await until(`document.documentElement.dataset.waitList === 'listed'`, 'the confirmed address on a reload');
 report.reloadListed = await tab.evaluate(`document.getElementById('arrival-wait-done')?.textContent?.trim() ?? null`);
 await shot('3-on-the-list.png');
@@ -180,7 +180,7 @@ for (let tries = 0; tries < 480; tries += 1) {
 }
 report.phone = await phone.evaluate(`({
   waitList: document.documentElement.dataset.waitList ?? null,
-  heading: document.getElementById('arrival-entry-heading')?.textContent?.trim() ?? null,
+  heading: document.getElementById('arrival-refusal-heading')?.textContent?.trim() ?? null,
   button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
   note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
   stacked: (() => {

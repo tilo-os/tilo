@@ -104,7 +104,7 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
     if (Date.now() > deadline) {
       const shown = await tab.evaluate(`JSON.stringify({
         arrival: document.documentElement.dataset.arrival ?? null,
-        entry: document.documentElement.dataset.entry ?? null,
+        refusal: document.documentElement.dataset.refusal ?? null,
         entry: document.documentElement.dataset.entry ?? null,
         status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
         // The mount's own account: which frame it last presented, and how

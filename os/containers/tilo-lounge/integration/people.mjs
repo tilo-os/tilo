@@ -149,7 +149,7 @@ const snapshot = async tab => {
     const safe = read => { try { return read(); } catch (error) { return \`unavailable: \${error}\`; } };
     return JSON.stringify({
     state: (() => { const s = globalThis.tiloMount?.state() ?? null;
-      return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, entry: s.entry ?? null,
+      return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, refusal: s.refusal ?? null,
         phase: s.phase ?? null, frames: s.frames ?? 0, searchOpen: !!s.searchOpen,
         // Frames the GPU left unreported since it last reported one: what a
         // page that stopped drawing while it stayed alive says.
@@ -230,7 +230,7 @@ const until = async (tab, expression, what, timeout = stepLimit(3), more = null)
   // says more than the wait that ran out.
   const shown = await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
     phase: document.documentElement.dataset.phase ?? null,
     progress: document.documentElement.dataset.arrivalProgress ?? null,
     status: document.getElementById('status')?.textContent ?? null,
@@ -761,7 +761,7 @@ const recordLoading = async (launched, tab) => {
 const mounted = async (tab, name) => {
   const arrival = JSON.parse(await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
-    entry: document.documentElement.dataset.entry ?? null,
+    refusal: document.documentElement.dataset.refusal ?? null,
     phase: document.documentElement.dataset.phase ?? null,
     // Why a page stopped: refused, failed or unsupported, in the words it shows.
     entry: document.documentElement.dataset.entry ?? null,

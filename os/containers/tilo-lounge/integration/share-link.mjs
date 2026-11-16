@@ -296,8 +296,8 @@ try {
   await shoot(bo, 'share-sheet-390');
   mark('Bo read Ada’s next words live and saw her here');
 
-  // 6. A link to an agent run opens the desktop, Console on that run's page.
-  const run = `console.run:${process.env.SHARE_LINK_RUN ?? 'no-such-run'}`;
+  // 6. A link to an agent session opens the desktop, Console on that session's page.
+  const run = `console.session:${process.env.SHARE_LINK_RUN ?? 'no-such-session'}`;
   const runLink = `${base}#/@${hostRoute}/w/${workspace}/so.tilo.console/-/${run}`;
   report.runLink = runLink;
   // In a browser of its own: a link is opened fresh, not by editing the
