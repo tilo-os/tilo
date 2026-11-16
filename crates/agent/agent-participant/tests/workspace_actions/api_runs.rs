@@ -1,8 +1,8 @@
-//! Every run of a workspace, listed through the API on the relay as tilo.sh
+//! A workspace's runs, listed through the API on the relay as tilo.sh
 //! hosts it (`GET /v1/workspaces/{workspace}/runs`, `tilo_read
 //! workspace/runs` over MCP): two keys made for the workspace and the
-//! person's own key each run something there, and every key that reaches the
-//! workspace reads all three, newest first, each with who ran it and how it
+//! person's own key each run something there, and each of those keys, which
+//! all may read every record there, reads all three, newest first, each with who ran it and how it
 //! ended. A command waiting for the person reads as waiting until they allow
 //! it, then as ended; a run taken back reads as undone, and one that someone's
 //! later change stands on says so. Pages hold `limit` runs and read on from
@@ -110,7 +110,7 @@ const LETTERS: [(&str, &str); 3] = [
 ];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_key_reads_every_run_of_its_workspace_newest_first_and_after_a_restart() {
+async fn keys_reading_a_workspace_list_its_runs_newest_first_also_after_a_restart() {
     Box::pin(every_run_listed()).await;
 }
 
@@ -146,7 +146,7 @@ async fn every_run_listed() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // Every key that reaches the workspace reads all three, newest first,
+    // Each key, reading every record there, lists all three, newest first,
     // each with who ran it and how it ended.
     for reader in [&agent, &reviewer, &person] {
         let listed = runs(reader, &ws, "").await;

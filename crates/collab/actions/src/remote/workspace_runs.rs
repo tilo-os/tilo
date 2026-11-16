@@ -1,6 +1,9 @@
-//! Every run of a workspace a host keeps, newest first: what a key that
-//! reaches the workspace reads to see what ran there, what waits for the
-//! person, and what can still be taken back.
+//! The runs of a workspace a host keeps, newest first, in the records the
+//! caller may read: what a key that reaches the workspace reads to see what
+//! ran there, what waits for the person, and what can still be taken back.
+//! Of each run the host answers only what lies in records the caller may
+//! read now, and a run with nothing left for them is neither listed nor
+//! counted.
 //!
 //! A device lists a workspace's agent sessions from its own history index
 //! ([`super::workspace_activity`]). A host that keeps a workspace for people
@@ -158,7 +161,8 @@ pub struct Run {
     /// remembers it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// What its newest change did, as History says it.
+    /// What its newest change did, without the values it carried: the action
+    /// by its published label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     /// How many changes it made to the workspace's records: its edits, and

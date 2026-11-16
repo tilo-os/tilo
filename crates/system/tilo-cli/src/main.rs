@@ -275,7 +275,7 @@ enum Cmd {
         /// The program to run, by its path here.
         file: std::path::PathBuf,
     },
-    /// Every run in a hosted workspace (-w), newest first, whoever ran it.
+    /// The runs of a hosted workspace (-w) in records you may read, newest first.
     #[command(
         after_help = "Examples:\n  tilo runs -w jane-doe\n  tilo runs -w jane-doe --limit 10\n\n\
                       Each line is a run: its id, how it stands (waiting for you, running, ended, failed,\n\
@@ -2264,7 +2264,7 @@ mod tests {
                     "  account    Your hosted account: its workspaces\n",
                     "  files      Files into a hosted workspace\n",
                     "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
-                    "  runs       Every run in a hosted workspace (-w), newest first, whoever ran it\n",
+                    "  runs       The runs of a hosted workspace (-w) in records you may read, newest first\n",
                     "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
                     "  device     Your devices: update them, go back, repair them, develop on them\n",
                     "  agent      Connect agents to this desktop, and choose their models\n",

@@ -1,4 +1,4 @@
-//! Every run of a workspace, as the path `workspace/runs` of every workspace
+//! The runs of a workspace, as the path `workspace/runs` of every workspace
 //! a key acts in: `tilo_read workspace/runs` answers the newest, and
 //! `tilo_ls workspace/runs {limit, cursor}` a page of them.
 //!
@@ -7,9 +7,9 @@
 //! and whether it can still be taken back; its `id` is what `tilo_status`
 //! reads, stops and takes back. The workspace's host answers it from the
 //! history its records keep, which outlasts a restart of the host, and the
-//! calls it remembers ([`tilo_actions::remote::workspace_runs`]). Any key that
-//! reaches the workspace reads every run in it, as History shows every
-//! actor's changes there.
+//! calls it remembers ([`tilo_actions::remote::workspace_runs`]). A key reads,
+//! whoever ran them, the runs in records it may read: of each run only what
+//! lies in those records, and none of the rest, not even as a count.
 
 use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
@@ -23,8 +23,9 @@ use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeReques
 pub const ROOT: &str = "workspace/runs";
 
 /// What every MCP client is told of it, beside `tilo_status`.
-pub const INSTRUCTIONS: &str = "`tilo_read workspace/runs` lists every run in the workspace, \
-newest first, whoever ran it (`tilo_ls workspace/runs` with `limit` and `cursor` pages on): who ran \
+pub const INSTRUCTIONS: &str = "`tilo_read workspace/runs` lists the workspace's runs in records \
+you may read, newest first, whoever ran them (`tilo_ls workspace/runs` with `limit` and `cursor` \
+pages on): who ran \
 it, how it stands (`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), \
 when, what it changed and whether it can still be taken back. Its `id` is the invocation \
 `tilo_status` reads, stops (`cancel`) and takes back (`undo`).";

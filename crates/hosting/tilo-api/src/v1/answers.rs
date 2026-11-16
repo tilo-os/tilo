@@ -452,7 +452,8 @@ pub struct RunInfo {
     /// remembers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// What its newest change did, as History says it.
+    /// What its newest change did, without the values it carried: the action
+    /// by its published label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     /// How many changes it made to the workspace's records: its edits, and
@@ -476,7 +477,9 @@ pub struct RunInfo {
     pub remembered: bool,
 }
 
-/// `GET /v1/workspaces/{workspace}/runs`: a page of its runs, newest first.
+/// `GET /v1/workspaces/{workspace}/runs`: a page of its runs in records the
+/// key may read, newest first: of each run only what lies in those records,
+/// and the totals over them alone.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RunList {
     pub runs: Vec<RunInfo>,

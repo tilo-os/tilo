@@ -440,7 +440,8 @@ pub fn read(reach: Reach<'_>, workspace: &str, path: &str, cursor: Option<&str>)
     })
 }
 
-/// `tilo runs -w <workspace>`: every run in the workspace, newest first, as
+/// `tilo runs -w <workspace>`: the workspace's runs in records the key may
+/// read, newest first, as
 /// `tilo_read workspace/runs` lists them: `limit` to a page, and the `cursor`
 /// a page ended with for the older ones.
 pub fn runs(

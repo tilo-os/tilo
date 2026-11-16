@@ -859,7 +859,7 @@
     "/v1/workspaces/{workspace}/runs": {
       "get": {
         "operationId": "listRuns",
-        "summary": "Every run in the workspace, newest first, whoever ran it",
+        "summary": "The workspace's runs in records the key may read, newest first",
         "tags": [
           "Runs"
         ],
@@ -900,7 +900,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Every run in the workspace, newest first, whoever ran it",
+            "description": "The workspace's runs in records the key may read, newest first",
             "content": {
               "application/json": {
                 "schema": {
@@ -2973,7 +2973,7 @@
           "total",
           "waiting"
         ],
-        "description": "`GET /v1/workspaces/{workspace}/runs`: a page of its runs, newest first."
+        "description": "`GET /v1/workspaces/{workspace}/runs`: a page of its runs in records the\nkey may read, newest first: of each run only what lies in those records,\nand the totals over them alone."
       },
       "RunInfo": {
         "type": "object",
@@ -3045,7 +3045,7 @@
               "string",
               "null"
             ],
-            "description": "What its newest change did, as History says it."
+            "description": "What its newest change did, without the values it carried: the action\nby its published label."
           },
           "changes": {
             "type": "integer",

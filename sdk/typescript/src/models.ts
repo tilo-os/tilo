@@ -353,7 +353,7 @@ export interface RunInfo {
   endedMs: number | null;
   /** What its last call asked for, `<app>#<action>`, while the host remembers it. */
   action: string | null;
-  /** What its newest change did, as History says it. */
+  /** What its newest change did, without the values it carried: the action by its published label. */
   summary: string | null;
   /** How many changes it made to the workspace's records. */
   changes: number;

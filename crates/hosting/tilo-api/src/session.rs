@@ -704,8 +704,9 @@ time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}
 to let keys minted for that workspace alone run commands there without asking (and in branches \
 made from it), answering `pending` until they decide; this key itself is still asked, and \
 `{on: false}` asks again from the next command. \
-`tilo_read workspace/runs` (with `workspace`) lists every run in a workspace, newest first, whoever \
-ran it (`tilo_ls workspace/runs` with `limit` and `cursor` pages on): who ran it, how it stands \
+`tilo_read workspace/runs` (with `workspace`) lists a workspace's runs in records this key may read, \
+newest first, whoever ran them (`tilo_ls workspace/runs` with `limit` and `cursor` pages on): who ran \
+it, how it stands \
 (`waiting` for the person, `running`, `ended`, `failed`, `cancelled`, `undone`), what it changed and \
 whether it can still be taken back; its `id` is the invocation `tilo_status` reads, stops (`cancel`) \
 and takes back (`undo`). \

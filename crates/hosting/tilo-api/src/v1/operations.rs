@@ -218,7 +218,7 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "listRuns",
             Method::GET,
             "/v1/workspaces/{workspace}/runs",
-            "Every run in the workspace, newest first, whoever ran it",
+            "The workspace's runs in records the key may read, newest first",
         )
         .query(&[
             ("limit", "How many runs at most: 50 unless said, at most 200"),

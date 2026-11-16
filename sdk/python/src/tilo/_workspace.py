@@ -281,9 +281,11 @@ class Workspace:
         return await (await self._endpoint()).status(run, cancel)
 
     def runs(self, limit: int | None = None) -> Any:
-        """Every run in the workspace, newest first, whoever ran it: a
-        `RunList` of `RunInfo`s, `limit` to a page (50 unless said, at most
-        200); iterating it reads on to the oldest.
+        """The workspace's runs in records this key may read, newest first,
+        whoever ran them: a `RunList` of `RunInfo`s, `limit` to a page (50
+        unless said, at most 200); iterating it reads on to the oldest. Of
+        each run it says only what lies in those records, and its totals
+        count only those runs.
 
         Each says who ran it, how it stands (`waiting` for the person,
         `running`, `ended`, `failed`, `cancelled`, `undone`), when, what it

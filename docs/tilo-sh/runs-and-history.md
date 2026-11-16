@@ -1,8 +1,8 @@
 # Runs and history
 
 Nothing in a workspace changes anonymously. Each connection is a **run**, every change is a step in its
-record's **history**, a run can be taken back as one piece, and the workspace lists **every run** in
-it.
+record's **history**, a run can be taken back as one piece, and the workspace lists its **runs** to
+anyone who may read the records they changed.
 
 ## A run
 
@@ -112,10 +112,10 @@ curl -sS --fail-with-body "$word/history" -H "$auth" -H "$json" -d '{"last": 10}
   | jq -r '"undone: \([.result.versions[] | select(.undone)] | length) steps"'
 ```
 
-## Every run
+## Every run you may read
 
-A workspace lists its runs, newest first, whoever ran them: every key of yours, every agent's key
-made for it, and you. Several agents each working in a workspace of their own leave one list per
+A workspace lists its runs, newest first, whoever ran them (every key of yours, every agent's key
+made for it, and you), as far as the key asking may read the records they changed. Several agents each working in a workspace of their own leave one list per
 workspace of what ran, what waits for you, and what can still be taken back.
 
 `ws.runs()` (`GET /v1/workspaces/{workspace}/runs`; over MCP `tilo_read workspace/runs`; `tilo runs
@@ -129,7 +129,8 @@ with. Each run says:
   everything it changed was taken back;
 - **when**: `started_ms`, and `ended_ms` once it ended;
 - **what it touched**: how many `changes` it made and to which `records`, how many were `undone`,
-  and the `summary` of its newest change as History words it;
+  and the `summary` of its newest change, without the values it carried (the action by its
+  published label);
 - **whether it can still be taken back**: `undoable`, or `undo_blocked` naming whose change stands
   on top of its own.
 
@@ -144,8 +145,11 @@ the undo step its changes carry in every record's History, names it either way. 
 nothing (one still waiting for you, one that failed before it wrote) is known from the host's
 memory alone, and is not listed after a restart.
 
-Any key that reaches a workspace reads every run in it, as History shows every change there.
-What a run was given, what it answered and the words of its failure stay with whoever ran it.
+A key reads the runs in records it may read now, as it reads those records' History: of a run that
+also changed a record it may not read, only the part in the records it may; a run with nothing in
+them is not listed, and `total` and `waiting` count only what is listed. A call that changed
+nothing is listed to a key that may read the record it asked about. A Read taken away shows in the
+next listing. What a run was given, what it answered and the words of its failure stay with whoever ran it.
 
 ```python example=list-runs
 from tilo import Tilo

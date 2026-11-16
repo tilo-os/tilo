@@ -414,6 +414,8 @@ class RunInfo:
     ended_ms: int | None = None
     action: str | None = None
     summary: str | None = None
+    """What its newest change did, without the values it carried: the
+    action by its published label."""
     changes: int = 0
     undone: int = 0
     records: Sequence[Mapping[str, Any]] = ()

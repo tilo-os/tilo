@@ -279,9 +279,10 @@ export class Workspace {
   }
 
   /**
-   * Every run in the workspace, newest first, whoever ran it: a `RunList` of
-   * `RunInfo`s, `limit` to a page (50 unless said, at most 200); `for await`
-   * reads on to the oldest. Each says who ran it, how it stands (`waiting` for
+   * The workspace's runs in records this key may read, newest first, whoever
+   * ran them: a `RunList` of `RunInfo`s, `limit` to a page (50 unless said,
+   * at most 200); `for await` reads on to the oldest. Of each run it says only
+   * what lies in those records, and its totals count only those runs. Each says who ran it, how it stands (`waiting` for
    * the person, `running`, `ended`, `failed`, `cancelled`, `undone`), when,
    * what it changed and whether it can still be taken back. Its `id` is the
    * run id a `Run` reads, cancels and undoes; a run the host no longer
