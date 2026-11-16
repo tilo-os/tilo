@@ -265,7 +265,7 @@ mod tests {
                 ReceiptRefusal::Unnamed("change".into()),
                 ReceiptRefusal::UnclaimedUnit("comments.c1".into()),
                 ReceiptRefusal::Appearance {
-                    actor: "ada".into(),
+                    actor: collab_types::MemberId::person("ada").into(),
                     reason: "not a bot".into(),
                 },
             ] {
