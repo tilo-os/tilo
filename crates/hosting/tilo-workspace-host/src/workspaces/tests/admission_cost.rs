@@ -6,11 +6,11 @@
 
 use super::*;
 
-/// One person's device entering `workspace` through its door, as a page
+/// One person's device entering `workspace` through its entry, as a page
 /// does: the owner's pre-admission, the challenge, then the proof. `n`
 /// tells this arrival apart from every other. Answers how long the proof
 /// took the host.
-pub(crate) async fn door_arrival(
+pub(crate) async fn entry_arrival(
     workspaces: &Workspaces,
     host: &DeviceCert,
     workspace: &str,
@@ -112,7 +112,7 @@ async fn seed(members: u32) -> (std::time::Duration, std::time::Duration) {
         if n + 10 == members {
             phases.0.lock().unwrap().clear();
         }
-        let took = door_arrival(&workspaces, &cert, &workspace, n).await;
+        let took = entry_arrival(&workspaces, &cert, &workspace, n).await;
         if n + 10 >= members {
             last.push(took);
         }
@@ -141,7 +141,7 @@ async fn admission_cost_at_thirty_and_three_hundred_members() {
 }
 
 /// What the host reads of the workspace's governance for each of the last
-/// `arrivals` of `members` people coming through the door: member rows
+/// `arrivals` of `members` people coming through the entry: member rows
 /// decoded, signatures checked, whole reads of the governance and replays
 /// of its membership log.
 async fn work_per_arrival(
@@ -164,7 +164,7 @@ async fn work_per_arrival(
     for n in 0..members + arrivals {
         let _ = tilo_peer_state::governance_work::take();
         let before = access_len();
-        door_arrival(&workspaces, &cert, &workspace, n).await;
+        entry_arrival(&workspaces, &cert, &workspace, n).await;
         if n >= members {
             work.push((
                 tilo_peer_state::governance_work::take(),
@@ -225,7 +225,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
 }
 
 /// The size of a workspace's record as written for the last of `members`
-/// people coming through the door, without the peer state's parts it holds
+/// people coming through the entry, without the peer state's parts it holds
 /// inline, and of the files beside it.
 async fn record_after(members: u32) -> (usize, u64) {
     let dir = tempfile::tempdir().unwrap();
@@ -234,7 +234,7 @@ async fn record_after(members: u32) -> (usize, u64) {
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
     for n in 0..members {
-        door_arrival(&workspaces, &cert, &workspace, n).await;
+        entry_arrival(&workspaces, &cert, &workspace, n).await;
     }
     let path = workspaces
         .workspace(&workspace)

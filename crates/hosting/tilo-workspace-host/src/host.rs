@@ -1275,8 +1275,8 @@ where
 {
     ctx.metrics.inc_conns_accepted();
     // A device the host has not admitted yet may enter a workspace through
-    // its door on this session, where the host governs workspaces.
-    let doorway = ctx.admin.get().cloned();
+    // its entry on this session, where the host governs workspaces.
+    let admit = ctx.admin.get().cloned();
     let (client_peer, entered) = match ctx
         .identity
         .authenticate_or_enter(
@@ -1288,7 +1288,7 @@ where
             &mut recv,
             &mut send,
             MAX_FRAME_BYTES,
-            doorway
+            admit
                 .as_deref()
                 .map(|workspaces| workspaces as &dyn crate::handshake::Admit),
             binding,

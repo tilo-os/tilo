@@ -419,7 +419,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_door_names_its_steps_and_reads_its_pages_error_reports;
+        fn an_entry_names_its_steps_and_reads_its_pages_error_reports;
 
         phase an_entry_route_names_its_workspace_and_step;
         {

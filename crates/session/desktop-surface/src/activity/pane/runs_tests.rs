@@ -495,7 +495,7 @@ tilo_test_env::scenario! {
         const NOTES_ROOT: &str = "tl:so.tilo.lang.notes:notebook";
         const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
         const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
-        // The run an agent admitted at this desktop's door works in: one run of a task.
+        // The run an agent admitted at this desktop's API works in: one run of a task.
         const RUN: &str =
             "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
         // The person names a session-kept record as the app's own record of the workspace.

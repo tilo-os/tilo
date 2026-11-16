@@ -9,7 +9,7 @@ use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::{Element, Text};
 use ui::{Theme, UiGraphEditor, UiGraphHandle};
 
-/// The editor's resource: the door its window is published on. The graph it
+/// The editor's resource, where its window is published. The graph it
 /// edits is the file the launch names.
 struct UiGraph;
 

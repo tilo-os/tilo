@@ -1,6 +1,6 @@
 //! A governed workspace's administration as `tilo.workspace` actions: offered as
 //! far as the workspace's governance lets the caller, run through the same workspace
-//! methods as the wire doors, and destructive governance held back until the
+//! methods as the wire API does, and destructive governance held back until the
 //! person's own confirmation can be asked for.
 
 #![expect(

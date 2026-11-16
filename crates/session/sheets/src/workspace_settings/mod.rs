@@ -42,7 +42,7 @@ pub const APP_ID: &str = "so.tilo.workspace-settings";
 /// beside them.
 const WIDTH: f64 = 760.0;
 
-/// The sheet's resource: the door its actions are published on. It holds
+/// The sheet's resource, where its actions are published. It holds
 /// nothing; the workspace is the shell's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceSettings {}
@@ -693,7 +693,7 @@ struct Parts {
 impl Parts {
     /// Ask the shell for `effect`. The person's own press is their
     /// decision, as a key is; anyone acting for them goes through the
-    /// door, which asks first where the effect says so.
+    /// action API, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
         // A new agent is named by what the form held: the press takes it,
         // and a press with no name asks nothing, leaving the form up.

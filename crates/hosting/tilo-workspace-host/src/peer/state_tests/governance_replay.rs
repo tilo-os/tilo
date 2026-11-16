@@ -112,7 +112,7 @@ async fn a_replay_carries_only_the_governance_its_device_uses() {
     }
 }
 
-/// The Welcome committed for a device the door admitted goes ahead of its
+/// The Welcome committed for a device the entry admitted goes ahead of its
 /// replay, and its retained copy is not sent again.
 #[tokio::test]
 async fn a_newcomers_welcome_is_written_once() {

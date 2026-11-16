@@ -17,7 +17,7 @@
 //!    In a workspace this relay governs, a device of a person its governance
 //!    has as a member ([`person_device`]: a browser tab, a new computer of
 //!    theirs) is enrolled when it subscribes: governance records it under its
-//!    person, as the door does for a further device of a member, so it holds
+//!    person, as the entry does for a further device of a member, so it holds
 //!    the part its person holds. Membership follows the person, not one
 //!    device key.
 //! 6. Anything else is not a member.

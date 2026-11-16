@@ -30,7 +30,7 @@ use crate::t;
 /// The app the session mounts the chooser as.
 pub const APP_ID: &str = "so.tilo.file-chooser";
 
-/// The sheet's resource: the door its steps are published on. It holds
+/// The sheet's resource, where its steps are published. It holds
 /// nothing; the request is the service's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct FileChooser {}
@@ -536,7 +536,7 @@ fn listing_of(picker: &FilePicker, refused: Option<String>) -> Listing {
     }
 }
 
-/// The toolkit's picker, taking the steps asked through the door and
+/// The toolkit's picker, taking the steps asked through the action API and
 /// handing what it answers to the state.
 struct Chooser {
     picker: FilePicker,

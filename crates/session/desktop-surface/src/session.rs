@@ -16,8 +16,8 @@
 //! The session also serves the workspace's activity, as a native session's broker does
 //! (`activity`), and carries the person's own asks of what only they reach
 //! (their MCP server, [`mcp_server::PROVIDER`], and their devices,
-//! [`identity_admin::PROVIDER`]) to the door the desktop's host hands it for
-//! each ([`DesktopSession::serve_person_door`]): the person's host, on a page.
+//! [`identity_admin::PROVIDER`]) to the action API the desktop's host hands it
+//! for each ([`DesktopSession::serve_person_api`]): the person's host, on a page.
 
 mod activity;
 #[cfg(test)]
@@ -158,8 +158,8 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
     })
 }
 
-/// The providers only the person reaches, each served by a door the
-/// desktop's host hands the session ([`DesktopSession::serve_person_door`]).
+/// The providers only the person reaches, each served by an action API the
+/// desktop's host hands the session ([`DesktopSession::serve_person_api`]).
 pub const PERSON_PROVIDERS: [&str; 4] = [
     mcp_server::PROVIDER,
     identity_admin::PROVIDER,
@@ -176,13 +176,13 @@ pub struct DesktopSession {
     workspace: String,
     asked: Asked,
     nodes: Arc<std::sync::Mutex<Vec<NodeAsk>>>,
-    activity: Arc<activity::Door>,
+    activity: Arc<activity::Api>,
     /// Where the person's asks of each provider only they reach go, once the
     /// host serves one.
-    person_doors: std::sync::Mutex<HashMap<String, Arc<dyn ActionHost + Send + Sync>>>,
-    /// The invocations a person's door admitted, and that door, which
+    person_apis: std::sync::Mutex<HashMap<String, Arc<dyn ActionHost + Send + Sync>>>,
+    /// The invocations a person's action API admitted, and that API, which
     /// answers for them.
-    door_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
+    api_invocations: std::sync::Mutex<HashMap<InvocationId, Arc<dyn ActionHost + Send + Sync>>>,
     /// The host actions a window asked the shell to choose for the person
     /// ([`session_actions::SHOW_CONNECT`]), for the desktop to take.
     chosen: Chosen,
@@ -228,7 +228,7 @@ pub fn serve(
 ) -> (Arc<DesktopSession>, Openings) {
     let asked = Asked::default();
     let nodes = Arc::<std::sync::Mutex<Vec<NodeAsk>>>::default();
-    let activity = activity::Door::new(Arc::clone(&woken));
+    let activity = activity::Api::new(Arc::clone(&woken));
     let chosen = Chosen::default();
     (
         Arc::new(DesktopSession {
@@ -236,8 +236,8 @@ pub fn serve(
             asked: Arc::clone(&asked),
             nodes: Arc::clone(&nodes),
             activity: Arc::clone(&activity),
-            person_doors: std::sync::Mutex::default(),
-            door_invocations: std::sync::Mutex::default(),
+            person_apis: std::sync::Mutex::default(),
+            api_invocations: std::sync::Mutex::default(),
             chosen: Arc::clone(&chosen),
             woken,
         }),
@@ -253,21 +253,21 @@ pub fn serve(
 
 impl DesktopSession {
     /// Carry the person's asks of `provider`, one only they reach
-    /// ([`PERSON_PROVIDERS`]), to `door` from now on.
-    pub fn serve_person_door(&self, provider: &str, door: Arc<dyn ActionHost + Send + Sync>) {
-        self.person_doors
+    /// ([`PERSON_PROVIDERS`]), to `api` from now on.
+    pub fn serve_person_api(&self, provider: &str, api: Arc<dyn ActionHost + Send + Sync>) {
+        self.person_apis
             .lock_recover()
-            .insert(provider.to_owned(), door);
+            .insert(provider.to_owned(), api);
     }
 
-    /// The person's door that admitted `id`, when one did.
-    fn door_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionHost + Send + Sync>> {
-        self.door_invocations.lock_recover().get(id).cloned()
+    /// The person's action API that admitted `id`, when one did.
+    fn api_of(&self, id: &InvocationId) -> Option<Arc<dyn ActionHost + Send + Sync>> {
+        self.api_invocations.lock_recover().get(id).cloned()
     }
 
-    /// Ask the person's door for `request`'s provider for `caller`: the
+    /// Ask the person's action API for `request`'s provider for `caller`: the
     /// person themselves, never an agent or an app acting for them.
-    fn ask_person_door(
+    fn ask_person_api(
         &self,
         caller: &Caller,
         request: InvokeRequest,
@@ -275,12 +275,12 @@ impl DesktopSession {
         if !(caller.acting().is_person() && caller.acting().app().is_none()) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let door = self
-            .person_doors
+        let api = self
+            .person_apis
             .lock_recover()
             .get(&request.target.provider)
             .cloned();
-        let Some(door) = door else {
+        let Some(api) = api else {
             return Pending::ready(Err(ActionHostError::Unavailable {
                 reason: if request.target.provider == mcp_server::PROVIDER {
                     "No MCP server answers here".into()
@@ -289,10 +289,10 @@ impl DesktopSession {
                 },
             }));
         };
-        self.door_invocations
+        self.api_invocations
             .lock_recover()
-            .insert(request.invocation, Arc::clone(&door));
-        door.invoke(caller, request)
+            .insert(request.invocation, Arc::clone(&api));
+        api.invoke(caller, request)
     }
 
     /// The app `request` opens in this desktop's workspace, the record it
@@ -414,7 +414,7 @@ impl ActionHost for DesktopSession {
             return self.activity.invoke(caller, request);
         }
         if PERSON_PROVIDERS.contains(&request.target.provider.as_str()) {
-            return self.ask_person_door(caller, request);
+            return self.ask_person_api(caller, request);
         }
         if request.target == session_actions::target(session_actions::SHOW_CONNECT) {
             return Pending::ready(self.show_connect(caller, &request));
@@ -489,15 +489,15 @@ impl ActionHost for DesktopSession {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // Every open is answered whole at admission; what stays open is a view of the activity
         // or of the MCP server.
-        if let Some(door) = self.door_of(id) {
-            return door.observe(caller, id);
+        if let Some(api) = self.api_of(id) {
+            return api.observe(caller, id);
         }
         self.activity.observe(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if let Some(door) = self.door_of(id) {
-            return door.next_change(caller, id);
+        if let Some(api) = self.api_of(id) {
+            return api.next_change(caller, id);
         }
         self.activity.next_change(caller, id)
     }
@@ -506,9 +506,9 @@ impl ActionHost for DesktopSession {
         if self.activity.serves(id) {
             return Pending::ready(self.activity.cancel(caller, id));
         }
-        if let Some(door) = self.door_of(id) {
-            self.door_invocations.lock_recover().remove(id);
-            return door.cancel(caller, id);
+        if let Some(api) = self.api_of(id) {
+            self.api_invocations.lock_recover().remove(id);
+            return api.cancel(caller, id);
         }
         Pending::ready(Err(ActionHostError::Refused {
             reason: "Opening an app can't be cancelled".into(),

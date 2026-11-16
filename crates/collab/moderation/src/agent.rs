@@ -1,6 +1,6 @@
 //! The moderation agent: on a report (or a burst of deletions), it reads the
 //! person's recent actions, asks the model, and carries the verdict out
-//! through the workspace's own doors.
+//! through the workspace's own API.
 //!
 //! Every effect goes through what the workspace already has. A restriction or a
 //! ban is a governance change ([`Change::Restrict`], [`Change::Ban`]) the
@@ -28,7 +28,7 @@ pub const BURST_WINDOW_MS: i64 = 60 * 1000;
 
 /// The workspace as the moderation agent reaches it. The host implements it over
 /// the workspace it governs; every call acts as [`crate::AGENT`].
-pub trait WorkspaceDoor {
+pub trait WorkspaceApi {
     /// Unix milliseconds now.
     fn now_ms(&self) -> i64;
 
@@ -110,7 +110,7 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Whether `person`'s recent actions are a burst of deletions worth a
     /// look without a report.
-    pub fn bursting(door: &mut impl WorkspaceDoor, person: &str) -> bool {
+    pub fn bursting(door: &mut impl WorkspaceApi, person: &str) -> bool {
         let since = door.now_ms().saturating_sub(BURST_WINDOW_MS);
         burst(&door.activity(person, since), BURST_COUNT, BURST_WINDOW_MS)
     }
@@ -119,7 +119,7 @@ impl<J: Judge> ModerationAgent<J> {
     /// earlier decisions. The host asks [`Self::verdict`] on it away from the
     /// workspace, then [`Self::enforce`]s the answer, so the workspace is never held
     /// while the model thinks.
-    pub fn look(door: &mut impl WorkspaceDoor, moderation: &Moderation, person: &str) -> Look {
+    pub fn look(door: &mut impl WorkspaceApi, moderation: &Moderation, person: &str) -> Look {
         let now = door.now_ms();
         let reports: Vec<_> = moderation.open_reports_on(person).collect();
         let activity = door.activity(person, now.saturating_sub(LOOKBACK_MS));
@@ -189,7 +189,7 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Carries `verdict` out on the workspace and records it with its reasoning.
     pub fn enforce(
-        door: &mut impl WorkspaceDoor,
+        door: &mut impl WorkspaceApi,
         look: Look,
         verdict: Verdict,
         model: String,
@@ -256,7 +256,7 @@ impl<J: Judge> ModerationAgent<J> {
     ///
     /// # Errors
     /// Each part that failed, with why; the others are still done.
-    pub fn restore(door: &mut impl WorkspaceDoor, decision: &Decision) -> Result<(), Vec<String>> {
+    pub fn restore(door: &mut impl WorkspaceApi, decision: &Decision) -> Result<(), Vec<String>> {
         let mut failures = Vec::new();
         let person = decision.person.clone();
         let lifted = match decision.outcome {
@@ -299,7 +299,7 @@ impl<J: Judge> ModerationAgent<J> {
 /// history names, `undo { by, to }` back to the version before their first
 /// change there, or `undo { by, steps }` when that change began the record.
 fn revert(
-    door: &mut impl WorkspaceDoor,
+    door: &mut impl WorkspaceApi,
     activity: &[Activity],
     run: &str,
     failures: &mut Vec<String>,

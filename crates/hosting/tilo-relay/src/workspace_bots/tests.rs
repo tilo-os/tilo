@@ -668,10 +668,10 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     );
 }
 
-/// A bot's run reads the records it follows through the record door: Chat's
+/// A bot's run reads the records it follows through the record API: Chat's
 /// record of the workspace and its messages' chain, with what was just posted.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bot_step_reads_the_records_it_follows_through_the_record_door() {
+async fn a_bot_step_reads_the_records_it_follows_through_the_record_api() {
     use tilo_automation::{ActorFilter, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

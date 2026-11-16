@@ -1,5 +1,5 @@
 //! The host's own operations as `tilo.host` actions: offered to and run for
-//! the devices of the relay's own person only, decided as every door
+//! the devices of the relay's own person only, decided as every entry
 //! decides a host operation, and asked with the certificate the transport
 //! verified.
 

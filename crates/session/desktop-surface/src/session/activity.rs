@@ -9,7 +9,7 @@
 //! What this device has seen is the person's own: an agent never marks it,
 //! and nothing here reaches a shared record. Whether a change of the history
 //! may be written back is the host's to say ([`crate::ActivityHost`]): this
-//! door carries the write to the model, and a host that only shows a
+//! API carries the write to the model, and a host that only shows a
 //! history refuses it there.
 //!
 //! The windows ask during their frame, on the desktop's thread, and the
@@ -92,7 +92,7 @@ struct State {
 }
 
 /// The windows' end: what [`super::DesktopSession`] routes to under [`wire::PROVIDER`].
-pub(super) struct Door {
+pub(super) struct Api {
     state: std::sync::Mutex<State>,
     woken: Arc<AtomicBool>,
 }
@@ -100,7 +100,7 @@ pub(super) struct Door {
 /// The desktop's end of the activity its session serves.
 #[derive(Clone)]
 pub struct ActivityRequests {
-    door: Arc<Door>,
+    api: Arc<Api>,
 }
 
 /// Wake every observe in `waiters` , outside the lock they were kept under.
@@ -120,7 +120,7 @@ fn refused(reason: String) -> ActionHostError {
     ActionHostError::Refused { reason }
 }
 
-impl Door {
+impl Api {
     pub(super) fn new(woken: Arc<AtomicBool>) -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::Mutex::default(),
@@ -130,7 +130,7 @@ impl Door {
 
     pub(super) fn requests(self: &Arc<Self>) -> ActivityRequests {
         ActivityRequests {
-            door: Arc::clone(self),
+            api: Arc::clone(self),
         }
     }
 
@@ -294,12 +294,12 @@ impl ActivityRequests {
     /// asked.
     #[must_use]
     pub fn take(&self) -> Vec<ActivityAsk> {
-        std::mem::take(&mut self.door.state.lock_recover().asks)
+        std::mem::take(&mut self.api.state.lock_recover().asks)
     }
     /// Whether a window follows the activity or asked something of it.
     #[must_use]
     pub fn wanted(&self) -> bool {
-        let state = self.door.state.lock_recover();
+        let state = self.api.state.lock_recover();
         !state.asks.is_empty() || state.follows.values().any(|open| !open.finished())
     }
 
@@ -307,7 +307,7 @@ impl ActivityRequests {
     /// answered once it ran, or with why it did not.
     pub fn act(&self, action: &str, arguments: Map<String, Value>) -> Pending<Result<(), String>> {
         let (answer, ran) = pending();
-        self.door.ask(ActivityAsk::Act {
+        self.api.ask(ActivityAsk::Act {
             action: action.to_owned(),
             arguments,
             answer,
@@ -327,7 +327,7 @@ impl ActivityRequests {
         action: &str,
         arguments: Map<String, Value>,
     ) -> Result<(), ActionHostError> {
-        self.door
+        self.api
             .follow(caller, invocation, action.to_owned(), arguments)
             .map(|_| ())
     }
@@ -336,7 +336,7 @@ impl ActivityRequests {
     /// the model has read it.
     #[must_use]
     pub fn served(&self, invocation: &InvocationId) -> Option<Result<Value, String>> {
-        let state = self.door.state.lock_recover();
+        let state = self.api.state.lock_recover();
         match &state.follows.get(invocation)?.update {
             InvocationUpdate::Item { value, .. } => Some(Ok(value.clone())),
             InvocationUpdate::Failed { error, .. } => Some(Err(error.message.clone())),
@@ -348,7 +348,7 @@ impl ActivityRequests {
     /// follow may read differently watches it.
     #[must_use]
     pub fn served_revision(&self) -> Option<u64> {
-        self.door.state.lock_recover().served
+        self.api.state.lock_recover().served
     }
 
     /// Read every followed read `model` has moved since, and send each that reads differently as
@@ -358,7 +358,7 @@ impl ActivityRequests {
     pub fn serve(&self, model: &mut dyn ActivityReads) {
         let now = model.revision();
         let due: Vec<(InvocationId, String, Map<String, Value>)> = {
-            let mut state = self.door.state.lock_recover();
+            let mut state = self.api.state.lock_recover();
             state.follows.retain(|_, open| !open.finished());
             state
                 .follows
@@ -376,7 +376,7 @@ impl ActivityRequests {
             .collect();
         let read_at = model.revision();
         let mut woken = Vec::new();
-        let mut state = self.door.state.lock_recover();
+        let mut state = self.api.state.lock_recover();
         state.served = Some(read_at);
         for (invocation, value) in reads {
             let Some(open) = state.follows.get_mut(&invocation) else {
@@ -418,7 +418,7 @@ impl ActivityRequests {
     /// pass it serves, which bounds how long a change could go unseen.
     pub fn wake_waiting(&self) {
         let waiters: Vec<_> = self
-            .door
+            .api
             .state
             .lock_recover()
             .follows
@@ -439,7 +439,7 @@ impl ActivityRequests {
         caller: &Caller,
         invocation: &InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.door.cancel(caller, invocation)
+        self.api.cancel(caller, invocation)
     }
 }
 
@@ -448,5 +448,5 @@ impl ActivityRequests {
 /// makes this on its own.
 #[must_use]
 pub fn activity_requests(woken: Arc<AtomicBool>) -> ActivityRequests {
-    Door::new(woken).requests()
+    Api::new(woken).requests()
 }

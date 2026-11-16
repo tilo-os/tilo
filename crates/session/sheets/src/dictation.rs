@@ -12,7 +12,7 @@
 //! this card and nothing else: the buttons answer the session's state
 //! directly ([`DictationState::take_answers`]). The sheet publishes no
 //! effect vocabulary for them, and none for the dictation's other answers
-//! either — an effect is reachable through the session's action door, and a
+//! either — an effect is reachable through the session's action API, and a
 //! remote action is not consent.
 //!
 //! The dictation itself — the recognizer, the field, the clipboard — is the
@@ -466,7 +466,7 @@ fn answers(prompt: &Prompt, state: Option<&DictationState>) -> Element {
     // These buttons answer the state with a plain local handler
     // (`Button::on_click`), never through `cx.effects(..)` or `cx.actions()`,
     // and the sheet publishes no vocabulary for their answers: an effect is
-    // reachable through the session's action door, and a remote action is not
+    // reachable through the session's action API, and a remote action is not
     // consent to listen through the microphone. The session can read what the
     // person answered ([`DictationState::take_answers`]); nothing but a press
     // on this card can answer for them.

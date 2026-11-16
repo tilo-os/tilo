@@ -1,5 +1,5 @@
 //! A device's workspace administration on its session: what a page asks of its
-//! host, answered by the same governance every door answers with
+//! host, answered by the same governance every action API answers with
 //! ([`crate::workspaces::Workspaces::page_workspaces`]).
 //!
 //! The session's authenticated certificate is who asks; the request names what

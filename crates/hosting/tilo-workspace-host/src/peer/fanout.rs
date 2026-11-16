@@ -121,7 +121,7 @@ impl LiveFanout<'_> {
         pending: &mut HashMap<[u8; 32], std::path::PathBuf>,
         delivered: &mut u64,
     ) -> Result<(), crate::store::StoreError> {
-        // A device admitted through the door that has not subscribed yet
+        // A device admitted through the entry that has not subscribed yet
         // finds its Welcome first in its replay.
         if let Some(audience) = &self.frame.audience {
             runtime.arriving.address(audience, self.frame.envelope);

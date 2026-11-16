@@ -9,7 +9,7 @@ use tilo_user_identity::{
 
 /// What a test's session with this host runs in: `workspaces`, served by
 /// `own`, a device of `user`, with fresh trust and revocations and every
-/// other door closed.
+/// other gate closed.
 fn peer_context(workspaces: WorkspaceRegistry, user: [u8; 32], own: &DeviceCert) -> PeerContext {
     PeerContext {
         workspaces,
@@ -67,16 +67,16 @@ pub(super) fn certified_device(
     (peer, key)
 }
 
-/// The trust doors one test's connection answers at, kept alive beside the
+/// The trust one test's connection answers at, kept alive beside the
 /// context that borrows them.
-struct Doors {
+struct Gates {
     trust: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     metrics: Arc<crate::metrics::Metrics>,
 }
 
-impl Doors {
-    /// Doors that admit this relay's own person's devices and revoke nobody.
+impl Gates {
+    /// Gates that admit this relay's own person's devices and revoke nobody.
     fn open() -> Self {
         Self {
             trust: Arc::new(std::sync::RwLock::new(
@@ -87,7 +87,7 @@ impl Doors {
         }
     }
 
-    /// What `who`'s connection is handled in, with every door a test does not
+    /// What `who`'s connection is handled in, with every gate a test does not
     /// vary left closed.
     fn ctx<'a>(
         &'a self,
@@ -606,8 +606,8 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     )])));
     let (outbound, _rx) = mpsc::channel(8);
     let (disconnect, _) = mpsc::channel(1);
-    let doors = Doors::open();
-    let session = doors.ctx(
+    let gates = Gates::open();
+    let session = gates.ctx(
         &registry,
         &outbound,
         &disconnect,
@@ -795,8 +795,8 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let doors = Doors::open();
-    let session = doors.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
+    let gates = Gates::open();
+    let session = gates.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = tilo_actions::remote::RemoteActionFrame::new(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
             correlation: 1,
@@ -885,8 +885,8 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let doors = Doors::open();
-    let session = doors.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
+    let gates = Gates::open();
+    let session = gates.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = || {
         tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
@@ -923,9 +923,9 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     // Each end is rechecked after its membership read: the sender's
     // certificate, then the target's.
     for device in [a.device_public_key, b.device_public_key] {
-        *doors.revocations.write().unwrap() = RevocationList::new();
+        *gates.revocations.write().unwrap() = RevocationList::new();
         let (release, reached) = crate::store::test_barrier::install(&root_path, "membership-read");
-        let list = doors.revocations.clone();
+        let list = gates.revocations.clone();
         let entry = revocation(device);
         let handle = tokio::runtime::Handle::current();
         let revoke = std::thread::spawn(move || {
@@ -1009,8 +1009,8 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
 
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let doors = Doors::open();
-    let session = doors.ctx(&registry, &btx, &bdis, (&user.public_key, &browser.cert));
+    let gates = Gates::open();
+    let session = gates.ctx(&registry, &btx, &bdis, (&user.public_key, &browser.cert));
     // The browser sends a SyncReq as presence.
     handle_presence(
         &browser,

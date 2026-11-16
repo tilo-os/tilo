@@ -33,7 +33,7 @@ const PICTURE_RADIUS: f32 = 8.0;
 /// What every part of the view acts through.
 #[derive(Clone)]
 pub(super) struct Parts {
-    /// Where every press goes: the app's door, or the state of a host that
+    /// Where every press goes: the app's action API, or the state of a host that
     /// draws the sheet itself.
     pub(super) ask: Ask,
     pub(super) shown: LocalState<Shown>,

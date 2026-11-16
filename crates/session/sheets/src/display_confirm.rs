@@ -30,7 +30,7 @@ use crate::t;
 /// The app the shell mounts the question as.
 pub const APP_ID: &str = "so.tilo.display-confirm";
 
-/// The question's resource: the door its answers are published on. It holds
+/// The question's resource, where its answers are published. It holds
 /// nothing; the transaction is the display backend's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DisplayConfirm {}

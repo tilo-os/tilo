@@ -4,8 +4,8 @@
 //! Whoever may edit the workspace may write its desktop. What a write does to a
 //! strip or window someone else made (closing, moving, renaming it) is
 //! moderation, decided on that item's `moderation` node with the writer's
-//! own grants ([`tilo_desktop_model::shared_record::guard`]). Every door a member's write enters
-//! by asks [`Workspaces::decide_desktop_write`] first; a refused write is neither
+//! own grants ([`tilo_desktop_model::shared_record::guard`]). Every path a member's write
+//! enters by asks [`Workspaces::decide_desktop_write`] first; a refused write is neither
 //! kept nor forwarded, like any change the workspace does not grant.
 
 use collab_types::DocumentMutation;
@@ -18,7 +18,7 @@ use tilo_desktop_model::shared_record::guard::{self, DesktopGuard};
 pub(crate) use tilo_desktop_model::shared_record::guard::is_desktop;
 
 /// Whether `body`, a member's retained write, is one of the workspace's records of the desktop:
-/// its layout, or a person's view of it. What a door asks before taking the workspace's lock for
+/// its layout, or a person's view of it. What every write asks before taking the workspace's lock for
 /// it.
 pub(crate) fn writes_desktop(body: &[u8]) -> bool {
     matches!(

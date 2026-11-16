@@ -33,7 +33,7 @@ use crate::{caption, t, t_args};
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.display-sheet";
 
-/// The sheet's resource: the door its choices are published on. It holds
+/// The sheet's resource, where its choices are published. It holds
 /// nothing; the displays are the compositor's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DisplaySheet {}

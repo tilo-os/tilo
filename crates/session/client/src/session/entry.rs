@@ -66,7 +66,7 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
 /// The failure code of an entry's refusal: the entry's own code, as its page
 /// reads it, or `not-admitted` when the workspace refused the device the entry
 /// let in.
-pub(super) const fn door_code(
+pub(super) const fn refusal_code(
     refusal: &tilo_relay_protocol::entering::EnterRefusal,
 ) -> &'static str {
     use tilo_relay_protocol::directory::EntryRefusalCode;
@@ -87,7 +87,7 @@ pub(super) const fn door_code(
 fn refused_entry(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Entry {
     use tilo_relay_protocol::entering::EnterRefusal;
     Entry::Refused {
-        code: door_code(refusal),
+        code: refusal_code(refusal),
         message: refusal.reason().to_owned(),
         retry_after_secs: match refusal {
             EnterRefusal::Entry {
@@ -133,7 +133,7 @@ impl Task {
                 let entry = refused_entry(&refused);
                 self.reports.change(|status| status.entry = Some(entry));
                 Some(Exit::Refused(
-                    door_code(&refused),
+                    refusal_code(&refused),
                     refused.reason().to_owned(),
                 ))
             }

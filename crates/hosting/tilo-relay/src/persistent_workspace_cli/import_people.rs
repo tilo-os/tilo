@@ -46,7 +46,7 @@ pub(super) async fn import(
                 .to_owned(),
         );
     }
-    if workspaces.mail_door().is_none()
+    if workspaces.mail_entry().is_none()
         && people.members.iter().any(|member| member.email.is_some())
     {
         imported.refused.push(

@@ -904,7 +904,7 @@ pub struct DesktopSurface {
     /// For search over everything, the window publishing each resource it lists, by resource id: an
     /// app's action chosen there runs inside the app's window, which comes forward.
     search_owners: HashMap<String, (StripId, GroupId)>,
-    /// An action chosen over a window that hosts no app to run it, left for the host's own door,
+    /// An action chosen over a window that hosts no app to run it, left for the host's own action API,
     /// which says why it did not run.
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
     /// The pointer in logical coordinates, as it last moved over the surface.

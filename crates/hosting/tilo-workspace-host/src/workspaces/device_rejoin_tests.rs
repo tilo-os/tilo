@@ -1,4 +1,4 @@
-//! A returning browser's device and the workspace's door: what the workspace refuses
+//! A returning browser's device and the workspace's entry: what the workspace refuses
 //! of a device it knows, and whom it admits instead.
 #![expect(
     clippy::significant_drop_tightening,
@@ -10,7 +10,7 @@ use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 /// Ask a pre-admitted join of `device_cert` with a fresh pre-admission for its
-/// person, as a browser coming through the door does.
+/// person, as a browser coming through the entry does.
 async fn pre_admitted_join(
     workspaces: &Workspaces,
     cert: &DeviceCert,

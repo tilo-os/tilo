@@ -1,7 +1,7 @@
 //! The person's MCP server on their host, as their page reads and uses it: a
 //! computer they logged in with `tilo login` that runs an agent is listed
 //! with its open run, followed as a page's window follows it (a held observe,
-//! answered when the door moves, never a blocking ask); stopping the run ends that session and the agent can
+//! answered when the API moves, never a blocking ask); stopping the run ends that session and the agent can
 //! come back; the root revoking the computer ends its session at once and
 //! refuses it after. Nobody else stops or revokes it, and a tab posting as
 //! a person is no agent.
@@ -39,11 +39,11 @@ fn caller() -> Caller {
     Caller::local_person("test")
 }
 
-/// Ask `door` for `action` with `argument`; whether the host took it.
-fn ask(door: &SessionActions, action: &str, argument: InvokeArgument) -> (InvocationId, bool) {
+/// Ask `api` for `action` with `argument`; whether the host took it.
+fn ask(api: &SessionActions, action: &str, argument: InvokeArgument) -> (InvocationId, bool) {
     let invocation = InvocationId::new();
     let receipt = tokio::task::block_in_place(|| {
-        door.invoke(
+        api.invoke(
             &caller(),
             InvokeRequest {
                 on_behalf_of: None,
@@ -66,20 +66,20 @@ fn ask(door: &SessionActions, action: &str, argument: InvokeArgument) -> (Invoca
     (invocation, taken)
 }
 
-/// The door as the follow `read` last read it: what is kept, never asked
+/// The API as the follow `read` last read it: what is kept, never asked
 /// again, as a page observes it.
-fn door_now(door: &SessionActions, read: &InvocationId) -> Option<Server> {
-    match door.observe(&caller(), read)?.update {
+fn api_now(api: &SessionActions, read: &InvocationId) -> Option<Server> {
+    match api.observe(&caller(), read)?.update {
         InvocationUpdate::Item { value, .. } => serde_json::from_value(value).ok(),
         _ => None,
     }
 }
 
-/// Wait until the door `read` follows reads as `wanted` says, as a page's
-/// window waits: a held observe, answered once the door moves.
-async fn door_until(
+/// Wait until the API `read` follows reads as `wanted` says, as a page's
+/// window waits: a held observe, answered once the API moves.
+async fn api_until(
     what: &str,
-    door: &SessionActions,
+    api: &SessionActions,
     read: &InvocationId,
     wanted: impl Fn(&Server) -> bool,
 ) -> Server {
@@ -88,18 +88,18 @@ async fn door_until(
     loop {
         let now = tilo_clock::now();
         let until = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
-        let state = settle_with(door, &caller(), *read, Some(seen), until)
+        let state = settle_with(api, &caller(), *read, Some(seen), until)
             .await
             .flatten()
-            .expect("the host answers the door's read");
+            .expect("the host answers the API's read");
         seen = UpdateMark::of(&state.update);
-        if let Some(now) = door_now(door, read).filter(|now| wanted(now)) {
+        if let Some(now) = api_now(api, read).filter(|now| wanted(now)) {
             return now;
         }
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "timed out waiting for {what}: {:?}",
-            door_now(door, read)
+            api_now(api, read)
         );
     }
 }
@@ -115,8 +115,8 @@ async fn agent_says_its_run(agent: &Link) -> bool {
     session_as_agent(agent, "Claude Code").await.is_ok()
 }
 
-/// Someone else (`other`) reads nothing of the door and stops nothing of
-/// the computer `device` the agent runs on; the agent itself keeps no door.
+/// Someone else (`other`) reads nothing of the API and stops nothing of
+/// the computer `device` the agent runs on; the agent itself keeps no API.
 async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_key: [u8; 32]) {
     let workspace = crate::support::workspace();
     let grant = hex::encode(device);
@@ -208,7 +208,7 @@ async fn revoked_by_someone_else(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses() {
+async fn the_persons_api_lists_stops_and_revokes_their_agent_and_nobody_elses() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let (other_root, _) = UserIdentity::generate("Bob", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -259,14 +259,14 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
 
     // The computer says its session is the agent it runs; the tab says nothing of the kind.
     assert!(agent_says_its_run(&stopped).await);
-    let door = SessionActions::new(&page, workspace, host_key);
-    let (read, taken) = ask(&door, mcp_server::SERVER, InvokeArgument::None);
-    assert!(taken, "the person reads their own door");
-    let listed = door_until(
+    let api = SessionActions::new(&page, workspace, host_key);
+    let (read, taken) = ask(&api, mcp_server::SERVER, InvokeArgument::None);
+    assert!(taken, "the person reads their own API");
+    let listed = api_until(
         "the server to list the agent's session",
-        &door,
+        &api,
         &read,
-        |door| door.session("Claude Code").is_some(),
+        |api| api.session("Claude Code").is_some(),
     )
     .await;
     assert_eq!(listed.grants.len(), 1, "the tab is no agent: {listed:?}");
@@ -276,7 +276,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
 
     nobody_else_reaches(&other, &stopped, computer.cert.device_public_key, host_key).await;
     assert!(
-        door_now(&door, &read)
+        api_now(&api, &read)
             .unwrap()
             .session("Claude Code")
             .is_some()
@@ -284,9 +284,9 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
 
     // Stopping the session ends it for good: the computer is told, says so, and connects
     // no more, so nothing of the agent is said from it again.
-    assert!(ask(&door, mcp_server::STOP, stop(&grant)).1);
-    door_until("the stopped session to end", &door, &read, |door| {
-        door.grants
+    assert!(ask(&api, mcp_server::STOP, stop(&grant)).1);
+    api_until("the stopped session to end", &api, &read, |api| {
+        api.grants
             .iter()
             .any(|g| g.id == grant && g.sessions.is_empty())
     })
@@ -296,31 +296,28 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
         agent_says_its_run(&agent).await.then_some(())
     })
     .await;
-    door_until("the agent's new session", &door, &read, |door| {
-        door.session("Claude Code").is_some()
+    api_until("the agent's new session", &api, &read, |api| {
+        api.session("Claude Code").is_some()
     })
     .await;
 
     revoked_by_someone_else(&other, &other_root, &agent, &computer, state.path()).await;
     assert!(
-        door_now(&door, &read)
+        api_now(&api, &read)
             .unwrap()
             .session("Claude Code")
             .is_some()
     );
 
     // The root revokes the computer: its session ends at once, it leaves the
-    // door, and the host refuses it from then on.
+    // API, and the host refuses it from then on.
     let entry = revoke_device(&root, computer.cert.device_public_key, now(), Retired)
         .await
         .unwrap();
     page.send(Cmd::Revoke(entry)).unwrap();
-    door_until(
-        "the revoked agent to leave the door",
-        &door,
-        &read,
-        |door| door.grants.is_empty(),
-    )
+    api_until("the revoked agent to leave the API", &api, &read, |api| {
+        api.grants.is_empty()
+    })
     .await;
     // Its session ended, and its next attempt to connect was turned away.
     wait_for("the host to refuse the revoked computer", || {

@@ -14,7 +14,7 @@ use ui::widget::Element;
 use crate::link::Studio;
 use crate::surface::StudioSurface;
 
-/// The studio resource: the door its actions are published on, so a
+/// The studio resource, where its actions are published, so a
 /// keyboard shortcut, the palette, an agent and a script take a screenshot
 /// or start a recording through the same actions the bar's own controls
 /// use. It holds nothing.

@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         assert!(!state.presentation().is_open(), "the menu took itself down");
     }
 
-    phase an_agent_invoking_an_action_reaches_the_same_door;
+    phase an_agent_invoking_an_action_reaches_the_same_api;
     {
         let (mut app, state) = mounted(Offers::default());
         app.effect(&PowerEffect::Lock).unwrap();

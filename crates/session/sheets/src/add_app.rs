@@ -45,7 +45,7 @@ pub const MOVE_SWITCH: &str = "add-app-move-switch";
 /// the row keeps the system's generic application icon.
 const MAX_ARTWORK_BYTES: u64 = 8 * 1024 * 1024;
 
-/// The sheet's resource: the door its actions are published on. It holds
+/// The sheet's resource, where its actions are published. It holds
 /// nothing; the question is the shell's, which is what answers it.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct AddToApps {}

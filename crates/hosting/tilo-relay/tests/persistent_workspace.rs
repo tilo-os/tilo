@@ -856,7 +856,7 @@ async fn directory_page(
 /// join the listed workspace at its default role, each as their own person,
 /// and the directory counts both.
 #[test]
-fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
+fn the_relay_entry_admits_two_people_as_distinct_members_at_its_default_role() {
     use tilo_relay_protocol::workspaces::Role;
 
     let scratch = tempfile::tempdir().unwrap();
@@ -918,7 +918,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
 /// person moderation removed before the upgrade stays out, and the old file
 /// goes.
 #[test]
-fn the_workspace_keeps_out_a_person_it_removed_before_the_door() {
+fn the_workspace_keeps_out_a_person_it_removed_before_the_entry() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -1486,7 +1486,7 @@ fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::
 
 /// A page's own error report still lands on the entry and is answered as
 /// reports always are.
-fn answers_the_door(
+fn answers_the_entry(
     runtime: &tokio::runtime::Runtime,
     plain: std::net::SocketAddr,
     workspace: &str,
@@ -1577,14 +1577,14 @@ fn the_workspace_serves_without_an_operator_and_answers_its_deployment_routes() 
     answers_its_sign_in(&runtime, management);
     assert_eq!(get(&runtime, management, "/join").status, 404);
     assert_eq!(get(&runtime, management, "/wait-list").status, 404);
-    answers_the_door(&runtime, started.plain, &started.workspace);
+    answers_the_entry(&runtime, started.plain, &started.workspace);
 
     workspace.stop();
 }
 
 /// What the entry keeps of the people it let in, in the workspace's state: the file
 /// beside the workspace's record, wherever the run laid its state out.
-fn door_admissions(state: &std::path::Path) -> std::path::PathBuf {
+fn entry_admissions(state: &std::path::Path) -> std::path::PathBuf {
     let mut workspaces = vec![state.to_path_buf()];
     let mut kept: Vec<std::path::PathBuf> = Vec::new();
     while let Some(dir) = workspaces.pop() {
@@ -1624,7 +1624,7 @@ fn settled_admissions(path: &std::path::Path) -> Vec<u8> {
 /// (a `tilo mcp` restarted, a page opened again) has no invitation put into the
 /// workspace's governance, none published to everyone there and none spent.
 #[test]
-fn a_device_that_came_in_before_enters_again_without_the_door() {
+fn a_device_that_came_in_before_enters_again_without_the_entry() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -1654,7 +1654,7 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
         own_device(0xc1, "Claude Code on build-box"),
         "Claude Code",
     );
-    let entry = door_admissions(&state);
+    let entry = entry_admissions(&state);
     let before = settled_admissions(&entry);
     // The same computer's next `tilo mcp`: its session enters the workspace
     // again, under an entry of its own as every run makes one.

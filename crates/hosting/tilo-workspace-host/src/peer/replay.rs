@@ -878,7 +878,7 @@ pub(super) struct ReplayCatchup {
     /// Woken as a frame is addressed to this device.
     addressed_wake: tokio::sync::Notify,
     /// Until when the replay's first batch waits for this device's keys: a
-    /// device the door just admitted asked for them in its entry, and its
+    /// device the entry just admitted asked for them in its entry, and its
     /// Welcome may still be on its way ([`crate::peer::Arriving`]).
     keys_due: std::sync::Mutex<Option<tokio::time::Instant>>,
     /// What the workspace's governance, which this replay carries, tells the

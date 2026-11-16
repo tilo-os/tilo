@@ -2,7 +2,7 @@
 //! or shut down the computer.
 //!
 //! Each of them is one of the app's effects, so the palette, an agent, a
-//! script and the menu's own rows reach the same door. The menu hangs from
+//! script and the menu's own rows reach the same action API. The menu hangs from
 //! the trailing end of the top bar, over the desktop. What it offers and
 //! where it hangs come from the shell ([`PowerState`]); what is chosen goes
 //! back to it, which alone powers the machine down.
@@ -29,7 +29,7 @@ use crate::t;
 /// The app the shell mounts the menu as.
 pub const APP_ID: &str = "so.tilo.power";
 
-/// The power menu's resource: the door its effects are published on. It
+/// The power menu's resource, where its effects are published. It
 /// holds nothing; what the menu does reaches the machine, not a document.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Power {}
@@ -297,7 +297,7 @@ impl PowerMenu {
         }
     }
 
-    /// Run through the view's door: rows name the actions they run, and
+    /// Run through the view's action API: rows name the actions they run, and
     /// a press that is not the person's own goes through `dispatch`.
     fn attach(&mut self, cx: &ViewCx<Power>) {
         let actions = cx.actions();
@@ -422,7 +422,7 @@ impl PowerMenu {
             match &self.dispatch {
                 // The person's own press is their decision, as a key is.
                 Some(dispatch) if dispatch.is_own_gesture(&effect) => self.choose(effect),
-                // Anyone acting for them goes through the door, which asks
+                // Anyone acting for them goes through the action API, which asks
                 // first where the effect says so.
                 Some(dispatch) => dispatch.effect(&effect),
                 None => self.choose(effect),

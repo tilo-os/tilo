@@ -585,7 +585,7 @@ pub enum Envelope {
     /// workspaces: the postcard-encoded [`WorkspacesRequest`], answered
     /// through [`Self::WorkspacesReply`] with the asker's `request_id`. The
     /// connection says who asks; the host checks that device's authority over
-    /// each request as every door does.
+    /// each request as it does every request.
     ///
     /// [`WorkspacesRequest`]: crate::workspaces::WorkspacesRequest
     WorkspacesRequest {

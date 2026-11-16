@@ -3,7 +3,7 @@
 //! (provider [`HOST_ACTIONS_PROVIDER`]).
 //!
 //! No workspace decides them: they are the relay's person's alone
-//! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every door,
+//! ([`HostOperation`]), and [`Workspaces::authorize`] says so for every entry,
 //! but for making a person's own workspace, which a host that keeps them
 //! offers anyone ([`CREATE_OWN_WORKSPACE`]).
 //! The catalogue asks the same decision, so a device of anyone else is
@@ -889,7 +889,7 @@ impl Workspaces {
         } else if !self.let_in(&person, now).await {
             // A new workspace is for a person the site let in. Anyone can
             // make a root, so a certificate alone is nobody's way past the
-            // door: they hear the door's own refusal, with its wait list.
+            // entry: they hear the entry's own refusal, with its wait list.
             return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
             // Another one: there is no bound on how many a person keeps, and

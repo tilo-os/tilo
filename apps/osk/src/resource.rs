@@ -1,5 +1,5 @@
-//! The on-screen keyboard as a resource: the door its preference effects
-//! and rows are published on, and the app that shows the keyboard.
+//! The on-screen keyboard as a resource, where its preference effects and
+//! rows are published, and the app that shows the keyboard.
 //!
 //! The keyboard edits no document of its own. This person's keyboard
 //! preferences (letter layout, suggestions, personalization, recent emoji)

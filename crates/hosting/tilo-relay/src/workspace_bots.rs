@@ -25,7 +25,7 @@ use tilo_relay_session::workspaces::RemoveMemberRequest;
 use tilo_resource::Resource as _;
 use tilo_user_identity::DeviceCert;
 
-use crate::moderation::{ReplicaDoor, files_a_report};
+use crate::moderation::{ReplicaApi, files_a_report};
 use crate::workspaces::{RecordWrite, Workspaces};
 
 /// The app whose record holds the workspace's reports and decisions.
@@ -156,10 +156,10 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             let mut replica = bot_replica(&governed, &root, bytes, parts)?;
             let mut govern =
                 |change: Change| handle.block_on(govern(&workspaces, &governed, &host, &change));
-            let mut door = chat_door(&mut replica, &mut govern);
-            let moderation = door.moderation().unwrap_or_default();
+            let mut api = chat_api(&mut replica, &mut govern);
+            let moderation = api.moderation().unwrap_or_default();
             for person in ModerationAgent::<J>::reported(&moderation) {
-                let look = ModerationAgent::<J>::look(&mut door, &moderation, &person);
+                let look = ModerationAgent::<J>::look(&mut api, &moderation, &person);
                 // A model that gives no verdict leaves the report open for
                 // a human Moderator.
                 let (verdict, model) = match handle.block_on(agent.verdict(&look)) {
@@ -169,7 +169,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
                         continue;
                     }
                 };
-                let enforced = ModerationAgent::<J>::enforce(&mut door, look, verdict, model);
+                let enforced = ModerationAgent::<J>::enforce(&mut api, look, verdict, model);
                 for failure in enforced.failures {
                     tracing::warn!(%person, %failure, "moderation step failed");
                 }
@@ -326,12 +326,12 @@ fn bot_replica(
     Ok(replica)
 }
 
-fn chat_door<'a>(
+fn chat_api<'a>(
     replica: &'a mut Replica,
     govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
-) -> ReplicaDoor<'a, chat::Chat> {
+) -> ReplicaApi<'a, chat::Chat> {
     let now = tilo_clock::unix_now_ms_i64();
-    ReplicaDoor::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
+    ReplicaApi::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
 }
 
 /// The record `doc` holds, read as this build's `R` once it is brought up to

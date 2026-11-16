@@ -216,7 +216,7 @@ mod tests {
     /// An entry's refusal reaches the device whatever it names: an empty one, and
     /// one offering a wait list with a contact and mail, both read back as sent.
     #[test]
-    fn a_door_refusal_reads_back_whatever_it_names() {
+    fn an_entry_refusal_reads_back_whatever_it_names() {
         let plain = EntryRefused {
             code: EntryRefusalCode::Refused,
             error: "no".into(),

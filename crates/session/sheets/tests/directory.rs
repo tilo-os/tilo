@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agent_joins_through_the_same_door;
+    phase an_agent_joins_through_the_same_api;
     {
         let (mut app, state) = mounted(directory());
         app.effect(&DirectoryEffect::Join {
@@ -254,12 +254,12 @@ tilo_test_env::scenario! {
         assert!(sheet_says(vec![busy], "+2"));
     }
 
-    phase the_sheet_alone_lists_a_fixture_and_asks_through_the_door_it_was_given;
+    phase the_sheet_alone_lists_a_fixture_and_asks_through_the_api_it_was_given;
     {
         // One surface, two hosts: the session's window and a web page both build
         // this sheet from the directory they keep, the search they keep, and their
         // own way to ask. Mounted with nothing but those three, it lists what the
-        // directory holds and asks through the door it was handed.
+        // directory holds and asks through the action API it was handed.
         let asked: Rc<RefCell<Vec<DirectoryEffect>>> = Rc::default();
         let ask: directory::Ask = {
             let asked = Rc::clone(&asked);

@@ -266,7 +266,7 @@ fn decision(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
 )]
 mod tests {
     use super::*;
-    use crate::workspaces::listing::door_tests::walk_in_as;
+    use crate::workspaces::listing::entry_tests::walk_in_as;
     use crate::workspaces::tests::{governor, guest_device, test_host};
     use tilo_relay_protocol::directory::{EntryJoin, Listing};
     use tilo_relay_protocol::workspaces::JoinReply;

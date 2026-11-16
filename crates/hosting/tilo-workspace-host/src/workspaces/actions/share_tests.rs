@@ -87,7 +87,7 @@ fn note(workspace: &str, id: &str) -> String {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one share told whole, through both doors, in order"
+    reason = "one share told whole, through both paths, in order"
 )]
 async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
     use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
@@ -156,7 +156,7 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
         json!({ "grants": 1 }),
         "a repeat is the same share"
     );
-    // The page door decides the same.
+    // The page's action API decides the same.
     assert_eq!(
         workspaces
             .page_workspaces(
@@ -182,7 +182,7 @@ async fn a_share_grants_the_workspace_one_item_until_its_sharer_ends_it() {
     );
     assert!(!bo_writes(&p1).await);
 
-    // Shared again through a page's door, and ended there.
+    // Shared again through a page's action API, and ended there.
     let shared = workspaces
         .page_workspaces(
             &ada,
@@ -305,7 +305,7 @@ async fn a_share_to_edit_lifts_no_restriction() {
             )
             .await,
         WorkspacesReply::Permits(false),
-        "the page door decides the same"
+        "the page's action API decides the same"
     );
     // Nor may he hand out what his restriction keeps from him.
     let reshare = json!({ "share": "m2", "node": p1, "access": "view" });

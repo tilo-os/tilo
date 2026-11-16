@@ -1,4 +1,4 @@
-//! The layer as a resource: the door its effects are published on, so the
+//! The layer as a resource, where its effects are published, so the
 //! person, the palette, an agent and a script press an activity's control or
 //! put the activity away through the same actions the cards offer.
 //!
@@ -13,7 +13,7 @@ use ui::widget::Element;
 use crate::link::ActivityService;
 use crate::surface::ActivitiesSurface;
 
-/// The floating layer resource: the door its effects are published on. It
+/// The floating layer resource, where its effects are published. It
 /// holds nothing.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Activities {}

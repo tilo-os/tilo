@@ -1,5 +1,5 @@
 //! "Uninstall \<name\>?": the one question asked before an app leaves the
-//! person's apps, whichever door it was asked from (Files, search, the
+//! person's apps, whichever surface it was asked from (Files, search, the
 //! Store).
 //!
 //! The shared modal ([`ModalDialog`]) holds what the answer does to this
@@ -37,7 +37,7 @@ pub const REMOVE_DATA_SWITCH: &str = "uninstall-remove-data-switch";
 /// Trash: `uninstall.copy.<index>`.
 pub const COPY: &str = "uninstall-copy";
 
-/// The sheet's resource: the door its actions are published on. It holds
+/// The sheet's resource, where its actions are published. It holds
 /// nothing; the question is the shell's, which is what answers it.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Uninstall {}

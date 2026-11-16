@@ -1,4 +1,4 @@
-//! The desktop's keyboard shortcuts on the action door, to read.
+//! The desktop's keyboard shortcuts on the action API, to read.
 //!
 //! The action broker publishes the shortcut catalogue
 //! ([`settings_store::keyboard_shortcuts`]) next to each workspace's own
@@ -11,7 +11,7 @@
 //! layout).
 //!
 //! The rows are the same catalogue [`crate::shortcut_guide`] draws, so the
-//! guide, Settings and the action door never disagree about a shortcut's
+//! guide, Settings and the action API never disagree about a shortcut's
 //! name or its live chords. They are this device's settings, so the broker
 //! offers them only to callers on this machine, under the Settings
 //! application. A shortcut is changed through the person's `shortcuts`
@@ -72,7 +72,7 @@ pub fn canonical_chord_text(chord: &KeyChord) -> String {
     ui::Keycaps::US.chord(chord.modifiers.iter().map(String::as_str), &chord.key)
 }
 
-/// One catalogue row as the door returns it.
+/// One catalogue row as the action API returns it.
 #[must_use]
 pub fn entry_json(entry: &ShortcutEntry) -> Value {
     let texts = |chords: &[KeyChord], text: fn(&KeyChord) -> String| {

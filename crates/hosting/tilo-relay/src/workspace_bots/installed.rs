@@ -602,18 +602,18 @@ impl BotRunner {
             self.bot_key.verifying_key().to_bytes(),
         )
         .in_workspace(self.workspace.clone());
-        let (door, shortcut, handle) = (
+        let (api, shortcut, handle) = (
             Arc::clone(&self.api),
             Arc::clone(&self.shortcut),
             tokio::runtime::Handle::current(),
         );
         let (run, trigger, cause) = (firing.run, firing.trigger.clone(), firing.cause.clone());
-        door.set_cause(cause.clone());
+        api.set_cause(cause.clone());
         // Replicas and connector performs block; the run is driven on its
         // own blocking thread so they never hold a runtime worker.
         let report = tokio::task::spawn_blocking(move || {
             handle.block_on(tilo_automation::run::run(
-                &*door,
+                &*api,
                 &Unattended,
                 RunRequest {
                     shortcut: &shortcut,

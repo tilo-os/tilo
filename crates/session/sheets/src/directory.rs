@@ -38,7 +38,7 @@ pub const APP_ID: &str = "so.tilo.workspace-directory";
 /// Faces shown before the rest collapse into "+N".
 const FACES_SHOWN: usize = 4;
 
-/// The sheet's resource: the door its actions are published on. It holds
+/// The sheet's resource, where its actions are published. It holds
 /// nothing; the directories are the sites'.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceDirectory {}

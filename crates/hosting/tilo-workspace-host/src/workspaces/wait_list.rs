@@ -619,7 +619,7 @@ impl super::Workspaces {
     /// an invitation is mailed at leads there
     /// ([`tilo_relay_protocol::workspaces::invitation_on_entry`]).
     #[must_use]
-    pub fn mail_door(&self) -> Option<String> {
+    pub fn mail_entry(&self) -> Option<String> {
         self.inner.entry.mail.get().map(|(entry, _)| entry.clone())
     }
 }

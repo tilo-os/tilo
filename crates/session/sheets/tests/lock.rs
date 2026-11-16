@@ -490,7 +490,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_agent_asking_for_the_same_thing_reaches_the_same_door;
+    phase an_agent_asking_for_the_same_thing_reaches_the_same_api;
     {
         let (mut app, _state, asked) = locked(Shown {
             media: Some(song()),

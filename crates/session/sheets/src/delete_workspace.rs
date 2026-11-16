@@ -23,7 +23,7 @@ use crate::t;
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.delete-workspace";
 
-/// The sheet's resource: the door its answers are published on. It holds
+/// The sheet's resource, where its answers are published. It holds
 /// nothing; the question is the shell's, which is what answers it.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DeleteWorkspace {}

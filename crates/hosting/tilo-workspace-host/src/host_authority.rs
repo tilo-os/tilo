@@ -72,10 +72,10 @@ pub enum HostOperation {
     /// workspace they were invited into, at the role they hold there, so
     /// another device of theirs (a key of theirs) enters it as them.
     /// Anyone's to ask, on a host that keeps workspaces of people's own
-    /// (`crate::workspaces::OwnWorkspaceOffer`); the door says whether it does.
+    /// (`crate::workspaces::OwnWorkspaceOffer`); the entry says whether it does.
     /// Making a new one is only for a person the site let in through its home
     /// workspace, which the handler checks against the host's membership
-    /// records: anyone else hears the door's refusal and its wait list.
+    /// records: anyone else hears the entry's refusal and its wait list.
     CreateOwnWorkspace,
     /// Delete a workspace of the caller's own person here, with everything
     /// the host keeps of it; the host's person deletes any it governs. Which
@@ -132,7 +132,7 @@ impl HostOperation {
 
     /// Whether the operation is about where a workspace is held, which its own
     /// governance decides: its owner's or keeper's to name, or the host's work
-    /// setting to accept ([`crate::hosted`]). The door lets anyone ask, since
+    /// setting to accept ([`crate::hosted`]). The entry lets anyone ask, since
     /// a device of neither person may keep one of the workspaces it governs; a
     /// catalogue, which has no workspace to ask, offers it to the host's own
     /// person alone.
@@ -147,7 +147,7 @@ impl HostOperation {
     /// `host`. Every host operation but making a person's own workspace is
     /// the host's person's own; an agent's grant does what its scope allows
     /// (see the module). The caller's certificate, revocation and agent
-    /// standing are checked by the door before it asks.
+    /// standing are checked by the entry before it asks.
     pub fn permits(self, host: &[u8; 32], caller: &DeviceCert) -> bool {
         if caller.user_public_key != *host
             && !matches!(

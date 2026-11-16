@@ -262,45 +262,45 @@ mod tests {
         }
     }
 
-    /// The door says of each agent whether the key it came in with operates
+    /// The server says of each agent whether the key it came in with operates
     /// web pages in Browser, as that key's certificate carries it: a key
     /// without it is asked about every page action.
     #[test]
     fn an_agents_key_says_whether_it_operates_web_pages() {
-        let door = McpServer::default();
+        let server = McpServer::default();
         let stop = Arc::new(Notify::new());
         let operating = cert(
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
         );
-        door.note(&operating, "Claude Code", &stop);
-        let read = door.server();
+        server.note(&operating, "Claude Code", &stop);
+        let read = server.server();
         assert_eq!(read.grants.len(), 1);
         assert!(read.grants[0].browser_pages);
 
         let asked = cert(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces));
-        door.note(&asked, "Claude Code", &stop);
-        assert!(!door.server().grants[0].browser_pages);
+        server.note(&asked, "Claude Code", &stop);
+        assert!(!server.server().grants[0].browser_pages);
     }
 
-    /// The door reads each grant as its key's certificate says it: where the
+    /// The server reads each grant as its key's certificate says it: where the
     /// agent runs, the one workspace it reaches, until when, whether it may
     /// operate web pages in Browser, and whether it is a script's key.
     #[test]
     fn a_grant_reads_as_its_certificate_says() {
-        let door = McpServer::default();
+        let server = McpServer::default();
         let workspace = [7; 16];
         let stop = Arc::new(Notify::new());
-        door.note(
+        server.note(
             &grant_cert(2, AgentScope::Workspace(workspace), true, false),
             "Claude Code #1",
             &stop,
         );
-        door.note(
+        server.note(
             &grant_cert(3, AgentScope::AllWorkspaces, false, true),
             "Nightly export #1",
             &Arc::new(Notify::new()),
         );
-        let read = door.server();
+        let read = server.server();
         let agent = read
             .grants
             .iter()

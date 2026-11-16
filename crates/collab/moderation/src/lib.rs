@@ -27,7 +27,7 @@ pub use moderation_model::{AGENT, KIND, record};
 
 pub use activity::{Activity, Source, activity_of, burst, destructive_verbs};
 #[cfg(feature = "host")]
-pub use agent::{Enforced, Look, ModerationAgent, WorkspaceDoor};
+pub use agent::{Enforced, Look, ModerationAgent, WorkspaceApi};
 #[cfg(feature = "host")]
 pub use judge::{Case, Judge, JudgeError, Verdict};
 pub use record::{Decision, Moderation, Outcome, Report, Reverted, Ruling};

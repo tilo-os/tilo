@@ -259,7 +259,7 @@ pub enum LayoutEffect {
 /// centre, the workspace directory and the surfaces above them. Each is
 /// one published action on the chrome's resource; the shell publishes the
 /// verbs it carries out itself and these are the rest, so no verb has two
-/// doors.
+/// routes.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.chrome")]
 pub enum ChromeEffect {

@@ -1391,7 +1391,7 @@ async fn gated_host() -> (
 /// own owner away would leave the workspace with nobody in it to invite
 /// anyone.
 #[tokio::test]
-async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
+async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
     use tilo_relay_protocol::directory::EntryJoin;
 
     let (key, owner) = governor();
@@ -1432,7 +1432,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_door() {
 /// The wait list gates the entry: the invitation-only entry lets nobody in on
 /// the strength of an address, and says it keeps one.
 #[tokio::test]
-async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
+async fn the_wait_list_gates_the_entry_and_lets_nobody_in_on_an_address() {
     use tilo_relay_protocol::directory::EntryJoin;
 
     let (_, workspaces, lounge, stranger, _state) = gated_host().await;

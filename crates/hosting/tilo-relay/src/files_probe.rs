@@ -1,4 +1,4 @@
-//! A read-only recovery lead: use the existing enrollment and discovery door,
+//! A read-only recovery lead: use the existing enrollment and discovery path,
 //! but never publish a ticket or refresh the user's registry as a side effect.
 use std::path::Path;
 

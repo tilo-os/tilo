@@ -331,7 +331,7 @@ impl WorkspaceRecords {
     }
 
     /// Keep what `workspace_id` commits for `device` alone until the device
-    /// subscribes, which the door just let it in to do
+    /// subscribes, which the entry just let it in to do
     /// ([`crate::peer::Arriving`]). False for a workspace this host does not
     /// hold.
     pub(crate) async fn expect_arrival(&self, workspace_id: WorkspaceId, device: [u8; 32]) -> bool {

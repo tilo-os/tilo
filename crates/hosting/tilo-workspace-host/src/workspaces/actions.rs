@@ -26,7 +26,7 @@
 //!   the workspace.
 //!
 //! Nothing here decides who may. Every invocation calls the [`Workspaces`] method
-//! its wire door calls, and with it [`Workspaces::authorize`]; the catalogue asks
+//! its wire API calls, and with it [`Workspaces::authorize`]; the catalogue asks
 //! the same decision ([`Workspaces::permits`]) so an action the caller may not
 //! take is absent, and invoking one is the same `UnknownAction` as invoking
 //! one that does not exist.
@@ -120,8 +120,8 @@ pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
 const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
 /// Most bytes a connector secret takes.
 const MAX_CONNECTOR_SECRET: usize = 512;
-/// The roles a public workspace hands out at its door.
-const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
+/// The roles a public workspace hands out at its entry.
+const ENTRY_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
@@ -473,7 +473,7 @@ fn publish_params() -> Vec<ActionParam> {
             ParamType::Text,
             "The role everyone who joins from the directory gets.",
         )
-        .with_choices(DOOR_ROLES),
+        .with_choices(ENTRY_ROLES),
         ActionParam::optional(
             "description",
             ParamType::Text,
@@ -1044,7 +1044,7 @@ impl Workspaces {
                 self.host_invoke(certificate, asking, request).await
             }
             (mcp_server::PROVIDER, _) => {
-                self.door_keeper(caller, certificate)?;
+                self.mcp_keeper(caller, certificate)?;
                 if request.target != mcp_server::target(mcp_server::STOP) {
                     return Err(ActionHostError::UnknownAction);
                 }
@@ -1103,7 +1103,7 @@ impl Workspaces {
     /// Whether `caller`, on the device `certificate` certifies, keeps this
     /// host's MCP server: a device of the host's own person speaking for
     /// themselves, and no agent's. Unknown and forbidden are the same answer.
-    fn door_keeper(
+    fn mcp_keeper(
         &self,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
@@ -1125,7 +1125,7 @@ impl Workspaces {
     }
 
     /// Run `request` from `caller` against the workspace `workspace_id` carries,
-    /// through the workspace method its wire door calls.
+    /// through the workspace method its wire API calls.
     async fn governance_invoke(
         &self,
         workspace_id: WorkspaceId,
@@ -1542,8 +1542,8 @@ struct Shared {
     /// What each admitted invocation came to.
     ledger: Mutex<InvocationLedger<InvocationState>>,
     /// The admitted invocations that follow the MCP server: live reads,
-    /// moved on whenever the door does.
-    door_follows: Mutex<std::collections::HashSet<InvocationId>>,
+    /// moved on whenever the MCP server does.
+    mcp_follows: Mutex<std::collections::HashSet<InvocationId>>,
 }
 
 impl HostWorkspaceActions {
@@ -1556,7 +1556,7 @@ impl HostWorkspaceActions {
                 workspaces: OnceLock::new(),
                 runtime: tokio::runtime::Handle::current(),
                 ledger: Mutex::new(InvocationLedger::default()),
-                door_follows: Mutex::default(),
+                mcp_follows: Mutex::default(),
             }),
         }
     }
@@ -1626,15 +1626,15 @@ impl HostWorkspaceActions {
     }
 
     /// Follow the MCP server for `caller` as invocation `request` asks: the
-    /// door now, as its first item; [`Self::door_moved`] moves it on.
-    fn follow_door(
+    /// MCP server now, as its first item; [`Self::mcp_moved`] moves it on.
+    fn follow_mcp(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
-        workspaces.door_keeper(caller, certificate)?;
+        workspaces.mcp_keeper(caller, certificate)?;
         let invocation = request.invocation;
         let mut ledger = self.ledger();
         if ledger.reserve(caller, request)? == tilo_actions::remote::Reservation::Admitted {
@@ -1648,24 +1648,24 @@ impl HostWorkspaceActions {
             InvocationUpdate::Item {
                 invocation,
                 sequence: 1,
-                value: door_value(workspaces),
+                value: mcp_value(workspaces),
             },
         );
         let receipt = state.receipt();
         ledger.complete(&invocation, state);
         drop(ledger);
-        self.shared.door_follows.lock_recover().insert(invocation);
+        self.shared.mcp_follows.lock_recover().insert(invocation);
         Ok(receipt)
     }
 
     /// Whether `id` is a live read of the MCP server `caller` follows.
-    fn follows_door(&self, caller: &Caller, id: &InvocationId) -> bool {
-        self.shared.door_follows.lock_recover().contains(id) && self.admitted(caller, id)
+    fn follows_mcp(&self, caller: &Caller, id: &InvocationId) -> bool {
+        self.shared.mcp_follows.lock_recover().contains(id) && self.admitted(caller, id)
     }
 
-    /// Read the door again for the follow `id`; whether it moved.
-    fn door_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
-        let value = door_value(workspaces);
+    /// Read the MCP server again for the follow `id`; whether it moved.
+    fn mcp_moved(&self, workspaces: &Workspaces, caller: &Caller, id: &InvocationId) -> bool {
+        let value = mcp_value(workspaces);
         let mut ledger = self.ledger();
         let Some(entry) = ledger.get_mut(caller, id) else {
             return false;
@@ -1804,7 +1804,7 @@ impl ActionHost for InWorkspace {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         };
         if request.target == mcp_server::target(mcp_server::SERVER) {
-            return Pending::ready(self.host.follow_door(
+            return Pending::ready(self.host.follow_mcp(
                 &workspaces,
                 caller,
                 self.certificate.as_ref(),
@@ -1884,29 +1884,29 @@ impl ActionHost for InWorkspace {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        // A follow of the door reads it as it is now.
-        if self.host.follows_door(caller, id)
+        // A follow reads the MCP server as it is now.
+        if self.host.follows_mcp(caller, id)
             && let Some(workspaces) = self.host.shared.workspaces.get()
         {
-            self.host.door_moved(workspaces, caller, id);
+            self.host.mcp_moved(workspaces, caller, id);
         }
         self.host.ledger().get(caller, id).cloned()
     }
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
-        if !self.host.follows_door(caller, id) {
+        if !self.host.follows_mcp(caller, id) {
             return None;
         }
         let workspaces = self.host.shared.workspaces.get()?.clone();
         let mut changes = workspaces.inner.mcp_server.changes();
-        if self.host.door_moved(&workspaces, caller, id) {
+        if self.host.mcp_moved(&workspaces, caller, id) {
             return Some(Pending::ready(()));
         }
         let (host, caller, id) = (self.host.clone(), caller.clone(), *id);
         Some(self.host.spawn(async move {
             // Bounded, as a waiter's deadline is only checked when woken.
-            let _ = tokio::time::timeout(DOOR_WAKE, changes.changed()).await;
-            host.door_moved(&workspaces, &caller, &id);
+            let _ = tokio::time::timeout(FOLLOW_WAKE, changes.changed()).await;
+            host.mcp_moved(&workspaces, &caller, &id);
         }))
     }
 
@@ -1915,8 +1915,8 @@ impl ActionHost for InWorkspace {
         caller: &Caller,
         id: &InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
-        if self.host.follows_door(caller, id) {
-            self.host.shared.door_follows.lock_recover().remove(id);
+        if self.host.follows_mcp(caller, id) {
+            self.host.shared.mcp_follows.lock_recover().remove(id);
             self.host.ledger().complete(
                 id,
                 InvocationState::new(
@@ -1940,10 +1940,10 @@ impl ActionHost for InWorkspace {
 }
 
 /// The longest a follower of the MCP server waits before it reads again.
-const DOOR_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
+const FOLLOW_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The MCP server as its read answers it.
-fn door_value(workspaces: &Workspaces) -> Value {
+fn mcp_value(workspaces: &Workspaces) -> Value {
     serde_json::to_value(workspaces.inner.mcp_server.server()).unwrap_or(Value::Null)
 }
 

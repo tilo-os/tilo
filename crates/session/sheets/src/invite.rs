@@ -26,7 +26,7 @@ use crate::{caption, code, word, words};
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
 
-/// The sheet's resource: the door its actions are published on. It holds
+/// The sheet's resource, where its actions are published. It holds
 /// nothing; the invitations are the workspace's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct InviteLinks {}

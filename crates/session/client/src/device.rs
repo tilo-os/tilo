@@ -163,13 +163,13 @@ impl Device {
                 through: tilo_relay_protocol::entering::Through::Entry,
             }
         });
-        let door_entered = entering.is_some();
+        let through_entry = entering.is_some();
         let device = Self::entering(sign_in, signer, entering);
         // An entry that fails, or that its caller gives up on, ends the session it started: the
         // device's next try opens another under the same key, and a relay keeps one connection
         // per key, so the two would cut each other off for as long as both dial.
         let unentered = Unentered(Some(device.peer.clone()));
-        if door_entered {
+        if through_entry {
             entered(&device.peer).await?;
         } else {
             device.connected().await?;

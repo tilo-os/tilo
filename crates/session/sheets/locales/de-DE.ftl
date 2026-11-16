@@ -521,7 +521,7 @@ mcp-server-person-from-device = Nur ein Programm auf diesem Gerät kann als du h
 mcp-server-admission-person = In „{ $workspace }“ als du handeln
 mcp-server-admission-person-detail = Alles, was es tut, ist deins: es führt aus, was du tippst, als du, dir zugeschrieben, mit allem, was du hier darfst. Erlaube das nur einem Programm, das du selbst gestartet hast, etwa einem Terminal.
 
-## The shortcut catalogue on the action door: every desktop shortcut with its
+## The shortcut catalogue on the action API: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
 keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Kürzel auflisten

@@ -290,7 +290,7 @@ fn photos_argument(hashes: &[String]) -> serde_json::Map<String, serde_json::Val
 }
 
 /// Photos' published `make-thumbnails` in `workspace` and a request for it
-/// over `hashes`, as the door builds one from an admitted invocation's
+/// over `hashes`, as the action API builds one from an admitted invocation's
 /// arguments.
 fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest {
     use tilo_resource::Effect as _;
@@ -305,7 +305,7 @@ fn make_thumbnails_request(workspace: &str, hashes: &[String]) -> OffloadRequest
     }
 }
 
-/// `workspace`'s `make-thumbnails` over `hashes`, as Photos' door sends it.
+/// `workspace`'s `make-thumbnails` over `hashes`, as Photos' API sends it.
 fn invocation(workspace: &str, hashes: &[String]) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
@@ -406,7 +406,7 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
         "{reason}"
     );
 
-    // Photos' handler runs it here, and the door reports how long it took.
+    // Photos' handler runs it here, and the action API reports how long it took.
     let app_content = tilo_content::ContentStore::memory();
     let held: Vec<tilo_resource::Bytes> = photographs
         .iter()
@@ -482,14 +482,14 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
         ),
     )
     .expect("offload is not turned off");
-    // What a run here takes is what the round weighs: this door learns it
-    // the way any door does, from the invocation it ran here.
+    // What a run here takes is what the round weighs: this API learns it
+    // the way any API does, from the invocation it ran here.
     let warm = unconnected
         .offload_invocation(request.clone(), invocation(&workspace, &named))
         .await;
     assert!(
         matches!(warm, Offloaded::RunHere { .. }),
-        "nothing is quicker on a door that knows nothing yet: {warm:?}"
+        "nothing is quicker on an API that knows nothing yet: {warm:?}"
     );
     unconnected.ran_here(&request, took);
     let fourth = tilo_test_env::within(
@@ -544,7 +544,7 @@ async fn a_host_at_its_capacity_takes_no_second_job() {
     let first = jobs.run(workspace, &work, requester, invocation(workspace, &named));
     assert_eq!(jobs.free_slots(), Some(0), "the slot the first job took");
 
-    // A second job arriving now is refused at the door, never queued behind
+    // A second job arriving now is refused at the API, never queued behind
     // the first or run over its slot.
     let second = jobs
         .run(workspace, &work, requester, invocation(workspace, &named))

@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
         assert!(says(&mut app, "Atelier"));
     }
 
-    phase an_agent_changes_the_workspace_through_the_same_door;
+    phase an_agent_changes_the_workspace_through_the_same_api;
     {
         let (mut app, state) = mounted("general");
         app.effect(&WorkspaceSettingsEffect::Move { step: -1 })
@@ -345,7 +345,7 @@ tilo_test_env::scenario! {
         assert!(says(&mut app, "Keep access"));
     }
 
-    phase an_agent_changing_a_role_goes_through_the_door;
+    phase an_agent_changing_a_role_goes_through_the_api;
     {
         let (mut app, state) = mounted("people");
         app.effect(&WorkspaceSettingsEffect::SetRole {
@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
         assert_eq!(uses, 0, "no model is offered to someone who is not keeper");
     }
 
-    phase an_agent_is_answered_through_the_door_too;
+    phase an_agent_is_answered_through_the_api_too;
     {
         let (mut app, state) = mounted("agent-review");
         app.effect(&WorkspaceSettingsEffect::SetAgentAnswer {

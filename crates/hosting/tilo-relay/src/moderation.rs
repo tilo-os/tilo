@@ -1,13 +1,13 @@
 //! The workspace's moderation agent, run on the host as an installed bot over a
 //! confined replica of the record that holds the workspace's reports.
 //!
-//! Nothing here reads or writes around the record: the agent's door
-//! ([`ReplicaDoor`]) reads the person's recent changes from the replica's own
+//! Nothing here reads or writes around the record: the agent's API
+//! ([`ReplicaApi`]) reads the person's recent changes from the replica's own
 //! history and the histories of the parts its app keeps beside it (a chat's
 //! messages), takes them back with the published `undo` action — the
 //! record's own, or for a part the chain's, naming the part — and records
 //! its decision with the record's `decide-reports`, each invoked
-//! through the replica's door as the bot, so the workspace's policy and history
+//! through the replica's API as the bot, so the workspace's policy and history
 //! see the bot's steps like anyone's. Restricting and banning are governance,
 //! which a bot never holds: the host enforces those as the workspace's root
 //! through `govern`, held to the workspace's policy.
@@ -16,9 +16,7 @@ use tilo_action_policy::Change;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::entry::Did;
 use tilo_agent_participant::Replica;
-use tilo_moderation::{
-    Activity, Moderation, Source, WorkspaceDoor, activity_of, destructive_verbs,
-};
+use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
 use tilo_resource::Resource;
 use ui::record::RecordId;
 
@@ -46,15 +44,15 @@ pub fn files_a_report(did: &Did) -> bool {
 /// The workspace as the moderation agent reaches it: one record's replica, held
 /// as the installed bot, with the records its app keeps beside it (the
 /// parts of a chat's messages), and the host's governance.
-pub struct ReplicaDoor<'a, R: Resource> {
+pub struct ReplicaApi<'a, R: Resource> {
     replica: &'a mut Replica,
     moderation: fn(&R::State) -> &Moderation,
     govern: &'a mut dyn FnMut(Change) -> Result<(), String>,
     now_ms: i64,
 }
 
-impl<'a, R: Resource> ReplicaDoor<'a, R> {
-    /// The door over `replica`, whose state holds the workspace's moderation
+impl<'a, R: Resource> ReplicaApi<'a, R> {
+    /// The API over `replica`, whose state holds the workspace's moderation
     /// record at `moderation`, enforcing governance through `govern`.
     pub fn new(
         replica: &'a mut Replica,
@@ -139,7 +137,7 @@ impl<'a, R: Resource> ReplicaDoor<'a, R> {
     }
 }
 
-impl<R: Resource> WorkspaceDoor for ReplicaDoor<'_, R> {
+impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
     fn now_ms(&self) -> i64 {
         self.now_ms
     }

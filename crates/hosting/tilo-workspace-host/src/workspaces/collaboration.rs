@@ -68,7 +68,7 @@ impl GovernedWorkspace {
         governed(&self.record, peer.into())
     }
 
-    /// Keep the people `removed` out of the workspace's public door for the
+    /// Keep the people `removed` out of the workspace's public entry for the
     /// day: moderation took their membership away. `by` is the person who
     /// asked, when a person asks: someone who leaves is not kept out of a
     /// workspace they may join again.
@@ -144,7 +144,7 @@ impl Workspaces {
 
     /// [`Self::issue_as`] of an invitation issued for the wait-list entry
     /// `wait_list_entry`, where one is named: the entry records the
-    /// invitation, so what the door mails to it carries this link, and it
+    /// invitation, so what the entry mails to it carries this link, and it
     /// leaves the list by itself once someone joins with it.
     pub async fn issue_at(
         &self,

@@ -14,7 +14,7 @@
 //! and the host's own operations (creating, listing and entering workspaces) as
 //! `tilo.host` actions (`actions`), or, from a page, over HTTPS: by devices
 //! of the relay's own user, and by other members as far as the workspace's
-//! governance lets them (`authority`, one decision for every door).
+//! governance lets them (`authority`, one decision for every entry).
 //! Any device redeems an invitation over the shared workspace-join
 //! protocol, and a page over HTTPS, where someone the workspace lets invite then
 //! admits it.
@@ -265,9 +265,9 @@ struct GovernedWorkspace {
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
-    /// The addresses people left at its door without an invitation.
+    /// The addresses people left at its entry without an invitation.
     wait_list: wait_list::WaitList,
-    /// Whom moderation removed, and when: the public door keeps them out for
+    /// Whom moderation removed, and when: the public entry keeps them out for
     /// the day.
     removals: removals::Removals,
     /// Admits the governance each settle retains to the host's order, after
@@ -607,7 +607,7 @@ impl GovernedWorkspace {
     }
 
     /// The signed invitation the workspace issued `person` that is still
-    /// redeemable at `now_ns`: the door of a workspace that takes people by
+    /// redeemable at `now_ns`: the entry of a workspace that takes people by
     /// invitation hands that one back rather than minting one.
     fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
         self.collaboration().invitation_for(person, now_ns)
@@ -989,8 +989,8 @@ struct WorkspacesInner {
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
-    /// When each workspace was last written to, and a ping after each door
-    /// that changed: the directory's own, beside the doors' governance.
+    /// When each workspace was last written to, and a ping after each entry
+    /// that changed: the directory's own, beside the entries' governance.
     directory: listing::Directory,
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the relay's `reseal`).
@@ -999,7 +999,7 @@ struct WorkspacesInner {
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
     hosting: crate::hosted::Hosting,
-    /// The door's wait list, once whoever runs the relay offers one
+    /// The entry's wait list, once whoever runs the relay offers one
     /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
     entry: wait_list::EntrySettings,
     /// The workspaces of people's own, once the host's operator offers them
@@ -1530,7 +1530,7 @@ impl Workspaces {
     }
 
     /// [`Self::rename`] of `governed`, which the caller holds, without
-    /// settling it: the door answers with what the rename made.
+    /// settling it: the entry answers with what the rename made.
     ///
     /// # Errors
     ///

@@ -221,14 +221,14 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     };
     let agent = ModerationAgent::new(FakeJudge(Mutex::default()));
 
-    let mut door =
-        ReplicaDoor::<chat::Chat>::new(&mut bot, |chat| &chat.moderation, &mut govern, now);
-    let moderation = door.moderation().unwrap();
+    let mut api =
+        ReplicaApi::<chat::Chat>::new(&mut bot, |chat| &chat.moderation, &mut govern, now);
+    let moderation = api.moderation().unwrap();
     assert_eq!(
         ModerationAgent::<FakeJudge>::reported(&moderation),
         [MALLORY]
     );
-    let look = ModerationAgent::<FakeJudge>::look(&mut door, &moderation, MALLORY);
+    let look = ModerationAgent::<FakeJudge>::look(&mut api, &moderation, MALLORY);
     assert_eq!(
         look.case.activity.len(),
         4,
@@ -239,7 +239,7 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
         .unwrap()
         .block_on(agent.verdict(&look))
         .unwrap();
-    let enforced = ModerationAgent::<FakeJudge>::enforce(&mut door, look, verdict, model);
+    let enforced = ModerationAgent::<FakeJudge>::enforce(&mut api, look, verdict, model);
     assert!(enforced.failures.is_empty(), "{:?}", enforced.failures);
 
     // What the bot did reaches the workspace like anyone's change.

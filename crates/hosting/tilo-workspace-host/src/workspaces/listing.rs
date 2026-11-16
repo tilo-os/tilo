@@ -49,10 +49,10 @@ use super::{CollaborationError, GovernedWorkspace, Workspaces};
 const LISTINGS_FILE: &str = "listings.json";
 /// How long an entry's invitation and its token stay good: time for the
 /// person's device to redeem it now, not to keep it.
-const DOOR_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
+const ENTRY_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
 /// How an entry's admission names where the person came from, in the
 /// owner's notices.
-pub(crate) const DOOR_LABEL: &str = "the public directory";
+pub(crate) const ENTRY_LABEL: &str = "the public directory";
 
 /// Why a public workspace's entry turns a person away.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -623,7 +623,7 @@ impl Workspaces {
     /// Let the person `join` names into the public workspace `workspace`: an
     /// invitation only they can redeem, and the token of a pre-admission at
     /// the listing's default role, under the owner's entry. The entry answers
-    /// them as a [`tilo_relay_protocol::directory::DoorAnswer`].
+    /// them with an invitation, or with a [`tilo_relay_protocol::directory::EntryRefused`].
     ///
     /// A workspace whose entry takes people by invitation answers its entry only
     /// to a person it has in it (joining again from another device of theirs),
@@ -694,7 +694,7 @@ impl Workspaces {
                 .and_then(invited_part)
                 .unwrap_or_else(|| listed_part(listing.default_role));
             let token = hex::encode(rand::random::<[u8; 32]>());
-            let grant = self.door_grant(workspace, role, now, &token)?;
+            let grant = self.entry_grant(workspace, role, now, &token)?;
             // A person an invitation of the workspace's own names is handed
             // that invitation, not a new one: the inviter decided its role and
             // how long it stands, and its consent is the decision. The page
@@ -767,7 +767,7 @@ impl Workspaces {
     /// entry: signed by this host's device key, which the redemption checks
     /// against the host and the workspace's listing
     /// ([`Workspaces::pre_admission_signer`]).
-    fn door_grant(
+    fn entry_grant(
         &self,
         workspace: &str,
         role: Role,
@@ -778,8 +778,8 @@ impl Workspaces {
             workspace: workspace.to_owned(),
             role,
             token_sha256: Sha256::digest(token.as_bytes()).into(),
-            label: DOOR_LABEL.to_owned(),
-            expires_at_ns: now.saturating_add(DOOR_INVITATION_NS),
+            label: ENTRY_LABEL.to_owned(),
+            expires_at_ns: now.saturating_add(ENTRY_INVITATION_NS),
             owner_user_public_key: [0; 32],
             signature: [0; 64],
         };
@@ -817,7 +817,7 @@ impl Workspaces {
             return Ok(());
         }
         if grant.owner_user_public_key == host.device_public_key
-            && grant.label == DOOR_LABEL
+            && grant.label == ENTRY_LABEL
             && Self::entry_of(workspace).is_listed()
         {
             return Ok(());
@@ -887,7 +887,7 @@ pub(super) mod tests {
 }
 
 #[cfg(test)]
-pub(crate) mod door_tests {
+pub(crate) mod entry_tests {
     #![expect(
         clippy::significant_drop_tightening,
         reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
@@ -1012,7 +1012,7 @@ pub(crate) mod door_tests {
     type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
 
     #[tokio::test]
-    async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
+    async fn a_entry_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1236,7 +1236,7 @@ pub(crate) mod door_tests {
     /// person, with the same device, and is a member again (the shell's
     /// `readmit_site_workspace`).
     #[tokio::test]
-    async fn a_pruned_guest_comes_back_through_the_door_with_the_same_device() {
+    async fn a_pruned_guest_comes_back_through_the_entry_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1299,7 +1299,7 @@ pub(crate) mod door_tests {
     /// Moderation takes a person's membership away and the entry keeps them out
     /// for the day; an idle member the host prunes is let in again at once.
     #[tokio::test]
-    async fn a_person_moderation_removed_is_refused_at_the_door_for_the_day() {
+    async fn a_person_moderation_removed_is_refused_at_the_entry_for_the_day() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1373,7 +1373,7 @@ pub(crate) mod door_tests {
     /// removal past the day and a malformed key keep nobody out; the old file
     /// is gone once it has been taken over.
     #[tokio::test]
-    async fn a_removal_the_workspace_kept_before_the_door_keeps_its_person_out_after_a_restart() {
+    async fn a_removal_the_workspace_kept_before_the_entry_keeps_its_person_out_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1442,7 +1442,7 @@ pub(crate) mod door_tests {
     /// after the upgrade: each is listed again as its owner listed it, and the
     /// old file stays beside the records.
     #[tokio::test]
-    async fn a_listing_kept_before_the_door_lists_its_workspace_after_the_upgrade() {
+    async fn a_listing_kept_before_the_entry_lists_its_workspace_after_the_upgrade() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1499,7 +1499,7 @@ pub(crate) mod door_tests {
     /// An entry that holds as many open grants as the workspace keeps says when
     /// it has room again instead of taking another invitation.
     #[tokio::test]
-    async fn a_full_door_answers_when_it_has_room_again() {
+    async fn a_full_entry_answers_when_it_has_room_again() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host_with_grants(dir.path(), &key, &owner, Some(1)).await;
@@ -1542,7 +1542,7 @@ pub(crate) mod door_tests {
     }
 
     #[tokio::test]
-    async fn a_private_workspace_has_no_door_and_is_not_listed() {
+    async fn a_private_workspace_has_no_entry_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1601,7 +1601,7 @@ pub(crate) mod door_tests {
     }
 
     #[tokio::test]
-    async fn a_banned_person_is_turned_away_at_the_door_and_others_cannot_publish() {
+    async fn a_banned_person_is_turned_away_at_the_entry_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1662,7 +1662,7 @@ pub(crate) mod door_tests {
     /// invitation is told so, and a person a member invited walks in. Opening
     /// the entry again lets a stranger in as before.
     #[tokio::test]
-    async fn an_invitation_only_door_refuses_a_stranger_and_admits_an_invited_person() {
+    async fn an_invitation_only_entry_refuses_a_stranger_and_admits_an_invited_person() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -1751,7 +1751,7 @@ pub(crate) mod door_tests {
     /// workspace's governance, so it is still there after the host restarts,
     /// and the entry still lets them in.
     #[tokio::test]
-    async fn an_invitation_only_door_admits_whom_the_operator_declares() {
+    async fn an_invitation_only_entry_admits_whom_the_operator_declares() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;

@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
         let (mut app, _state) = mounted(asking(7));
         let published = dictation_resource(&app.harness().resources()).expect("the sheet is published");
         // The framework's own verbs stand beside every resource; the sheet adds
-        // none. An effect is what the session's action door invokes, and a remote
+        // none. An effect is what the session's action API invokes, and a remote
         // action is not consent, so the vocabulary is empty.
         let effects: Vec<&str> = published
             .actions
@@ -257,7 +257,7 @@ tilo_test_env::scenario! {
             .collect();
         assert!(
             effects.is_empty(),
-            "an effect would let anything that can reach the door answer the microphone: {effects:?}"
+            "an effect would let anything that can reach the action API answer the microphone: {effects:?}"
         );
         let answers = ["allow", "deny", "finish", "cancel", "copy", "discard"];
         let named: Vec<&str> = published

@@ -173,14 +173,14 @@ pub struct PersistentArgs {
         requires = "invitation_only"
     )]
     pub wait_list_max: usize,
-    /// The web entry DOOR (a URL ending in `/`) the wait list's mails are
+    /// The web entry URL (a URL ending in `/`) the wait list's mails are
     /// sent from, which their links open: the confirmation link, and an
     /// invitation a member asks the entry to mail to a confirmed address. It
     /// defaults to the workspace's own web entry; without mail configured,
     /// the list keeps addresses and mails nothing.
     #[arg(
         long = "wait-list-mail",
-        value_name = "DOOR",
+        value_name = "URL",
         requires = "wait_list_max"
     )]
     pub wait_list_mail: Option<String>,

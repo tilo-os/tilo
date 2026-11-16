@@ -165,7 +165,7 @@ fn workspace_and_strip_commands_run_through_the_models_reduction() {
             Some(&workspace.strips[0].id)
         );
     });
-    // Windows change through navigation, never through this door.
+    // Windows change through navigation, never through this API.
     assert!(
         handle
             .apply_command(&DesktopCommand::OpenApp {

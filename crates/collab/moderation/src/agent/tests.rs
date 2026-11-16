@@ -132,7 +132,7 @@ impl FakeWorkspace {
     }
 }
 
-impl WorkspaceDoor for FakeWorkspace {
+impl WorkspaceApi for FakeWorkspace {
     fn now_ms(&self) -> i64 {
         self.now
     }

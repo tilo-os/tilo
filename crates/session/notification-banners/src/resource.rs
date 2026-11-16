@@ -1,4 +1,4 @@
-//! The banners as a resource: the door their effects are published on, so
+//! The banners as a resource, where their effects are published, so
 //! the person, the palette, an agent and a script close a banner, choose on
 //! it, reply to it or answer the call it rings for through the same actions.
 //!
@@ -13,7 +13,7 @@ use ui::widget::Element;
 use crate::link::BannerService;
 use crate::surface::BannerSurface;
 
-/// The banners resource: the door their effects and rows are published on.
+/// The banners resource, where their effects and rows are published.
 /// It holds nothing.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Banners {}

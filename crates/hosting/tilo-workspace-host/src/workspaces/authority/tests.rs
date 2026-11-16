@@ -165,7 +165,7 @@ async fn a_page_renames_the_workspace_where_every_list_of_it_reads_the_name() {
 }
 
 #[tokio::test]
-async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_admit() {
+async fn an_address_left_at_the_entry_is_on_the_wait_list_and_never_a_person_to_admit() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -216,7 +216,7 @@ async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_a
     relay.shutdown().await;
 }
 
-/// Bo left an address where the door mails a confirmation link, and Cy one
+/// Bo left an address where the entry mails a confirmation link, and Cy one
 /// where it sends none; Bo is listed once confirmed. Bo's request id.
 async fn bo_confirmed_beside_cy(
     workspaces: &Workspaces,
@@ -304,7 +304,7 @@ fn mailed_invitation(workspace: &str, entry: [u8; 32], link: &str) -> Workspaces
 }
 
 /// The owner invites the mailed address, which lists it with the day it was
-/// invited, mails it once on the operator's own door and is asked in. Returns
+/// invited, mails it once on the operator's own entry and is asked in. Returns
 /// the invitation the person joins with.
 async fn the_address_is_invited_and_mailed(
     workspaces: &Workspaces,
@@ -342,13 +342,13 @@ async fn the_address_is_invited_and_mailed(
         ask(mailed_invitation(
             workspace,
             entry,
-            "https://door.example/?invite=AAEC"
+            "https://entry.example/?invite=AAEC"
         ))
         .await,
         WorkspacesReply::Refused(reason) if reason.contains("no mail")
     ));
-    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
-    // Only an invitation on the operator's door is mailed.
+    let mut mail = workspaces.mail_wait_list("https://entry.example/").unwrap();
+    // Only an invitation on the operator's entry is mailed.
     assert!(matches!(
         ask(mailed_invitation(
             workspace,
@@ -362,7 +362,7 @@ async fn the_address_is_invited_and_mailed(
         ask(mailed_invitation(
             workspace,
             entry,
-            "https://door.example/?invite=AAEC"
+            "https://entry.example/?invite=AAEC"
         )),
         async {
             let WaitListMail {
@@ -380,7 +380,7 @@ async fn the_address_is_invited_and_mailed(
         (to.contact.as_str(), to.language.as_str()),
         ("bo@example.org", "de")
     );
-    assert_eq!(link, "https://door.example/?invite=AAEC");
+    assert_eq!(link, "https://entry.example/?invite=AAEC");
     assert_eq!(
         workspaces
             .wait_list_standing(workspace, digest(&removal))
@@ -393,7 +393,7 @@ async fn the_address_is_invited_and_mailed(
         ask(mailed_invitation(
             workspace,
             entry,
-            "https://door.example/?invite=AAEC"
+            "https://entry.example/?invite=AAEC"
         ))
         .await,
         WorkspacesReply::Refused(_)
@@ -441,9 +441,11 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
+    let mut mail = workspaces.mail_wait_list("https://entry.example/").unwrap();
     assert!(
-        workspaces.mail_wait_list("https://door.example/").is_none(),
+        workspaces
+            .mail_wait_list("https://entry.example/")
+            .is_none(),
         "one operator hears the mail"
     );
     workspaces
@@ -456,7 +458,7 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     let mail_invite = || WorkspacesRequest::MailInvite {
         workspace: workspace.clone(),
         wait_list_entry: cy,
-        link: "https://door.example/?invite=AAEC".into(),
+        link: "https://entry.example/?invite=AAEC".into(),
     };
     let invite = |wait_list_entry| WorkspacesRequest::Invite {
         workspace: workspace.clone(),
@@ -546,7 +548,7 @@ async fn assert_uncertain_invitation_mail(
     timeout: bool,
 ) {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
+    let mut mail = workspaces.mail_wait_list("https://entry.example/").unwrap();
     workspaces
         .wait(&workspace, "cy@example.org", listed_at_once(0x0c), "en", 10)
         .await
@@ -573,7 +575,7 @@ async fn assert_uncertain_invitation_mail(
     let request = || WorkspacesRequest::MailInvite {
         workspace: workspace.clone(),
         wait_list_entry: cy,
-        link: "https://door.example/?invite=AAEC".into(),
+        link: "https://entry.example/?invite=AAEC".into(),
     };
     if timeout {
         tokio::time::pause();
@@ -694,7 +696,7 @@ async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> JoinReply 
         .await
 }
 
-/// Secrets for a door that sends no mail, which lists an address at once.
+/// Secrets for an entry that sends no mail, which lists an address at once.
 const fn listed_at_once(removal: u8) -> WaitListSecrets {
     WaitListSecrets {
         removal: [removal; 32],

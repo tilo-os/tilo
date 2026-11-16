@@ -601,9 +601,9 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_mailed_invitation_has_a_link_on_the_door_and_one_address;
+        fn a_mailed_invitation_has_a_link_on_the_entry_and_one_address;
 
-        phase a_mailed_invitation_is_on_the_door;
+        phase a_mailed_invitation_is_on_the_entry;
         {
             let entry = "https://tilo.example/";
             assert!(invitation_on_entry(

@@ -452,7 +452,7 @@ mod tests {
 
     /// `cert`'s device asks to come into `workspace` through its entry, on a
     /// session whose proof the handshake checked.
-    async fn through_the_door(
+    async fn through_the_entry(
         workspaces: &Workspaces,
         workspace: &str,
         cert: &DeviceCert,
@@ -560,13 +560,13 @@ mod tests {
 
         for (workspace, role) in [(&closed, Role::Moderator), (&unlisted, Role::Commenter)] {
             let tab = device_of(&ada, DeviceCapabilities::member());
-            let entered = through_the_door(workspaces, workspace, &tab).await;
+            let entered = through_the_entry(workspaces, workspace, &tab).await;
             assert!(
                 matches!(entered, Entered::Admitted { role: admitted, .. } if admitted == role),
                 "{workspace}: {entered:?}"
             );
             // In now, the device enters again as a member's.
-            let again = through_the_door(workspaces, workspace, &tab).await;
+            let again = through_the_entry(workspaces, workspace, &tab).await;
             assert!(
                 matches!(again, Entered::Admitted { role: admitted, .. } if admitted == role),
                 "{workspace} again: {again:?}"
@@ -583,7 +583,7 @@ mod tests {
                 &SigningKey::from_bytes(&rand::random()),
                 DeviceCapabilities::member(),
             );
-            let entered = through_the_door(workspaces, workspace, &stranger).await;
+            let entered = through_the_entry(workspaces, workspace, &stranger).await;
             assert!(
                 matches!(entered, Entered::Refused(_)),
                 "{workspace}: {entered:?}"
@@ -597,7 +597,7 @@ mod tests {
     /// they hold, which a further device of theirs redeems without changing
     /// it.
     #[tokio::test]
-    async fn an_invitation_only_door_lets_a_member_in_at_their_part() {
+    async fn an_invitation_only_entry_lets_a_member_in_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -694,7 +694,7 @@ mod tests {
             .unwrap();
         for (who, root) in [("banned", &banned), ("removed", &removed)] {
             let tab = device_of(root, DeviceCapabilities::member());
-            let entered = through_the_door(workspaces, &workspace, &tab).await;
+            let entered = through_the_entry(workspaces, &workspace, &tab).await;
             assert!(matches!(entered, Entered::Refused(_)), "{who}: {entered:?}");
         }
 
@@ -702,7 +702,7 @@ mod tests {
             &ada,
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         );
-        let entered = through_the_door(workspaces, &workspace, &agent).await;
+        let entered = through_the_entry(workspaces, &workspace, &agent).await;
         assert!(matches!(entered, Entered::Refused(_)), "{entered:?}");
         let held = workspaces.workspace(&workspace).await.unwrap();
         assert!(

@@ -17,7 +17,7 @@ use crate::state::OnboardingState;
 /// The app the shell mounts setup as.
 pub const APP_ID: &str = "so.tilo.onboarding";
 
-/// Setup's resource: the door its actions are published on. It holds
+/// Setup's resource, where its actions are published. It holds
 /// nothing; the ceremony is the shell's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Onboarding {}

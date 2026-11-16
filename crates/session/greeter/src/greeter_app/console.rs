@@ -9,7 +9,7 @@
 //! carries it to [`GreeterApp::apply_operation`], like every typed effect.
 //! Keyboard input readiness remains separately observable.
 //!
-//! Every door ends in that one function: this console, the toolkit host's
+//! Every way in ends in that one function: this console, the toolkit host's
 //! action surface (`ResourceOperations::start_operation`) and the keyboard/pointer
 //! handlers, which call the same `attempt_login` and choosers.
 
@@ -551,7 +551,7 @@ fn console_action(id: &'static str, label: &'static str, params: Vec<ActionParam
     )
 }
 
-/// The operation `action` with the arguments the door bound strictly against
+/// The operation `action` with the arguments the action API bound strictly against
 /// its parameters. A secret argument rides along to the in-process handler
 /// only; it is never published or logged (the host redacts `Secret` params).
 fn encode(action: &str, args: &ActionArgs) -> EncodedAction {
@@ -1123,10 +1123,10 @@ mod authentication_tests {
 
         phase remote_sign_in_uses_the_real_greetd_exchange_and_does_not_disclose_secrets;
         {
-            // The console and the toolkit host's action surface are two doors to
+            // The console and the toolkit host's action surface are two ways into
             // one handler; both must reach the real greetd conversation.
-            for door in ["console", "surface"] {
-                remote_sign_in_through(door);
+            for route in ["console", "surface"] {
+                remote_sign_in_through(route);
             }
         }
 
@@ -1193,7 +1193,7 @@ mod authentication_tests {
         stream.write_all(&bytes).unwrap();
     }
 
-    fn remote_sign_in_through(door: &str) {
+    fn remote_sign_in_through(route: &str) {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("greetd.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -1241,7 +1241,7 @@ mod authentication_tests {
                 "greeter_app::console::authentication_tests::remote_sign_in_fixture_child",
                 "--nocapture",
             ])
-            .env("TILO_GREETER_CONSOLE_AUTH_FIXTURE", door)
+            .env("TILO_GREETER_CONSOLE_AUTH_FIXTURE", route)
             .env("GREETD_SOCK", &socket)
             .output_locked()
             .unwrap();
@@ -1257,7 +1257,7 @@ mod authentication_tests {
 
     #[test]
     fn remote_sign_in_fixture_child() {
-        let Some(door) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
+        let Some(route) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
             let app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             assert!(!ui::resources::resources(&app, &AutoCommit::new()).is_empty());
             return;
@@ -1276,7 +1276,7 @@ mod authentication_tests {
         // operation, as every typed effect's secret does.
         let catalogue = catalog::enumerate(PROVIDER, &resources, "");
         assert!(!catalogue.to_string().contains(SECRET));
-        let reply = if door == "surface" {
+        let reply = if route == "surface" {
             let encoded = ui::tilo_actions::api::resolve(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new(PROVIDER, "sign-in"),

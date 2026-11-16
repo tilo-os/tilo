@@ -551,7 +551,7 @@ tilo_test_env::scenario! {
         assert_eq!(state.text(Field::Answer).as_str(), "4711");
     }
 
-    phase a_secret_prompt_is_answered_through_the_door_as_the_prompt_checks_it;
+    phase a_secret_prompt_is_answered_through_the_api_as_the_prompt_checks_it;
     {
         let (mut app, state) = mounted(network());
         // A required field still empty: the prompt refuses, and nothing is

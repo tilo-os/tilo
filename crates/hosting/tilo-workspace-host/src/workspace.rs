@@ -165,7 +165,7 @@ pub struct WorkspaceRuntime {
     /// host still holds its stale connection; the order here says which of
     /// the two the device opened last, so the newer one takes the slot.
     subscribing: HashMap<[u8; 32], Vec<mpsc::WeakSender<Envelope>>>,
-    /// Devices admitted through the workspace's door that have not
+    /// Devices admitted through the workspace's entry that have not
     /// subscribed yet, with what was committed for them alone meanwhile
     /// (their channel Welcome), which their replay writes first.
     pub(crate) arriving: crate::peer::Arriving,

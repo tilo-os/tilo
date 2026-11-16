@@ -57,7 +57,7 @@ impl Admissions {
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
-    /// How long until the door takes another grant, or `None` when it does
+    /// How long until the entry takes another grant, or `None` when it does
     /// now: the table has room under `max_grants`, or a spent or expired grant
     /// to evict ([`Self::record`]). Otherwise the earliest open grant's expiry,
     /// so the person who asked knows when to come back.
@@ -130,7 +130,7 @@ impl Admissions {
         Ok(())
     }
 
-    /// Whether `invite_id` already carries a grant, spent or not: a door
+    /// Whether `invite_id` already carries a grant, spent or not: an entry
     /// handing back an invitation a member pre-admitted keeps that grant,
     /// whose own token admits them.
     pub(super) fn carries(&self, invite_id: [u8; 32]) -> bool {

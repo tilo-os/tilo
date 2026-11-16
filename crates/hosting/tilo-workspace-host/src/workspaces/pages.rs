@@ -2,15 +2,15 @@
 //! [`tilo_relay_protocol::workspaces`]), and the redemptions of the devices
 //! that enter them on their sessions ([`tilo_relay_protocol::entering`]).
 //!
-//! `/workspaces` is workspace administration with the authorization every door has
+//! `/workspaces` is workspace administration with the authorization every action API has
 //! ([`Workspaces::authorize`]): the
 //! session's device is one of the relay's own user, or a member's the
 //! workspace's governance lets do what it asks. `/invitation` says what an
 //! invitation offers. A redemption is the invitation's own approval of whoever
 //! made it, so the device's verified redemption is admitted at once, as at
-//! every other door, or through the queue under the owner's pre-admission
+//! every other action API, or through the queue under the owner's pre-admission
 //! token. The
-//! addresses left at the door of a workspace that takes people by invitation
+//! addresses left at the entry of a workspace that takes people by invitation
 //! are kept with the workspace ([`super::wait_list`]) and listed on their own
 //! ([`WorkspacesRequest::WaitList`]).
 
@@ -808,7 +808,7 @@ impl Workspaces {
         ))
     }
 
-    /// The addresses left at `workspace`'s door, oldest first, for someone the
+    /// The addresses left at `workspace`'s entry, oldest first, for someone the
     /// workspace lets invite.
     async fn wait_list(
         &self,
@@ -869,10 +869,10 @@ impl Workspaces {
         link: String,
         now: u64,
     ) -> Result<(), CollaborationError> {
-        let Some((door, mail)) = self.inner.entry.mail.get() else {
+        let Some((entry_url, mail)) = self.inner.entry.mail.get() else {
             return Err(CollaborationError::new("this entry sends no mail"));
         };
-        if !tilo_relay_protocol::workspaces::invitation_on_entry(door, &link) {
+        if !tilo_relay_protocol::workspaces::invitation_on_entry(entry_url, &link) {
             return Err(CollaborationError::new(
                 "only an invitation on this entry is mailed",
             ));
@@ -934,7 +934,7 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Keep the request of someone who asked at `workspace`'s door without an
+    /// Keep the request of someone who asked at `workspace`'s entry without an
     /// invitation, to be invited at `contact` (an address
     /// [`tilo_relay_protocol::workspaces::contact_address`] accepts), while the
     /// workspace keeps fewer than `max`. Whoever may invite sees it on the workspace's
@@ -964,7 +964,7 @@ impl Workspaces {
             .keep(&contact, secrets, language, tilo_clock::unix_now_ns(), max)
             .map_err(CollaborationError::new)?;
         drop(governed);
-        tracing::info!(%workspace, outcome = ?kept, "a request was left at the door");
+        tracing::info!(%workspace, outcome = ?kept, "a request was left at the entry");
         Ok(kept)
     }
 
@@ -1050,7 +1050,7 @@ impl Workspaces {
             .map(|(told, _)| told)
     }
 
-    /// Remove an entry for the private door operator, returning its stable
+    /// Remove an entry for the private entry operator, returning its stable
     /// contact digest for cancelling mail even when it was not confirmed.
     /// Neither this digest nor the mailbox belongs in a public response.
     ///
@@ -1142,7 +1142,7 @@ impl Workspaces {
     /// Admit the device `presented` names with its invitation, then answer
     /// once the governance that admitted it is retained
     /// ([`Self::retained_for`]): what a session entering with an invitation,
-    /// or through a door, is answered.
+    /// or through an entry, is answered.
     pub(crate) async fn redeem_on_connection(
         &self,
         presented: Presented,
@@ -1220,7 +1220,7 @@ impl Workspaces {
             return Err(CollaborationError::new("invitation was already redeemed"));
         }
         // An invitation is the approval of whoever made it: a page that holds
-        // one is let in by its issuer's own grant, as at every other door, and
+        // one is let in by its issuer's own grant, as at every other entry, and
         // never waits for someone in the workspace to answer for it.
         let issuer = redemption.join().grant().issuer.clone();
         self.authorize(

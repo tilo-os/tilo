@@ -1,4 +1,4 @@
-//! The launcher as a resource: the door its effects are published on, so the person, the
+//! The launcher as a resource, where its effects are published, so the person, the
 //! palette, an agent and a script open search, type into it, narrow it and choose what it
 //! found through the same actions.
 
@@ -7,7 +7,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Model, resource};
 use ui::widget::Element;
 
-/// The launcher resource: the door its effects and result rows are published on.
+/// The launcher resource, where its effects and result rows are published.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Launcher {}
 

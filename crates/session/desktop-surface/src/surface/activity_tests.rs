@@ -178,8 +178,8 @@ impl Served {
         }
     }
 
-    /// The windows' door to the session, as `caller` .
-    fn door(&self, caller: Caller) -> RemoteActions {
+    /// The windows' action API of the session, as `caller` .
+    fn api(&self, caller: Caller) -> RemoteActions {
         RemoteActions::with_host(self.session.clone(), caller.in_workspace(WORKSPACE))
     }
 
@@ -241,8 +241,8 @@ fn succeeded(call: &ui::InvocationCall) -> bool {
 #[test]
 fn the_app_reads_the_retained_history_and_follows_new_changes() {
     let mut shell = Served::new(None);
-    let door = shell.door(person());
-    let feed = door.follow(
+    let api = shell.api(person());
+    let feed = api.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
     );
@@ -293,15 +293,15 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
     shell.frame();
     assert_eq!(shell.activity_windows(), 1);
 
-    let door = shell.door(person());
-    let focus = door.follow(wire::target(wire::FOCUS), wire::argument(&()));
+    let api = shell.api(person());
+    let focus = api.follow(wire::target(wire::FOCUS), wire::argument(&()));
     shell.frame();
     let (_, offered) = latest::<Option<wire::Focus>>(&focus).unwrap();
     let offered = offered.expect("the view is offered");
     assert_eq!(offered.view, wire::View::Replay);
 
     // The app showed it: it is not offered again.
-    let shown = door.invoke(
+    let shown = api.invoke(
         wire::target(wire::FOCUSED),
         wire::argument(&wire::Focused {
             serial: offered.serial,
@@ -333,7 +333,7 @@ fn asking_for_activity_opens_the_app_at_the_view_asked_for() {
 #[test]
 fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
     let mut shell = Served::new(None);
-    let agent = shell.door(Caller::local_agent("helper"));
+    let agent = shell.api(Caller::local_agent("helper"));
     let viewed = wire::argument(&wire::Viewed {
         entries: Vec::new(),
         later: false,
@@ -359,7 +359,7 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
         "an agent reads the workspace it works in"
     );
 
-    let person = shell.door(person());
+    let person = shell.api(person());
     let marked = person.invoke(wire::target(wire::MARK_VIEWED), viewed, None);
     let range = wire::Range::one(&wire::entry_hex(&[0; 16]));
     let undone = person.invoke(wire::target(wire::UNDO), wire::argument(&range), None);
@@ -389,8 +389,8 @@ fn what_is_seen_is_the_persons_own_and_the_history_is_read_only() {
 fn reads_asked_while_the_code_loads_are_served_once_it_has_loaded() {
     let code = Rc::new(std::cell::Cell::new(ActivityPaneCode::Loading));
     let mut shell = Served::new(Some(Rc::clone(&code)));
-    let door = shell.door(person());
-    let feed = door.follow(
+    let api = shell.api(person());
+    let feed = api.follow(
         wire::target(wire::FEED),
         wire::argument(&wire::FeedQuery::default()),
     );

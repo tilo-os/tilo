@@ -18,7 +18,7 @@
 //!   remember the window it answered. The open answers once the window is
 //!   live; a second open attaches to the same session.
 //! - **Route** ([`HostedBrowsers::route`]): an action addressed to that
-//!   window reaches this host (a door agent's calls go to the workspace's
+//!   window reaches this host (an agent's calls go to the workspace's
 //!   host device) and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
 //!   agent's run for the person it acts for. The relay runs none of it. A

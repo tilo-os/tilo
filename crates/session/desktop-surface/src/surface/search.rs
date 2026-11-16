@@ -1401,7 +1401,7 @@ impl DesktopSurface {
     }
 
     /// Run a chosen action row: by its address, in the window the search was opened in or the
-    /// window of the app publishing it, as that app's own control would; the desktop's own door
+    /// window of the app publishing it, as that app's own control would; the desktop's own API
     /// runs a row of its own.
     fn run_action(&mut self, action: &tilo_desktop_search::ActionTarget) {
         let mut arguments = serde_json::Map::new();
@@ -1425,7 +1425,7 @@ impl DesktopSurface {
                         self.bring_forward(strip, group);
                         self.run_in_window(strip, group, invocation);
                     }
-                    // Not an app's: the desktop's own door runs it.
+                    // Not an app's: the desktop's own API runs it.
                     None => self.unrouted_control = Some(invocation),
                 }
             }
@@ -1433,7 +1433,7 @@ impl DesktopSurface {
     }
 
     /// Run `invocation` , chosen in the search over window `group` , inside the app that window
-    /// shows, as its own control would: the desktop's door never reaches into an app's actions by
+    /// shows, as its own control would: the desktop's API never reaches into an app's actions by
     /// address.
     fn run_in_window(
         &mut self,

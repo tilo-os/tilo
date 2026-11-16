@@ -2,7 +2,7 @@
 //! locked, over nothing.
 //! It is one quiet screen: the time and its date in poster type, whose session this
 //! is, and the one password field that unlocks it. Unlocking is an effect, so a
-//! person, an assistive tool and a headless run reach the same door; the password
+//! person, an assistive tool and a headless run reach the same action API; the password
 //! never leaves the state's zeroizing buffer except to the session, which checks it.
 //! The screen runs as its own process: the session publishes what it shows as a
 //! resource ([`Shown`]), the app asks through the same actions as any other, and

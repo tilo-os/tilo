@@ -1,6 +1,6 @@
 //! Who may administer a workspace this relay governs, decided in one place.
 //!
-//! Every administration door (the `tilo.workspace` and `tilo.host` actions,
+//! Every administration entry (the `tilo.workspace` and `tilo.host` actions,
 //! the `/workspaces` pages, calls, the moderation
 //! agent) asks [`Workspaces::authorize`] with what it is about to do. The answer comes in three steps:
 //!

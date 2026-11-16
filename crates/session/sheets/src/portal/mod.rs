@@ -46,7 +46,7 @@ pub type Ask = Rc<dyn Fn(&PortalEffect)>;
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.portal-sheet";
 
-/// The sheet's resource: the door its answers are published on. It holds
+/// The sheet's resource, where its answers are published. It holds
 /// nothing; the requests are the shell's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct PortalSheet {}
@@ -436,7 +436,7 @@ enum Focus {
 struct Shown {
     dialog: Option<Dialog>,
     focus: Focus,
-    /// Counts what was typed through the door, so the fields show it.
+    /// Counts what was typed through the action API, so the fields show it.
     typed: u64,
 }
 
@@ -644,14 +644,14 @@ impl PortalState {
         }
     }
 
-    /// Ask `effect` as a press in the sheet would, without the door's
+    /// Ask `effect` as a press in the sheet would, without the action API's
     /// check that it names the request that is up: for a host test.
     pub fn press(&self, effect: PortalEffect) {
         self.asked.borrow_mut().push(effect);
     }
 
-    /// Take `effect` from the sheet's door. Typing stays in the state and
-    /// is never asked; a secret prompt answered through the door is
+    /// Take `effect` from the sheet's action API. Typing stays in the state and
+    /// is never asked; a secret prompt answered through the action API is
     /// answered with what its buffers hold, checked as the prompt checks
     /// it. An effect that names a request that is not the one up is
     /// refused: it was pressed while another question was.
@@ -737,7 +737,7 @@ impl PortalState {
         Ok(())
     }
 
-    /// Show again what was typed through the door.
+    /// Show again what was typed through the action API.
     fn retype(&self) {
         if let Some(shown) = self.shown.borrow().as_ref() {
             shown.update(|shown| shown.typed = shown.typed.wrapping_add(1));
@@ -777,7 +777,7 @@ fn typed_field(dialog: &Dialog, name: &str) -> Option<Field> {
 
 /// The sheet for a host that draws it itself rather than mounting it as an
 /// app (a page, over its desktop): the same view and keys, every press taken
-/// by the state as the app's door takes it ([`PortalState::take_asked`]).
+/// by the state as the app's action API takes it ([`PortalState::take_asked`]).
 pub struct DrawnSheet {
     parts: view::Parts,
     built: Option<Shown>,

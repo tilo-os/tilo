@@ -202,7 +202,7 @@ pub(super) async fn subscribe(
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new(&work));
-    // What is committed for a device the door just admitted (its channel
+    // What is committed for a device the entry just admitted (its channel
     // Welcome) goes ahead of everything its replay carries.
     ws.lock()
         .await
@@ -304,7 +304,7 @@ async fn admit_subscription(
     let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
         // A host that keeps nothing of this person forgot them: their session
-        // stops as not admitted, and they join again through its door. One
+        // stops as not admitted, and they join again through its entry. One
         // that knows them keeps no such workspace, which their workspace's
         // permissions answer.
         let known = session

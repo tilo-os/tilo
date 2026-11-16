@@ -1,10 +1,10 @@
-//! Devices a workspace admitted through its door that have not subscribed
+//! Devices a workspace admitted through its entry that have not subscribed
 //! yet ([`tilo_relay_protocol::entering`]), and the frames committed for them
 //! alone in the meantime: the Welcome to the workspace's channel group that
 //! the request in their entry asked for. Their subscription's replay writes
 //! these first, so the keys are the first thing a newcomer downloads.
 //!
-//! The door answers the entry without waiting for the Welcome: the
+//! The entry answers the entry without waiting for the Welcome: the
 //! participants commit it while the answer travels and the device subscribes.
 //! A device that subscribes before its Welcome is committed has its replay
 //! hold the first batch until the Welcome arrives ([`KEYS_WAIT`] at most), and
@@ -34,7 +34,7 @@ const WAITS: Duration = ENTERING_DEADLINE;
 /// as every member does.
 pub(crate) const KEYS_WAIT: Duration = Duration::from_secs(2);
 
-/// The devices of one workspace that arrive through its door.
+/// The devices of one workspace that arrive through its entry.
 #[derive(Default)]
 pub(crate) struct Arriving {
     devices: HashMap<[u8; 32], Arrival>,

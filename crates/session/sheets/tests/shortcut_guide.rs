@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
         assert!(!state.presentation().is_open());
     }
 
-    phase an_agent_closes_the_guide_through_the_same_door;
+    phase an_agent_closes_the_guide_through_the_same_api;
     {
         let (mut app, state) = mounted(guide());
         app.effect(&GuideEffect::Done).unwrap();

@@ -82,7 +82,7 @@ pub(super) async fn handle_remote_action(
     }
     // A browser environment's device answers the page actions the relay hands
     // it and originates none: what it holds is a window, not a member's
-    // standing to call the workspace's doors. What it asks of this host about
+    // standing to call the workspace's action APIs. What it asks of this host about
     // itself — its own streams' media keys, its own windows' shares — is the
     // one exception, and this host answers it only for that device.
     if session.environment(&peer.device_public_key).is_some()
@@ -321,7 +321,7 @@ fn hand_over(
 
 /// Handle an inbound `HostAction`: one of this host's own operations
 /// (`tilo.host`), asked over the caller's authenticated connection with no
-/// workspace. The host's governance decides who may, as for every door:
+/// workspace. The host's governance decides who may, as for every action API:
 /// only the devices of the host's own person, speaking for themselves.
 ///
 /// Every request that can be read is answered: a refusal comes back at once

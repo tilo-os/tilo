@@ -51,7 +51,7 @@ enum Side {
 
 impl Fixture {
     /// What a connection to this fixture's workspace is handled in, answering
-    /// as `side`, with every door a test does not vary left closed.
+    /// as `side`, with every gate a test does not vary left closed.
     fn ctx<'a>(
         &'a self,
         side: Side,

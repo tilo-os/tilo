@@ -31,7 +31,7 @@ use crate::{caption, t};
 /// The app the shell mounts the guide as.
 pub const APP_ID: &str = "so.tilo.shortcut-guide";
 
-/// The guide's resource: the door its actions are published on. It holds
+/// The guide's resource, where its actions are published. It holds
 /// nothing; the shortcut table is the person's settings.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ShortcutGuide {}
@@ -917,7 +917,7 @@ fn touch(column: Column) -> Column {
 /// what else to know about the keys.
 ///
 /// Every row is a keyboard-shortcuts catalogue entry, so the guide, Settings
-/// and the action door read the same names and the same live chords, and the
+/// and the action API read the same names and the same live chords, and the
 /// guide never promises a default the person has rebound.
 #[must_use]
 pub fn keyboard_guide(table: &ShortcutConfig) -> Guide {
