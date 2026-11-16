@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use tilo_actions::SemanticInteraction;
 use tilo_desktop_model::TabId;
 
 use super::{HereState, Person};
@@ -47,6 +48,34 @@ pub fn reveal_own_agent_work(
         None => None,
     };
     tab.is_some_and(|tab| handle.reveal_tab(tab))
+}
+
+/// The agents in `narrated` that act for this person show them where they act: each one is noted
+/// ([`HereState::note_agent_acted`]), so where it works comes into view on the next look
+/// ([`reveal_own_agent_work`]). Someone else's agent moves nothing here.
+pub fn note_narrated(here: &mut HereState, narrated: &[SemanticInteraction]) {
+    for interaction in narrated {
+        if interaction.actor.is_agent()
+            && let Some(person) = interaction.actor.acted_for_person()
+        {
+            here.note_agent_acted(person);
+        }
+    }
+}
+
+/// `narrated` drawn into this shell's `presence`: each action moves its agent's cursor to the
+/// control it is bound to, over the window that shows its record. Whether it drew any.
+pub fn apply_narrated(
+    presence: &mut ui::presence::PresenceCtx,
+    narrated: &[SemanticInteraction],
+) -> bool {
+    let mut shown = false;
+    for interaction in narrated {
+        shown |= presence
+            .apply_interaction(interaction.clone())
+            .unwrap_or(false);
+    }
+    shown
 }
 
 /// What this page last showed of each of its person's agents, and whether one acted since.

@@ -132,21 +132,11 @@ impl Mount {
         let narrated = crate::peer_sync::take_narrated(peer, &workspace);
         // An agent acting for this person shows them where it acts, even where it already was.
         if let Some(desktop) = &self.desktop {
-            for interaction in &narrated {
-                if interaction.actor.is_agent()
-                    && let Some(person) = interaction.actor.acted_for_person()
-                {
-                    desktop.here.borrow_mut().note_agent_acted(person);
-                }
-            }
+            tilo_desktop::here::note_narrated(&mut desktop.here.borrow_mut(), &narrated);
         }
         if !narrated.is_empty() {
             self.frame.update_presence(|presence| {
-                let mut shown = false;
-                for interaction in narrated {
-                    shown |= presence.apply_interaction(interaction).unwrap_or(false);
-                }
-                shown
+                tilo_desktop::here::apply_narrated(presence, &narrated)
             });
             self.pending = true;
             self.window.request_redraw();

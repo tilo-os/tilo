@@ -182,10 +182,6 @@ fn pointer_of(value: &JsPresence) -> Result<Option<tilo_live::presence::Point>, 
         .transpose()
 }
 
-/// The most narrated work a workspace holds for its mounts between two frames: a burst past it is
-/// older than what the frame shows anyway.
-const MAX_HELD_INTERACTIONS: usize = 32;
-
 /// A started page's plane: the session's client, the transport ends it says through, and the
 /// workspaces its mounts show.
 struct Page {
@@ -204,7 +200,7 @@ struct Page {
     waved: Option<u32>,
     /// Semantic work its agents narrated since the mounts last took it, by workspace, admitted and
     /// bound to the member that published it.
-    interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
+    narrated: tilo_session_client::narration::Held,
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
     doors: RefCell<HashMap<WorkspaceId, SessionActions>>,
@@ -287,7 +283,7 @@ pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceC
                 client,
                 workspaces: HashMap::new(),
                 waved: None,
-                interactions: HashMap::new(),
+                narrated: tilo_session_client::narration::Held::default(),
                 doors: RefCell::default(),
                 open_door,
             },
@@ -484,15 +480,7 @@ pub(crate) fn narrated(
             return false;
         };
         let here = page.client.members(&workspace);
-        let Some(interaction) = tilo_session_client::narration::admit(&here, from, event) else {
-            return false;
-        };
-        let held = page.interactions.entry(workspace).or_default();
-        if held.len() >= MAX_HELD_INTERACTIONS {
-            held.remove(0);
-        }
-        held.push(interaction);
-        true
+        page.narrated.hear(&workspace, &here, from, event)
     });
     if admitted {
         crate::browser::presence::heard(peer, workspace_id);
@@ -505,7 +493,7 @@ pub(crate) fn take_narrated(peer: u32, workspace: &str) -> Vec<tilo_actions::Sem
     PAGES.with_borrow_mut(|pages| {
         pages
             .get_mut(&peer)
-            .and_then(|page| page.interactions.remove(workspace))
+            .map(|page| page.narrated.take(workspace))
             .unwrap_or_default()
     })
 }

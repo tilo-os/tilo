@@ -23,7 +23,7 @@ mod following;
 mod screen;
 mod waves;
 
-pub use agent_work::{WorkPlace, go_to, reveal_own_agent_work};
+pub use agent_work::{WorkPlace, apply_narrated, go_to, note_narrated, reveal_own_agent_work};
 pub use collab_types::presence::{
     ShownFocus as Focus, ShownLayout as MemberLayout, ShownWindow as MemberWindow,
 };

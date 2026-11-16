@@ -1,8 +1,14 @@
 //! An agent's actions narrated on the live plane: the semantic work its
 //! device publishes on a record's stream as each action goes ([`frame`]),
-//! and what a page admits of it ([`admit`]). A person watching sees the
+//! and what a shell admits of it ([`admit`]). A person watching sees the
 //! agent the way they see a colleague: its cursor travelling to the control
 //! each action is bound to.
+//!
+//! What a shell takes of it between two drawn frames is [`Held`], one hold
+//! every surface keeps, whether the workspace is drawn by a page or by a
+//! device's session.
+
+use std::collections::HashMap;
 
 use collab_types::presence::Shown;
 use tilo_actions::{
@@ -72,13 +78,14 @@ pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<Seman
     })
 }
 
-/// The semantic work `event` carries, as `from` did it, on a page that has `here` as its members:
+/// The semantic work `event` carries, as `from` did it, on a shell that has `here` as its members:
 /// `None` unless `from` is one of them as an agent and the work is well formed and names the
 /// execution its frame does. Its actor is that member, whatever the work claims: a device says only
-/// what its own agent does.
+/// what its own agent does. Who the agent acts for is the board's to say, not the work's: the person
+/// the member names ([`Shown::user`]), which is what a shell shows the work to.
 ///
 /// Work the workspace's host narrates for a run it executes ([`SemanticFrame::on_behalf`]) is the
-/// member it speaks for that run ([`collab_types::presence::stand_in`]), which the page's board
+/// member it speaks for that run ([`collab_types::presence::stand_in`]), which the shell's board
 /// admitted only from the workspace's own host: `None` from any other device.
 #[must_use]
 pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<SemanticInteraction> {
@@ -98,8 +105,52 @@ pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<Se
         return None;
     }
     interaction.actor = Acting::agent(publisher);
+    if let Some(person) = &member.user {
+        interaction.actor = interaction.actor.acting_for(Acting::person(person.clone()));
+    }
     interaction.validate().ok()?;
     Some(interaction)
+}
+
+/// The most narrated work a workspace holds between two drawn frames: a burst past it is older
+/// than what the next frame shows anyway.
+const MAX_HELD_PER_WORKSPACE: usize = 32;
+
+/// The narrated work a shell holds for the surfaces that draw its workspaces, by workspace: what
+/// each agent's device published and the workspace's board admitted ([`admit`]), for the next
+/// frame to show.
+#[derive(Debug, Default)]
+pub struct Held {
+    by_workspace: HashMap<String, Vec<SemanticInteraction>>,
+}
+
+impl Held {
+    /// Take one semantic frame `from` published in `workspace`, whose board is `here`: the work it
+    /// carries, when admitted ([`admit`]), is held for the surfaces drawing that workspace. Whether
+    /// it was.
+    pub fn hear(
+        &mut self,
+        workspace: &str,
+        here: &[Shown],
+        from: [u8; 32],
+        event: &SemanticFrame,
+    ) -> bool {
+        let Some(interaction) = admit(here, from, event) else {
+            return false;
+        };
+        let held = self.by_workspace.entry(workspace.to_owned()).or_default();
+        if held.len() >= MAX_HELD_PER_WORKSPACE {
+            held.remove(0);
+        }
+        held.push(interaction);
+        true
+    }
+
+    /// The work `workspace` holds since the last call, oldest first. Empty, and allocating
+    /// nothing, while there is none.
+    pub fn take(&mut self, workspace: &str) -> Vec<SemanticInteraction> {
+        self.by_workspace.remove(workspace).unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
