@@ -27,13 +27,18 @@ use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tokio::sync::mpsc;
 
 /// A key's calls of `/v1`.
-struct Key<'a> {
-    api: &'a Arc<Server>,
-    token: String,
+pub(super) struct Key<'a> {
+    pub(super) api: &'a Arc<Server>,
+    pub(super) token: String,
 }
 
 impl Key<'_> {
-    async fn send(&self, method: hyper::Method, path: &str, body: &Value) -> (u16, Value) {
+    pub(super) async fn send(
+        &self,
+        method: hyper::Method,
+        path: &str,
+        body: &Value,
+    ) -> (u16, Value) {
         let bearer = format!("Bearer {}", self.token);
         let pairs = [
             ("authorization", bearer.as_str()),
@@ -56,16 +61,16 @@ impl Key<'_> {
         Box::pin(json_of(reply)).await
     }
 
-    async fn get(&self, path: &str) -> (u16, Value) {
+    pub(super) async fn get(&self, path: &str) -> (u16, Value) {
         self.send(hyper::Method::GET, path, &Value::Null).await
     }
 
-    async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
+    pub(super) async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
         self.send(hyper::Method::POST, path, body).await
     }
 
     /// Run `command` in `workspace`'s Terminal.
-    async fn run(&self, workspace: &str, command: &str) -> (u16, Value) {
+    pub(super) async fn run(&self, workspace: &str, command: &str) -> (u16, Value) {
         self.post(
             &format!("/v1/workspaces/{workspace}/resources/terminal/actions/run"),
             &json!({"command": command}),
@@ -84,7 +89,7 @@ impl Key<'_> {
     }
 
     /// Follow `run` in `workspace` until it is no longer pending.
-    async fn follow(&self, workspace: &str, run: &str) -> (u16, Value) {
+    pub(super) async fn follow(&self, workspace: &str, run: &str) -> (u16, Value) {
         self.get(&format!("/v1/workspaces/{workspace}/runs/{run}?wait=30"))
             .await
     }
@@ -103,7 +108,7 @@ impl Key<'_> {
     }
 
     /// A key reaching `workspace` alone, named `name`: its token.
-    async fn mint(&self, workspace: &str, name: &str) -> String {
+    pub(super) async fn mint(&self, workspace: &str, name: &str) -> String {
         let (status, minted) = self
             .post("/v1/keys", &json!({"workspace": workspace, "name": name}))
             .await;
@@ -113,8 +118,8 @@ impl Key<'_> {
 }
 
 /// What the page's sheet shows: every question the relay put to the person.
-struct Sheet {
-    asked: Arc<Mutex<Vec<PendingConfirmation>>>,
+pub(super) struct Sheet {
+    pub(super) asked: Arc<Mutex<Vec<PendingConfirmation>>>,
 }
 
 impl QuestionSheet for Sheet {
@@ -126,28 +131,28 @@ impl QuestionSheet for Sheet {
 }
 
 /// The person at their page: what it was asked, and where their answers go.
-struct Person {
-    asked: Arc<Mutex<Vec<PendingConfirmation>>>,
-    answers: mpsc::UnboundedSender<Answered>,
+pub(super) struct Person {
+    pub(super) asked: Arc<Mutex<Vec<PendingConfirmation>>>,
+    pub(super) answers: mpsc::UnboundedSender<Answered>,
 }
 
 impl Person {
-    fn questions(&self) -> usize {
+    pub(super) fn questions(&self) -> usize {
         self.asked.lock().unwrap().len()
     }
 
-    fn last(&self) -> PendingConfirmation {
+    pub(super) fn last(&self) -> PendingConfirmation {
         self.asked.lock().unwrap().last().cloned().unwrap()
     }
 
     /// Answer the last question asked with `answer`.
-    fn answer(&self, answer: ConfirmationAnswer) {
+    pub(super) fn answer(&self, answer: ConfirmationAnswer) {
         self.answers.send((self.last().id, answer)).unwrap();
     }
 }
 
 /// `call`, while the person's page keeps its session with the relay.
-async fn beside<T>(
+pub(super) async fn beside<T>(
     page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
     call: impl Future<Output = T>,
 ) -> T {
@@ -158,7 +163,7 @@ async fn beside<T>(
 }
 
 /// Wait, beside the page, until it was asked `count` questions in all.
-async fn asked(
+pub(super) async fn asked(
     page: &mut Pin<&mut impl Future<Output = tilo_relay_client::CertifyError>>,
     person: &Person,
     count: usize,
@@ -176,7 +181,7 @@ async fn asked(
 
 /// A person on `on_relay` with their page and a key reaching all their
 /// workspaces, as their backend holds it.
-async fn backend(on_relay: &OnRelay) -> (SigningKey, String) {
+pub(super) async fn backend(on_relay: &OnRelay) -> (SigningKey, String) {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&root, "Ada's browser", DeviceCapabilities::member());
     let token = Box::pin(approved_key(on_relay, &root, &page, "Visa backend")).await;
@@ -184,7 +189,7 @@ async fn backend(on_relay: &OnRelay) -> (SigningKey, String) {
 }
 
 /// A new workspace of the backend key's person named `name`: its id.
-async fn workspace(key: &Key<'_>, name: &str) -> String {
+pub(super) async fn workspace(key: &Key<'_>, name: &str) -> String {
     let (status, made) = key.post("/v1/workspaces", &json!({"name": name})).await;
     assert_eq!(status, 201, "{made}");
     made["id"].as_str().unwrap().to_owned()
@@ -192,7 +197,7 @@ async fn workspace(key: &Key<'_>, name: &str) -> String {
 
 /// Whether `answer` is a run still pending, as one waiting for the person
 /// is: its run.
-fn waiting(status: u16, answer: &Value) -> Option<String> {
+pub(super) fn waiting(status: u16, answer: &Value) -> Option<String> {
     (status == 202 && answer["status"] == "pending")
         .then(|| answer["run"].as_str().unwrap().to_owned())
 }

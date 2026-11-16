@@ -49,6 +49,9 @@ pub mod api_on_relay;
 #[path = "workspace_actions/api_questions.rs"]
 mod api_questions;
 #[cfg(test)]
+#[path = "workspace_actions/api_runs.rs"]
+mod api_runs;
+#[cfg(test)]
 #[path = "workspace_actions/api_unattended.rs"]
 mod api_unattended;
 #[cfg(test)]

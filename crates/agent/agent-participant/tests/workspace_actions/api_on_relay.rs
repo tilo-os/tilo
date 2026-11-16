@@ -254,6 +254,16 @@ impl OnRelay {
             },
         )
         .await;
+        // People's own workspaces here, and who may keep them, as every start
+        // of the relay offers them: those made before the restart are theirs
+        // again.
+        let workspaces = hosted.relay.workspaces().unwrap();
+        workspaces
+            .offer_own_workspaces(tilo_relay::workspaces::OwnWorkspaceOffer::free(
+                "relay.tilo.test",
+            ))
+            .unwrap();
+        workspaces.admit_own_through(&lobby);
         let relay = hosted.web.plain_origin.clone().unwrap();
         let api = Server::new(
             &Config {
