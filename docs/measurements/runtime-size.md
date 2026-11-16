@@ -288,6 +288,18 @@ record and action SDK (`tilo_actions` 1.06 -> 1.26, `tilo_resource` 1.22 ->
 used, `runtime_collab`, `tilo_fs_client`, `read_fonts` and `skrifa` gave back
 4.0 MB.
 
+`libtilo_settings_engine.so` grew 4.8 MB of named code over the same period
+(9.6 -> 14.4 MB; 13.6 MB shipped, 3.4 MB over its budget of 10.2): the SDK the
+panes are written against, 3.1 MB (`tilo_app` 0.58 -> 1.38 MB, `tilo_resource`
+0.67 -> 1.16, `settings_sections` 0.66 -> 1.03, `provider_settings_ui`,
+`tilo_ui`, and what they instantiate in `core`, `alloc` and `serde_json`);
+1.2 MB of device-administration libraries the app's `tilo-os` panes ask
+(`zbus` 0.18, `zvariant` 0.11, `tilo-audio-service` 0.16, `tilo-power-mgmt`
+0.14, `tilo-account-probe` 0.10, `tilo-service` 0.09, `tilo-session-power`
+0.07, and the mail stack the sign-in probe asks: `mail-parser` 0.15, `lettre`
+0.10, `mail-builder` 0.05, which `libtilo_mail_engine.so` also carries); and
+Settings' own panes, 0.31 MB.
+
 ## What an app start pays for the runtime
 
 Warm, the loader's work before `main` is almost all the runtime's: it copies
