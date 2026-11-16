@@ -1,53 +1,128 @@
-reason = "Each amount is that app's overage plus the ratchet's 1 % headroom, rounded up to 64 KiB, measured by t's app-sizes-x86_64 (run r1a9de479eb). The budgets were last raised at 9ee2d3e1439 on 2026-11-09; the growth since is each app's own code and the codec instances its new types compile, split by crate in docs/measurements/app-package-size.md: Browser's page forms, page record and page review (+184,689 named bytes), Mail's own mailbox per member and page sends (+30,829) with 102,422 bytes of serde instances, Tasks' import inbox (+9,498) and its model crate (+55,098), Video Editor's inspector and timeline (+24,294), Notes' metadata and notebook (+13,023), Pdf Viewer's page rendering (+13,266), and Calendar and Ebook, whose own crates grew 2,601 and 8,339 bytes while the serde instances for the shared action and document types they read grew 100,236 and 97,994. No crate is carried whole in several tapps: re-exporting serde, serde_json and tilo-resource from the runtime changed 84 bytes across the 65 tapps."
+# What each app below grew between the 2026-11-09 budgets (9ee2d3e1439) and
+# the 2026-11-15 measurement: its binary's named code, split by crate in
+# docs/measurements/app-package-size.md, and the surface.toml the tapp carries
+# as data. Named code is what nm sees; a tapp is larger by its unwind tables,
+# read-only data and the package format. The comment above each app names what
+# grew in it.
+reason = "Each amount is that app's overage at the 2026-11-15 measurement plus the ratchet's 1 % headroom, rounded up to 64 KiB, so an app a few kilobytes over still gets 64 KiB; t's app-sizes-x86_64 (run r1a9de479eb) measured the tapps. Browser, Calendar, Chat, Code Editor, Ebook, Mail, Notes and Tasks are not here: reading and writing the shared document codecs in the runtime took them below their raised budgets, so their budgets were lowered instead (9398258bffd)."
 run = "r1a9de479eb"
 
+# Backups: its records answer a read of what they hold, its actions are
+# labelled from its catalogue, and the surface it publishes grew 353 bytes.
+# Named code +33,622 (own +4,054, tilo_resource +876, serde_json +43, core and
+# alloc +11,948); 4,096 over its old budget.
 [apps."so.tilo.backups"]
 x86_64 = 65536
 
+# Clocks: its schedule and alarm records answer a read, its actions are
+# labelled from its catalogue, it draws through the toolkit's keyed children,
+# and its surface grew 1,509 bytes. Named code +29,274 (own +2,588,
+# tilo_resource +1,402, serde_json +161, core and alloc +12,457); 38,400 over
+# its old budget.
 [apps."so.tilo.clocks"]
 x86_64 = 65536
 
+# Contacts: its records answer a read, every context menu ends in Send to…,
+# and its surface grew 3,397 bytes. Named code +16,998 (own +859, tilo_resource
+# +1,724, serde_json +47, core and alloc +6,529); 14,336 over its old budget.
 [apps."so.tilo.contacts"]
 x86_64 = 65536
 
+# Db Client: the bundled SQLite that rusqlite 0.37 to 0.41 brought, 30 KB of
+# sqlite3_* code in its largest new symbols, its records answering a read, and
+# its surface growing 816 bytes. Named code +63,666 (own +1,778, tilo_resource
+# +1,352, serde_json -25, core and alloc +4,471); 31,232 over its old budget.
 [apps."so.tilo.db-client"]
 x86_64 = 131072
 
+# Discord: the bridge reads a chat's newest part, a bot's program reads records
+# through the record door, a moved message shows as its author's at its time
+# there, and its surface grew 15,382 bytes. Its own crate fell 1,867 bytes;
+# named code +52,537 (tilo_resource +16,030, serde_json +4,625, core and alloc
+# +28,047); 108,032 over its old budget.
 [apps."so.tilo.discord"]
 x86_64 = 131072
 
+# Feeds: every context menu ends in Send to…, it draws through the toolkit's
+# keyed children, its actions are labelled from its catalogue, and its surface
+# grew 2,803 bytes. Named code +8,492 (own +417, tilo_resource +720, serde_json
+# -52, core and alloc +5,772); 8,704 over its old budget.
 [apps."so.tilo.feeds"]
 x86_64 = 65536
 
+# Maps: it draws through the toolkit's keyed children, every context menu ends
+# in Send to…, its actions are labelled from its catalogue, and its surface
+# grew 4,832 bytes. Its own crate fell 1,796 bytes; named code +10,506
+# (tilo_resource +1,460, serde_json +189, core and alloc +3,974); 10,240 over
+# its old budget.
 [apps."so.tilo.maps"]
 x86_64 = 65536
 
+# Messages: apps read another app's records through the record door, presence
+# is keyed by member, and its surface grew 3,948 bytes. Named code +73,374
+# (own +2,756, tilo_resource +7,373, serde_json +908, core and alloc +20,524);
+# 77,312 over its old budget.
 [apps."so.tilo.messages"]
 x86_64 = 131072
 
+# Passwords: a login is saved and listed by an action, and its surface grew 873
+# bytes. Its own code grew 9,400 bytes; named code +38,297 (tilo_resource +810,
+# serde_json +82, core and alloc +11,891); 31,744 over its old budget.
 [apps."so.tilo.passwords"]
 x86_64 = 65536
 
+# Pdf Viewer: renders pages on demand, actions carry sealed content references,
+# and its surface grew 12,231 bytes. Its own code grew 13,266 bytes; named code
+# +21,898 (tilo_resource +1,752, serde_json +3,521, core and alloc +13,058);
+# 3,072 over its old budget.
 [apps."so.tilo.pdf-viewer"]
 x86_64 = 65536
 
+# Remote: its SSH client (russh, with the curve crate its key type needs) is
+# 9 KB of its growth, its records answer a read, and its surface grew 939
+# bytes. Named code +19,036 (own +616, tilo_resource +1,171, serde_json +1,
+# core and alloc +8,591); 13,312 over its old budget.
 [apps."so.tilo.remote"]
 x86_64 = 65536
 
+# Shortcuts: a bot's program reads records through the record door, its actions
+# are labelled from its catalogue, and its surface grew 2,365 bytes. Its own
+# code grew 5,498 bytes; named code +26,946 (tilo_resource +1,045, serde_json
+# -37, core and alloc +10,268); 34,816 over its old budget.
 [apps."so.tilo.shortcuts"]
 x86_64 = 65536
 
+# Snippets: it draws through the toolkit's keyed children, its actions are
+# labelled from its catalogue, and its surface grew 975 bytes. Its own crate
+# fell 1,124 bytes; named code +27,990 (tilo_resource +621, serde_json -9, core
+# and alloc +10,899); 46,080 over its old budget.
 [apps."so.tilo.snippets"]
 x86_64 = 65536
 
+# Terminal: actions carry sealed content references, an agent editing its files
+# or running a command is shown there, its actions are labelled from its
+# catalogue, and its surface grew 3,871 bytes. Named code +19,118 (own +2,632,
+# tilo_resource +2,621, serde_json +264, core and alloc +3,800); 24,064 over
+# its old budget.
 [apps."so.tilo.terminal"]
 x86_64 = 65536
 
+# Totp: its records answer a read, it draws through the toolkit's keyed
+# children, and its surface grew 926 bytes. Its own crate fell 637 bytes; named
+# code +22,843 (tilo_resource +928, serde_json -14, core and alloc +5,356);
+# 29,696 over its old budget.
 [apps."so.tilo.totp"]
 x86_64 = 65536
 
+# Video Editor: its inspector and timeline drawing grew its own code 24,294
+# bytes, and its surface grew 8,684. Named code +37,614 (tilo_resource +384,
+# serde_json +5, core and alloc +10,777); 84,480 over its old budget.
 [apps."so.tilo.video-editor"]
 x86_64 = 131072
 
+# Weather: its records answer a read, it draws through the toolkit's keyed
+# children, and its surface grew 1,144 bytes. Its own crate fell 383 bytes;
+# named code +1,773 (tilo_resource +696, serde_json -50, core and alloc
+# +3,127); 1,024 over its old budget.
 [apps."so.tilo.weather"]
 x86_64 = 65536

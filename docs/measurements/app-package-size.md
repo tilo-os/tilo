@@ -208,3 +208,14 @@ Named code from symbols builds before and after, with `tools/perf/tapp_symbol_si
 t's app-sizes-x86_64 run ra8e3b25f8a measured the tapps the x86_64 budgets were lowered to
 (Slides' tapp, for one, is 171,008 bytes smaller). The aarch64 budgets wait for a measurement on
 that architecture.
+
+Eight of the twenty-five apps that raise covered — Browser, Calendar, Chat, Code Editor, Ebook,
+Mail, Notes and Tasks — fell below their raised budgets with that change, so their budgets were
+lowered instead. The other seventeen keep their raise, and the comment above each app in
+`tools/perf/tapp-size-budget/raises/apps-features-2026-11-09-to-11-15.toml` names what grew in it:
+its own feature work, its records answering a read and naming their labels from its catalogue, the
+framework code those instantiate for its own types, and, for Db Client and Remote, the one
+dependency its tapp carries alone (the bundled SQLite, and the SSH client with its curve crate).
+t's app-sizes-x86_64 run rf7bc66b852 re-measured the x86_64 tapps at 1b82c14d6b8: all of them are
+within their budgets, and each budget is already the smallest 64 KiB step above its measurement
+plus the 1 % headroom, so none falls.
