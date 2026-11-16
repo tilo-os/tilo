@@ -125,6 +125,19 @@ impl WorkspaceShells {
         self.vms.is_some()
     }
 
+    /// Where a run `payer` pays for runs its Linux programs when the environment names the hosted-VM
+    /// service but no account: a member taking a relay's work, whose every run names who pays,
+    /// runs them on the service its workspaces' Browser starts on.
+    fn paid_on_browsers(&self, payer: Option<&Payer>) -> Option<HostedTarget> {
+        let payer = payer?;
+        Some(HostedTarget {
+            socket: self.browsers.clone()?,
+            account: payer.account.clone(),
+            size: payer.size,
+            plans: std::env::var_os(crate::hosted_vm::PLANS_ENV).map(PathBuf::from),
+        })
+    }
+
     /// The hosted-VM service these shells run Linux programs on, and for whom.
     #[must_use]
     pub const fn hosted(&self) -> Option<&HostedTarget> {
@@ -235,13 +248,17 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
-        let target = self.vms.clone().map(|mut target| {
-            if let Some(payer) = payer {
-                target.account.clone_from(&payer.account);
-                target.size = payer.size;
-            }
-            target
-        });
+        let target = self
+            .vms
+            .clone()
+            .or_else(|| self.paid_on_browsers(payer))
+            .map(|mut target| {
+                if let Some(payer) = payer {
+                    target.account.clone_from(&payer.account);
+                    target.size = payer.size;
+                }
+                target
+            });
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();

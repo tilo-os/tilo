@@ -508,3 +508,39 @@ fn a_member_that_runs_no_vms_has_no_machine_to_branch_or_delete() {
         );
     }
 }
+
+#[test]
+fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_asked() {
+    use legacy_vm::hosted::control::{Reply, Request};
+    let dir = tempfile::tempdir().unwrap();
+    let (socket, asked) = fake_hosted(
+        dir.path(),
+        vec![Reply::Error("this test runs no VM".into())],
+    );
+    let files = dir.path().join("replicas");
+    // As a VM host's member is started: its environment names the hosted-VM
+    // service and no account, since the relay names one with each run.
+    let runs = EnvironmentRuns::new(
+        WorkspaceShells::new(dir.path().join("shells"), None)
+            .with_files(move |workspace| files.join(workspace))
+            .with_browsers_on(Some(socket)),
+        OPERATOR,
+    );
+    let request = asking("uname -srm");
+    let id = request.invocation;
+    answered(runs.invoke(&host(), request)).unwrap();
+    let (ran, _) = followed(&runs, &host(), id);
+    assert_ne!(ran.exit, 0, "the service ran nothing: {}", ran.output);
+    let asked = asked.lock().unwrap().clone();
+    let Some(Request::Ensure { vm, .. }) = asked.first() else {
+        panic!(
+            "the program was never taken to the workspace's VM ({asked:?}): {}",
+            ran.output
+        );
+    };
+    assert_eq!(
+        (vm.workspace.as_str(), vm.account.as_str(), vm.size),
+        ("ws-1", "acct-1", legacy_vm::hosted::size::VmSize::Small),
+        "the caller's workspace's VM, paid for by the account the run named, at its size"
+    );
+}
