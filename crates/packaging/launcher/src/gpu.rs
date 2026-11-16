@@ -556,6 +556,86 @@ impl SoftwarePin {
     }
 }
 
+/// How an app's graphics loader is pinned for the GPU the compositor names: one decision for every
+/// process the session starts, whether the launcher sandboxes it or the session runs it itself (its
+/// surface apps). Two copies of this decision drifted apart before: Mesa's device-select layer was
+/// switched off for launched apps, later for surface apps, and later still only for render nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoaderPin {
+    /// The compositor names `selection.node`: the loader is pinned to the driver that reports it,
+    /// with the software rasteriser over it when no driver claims a display's primary node
+    /// ([`unclaimed_node_pin`]).
+    Node {
+        selection: GpuSelection,
+        software: Option<SoftwarePin>,
+    },
+    /// The compositor found no GPU and renders with lavapipe: its apps do too.
+    Software(SoftwarePin),
+    /// No GPU named (not yet, at a session's start, or none the compositor imports from): Mesa's
+    /// device-select layer asks the compositor for its device, finds none, and crashed the app's
+    /// `native-render-prepare` on a machine without 3D, so it is off and the renderer picks its
+    /// adapter itself.
+    Unpinned,
+}
+
+impl LoaderPin {
+    /// The pin for a launch while the compositor names `render_node`: the compositor's own pin when
+    /// it handed one down, else the one the installed drivers report.
+    #[must_use]
+    pub fn for_render_node(render_node: Option<&Path>) -> Self {
+        let Some(node) = render_node else {
+            return inherited_software_pin().map_or(Self::Unpinned, Self::Software);
+        };
+        let mut selection = inherited_selection(node)
+            .unwrap_or_else(|| select_for_node(node, &IcdSearch::default()));
+        selection.pipeline_seed = host_pipeline_seed();
+        #[cfg(target_os = "linux")]
+        let software =
+            unclaimed_node_pin(&selection, inherited_software_pin(), &IcdSearch::default());
+        #[cfg(not(target_os = "linux"))]
+        let software = None;
+        Self::Node {
+            selection,
+            software,
+        }
+    }
+
+    /// The environment a process the session runs outside a sandbox starts with: what the launcher
+    /// sets inside one for the same pin.
+    #[must_use]
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        match self {
+            Self::Node {
+                selection,
+                software,
+            } => {
+                let mut env = selection.env();
+                // The software pin is set after the node's, and wins where both name a loader.
+                env.extend(software.iter().flat_map(SoftwarePin::env));
+                // A display's primary node (`card*`), which the compositor names when it has no
+                // render node, is no GPU for the layer to prefer either: surface apps still crashed
+                // in it with such a node named and no software rasteriser installed.
+                if !is_render_node(&selection.node)
+                    && !env.iter().any(|(key, _)| *key == NO_DEVICE_SELECT_ENV)
+                {
+                    env.push((NO_DEVICE_SELECT_ENV, "1".to_owned()));
+                }
+                env
+            }
+            Self::Software(pin) => pin.env(),
+            Self::Unpinned => vec![(NO_DEVICE_SELECT_ENV, "1".to_owned())],
+        }
+    }
+}
+
+/// Whether `node` is a render node (`renderD*`), a GPU to render on, rather than a display's
+/// primary node (`card*`).
+fn is_render_node(node: &Path) -> bool {
+    node.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("renderD"))
+}
+
 /// The pin a launch onto `selection` runs with when its node is a display's primary node (`card*`, no
 /// render node) that no Vulkan driver claims: no GPU renders on it, so the app renders as the
 /// compositor does, with lavapipe — the pin the compositor handed down (`inherited`), else the one
@@ -566,12 +646,7 @@ pub fn unclaimed_node_pin(
     inherited: Option<SoftwarePin>,
     search: &IcdSearch,
 ) -> Option<SoftwarePin> {
-    let render_node = selection
-        .node
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("renderD"));
-    if render_node || !selection.unclaimed || !selection.is_empty() {
+    if is_render_node(&selection.node) || !selection.unclaimed || !selection.is_empty() {
         return None;
     }
     inherited.or_else(|| software_pin(search).ok())
@@ -1048,6 +1123,45 @@ mod loaded {
 
 #[cfg(test)]
 mod tests {
+    /// A selection on `node` that pins no loader: what the installed drivers report for a node
+    /// none of them claims, or for a GPU the loader's own default serves.
+    fn bare_selection(node: &str) -> GpuSelection {
+        GpuSelection {
+            node: PathBuf::from(node),
+            driver: None,
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: None,
+            site_integration: None,
+            unclaimed: false,
+            notes: Vec::new(),
+        }
+    }
+
+    /// Mesa's device-select layer asks the compositor for its device and crashed apps'
+    /// `native-render-prepare` where there is none to prefer: it is off with no GPU named and with
+    /// a display's primary node named, for launched and surface apps alike, and left to pick on a
+    /// render node.
+    #[test]
+    fn the_device_select_layer_is_off_unless_a_render_node_is_named() {
+        let off = vec![(NO_DEVICE_SELECT_ENV, "1".to_owned())];
+        assert_eq!(LoaderPin::Unpinned.env(), off);
+        let primary = LoaderPin::Node {
+            selection: bare_selection("/dev/dri/card1"),
+            software: None,
+        };
+        assert_eq!(primary.env(), off, "a primary node is no GPU to prefer");
+        let render = LoaderPin::Node {
+            selection: bare_selection("/dev/dri/renderD128"),
+            software: None,
+        };
+        assert!(
+            render.env().is_empty(),
+            "a named GPU leaves the layer to pick"
+        );
+    }
+
     use super::*;
     use std::collections::HashMap;
 

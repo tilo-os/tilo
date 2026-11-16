@@ -332,26 +332,6 @@ fn own_display(
     }
 }
 
-/// What a surface app's Vulkan loader is told of the compositor's GPU: with none named (at the
-/// session's start, or on a machine it renders on without one) Mesa's device-select layer is off.
-/// The layer asks the compositor for its device, finds none, and segfaulted in the surface apps'
-/// `native-render-prepare` at every session start on a machine without 3D; with no device to
-/// prefer it has nothing to do. The launcher does the same for the apps it starts.
-fn device_select_environment(render_node: Option<&Path>) -> Vec<(String, String)> {
-    // A render node is a GPU to prefer; a display's primary node (`card*`), which the compositor
-    // names when it has no render node, is not one.
-    let renders = render_node
-        .and_then(Path::file_name)
-        .is_some_and(|name| name.to_string_lossy().starts_with("renderD"));
-    if renders {
-        return Vec::new();
-    }
-    vec![(
-        launcher::gpu::NO_DEVICE_SELECT_ENV.to_owned(),
-        "1".to_owned(),
-    )]
-}
-
 /// The descriptor an app's end of the trusted socket is handed as.
 const SOCKET_DESCRIPTOR: i32 = 3;
 
@@ -780,9 +760,11 @@ impl Surfaces {
         let mut command = Command::new(&surface.program);
         command
             .envs(surface.environment())
-            .envs(device_select_environment(
-                compositor.render_node().as_deref(),
-            ))
+            // The loader pin the launcher gives the apps it starts, for the same GPU.
+            .envs(
+                launcher::gpu::LoaderPin::for_render_node(compositor.render_node().as_deref())
+                    .env(),
+            )
             // What the app is of this session: the launch the session records for the process it
             // starts here, and the connection to the session's services it makes for itself, as any
             // app of the session does.
@@ -1248,33 +1230,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_surface_app_is_started_and_told_where_it_stands;
-
-        phase a_surface_started_before_the_compositor_names_a_gpu_runs_without_device_select;
-        // A surface app the session starts while the compositor names no GPU (at the session's start,
-        // or on a machine it renders on without one) runs without Mesa's device-select layer, which
-        // asks the compositor for its device, finds none, and segfaulted in three surface apps'
-        // `native-render-prepare` at every start of the e2e-ws-branch box. With a GPU named the layer
-        // is left to pick.
-        {
-            assert_eq!(
-                device_select_environment(None),
-                [(
-                    launcher::gpu::NO_DEVICE_SELECT_ENV.to_owned(),
-                    "1".to_owned()
-                )]
-            );
-            assert!(
-                device_select_environment(Some(Path::new("/dev/dri/renderD128"))).is_empty(),
-                "a named GPU leaves the layer to pick"
-            );
-            // A display's primary node with no render node beside it (a VM's virtio card without
-            // 3D) is no GPU to render on either: the surfaces still crashed with it named
-            // (r24ead78485).
-            assert_eq!(
-                device_select_environment(Some(Path::new("/dev/dri/card1"))),
-                device_select_environment(None),
-            );
-        }
 
         phase a_bar_tells_the_app_where_its_window_goes;
         {

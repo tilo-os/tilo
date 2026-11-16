@@ -726,16 +726,8 @@ fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread:
     }
 }
 
-/// Derive GPU pinning, or `None` when nothing to pin.
-pub fn resolve_gpu_selection(
-    manifest: &crate::manifest::ManifestView,
-    opts: &RunOptions,
-) -> Option<crate::gpu::GpuSelection> {
-    let node = opts.render_node.as_ref()?;
-    // A launch the compositor started inherits its loader pin, so no ICD is loaded again here.
-    let mut selection = crate::gpu::inherited_selection(node)
-        .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
-    selection.pipeline_seed = crate::gpu::host_pipeline_seed();
+/// Say which loader a launch is pinned to, and every part of the pin that could not be made.
+fn log_selection(manifest: &crate::manifest::ManifestView, selection: &crate::gpu::GpuSelection) {
     for note in &selection.notes {
         tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
@@ -748,7 +740,6 @@ pub fn resolve_gpu_selection(
         vulkan = selection.vulkan_icd_json.as_ref().map_or_else(|| "<loader default>".into(), |p| p.display().to_string()),
         "pinning the app to the compositor's render node",
     );
-    Some(selection)
 }
 
 /// Priority: explicit override > manifest declaration (per-user, then system; system first for an
@@ -1979,65 +1970,57 @@ fn splice_gpu(
     // prefer, and the layer, which crashed such apps at a session's start, is off.
     if !gpu_granted {
         let entry = pop_entry(argv)?;
-        argv.extend([
-            "--setenv".to_string(),
-            crate::gpu::NO_DEVICE_SELECT_ENV.to_string(),
-            "1".to_string(),
-        ]);
+        for (key, value) in crate::gpu::LoaderPin::Unpinned.env() {
+            argv.extend(["--setenv".to_string(), key.to_string(), value]);
+        }
         argv.push(entry);
         return Ok((None, None));
     }
     let entry = pop_entry(argv)?;
     crate::profile::push_gpu_devices(argv);
     argv.push(entry);
-    let gpu = resolve_gpu_selection(manifest, opts);
-    if let Some(sel) = &gpu {
-        let entry = pop_entry(argv)?;
-        // The device nodes were just bound: narrow them to the node.
-        crate::sandbox::push_gpu_selection(argv, sel, true);
-        // No driver claims the node: the app renders with lavapipe, as the compositor does.
-        #[cfg(target_os = "linux")]
-        if let Some(pin) = crate::gpu::unclaimed_node_pin(
-            sel,
-            crate::gpu::inherited_software_pin(),
-            &crate::gpu::IcdSearch::default(),
-        ) {
+    // The same pin the session's own surface apps run with ([`crate::gpu::LoaderPin`]), set here
+    // inside the sandbox, with the device nodes narrowed to it.
+    let pin = crate::gpu::LoaderPin::for_render_node(opts.render_node.as_deref());
+    let entry = pop_entry(argv)?;
+    let gpu = match pin {
+        crate::gpu::LoaderPin::Node {
+            selection,
+            software,
+        } => {
+            log_selection(manifest, &selection);
+            // The device nodes were just bound: narrow them to the node.
+            crate::sandbox::push_gpu_selection(argv, &selection, true);
+            if let Some(pin) = software {
+                tracing::info!(
+                    target: "tilo_launcher::gpu",
+                    package = %manifest.package_id,
+                    vulkan = %pin.vulkan_icd_json.display(),
+                    "no driver claims the compositor's render node: the app renders with lavapipe",
+                );
+                crate::sandbox::push_software_pin(argv, &pin);
+            }
+            Some(selection)
+        }
+        crate::gpu::LoaderPin::Software(pin) => {
+            crate::sandbox::push_software_pin(argv, &pin);
+            crate::profile::hide_gpu_devices(argv);
             tracing::info!(
                 target: "tilo_launcher::gpu",
                 package = %manifest.package_id,
                 vulkan = %pin.vulkan_icd_json.display(),
-                "no driver claims the compositor's render node: the app renders with lavapipe",
+                "no GPU: the app renders with the software renderer and sees no render node",
             );
-            crate::sandbox::push_software_pin(argv, &pin);
+            None
         }
-        argv.push(entry);
-    } else if opts.render_node.is_none()
-        && let Some(pin) = crate::gpu::inherited_software_pin()
-    {
-        // A compositor with no GPU pinned lavapipe; its apps follow that pin.
-        let entry = pop_entry(argv)?;
-        crate::sandbox::push_software_pin(argv, &pin);
-        crate::profile::hide_gpu_devices(argv);
-        tracing::info!(
-            target: "tilo_launcher::gpu",
-            package = %manifest.package_id,
-            vulkan = %pin.vulkan_icd_json.display(),
-            "no GPU: the app renders with the software renderer and sees no render node",
-        );
-        argv.push(entry);
-    } else if opts.render_node.is_none() {
-        // The compositor named no GPU (not yet, at a session's start, or none it imports from):
-        // Mesa's device-select layer asks the compositor for its device to put it first, finds
-        // none, and crashed in the app's `native-render-prepare` on a machine without 3D. With no
-        // device to prefer it has nothing to do: the app's renderer picks its adapter itself.
-        let entry = pop_entry(argv)?;
-        argv.extend([
-            "--setenv".to_string(),
-            crate::gpu::NO_DEVICE_SELECT_ENV.to_string(),
-            "1".to_string(),
-        ]);
-        argv.push(entry);
-    }
+        unpinned @ crate::gpu::LoaderPin::Unpinned => {
+            for (key, value) in unpinned.env() {
+                argv.extend(["--setenv".to_string(), key.to_string(), value]);
+            }
+            None
+        }
+    };
+    argv.push(entry);
     let seed = gpu
         .as_ref()
         .and_then(|selection| selection.pipeline_seed.clone())
