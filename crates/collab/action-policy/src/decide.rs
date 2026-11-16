@@ -233,9 +233,9 @@ impl<'g> Party<'g> {
 
     fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         // A member's own record is that person's alone, whatever the workspace's
-        // grants or owner say ([`crate::member_record`]). A delegation, known
+        // grants or owner say ([`Context::with_own_record`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
-        if let Some(member) = crate::member_record::owner_of(node)
+        if let Some(member) = cx.owner_of(node)
             && self
                 .grantees
                 .iter()

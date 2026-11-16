@@ -129,6 +129,10 @@ pub struct InboundState {
     /// The record kind each artifact is, if known: which of its app's
     /// resources the record's changes are decided against.
     pub artifact_kinds: HashMap<ArtifactId, String>,
+    /// The person (hex of their user root key) whose own record each artifact
+    /// is, as the write naming it said ([`crate::OwnRecord`]): only they are
+    /// granted anything in it, whatever their role.
+    pub artifact_owners: HashMap<ArtifactId, String>,
 
     /// The workspace this state belongs to, as the tree names it.
     pub workspace: String,
@@ -176,6 +180,7 @@ impl Default for InboundState {
             artifact_apps: HashMap::new(),
             artifact_records: HashMap::new(),
             artifact_kinds: HashMap::new(),
+            artifact_owners: HashMap::new(),
             workspace: DEFAULT_WORKSPACE.to_owned(),
             surfaces: crate::receipt::Surfaces::default(),
             grants: roles::workspace_role_grants(DEFAULT_WORKSPACE, &Grantee::role(Role::Owner)),
@@ -501,8 +506,12 @@ fn check_op_permission(
             .get(&op.artifact)
             .map_or(artifact.as_str(), String::as_str),
     };
+    let mut cx = Context::at(0);
+    if let Some(person) = state.artifact_owners.get(&op.artifact) {
+        cx = cx.with_own_record(record.record, person);
+    }
     let allows = |node: &tilo_action_policy::TreePath, kind: ActionKind| {
-        author.decide(node, kind, &Context::at(0)).answer == Answer::Allow
+        author.decide(node, kind, &cx).answer == Answer::Allow
     };
     match crate::receipt::decide_op(
         op,

@@ -175,20 +175,19 @@ impl RecordId {
         (id.storage_key() == storage_key).then_some(id)
     }
 
-    /// `person`'s own record of `kind` in a workspace
-    /// ([`crate::member_record`]): only that person's devices read
-    /// or change it. `None` when `person` is not the hex of a user root key
-    /// or `kind` is not a label.
+    /// A member's own record ([`crate::OwnRecord`]): only that person's
+    /// devices read or change it.
     #[must_use]
-    pub fn of_member(person: &str, kind: &str) -> Option<Self> {
-        Self::parse(&crate::member_record_id(&person.to_ascii_lowercase(), kind))
+    pub fn of_own(own: &crate::OwnRecord) -> Self {
+        Self(own.record_id())
     }
 
-    /// The person whose own record this is ([`Self::of_member`]), as the lowercase hex of their
-    /// user root key; `None` for a record of the workspace.
+    /// The id of the own record of `kind` of the person `person` names (the
+    /// hex of their user root key, [`crate::OwnRecord::of_person`]); `None`
+    /// when either is not one.
     #[must_use]
-    pub fn owner(&self) -> Option<&str> {
-        crate::member_record(&self.0).map(|(person, _)| person)
+    pub fn of_member(person: &str, kind: &str) -> Option<Self> {
+        crate::OwnRecord::of_person(person, kind).map(|own| Self::of_own(&own))
     }
 
     /// The record of the pair two people share in a workspace
@@ -429,9 +428,6 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     }
     if let Some(uuid) = s.strip_prefix("uuid:") {
         return uuid::Uuid::parse_str(uuid).is_ok();
-    }
-    if s.starts_with("member:") {
-        return crate::member_record(s).is_some();
     }
     if let Some(pair) = s.strip_prefix("direct/") {
         return crate::canonical_pair(pair);

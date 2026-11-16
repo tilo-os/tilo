@@ -85,7 +85,7 @@ pub use mesh::{
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
-pub use transport::{ALPN, ContentPeerRegistration, Envelope, RecordAnswer};
+pub use transport::{ALPN, ContentPeerRegistration, Envelope, OwnedChannel, RecordAnswer};
 pub use work::{Machine, Whose, WorkFrom, WorkKinds, WorkSetting, WorkWhen};
 
 /// Domain-separated secret the relay binds, derived from the device secret.

@@ -191,11 +191,23 @@ impl PersonRecords {
     /// workspace for an app's own records ([`Self::in_workspace`] keeps
     /// them only for a root identity), else the one every device derives
     /// alike.
-    fn id_of(&self, kind: &RecordKind) -> RecordId {
-        self.member
-            .then(|| RecordId::of_member(&self.author.key(), kind.as_str()))
-            .flatten()
-            .unwrap_or_else(|| record_id(kind))
+    ///
+    /// A member's own record is of a kind the app's manifest declares each
+    /// member's own (`[resources] own`): what its every write carries, so the
+    /// workspace's hosts send it to the author's devices alone. An undeclared
+    /// kind is refused rather than kept where every member would receive it.
+    fn id_of(&self, kind: &RecordKind) -> Result<RecordId, RecordOpenError> {
+        if !self.member {
+            return Ok(record_id(kind));
+        }
+        if !collab_types::own_kinds(&self.own_app)
+            .iter()
+            .any(|own| own == kind.as_str())
+        {
+            return Err(RecordOpenError::UndeclaredOwnKind(kind.as_str().to_owned()));
+        }
+        Ok(RecordId::of_member(&self.author.key(), kind.as_str())
+            .unwrap_or_else(|| record_id(kind)))
     }
 
     /// These records, with the person's records of other apps
@@ -252,7 +264,7 @@ impl PersonRecords {
         kind: RecordKind,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
         match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
@@ -293,7 +305,7 @@ impl PersonRecords {
         &self,
         kind: RecordKind,
     ) -> Result<Option<StoredRecord>, RecordOpenError> {
-        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
         let store = match self.store.try_open_record(&checkout) {
             Ok(_) => self.store.clone(),
             Err(RecordOpenError::MissingRecord) => return Ok(None),
@@ -333,7 +345,7 @@ impl PersonRecords {
         if self.replica {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
         open_in(&self.store, &checkout, &initialize)?;
         Ok(StoredRecord::new(
             self.store.clone(),

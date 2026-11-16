@@ -1745,6 +1745,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenRecord {
             workspace_id: WS,
             channel: notes_channel(),
+            own: None,
         })
         .unwrap();
     let refusal = next(&environment, "environment").await;
@@ -1756,6 +1757,7 @@ async fn an_environment_opens_its_own_record_and_no_other() {
         .send(Envelope::OpenRecord {
             workspace_id: WS,
             channel: window_channel(),
+            own: None,
         })
         .unwrap();
     let answer = next(&environment, "environment").await;

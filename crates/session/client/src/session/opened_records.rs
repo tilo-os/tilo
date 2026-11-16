@@ -32,6 +32,7 @@ impl Task {
                 .send(Envelope::OpenRecord {
                     workspace_id,
                     channel,
+                    own: None,
                 })
                 .is_ok()
         })
@@ -86,6 +87,7 @@ impl Task {
                 .send(Envelope::OpenRecord {
                     workspace_id: *workspace_id,
                     channel: *channel,
+                    own: None,
                 })
                 .is_ok();
         }

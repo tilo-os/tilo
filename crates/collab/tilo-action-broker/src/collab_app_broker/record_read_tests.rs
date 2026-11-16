@@ -19,6 +19,10 @@ use crate::test_support::{Grantee, Grants as _, KindSet, TreePath, WorkspaceId, 
 
 const NOTES: &str = "so.tilo.lang.notes";
 const MAIL: &str = "so.tilo.lang.mail";
+/// The kind of the record Mail keeps each member's own.
+const OWN_KIND: &str = "tl.so.tilo.lang.mail";
+/// Another member of the workspace, by a byte of their user root key.
+const ANOTHER_MEMBER: &str = "b2";
 
 struct Bytes(Vec<u8>);
 impl DocumentBytes for Bytes {
@@ -36,6 +40,8 @@ struct Owner {
     between: Mutex<Option<Box<dyn Fn() + Send>>>,
     /// For a workspace whose records are sealed channels: what this device holds of them.
     sealed: Option<Sealed>,
+    /// The members whose own Mail record this device holds writes of, which name it theirs.
+    own_people: Mutex<Vec<String>>,
 }
 
 /// The records of a sealed workspace this device holds writes of, by record id.
@@ -59,6 +65,15 @@ impl NativeDocumentReads for Owner {
             Some(sealed) if sealed.whole.contains(&record) => RecordRead::Sealed,
             Some(_) => RecordRead::Own,
         }
+    }
+    fn own_record(&self, _: &str, app: &str, record: &str) -> Option<collab_types::OwnRecord> {
+        (app == MAIL).then_some(())?;
+        self.own_people
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|person| collab_types::OwnRecord::of_person(person, OWN_KIND))
+            .find(|own| own.names(record))
     }
     fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
         self.record_read(workspace, app, record) != RecordRead::Own
@@ -177,6 +192,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
+    *owner.own_people.lock().unwrap() = vec![person.clone(), ANOTHER_MEMBER.repeat(32)];
     let owner = Arc::new(owner);
     let origin = Arc::new(Origin::default());
     let services = HostServices {
@@ -230,7 +246,9 @@ impl Fixture {
 
 /// `person`'s own record of Mail, the one an app with `records: .own` keeps.
 fn own_record(person: &str) -> String {
-    tilo_action_policy::member_record_id(person, "tilolang.workspace")
+    collab_types::OwnRecord::of_person(person, OWN_KIND)
+        .expect("a person's own record")
+        .record_id()
 }
 
 tilo_test_env::scenario! {
@@ -285,7 +303,7 @@ tilo_test_env::scenario! {
         let f = fixture();
         let caller = f.agent("scribe");
         // Another member's own record: the person may not read it, so neither may their agent.
-        let theirs = own_record(&"b2".repeat(32));
+        let theirs = own_record(&ANOTHER_MEMBER.repeat(32));
         assert!(
             matches!(
                 f.read(&caller, MAIL, &theirs),

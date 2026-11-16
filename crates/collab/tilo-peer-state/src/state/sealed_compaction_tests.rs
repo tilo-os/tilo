@@ -200,6 +200,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
         cluster_id: WORKSPACE.into(),
         record_id: RECORD.into(),
         envelope: Box::new(op),
+        own: None,
     }
 }
 

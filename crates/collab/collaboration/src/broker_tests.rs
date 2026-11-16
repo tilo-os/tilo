@@ -3599,7 +3599,11 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
     let drafts = RouteSpec {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace,
-        record: Some("member:ada:chat.drafts".into()),
+        record: Some(
+            collab_types::OwnRecord::new("chat.drafts", [0xad; 32])
+                .unwrap()
+                .record_id(),
+        ),
     };
     manager.join_route(
         drafts.clone(),

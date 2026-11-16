@@ -1179,4 +1179,7 @@ pub struct AppWrite {
     /// Whether the host replayed it from what it retains.
     pub replayed: bool,
     pub envelope: collab_types::SignedOp,
+    /// The member's own record it changes, as the write said
+    /// ([`collab_types::OwnRecord`]).
+    pub own: Option<collab_types::OwnRecord>,
 }

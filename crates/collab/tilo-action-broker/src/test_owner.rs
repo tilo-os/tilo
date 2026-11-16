@@ -293,6 +293,7 @@ impl SessionOwner {
                 app,
                 record,
                 envelope,
+                ..
             } => {
                 let outcome =
                     candidate.admit_local_app_document(app, record, *envelope.clone(), now)?;

@@ -1371,6 +1371,7 @@ async fn an_opened_records_answer_is_written_whole_before_live_frames() {
         .write_all(&send(&Envelope::OpenRecord {
             workspace_id: id,
             channel: record,
+            own: None,
         }))
         .await
         .unwrap();

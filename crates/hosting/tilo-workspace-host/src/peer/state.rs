@@ -541,8 +541,14 @@ async fn change_refusal(
                 || crate::surfaces::role_refusal(delta, standings, claimed).is_some()
         })
         .await;
+    let store = ws.lock().await.store.clone();
     let refused = crate::surfaces::refusal(&*payloads, delta, standings.as_deref())
-        .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
+        .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed))
+        .or_else(|| {
+            (!attached)
+                .then(|| crate::surfaces::own_refusal(&store, &peer.user_public_key, delta))
+                .flatten()
+        });
     if let Some(refusal) = refused {
         tracing::warn!(%refusal, device = %hex::encode(peer.device_public_key), "refused a document change");
         file_refusal_of(ws, env, &refusal.to_string()).await;

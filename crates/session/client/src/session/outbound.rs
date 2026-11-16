@@ -156,6 +156,7 @@ impl Task {
                             app: route.app_id.clone(),
                             record: route.record.clone(),
                             envelope: Box::new(op),
+                            own: view.peer().own_write(&route.app_id, &route.record, &author),
                         },
                     })
                 })

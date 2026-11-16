@@ -62,6 +62,7 @@ pub mod inbound;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
+pub mod own_record;
 pub mod peer;
 pub mod personal;
 pub mod presence;
@@ -129,6 +130,7 @@ pub use op::{
     live_artifact_id, next_unordered_document_sequence, validate_document_payload_route,
     validate_whole_document_payload_route,
 };
+pub use own_record::{OwnRecord, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
     is_personal_cluster, person_record_id, person_record_kind, personal_cluster,
@@ -143,7 +145,7 @@ pub use redaction::{
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
 pub use role::{ArtifactKind, OpKind, Role};
-pub use tilo_action_policy::{MemberId, member_record, member_record_id};
+pub use tilo_action_policy::MemberId;
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,

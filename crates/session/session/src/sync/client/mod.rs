@@ -2321,6 +2321,7 @@ impl PeerDocuments {
                 author: write.author,
                 replayed: write.replayed,
                 envelope: write.envelope,
+                own: write.own,
             },
             |_| format!("peer@{}", hex::encode(author)),
         );

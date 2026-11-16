@@ -741,12 +741,11 @@ impl BotRunner {
     async fn routes(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
             .workspaces
-            .record_routes(&self.workspace)
+            .workspace_record_routes(&self.workspace)
             .await
             .map_err(|error| error.to_string())?
             .into_iter()
             .filter(|(app, _)| self.apps.contains(app))
-            .filter(|(_, record)| tilo_action_policy::member_record(record).is_none())
             .collect())
     }
 

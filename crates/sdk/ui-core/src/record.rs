@@ -1880,6 +1880,10 @@ pub enum RecordOpenError {
     IdentityMismatch,
     #[error("record does not exist")]
     MissingRecord,
+    /// A member's own record of a kind the app's manifest does not declare
+    /// each member's own (`[resources] own`).
+    #[error("the app's manifest declares no kind {0} its members keep as their own")]
+    UndeclaredOwnKind(String),
     #[error("record is reserved or already initialized")]
     Busy,
     /// The store's own thread is still opening the record's document for a thread that must not

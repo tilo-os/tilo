@@ -530,6 +530,11 @@ pub enum NeighbourMsg {
         /// The signed-op envelope; the receiving shell's validator decides whether
         /// to fan it to local apps or drop it with an audit-log entry.
         envelope: Box<collab_types::SignedOp>,
+        /// The member's own record this is, when it is one: its kind, which the
+        /// app's manifest declares each member's own, and its person. Only that
+        /// person's devices are sent it, and only they write it. In the clear
+        /// for a sealed record too, so a host that cannot read it routes it.
+        own: Option<collab_types::OwnRecord>,
     },
     /// Retired: app-level presence crossing the host boundary. An app's
     /// presence is a frame on the workspace's live plane now; no build
@@ -1339,6 +1344,10 @@ mod tests {
                     cluster_id: WORKSPACE.into(),
                     record_id: "uuid:1c2f".into(),
                     envelope: dummy_envelope(),
+                    own: Some(collab_types::OwnRecord {
+                        kind: "notes.page".into(),
+                        owner: [7; 32],
+                    }),
                 },
             ),
             (
@@ -1557,7 +1566,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b31",
+                "0b32",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1615,7 +1624,8 @@ mod tests {
                 "0707070707070707070707070707070710222222222222222222222222222222",
                 "220000002a000000400000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "000000000000000000",
+                "000000000000000000010a6e6f7465732e706167650707070707070707070707",
+                "070707070707070707070707070707070707070707",
             ),
         ),
         (

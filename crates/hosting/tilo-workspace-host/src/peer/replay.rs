@@ -262,6 +262,8 @@ struct ReplayFilter {
     /// The user root key of the device's person: of the members' own records,
     /// only theirs is replayed to it.
     person: [u8; 32],
+    /// What knows each record's person.
+    store: crate::store::WorkspaceStore,
     payloads: Arc<dyn crate::payloads::ShellPayloads>,
     every_frame: bool,
     channel_reader: bool,
@@ -269,10 +271,12 @@ struct ReplayFilter {
 
 impl ReplayFilter {
     async fn new(run: ReplayRun<'_>, peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
+        let store = run.workspace.lock().await.store.clone();
         Self {
             device: peer.device_public_key,
             person: peer.user_public_key,
-            payloads: run.workspace.lock().await.store.payloads().clone(),
+            payloads: store.payloads().clone(),
+            store,
             every_frame: run.authority.every_record(),
             channel_reader: session
                 .channel_reader
@@ -307,9 +311,10 @@ impl ReplayFilter {
         if self.channel_reader && self.payloads.asks_admission(body) {
             return true;
         }
-        if let Some((route, _)) = self.payloads.open_document(body)
-            && crate::store::record_sync::owner_of(&route.record_id)
-                .is_some_and(|owner| owner != self.person)
+        if self
+            .store
+            .frame_owner(delta)
+            .is_some_and(|owner| owner != self.person)
         {
             return true;
         }

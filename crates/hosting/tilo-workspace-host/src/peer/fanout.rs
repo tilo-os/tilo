@@ -90,16 +90,14 @@ fn record_reach(
     let Envelope::Delta { delta, .. } = &**envelope else {
         return (Reach::Everyone, None);
     };
-    match CoeditPayload::decode(delta) {
+    let reach = match CoeditPayload::decode(delta) {
         Some(
             CoeditPayload::Checkpoint { channel, body }
             | CoeditPayload::RetainedDelta { channel, body },
-        ) => (
-            runtime.store.frame_reach(&channel, &body),
-            runtime.store.record_owner(&channel, Some(&body)),
-        ),
-        None => (Reach::Everyone, None),
-    }
+        ) => runtime.store.frame_reach(&channel, &body),
+        None => Reach::Everyone,
+    };
+    (reach, runtime.store.frame_owner(delta))
 }
 
 /// Fan one frame out to a commit's captured sessions, under the workspace's lock.

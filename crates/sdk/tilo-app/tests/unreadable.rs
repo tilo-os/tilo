@@ -118,6 +118,7 @@ tilo_test_env::scenario! {
 
     phase a_persons_record_that_stops_reading_says_why_instead_of_going_quiet;
     {
+        crate::own_kinds::declare("so.tilo.test-unreadable-person", &["test.learned"]);
         let mut app = TestApp::<LearnedApp>::for_person(&"ad".repeat(32)).unwrap();
         assert!(
             app.person::<Learned>().is_some(),

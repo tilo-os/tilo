@@ -6,15 +6,21 @@ use tilo_action_policy::{ActionKind, Answer, Authority};
 pub(in crate::state) fn document_read(
     authority: &Authority<'_>,
     workspace: &str,
-    app: &str,
-    record: &str,
+    (app, record): (&str, &str),
+    own: Option<&collab_types::OwnRecord>,
     now: SystemTime,
 ) -> bool {
+    // A member's own record is read by its person alone.
+    let person = own.map(collab_types::OwnRecord::person);
+    let mut cx = tilo_action_policy::Context::at_time(now);
+    if let Some(person) = &person {
+        cx = cx.with_own_record(record, person);
+    }
     authority
         .decide(
             &collab_types::document_node(workspace, app, record),
             ActionKind::Read,
-            &tilo_action_policy::Context::at_time(now),
+            &cx,
         )
         .answer
         == Answer::Allow

@@ -2440,6 +2440,7 @@ async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     page.send(crate::Envelope::OpenRecord {
         workspace_id,
         channel,
+        own: None,
     })
     .unwrap();
     let frames = tilo_test_env::within("the relay answers the page's ask", async {
@@ -2472,6 +2473,7 @@ async fn opened_frames(page: &crate::RelayClient, workspace_id: WorkspaceId, rec
     page.send(crate::Envelope::OpenRecord {
         workspace_id,
         channel,
+        own: None,
     })
     .unwrap();
     tilo_test_env::within("the relay answers the page's ask", async {

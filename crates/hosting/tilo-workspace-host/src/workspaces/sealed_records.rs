@@ -722,10 +722,17 @@ impl Workspaces {
                         continue;
                     }
                 }
+                let peer = workspace.peer();
                 (
                     workspace.workspace().to_owned(),
                     workspace.workspace_id(),
-                    workspace.peer().sealed_routes(),
+                    peer.sealed_routes()
+                        .into_iter()
+                        .map(|(app, record)| {
+                            let own = peer.own_record(&app, &record);
+                            (app, record, own)
+                        })
+                        .collect::<Vec<_>>(),
                 )
             };
             let Some(workspace) = self
@@ -739,12 +746,13 @@ impl Workspaces {
             else {
                 continue;
             };
-            for (app, record) in routes {
+            for (app, record, own) in routes {
                 let channel = neighbour_wire::app_document_channel(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),
                     record_id: record,
+                    own,
                 };
                 if let Err(error) = compactor
                     .reseal(&workspace, workspace_id, channel, &route)
@@ -789,7 +797,8 @@ impl Workspaces {
                     .await
                     .is_empty()
                 {
-                    holed.push((app, record));
+                    let own = peer.own_record(&app, &record);
+                    holed.push((app, record, own));
                 }
             }
             if holed.is_empty() {
@@ -806,12 +815,13 @@ impl Workspaces {
             else {
                 continue;
             };
-            for (app, record) in holed {
+            for (app, record, own) in holed {
                 let channel = neighbour_wire::app_document_channel(&app, &record);
                 let route = crate::compaction::Route {
                     app_id: app,
                     cluster_id: name.clone(),
                     record_id: record,
+                    own,
                 };
                 if let Err(error) = compactor
                     .repair(&workspace, workspace_id, channel, &route)

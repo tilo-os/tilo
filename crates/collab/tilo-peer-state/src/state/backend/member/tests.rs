@@ -287,24 +287,22 @@ tilo_test_env::scenario! {
         workspace.put(ROOT, "owner", person.as_str()).unwrap();
         workspace.commit();
         let workspace_id = peer.workspace_id().to_owned();
-        let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
-        let own = collab_types::member_record_id(&person, "chat.drafts");
-        let member = peer.permissions(source, now).unwrap();
+        // Another member's own record is known by what its writes say.
+        let theirs_own = collab_types::OwnRecord::of_person(&"ad".repeat(32), "chat.drafts").unwrap();
+        peer.keep_own_record("so.tilo.chat", &theirs_own);
+        let theirs = theirs_own.record_id();
+        let own = collab_types::OwnRecord::of_person(&person, "chat.drafts")
+            .unwrap()
+            .record_id();
         assert_eq!(
             peer.role(&source, now).unwrap(),
             Role::Owner,
             "the owner, who reads everything else"
         );
         for (record, theirs_alone) in [(&theirs, false), (&own, true)] {
-            let node = collab_types::document_node(&workspace_id, "so.tilo.chat", record);
             assert_eq!(
                 peer.check_document_read(source, "so.tilo.chat", record, now)
                     .is_ok(),
-                theirs_alone,
-                "{record}"
-            );
-            assert_eq!(
-                member.allows(&node, ActionKind::Undoable, now),
                 theirs_alone,
                 "{record}"
             );
@@ -324,7 +322,13 @@ tilo_test_env::scenario! {
         let viewer = peer.permissions(source, now).unwrap();
         assert_eq!(peer.role(&source, now).unwrap(), Role::Viewer);
         let own_node = collab_types::document_node(&workspace_id, "so.tilo.chat", &own);
-        assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
+        assert!(
+            viewer.answer(
+                &own_node,
+                ActionKind::Undoable,
+                &tilo_action_policy::Context::at_time(now).with_own_record(&own, &person)
+            ) == tilo_action_policy::Answer::Allow
+        );
     }
 }
 fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {

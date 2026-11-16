@@ -112,6 +112,7 @@ impl StatePeer {
             cluster_id,
             record_id,
             envelope,
+            ..
         } = message
         else {
             return Err("exact document lookup requires AppDocument".into());

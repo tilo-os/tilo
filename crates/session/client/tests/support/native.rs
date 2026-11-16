@@ -210,6 +210,7 @@ impl NativeDevice {
                 cluster_id: route.cluster_id.clone(),
                 record_id: route.record.clone(),
                 envelope: Box::new(op),
+                own: None,
             },
         );
     }

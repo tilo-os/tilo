@@ -28,6 +28,10 @@ pub struct RemoteDocument {
     /// (before answering the subscription): old by nature.
     pub replayed: bool,
     pub envelope: SignedOp,
+    /// The member's own record it changes, as the write said
+    /// ([`collab_types::OwnRecord`]): only its person is granted anything in
+    /// it.
+    pub own: Option<collab_types::OwnRecord>,
 }
 
 /// How far an admitted device's live op may be dated from this clock.
@@ -103,6 +107,13 @@ fn deliver_at(
                 state
                     .artifact_records
                     .insert(artifact, document.record_id.clone());
+                if let Some(own) = document
+                    .own
+                    .as_ref()
+                    .filter(|own| own.names(&document.record_id))
+                {
+                    state.artifact_owners.insert(artifact, own.person());
+                }
                 validate_document(
                     &document.envelope,
                     &document.author,
@@ -392,6 +403,7 @@ mod tests {
                 author: editor(),
                 replayed,
                 envelope,
+                own: None,
             };
             let channels = Arc::new(Mutex::new(BrokerChannels::default()));
             let fanout = FanoutState::new();
@@ -510,6 +522,7 @@ mod tests {
                         author: editor(),
                         replayed: false,
                         envelope: envelope.clone(),
+                        own: None,
                     },
                     |_| "writer".into(),
                 )
@@ -586,6 +599,7 @@ mod tests {
                     author: editor(),
                     replayed,
                     envelope,
+                    own: None,
                 },
                 |_| "writer".into(),
             );
@@ -662,6 +676,7 @@ mod tests {
                     author: editor(),
                     replayed: false,
                     envelope,
+                    own: None,
                 },
                 |_| "peer".into(),
             )

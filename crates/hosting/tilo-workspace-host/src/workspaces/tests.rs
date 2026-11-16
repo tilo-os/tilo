@@ -2108,6 +2108,7 @@ async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
         cluster_id: workspace.clone(),
         record_id: record.into(),
         envelope: Box::new(envelope),
+        own: None,
     })
     .unwrap();
     let reason = "record read forbidden: notes/main";

@@ -1735,6 +1735,27 @@ impl Workspaces {
         Ok(routes)
     }
 
+    /// [`Self::record_routes`] but the members' own records
+    /// ([`collab_types::OwnRecord`]): each is that person's alone, no record
+    /// of the workspace's.
+    ///
+    /// # Errors
+    /// As [`Self::record_routes`].
+    pub async fn workspace_record_routes(
+        &self,
+        workspace: &str,
+    ) -> Result<Vec<(String, String)>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        let mut routes = governed.peer().plaintext_routes();
+        if governed.seals() {
+            routes.extend(governed.peer().sealed_routes());
+        }
+        routes.retain(|(app, record)| governed.peer().own_record(app, record).is_none());
+        drop(governed);
+        Ok(routes)
+    }
+
     /// The state of `workspace` as this host holds it now: what a channel
     /// service reads who may read the workspace's channels from.
     pub async fn state(&self, workspace: &str) -> Option<StatePeer> {

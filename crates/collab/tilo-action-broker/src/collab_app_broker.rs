@@ -8446,6 +8446,14 @@ fn validate_signed_op(
             ch_state
                 .artifact_records
                 .insert(artifact, route.record_id.clone());
+            // The person's own record is theirs to change whatever their role.
+            if let Some(own) = collab_types::OwnRecord::recognise(
+                &route.app_id,
+                &route.record_id,
+                verified_identity.verified.user_public_key,
+            ) {
+                ch_state.artifact_owners.insert(artifact, own.person());
+            }
             Some(validate_admitted_inbound_op(
                 envelope,
                 author,

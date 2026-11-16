@@ -378,6 +378,11 @@ impl JoinedChannel {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
                             envelope: Box::new(envelope),
+                            own: collab_types::OwnRecord::recognise(
+                                &route.app_id,
+                                &route.record_id,
+                                current_identity.verified.user_public_key,
+                            ),
                         },
                     },
                     self.record_kind.clone(),

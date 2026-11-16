@@ -492,6 +492,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             label: ty.name.clone(),
             version: VERSION,
             person: false,
+            own: false,
             verbs,
             fields,
             types: types.into_types(),
@@ -508,6 +509,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         label: crate::publish::app_name(words, meta),
         version: VERSION,
         person: false,
+        own: meta.own_records,
         verbs: loose,
         fields: Vec::new(),
         types: types.into_types(),
@@ -538,6 +540,7 @@ pub fn host_surface() -> Surface {
         label: "tilolang".to_owned(),
         version: VERSION,
         person: false,
+        own: false,
         verbs: vec![host_verb(
             COMMIT,
             "Commit a planned action",

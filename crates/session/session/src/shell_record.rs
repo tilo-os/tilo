@@ -220,7 +220,7 @@ impl ShellRecord {
 }
 
 /// The record id the shell's own record takes: the one an app declaring `records: .own` names for
-/// `person` (`member:<person>:so.tilo.shell`, read and changed by that person's devices alone),
+/// `person` (of the package kind `tl.so.tilo.shell`, read and changed by that person's devices alone),
 /// and, for a person without a root identity, the id every device derives alike.
 fn record_id(person: &str) -> String {
     tilolang_tilo::member_record_of(APP, person).unwrap_or_else(|| {

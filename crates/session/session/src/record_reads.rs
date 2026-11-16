@@ -71,6 +71,15 @@ impl NativeDocumentReads for Records {
         })
     }
 
+    fn own_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<collab_types::OwnRecord> {
+        self.engine.own_record(workspace, app, record)
+    }
+
     fn record_read(&self, workspace: &str, app: &str, record: &str) -> RecordRead {
         let Some(id) = WorkspaceId::parse(workspace) else {
             return RecordRead::Own;

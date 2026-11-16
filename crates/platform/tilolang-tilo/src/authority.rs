@@ -293,14 +293,15 @@ impl Authority for TiloAuthority {
             .kind(kind);
         // An app whose records are each member's own acts on the record of the person at the
         // window: whoever else invokes is decided as on anyone's own record, refused.
-        let own = standing
+        let own_record = standing
             .as_ref()
             .filter(|_| state.own.contains(action.app.as_str()))
             .and_then(|standing| {
-                crate::member_record_of(&action.app, standing.person_id().unwrap_or_default())
+                let person = standing.person_id()?.to_owned();
+                Some((crate::member_record_of(&action.app, &person)?, person))
             });
-        let node = match own {
-            Some(record) => node.resource(record),
+        let node = match &own_record {
+            Some((record, _)) => node.resource(record.clone()),
             None => node,
         }
         .action(&action.action);
@@ -386,7 +387,10 @@ impl Authority for TiloAuthority {
                 Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
             });
         }
-        let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
+        let mut cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
+        if let Some((record, person)) = &own_record {
+            cx = cx.with_own_record(record, person);
+        }
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }
 }

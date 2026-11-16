@@ -523,7 +523,7 @@ impl InstanceRecord {
             // A member's own record of an app that kept the workspace's record before starts
             // from what that record held on this device (`open_stored_adopting`).
             None => Ok(match route.record.as_deref() {
-                Some(record) if tilo_action_policy::member_record(record).is_some() => {
+                Some(record) if !record.is_empty() && crate::keeps_own_records(&route.app_id) => {
                     open_stored_adopting(
                         store,
                         workspace_document(documents, &route.app_id, &workspace).ok(),

@@ -934,7 +934,7 @@ impl Tiles {
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         // A member's own record is theirs to start whatever their role; the
         // workspace's record waits for someone who writes there.
-        let own = named_new.as_ref().is_some_and(|id| id.owner().is_some());
+        let own = definition.member_record && named_new.is_some();
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }

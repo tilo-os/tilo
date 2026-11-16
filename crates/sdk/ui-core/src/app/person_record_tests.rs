@@ -33,8 +33,14 @@ fn personal_device() -> StoredRecord {
         .unwrap()
 }
 
-/// One device's copy of the member's watched list in the workspace.
+/// One device's copy of the member's watched list in the workspace, the app's
+/// installed surface declaring it each member's own: an undeclared kind is
+/// refused.
 fn device() -> StoredRecord {
+    crate::app_surface::register_package(
+        APP,
+        b"[[resources]]\nkind = \"test.watched\"\nlabel = \"Watched\"\nversion = 1\nown = true\n",
+    );
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, APP, person())
         .unwrap()
@@ -581,4 +587,21 @@ tilo_test_env::scenario! {
             "the keeper's whole record goes out once on its route"
         );
     }
+}
+
+#[test]
+fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
+    let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+    let refused = PersonRecords::open(&mut owners, "so.tilo.test-undeclared", person())
+        .unwrap()
+        .in_workspace(WORKSPACE)
+        .unwrap()
+        .open_record(RecordKind::new("test.watched"), &|_| Ok(()));
+    assert!(
+        matches!(
+            refused,
+            Err(crate::record::RecordOpenError::UndeclaredOwnKind(ref kind)) if kind == "test.watched"
+        ),
+        "a record no manifest declares a member's own would reach every member"
+    );
 }

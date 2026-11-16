@@ -474,6 +474,9 @@ mod own_record_tests {
         let own = definition
             .member_record_of(&person)
             .expect("each member keeps their own Settings record");
-        assert_eq!(own.id.owner(), Some(person.key().as_str()));
+        assert_eq!(
+            own.id,
+            ui::record::RecordId::of_member(&person.key(), "settings.root").unwrap()
+        );
     }
 }

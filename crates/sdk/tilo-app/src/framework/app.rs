@@ -762,24 +762,26 @@ pub(crate) enum Editing {
 }
 
 /// The permission that makes the record `run` opened editable: writing the
-/// app's records of the workspace, or, for a member's own record, writing that
-/// record, which the policy leaves to its person whatever their role.
+/// app's records of the workspace, or, for a record of a kind the app's
+/// manifest declares each member's own, writing that record, which the policy
+/// leaves to its person whatever their role.
 fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
+    let own_kind = collab_types::own_kinds(app.id())
+        .iter()
+        .any(|kind| kind == app.kind);
     match run
         .launched
         .record
         .as_ref()
         .map(ui_core::record::RecordId::route)
     {
-        Some(record) if ui_core::permissions::policy::member_record(record).is_some() => {
-            PermissionScope::Action {
-                node: ui_core::permissions::TreePath::root()
-                    .app(app.id())
-                    .kind(app.kind)
-                    .resource(record),
-                kind: ActionKind::Undoable,
-            }
-        }
+        Some(record) if own_kind => PermissionScope::Action {
+            node: ui_core::permissions::TreePath::root()
+                .app(app.id())
+                .kind(app.kind)
+                .resource(record),
+            kind: ActionKind::Undoable,
+        },
         _ => PermissionScope::app(app.id(), ActionKind::Undoable),
     }
 }

@@ -11,11 +11,22 @@ impl StatePeer {
         route: &Route,
         at: SystemTime,
     ) -> bool {
-        member.allows(
+        // A member's own record is its person's to start whatever their role.
+        let own = self.core.own_of(&route.app, &route.record).or_else(|| {
+            let mut root = [0; 32];
+            hex::decode_to_slice(member.person_id()?, &mut root).ok()?;
+            collab_types::OwnRecord::recognise(&route.app, &route.record, root)
+        });
+        let person = own.as_ref().map(collab_types::OwnRecord::person);
+        let mut cx = tilo_action_policy::Context::at_time(at);
+        if let Some(person) = &person {
+            cx = cx.with_own_record(&route.record, person);
+        }
+        member.answer(
             &collab_types::document_node(&self.core.workspace, &route.app, &route.record),
             ActionKind::Undoable,
-            at,
-        )
+            &cx,
+        ) == tilo_action_policy::Answer::Allow
     }
 }
 

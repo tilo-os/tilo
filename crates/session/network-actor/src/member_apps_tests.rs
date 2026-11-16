@@ -202,6 +202,7 @@ fn commit_record(
                     app: APP.into(),
                     record: RECORD.into(),
                     envelope,
+                    own: None,
                 },
             },
             now,

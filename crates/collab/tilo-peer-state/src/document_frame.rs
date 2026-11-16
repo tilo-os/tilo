@@ -492,6 +492,7 @@ mod tests {
                 cluster_id: route.cluster_id.clone(),
                 record_id: route.record,
                 envelope: Box::new(op),
+                own: None,
             })
             .unwrap();
             let opened = open_frame(&body, *author.as_bytes(), Some(&keys))

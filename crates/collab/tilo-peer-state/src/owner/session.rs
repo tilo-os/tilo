@@ -308,6 +308,7 @@ pub fn app_write(
         cluster_id,
         record_id,
         envelope,
+        own,
     } = msg
     else {
         return None;
@@ -330,6 +331,7 @@ pub fn app_write(
         author: standing,
         replayed,
         envelope: (**envelope).clone(),
+        own: own.clone().filter(|own| own.names(record_id)),
     })
 }
 

@@ -2627,6 +2627,7 @@ dependencies = [
 name = "collab-types"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "blake3",
  "ed25519-dalek 3.0.0",
  "fnv",

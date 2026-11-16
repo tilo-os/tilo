@@ -81,7 +81,8 @@ const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000a";
 
 /// The id of `person`'s own watch history in a workspace.
 fn watched_record_of(person: &str) -> String {
-    format!("member:{person}:test.watched")
+    collab_types::OwnRecord::of_person(person, "test.watched")
+        .map_or_else(String::new, |own| own.record_id())
 }
 
 fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
@@ -95,6 +96,7 @@ tilo_test_env::scenario! {
 
     phase a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace;
     {
+        crate::own_kinds::declare("so.tilo.test-queue", &["test.watched"]);
         let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
         let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
         let on_laptop = laptop.person::<Watched>().unwrap();

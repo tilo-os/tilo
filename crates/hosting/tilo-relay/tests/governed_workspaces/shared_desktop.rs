@@ -171,6 +171,7 @@ impl Page<'_> {
                     cluster_id: self.workspace.clone(),
                     record_id: DESKTOP_RECORD.into(),
                     envelope: Box::new(op),
+                    own: None,
                 }
             })
             .collect()

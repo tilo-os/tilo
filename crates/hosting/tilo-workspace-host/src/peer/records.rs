@@ -24,6 +24,7 @@ pub(super) async fn handle_open_record(
     let Envelope::OpenRecord {
         workspace_id,
         channel,
+        own,
     } = envelope
     else {
         return Ok(None);
@@ -67,9 +68,16 @@ pub(super) async fn handle_open_record(
         // Another person's own record is theirs alone: this device is told so,
         // and is sent nothing of it. A host the workspace is attached to keeps
         // all of the workspace.
+        // The record may be one nothing was written of yet: what the device
+        // says it is counts when it names the channel opened.
         let read = head.unwrap_or(channel);
+        let named_owner = own
+            .as_ref()
+            .filter(|own| own.names(&channel))
+            .map(|own| own.record.owner);
         if !runtime.attached(&peer.device_public_key)
-            && !runtime.store.reaches_person(&read, &peer.user_public_key)
+            && (!runtime.store.reaches_person(&read, &peer.user_public_key)
+                || named_owner.is_some_and(|owner| owner != peer.user_public_key))
         {
             return Ok(Some(Envelope::RecordOpened {
                 workspace_id,

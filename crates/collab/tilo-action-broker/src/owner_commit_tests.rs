@@ -441,6 +441,7 @@ mod owner_commit_tests {
                             app: fixture.route.app_id.clone(),
                             record: fixture.route.record_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
+                            own: None,
                         },
                     };
                     let state = fixture.state.clone();
@@ -491,6 +492,7 @@ mod owner_commit_tests {
                         app: fixture.route.app_id.clone(),
                         record: fixture.route.record_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
+                        own: None,
                     },
                 };
                 fixture
@@ -1426,6 +1428,7 @@ mod owner_commit_tests {
                     app: f.route.app_id.clone(),
                     record: f.route.record_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
+                    own: None,
                 },
             };
             let expected = request.clone();

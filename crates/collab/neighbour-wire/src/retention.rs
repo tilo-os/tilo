@@ -191,6 +191,7 @@ mod tests {
             cluster_id: "workspace".into(),
             record_id: "doc".into(),
             envelope: Box::new(envelope),
+            own: None,
         }
     }
 

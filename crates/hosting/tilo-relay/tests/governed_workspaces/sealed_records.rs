@@ -19,6 +19,7 @@ fn sealed(
         cluster_id,
         record_id,
         mut envelope,
+        own,
     } = message
     else {
         panic!("a document write")
@@ -39,6 +40,7 @@ fn sealed(
         cluster_id,
         record_id,
         envelope,
+        own,
     }
 }
 

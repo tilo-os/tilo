@@ -1353,19 +1353,26 @@ impl DirectSync {
     /// devices alone, never to another member's, whatever its role. Every
     /// other frame reaches it.
     fn reach_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
-        let person = self
-            .0
-            .replica
-            .lock()
+        let replica = self.0.replica.lock();
+        let person = replica
             .certificates()
             .into_iter()
             .find(|certificate| certificate.device_public_key == device)
-            .map(|certificate| hex::encode(certificate.user_public_key));
+            .map(|certificate| certificate.user_public_key);
+        let owned = replica.own_records();
+        drop(replica);
         move |message| match message {
-            NeighbourMsg::AppDocument { record_id, .. } => {
-                tilo_action_policy::member_record(record_id)
-                    .is_none_or(|(owner, _)| person.as_deref() == Some(owner))
-            }
+            NeighbourMsg::AppDocument {
+                app_id,
+                record_id,
+                own,
+                ..
+            } => own
+                .as_ref()
+                .filter(|own| own.names(record_id))
+                .map(|own| own.owner)
+                .or_else(|| owned.get(&(app_id.clone(), record_id.clone())).copied())
+                .is_none_or(|owner| person == Some(owner)),
             _ => true,
         }
     }
@@ -1611,7 +1618,17 @@ impl DirectSync {
                     app_id,
                     record_id,
                 );
-                member.allows(&node, tilo_action_policy::ActionKind::Undoable, now)
+                // A member's own record is its person's to start whatever
+                // their role.
+                let person = replica
+                    .own_write(app_id, record_id, &remote)
+                    .map(|own| own.person());
+                let mut cx = tilo_action_policy::Context::at_time(now);
+                if let Some(person) = &person {
+                    cx = cx.with_own_record(record_id, person);
+                }
+                member.answer(&node, tilo_action_policy::ActionKind::Undoable, &cx)
+                    == tilo_action_policy::Answer::Allow
             })
     }
 

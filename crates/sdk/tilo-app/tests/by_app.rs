@@ -94,6 +94,7 @@ fn offered(app: &mut TestApp<PlayerApp>) -> Vec<String> {
 
 #[test]
 fn the_api_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
+    crate::own_kinds::declare("so.tilo.test-jukebox", &["test.jukebox-played"]);
     let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
     let played = app.person::<Played>().unwrap();
     app.harness().relayout();
@@ -154,6 +155,7 @@ fn the_api_offers_a_by_app_verb_to_nobody_and_takes_it_from_nobody() {
 
 #[test]
 fn the_apps_own_code_applies_a_by_app_verb_as_whoever_it_names() {
+    crate::own_kinds::declare("so.tilo.test-jukebox", &["test.jukebox-played"]);
     let mut app = TestApp::<PlayerApp>::for_person(&ada()).unwrap();
     let played = app.person::<Played>().unwrap();
     played.invoke(&Played::NOTE.with("as ada")).unwrap();

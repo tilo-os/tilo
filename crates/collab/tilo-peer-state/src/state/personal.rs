@@ -901,6 +901,7 @@ impl PersonalStore {
             cluster_id,
             record_id,
             envelope,
+            ..
         } = message
         else {
             return Err("not a document message".into());
@@ -1101,6 +1102,9 @@ impl PersonalStore {
             cluster_id: self.store_key(),
             record_id: record.into(),
             envelope: Box::new(envelope),
+            // The person's own store holds only theirs: none is a member's own
+            // record of a workspace.
+            own: None,
         }
     }
 
@@ -2208,6 +2212,7 @@ mod tests {
                     cluster_id: a.store_key(),
                     record_id: route.record,
                     envelope: Box::new(envelope),
+                    own: None,
                 },
                 now(),
             );

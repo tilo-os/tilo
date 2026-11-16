@@ -925,6 +925,22 @@ impl Engine {
             })
     }
 
+    /// The member's own record `app`'s `record` in `workspace` is, as the writes of it this
+    /// device holds name it.
+    #[must_use]
+    pub fn own_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<collab_types::OwnRecord> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        self.owner
+            .with_current(workspace, |view| Ok(view.peer().own_record(app, record)))
+            .ok()
+            .flatten()
+    }
+
     /// Whether `workspace` holds `app`'s `record` here now: what a read of it opens, or a record
     /// this device holds nothing of that may still be on its way.
     #[must_use]
@@ -1166,6 +1182,7 @@ impl Engine {
                     app: app.to_owned(),
                     record: record.to_owned(),
                     envelope: Box::new(op),
+                    own: view.peer().own_write(app, record, &device),
                 },
             }])
         };
@@ -1176,7 +1193,7 @@ impl Engine {
             .pop()
             .ok_or("the write was not committed")?;
         self.schedule_publication(workspace);
-        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, own, .. } =
             committed.0.operation
         else {
             return Err("a record's write is not a document write".to_owned());
@@ -1189,6 +1206,7 @@ impl Engine {
             author: author.ok_or("the write was not made")?,
             replayed: false,
             envelope: *envelope,
+            own,
         })
     }
 

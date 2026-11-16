@@ -605,10 +605,15 @@ impl DispatchCore {
     /// shared to edit) lets it be changed here too; else the app's.
     fn node(&self) -> TreePath {
         let app = TreePath::root().app(self.app_id);
-        // A member's own record is theirs whatever their role: its changes
-        // are decided on that record, which the policy leaves to its person.
-        if policy::member_record(&self.record).is_some() {
-            let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+        // A record of a kind the app's manifest declares each member's own is
+        // its person's whatever their role: its changes are decided on that
+        // record, which the policy leaves to its person.
+        let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+        if !self.record.is_empty()
+            && collab_types::own_kinds(self.app_id)
+                .iter()
+                .any(|own| own == kind)
+        {
             return app.kind(kind).resource(&*self.record);
         }
         if self.applied_as.is_none() {

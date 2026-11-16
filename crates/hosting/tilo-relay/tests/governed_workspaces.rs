@@ -792,6 +792,7 @@ params = []
             cluster_id: workspace.workspace.clone(),
             record_id: String::new(),
             envelope: Box::new(op),
+            own: None,
         }
     };
     // An edit of the topic: published by the app, not granted to a commenter.

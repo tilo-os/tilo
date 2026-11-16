@@ -151,6 +151,18 @@ pub trait NativeDocumentReads: Send + Sync {
         let _ = workspace;
         false
     }
+    /// The member's own record `app`'s `record` in `workspace` is, as its writes
+    /// that reached this device name it ([`collab_types::OwnRecord`]); `None` for
+    /// a record of the workspace's, or one this device holds nothing of.
+    fn own_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Option<collab_types::OwnRecord> {
+        let _ = (workspace, app, record);
+        None
+    }
     /// Who answers an app's read of `app`'s `record` in `workspace`.
     fn record_read(&self, workspace: &str, app: &str, record: &str) -> RecordRead {
         let _ = (app, record);

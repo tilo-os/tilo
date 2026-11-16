@@ -1614,7 +1614,8 @@ impl Hosted {
         } else {
             invoker.acting.acted_for_person()
         };
-        if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
+        let route = self.record.route();
+        if !tilolang_tilo::reaches(&route.app_id, route.record.as_deref(), person) {
             let update = failed(
                 invocation,
                 Refused::new("permission_denied", "this is another member's own record"),

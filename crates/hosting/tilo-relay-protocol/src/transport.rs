@@ -521,6 +521,10 @@ pub enum Envelope {
         /// The record's retained channel
         /// (`neighbour_wire::app_document_channel`).
         channel: [u8; 32],
+        /// The member's own record the channel carries, when the device knows
+        /// it is one: the relay answers another person's
+        /// [`RecordAnswer::NotYours`] even before anything of it was written.
+        own: Option<OwnedChannel>,
     },
 
     /// The relay's answer to an opened record: everything it retains of it
@@ -691,6 +695,23 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
         refusal: crate::refusal::Refusal,
     },
+}
+
+/// A member's own record a device opens ([`Envelope::OpenRecord`]): the app
+/// whose record it is and its kind and person. The relay takes it only when
+/// it names the channel opened.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnedChannel {
+    pub app_id: String,
+    pub record: collab_types::OwnRecord,
+}
+
+impl OwnedChannel {
+    /// Whether this is the record `channel` carries.
+    #[must_use]
+    pub fn names(&self, channel: &[u8; 32]) -> bool {
+        neighbour_wire::app_document_channel(&self.app_id, &self.record.record_id()) == *channel
+    }
 }
 
 /// What the relay answered of a record a device opened ([`Envelope::OpenRecord`]).

@@ -445,6 +445,12 @@ fn repair_workspace<'a>(
             .record_routes(workspace)
             .await
             .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
+        // A person's own record, sealed for their devices alone (their drafts),
+        // is not the host's to read, nor to repair.
+        let theirs = workspaces
+            .workspace_record_routes(workspace)
+            .await
+            .map_err(|error| anyhow::anyhow!("{workspace}: {error}"))?;
         for (record_app, record) in routes {
             if app.is_some_and(|only| only != record_app) {
                 continue;
@@ -455,9 +461,7 @@ fn repair_workspace<'a>(
             {
                 Ok(Some(history)) => history,
                 Ok(None) => continue,
-                // A person's own record, sealed for their devices alone (their
-                // drafts), is not the host's to read, nor to repair.
-                Err(_) if tilo_action_policy::member_record(&record).is_some() => continue,
+                Err(_) if !theirs.contains(&(record_app.clone(), record.clone())) => continue,
                 Err(error) => {
                     let report = RecordReport {
                         workspace: workspace.to_owned(),

@@ -2,8 +2,8 @@
 //! be unlocked after a reboot.
 //! An answer is a fact the answering device signs and publishes in its own part of
 //! the person's device fabric ([`crate::platform::fabric::unlock`]); every one of their
-//! devices carries it. What the person reads is `member:<person>:device.unlock`,
-//! one document whose changes are those answers, so the activity history lists them
+//! devices carries it. What the person reads is their own record of kind `device.unlock`
+//! ([`collab_types::OwnRecord`]), one document whose changes are those answers, so the activity history lists them
 //! beside everything else that happened.
 //! The record is a projection of the fabric: each device writes the answers it
 //! hears under the answering device's actor, at the time it decided.

@@ -177,6 +177,7 @@ tilo_test_env::scenario! {
     // A click on a control bound to a field of a settings section kept in the
     // person's records stores the change in the settings document, both ways.
     {
+        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let control = checkbox(&mut app, "high_contrast");
         app.harness().click_named(&control).unwrap();
@@ -289,6 +290,7 @@ tilo_test_env::scenario! {
 
     phase a_settings_section_is_kept_in_the_settings_document_alone;
     {
+        crate::own_kinds::declare("so.tilo.test-board-declaring", &["test.playback"]);
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         // The person record of playback is declared and kept open; the display
         // section is the settings document's, with no record of its own.
@@ -415,6 +417,7 @@ tilo_test_env::scenario! {
 
     phase the_persons_record_is_edited_by_path_as_the_person_whatever_their_role;
     {
+        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let control = checkbox(&mut app, "autoplay");
         app.harness().click_named(&control).unwrap();
@@ -482,6 +485,7 @@ tilo_test_env::scenario! {
     // Undo takes back is undoable, so it runs at once and asks nothing, while
     // what a grant must allow is reading, so the workspace's roles do not gate it.
     {
+        crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
         let resources = app.harness().resources();
         let descriptor = tilo_actions::api::survey(&resources)
@@ -522,6 +526,7 @@ tilo_test_env::scenario! {
 
     phase declared_records_are_published_and_committed_though_no_view_shows_them;
     {
+        crate::own_kinds::declare("so.tilo.test-board-declaring", &["test.playback"]);
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         app.call_on(
             "settings:test.display",

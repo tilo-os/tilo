@@ -28,6 +28,7 @@ impl ShellPayloads for NeighbourPayloads {
             cluster_id,
             record_id,
             envelope,
+            own,
             ..
         }) = postcard::from_bytes::<NeighbourMsg>(body)
         else {
@@ -38,6 +39,7 @@ impl ShellPayloads for NeighbourPayloads {
                 app_id,
                 cluster_id,
                 record_id,
+                own,
             },
             envelope,
         ))
@@ -55,6 +57,7 @@ impl ShellPayloads for NeighbourPayloads {
             cluster_id: route.cluster_id.clone(),
             record_id: route.record_id.clone(),
             envelope: Box::new(op),
+            own: route.own.clone(),
         })
         .map_err(|error| error.to_string())
     }
