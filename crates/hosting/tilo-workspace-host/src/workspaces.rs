@@ -100,7 +100,9 @@ mod naming_tests;
 mod shares;
 #[cfg(test)]
 pub(crate) mod tests;
+mod unattended;
 mod unbuildable_windows;
+pub use unattended::{Answer as PersonAnswer, AsksPeople};
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
@@ -786,6 +788,7 @@ impl GovernedWorkspace {
             generation: self.record.generation,
             role: None,
             labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+            unattended: false,
         }
     }
 }
@@ -953,6 +956,9 @@ struct WorkspacesInner {
     /// What copies a source's content into a branch of it
     /// ([`Workspaces::branch_content`]).
     branch_content: std::sync::RwLock<Option<Arc<dyn BranchContent>>>,
+    /// What asks a person whether a workspace of theirs runs commands
+    /// unattended ([`Workspaces::ask_people`]).
+    asks_people: std::sync::RwLock<Option<Arc<dyn AsksPeople>>>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What the changes a record's repair kept wait for, by record, so a
@@ -1210,6 +1216,7 @@ impl Workspaces {
                 deletions: tokio::sync::broadcast::channel(64).0,
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
+                asks_people: std::sync::RwLock::default(),
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),

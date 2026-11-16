@@ -200,6 +200,13 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     ) -> Option<Pending<Result<ConfirmationReply, ActionHostError>>> {
         None
     }
+    /// Whether `caller` runs a command in the machine of `workspace` without
+    /// its person being asked each time: a key reaching that workspace alone,
+    /// whose person let that workspace run commands unattended. Nobody does
+    /// by default: every command the person's grants leave to them is asked.
+    fn runs_unattended(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
+        false
+    }
 }
 
 /// A model the host lends its admitted reporters to look over a report's

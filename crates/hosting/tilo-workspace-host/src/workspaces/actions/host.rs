@@ -428,6 +428,7 @@ fn listing(summary: &WorkspaceSummary) -> WorkspaceListing {
         generation: summary.generation,
         role: None,
         labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+        unattended: false,
     }
 }
 
@@ -743,6 +744,7 @@ impl Workspaces {
                     if let Some(own) = self.own() {
                         one.labels = own.labels_of(workspace);
                     }
+                    one.unattended = self.listed_unattended(workspace);
                     listed.push(one);
                 }
             }
@@ -787,6 +789,7 @@ impl Workspaces {
                     .own()
                     .map(|own| own.labels_of(&summary.workspace))
                     .unwrap_or_default(),
+                unattended: self.listed_unattended(&summary.workspace),
                 ..listing(summary)
             })
             .filter(|listed| labelled(&listed.labels, labels))
@@ -996,6 +999,7 @@ impl Workspaces {
             && own.is_of(&person, &summary.workspace)
         {
             workspace.labels = own.labels_of(&summary.workspace);
+            workspace.unattended = own.runs_unattended(&summary.workspace);
         }
         answer(&CreatedWorkspace {
             workspace,

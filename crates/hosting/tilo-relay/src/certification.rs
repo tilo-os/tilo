@@ -986,6 +986,19 @@ async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError
     Ok(())
 }
 
+/// Whether a workspace runs commands unattended is asked as an agent's
+/// action is: on the approving devices of the person, who alone answer it.
+impl tilo_workspace_host::workspaces::AsksPeople for CertificationProtocol {
+    fn ask(
+        &self,
+        person: [u8; 32],
+        question: PendingConfirmation,
+    ) -> tilo_workspace_host::workspaces::PersonAnswer {
+        let asked = self.clone();
+        Box::pin(async move { asked.confirm_for(person, question).await })
+    }
+}
+
 impl ProtocolHandler for CertificationProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.serve(&Link::iroh(connection)).await

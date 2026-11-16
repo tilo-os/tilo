@@ -511,6 +511,7 @@ impl Workspaces {
                 host,
                 role: listed.role.clone(),
                 labels: listed.labels.clone(),
+                unattended: listed.unattended,
             });
         }
         let reaches = |workspace: &str| {

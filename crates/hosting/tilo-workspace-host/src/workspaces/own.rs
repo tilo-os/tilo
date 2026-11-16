@@ -22,6 +22,10 @@
 //! (`customer_id` → `cus_8121`, [`WorkspaceLabels`]) is kept beside it, in
 //! `own-workspace-labels.json`: the host's, for the owner's programs to find
 //! a workspace by, and in no workspace, so nobody invited in reads them.
+//! Which own workspaces their owner let run commands unattended
+//! ([`Workspaces::runs_unattended`]) is kept the same way, in
+//! `own-workspace-unattended.json`: no record of the workspace holds it, so no
+//! key working in it can turn it on for itself.
 //!
 //! [`HostOperation::CreateOwnWorkspace`]: crate::host_authority::HostOperation::CreateOwnWorkspace
 
@@ -45,6 +49,10 @@ const INDEX: &str = "own-workspaces.json";
 /// The file beside it that keeps what each own workspace's owner labelled
 /// it with, by the workspace's UUID.
 const LABELS: &str = "own-workspace-labels.json";
+/// The file beside it that names the own workspaces whose owner let keys
+/// reaching that workspace alone run commands in its machine unasked, by
+/// UUID.
+const UNATTENDED: &str = "own-workspace-unattended.json";
 /// How long a workspace's measured size is trusted before it is measured
 /// again: walking its files on every write would cost more than the write.
 const MEASURED_FOR: Duration = Duration::from_secs(30);
@@ -92,6 +100,11 @@ pub(super) struct OwnWorkspaces {
     /// are: written to [`LABELS`] under the lock, before it is answered.
     labels: std::sync::Mutex<BTreeMap<String, WorkspaceLabels>>,
     labels_path: PathBuf,
+    /// The own workspaces (their UUIDs) whose owner let keys reaching that
+    /// workspace alone run commands in its machine without asking them each
+    /// time: written to [`UNATTENDED`] under the lock, before it is answered.
+    unattended: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    unattended_path: PathBuf,
     /// The plan each person is on here, by their hex root, when the host's
     /// account knows theirs: what they may keep rather than what the offer
     /// gives everyone.
@@ -136,6 +149,15 @@ impl OwnWorkspaces {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.to_string()),
         };
+        let unattended_path = dir.join(UNATTENDED);
+        let unattended = match std::fs::read(&unattended_path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{}: {error}", unattended_path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::collections::BTreeSet::new()
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         Ok(Self {
             offer,
             path,
@@ -143,6 +165,8 @@ impl OwnWorkspaces {
             owners: std::sync::Mutex::new(owners),
             labels: std::sync::Mutex::new(labels),
             labels_path,
+            unattended: std::sync::Mutex::new(unattended),
+            unattended_path,
             plans: std::sync::Mutex::default(),
             measured: std::sync::Mutex::default(),
             making: std::sync::Mutex::default(),
@@ -254,10 +278,38 @@ impl OwnWorkspaces {
         Ok(())
     }
 
+    /// Whether `workspace`'s owner let keys reaching it alone run commands in
+    /// its machine without asking them each time. Off for every workspace
+    /// until its owner turns it on.
+    pub(super) fn runs_unattended(&self, workspace: &str) -> bool {
+        self.unattended.lock_recover().contains(workspace)
+    }
+
+    /// Turn [`Self::runs_unattended`] for `workspace` on or off, durably.
+    pub(super) fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
+        let mut kept = self.unattended.lock_recover();
+        if kept.contains(workspace) == on {
+            return Ok(());
+        }
+        let mut next = kept.clone();
+        if on {
+            next.insert(workspace.to_owned());
+        } else {
+            next.remove(workspace);
+        }
+        let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
+        tilo_files::native::atomic::write(&self.unattended_path, &bytes)
+            .map_err(|error| error.to_string())?;
+        *kept = next;
+        drop(kept);
+        Ok(())
+    }
+
     /// Forget `workspace`, deleted: it is nobody's any more, and what it
     /// took no longer counts against its person. Durably.
     pub(super) fn forget(&self, workspace: &str) -> Result<(), String> {
         self.label(workspace, WorkspaceLabels::new())?;
+        self.set_unattended(workspace, false)?;
         let mut index = self.by_person.lock_recover();
         let mut next = index.clone();
         for mine in next.values_mut() {
@@ -747,6 +799,28 @@ mod tests {
         let again = OwnWorkspaces::open(dir.path(), offer).unwrap();
         assert_eq!(again.of(&[3; 32]), Vec::<String>::new());
         assert_eq!(again.owner_of("w-4"), None);
+    }
+
+    #[test]
+    fn running_unattended_is_off_until_turned_on_and_survives_a_restart_until_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let offer = OwnWorkspaceOffer::free("tilo.test");
+        let own = OwnWorkspaces::open(dir.path(), offer.clone()).unwrap();
+        own.record(&[3; 32], "w-3").unwrap();
+        own.record(&[3; 32], "w-4").unwrap();
+        assert!(!own.runs_unattended("w-3"), "off by default");
+        own.set_unattended("w-3", true).unwrap();
+        own.set_unattended("w-4", true).unwrap();
+        own.set_unattended("w-4", false).unwrap();
+        let again = OwnWorkspaces::open(dir.path(), offer.clone()).unwrap();
+        assert!(again.runs_unattended("w-3"));
+        assert!(!again.runs_unattended("w-4"), "turned off again");
+        again.forget("w-3").unwrap();
+        let after = OwnWorkspaces::open(dir.path(), offer).unwrap();
+        assert!(
+            !after.runs_unattended("w-3"),
+            "a deleted workspace keeps nothing"
+        );
     }
 
     #[test]

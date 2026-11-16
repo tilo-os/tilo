@@ -305,7 +305,10 @@ impl Worker {
     /// someone within bounds is: the caller's standing bounded as
     /// [`Caller::invoker`] reads them, the shared admission, and an ask put to
     /// the person on their own devices. The host's own person and their
-    /// agents may. `Err` is the receipt that answers it instead: refused, or
+    /// agents may. A key reaching this workspace alone runs what would be
+    /// asked without the ask when its person let the workspace run commands
+    /// unattended ([`super::WorkspaceRecordsLink::runs_unattended`]); what
+    /// is refused stays refused. `Err` is the receipt that answers it instead: refused, or
     /// waiting for the person.
     #[allow(
         clippy::result_large_err,
@@ -379,6 +382,16 @@ impl Worker {
                 let given = witness.as_ref().or(request.confirmation.as_ref());
                 let binding = super::bounded::WitnessBinding::of(workspace_id, caller, request);
                 if super::bounded::witnessed(&self.shared.witnesses, given, &binding) {
+                    return Ok(());
+                }
+                // A key for this workspace alone, whose person let it run
+                // commands unattended, runs this one as if they allowed it.
+                if self
+                    .shared
+                    .link
+                    .get()
+                    .is_some_and(|link| link.runs_unattended(workspace_id, caller))
+                {
                     return Ok(());
                 }
                 let about = self.about(

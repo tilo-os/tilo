@@ -735,6 +735,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
         }),
         role: Some("owner".into()),
         labels: tilo_relay_session::workspaces::WorkspaceLabels::new(),
+        unattended: false,
     };
     let held = PersonalList {
         workspaces: vec![entry(SHELL, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],

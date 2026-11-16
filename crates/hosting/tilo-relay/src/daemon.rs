@@ -638,6 +638,9 @@ impl Relay {
         );
         if let Some(governed) = &governed {
             certification.keep_issued_in(governed.clone());
+            // Whether a workspace of theirs runs commands unattended is the
+            // person's to answer, on their approving devices.
+            governed.ask_people(Arc::new(certification.clone()));
         }
         let web = Box::new(WebContext {
             relay: handler.clone(),

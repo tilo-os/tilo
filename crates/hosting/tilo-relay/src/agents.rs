@@ -745,6 +745,14 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         Some(answer)
     }
 
+    fn runs_unattended(&self, workspace: WorkspaceId, caller: &Caller) -> bool {
+        self.workspaces.as_ref().is_some_and(|workspaces| {
+            self.host_device
+                .runtime
+                .block_on(workspaces.runs_unattended(workspace, caller))
+        })
+    }
+
     fn workspace_content(&self, workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         let identity = self
             .host_device

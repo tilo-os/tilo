@@ -1021,6 +1021,13 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         match (request.target.provider.as_str(), workspace_id) {
+            (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id))
+                if request.target.address.action
+                    == tilo_relay_session::workspaces::RUN_UNATTENDED =>
+            {
+                self.unattended_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
             (WORKSPACE_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
                 self.governance_invoke(workspace_id, caller, request).await
             }

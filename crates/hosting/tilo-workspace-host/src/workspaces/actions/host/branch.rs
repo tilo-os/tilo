@@ -91,7 +91,13 @@ impl Workspaces {
         } else if !self.let_in(&person, now).await {
             return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
-            self.make_branch(source, &branch, name, person).await?
+            let made = self.make_branch(source, &branch, name, person).await?;
+            // The branch holds what its source holds: running commands
+            // unattended too. Not taken, its keys are asked, as before.
+            if let Err(error) = self.branch_unattended(source, &made.workspace) {
+                tracing::warn!(%source, branch = %made.workspace, %error, "a branch does not run commands unattended as its source does");
+            }
+            made
         };
         if let Some(labels) = labels {
             own.label(&summary.workspace, labels)

@@ -165,6 +165,16 @@ pub const LIST_WORKSPACES: &str = "workspace.list";
 /// reaching all their workspaces, deletes; a workspace that is not theirs is
 /// refused with [`NOT_YOUR_OWN`]. Answers `{"deleted": workspace}`.
 pub const DELETE_WORKSPACE: &str = "workspace.delete";
+/// The workspace's governance verb (on its [`tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER`]
+/// resource) that turns running commands unattended on or off: `{"on": bool}`.
+/// On, a key of the workspace's owner that reaches this workspace alone runs
+/// commands in its machine without the person being asked each time; a key
+/// reaching all their workspaces is still asked. Off by default. Turning it on
+/// asks the person on their approving devices, whoever calls it, and waits for
+/// their answer; turning it off asks nothing. It is the owner's alone: in a
+/// workspace that is not their own it is refused with [`NOT_YOUR_OWN`].
+/// Answers `{"workspace": uuid, "unattended": bool}`.
+pub const RUN_UNATTENDED: &str = "commands.unattended";
 /// What the host refuses a person asking for, or deleting, a workspace that
 /// is not one of their own with.
 pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
@@ -344,6 +354,11 @@ pub struct PersonalWorkspace {
     /// that answers keeps it for them.
     #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
     pub labels: WorkspaceLabels,
+    /// Whether its owner let keys made for it alone run commands in its
+    /// machine without asking them each time
+    /// ([`RUN_UNATTENDED`]), when the host that answers keeps it for them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
 }
 
 /// Where a workspace is hosted, as a device dials it.
@@ -470,6 +485,11 @@ pub struct WorkspaceListing {
     /// member invited in reads none.
     #[serde(default, skip_serializing_if = "WorkspaceLabels::is_empty")]
     pub labels: WorkspaceLabels,
+    /// Whether its owner let keys made for it alone run commands in its
+    /// machine without asking them each time ([`RUN_UNATTENDED`]), answered
+    /// to the owner alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
 }
 
 /// What a person labels a workspace of their own with, for their own
