@@ -13,7 +13,7 @@ description = "The canonical Tilo desktop model shared by every host."
 # people and permissions attached to them. Pure data and pure functions — no
 # compositor, toolkit, transport, async runtime or host filesystem, so every
 # host (native compositor, headless peer, anything else) shares one model.
-# `tools/policy/check_desktop_model_dependencies.py` enforces that list.
+# `tools/policy/check_crate_graph.py` enforces that list.
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

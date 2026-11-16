@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Keep the shared desktop crates free of host stacks.
+"""Keep each package's graph free of the stacks it does not own.
+
+A boundary names a package, the crates it must never reach through any
+dependency, and what the package is: a stack it reaches is compiled into it
+and held while it runs, and no line of its manifest says so.
 
 ``tilo-desktop-model`` is shared by every host: the native compositor, a
 headless peer, the browser runtime, and anything else that renders or serves
@@ -14,6 +18,12 @@ runtime, host directories, settings storage or libc: those it may only see
 through the toolkit and the other shared crates it uses, which own them.
 (They are reached transitively — libc by every native allocator-level
 crate, tokio by feature unification — so the rule is on its own edges.)
+
+``tilo-cli`` is the ``tilo`` program: the machine's own commands, the
+desktop's actions, and the bridge an agent reaches its person's workspace
+through. It draws nothing and plays nothing, so it reaches neither the
+toolkit nor the media stack; either one compiled back in is megabytes a
+``tilo mcp`` holds for as long as an agent runs.
 
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for both Linux architectures and for
@@ -45,6 +55,8 @@ class Boundary:
     manifest: str
     # Never reached, through any dependency.
     forbidden: frozenset[str]
+    # What the package is, in the words its own finding ends with.
+    why: str
     # Never a direct dependency of the package itself.
     not_direct: frozenset[str] = frozenset()
     targets: tuple[str, ...] = NATIVE
@@ -67,14 +79,23 @@ BOUNDARIES = (
                 "winit",
             }
         ),
+        why="it is shared by every host, and the hosts own those stacks",
         targets=(*NATIVE, WASM),
     ),
     Boundary(
         package="tilo-desktop",
         manifest="crates/session/desktop/Cargo.toml",
         forbidden=frozenset({"iroh", "smithay"}),
+        why="it draws a desktop and talks to no peer itself",
         not_direct=frozenset({"dirs", "libc", "settings-store", "tokio"}),
         targets=(*NATIVE, WASM),
+    ),
+    Boundary(
+        package="tilo-cli",
+        manifest="crates/system/tilo-cli/Cargo.toml",
+        forbidden=frozenset({"tilo-media", "tilo-native-media", "tilo-ui"}),
+        why="it draws nothing and plays nothing: the toolkit and the media stack are the apps'",
+        targets=NATIVE,
     ),
 )
 
@@ -98,8 +119,8 @@ def reached_packages(
         "--format",
         "{p}",
     ]
-    # Both crates reach the hack (desktop-model through the resource layer's
-    # proc macro, whose host-side edge cargo tree shows for every target).
+    # Every boundary's package reaches the hack: it unifies features for the whole
+    # workspace, so its edges say nothing about a package's own stacks.
     command += ["--prune", "workspace-hack"]
     if target:
         command += ["--target", target]
@@ -121,7 +142,7 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
     if reached:
         found.append(
             f"{boundary.manifest}: {boundary.package} reaches {', '.join(reached)} for {where}; "
-            "hosts own those stacks, the shared desktop must not"
+            + boundary.why
         )
     if boundary.not_direct:
         direct = reached_packages(boundary.package, target, depth=1)
@@ -147,7 +168,10 @@ def main() -> int:
                 print(message)
                 failed = True
             if not found:
-                print(f"{boundary.package} ({target or 'host'}): no host stacks", file=sys.stderr)
+                print(
+                    f"{boundary.package} ({target or 'host'}): none of {sorted(boundary.forbidden)}",
+                    file=sys.stderr,
+                )
     return 1 if failed else 0
 
 

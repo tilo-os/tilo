@@ -256,9 +256,9 @@ label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
 
 [[step]]
-name = "desktop-model-dependencies"
-label = "Desktop crates dependency boundary"
-run = "python3 tools/policy/check_desktop_model_dependencies.py"
+name = "crate-graph"
+label = "Packages reach none of the stacks they do not own"
+run = "python3 tools/policy/check_crate_graph.py"
 
 [[step]]
 name = "crate-layers"

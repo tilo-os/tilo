@@ -97,7 +97,7 @@ third-party = [
     # into the hack.
     { name = "smithay", path = "vendor/smithay" },
     # The peer transport belongs to the hosts: tilo-desktop is managed and
-    # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
+    # must never reach iroh (tools/policy/check_crate_graph.py).
     { name = "iroh", path = "vendor/iroh" },
     { name = "iroh-base" },
     { name = "iroh-dns" },
@@ -123,7 +123,7 @@ third-party = [
 # These members keep their own dependency graph. Built with managed members
 # they still receive the unified features; built alone they do not.
 # - tilo-desktop-model must not reach host stacks through any dependency
-#   (tools/policy/check_desktop_model_dependencies.py), so neither it nor any
+#   (tools/policy/check_crate_graph.py), so neither it nor any
 #   member it depends on may depend on workspace-hack. When that policy reports
 #   a host stack after desktop-model gains a member dependency, list it here.
 # - tilo-crypto is also built standalone from registry dependencies only
