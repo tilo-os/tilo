@@ -53,7 +53,36 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
             self.show(&resolved.provider, app_id).await;
         }
-        let value = json!({"update": {"state": "succeeded", "output": {}}});
+        // What is in the window it answered with: the record the workspace lists
+        // it on, so a caller opening an app that runs learns the window it
+        // attached to and the record that window shows, as the open that made
+        // it said.
+        let record = self
+            .providers()
+            .await
+            .ok()
+            .and_then(|(_, listed)| {
+                listed
+                    .into_iter()
+                    .find(|(provider, _)| *provider == resolved.provider)
+                    .map(|(_, entry)| entry)
+            })
+            .and_then(|entry| {
+                entry["record_id"]
+                    .as_str()
+                    .filter(|record| !record.is_empty())
+                    .map(str::to_owned)
+            });
+        let value = match record {
+            Some(record) => json!({"update": {
+                "state": "succeeded",
+                "output": {"value": {
+                    "provider": format!("{}:{app_id}:{record}", tilo_actions::remote::RECORD_PROVIDER),
+                    "record": record,
+                }},
+            }}),
+            None => json!({"update": {"state": "succeeded", "output": {}}}),
+        };
         let reply = self.opened_reply(app_id, &value).await;
         Done::Launched { value, reply }
     }

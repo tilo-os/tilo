@@ -85,7 +85,7 @@ vm_failure() {
 # output comes back.
 ran=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
   --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
-  --workspace ws-local --account acct-with-card --size small -- /bin/sh -c 'echo hello-from-the-guest' 2>&1) \
+  --workspace ws-local --account acct-tilo-sh --size small -- /bin/sh -c 'echo hello-from-the-guest' 2>&1) \
   || vm_failure 'the workspace VM did not run a program'
 printf '%s\n' "$ran" >&2
 grep -qx 'hello-from-the-guest' <<<"$ran" \

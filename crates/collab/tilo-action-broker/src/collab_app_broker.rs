@@ -1189,6 +1189,7 @@ mod local_action_host;
 mod remaining_workspace_actions;
 mod turns;
 pub use agent_connection::AgentConnection;
+mod window_provider;
 mod windowless_instances;
 mod witness;
 use witness::requires_store_witness;

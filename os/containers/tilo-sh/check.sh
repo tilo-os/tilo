@@ -321,8 +321,9 @@ if [[ $hosted == 1 ]]; then
   # check plays the provider, adding the account to it mid-run.
   [[ -w $plans ]] || sudo -n chown "$(id -u):$(id -g)" "$plans" 2>/dev/null \
     || fail "the plans file $plans is not the check's to edit"
-  # A Linux program in a VM is admitted for an account with a card on file,
-  # which is what the proofs and the guest check below run as.
+  # The proofs run in the workspace's own VM, and a VM belongs to the account
+  # the relay placed it for: the account this stack admits by. The guest check
+  # below runs as an account with a card on file, so a probe of its own admits.
   vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
     || fail "the plans file $plans names no account with a card"
   # The person's approving device: the root the page made for them, opened
@@ -524,8 +525,17 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
     step '11. the VM the Browser ran in: its sandbox, its user, its memory'
     VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
       VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
-      python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
-      || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+      python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_account" "$work/vm" \
+      || {
+        echo '--- the VM on its host:' >&2
+        vm_host status >&2 2>/dev/null || true
+        echo '--- the VM host said:' >&2
+        sudo -n podman logs --tail 60 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+        echo '--- the relay said of the Browser:' >&2
+        bash "$here/stack.sh" logs relay 2>/dev/null \
+          | grep -iE 'browser|environment|hosted|session|suspend|stop' | tail -60 >&2 || true
+        fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+      }
   fi
 
   if runs_step 12; then
@@ -551,7 +561,15 @@ print(found.group(1) if found else "")' "$hosted_workspace" <<<"$(vm_host status
   # are held to the same VM a customer gets.
   if runs_step 13; then
     step '13. a Linux command in a workspace without a card on file is refused'
-    hosted_terminal --refused || fail "the plans rule did not hold for a Linux command (see $work/hosted/refused.json)"
+    # The provider takes the card off the account for this step: booting a VM
+    # and proving what is in it takes the card, and the refusal is what an
+    # account without one gets. It is put back before the step ends, so a run
+    # that stops here leaves the file as it found it.
+    python3 "$here/integration/plans.py" --remove "$vm_account" "$plans" >/dev/null
+    refused=0
+    hosted_terminal --refused || refused=$?
+    python3 "$here/integration/plans.py" "$vm_account" "$plans" >/dev/null
+    [[ $refused == 0 ]] || fail "the plans rule did not hold for a Linux command (see $work/hosted/refused.json)"
     echo "ok: a Linux command without a card is refused in $((SECONDS - at))s, saying where a card is added"
   fi
 

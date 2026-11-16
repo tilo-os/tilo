@@ -658,17 +658,15 @@ impl HostedBrowsers {
         {
             return answer;
         }
-        // Named as the workspace's other publishers are, so a caller holding
-        // the listing to its own workspace keeps it.
-        let workspace = page
-            .providers
-            .first()
-            .map_or_else(|| up.workspace.clone(), |listed| listed.workspace.clone());
+        // Named by the workspace it was opened in: a caller holding what runs
+        // in its own workspace to that workspace keeps it. The host's own rows
+        // name no workspace (they are the caller's by the host serving them),
+        // so theirs is not the name to copy.
         page.providers
             .push(tilo_actions::remote::CatalogueProvider {
                 provider: up.window.provider.clone(),
                 app_id: APP.to_owned(),
-                workspace,
+                workspace: up.workspace.clone(),
                 record_id: up.record.clone(),
                 browsable: true,
             });
