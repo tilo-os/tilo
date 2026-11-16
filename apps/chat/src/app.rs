@@ -452,15 +452,6 @@ pub struct ChatApp {
     pub(crate) scrollback: crate::scrollback::Scrollback,
     /// The chain's revision the window last read its messages at.
     pub(crate) chain_seen: Option<u64>,
-    /// The messages the chat record kept in itself, read once for the
-    /// object holding them ([`crate::record::kept_messages`]).
-    pub(crate) kept_messages: Option<(
-        automerge::ObjId,
-        std::rc::Rc<ui::tilo_resource::Collection<crate::record::Message>>,
-    )>,
-    /// What the chat record kept as the names of the people in it
-    /// ([`crate::record::kept_names`]), read with the kept messages.
-    pub(crate) kept_names: std::collections::BTreeMap<String, String>,
     /// The first part a screenshot scenario starts with, until written:
     /// messages by several people under the ids the scenario names.
     pub(crate) staged_start: Option<crate::parts::ChatPart>,
@@ -808,8 +799,6 @@ impl ChatApp {
             chain: None,
             scrollback: crate::scrollback::Scrollback::default(),
             chain_seen: None,
-            kept_messages: None,
-            kept_names: std::collections::BTreeMap::new(),
             staged_start: None,
             staged_parts: std::collections::VecDeque::new(),
             #[cfg(feature = "samples")]
@@ -1087,30 +1076,6 @@ impl ChatApp {
                 crate::messages::Messages::new(chain.parts()).with_sending(chain.unwritten())
             })
             .unwrap_or_default()
-            .with_kept(
-                self.kept_messages
-                    .as_ref()
-                    .map(|(_, kept)| kept.clone())
-                    .unwrap_or_default(),
-            )
-    }
-
-    /// Read the messages the chat record `doc` kept in itself, unless they
-    /// were read from the same object already.
-    fn read_kept_messages(&mut self, doc: &AutoCommit) {
-        let holding = ui::tilo_resource::evolution::map_at(doc, &automerge::ROOT, "messages")
-            .ok()
-            .flatten();
-        if self.kept_messages.as_ref().map(|(id, _)| id) == holding.as_ref() {
-            return;
-        }
-        self.kept_names = if holding.is_some() {
-            crate::record::kept_names(doc)
-        } else {
-            std::collections::BTreeMap::new()
-        };
-        self.kept_messages =
-            holding.map(|id| (id, std::rc::Rc::new(crate::record::kept_messages(doc))));
     }
 
     /// Apply a verb on the chat's messages now, through the chain's api:

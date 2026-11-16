@@ -73,7 +73,6 @@ impl ChatApp {
     }
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
-        self.read_kept_messages(doc);
         let Some(chat) =
             ui::tilo_resource::profiling::measure("chat.reload.read", || read_record(doc))
         else {
@@ -349,18 +348,6 @@ impl ChatApp {
             .into_iter()
             .filter(|user| ids.contains(&user.id))
             .collect();
-        for (id, name) in &self.kept_names {
-            if ids.contains(id) && !people.iter().any(|user| user.id == *id) {
-                people.push(User {
-                    id: id.clone(),
-                    name: name.clone(),
-                    initials: ui::widget::initials_for_name(name),
-                    color_idx: 0,
-                    status: model::Presence::Offline,
-                    is_agent: false,
-                });
-            }
-        }
         if !people.iter().any(|user| self.is_me(&user.id)) {
             people.push(User {
                 id: self.me.id.clone(),

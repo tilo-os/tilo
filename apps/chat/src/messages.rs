@@ -239,8 +239,6 @@ pub struct NewMessage {
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 5,
-    migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
     /// Post a message.
@@ -1022,8 +1020,7 @@ impl ChatPart {
 }
 
 /// The parts of the chat's messages a device holds, read as one timeline:
-/// every message oldest first, whichever part holds it, after the messages
-/// the chat record kept from before its messages moved to parts.
+/// every message oldest first, whichever part holds it.
 ///
 /// The order is the records', not a clock's ([`Self::iter`]): the parts by
 /// number, each part's messages in the order the part holds them, which every
@@ -1035,10 +1032,6 @@ impl ChatPart {
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
     parts: Vec<(u64, Rc<ChatPart>)>,
-    /// The messages the chat record kept in itself
-    /// ([`crate::record::kept_messages`]): the oldest of the timeline, in
-    /// no part, so no verb changes them and none of them is unread.
-    kept: Rc<tilo_resource::Collection<Message>>,
     /// The messages sent from here that wait for the part they go to, on its
     /// way from the workspace ([`ui::framework::Chain::unwritten`]): shown as
     /// being sent, in no part yet.
@@ -1052,7 +1045,6 @@ impl Messages {
         parts.sort_by_key(|(index, _)| *index);
         Self {
             parts,
-            kept: Rc::default(),
             sending: None,
         }
     }
@@ -1070,13 +1062,6 @@ impl Messages {
             .iter()
             .flat_map(|part| part.messages.iter())
             .filter(|(id, _)| self.part_of(id).is_none())
-    }
-
-    /// These parts after the messages the chat record kept, `kept`.
-    #[must_use]
-    pub fn with_kept(mut self, kept: Rc<tilo_resource::Collection<Message>>) -> Self {
-        self.kept = kept;
-        self
     }
 
     /// One part, numbered 0: for a reader of a single part's document.
@@ -1097,21 +1082,12 @@ impl Messages {
         self.parts.last().map(|(index, _)| *index)
     }
 
-    /// Every message held, oldest first: the kept ones a part does not
-    /// hold too, then the parts', each in the order its record holds it
+    /// Every message held, oldest first: the parts', each in the order its record holds it
     /// (its order key, ties by id). Every device reads the same records as
     /// that order, so this is one total order, whatever order the changes
     /// arrived in.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
-        self.kept
-            .iter()
-            .filter(|(id, _)| self.part_of(id).is_none())
-            .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
-    }
-
-    /// The messages the chat record kept in itself, which no part holds.
-    pub fn kept(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
-        self.kept.iter()
+        self.parts.iter().flat_map(|(_, part)| part.messages.iter())
     }
 
     /// Every message held, oldest first, with the part holding it.
@@ -1140,7 +1116,6 @@ impl Messages {
             .iter()
             .rev()
             .find_map(|(_, part)| part.messages.get(id))
-            .or_else(|| self.kept.get(id))
     }
 
     /// Whether a held part has the message `id`.
