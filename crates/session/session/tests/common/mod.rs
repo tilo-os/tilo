@@ -678,7 +678,7 @@ pub fn last_step(session: &mut Session, verb: &str) -> String {
 ///
 /// # Panics
 /// The home, the identity or their directories cannot be made.
-pub fn seated_state() -> std::path::PathBuf {
+pub fn device_state() -> std::path::PathBuf {
     thread_local! {
         static STATE: std::path::PathBuf = state();
     }
@@ -686,7 +686,7 @@ pub fn seated_state() -> std::path::PathBuf {
 }
 
 fn state() -> std::path::PathBuf {
-    seat_in(Box::leak(Box::new(
+    device_in(Box::leak(Box::new(
         tilo_test_env::TestHome::new().expect("a home"),
     )))
 }
@@ -696,7 +696,7 @@ fn state() -> std::path::PathBuf {
 ///
 /// # Panics
 /// The identity or its directories cannot be made.
-pub fn seat_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
+pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
@@ -900,7 +900,7 @@ pub fn repl_session(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            state: Some(seated_state()),
+            state: Some(device_state()),
             shell: true,
             collab: false,
             services: vec![Box::new(notes)],

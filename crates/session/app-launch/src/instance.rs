@@ -14,7 +14,7 @@
 //! a workspace, so a launch that names a record or content of an app that
 //! already has a window — showing, or on its way — goes to that window. A
 //! file or a link it is opened on goes to that process, which opens it in a
-//! window of its own beside the others (`crate::doors`). A second process
+//! window of its own beside the others (`crate::channels`). A second process
 //! would hold the app's records against the first, and one of them would read
 //! nothing.
 //!
@@ -132,7 +132,7 @@ impl Instance {
         // it, and the app's toolkit hands it to the process it already runs —
         // which is how an app the shell had started opened one too. A Tilo
         // package's file or link is asked of the process it runs, through its
-        // window door: another window of it opens on that file. A record or
+        // window channel: another window of it opens on that file. A record or
         // content goes to the window it has, and no second process takes them.
         match launch {
             Launch::Host { open: Some(_), .. } => return Answer::Start { new_window: false },

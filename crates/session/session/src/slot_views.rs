@@ -3,7 +3,7 @@
 //! tilolang package this machine installed: then the view is the package's, and the session runs it
 //! in an instance of its own ([`SlotView`]), over the reading it
 //! publishes for the slot. The pointer and the keys reach it while the overlay stack says its
-//! surface is the one over the shell; what it asks goes through the session's door, as any caller's
+//! surface is the one over the shell; what it asks goes through the session's API, as any caller's
 //! does.
 //! A package that does not start is no view for the slot: the slot keeps the view the session ships
 //! with, as a missing program does.
@@ -104,7 +104,7 @@ impl SlotViews {
         }
     }
 
-    /// Run what the view in `slot` asked through `invoke` (the session's door), as any caller of
+    /// Run what the view in `slot` asked through `invoke` (the session's API), as any caller of
     /// the action protocol does.
     pub(crate) fn serve(&self, slot: &str, invoke: impl FnMut(&Asked) -> Result<(), String>) {
         if let Some(host) = self.hosts.get(slot) {

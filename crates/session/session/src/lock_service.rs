@@ -267,7 +267,7 @@ fn lock_artwork(playing: &tilo_desktop_surface::now_playing::NowPlaying) -> Stri
 /// Carry out what the screen's transport asked: play, pause, or the song before or after this one.
 /// `false` when `asked` was not the transport's, so the caller knows nothing was done.
 /// A locked session withholds every published action but the screen's own, so this cannot go
-/// through the door a media key uses: it is the session asking the service that plays, straight.
+/// through the API a media key uses: it is the session asking the service that plays, straight.
 /// With nothing playing the screen shows no transport, and nothing is asked of a player.
 pub fn transport(
     asked: &LockEffect,

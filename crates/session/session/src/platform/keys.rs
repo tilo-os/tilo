@@ -20,10 +20,10 @@ use xkeysym::key as keysyms;
 use crate::Shared;
 use crate::controls::SessionCommand;
 use crate::displays;
-use crate::doors::plane::answered;
 use crate::i18n::t;
 use crate::keys::{DeviceKey, Invocation, Press, SessionKeys};
 use crate::platform::surfaces::ShellGesture;
+use crate::services::plane::answered;
 use crate::shell::state::WINDOW_MENU;
 
 /// What plays: the audio service's media, whose own controls reach the player in front.
@@ -497,7 +497,7 @@ impl Shared {
             .extend(crate::window_share::follow_asks(&self.handle));
     }
 
-    /// Run the published actions keys and gestures asked for, through the door every caller uses.
+    /// Run the published actions keys and gestures asked for, through the API every caller uses.
     /// The lock screen withholds the hosted surfaces' actions while it is up; the keys that work
     /// there are the device's own (a level, the power key), and the services publishing those still
     /// run.

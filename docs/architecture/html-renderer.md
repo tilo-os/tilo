@@ -46,7 +46,7 @@ skip it.
 Widgets with their own HTML so far: `Text`, `EditableLabel`, `BlockEditor`,
 `Button` (a `<button>` whose face is still its picture), `ListRow`, `Column`,
 `Row`, `Stack`, `Container`, `Scrollable`, `VirtualList`, `NavShell` and its
-header title, `ModalDialog` and `OverflowDoor`. The window's bar of slots,
+header title, `ModalDialog` and `OverflowButton`. The window's bar of slots,
 which the frame hosts over a page that mounts one app, is a `<header>`
 toolbar of real buttons over its painted band.
 

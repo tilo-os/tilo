@@ -3,7 +3,7 @@
 //!
 //! The agent answering a person's turn arranges the screen as the REPL does: the
 //! layout's `place` and `place-found`, the undo steps, the windows and the notices.
-//! Those are published by the session on its own door, on the loop's thread, and this is
+//! Those are published by the session on its own API, on the loop's thread, and this is
 //! the provider its broker answers them under, so one catalogue names them for every caller
 //! that has a broker: the MCP server, a launched agent, and a task's program alike.
 //!
@@ -12,8 +12,8 @@
 //! pass, attributed to the agent and the person who asked, as a change the person takes
 //! back like any other. The layout is `Rc<RefCell<…>>` on the loop's thread and is
 //! never shared: its rows are read on the pass and handed here, and an invocation is handed
-//! to the session's door ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered
-//! on the pass, as the door's own calls are.
+//! to the session's API ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered
+//! on the pass, as the API's own calls are.
 #![cfg_attr(
     target_arch = "wasm32",
     allow(
@@ -34,36 +34,36 @@ use crate::platform::steps::SessionSteps;
 
 /// The session's own actions, as the broker's catalogue names them.
 pub(crate) struct SessionActions {
-    doors: Arc<dyn SessionSteps>,
-    /// The rows the session's own door offered on its last pass: what the catalogue lists.
+    steps: Arc<dyn SessionSteps>,
+    /// The rows the session's own API offered on its last pass: what the catalogue lists.
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the layout from off its thread.
     rows: std::sync::RwLock<Vec<tilo_actions::api::PlacedAction>>,
-    /// Where the door stood when the rows were last read
+    /// Where the API stood when the rows were last read
     /// ([`tilo_session_core::surfaces::Surfaces::revision`]).
     read_at: std::sync::Mutex<Vec<(usize, u64)>>,
 }
 
 impl SessionActions {
-    /// The session's actions, whose rows the session hands over on each pass through `doors`.
-    pub(crate) fn new(doors: Arc<dyn SessionSteps>) -> Self {
+    /// The session's actions, whose rows the session hands over on each pass through `steps`.
+    pub(crate) fn new(steps: Arc<dyn SessionSteps>) -> Self {
         Self {
-            doors,
+            steps,
             rows: std::sync::RwLock::default(),
             read_at: std::sync::Mutex::default(),
         }
     }
 
-    /// Whether the door moved since its rows were last read: equal revisions offer the same rows,
+    /// Whether the API moved since its rows were last read: equal revisions offer the same rows,
     /// so a pass reads them again only once what a surface offers moved.
-    pub(crate) fn door_moved(&self, revision: Vec<(usize, u64)>) -> bool {
+    pub(crate) fn rows_moved(&self, revision: Vec<(usize, u64)>) -> bool {
         let mut read_at = self.read_at.lock_recover();
         let moved = *read_at != revision;
         *read_at = revision;
         moved
     }
 
-    /// Publish the rows the session's own door offers now, as its pass read them: what the
+    /// Publish the rows the session's own API offers now, as its pass read them: what the
     /// broker's catalogue lists from here on. Whether they are new: a pass that read the same
     /// rows again changes nothing, and no catalogue is rebuilt for it.
     pub(crate) fn offer(&self, rows: Vec<tilo_actions::api::PlacedAction>) -> bool {
@@ -118,7 +118,7 @@ impl HostStepServices for SessionActions {
             .turn()
             .map(|turn| tilo_session_core::layout::turn_key(&turn.conversation, &turn.message))
             .unwrap_or_default();
-        self.doors.invoke_step(
+        self.steps.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),
             argument,
@@ -184,7 +184,7 @@ mod tests {
 
     /// The session's own actions are its broker's: the person at this seat is offered the
     /// layout's `place` on the session's own provider, read on the loop's pass and listed
-    /// by the broker — one catalogue, whichever door the caller came in by. Its invocation, and
+    /// by the broker — one catalogue, whichever API the caller came in by. Its invocation, and
     /// the turn's admission of it, are proven against a real tracker in the broker's own
     /// `a_turn_takes_the_hosts_turn_steps_and_nobody_else_does`.
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         );
 
         // What the broker lists is what the session publishes: every row names a resource the
-        // session's own door holds.
+        // session's own API holds.
         let published = published(&session);
         for row in &page.rows {
             let action = row.action.as_ref().expect("a row offers its action");
@@ -250,7 +250,7 @@ mod tests {
         }
     }
 
-    /// Every resource the session's own door publishes, by its id.
+    /// Every resource the session's own API publishes, by its id.
     fn published(session: &crate::Session) -> Vec<String> {
         fn walk(resources: &[tilo_actions::ResourceSpec], out: &mut Vec<String>) {
             for resource in resources {

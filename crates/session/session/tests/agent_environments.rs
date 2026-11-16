@@ -5,7 +5,7 @@
 //! and "Always allow" is remembered per environment.
 //!
 //! The environments here are this test's own processes, as `ush` is the person's: a process asks
-//! for the door through the production request ([`runtime_portal::environment_door`]) and holds
+//! for the door through the production request ([`runtime_portal::environment_socket`]) and holds
 //! its lease, and the programs inside it are processes it starts. A program outside that process
 //! tree, the test itself or a program of another environment, is refused at the door.
 
@@ -27,7 +27,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use runtime_portal::environment_door::{self, Request};
+use runtime_portal::environment_socket::{self, Request};
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -76,7 +76,7 @@ fn environment() {
         &var("ENVIRONMENT_NAME").expect("its name"),
         var("ENVIRONMENT_WORKSPACE").as_deref(),
     );
-    let lease = match environment_door::open(&door, &request) {
+    let lease = match environment_socket::open(&door, &request) {
         Ok(lease) => lease,
         Err(error) => {
             say("REFUSED", &error.to_string());

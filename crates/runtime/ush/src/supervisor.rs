@@ -2357,8 +2357,8 @@ mod tests {
                     .read_until(b'\n', &mut line)
                     .unwrap();
                 let request =
-                    runtime_portal::environment_door::Request::of(line.trim_ascii_end()).unwrap();
-                let reply = runtime_portal::environment_door::Reply::Opened {
+                    runtime_portal::environment_socket::Request::of(line.trim_ascii_end()).unwrap();
+                let reply = runtime_portal::environment_socket::Reply::Opened {
                     path: PathBuf::from(format!(
                         "/run/user/1/tilo-session/environments/{}.sock",
                         asked.len()

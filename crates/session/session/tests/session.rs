@@ -2474,7 +2474,7 @@ fn the_next_session_comes_up_where_this_one_was() {
     // A workspace's layout is the workspace's own record, which a device holds once it has an
     // identity: this session is on a device set up as it is at its first login.
     let mut device = tilo_test_env::TestHome::new().expect("a home");
-    let state = crate::common::seat_in(&mut device);
+    let state = crate::common::device_in(&mut device);
     let home = {
         let mut session = session_keeping(&state);
         session.step(Duration::from_millis(1)).unwrap();

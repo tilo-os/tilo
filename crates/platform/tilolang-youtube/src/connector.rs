@@ -22,7 +22,7 @@ pub const ORIGIN: &str = "youtube";
 /// on the door the launcher handed it, until the session closes the door: every instance that
 /// attaches has its questions answered by `service`.
 pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
-    let door = runtime_portal::origin_connector::take_door()
+    let door = runtime_portal::origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the YouTube connector no door".to_owned())?;
     let attachments = std::iter::from_fn(move || {
         match runtime_portal::origin_connector::receive_attachment(&door) {

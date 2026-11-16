@@ -7,7 +7,7 @@
 //! close it, and choose a row, which sends the same command the shell would
 //! send from anywhere. Whoever draws the menu — this desktop's own view, a
 //! person's replacement, an agent — reads the same reading through the same
-//! door and invokes the same verbs, so the menu a person sees and the menu a
+//! API and invokes the same verbs, so the menu a person sees and the menu a
 //! script drives are one thing.
 //!
 //! The same service publishes the surface stack — `desktop:overlays` — which
@@ -53,7 +53,7 @@ pub const WINDOW_MENU_APP: &str = "desktop";
 /// The window menu's surface, as a tilolang package drawing it is compiled against: the fields
 /// [`WINDOW_MENU`] reads and the verbs that change it, in the vocabulary a surface file declares
 /// (`tilo_actions::surface`, see `docs/developers/slot-views.md` ). A view reads the menu through
-/// this and invokes it through this; the session publishes the same fields and verbs on its door.
+/// this and invokes it through this; the session publishes the same fields and verbs on its API.
 pub const WINDOW_MENU_SURFACE: &str = r#"
 [[resources]]
 kind = "desktop.window-menu"

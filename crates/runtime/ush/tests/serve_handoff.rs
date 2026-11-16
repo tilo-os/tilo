@@ -1299,10 +1299,10 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
 
     let runtime = dir.path().join("rt");
     let session_dir = runtime.join(tilo_paths::login::SESSION_DIR);
-    std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)).unwrap();
+    std::fs::create_dir_all(session_dir.join(tilo_paths::login::ENVIRONMENTS_DIR)).unwrap();
     let door = session_dir.join(tilo_paths::login::AGENT_SOCKET_FILE);
     let environment_server = session_dir
-        .join(tilo_paths::login::ENVIRONMENT_DOORS_DIR)
+        .join(tilo_paths::login::ENVIRONMENTS_DIR)
         .join("e1.sock");
     let session = fake_session(&door, environment_server.clone());
 
@@ -1354,8 +1354,8 @@ fn a_guest_reaches_the_session_through_its_own_mcp_server() {
 fn fake_session(
     door: &Path,
     serving: PathBuf,
-) -> std::thread::JoinHandle<(runtime_portal::environment_door::Request, bool, String)> {
-    use runtime_portal::environment_door::{Reply, Request};
+) -> std::thread::JoinHandle<(runtime_portal::environment_socket::Request, bool, String)> {
+    use runtime_portal::environment_socket::{Reply, Request};
     let listener = tilo_files::native::socket::bind(door).unwrap();
     std::thread::spawn(move || {
         let (lease, _) = listener.accept().unwrap();

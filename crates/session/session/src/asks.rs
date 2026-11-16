@@ -393,8 +393,8 @@ impl Shared {
             AgentAsk::Revoke => {
                 // What let its program in here is taken back, and every session of it ends: the
                 // next client of that program is asked about, as the first was.
-                if let Some(door) = self.mcp_server.borrow_mut().as_mut() {
-                    door.revoke(&working.program);
+                if let Some(server) = self.mcp_server.borrow_mut().as_mut() {
+                    server.revoke(&working.program);
                 }
                 self.agent_sessions.stop_program(&working.program);
             }

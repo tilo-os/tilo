@@ -491,7 +491,7 @@ impl Mentions {
     }
 
     /// Take up the places the person chose from a notice, so the host opens them through its own
-    /// door: the role knows where they want to be, and the host how to get there.
+    /// API: the role knows where they want to be, and the host how to get there.
     fn chosen_places(&self) {
         let Some(notices) = &self.0.notices else {
             return;
@@ -503,7 +503,7 @@ impl Mentions {
     }
 
     /// The places the person chose since this was last taken, in the order they chose them: what
-    /// the host opens through its own door.
+    /// the host opens through its own API.
     pub fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.0.chosen.borrow_mut())
     }

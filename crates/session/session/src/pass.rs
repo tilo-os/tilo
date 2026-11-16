@@ -88,7 +88,7 @@ impl Session {
         // whole is recorded rather than refused, and reads back here and on the person's devices.
         self.lend_record_content(&mut services);
         // What the packages the session runs itself (the shell) wrote into the records their parts
-        // share, published with every app's before the door answers this pass.
+        // share, published with every app's before the API answers this pass.
         if let Err(error) = services.follow_shared() {
             tracing::error!(%error, "a package's records are not followed");
         }
@@ -591,7 +591,7 @@ impl Session {
         );
         quick_settings::follow_dictation(&self.shared);
         // The picker's picks go into the field the person was typing in,
-        // through the same text-input door dictation writes through.
+        // through the same text-input API dictation writes through.
         let origin = self
             .shared
             .desktop

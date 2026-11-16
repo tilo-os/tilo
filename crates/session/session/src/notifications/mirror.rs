@@ -55,7 +55,7 @@ struct State {
 
 /// This device's side of the person's other devices' notifications.
 pub(crate) struct Mirroring {
-    /// The person's devices: where this device's notifications go, and the door what they do with
+    /// The person's devices: where this device's notifications go, and the API what they do with
     /// one comes back through. `None` while this session is no certified device of theirs.
     link: RefCell<Option<SharedLink>>,
     state: RefCell<State>,

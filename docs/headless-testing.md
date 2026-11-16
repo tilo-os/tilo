@@ -19,7 +19,7 @@ A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
-| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
+| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --api` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
 | `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |

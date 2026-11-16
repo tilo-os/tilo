@@ -101,7 +101,7 @@ fn admin_socket_refusal(kind: SocketKind, response: &serde_json::Value) -> Optio
         return None;
     }
     tilo_control::client::refusal_of_process(
-        &tilo_control::client::Door::Admin(PathBuf::new()),
+        &tilo_control::client::ControlSocket::Admin(PathBuf::new()),
         response,
     )
     .map(|message| format!("tilo-control: {message}"))
@@ -940,7 +940,7 @@ fn parse_action_invocation<'a>(
 }
 
 /// How long `actions invoke --wait` waits for the invocation to settle when
-/// no time is given: the MCP door's default. The desktop caps any wait at
+/// no time is given: the MCP socket's default. The desktop caps any wait at
 /// 30 s.
 const DEFAULT_INVOKE_WAIT_MS: u64 = 5_000;
 

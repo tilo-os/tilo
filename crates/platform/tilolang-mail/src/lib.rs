@@ -145,7 +145,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
     if origin != "imap" {
         return Err(format!("there is no connector for the origin `{origin}`"));
     }
-    let door = runtime_portal::origin_connector::take_door()
+    let door = runtime_portal::origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the connector no door".to_owned())?;
     let attachments = std::iter::from_fn(move || {
         match runtime_portal::origin_connector::receive_attachment(&door) {

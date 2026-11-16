@@ -1,4 +1,4 @@
-//! The records a connection reads and changes through the session's door: the ones this session's
+//! The records a connection reads and changes through the session's API: the ones this session's
 //! own services keep for the packages it runs (the shell), which answer on the loop's pass, and the
 //! workspace's, which its broker answers.
 
@@ -8,13 +8,13 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_lock::MutexRecover as _;
 
-use super::{ApiAsk, SessionDoors, WAIT, unanswered};
+use super::{ApiAsk, SessionServices, WAIT, unanswered};
 
 /// The records a connection reads and changes as any app's: those the session's services keep for
 /// packages it runs itself (the shell), on the loop's pass, and the workspace's through the broker.
 pub(crate) struct ServiceRecords {
     pub(crate) state: Option<std::sync::Weak<AppBrokerState>>,
-    pub(crate) session: Arc<SessionDoors>,
+    pub(crate) session: Arc<SessionServices>,
     /// The agent session an admitted connection is, when it is one: the records it changes are
     /// kept there, as what taking its work back undoes.
     pub(crate) agent_session: Option<(

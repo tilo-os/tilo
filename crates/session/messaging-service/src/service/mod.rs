@@ -14,8 +14,8 @@ use tilo_messaging::{
 use tilo_messaging_protocol::journal::Owner;
 use tilo_messaging_protocol::supervisor::AccountSupervisor;
 
-use crate::door::{self, DoorLink};
 use crate::link::{Handler, Responder};
+use crate::session::{self, SessionLink};
 use crate::wire::{self, AccountView, AppLink, SetupView, Snapshot};
 
 mod consent;
@@ -44,7 +44,7 @@ struct Flows {
 pub struct Service {
     custody: Arc<Custody>,
     vault: CredentialOwner,
-    door: DoorLink,
+    session: SessionLink,
     registry: Arc<dyn MessagingRegistry>,
     messaging: MessagingClient,
     flows: Flows,
@@ -64,7 +64,7 @@ pub struct Service {
 
 impl Service {
     /// The service for `principal` on SDK device `device`, keeping account
-    /// state under `profile`, asking the compositor through `door`.
+    /// state under `profile`, asking the compositor through `session`.
     ///
     /// # Errors
     /// The person's custody cannot be read.
@@ -72,20 +72,20 @@ impl Service {
         principal: &str,
         device: &str,
         profile: &std::path::Path,
-        door: DoorLink,
+        session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
         let custody = Arc::new(Custody::load(principal, device)?);
         let vault = CredentialOwner::deferred(principal, device, accounts::SecretStore::open)
             .map_err(|_| "the vault refuses this person or device".to_owned())?;
-        Self::assemble(custody, vault, profile, door, runtime)
+        Self::assemble(custody, vault, profile, session, runtime)
     }
 
     fn assemble(
         custody: Arc<Custody>,
         vault: CredentialOwner,
         profile: &std::path::Path,
-        door: DoorLink,
+        session: SessionLink,
         runtime: tokio::runtime::Handle,
     ) -> Result<Arc<Self>, String> {
         let principal = custody.principal().to_owned();
@@ -96,7 +96,7 @@ impl Service {
         let service = Arc::new_cyclic(|this: &Weak<Self>| Self {
             custody,
             vault,
-            door,
+            session,
             registry,
             messaging,
             flows: Flows {
@@ -229,7 +229,7 @@ impl Service {
     ) -> Result<Arc<A>, SendError> {
         let identity = identity.running();
         let authority =
-            records::CurrentAuthority::new(&identity, &credential, scope, self.door.clone())?;
+            records::CurrentAuthority::new(&identity, &credential, scope, self.session.clone())?;
         let gate = Gate::new(identity, credential, authority)?;
         let supervisor =
             AccountSupervisor::new_with_authority(&gate.identity.owner, Some(gate.clone()))?;
@@ -264,17 +264,17 @@ impl Service {
     pub(crate) fn policy(&self) -> consent::Policy {
         consent::Policy {
             cancellation: ServiceCancellation::for_owner(Arc::downgrade(&self.lifetime)),
-            door: self.door.clone(),
+            session: self.session.clone(),
         }
     }
 
     /// The person's accounts record now. Blocks.
     pub(crate) fn person_accounts(&self) -> Result<accounts::AccountStore, SendError> {
         match self
-            .door
-            .call_blocking(door::Call::Person, Duration::from_secs(5))
+            .session
+            .call_blocking(session::Call::Person, Duration::from_secs(5))
         {
-            Some(door::Reply::Person { accounts, .. }) => Ok(accounts),
+            Some(session::Reply::Person { accounts, .. }) => Ok(accounts),
             _ => Err(SendError::Unavailable),
         }
     }
@@ -284,14 +284,14 @@ impl Service {
     pub(crate) fn publish(
         &self,
         identity: &Identity,
-        publication: door::Publication,
+        publication: session::Publication,
     ) -> Result<(), SendError> {
         identity.check()?;
         match self
-            .door
-            .call_blocking(door::Call::Publish(publication), Duration::from_secs(10))
+            .session
+            .call_blocking(session::Call::Publish(publication), Duration::from_secs(10))
         {
-            Some(door::Reply::Done) => {}
+            Some(session::Reply::Done) => {}
             _ => return Err(SendError::Revoked),
         }
         identity.check()
@@ -318,7 +318,7 @@ impl Service {
         self.changed();
     }
 
-    /// Stop every account and enrollment; the door closed.
+    /// Stop every account and enrollment; the session closed.
     pub fn stop(&self) {
         self.flows.signal.retire_all();
         self.flows.whatsapp.retire_all();
@@ -415,14 +415,14 @@ pub(crate) fn runtime_dir() -> Result<PathBuf, SendError> {
     tilo_paths::xdg::runtime_dir().ok_or(SendError::Unavailable)
 }
 
-/// What the service answers the compositor over the door.
-pub struct DoorHandler {
+/// What the service answers the compositor over the session.
+pub struct SessionHandler {
     service: OnceLock<Weak<Service>>,
     /// The session's state as last reported, kept for a service bound after.
     session: Mutex<Option<(bool, u64)>>,
 }
 
-impl DoorHandler {
+impl SessionHandler {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             service: OnceLock::new(),
@@ -443,17 +443,21 @@ impl DoorHandler {
     }
 }
 
-impl Handler<door::Call, door::Reply, door::Event> for DoorHandler {
-    fn call(&self, _call: door::Call, reply: Responder<door::Call, door::Reply, door::Event>) {
+impl Handler<session::Call, session::Reply, session::Event> for SessionHandler {
+    fn call(
+        &self,
+        _call: session::Call,
+        reply: Responder<session::Call, session::Reply, session::Event>,
+    ) {
         if self.service().is_none() {
-            reply.send(door::Reply::Unavailable);
+            reply.send(session::Reply::Unavailable);
             return;
         }
-        reply.send(door::Reply::Refused);
+        reply.send(session::Reply::Refused);
     }
 
-    fn event(&self, event: door::Event) {
-        let door::Event::Session { active, generation } = event;
+    fn event(&self, event: session::Event) {
+        let session::Event::Session { active, generation } = event;
         *self.session.lock().unwrap_or_else(PoisonError::into_inner) = Some((active, generation));
         if let Some(service) = self.service() {
             service.session(active, generation);

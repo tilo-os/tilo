@@ -3224,7 +3224,7 @@ pub(crate) fn run_with_context(
         // of the app attach over it.
         #[cfg(target_os = "linux")]
         if opts.tilolang_connector.is_some()
-            && let Some(door) = crate::registration_gate::take_window_door()
+            && let Some(door) = crate::registration_gate::take_window_channel()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
@@ -3237,7 +3237,7 @@ pub(crate) fn run_with_context(
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
             && opts.tilolang_connector.is_none()
-            && let Some(door) = crate::registration_gate::take_window_door()
+            && let Some(door) = crate::registration_gate::take_window_channel()
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::windows::SERVICE.to_owned(),

@@ -1,5 +1,5 @@
 //! The REPL at the session's MCP server, on the headless session with the tilolang shell as the
-//! whole screen: `tilolang repl --door` asks to act as the person, the person admits it, and the
+//! whole screen: `tilolang repl --api` asks to act as the person, the person admits it, and the
 //! lines it sends are the agent's own calls (`tilo_ls`, `tilo`), run as the person.
 //!
 //! The person admits it either on the sheet the door's question opens, pressed as they press it,
@@ -1234,7 +1234,7 @@ fn the_repl_finds_what_place_found_places() {
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
-        state: Some(crate::common::seated_state()),
+        state: Some(crate::common::device_state()),
         shell: true,
         collab: false,
         services: apps,

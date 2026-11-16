@@ -376,7 +376,7 @@ impl Shared {
 
     /// Stand each place a service's `open` asked for since the last pass: a resource's own `open`
     /// and the layout's `open(resource)` are one act — the system's — so the requests go
-    /// through the layout door's `open`, that same code, beside the place the asking turn is
+    /// through the layout API's `open`, that same code, beside the place the asking turn is
     /// in and attributed to the actor that asked (`docs/designs/app-language/one-app-model.md`
     /// §3; shell.md §8, "The canvas composes views; it opens nothing"). A resource already shown
     /// is brought forward instead of stood a second time.
@@ -418,9 +418,9 @@ impl Shared {
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.
         let catalog = self.layout.borrow().targets();
-        self.session_doors.keep_tabs(&self.handle);
+        self.session_services.keep_tabs(&self.handle);
         if let Some(engine) = &self.engine {
-            self.session_doors.keep_awaiting(&self.handle, engine);
+            self.session_services.keep_awaiting(&self.handle, engine);
         }
         // What a place can show, as a find's answer holds it: the borrow ends here, since an
         // answer is heard on a later pass, off the pass that asked.
@@ -428,7 +428,7 @@ impl Shared {
             let catalog = std::rc::Rc::clone(&catalog);
             std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
         };
-        self.session_doors
+        self.session_services
             .answer(&self.published, &self.services, &self.search, &shows, look);
         // A service's `open` changes nothing of its record: opening is the session's arranging
         // step, and the places the services were asked for are stood through the layout's
@@ -436,7 +436,7 @@ impl Shared {
         // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
         // views; it opens nothing").
         self.open_asked_by_services();
-        // The finds the door asked on an earlier pass whose sources answered since: answered here,
+        // The finds the API asked on an earlier pass whose sources answered since: answered here,
         // where the catalogue a place reads is, and never by the pass that asked them.
         self.search.poll_finds();
         if let Some(power) = &self.power {
@@ -471,9 +471,9 @@ impl Shared {
         // answer admits it as their agent member for its client, which the broker's roster lists
         // before the client is told (`Shared::mcp_member`), and it is served from the next pass on.
         if !self.boot_join.borrow().waiting()
-            && let Some(door) = self.mcp_server.borrow_mut().as_mut()
+            && let Some(server) = self.mcp_server.borrow_mut().as_mut()
         {
-            door.follow(
+            server.follow(
                 &self.handle,
                 &self.person,
                 &|workspace: &str, client: &str| self.mcp_member(workspace, client),

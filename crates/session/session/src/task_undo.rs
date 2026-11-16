@@ -4,7 +4,7 @@
 //! takes those changes back by naming the task: its history's `undo` with `{"run": task}`. An agent
 //! connection stamps them with its session's group instead, which undo names the same way. That
 //! goes through the document's own history, so edits others made since are kept and a step's
-//! compensation runs. Each document the run changed is asked through the session's action door as
+//! compensation runs. Each document the run changed is asked through the session's action API as
 //! the person at the screen, on a thread of its own, so the activity's request answers at once.
 //!
 //! Whoever keeps the record answers: the app whose process holds it, or — a record no app's
@@ -26,7 +26,7 @@ use tilo_lock::MutexRecover as _;
 /// How long one run's undo may take altogether.
 const UNDO_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long the door has to answer a request at all.
+/// How long the API has to answer a request at all.
 const ANSWER: Duration = Duration::from_millis(100);
 
 /// The history verb every document publishes, and the argument naming a run.
@@ -36,8 +36,8 @@ const RUN: &str = "run";
 /// The provider the session's own services answer at: what keeps a record no app's process holds.
 const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
 
-/// The session's action door, as an undo asks it: the seat's own, or a test's.
-pub(crate) trait UndoDoor: Send + Sync {
+/// The session's action API, as an undo asks it: this device's own, or a test's.
+pub(crate) trait UndoApi: Send + Sync {
     /// One page of what `caller` is offered now.
     fn page(&self, caller: &Caller, query: CatalogueQuery) -> Option<CataloguePage>;
 
@@ -45,7 +45,7 @@ pub(crate) trait UndoDoor: Send + Sync {
     fn run(&self, caller: &Caller, request: InvokeRequest, until: Instant) -> Result<(), String>;
 }
 
-impl UndoDoor for crate::mcp_server::Host {
+impl UndoApi for crate::mcp_server::Host {
     fn page(&self, caller: &Caller, query: CatalogueQuery) -> Option<CataloguePage> {
         self.query(caller, query).wait_timeout(ANSWER).ok()??.ok()
     }
@@ -54,7 +54,7 @@ impl UndoDoor for crate::mcp_server::Host {
         let invocation = request.invocation;
         let left = until.saturating_duration_since(Instant::now());
         let receipt = match self
-            .invoke_at_seat(caller, request)
+            .invoke_as_local_person(caller, request)
             .wait_timeout(left.max(ANSWER))
         {
             Ok(Some(Ok(receipt))) => receipt,
@@ -86,7 +86,7 @@ fn settled(status: &ReceiptStatus) -> Result<(), String> {
 }
 
 /// Undo the run `run` (a task's id, or an agent connection's group) in each document `steps` names
-/// (its app and record), through `door` as `caller`: one [`TaskRunDocument`] per document the run
+/// (its app and record), through `api` as `caller`: one [`TaskRunDocument`] per document the run
 /// changed, in the order `steps` names them, so a record nobody reverted is reported rather than
 /// dropped.
 ///
@@ -94,7 +94,7 @@ fn settled(status: &ReceiptStatus) -> Result<(), String> {
 /// Nothing was undone: no document the run changed is open, or each refused. A run undone in some
 /// documents but not others answers those that were, with the refusals logged.
 pub(crate) fn undo_task_run(
-    door: &dyn UndoDoor,
+    api: &dyn UndoApi,
     caller: &Caller,
     run: &str,
     steps: &[(String, String)],
@@ -102,7 +102,7 @@ pub(crate) fn undo_task_run(
 ) -> Result<Vec<TaskRunDocument>, String> {
     let now = Instant::now();
     let deadline = now.checked_add(timeout).unwrap_or(now);
-    let providers = door
+    let providers = api
         .page(
             caller,
             CatalogueQuery {
@@ -110,7 +110,7 @@ pub(crate) fn undo_task_run(
                 ..CatalogueQuery::default()
             },
         )
-        .ok_or("the action door did not answer")?
+        .ok_or("the action API did not answer")?
         .providers;
     let targets = undo_targets(&providers, caller.workspace().unwrap_or_default(), steps);
     if targets.is_empty() {
@@ -119,7 +119,7 @@ pub(crate) fn undo_task_run(
     let mut undone: usize = 0;
     let mut refused = Vec::new();
     for target in &targets {
-        let Some(address) = undo_address(door, caller, &target.provider, &target.app) else {
+        let Some(address) = undo_address(api, caller, &target.provider, &target.app) else {
             refused.push(format!("{} has no history to undo", target.provider.app_id));
             continue;
         };
@@ -139,7 +139,7 @@ pub(crate) fn undo_task_run(
             wait_ms: None,
             appearance: None,
         };
-        match door.run(caller, request, deadline) {
+        match api.run(caller, request, deadline) {
             Ok(()) => undone = undone.saturating_add(1),
             Err(error) => refused.push(format!("{}: {error}", target.provider.app_id)),
         }
@@ -222,7 +222,7 @@ fn undo_targets(
 
 /// The address of the history `undo` that `provider` publishes for `app`'s record.
 fn undo_address(
-    door: &dyn UndoDoor,
+    api: &dyn UndoApi,
     caller: &Caller,
     provider: &CatalogueProvider,
     app: &str,
@@ -231,7 +231,7 @@ fn undo_address(
     // services keep, so there it is `app`'s own root — the resource the record's history is
     // published on — that is asked.
     let root = (provider.provider == SESSION).then(|| format!("tl:{app}:"));
-    door.page(
+    api.page(
         caller,
         CatalogueQuery {
             provider: Some(provider.provider.clone()),
@@ -270,11 +270,11 @@ pub(crate) enum UndoState {
 }
 
 impl Undos {
-    /// Start undoing the run `run` in `workspace` as `person`, through `door`; `done` is told once
+    /// Start undoing the run `run` in `workspace` as `person`, through `api`; `done` is told once
     /// it ended, on its thread.
     pub(crate) fn start(
         &self,
-        door: Arc<dyn UndoDoor>,
+        api: Arc<dyn UndoApi>,
         person: String,
         workspace: String,
         invocation: uuid::Uuid,
@@ -287,12 +287,12 @@ impl Undos {
         std::thread::Builder::new()
             .name("tilo-task-undo".into())
             .spawn(move || {
-                // Opening the door reads the workspace the pane's caller may hold, so the caller is
+                // Opening the API reads the workspace the pane's caller may hold, so the caller is
                 // the undo's own.
                 let caller = Caller::local_person(person)
                     .in_workspace(workspace)
                     .in_new_execution();
-                let outcome = undo_task_run(door.as_ref(), &caller, &run, &steps, UNDO_TIMEOUT);
+                let outcome = undo_task_run(api.as_ref(), &caller, &run, &steps, UNDO_TIMEOUT);
                 running.lock_recover().insert(invocation, Some(outcome));
                 done();
             })
@@ -332,7 +332,7 @@ mod tests {
 
     /// A note document served as its app publishes it: the history verbs it offers, and the run
     /// its `undo` takes back.
-    struct FakeDoor {
+    struct FakeApi {
         doc: Mutex<AutoCommit>,
         /// Whether the app publishes its history verbs.
         history: bool,
@@ -344,7 +344,7 @@ mod tests {
         session: bool,
     }
 
-    impl UndoDoor for FakeDoor {
+    impl UndoApi for FakeApi {
         fn page(&self, caller: &Caller, query: CatalogueQuery) -> Option<CataloguePage> {
             let mut page = CataloguePage::default();
             if query.max_results == 0 {
@@ -442,8 +442,8 @@ mod tests {
         (doc, body)
     }
 
-    fn door(doc: AutoCommit, history: bool, open: bool) -> FakeDoor {
-        FakeDoor {
+    fn fake_api(doc: AutoCommit, history: bool, open: bool) -> FakeApi {
+        FakeApi {
             doc: Mutex::new(doc),
             history,
             open,
@@ -453,8 +453,8 @@ mod tests {
 
     /// The same document, kept by the session itself: no app's process holds it, and the
     /// session's own provider answers its history.
-    fn session_api(doc: AutoCommit) -> FakeDoor {
-        FakeDoor {
+    fn session_api(doc: AutoCommit) -> FakeApi {
+        FakeApi {
             doc: Mutex::new(doc),
             history: true,
             open: false,
@@ -468,13 +468,13 @@ mod tests {
             .in_new_execution()
     }
 
-    fn undo(door: &FakeDoor) -> Result<Vec<TaskRunDocument>, String> {
-        undo_run(door, TASK)
+    fn undo(api: &FakeApi) -> Result<Vec<TaskRunDocument>, String> {
+        undo_run(api, TASK)
     }
 
-    fn undo_run(door: &FakeDoor, run: &str) -> Result<Vec<TaskRunDocument>, String> {
+    fn undo_run(api: &FakeApi, run: &str) -> Result<Vec<TaskRunDocument>, String> {
         undo_task_run(
-            door,
+            api,
             &caller(),
             run,
             &[(APP.to_owned(), RECORD.to_owned())],
@@ -490,16 +490,16 @@ mod tests {
         // undone in is reported.
         {
             let (doc, body) = edited(TASK);
-            let door = door(doc, true, true);
+            let api = fake_api(doc, true, true);
             assert_eq!(
-                undo(&door).expect("the document publishes its history"),
+                undo(&api).expect("the document publishes its history"),
                 vec![TaskRunDocument {
                     app: APP.into(),
                     record: RECORD.into(),
                 }]
             );
             assert_eq!(
-                door.doc.lock_recover().text(&body).unwrap(),
+                api.doc.lock_recover().text(&body).unwrap(),
                 "Shipping notes."
             );
         }
@@ -515,16 +515,16 @@ mod tests {
             doc.set_actor(ActorId::from(b"person".as_slice()));
             doc.splice_text(&body, 0, 0, "Reviewed: ").unwrap();
             doc.commit();
-            let door = door(doc, true, true);
+            let api = fake_api(doc, true, true);
             assert_eq!(
-                undo_run(&door, CONNECTION).expect("the document publishes its history"),
+                undo_run(&api, CONNECTION).expect("the document publishes its history"),
                 vec![TaskRunDocument {
                     app: APP.into(),
                     record: RECORD.into(),
                 }]
             );
             assert_eq!(
-                door.doc.lock_recover().text(&body).unwrap(),
+                api.doc.lock_recover().text(&body).unwrap(),
                 "Reviewed: Shipping notes.",
                 "the run's sentence went, the person's later one stayed"
             );
@@ -535,9 +535,9 @@ mod tests {
         // writes nothing.
         {
             let (doc, _) = edited(TASK);
-            let refused = undo(&door(doc.clone(), true, false)).unwrap_err();
+            let refused = undo(&fake_api(doc.clone(), true, false)).unwrap_err();
             assert!(refused.contains("open the documents"), "{refused}");
-            let refused = undo(&door(doc, false, true)).unwrap_err();
+            let refused = undo(&fake_api(doc, false, true)).unwrap_err();
             assert!(
                 refused.contains(APP) && refused.contains("history"),
                 "{refused}"
@@ -550,11 +550,11 @@ mod tests {
         // a provider an app process never published.
         {
             let (doc, body) = edited(TASK);
-            let door = session_api(doc);
+            let api = session_api(doc);
             // The activity names a session-kept record as the app's own record of the workspace.
             let primary = ui::record::RecordId::package_primary().as_str().to_owned();
             let undone = undo_task_run(
-                &door,
+                &api,
                 &caller(),
                 TASK,
                 &[(APP.to_owned(), primary.clone())],
@@ -569,7 +569,7 @@ mod tests {
                 }]
             );
             assert_eq!(
-                door.doc.lock_recover().text(&body).unwrap(),
+                api.doc.lock_recover().text(&body).unwrap(),
                 "Shipping notes."
             );
         }
@@ -579,9 +579,9 @@ mod tests {
         // has no history to undo there, and the refusal says so rather than claiming the undo.
         {
             let (doc, _) = edited(TASK);
-            let door = session_api(doc);
+            let api = session_api(doc);
             let refused = undo_task_run(
-                &door,
+                &api,
                 &caller(),
                 TASK,
                 &[("so.tilo.elsewhere".to_owned(), RECORD.to_owned())],

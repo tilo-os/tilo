@@ -1,25 +1,25 @@
-//! The door of each confined environment open on this login.
+//! The socket of each confined environment open on this login.
 //!
-//! The session's own door serves only programs in the session's namespaces, so
+//! The session's own socket serves only programs in the session's namespaces, so
 //! nothing inside a `ush` guest reaches it. When `ush` opens an environment it
-//! asks the session, on that door, for a door of the environment's own
-//! ([`runtime_portal::environment_door`]): the request passes the door's kernel
+//! asks the session, on that socket, for a socket of the environment's own
+//! ([`runtime_portal::environment_socket`]): the request passes the socket's kernel
 //! peer checks like any other connection, so it comes from a program of this
 //! login outside every sandbox. The session binds a fresh socket for the
-//! environment, beside its own door, and answers its path; `ush` binds that
+//! environment, beside its own socket, and answers its path; `ush` binds that
 //! socket into the environment alone, at
 //! [`tilo_paths::login::GUEST_AGENT_SOCKET`].
 //!
-//! A program connecting to an environment's door is served as an agent of
+//! A program connecting to an environment's socket is served as an agent of
 //! that environment, working in the environment's workspace rather than the
 //! one in front of the person. Being reachable only inside the environment is
 //! what authenticates it, and the kernel says so too: only a process of this
-//! account descending from the process holding the door's lease (the
+//! account descending from the process holding the socket's lease (the
 //! environment's own `ush`) is served there, so neither a program of the login
 //! outside the environment nor one in another environment is. The person's
 //! answer still decides each one, remembered per environment.
 //!
-//! The connection the request came on is the door's lease: when it closes (the
+//! The connection the request came on is the socket's lease: when it closes (the
 //! environment ended, or its `ush` did) the socket is removed and the agents it
 //! admitted are stopped.
 
@@ -32,13 +32,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 
-use runtime_portal::environment_door::{Reply, Request};
+use runtime_portal::environment_socket::{Reply, Request};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::word;
 
 use super::{ASK_EVERY, PeerRefusal, Serving, WAIT};
 
-/// Environments with a door open at once; more are refused one.
+/// Environments with a socket open at once; more are refused one.
 const MAX_ENVIRONMENTS: usize = 64;
 
 /// The longest an environment's part of an agent id is.
@@ -47,15 +47,15 @@ const MAX_PLACE: usize = 40;
 /// Where a connection came in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Origin {
-    /// The session's own door: a program of this login outside every sandbox.
+    /// The session's own socket: a program of this login outside every sandbox.
     Host,
-    /// The door of a confined environment.
+    /// The socket of a confined environment.
     Environment(Arc<Environment>),
 }
 
 impl Origin {
     /// The environment a connection is remembered by: its record key, or
-    /// `None` for the session's own door.
+    /// `None` for the session's own socket.
     pub(super) fn environment(&self) -> Option<&str> {
         match self {
             Self::Host => None,
@@ -97,7 +97,7 @@ impl Origin {
         match self {
             Self::Host => None,
             Self::Environment(environment) => Some(crate::agent_sessions::Entered {
-                door: environment.door,
+                door: environment.socket,
                 id: environment.id.clone(),
                 name: environment.name.clone(),
             }),
@@ -105,7 +105,7 @@ impl Origin {
     }
 }
 
-/// A confined environment with a door open.
+/// A confined environment with a socket open.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Environment {
     /// Its id on this device, `<workspace>/<record>`: what the person's
@@ -116,12 +116,12 @@ pub(super) struct Environment {
     /// The workspace its programs work in, by id, and as the person reads it.
     pub(super) workspace: String,
     pub(super) workspace_name: String,
-    /// The process holding the door's lease, and when it started: only its
+    /// The process holding the socket's lease, and when it started: only its
     /// descendants are served here.
     holder: u32,
     holder_start: Option<u64>,
-    /// This door's number among the doors this session opened.
-    door: u64,
+    /// This socket's number among the sockets this session opened.
+    socket: u64,
 }
 
 impl Environment {
@@ -200,16 +200,16 @@ pub(super) fn workspace_for(
     }
 }
 
-/// An environment's door asked for, waiting for the loop to say where its
+/// An environment's socket asked for, waiting for the loop to say where its
 /// programs work.
 pub(super) struct Opening {
     request: Request,
     decide: tokio::sync::oneshot::Sender<Result<(String, String), String>>,
 }
 
-/// The loop's side of the environments' doors: the doors asked for, and the
+/// The loop's side of the environments' sockets: the sockets asked for, and the
 /// instance each agent id has reached.
-pub(super) struct Doors {
+pub(super) struct Sockets {
     asked: Receiver<Opening>,
     opener: Opener,
     /// The last instance number given each agent at each place
@@ -218,19 +218,19 @@ pub(super) struct Doors {
     instances: HashMap<String, u64>,
 }
 
-/// What a connection's thread opens an environment's door with.
+/// What a connection's thread opens an environment's socket with.
 #[derive(Clone)]
 pub(super) struct Opener {
     asks: Sender<Opening>,
-    /// Where the environments' doors are bound: beside the session's own.
+    /// Where the environments' sockets are bound: beside the session's own.
     directory: Arc<Path>,
     open: Arc<AtomicUsize>,
-    doors: Arc<AtomicU64>,
+    sockets: Arc<AtomicU64>,
 }
 
-impl Doors {
-    /// The doors of environments, bound under `directory`. A door left there
-    /// by a session that ended is nobody's: this session's door is bound, so
+impl Sockets {
+    /// The sockets of environments, bound under `directory`. A socket left there
+    /// by a session that ended is nobody's: this session's socket is bound, so
     /// none other of this login serves there.
     pub(super) fn new(directory: PathBuf) -> Self {
         if let Ok(entries) = std::fs::read_dir(&directory) {
@@ -241,7 +241,7 @@ impl Doors {
                     .is_some_and(|extension| extension == "sock")
                     && let Err(error) = std::fs::remove_file(&path)
                 {
-                    tracing::warn!(%error, path = %path.display(), "MCP server: an ended session's environment door was not removed");
+                    tracing::warn!(%error, path = %path.display(), "MCP server: an ended session's environment socket was not removed");
                 }
             }
         }
@@ -252,7 +252,7 @@ impl Doors {
                 asks,
                 directory: directory.into(),
                 open: Arc::new(AtomicUsize::new(0)),
-                doors: Arc::new(AtomicU64::new(0)),
+                sockets: Arc::new(AtomicU64::new(0)),
             },
             instances: HashMap::new(),
         }
@@ -262,7 +262,7 @@ impl Doors {
         self.opener.clone()
     }
 
-    /// Say where each environment asking for a door works: the workspace its
+    /// Say where each environment asking for a socket works: the workspace its
     /// `ush` named, when the person may let an agent into it, else the one in
     /// front of them.
     pub(super) fn follow(&self, handle: &DesktopHandle, person: &str) {
@@ -283,11 +283,11 @@ impl Doors {
 }
 
 /// Answer what `first`, the first line of a connection from `pid` that came in by `entrance`,
-/// asks of the environments' doors: the runtime confining an environment asks for the
-/// environment's own door, only on the session's door, whose peer checks it passed; a program
+/// asks of the environments' sockets: the runtime confining an environment asks for the
+/// environment's own socket, only on the session's socket, whose peer checks it passed; a program
 /// inside an environment opens none, and is carried to no other device. The connection, when it
 /// asked for none of that.
-pub(super) fn answer_door_requests(
+pub(super) fn answer_socket_requests(
     stream: UnixStream,
     first: &[u8],
     pid: u32,
@@ -298,7 +298,7 @@ pub(super) fn answer_door_requests(
         if *entrance != Origin::Host {
             tracing::info!(
                 pid,
-                "MCP server: a program inside an environment asked for a door"
+                "MCP server: a program inside an environment asked for a socket"
             );
             super::refuse(stream, &PeerRefusal::OutsideEnvironment);
             return None;
@@ -315,7 +315,7 @@ pub(super) fn answer_door_requests(
 }
 
 /// The environment `request` named asks, on `stream` from `holder`, for a
-/// door of its own: open it, and keep it open until `stream` closes. Runs on
+/// socket of its own: open it, and keep it open until `stream` closes. Runs on
 /// a thread of its own for the environment's life.
 pub(super) fn open(mut stream: UnixStream, request: Request, holder: u32, serving: Serving) {
     let opener = serving.environments.clone();
@@ -324,7 +324,7 @@ pub(super) fn open(mut stream: UnixStream, request: Request, holder: u32, servin
         answer(
             &mut stream,
             &Reply::Refused {
-                reason: "the session serves as many environments' doors as it takes".to_owned(),
+                reason: "the session serves as many environments' sockets as it takes".to_owned(),
             },
         );
         return;
@@ -338,23 +338,23 @@ pub(super) fn open(mut stream: UnixStream, request: Request, holder: u32, servin
         });
     if let Err(error) = spawned {
         opener.open.fetch_sub(1, Ordering::Relaxed);
-        tracing::warn!(%error, "MCP server: an environment's door could not be opened");
+        tracing::warn!(%error, "MCP server: an environment's socket could not be opened");
     }
 }
 
-/// Open `request`'s door, serve it, and remove it once `stream` closes.
+/// Open `request`'s socket, serve it, and remove it once `stream` closes.
 fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Serving) {
     let opener = &serving.environments;
     let (workspace, workspace_name) = match where_it_works(&stream, request, opener, serving) {
         Ok(found) => found,
         Err(reason) => {
-            tracing::info!(environment = %request.environment, %reason, "MCP server: an environment's door is refused");
+            tracing::info!(environment = %request.environment, %reason, "MCP server: an environment's socket is refused");
             answer(&mut stream, &Reply::Refused { reason });
             return;
         }
     };
-    let door = opener
-        .doors
+    let socket = opener
+        .sockets
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
     let path = opener.directory.join(format!(
@@ -367,11 +367,11 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
     }) {
         Ok(listener) => listener,
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "MCP server: an environment's door could not be bound");
+            tracing::warn!(%error, path = %path.display(), "MCP server: an environment's socket could not be bound");
             answer(
                 &mut stream,
                 &Reply::Refused {
-                    reason: "the session could not open a door for this environment".to_owned(),
+                    reason: "the session could not open a socket for this environment".to_owned(),
                 },
             );
             return;
@@ -384,13 +384,13 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
         workspace_name,
         holder,
         holder_start: start_time(holder),
-        door,
+        socket,
     });
     tracing::info!(
         environment = %environment.id,
         %workspace,
         path = %path.display(),
-        "MCP server: an environment's door is open"
+        "MCP server: an environment's socket is open"
     );
     answer(
         &mut stream,
@@ -402,15 +402,15 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
     serve(&stream, &listener, &environment, serving);
     drop(listener);
     if let Err(error) = std::fs::remove_file(&path) {
-        tracing::warn!(%error, path = %path.display(), "MCP server: an ended environment's door was not removed");
+        tracing::warn!(%error, path = %path.display(), "MCP server: an ended environment's socket was not removed");
     }
     // The environment ended: so does every agent it let in.
-    serving.sessions.stop_environment(door);
-    tracing::info!(environment = %environment.id, "MCP server: an environment's door is closed");
+    serving.sessions.stop_environment(socket);
+    tracing::info!(environment = %environment.id, "MCP server: an environment's socket is closed");
 }
 
 /// Where the environment `request` names works, as the loop decides on its
-/// pass; the reason when it may not have a door, or `stream`, its lease,
+/// pass; the reason when it may not have a socket, or `stream`, its lease,
 /// closed while it waited.
 fn where_it_works(
     stream: &UnixStream,
@@ -437,7 +437,7 @@ fn where_it_works(
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
         if asked.elapsed() > WAIT || !tilo_mcp::session_api::client_connected(stream) {
-            return Err("the environment left before its door opened".to_owned());
+            return Err("the environment left before its socket opened".to_owned());
         }
         std::thread::sleep(ASK_EVERY);
     }
@@ -446,12 +446,12 @@ fn where_it_works(
 /// Write `reply` on the lease.
 fn answer(stream: &mut UnixStream, reply: &Reply) {
     if let Err(error) = stream.write_all(&reply.line()) {
-        // Its closed lease closes any door it was given.
+        // Its closed lease closes any socket it was given.
         tracing::info!(%error, "MCP server: an environment left before its answer");
     }
 }
 
-/// Serve `environment`'s door `listener` until `lease` closes: each process of
+/// Serve `environment`'s socket `listener` until `lease` closes: each process of
 /// the environment that connects is served as its agent; anything else is
 /// refused.
 fn serve(
@@ -482,10 +482,10 @@ fn serve(
             if error.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            tracing::warn!(%error, "MCP server: an environment's door stopped waiting");
+            tracing::warn!(%error, "MCP server: an environment's socket stopped waiting");
             return;
         }
-        let [lease_ready, door_ready] = fds;
+        let [lease_ready, socket_ready] = fds;
         if lease_ready.revents != 0 {
             // The lease says nothing more: anything but its end is ignored.
             match (&*lease).read(&mut ended) {
@@ -493,18 +493,18 @@ fn serve(
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => {
-                    tracing::info!(%error, environment = %environment.id, "MCP server: an environment's lease failed, so its door closes");
+                    tracing::info!(%error, environment = %environment.id, "MCP server: an environment's lease failed, so its socket closes");
                     return;
                 }
             }
         }
-        if door_ready.revents != 0 {
+        if socket_ready.revents != 0 {
             accept(listener, environment, serving);
         }
     }
 }
 
-/// Accept what is waiting at `environment`'s door.
+/// Accept what is waiting at `environment`'s socket.
 fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Serving) {
     loop {
         let stream = match listener.accept() {
@@ -512,13 +512,13 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => {
-                tracing::warn!(%error, "MCP server: accepting at an environment's door failed");
+                tracing::warn!(%error, "MCP server: accepting at an environment's socket failed");
                 return;
             }
         };
         let admitted = super::identify(&stream).and_then(|(pid, peer)| {
             environment_decision(&peer, pid, environment)?;
-            // Only a program of this environment is told that the door is full.
+            // Only a program of this environment is told that the socket is full.
             let place = serving.room.take().ok_or(PeerRefusal::Busy)?;
             Ok((pid, place))
         });
@@ -529,14 +529,14 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
                 super::From::Environment(pid, Arc::clone(environment)),
             ),
             Err(refusal) => {
-                tracing::info!(?refusal, environment = %environment.id, "MCP server: a connection to an environment's door is refused");
+                tracing::info!(?refusal, environment = %environment.id, "MCP server: a connection to an environment's socket is refused");
                 super::refuse(stream, &refusal);
             }
         }
     }
 }
 
-/// Decide one connection at `environment`'s door from its peer's facts: this
+/// Decide one connection at `environment`'s socket from its peer's facts: this
 /// session's account, in a process of that environment.
 pub(super) fn environment_decision(
     peer: &super::Peer,
@@ -610,7 +610,7 @@ mod tests {
             workspace_name: "Studio".into(),
             holder,
             holder_start: start_time(holder),
-            door: 1,
+            socket: 1,
         }
     }
 
@@ -683,27 +683,29 @@ mod tests {
 
     #[test]
     fn each_admitted_connection_is_an_agent_of_its_own() {
-        let mut doors = Doors::new(PathBuf::from("/nowhere"));
+        let mut sockets = Sockets::new(PathBuf::from("/nowhere"));
         let host = Origin::Host;
         let inside = Origin::Environment(Arc::new(environment(std::process::id())));
         assert_eq!(
-            doors.instance(&format!("claude-code@{}", host.place())),
+            sockets.instance(&format!("claude-code@{}", host.place())),
             ("claude-code@host#1".to_owned(), 1)
         );
         assert_eq!(
-            doors.instance(&format!("claude-code@{}", host.place())),
+            sockets.instance(&format!("claude-code@{}", host.place())),
             ("claude-code@host#2".to_owned(), 2)
         );
         assert_eq!(
-            doors.instance(&format!("claude-code@{}", inside.place())),
+            sockets.instance(&format!("claude-code@{}", inside.place())),
             ("claude-code@dev.box#1".to_owned(), 1),
             "each place counts its own"
         );
         assert_eq!(
-            doors.instance(&format!("codex@{}", host.place())),
+            sockets.instance(&format!("codex@{}", host.place())),
             ("codex@host#1".to_owned(), 1)
         );
-        let id = doors.instance(&format!("claude-code@{}", inside.place())).0;
+        let id = sockets
+            .instance(&format!("claude-code@{}", inside.place()))
+            .0;
         tilo_peer_state::workspace_membership::valid_agent_id(&id)
             .expect("an id a workspace names an agent by");
         assert_eq!(inside.environment(), Some("Dev.Box"));

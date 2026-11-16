@@ -92,45 +92,45 @@ pub(crate) enum Service {
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
-pub(crate) struct Door {
+pub(crate) struct Row {
     pub name: &'static str,
     pub reach: Reach,
     pub owner: Owner,
 }
 
 /// Every service this session's apps and devices reach.
-pub(crate) const TABLE: &[Door] = &[
-    Door {
+pub(crate) const TABLE: &[Row] = &[
+    Row {
         name: launcher::services::COLLAB_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Module("doors::plane"),
+        owner: Owner::Module("services::plane"),
     },
-    Door {
+    Row {
         name: launcher::services::SHELL_UI_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Module("app_tabs"),
     },
-    Door {
+    Row {
         name: launcher::services::IDENTITY_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::Identity),
     },
-    Door {
+    Row {
         name: tilo_system_stats::SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::SystemInfo),
     },
-    Door {
+    Row {
         name: launcher::services::SYSTEM_SERVICE,
         reach: Reach::NoConnection,
-        owner: Owner::Module("doors::plane"),
+        owner: Owner::Module("services::plane"),
     },
-    Door {
+    Row {
         name: "network-usage",
         reach: Reach::Plane,
         owner: Owner::Session(Service::DataUsage),
     },
-    Door {
+    Row {
         name: launcher::services::CHOOSER_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Nothing(
@@ -138,7 +138,7 @@ pub(crate) const TABLE: &[Door] = &[
              not served by this session yet",
         ),
     },
-    Door {
+    Row {
         name: launcher::services::COMPAT_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Nothing(
@@ -146,47 +146,47 @@ pub(crate) const TABLE: &[Door] = &[
              yet, because no session runs the appliance it would start",
         ),
     },
-    Door {
+    Row {
         name: tools::SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::Tools),
     },
-    Door {
+    Row {
         name: tilo_render_protocol::broker::SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Session(Service::Render),
     },
-    Door {
+    Row {
         name: launcher::services::MESSAGING_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-messaging"),
     },
-    Door {
+    Row {
         name: launcher::services::MODEL_GATEWAY_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-model-gateway"),
     },
-    Door {
+    Row {
         name: "models",
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-model-manager"),
     },
-    Door {
+    Row {
         name: launcher::services::APP_HOST_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-app-host"),
     },
-    Door {
+    Row {
         name: launcher::services::USH_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("tilo-supervisor"),
     },
-    Door {
+    Row {
         name: "tilo-fs",
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("the filesystem daemon"),
     },
-    Door {
+    Row {
         name: launcher::services::BLOB_SERVICE,
         reach: Reach::Launcher,
         owner: Owner::Elsewhere("the filesystem daemon"),
@@ -195,7 +195,7 @@ pub(crate) const TABLE: &[Door] = &[
 
 /// The services this session started, kept for as long as it runs.
 #[derive(Default)]
-pub(crate) struct Doors {
+pub(crate) struct Served {
     /// The identity broker apps sign in through.
     identity: Option<IdentityBrokerHandle>,
     /// The machine's readings, served to the apps the launcher connects.
@@ -236,26 +236,26 @@ pub(crate) struct Serving {
 
 /// Start every service of [`TABLE`] this module owns, and keep what serves them for as long as the
 /// session runs.
-pub(crate) fn start(mut serving: Serving) -> Doors {
-    let mut doors = Doors {
+pub(crate) fn start(mut serving: Serving) -> Served {
+    let mut served = Served {
         usage: data_usage::Counting::start(serving.wake.clone()),
-        ..Doors::default()
+        ..Served::default()
     };
-    for door in TABLE {
+    for row in TABLE {
         // What this session does and does not serve, as its log reads it: the same table the guard
         // below holds every client to.
         tracing::debug!(
-            service = door.name,
-            reach = ?door.reach,
-            owner = ?door.owner,
+            service = row.name,
+            reach = ?row.reach,
+            owner = ?row.owner,
             "a service of the session"
         );
-        let Owner::Session(service) = door.owner else {
+        let Owner::Session(service) = row.owner else {
             continue;
         };
         match service {
             Service::Identity => {
-                doors.identity = identity(
+                served.identity = identity(
                     serving.shell.as_ref().map(Arc::clone),
                     std::mem::take(&mut serving.keys),
                 );
@@ -267,15 +267,15 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
                     serving.person.clone(),
                     serving.render_node.take(),
                 ) {
-                    Ok(broker) => doors.render = Some(broker),
+                    Ok(broker) => served.render = Some(broker),
                     Err(error) => tracing::warn!(%error, "the apps' render broker is unavailable"),
                 }
             }
             Service::SystemInfo => {
-                doors.system_info = system_info(serving.questions.take(), serving.consents.take());
+                served.system_info = system_info(serving.questions.take(), serving.consents.take());
             }
             Service::Tools => {
-                doors.tools =
+                served.tools =
                     serving
                         .tools
                         .take()
@@ -290,10 +290,10 @@ pub(crate) fn start(mut serving: Serving) -> Doors {
             Service::DataUsage => {}
         }
     }
-    doors
+    served
 }
 
-impl Doors {
+impl Served {
     /// The typed opens an app asks this session for, while it serves them.
     pub(crate) fn tools(&self) -> Option<&tools::Handle> {
         self.tools.as_ref().map(tools::Tools::handle)
@@ -944,11 +944,11 @@ mod tests {
         {
             let missing: Vec<String> = dialled_by_clients()
                 .into_iter()
-                .filter(|name| !TABLE.iter().any(|door| door.name == name))
+                .filter(|name| !TABLE.iter().any(|row| row.name == name))
                 .collect();
             assert!(
                 missing.is_empty(),
-                "no row serves {missing:?}: add one to the table in mount/doors.rs"
+                "no row serves {missing:?}: add one to the table in services/mod.rs"
             );
         }
 
@@ -956,11 +956,11 @@ mod tests {
         // Two rows for one name would be two servers on one socket: the table names each service once.
         {
             let mut seen = BTreeSet::new();
-            for door in TABLE {
+            for row in TABLE {
                 assert!(
-                    seen.insert(door.name),
+                    seen.insert(row.name),
                     "`{}` has more than one row",
-                    door.name
+                    row.name
                 );
             }
         }
@@ -969,28 +969,28 @@ mod tests {
         // A row this module starts reaches its clients, a row served elsewhere names where, and a row
         // nothing serves says why.
         {
-            for door in TABLE {
-                match door.owner {
+            for row in TABLE {
+                match row.owner {
                     Owner::Session(service) => assert_ne!(
-                        door.reach,
+                        row.reach,
                         Reach::NoConnection,
                         "`{}` is started but reached nowhere ({service:?})",
-                        door.name
+                        row.name
                     ),
                     Owner::Module(module) => assert!(
-                        !module.is_empty() && door.reach != Reach::Plane,
+                        !module.is_empty() && row.reach != Reach::Plane,
                         "`{}` names the module `{module}` but is reached on the plane",
-                        door.name
+                        row.name
                     ),
                     Owner::Elsewhere(program) => assert!(
-                        !program.is_empty() && door.reach == Reach::Launcher,
+                        !program.is_empty() && row.reach == Reach::Launcher,
                         "`{}` names `{program}` as its server on no socket",
-                        door.name
+                        row.name
                     ),
                     Owner::Nothing(reason) => assert!(
                         reason.len() > 20,
                         "`{}` says nothing of why nothing serves it",
-                        door.name
+                        row.name
                     ),
                 }
             }
@@ -1010,7 +1010,7 @@ mod tests {
                 assert!(
                     TABLE
                         .iter()
-                        .any(|door| door.owner == Owner::Session(service)),
+                        .any(|row| row.owner == Owner::Session(service)),
                     "{service:?} has no row"
                 );
             }

@@ -1,6 +1,6 @@
 //! The retained parts of a column header the shell owns itself: the title
 //! (with its count). The actions that do not fit overflow into the toolkit's
-//! one door ([`crate::widget::OverflowDoor`]).
+//! one button ([`crate::widget::OverflowButton`]).
 
 use crate::num::f32_of_f64;
 use std::collections::HashMap;

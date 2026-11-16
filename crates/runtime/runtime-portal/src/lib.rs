@@ -5,12 +5,8 @@
 //! back to a local-only mode.
 
 pub mod agent_transport;
-/// The messages that travel over a connected door: Unix sockets and the
-/// descriptors they carry, so Linux only, like the clients that use it.
 #[cfg(unix)]
-pub mod door;
-#[cfg(unix)]
-pub mod environment_door;
+pub mod environment_socket;
 /// What a process says first on its connection to its session's services:
 /// the launch it is, written on a Unix socket. Only a broker attests it
 /// (its own side reads `/proc`), so writing one is available wherever the
@@ -18,6 +14,10 @@ pub mod environment_door;
 #[cfg(unix)]
 pub mod launch_handoff;
 pub mod local_socket;
+/// The messages that travel over a connected door: Unix sockets and the
+/// descriptors they carry, so Linux only, like the clients that use it.
+#[cfg(unix)]
+pub mod message;
 pub mod origin_connector;
 pub mod pending_connection;
 pub mod process_binding;

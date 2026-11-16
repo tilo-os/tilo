@@ -110,7 +110,7 @@ impl Published for Mailbox {
 fn options() -> Options {
     Options {
         person: ADA.to_owned(),
-        state: Some(crate::common::seated_state()),
+        state: Some(crate::common::device_state()),
         collab: false,
         ..Options::default()
     }
@@ -325,7 +325,7 @@ fn session_searching(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            state: Some(crate::common::seated_state()),
+            state: Some(crate::common::device_state()),
             collab: false,
             search: tilo_session::SearchOptions {
                 indexes: Some(std::sync::Arc::new(SessionIndexes::new(index, None))),

@@ -2408,9 +2408,9 @@ pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
-mod overflow_door;
-pub(crate) use overflow_door::give_way;
-pub use overflow_door::{OverflowDoor, plan as plan_overflow};
+mod overflow_button;
+pub(crate) use overflow_button::give_way;
+pub use overflow_button::{OverflowButton, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,

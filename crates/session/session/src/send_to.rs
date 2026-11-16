@@ -193,7 +193,7 @@ impl Sends {
 }
 
 /// The send action as a service: it takes each send, and the session's pass carries it out
-/// ([`Shared::deliver_sends`]), since a send makes agents and reaches Chat through the doors.
+/// ([`Shared::deliver_sends`]), since a send makes agents and reaches Chat through the APIs.
 pub(crate) struct SendToService {
     sends: Sends,
 }

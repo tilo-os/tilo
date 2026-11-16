@@ -626,7 +626,7 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
             | PersonalFabricAction::RetiredShowTab
-            // The device-certification exchange answered above, for the other door's preconditions.
+            // The device-certification exchange answered above, for the other API's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }

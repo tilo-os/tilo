@@ -2,7 +2,7 @@
 //! (`crates/lang/tilolang-cli/src/dev.rs`) in the directory protocol of `tilo_app_module`: the
 //! directory is named in `TILO_APP_MODULE_UPDATES`. Without one, nothing here runs. In a
 //! session the workspace's tilolang host runs the instance, and the session hands it later
-//! builds over the host's door.
+//! builds over the host's socket.
 //!
 //! A thread watches the directory and reads each new generation as a [`Bundle`], which it hands
 //! over to the later builds the window's instance follows ([`builds`]).

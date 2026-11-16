@@ -3,7 +3,7 @@
 //! The walk itself is the shell's ([`tilo_desktop::overlays`]): Alt+Tab's presses ask its verbs, and it
 //! says which window it reached. This reads that once a pass, as the panel shows it, so the chrome
 //! draws what the shell decided and nothing of its own.
-//! A host without the shell's door, the page, moves the same walk through [`WindowWalk`].
+//! A host without the shell's API, the page, moves the same walk through [`WindowWalk`].
 
 use tilo_desktop::overlays::{Overlay, Overlays};
 use tilo_desktop::window_switcher::Switcher;
@@ -46,7 +46,7 @@ pub(crate) fn show(
 
 /// Alt+Tab on a host that hands the session its keys itself, as the page does: the shell's walk over
 /// its windows, the panel the chrome draws of it, and the keys that move it. The walk is the one the
-/// shell's verbs move on a native desktop; with no door to the shell here, its keys move it directly.
+/// shell's verbs move on a native desktop; with no API to the shell here, its keys move it directly.
 pub struct WindowWalk {
     handle: tilo_desktop_surface::DesktopHandle,
     walk: Overlays,

@@ -1,7 +1,7 @@
 //! A workspace's activity, served to the apps this session runs.
 //! The shell serves the activity model to its own windows in process
 //! ([`tilo_desktop_surface::session::activity`]); an app runs in a process of its own and reaches
-//! the same model through the action broker, under [`wire::PROVIDER`]. Both ask the same door
+//! the same model through the action broker, under [`wire::PROVIDER`]. Both ask the same API
 //! ([`ActivityRequests`]): this is the broker's end of it. Its reads are live views, re-read
 //! whenever the shell's model has served something new; its writes run on the shell's thread when the
 //! shell takes them, so a write and a read of the same change cannot cross.
@@ -11,7 +11,7 @@
     target_arch = "wasm32",
     allow(
         dead_code,
-        reason = "the page serves its own activity over this door next"
+        reason = "the page serves its own activity over this API next"
     )
 )]
 
@@ -28,7 +28,7 @@ use tilo_desktop_surface::activity::{is_read, refused_to_agent};
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::session::ActivityRequests;
 
-/// The broker's door to the activity the shell's model serves.
+/// The broker's API to the activity the shell's model serves.
 pub(crate) struct ActivityWire {
     requests: ActivityRequests,
     /// Moves whenever what an app follows may read differently.
@@ -36,7 +36,7 @@ pub(crate) struct ActivityWire {
 }
 
 impl ActivityWire {
-    /// The door `requests` serves, and the changes to what it serves.
+    /// The API `requests` serves, and the changes to what it serves.
     pub(crate) fn new(requests: ActivityRequests) -> Self {
         Self {
             requests,
@@ -77,7 +77,7 @@ fn arguments_of(
     serde_json::from_str(json).map_err(|error| error.to_string())
 }
 
-/// `request` 's caller, as the door knows it: an app reaches the activity as the person using it,
+/// `request` 's caller, as the API knows it: an app reaches the activity as the person using it,
 /// confined to the workspace it runs in.
 fn caller_of(request: &HostStepRequest<'_>) -> Caller {
     let caller = if request.actor.is_agent() {
@@ -110,7 +110,7 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         // Undoing a change, restoring a version and undoing an agent's task overwrite documents
         // with what they held before: the changes they drop stay in the record, but Undo does not
         // bring them back, and they are everybody's. So the declaration says Undo cannot take it
-        // back, and every door asks the person first. Narrating a work group (naming, splitting,
+        // back, and every API asks the person first. Narrating a work group (naming, splitting,
         // merging) writes the activity record alone and stays undoable, so it runs at once.
         let mut contract = ActionContract {
             kind: ActionKind::Undoable,

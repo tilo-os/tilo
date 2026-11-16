@@ -699,7 +699,7 @@ mod tests {
 
     use super::*;
 
-    /// Ask the arrangement resource `action` with `arguments`, as the door decodes it.
+    /// Ask the arrangement resource `action` with `arguments`, as the API decodes it.
     fn asked(service: &mut QuickSettingsService, action: &str, arguments: &serde_json::Value) {
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         service

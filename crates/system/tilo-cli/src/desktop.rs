@@ -19,7 +19,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 use clap_complete::Shell;
-use tilo_control::client::{Door, desktop_present, doors_from_env};
+use tilo_control::client::{ControlSocket, desktop_present, sockets_from_env};
 use tilo_control::front::{self, Io, Spelling};
 
 /// `tilo action …` and the standalone `action`.
@@ -69,14 +69,14 @@ pub enum WorkspaceCmd {
 
 /// Run one `workspace` subcommand.
 pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
-    let doors = doors();
+    let sockets = sockets();
     with_io(|io| match cmd {
         WorkspaceCmd::Branch { source, name } => {
             // The shell's own verb, as the workspace menu and an agent invoke it.
             let address =
                 tilo_actions::ActionAddress::new("desktop:chrome", "branch-workspace").encode();
             front::run_address(
-                &doors,
+                &sockets,
                 (
                     tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
                     &address,
@@ -90,14 +90,14 @@ pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
     })
 }
 
-/// The doors of this process.
-pub fn doors() -> Vec<Door> {
-    doors_from_env()
+/// The sockets of this process.
+pub fn sockets() -> Vec<ControlSocket> {
+    sockets_from_env()
 }
 
 /// Whether a desktop session serves this process at all.
 pub fn available() -> bool {
-    desktop_present(&doors())
+    desktop_present(&sockets())
 }
 
 fn exit(code: u8) -> ExitCode {
@@ -123,19 +123,19 @@ fn with_io(run: impl FnOnce(&mut Io<'_>) -> u8) -> ExitCode {
 
 /// Run one `action` subcommand, with examples spelled for `spelling`.
 pub fn run_action(cmd: ActionCmd, spelling: &Spelling) -> ExitCode {
-    let doors = doors();
+    let sockets = sockets();
     with_io(|io| match cmd {
-        ActionCmd::List { filter } => front::list(&doors, &filter.join(" "), spelling, io),
-        ActionCmd::Run { action, args } => front::run(&doors, &action, &args, spelling, io),
-        ActionCmd::Show { action } => front::show(&doors, &action, spelling, io),
+        ActionCmd::List { filter } => front::list(&sockets, &filter.join(" "), spelling, io),
+        ActionCmd::Run { action, args } => front::run(&sockets, &action, &args, spelling, io),
+        ActionCmd::Show { action } => front::show(&sockets, &action, spelling, io),
     })
 }
 
 /// `tilo open APP [file|link…]` and `tilo app open …`.
 pub fn run_open(app: &str, items: &[String], spelling: &Spelling) -> ExitCode {
-    let doors = doors();
+    let sockets = sockets();
     let cwd = std::env::current_dir().unwrap_or_default();
-    with_io(|io| front::open(&doors, app, items, &cwd, spelling, io))
+    with_io(|io| front::open(&sockets, app, items, &cwd, spelling, io))
 }
 
 /// What `tilo complete` completes.
@@ -150,10 +150,10 @@ pub enum Completing {
 /// `tilo complete KIND [PREFIX]`: one candidate per line, for the shell
 /// completions below. Prints nothing where there is no desktop.
 pub fn complete(what: Completing, prefix: &str) -> ExitCode {
-    let doors = doors();
+    let sockets = sockets();
     let names = match what {
-        Completing::Actions => front::complete_actions(&doors, prefix),
-        Completing::Apps => front::complete_apps(&doors, prefix),
+        Completing::Actions => front::complete_actions(&sockets, prefix),
+        Completing::Apps => front::complete_apps(&sockets, prefix),
     };
     let mut out = std::io::stdout().lock();
     for name in names {

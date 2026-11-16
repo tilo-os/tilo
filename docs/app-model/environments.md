@@ -266,7 +266,7 @@ shows both, each in its workspace, and Stop on one ends that one alone.
 outside every sandbox, so nothing in a guest reaches it. When `ush` opens an
 environment it asks the session, on that door, for a door of the
 environment's own, by its `TILO_ENVIRONMENT` id
-(`runtime_portal::environment_door`; the request passes the
+(`runtime_portal::environment_socket`; the request passes the
 door's kernel peer checks, so it comes from a program of the login outside
 every sandbox). The session binds a fresh socket beside its own
 (`tilo-session/environments/`), answers its path and the workspace it serves,

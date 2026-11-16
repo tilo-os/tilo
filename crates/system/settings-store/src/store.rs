@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
-use tilo_settings_records::{Door, Hold, Holding, Records, Watch};
+use tilo_settings_records::{Hold, Holding, Records, Socket, Watch};
 
 use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
@@ -90,7 +90,7 @@ pub struct Store {
     changes: crate::ChangeSignal,
     failures: Mutex<Vec<crate::DeferredFailure>>,
     watch: Mutex<Option<Watch>>,
-    door: Mutex<Option<Door>>,
+    socket: Mutex<Option<Socket>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -172,10 +172,10 @@ impl Store {
             changes: crate::ChangeSignal::default(),
             failures: Mutex::new(Vec::new()),
             watch: Mutex::new(None),
-            door: Mutex::new(None),
+            socket: Mutex::new(None),
         });
         if holds {
-            store.open_door();
+            store.open_socket();
         }
         if follower {
             let weak = Arc::downgrade(&store);
@@ -188,29 +188,29 @@ impl Store {
         Ok(store)
     }
 
-    fn open_door(&self) {
+    fn open_socket(&self) {
         let weak = self.me.clone();
-        let opened = self.records.open_door(move |request| {
+        let opened = self.records.open_socket(move |request| {
             let answer = match weak.upgrade() {
-                Some(store) => door::answer(&store, request),
-                None => door::Answer::Refused("the settings were closed".to_owned()),
+                Some(store) => socket::answer(&store, request),
+                None => socket::Answer::Refused("the settings were closed".to_owned()),
             };
             match serde_json::to_vec(&answer) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    tracing::error!(%error, "the settings door could not encode its answer");
+                    tracing::error!(%error, "the settings socket could not encode its answer");
                     Vec::new()
                 }
             }
         });
-        *self.door.lock_recover() = match opened {
-            Ok(door) => Some(door),
+        *self.socket.lock_recover() = match opened {
+            Ok(socket) => Some(socket),
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
             Err(error) => {
                 tracing::error!(
                     root = %self.root.display(),
                     %error,
-                    "the settings door did not open: other processes' settings writes fail"
+                    "the settings socket did not open: other processes' settings writes fail"
                 );
                 None
             }
@@ -246,7 +246,7 @@ impl Store {
         *self.refused.lock_recover() = None;
         *self.watch.lock_recover() = None;
         self.publish(document);
-        self.open_door();
+        self.open_socket();
         true
     }
 
@@ -493,7 +493,7 @@ impl Store {
                 .iter()
                 .flat_map(|change| change.raw_bytes().to_vec())
                 .collect();
-            let changes = door::Changes {
+            let changes = socket::Changes {
                 person: holder == Holder::Person,
                 section: section.to_owned(),
                 bytes,
@@ -518,7 +518,7 @@ impl Store {
         writer().schedule(&self.me);
     }
 
-    fn take_changes(&self, changes: &door::Changes) -> std::io::Result<()> {
+    fn take_changes(&self, changes: &socket::Changes) -> std::io::Result<()> {
         let holder = if changes.person {
             Holder::Person
         } else {
@@ -534,14 +534,14 @@ impl Store {
         Ok(())
     }
 
-    fn forward_changes(&self, changes: door::Changes, why: &str) -> std::io::Result<()> {
-        let request = door::Request {
+    fn forward_changes(&self, changes: socket::Changes, why: &str) -> std::io::Result<()> {
+        let request = socket::Request {
             origin: ChangeOrigin::default(),
             expected: Vec::new(),
             sections: Vec::new(),
             changes: Some(changes),
         };
-        match door::send(&self.records, &request) {
+        match socket::send(&self.records, &request) {
             Ok(_) => {
                 self.take_in_saves();
                 Ok(())
@@ -686,20 +686,20 @@ impl Store {
             .iter()
             .map(|(name, _)| (name.clone(), document.get(name).cloned()))
             .collect();
-        let request = door::Request {
+        let request = socket::Request {
             origin: origin.clone(),
             expected,
             sections,
             changes: None,
         };
-        let answer = match door::send(&self.records, &request) {
+        let answer = match socket::send(&self.records, &request) {
             Ok(answer) => answer,
-            // The holder lets the settings go before it closes its door:
-            // where the door no longer answers and the lock is free, this
+            // The holder lets the settings go before it closes its socket:
+            // where the socket no longer answers and the lock is free, this
             // process holds them and makes the change itself. A holder that
             // is still there is never waited for.
             Err(_) if self.take_over() => {
-                let door::Request {
+                let socket::Request {
                     expected, sections, ..
                 } = request;
                 let mut sections = Some(sections);
@@ -722,7 +722,7 @@ impl Store {
     }
 }
 
-mod door {
+mod socket {
     use serde_json::{Map, Value};
     use tilo_settings_records::Records;
 
@@ -790,7 +790,7 @@ mod door {
 
     pub(super) fn send(records: &Records, request: &Request) -> std::io::Result<ConditionalUpdate> {
         let body = serde_json::to_vec(request).map_err(std::io::Error::other)?;
-        let line = records.knock(&body)?;
+        let line = records.send(&body)?;
         match serde_json::from_slice::<Answer>(&line).map_err(std::io::Error::other)? {
             Answer::Stored => Ok(ConditionalUpdate::Stored),
             Answer::Superseded => Ok(ConditionalUpdate::Superseded),
@@ -1033,7 +1033,7 @@ fn empty(root: &Path) -> Arc<Store> {
         changes: crate::ChangeSignal::default(),
         failures: Mutex::new(Vec::new()),
         watch: Mutex::new(None),
-        door: Mutex::new(None),
+        socket: Mutex::new(None),
     })
 }
 
@@ -1070,22 +1070,22 @@ mod tests {
     fn deep_profile() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
-        let [_, door] = Records::of(&root).runtime_files();
-        assert!(door.as_os_str().len() > 108, "{}", door.display());
+        let [_, socket] = Records::of(&root).runtime_files();
+        assert!(socket.as_os_str().len() > 108, "{}", socket.display());
         (dir, root)
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_follower_never_waits_for_a_live_holder_whose_door_is_gone() {
+    fn a_follower_never_waits_for_a_live_holder_whose_socket_is_gone() {
         let dir = tempfile::tempdir().unwrap();
         let holder = Store::open(dir.path()).unwrap();
         holder.update_section("s", object(json!({"x": 1}))).unwrap();
         holder.flush_pending();
         let follower = Store::open(dir.path()).unwrap();
-        *holder.door.lock_recover() = None;
-        let [_, door] = holder.records.runtime_files();
-        drop(std::os::unix::net::UnixListener::bind(&door).unwrap());
+        *holder.socket.lock_recover() = None;
+        let [_, socket] = holder.records.runtime_files();
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
 
         let writer = Arc::clone(&follower);
         let refused = promptly(move || writer.update_section("s", object(json!({"x": 2}))));

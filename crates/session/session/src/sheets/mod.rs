@@ -2,7 +2,7 @@
 //! or a service, workspace settings), each an app of [`tilo_sheets`] on a layer of its own covering
 //! a display, up while its state's presentation says so. The state is how the session and the
 //! services behind it talk to the sheet: what it shows in, what the person chose out. Its actions
-//! are published through its door while it is up. Which display each sheet covers is placed here
+//! are published through its API while it is up. Which display each sheet covers is placed here
 //! too, from the one the person is working on. Each sheet is the session's: it keeps its state
 //! current and puts it up, and whoever asks reaches that state through the session.
 

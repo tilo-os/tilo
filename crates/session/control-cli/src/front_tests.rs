@@ -77,12 +77,12 @@ fn desktop_answer(request: &serde_json::Value) -> serde_json::Value {
 }
 
 /// A socket answering each request line with `answer`, recording requests.
-struct FakeDoor {
+struct FakeSocket {
     path: PathBuf,
     requests: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
-impl FakeDoor {
+impl FakeSocket {
     fn serve(
         dir: &Path,
         name: &str,
@@ -90,7 +90,7 @@ impl FakeDoor {
         close_after_first: bool,
     ) -> Self {
         let path = dir.join(name);
-        let listener = UnixListener::bind(&path).expect("bind the fake door");
+        let listener = UnixListener::bind(&path).expect("bind the fake socket");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&requests);
         std::thread::spawn(move || {
@@ -264,18 +264,18 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
     assert_eq!(pick_app("x", &actions[..5]), None, "no app rows at all");
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let door = FakeDoor::serve(dir.path(), "control.sock", desktop_answer, false);
-    let doors = [Door::Named(door.path.clone())];
+    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
+    let sockets = [ControlSocket::Named(socket.path.clone())];
     let spelling = Spelling::tilo();
 
-    let opened = ran(|io| open(&doors, "calc", &[], dir.path(), &spelling, io));
+    let opened = ran(|io| open(&sockets, "calc", &[], dir.path(), &spelling, io));
     assert_eq!(opened.code, 0, "{}", opened.err);
-    let invoked = door.invocations();
+    let invoked = socket.invocations();
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0]["provider"], "applications");
     assert_eq!(invoked[0]["id"], "so.tilo.calculator");
     assert_eq!(invoked[0]["args"], serde_json::json!({}));
-    let listed = door
+    let listed = socket
         .requests()
         .into_iter()
         .find(|request| request["op"] == "actions_enumerate")
@@ -285,7 +285,7 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
 
     let with_files = ran(|io| {
         open(
-            &doors,
+            &sockets,
             "Notes",
             &["plan.md".to_string(), "https://tilo.so".to_string()],
             Path::new("/home/me"),
@@ -294,7 +294,7 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
         )
     });
     assert_eq!(with_files.code, 0, "{}", with_files.err);
-    let invoked = door.invocations();
+    let invoked = socket.invocations();
     let last = invoked.last().expect("an invocation");
     assert_eq!(last["provider"], "applications");
     assert_eq!(last["id"], "open-with:so.tilo.notes");
@@ -305,7 +305,7 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
 
     let absent = ran(|io| {
         open(
-            &doors,
+            &sockets,
             "chess",
             &["game.pgn".to_string()],
             dir.path(),
@@ -318,7 +318,7 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
         absent.err,
         "Chess isn't on this device yet. Open it once to get it: tilo open chess\n"
     );
-    let unknown = ran(|io| open(&doors[..0], "calc", &[], dir.path(), &spelling, io));
+    let unknown = ran(|io| open(&sockets[..0], "calc", &[], dir.path(), &spelling, io));
     assert_eq!(unknown.code, 1);
     assert_eq!(unknown.err, "This needs a Tilo desktop session.\n");
 }
@@ -326,36 +326,52 @@ fn open_resolves_an_app_by_word_name_or_id_like_search() {
 #[test]
 fn do_validates_then_invokes_through_a_control_socket() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let door = FakeDoor::serve(dir.path(), "control.sock", desktop_answer, false);
-    let doors = [Door::Named(door.path.clone())];
+    let socket = FakeSocket::serve(dir.path(), "control.sock", desktop_answer, false);
+    let sockets = [ControlSocket::Named(socket.path.clone())];
     let spelling = Spelling::tilo();
 
-    let done = ran(|io| run(&doors, "new terminal", &[], &spelling, io));
+    let done = ran(|io| run(&sockets, "new terminal", &[], &spelling, io));
     assert_eq!(
         (done.code, done.out.as_str()),
         (0, "done\n"),
         "{}",
         done.err
     );
-    let invoked = door.invocations();
+    let invoked = socket.invocations();
     assert_eq!(invoked.len(), 1);
     assert_eq!(invoked[0]["provider"], "actions");
     assert_eq!(invoked[0]["id"], "window.new.terminal");
     assert_eq!(invoked[0]["wait_ms"], 5000);
 
-    let renamed = ran(|io| run(&doors, "rename-note", &["Groceries".into()], &spelling, io));
+    let renamed = ran(|io| {
+        run(
+            &sockets,
+            "rename-note",
+            &["Groceries".into()],
+            &spelling,
+            io,
+        )
+    });
     assert_eq!(renamed.code, 0, "{}", renamed.err);
-    let invoked = door.invocations();
+    let invoked = socket.invocations();
     assert_eq!(invoked[1]["id"], "notes\u{1f}rename");
     assert_eq!(
         invoked[1]["args"],
         serde_json::json!({"title": "Groceries"})
     );
 
-    let refused = ran(|io| run(&doors, "set-volume", &["level=loud".into()], &spelling, io));
+    let refused = ran(|io| {
+        run(
+            &sockets,
+            "set-volume",
+            &["level=loud".into()],
+            &spelling,
+            io,
+        )
+    });
     assert_eq!(refused.code, 1);
     assert_eq!(refused.err, "level must be a whole number, not “loud”.\n");
-    let ambiguous = ran(|io| run(&doors, "rename", &["x".into()], &spelling, io));
+    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], &spelling, io));
     assert_eq!(ambiguous.code, 1);
     assert!(
         ambiguous.err.contains("tilo do rename-report-md")
@@ -364,12 +380,12 @@ fn do_validates_then_invokes_through_a_control_socket() {
         ambiguous.err
     );
     assert_eq!(
-        door.invocations().len(),
+        socket.invocations().len(),
         2,
         "nothing is invoked when its arguments are wrong or its name is unclear"
     );
 
-    let shown = ran(|io| show(&doors, "rename-note", &spelling, io));
+    let shown = ran(|io| show(&sockets, "rename-note", &spelling, io));
     assert_eq!(shown.code, 0);
     assert!(
         shown.out.starts_with("Rename note\nTodo\n"),
@@ -395,15 +411,15 @@ fn do_validates_then_invokes_through_a_control_socket() {
 #[test]
 fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let admin = FakeDoor::serve(dir.path(), "admin-control.sock", admin_refusal, true);
-    let agent = FakeDoor::serve(dir.path(), "agent.sock", desktop_answer, false);
-    let doors = [
-        Door::Admin(admin.path.clone()),
-        Door::Agent(agent.path.clone()),
+    let admin = FakeSocket::serve(dir.path(), "admin-control.sock", admin_refusal, true);
+    let agent = FakeSocket::serve(dir.path(), "agent.sock", desktop_answer, false);
+    let sockets = [
+        ControlSocket::Admin(admin.path.clone()),
+        ControlSocket::Agent(agent.path.clone()),
     ];
     let spelling = Spelling::tilo();
 
-    let listed = ran(|io| list(&doors, "", &spelling, io));
+    let listed = ran(|io| list(&sockets, "", &spelling, io));
     assert_eq!(listed.code, 0, "{}", listed.err);
     assert!(listed.out.starts_with("Actions\n"), "{}", listed.out);
     assert!(
@@ -415,7 +431,7 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
     );
     assert!(listed.out.contains("\nApps\n"), "{}", listed.out);
 
-    let done = ran(|io| run(&doors, "new-terminal-window", &[], &spelling, io));
+    let done = ran(|io| run(&sockets, "new-terminal-window", &[], &spelling, io));
     assert_eq!(done.code, 0, "{}", done.err);
     assert_eq!(agent.invocations().len(), 1, "run through the MCP server");
     assert!(
@@ -429,7 +445,7 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
     );
 
     // An MCP server that turns the process away too ends in one sentence.
-    let refusing = FakeDoor::serve(
+    let refusing = FakeSocket::serve(
         dir.path(),
         "refusing-agent.sock",
         |_| {
@@ -438,8 +454,11 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
         },
         true,
     );
-    let doors = [Door::Admin(admin.path), Door::Agent(refusing.path)];
-    let refused = ran(|io| list(&doors, "", &spelling, io));
+    let sockets = [
+        ControlSocket::Admin(admin.path),
+        ControlSocket::Agent(refusing.path),
+    ];
+    let refused = ran(|io| list(&sockets, "", &spelling, io));
     assert_eq!(refused.code, 1);
     assert_eq!(
         refused.err,

@@ -611,7 +611,7 @@ pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) 
             let primary = ui::widget::find_test_id(root, &id).is_some_and(is_primary_button);
             out.push(RowControl {
                 name: access.name.clone().unwrap_or_default(),
-                menu: node.widget == "OverflowDoor",
+                menu: node.widget == "OverflowButton",
                 id,
                 rect: node.rect,
                 primary,

@@ -1,4 +1,4 @@
-//! This device's keyboard shortcuts on the app door.
+//! This device's keyboard shortcuts on the app shortcuts.
 //! The catalogue is the shortcut guide's own ([`tilo_sheets::keyboard_shortcuts`]): apps asking for
 //! the keymap read the same names and the same live chords the guide and Settings show, and
 //! changing a shortcut stays the person's `shortcuts` settings section's action. The broker loads
@@ -21,9 +21,9 @@ use tilo_broker_core::services::KeyboardShortcutServices;
 use tilo_sheets::keyboard_shortcuts as catalogue;
 
 /// The device's shortcut table as the broker answers an app's call for it.
-pub(crate) struct Door;
+pub(crate) struct Shortcuts;
 
-impl KeyboardShortcutServices for Door {
+impl KeyboardShortcutServices for Shortcuts {
     fn app_id(&self) -> &str {
         catalogue::APP_ID
     }
@@ -61,7 +61,7 @@ impl KeyboardShortcutServices for Door {
 /// The seam this session hands the broker: the shortcut catalogue, read from the keymap the broker
 /// loads.
 pub(crate) fn servable() -> Arc<dyn KeyboardShortcutServices> {
-    Arc::new(Door)
+    Arc::new(Shortcuts)
 }
 
 #[cfg(test)]
@@ -70,19 +70,19 @@ mod tests {
     use settings_store::hardware::ShortcutConfig;
 
     tilo_test_env::scenario! {
-        fn the_shortcut_catalogue_is_a_read_through_the_door;
+        fn the_shortcut_catalogue_is_a_read_through_the_api;
 
-        phase an_app_reads_the_shortcut_catalogue_through_the_door;
+        phase an_app_reads_the_shortcut_catalogue_through_the_api;
         // An app asking for one shortcut reads the catalogue the guide shows: the row names its live
         // chords, canonically and as the layout spells them, and refuses everything that is not the
         // one action published.
         {
-            let door = servable();
+            let surface = servable();
             let keymap = ShortcutConfig::default();
-            assert_eq!(door.app_id(), "so.tilo.settings");
-            assert!(door.is_resource(catalogue::RESOURCE));
+            assert_eq!(surface.app_id(), "so.tilo.settings");
+            assert!(surface.is_resource(catalogue::RESOURCE));
 
-            let rows = door.catalogue_rows("shell", &keymap);
+            let rows = surface.catalogue_rows("shell", &keymap);
             assert_eq!(rows.len(), 1, "one resource carries the catalogue");
             let row = &rows[0];
             assert_eq!(row.provider, "shell");
@@ -96,7 +96,7 @@ mod tests {
                 ))
             );
 
-            let listed = door
+            let listed = surface
                 .apply(
                     &keymap,
                     &ActionAddress::new(catalogue::RESOURCE, catalogue::LIST_ACTION),
@@ -105,14 +105,14 @@ mod tests {
                 .expect("listing the catalogue is answered")
                 .value
                 .expect("the list is the answer");
-            let shortcuts = listed["shortcuts"]
+            let entries = listed["shortcuts"]
                 .as_array()
                 .expect("the catalogue is a list");
             assert!(
-                shortcuts.len() > settings_store::hardware::ShortcutAction::ALL.len(),
+                entries.len() > settings_store::hardware::ShortcutAction::ALL.len(),
                 "every rebindable action and every fixed shortcut is listed"
             );
-            let terminal = shortcuts
+            let terminal = entries
                 .iter()
                 .find(|row| row["id"] == settings_store::hardware::ShortcutAction::OpenTerminal.id())
                 .expect("the terminal shortcut is listed");
@@ -120,7 +120,7 @@ mod tests {
             assert_eq!(terminal["defaults"], serde_json::json!(["Ctrl+Alt+T"]));
 
             assert!(
-                door.apply(
+                surface.apply(
                     &keymap,
                     &ActionAddress::new(catalogue::RESOURCE, "reset-all"),
                     None
@@ -129,7 +129,7 @@ mod tests {
                 "changing a shortcut is the shortcuts settings section's action"
             );
             assert_eq!(
-                door.descriptor(
+                surface.descriptor(
                     &keymap,
                     &ActionAddress::new(catalogue::RESOURCE, "reset-all")
                 ),

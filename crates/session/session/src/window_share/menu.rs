@@ -3,7 +3,7 @@
 //! A window's menu offers to share the window with its workspace, or to stop. The shell keeps
 //! nothing of the share: what the row says is what the shares' resource reads when the menu is
 //! asked for ([`WindowShares::reading`]), and choosing the row invokes the resource's own action
-//! with the tab, through the door every caller uses. The menu is one more caller of
+//! with the tab, through the API every caller uses. The menu is one more caller of
 //! `session:window-share`, so a share started from it is checked, announced and ended exactly as
 //! one a script or an agent starts.
 

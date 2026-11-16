@@ -423,7 +423,7 @@ pub struct Hosted {
     /// for its drive and app lists' changes are answered from.
     pub tools: Option<crate::tools::Handle>,
     /// The programs the agents working this session's tasks write, which this
-    /// session's door runs as steps of their runs.
+    /// session's links runs as steps of their runs.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// The session's own actions — the layout, its undo, the windows and the
     /// notices — offered to a turn's agent as the broker's steps, so it arranges the
@@ -492,7 +492,7 @@ pub fn serve(
     // A session with an identity and a state to keep its workspaces in is the
     // person's device itself: what its broker admits is recorded before it runs
     // and answered from that record, so a change survives the session stopping
-    // mid-run. A session with neither keeps the doors that need no identity.
+    // mid-run. A session with neither keeps the services that need no identity.
     let config =
         hosted
             .engine
@@ -840,7 +840,7 @@ impl WorkspaceAuthority for LayoutAuthority {
 
     /// Every write the broker's checks read here is announced: the session on [`Self::publish`],
     /// the workspaces' governance by their owner, the device fleet and identity registry by
-    /// their stores, and an agent's run ending by its door.
+    /// their stores, and an agent's run ending by its links.
     fn announces_policy_changes(&self) -> bool {
         true
     }
@@ -1138,7 +1138,7 @@ fn seams(
             }) as std::sync::Arc<dyn tilo_action_broker::services::AppConsents>
         });
     // What each installed app's signed manifest declares it may do on the
-    // action door: a ceiling the broker decides an app's calls against.
+    // action links: a ceiling the broker decides an app's calls against.
     let app_action_access = crate::seams::declared_access(lists.clone());
     let app_resource_kinds = crate::seams::declared_resource_kinds(lists);
     // Where the broker keeps the actions of apps that are closed, beside the
@@ -1198,7 +1198,7 @@ fn seams(
         ),
         // A record's own origin is its app's collaboration plane route, and a
         // task's change reaches it as the app's action; the session applies
-        // no record change of its own for the door to ask.
+        // no record change of its own for the links to ask.
         record_changes: Seam::unserved(
             "an agent's change to a record goes through the record's own app, not through \
              a record origin this session keeps",
@@ -1363,9 +1363,9 @@ fn seams(
                     // The person's account with the host the session runs
                     // on: what Settings and the overview of their Tilo show,
                     // followed as the host's plans change.
-                    crate::host_account::HostAccountDoor::session(),
+                    crate::host_account::HostAccountApi::session(),
                 ],
-                // An agent's task writes its programs; this session's door runs them as the
+                // An agent's task writes its programs; this session's links runs them as the
                 // steps of the run the task is in.
                 task_programs
                     .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
@@ -1485,7 +1485,7 @@ pub(crate) struct Plane {
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
-    pub(crate) _personal: Option<tilo_action_broker::personal::Door>,
+    pub(crate) _personal: Option<tilo_action_broker::personal::Links>,
 }
 
 impl Plane {
@@ -1578,14 +1578,14 @@ fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> 
         .is_some_and(|rows| !rows.is_empty())
 }
 
-/// The session's own actions as the broker's steps, for a fixture: a door that is never asked
+/// The session's own actions as the broker's steps, for a fixture: a links that is never asked
 /// anything.
 #[cfg(test)]
 fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
-    let doors =
-        crate::mcp_server::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
+    let services =
+        crate::mcp_server::SessionServices::new(tilo_service::LoopWake::default().handle(), "Pat");
     std::sync::Arc::new(crate::session_actions::SessionActions::new(
-        std::sync::Arc::new(doors),
+        std::sync::Arc::new(services),
     ))
 }
 
@@ -1680,7 +1680,7 @@ mod tests {
         }
     }
 
-    /// The activity's door, which these tests serve nothing on.
+    /// The activity's links, which these tests serve nothing on.
     fn requests() -> tilo_desktop_surface::session::ActivityRequests {
         tilo_desktop_surface::session::activity_requests(std::sync::Arc::new(
             std::sync::atomic::AtomicBool::new(false),
@@ -1707,7 +1707,7 @@ mod tests {
     }
 
     /// The same, over the app lists the test reads: what each app declared it
-    /// may do on the action door is served out of them.
+    /// may do on the action links is served out of them.
     fn hosted_with(content: Option<std::sync::Arc<AppContentIndex>>, lists: Lists) -> Hosted {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
@@ -1819,7 +1819,7 @@ mod tests {
 
         phase an_app_keeps_and_asks_for_content_through_the_services_of_this_session;
         // An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
-        // put door, are served by the plane this session keeps: the same store
+        // put links, are served by the plane this session keeps: the same store
         // and the same asks of the workspace's other devices. A session that
         // keeps no content hands the broker none of it.
         {
@@ -2007,7 +2007,7 @@ mod tests {
         }
 
         phase an_apps_declared_access_is_what_this_device_read;
-        // What an app declared it may do on the action door is served out of the
+        // What an app declared it may do on the action links is served out of the
         // lists this device read: its own declaration, and nothing for an app
         // that declared nothing.
         {
@@ -2089,7 +2089,7 @@ mod tests {
         }
     }
 
-    /// What each shipped app's sources call of the action door: the seam each
+    /// What each shipped app's sources call of the action links: the seam each
     /// call reaches, and the apps whose sources make it.
     fn seams_shipped_apps_call()
     -> std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>> {

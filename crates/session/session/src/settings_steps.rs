@@ -10,7 +10,7 @@
 //!
 //! The rows are the settings the service published on the loop's last pass, read there and
 //! handed here ([`Self::offer`]), where a catalogue built on the broker's own thread finds them
-//! without waiting on the session. An invocation is handed to the session's door
+//! without waiting on the session. An invocation is handed to the session's API
 //! ([`SessionSteps`](crate::platform::steps::SessionSteps)) and answered on the pass, where the
 //! service runs it: the same path a service's step takes from the session's own provider, with
 //! the broker admitting it first, its confirmation included, under Settings' app id.
@@ -27,9 +27,9 @@ use crate::platform::steps::SessionSteps;
 
 /// The person's settings, as the broker's catalogue names them for Settings' controls.
 pub(crate) struct SettingsSteps {
-    /// What answers an invocation on the loop's pass: the session's own doors, where the
+    /// What answers an invocation on the loop's pass: the session's own steps, where the
     /// settings service runs it.
-    doors: Arc<dyn SessionSteps>,
+    steps: Arc<dyn SessionSteps>,
     /// The settings the service published on its last pass: what the catalogue lists, and the
     /// sections' field edits an invocation is decided against.
     resources: std::sync::RwLock<Vec<ResourceSpec>>,
@@ -40,10 +40,10 @@ pub(crate) struct SettingsSteps {
 }
 
 impl SettingsSteps {
-    /// The person's settings, whose invocations the session answers on its pass through `doors`.
-    pub(crate) fn new(doors: Arc<dyn SessionSteps>) -> Self {
+    /// The person's settings, whose invocations the session answers on its pass through `steps`.
+    pub(crate) fn new(steps: Arc<dyn SessionSteps>) -> Self {
         Self {
-            doors,
+            steps,
             resources: std::sync::RwLock::default(),
             read_at: std::sync::Mutex::default(),
         }
@@ -136,7 +136,7 @@ impl HostStepServices for SettingsSteps {
         // The place the ask is in, as for the session's own steps: an agent's turn stands what a
         // setting opens beside its conversation, the person's own step beside the place in front.
         let beside = crate::mcp_server::service_steps::turn_beside(request.actor.turn());
-        self.doors.invoke_step(
+        self.steps.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),
             argument,

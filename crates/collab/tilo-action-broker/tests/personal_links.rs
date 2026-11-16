@@ -23,7 +23,7 @@ use runtime_collab::event::CollabEvent;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tilo_action_broker::collab_broker::{BrokerChannels, FanoutState};
-use tilo_action_broker::personal::{Door, Person};
+use tilo_action_broker::personal::{Links, Person};
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
@@ -150,14 +150,14 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
     );
 
     // This device serves the person's store: its own router answers the
-    // store's link, as the session's endpoint does, and the door carries what
+    // store's link, as the session's endpoint does, and the links carry what
     // a sibling writes to the apps here.
     let a_endpoint = endpoint(&a_key).await;
     let router = iroh::protocol::Router::builder(a_endpoint.clone())
         .accept(PERSONAL_ALPN, a.clone())
         .spawn();
     let state = tempfile::tempdir().unwrap();
-    let door = Door::serve(
+    let links = Links::serve(
         &tokio::runtime::Handle::current(),
         a_endpoint.clone(),
         a.clone(),
@@ -202,7 +202,7 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
     );
 
     // And the other way: what this device's app writes reaches the person's
-    // other device through the link the same door keeps.
+    // other device through the links it keeps.
     a.publish(|store, key, now| {
         store.publish(APP, RECORD, &change("email", "ada@example.com"), key, now)
     })
@@ -256,7 +256,7 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
     );
 
     link.abort();
-    drop(door);
+    drop(links);
     router.shutdown().await.unwrap();
     a_endpoint.close().await;
     b_endpoint.close().await;

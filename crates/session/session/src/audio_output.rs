@@ -178,7 +178,7 @@ struct Outputs {
     entries: BTreeMap<Key, Entry>,
 }
 
-/// What the door holds of this session's audio output.
+/// What the API holds of this session's audio output.
 struct Shared {
     outputs: Mutex<Outputs>,
     streams: &'static dyn AudioStreams,
@@ -439,7 +439,7 @@ fn write(entry: &Entry, sequence: u64, samples: Vec<i16>) -> Result<(), String> 
     Ok(())
 }
 
-/// The apps' sound on this device's output, as the action door reaches it.
+/// The apps' sound on this device's output, as the action API reaches it.
 #[derive(Clone)]
 pub(crate) struct AppAudioOutput(Arc<Shared>);
 

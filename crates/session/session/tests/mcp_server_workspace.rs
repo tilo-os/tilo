@@ -8,7 +8,7 @@
 //! door's own places, so no more of them wait than the door serves.
 //!
 //! The environment here is the test's own: the test holds its door's lease as `ush` does
-//! ([`runtime_portal::environment_door`]), and the programs inside it are processes the test
+//! ([`runtime_portal::environment_socket`]), and the programs inside it are processes the test
 //! starts, as an environment's are its `ush`'s.
 
 #![cfg(target_os = "linux")]
@@ -33,7 +33,7 @@ use std::time::{Duration, Instant, SystemTime};
 use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use runtime_portal::environment_door::{self, Lease, Request};
+use runtime_portal::environment_socket::{self, Lease, Request};
 use serde_json::{Value, json};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_mcp::devices::{ALPN, NotOpened, open};
@@ -423,7 +423,7 @@ impl Shell {
         );
         let (tell, opened) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tell.send(environment_door::open(&door, &request));
+            let _ = tell.send(environment_socket::open(&door, &request));
         });
         crate::common::wait_for(&mut self.session, "the environment's door", |_| {
             opened.try_recv().ok()

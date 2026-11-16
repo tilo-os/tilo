@@ -20,8 +20,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionDescriptor, ApiError, ExecutionLocus, InvocationId};
 use tilo_app_launch::{
-    Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
-    Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
+    Answer, Authority, Cause, Channels, HeldChannel, Instance, Kind, Launch, PlanContext, Planned,
+    Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
 use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
@@ -121,15 +121,15 @@ struct State {
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
-    /// The window doors of the apps this session starts, once it lent them: one process per app per
+    /// The window channels of the apps this session starts, once it lent them: one process per app per
     /// workspace opens that app's later windows itself.
-    doors: Option<Rc<WindowDoors>>,
-    /// This session, while the doors are lent: a window that must start a process of its own starts
+    channels: Option<Rc<Channels>>,
+    /// This session, while the channels are lent: a window that must start a process of its own starts
     /// it here.
     me: Weak<Apps>,
-    /// The door of each launch still running, by the launch's id: the end of the launch retires it,
+    /// The channel of each launch still running, by the launch's id: the end of the launch retires it,
     /// so the app's next window there starts a process again.
-    held: BTreeMap<u64, HeldDoor>,
+    held: BTreeMap<u64, HeldChannel>,
     /// The windows apps asked this session for, by app and in ask order: each starts in the tab the
     /// shell holds for it once the shell asks back ([`Apps::start_asked`]).
     planned: BTreeMap<String, VecDeque<WindowAsk>>,
@@ -150,7 +150,7 @@ struct State {
     /// The agents this device runs because the person here keeps them, by workspace and id: what
     /// each was started with, and the launch running it while one does.
     agents: BTreeMap<(String, String), AgentProcess>,
-    /// The tilolang hosts, once the session lent its doors: one per workspace and author, running
+    /// The tilolang hosts, once the session lent its channels: one per workspace and author, running
     /// the instances of the tilolang apps' windows.
     hosts: Option<Arc<tilo_app_launch::tilolang_hosts::Hosts>>,
     /// The connectors of the apps' outside services: what a hosted instance reaches its origin by.
@@ -230,7 +230,7 @@ impl Apps {
                 software: false,
                 launched: BTreeMap::new(),
                 launches: None,
-                doors: None,
+                channels: None,
                 me: Weak::new(),
                 held: BTreeMap::new(),
                 planned: BTreeMap::new(),
@@ -439,20 +439,20 @@ impl Apps {
         Ok(())
     }
 
-    /// The window doors the session keeps for the apps it starts: from here on the first launch of
-    /// an app in a workspace hands its process the door, and every later window of that app there
+    /// The window channels the session keeps for the apps it starts: from here on the first launch of
+    /// an app in a workspace hands its process the channel, and every later window of that app there
     /// opens in that process.
     ///
     /// A tilolang app's windows hold none of its data: each window's instance runs in the
     /// tilolang host of its workspace and author, reaching its outside service through
     /// `connectors`.
-    pub fn lend_doors(
+    pub fn lend_channels(
         self: &Rc<Self>,
-        doors: Rc<WindowDoors>,
+        channels: Rc<Channels>,
         connectors: Rc<crate::connectors::ConnectorHost>,
     ) {
         let me = Rc::downgrade(self);
-        doors.hand_instances_to(Box::new(move |hosted| {
+        channels.hand_instances_to(Box::new(move |hosted| {
             if let Some(apps) = me.upgrade() {
                 apps.host_window(hosted);
             }
@@ -463,7 +463,7 @@ impl Apps {
             .launcher
             .clone()
             .map(tilo_app_launch::tilolang_hosts::Hosts::new);
-        state.doors = Some(doors);
+        state.channels = Some(channels);
         state.connectors = Some(connectors);
     }
 
@@ -479,10 +479,10 @@ impl Apps {
     }
 
     /// Whether `app`'s windows hold none of its data, their instances run in a tilolang host:
-    /// a tilolang app, in a session with doors and a launcher to start hosts through.
+    /// a tilolang app, in a session with channels and a launcher to start hosts through.
     fn runs_in_host(&self, app: &str) -> bool {
         let state = self.state.borrow();
-        if state.doors.is_none() || state.hosts.is_none() {
+        if state.channels.is_none() || state.hosts.is_none() {
             return false;
         }
         drop(state);
@@ -711,7 +711,7 @@ impl Apps {
             if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
                 tracing::warn!(%id, %error, "the person's authority there was not published");
             }
-            // The windows whose instances a tilolang host runs are told on its door.
+            // The windows whose instances a tilolang host runs are told on its channel.
             if let Some(hosts) = &hosts {
                 hosts.policy_changed(&workspace);
             }
@@ -1106,7 +1106,7 @@ impl Apps {
                 );
                 continue;
             }
-            // The launch is over: its door retires with it, so the app's next window there starts a
+            // The launch is over: its channel retires with it, so the app's next window there starts a
             // process again.
             self.state.borrow_mut().held.remove(&event.id);
             let lived = self
@@ -1570,7 +1570,7 @@ impl Apps {
     }
 
     /// Start `launch` in `workspace` : in the process the app already runs there when that one
-    /// opens the app's windows, and otherwise in a process of its own, which holds the app's door
+    /// opens the app's windows, and otherwise in a process of its own, which holds the app's channel
     /// for its workspace until it ends. Whether a window comes for the tab held for this launch.
     fn start_window(
         &self,
@@ -1596,9 +1596,9 @@ impl Apps {
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
         // A tilolang app's window holds none of its data: its instance runs in the tilolang host
-        // of its workspace and author, and every window of it opens through its door, which
+        // of its workspace and author, and every window of it opens through its channel, which
         // names the instance the window draws.
-        let doors = self.state.borrow().doors.clone();
+        let channels = self.state.borrow().channels.clone();
         let hosted = launch.package().is_some() && self.runs_in_host(app);
         if instance.is_none() {
             window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
@@ -1619,19 +1619,19 @@ impl Apps {
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no shell behind it: the tab is the window's instance, and it is the only
         // name the window has.
-        let instance = match (&doors, hosted) {
-            (Some(doors), true) => instance.or_else(|| Some(doors.next_instance())),
+        let instance = match (&channels, hosted) {
+            (Some(channels), true) => instance.or_else(|| Some(channels.next_instance())),
             _ => instance,
         };
         let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
         // The window this launch starts is the one the shell asked for: a
-        // process has no door open to it yet, so its launch says which item
-        // it opens (`ui::window_door::REVEAL_ENV`).
+        // process has no channel open to it yet, so its launch says which item
+        // it opens (`ui::window_channel::REVEAL_ENV`).
         if let Some(reveal) = reveal.filter(|_| !hosted) {
             planned
                 .env
-                .insert(ui::window_door::REVEAL_ENV.to_owned(), reveal.to_owned());
+                .insert(ui::window_channel::REVEAL_ENV.to_owned(), reveal.to_owned());
         }
         // The tool this launch opens is told what to show: only a package is given it.
         if let (Some(context), Kind::Package) =
@@ -1642,7 +1642,7 @@ impl Apps {
                 .insert(runtime_portal::tools::TOOL_CONTEXT_ENV.to_owned(), context);
         }
         let asked = launch.id();
-        let Some(doors) = doors else {
+        let Some(channels) = channels else {
             return self
                 .spawn(&planned, Some(&asked), &workspace.id, None, Some(timed))
                 .map(|_| true);
@@ -1656,7 +1656,7 @@ impl Apps {
         } else {
             Box::new(self.start_alone(&planned, &asked, &workspace.id, timed))
         };
-        let reserved = doors.route_or_reserve(
+        let reserved = channels.route_or_reserve(
             &planned.app,
             &workspace.id,
             routable,
@@ -1677,12 +1677,12 @@ impl Apps {
             Ok(reservation) => reservation,
         };
         if hosted {
-            // The process is the app's windows alone: its door carries each window's patch
+            // The process is the app's windows alone: its channel carries each window's patch
             // connection, and the host of its workspace and author runs their instances.
-            if reservation.is_none() || !doors.host_instances(&planned.app, &workspace.id) {
+            if reservation.is_none() || !channels.host_instances(&planned.app, &workspace.id) {
                 tilo_startup_metrics::launch_failed(timed);
                 return Err(ApiError::Failed(format!(
-                    "{} has no window door, which its hosted windows open through",
+                    "{} has no window channel, which its hosted windows open through",
                     planned.app
                 )));
             }
@@ -1691,12 +1691,12 @@ impl Apps {
                 .push(tilo_app_launch::tilolang_hosts::HOSTED_ARG.to_owned());
         }
         tilo_startup_metrics::launch_phase(app, "routed");
-        let door = doors.hold(&planned.app, &workspace.id);
-        let started = self.spawn(&planned, Some(&asked), &workspace.id, door, Some(timed));
+        let channel = channels.hold(&planned.app, &workspace.id);
+        let started = self.spawn(&planned, Some(&asked), &workspace.id, channel, Some(timed));
         if started.is_ok()
             && let Some(reservation) = reservation
         {
-            // The launch holds its door from its start: the reservation is spent, not given up.
+            // The launch holds its channel from its start: the reservation is spent, not given up.
             reservation.launched();
         }
         // A hosted app's first window goes to its host as a later window does.
@@ -1704,7 +1704,7 @@ impl Apps {
             && hosted
             && let Some(instance) = instance
             && let Err(error) =
-                doors.first_hosted_window(&planned.app, &workspace.id, instance, &opens)
+                channels.first_hosted_window(&planned.app, &workspace.id, instance, &opens)
         {
             tracing::error!(%error, app = %planned.app, "a hosted window's instance runs nowhere");
         }
@@ -1763,7 +1763,7 @@ impl Apps {
 
     /// Start package `app` in `workspace` with no window, for an action that shows nothing: its
     /// process takes the app's actions on its records and makes a window only when the shell
-    /// asks it for one, through the door it holds as every launch of the app does. A process of
+    /// asks it for one, through the channel it holds as every launch of the app does. A process of
     /// the app running there already takes the action instead, and nothing starts.
     fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), ApiError> {
         if self.runs_in_host(launch.app()) {
@@ -1780,7 +1780,7 @@ impl Apps {
         launch: &Launch,
         workspace: &Workspace,
     ) -> Result<(), ApiError> {
-        let Some(doors) = self.state.borrow().doors.clone() else {
+        let Some(channels) = self.state.borrow().channels.clone() else {
             return Err(ApiError::Failed(
                 "this session starts no app without a window".into(),
             ));
@@ -1788,24 +1788,25 @@ impl Apps {
         let mut planned = self
             .plan(launch, workspace, false, None)
             .map_err(|error| ApiError::Failed(refusal_said(&error)))?;
-        planned
-            .env
-            .insert(ui::window_door::WINDOWLESS_ENV.to_owned(), "1".to_owned());
-        let Some(reservation) = doors
+        planned.env.insert(
+            ui::window_channel::WINDOWLESS_ENV.to_owned(),
+            "1".to_owned(),
+        );
+        let Some(reservation) = channels
             .reserve_unless_running(&planned.app, &workspace.id)
             .map_err(ApiError::Failed)?
         else {
             return Ok(());
         };
-        let door = doors.hold(&planned.app, &workspace.id);
-        self.spawn(&planned, Some(&launch.id()), &workspace.id, door, None)?;
-        // The launch holds its door from its start: the reservation is spent, not given up.
+        let channel = channels.hold(&planned.app, &workspace.id);
+        self.spawn(&planned, Some(&launch.id()), &workspace.id, channel, None)?;
+        // The launch holds its channel from its start: the reservation is spent, not given up.
         reservation.launched();
         Ok(())
     }
 
     /// How a window that must start a process of its own starts it: what a window asked of a
-    /// process gone to sleep or built before the door does.
+    /// process gone to sleep or built before the channel does.
     fn start_alone(
         &self,
         planned: &Planned,
@@ -1836,7 +1837,7 @@ impl Apps {
     }
 
     /// How a hosted window that must start a process starts it: as a launch of its own again, on
-    /// the path every window of the app takes, so it opens through a door of its own and its
+    /// the path every window of the app takes, so it opens through a channel of its own and its
     /// instance runs in its host.
     fn start_again(
         &self,
@@ -1868,7 +1869,7 @@ impl Apps {
         })
     }
 
-    /// Start `planned` with the door `door` , which the launch holds until it ends, and write it
+    /// Start `planned` with the channel `channel` , which the launch holds until it ends, and write it
     /// down as a launch of this session before the app can reach a service of it. A service asked
     /// as nothing has no window to offer again. `timed` is the launch timing of the request that
     /// led here, which an agent start of no person's ask begins for itself.
@@ -1877,7 +1878,7 @@ impl Apps {
         planned: &Planned,
         asked: Option<&str>,
         workspace: &str,
-        door: Option<HeldDoor>,
+        channel: Option<HeldChannel>,
         timed: Option<u64>,
     ) -> Result<u64, ApiError> {
         // An app of a workspace this device is not admitted to yet would take part in nothing
@@ -1886,13 +1887,13 @@ impl Apps {
         self.admitted(workspace)?;
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
-        let windowless = planned.env.contains_key(ui::window_door::WINDOWLESS_ENV);
+        let windowless = planned.env.contains_key(ui::window_channel::WINDOWLESS_ENV);
         // The launch's share in the launch-latency log runs from the request to the first presented
         // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
         // launch with no window presents none.
         let timed = (!windowless)
             .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
-        let started = state.spawner.start_with(planned, door, &|pid| {
+        let started = state.spawner.start_with(planned, channel, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a package's sandbox and
                 // into nothing else, so a package is the launch whose files are answered with paths
@@ -1914,7 +1915,7 @@ impl Apps {
                 return Err(ApiError::Failed(error.to_string()));
             }
         };
-        let (started, door) = started;
+        let (started, channel) = started;
         if let Some(timed) = timed {
             tilo_startup_metrics::launch_spawned(timed, started.pid);
         }
@@ -1927,8 +1928,8 @@ impl Apps {
                     .insert(started.id, (planned.app.clone(), std::time::Instant::now()));
             }
         }
-        if let Some(door) = door {
-            state.held.insert(started.id, door);
+        if let Some(channel) = channel {
+            state.held.insert(started.id, channel);
         }
         drop(state);
         tracing::info!(

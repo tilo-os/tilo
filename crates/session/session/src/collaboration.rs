@@ -57,7 +57,7 @@ impl Session {
         // Where this person is on this session, so a page here draws their pointer, follows them to the
         // record they work in and shows a mini view of their screen.
         self.say_where_i_am(sync);
-        // The agents the person admitted at this device's door are here with them.
+        // The agents the person admitted at this device's API are here with them.
         self.say_agents_here(sync);
         // What became of the invitations redeemed is the directory's to say, and the shell's to
         // show.

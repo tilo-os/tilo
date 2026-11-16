@@ -308,7 +308,7 @@ pub struct SessionSearch {
     ask: crate::search_ask::Shared,
     /// What wakes the session's loop as an answer is written, so the row shows it as it lands.
     wake: Option<tilo_service::Wake>,
-    /// The sources' threads for a find with no frame of the toolkit's own: a door's `find` runs
+    /// The sources' threads for a find with no frame of the toolkit's own: an API's `find` runs
     /// on the loop's thread and must never wait for a source, so its search asks these and the
     /// answers come on a later pass.
     workers: tilo_desktop_search::SearchWorkers,
@@ -316,7 +316,7 @@ pub struct SessionSearch {
     pending: RefCell<Vec<PendingFind>>,
 }
 
-/// A find a door asked, as it stands between passes: the search's stream, the sources it was
+/// A find an API asked, as it stands between passes: the search's stream, the sources it was
 /// made from (which outlive the stream's own borrow of them), and where the answer goes.
 struct PendingFind {
     stream: tilo_desktop_search::SearchStream,
@@ -338,9 +338,9 @@ struct PendingFind {
 
 /// Who a find was asked for, and so what its hits become when they are in.
 pub(crate) enum FindAnswer {
-    /// A door's find: the resources the hits name, as a caller who addresses them reads them,
+    /// A API's find: the resources the hits name, as a caller who addresses them reads them,
     /// under what a place can show ([`found_all`]).
-    Door {
+    Api {
         done: FoundSearch,
         /// What a place can show, read at the ask where the layout is: `'static` by holding
         /// the catalogue itself, not a borrow of it.
@@ -351,12 +351,12 @@ pub(crate) enum FindAnswer {
     Canvas(tilo_session_core::layout::FindDone),
 }
 
-/// Answer `answer` with the hits a search has: a door's find as the resources they name, the
+/// Answer `answer` with the hits a search has: an API's find as the resources they name, the
 /// canvas's as the hits themselves. `needle` is what was typed, which [`found_all`] ranks the
 /// lead by.
 fn finish(answer: FindAnswer, needle: &str, hits: &[tilo_desktop_search::Hit]) {
     match answer {
-        FindAnswer::Door { done, shows } => {
+        FindAnswer::Api { done, shows } => {
             let shows = &*shows;
             done.complete(found_all(needle, hits.to_vec(), shows));
         }
@@ -418,7 +418,7 @@ impl SessionSearch {
             files: indexed.as_ref().and_then(|index| index.files()),
             workspace: None,
         };
-        // The sources of a door's `find` answer on their own threads, and the wake asks the loop
+        // The sources of an API's `find` answer on their own threads, and the wake asks the loop
         // for the pass that takes them up: the same wake the session's services use.
         let workers = match &wake {
             Some(wake) => tilo_desktop_search::SearchWorkers::waking(Arc::clone(wake)),
@@ -733,7 +733,7 @@ impl SessionSearch {
         groups.into_iter().flat_map(|group| group.results).collect()
     }
 
-    /// What [`Self::find_in`] answers, asked by the session's own door on the loop's thread: the
+    /// What [`Self::find_in`] answers, asked by the session's own API on the loop's thread: the
     /// sources are handed to their workers and the search stays pending (`shows` names what a
     /// place can show, read here where the layout is), and `done` hears what it found on a
     /// later pass ([`Self::poll_finds`]), as its answers land.
@@ -750,7 +750,7 @@ impl SessionSearch {
         within: std::time::Duration,
         done: FoundSearch,
     ) {
-        self.find_off_loop(needle, workspace, within, FindAnswer::Door { done, shows });
+        self.find_off_loop(needle, workspace, within, FindAnswer::Api { done, shows });
     }
 
     /// Text typed on the canvas, asked of the same search off the pass that places it: the hits
@@ -877,7 +877,7 @@ impl SessionSearch {
         if needle.trim().is_empty() {
             return None;
         }
-        // The session's own published actions, from its door: the apps' and the seeded records'
+        // The session's own published actions, from its API: the apps' and the seeded records'
         // alike, which is where an app's search action and its types are (the palette's `own`).
         let own = self.own.borrow();
         let types = self.own_types.borrow();
@@ -1549,7 +1549,7 @@ impl ResourceSearch for SearchThrough {
     }
 }
 
-/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own doors
+/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as the session's own APIs
 /// are asked: the session's search is not `Send` , and every call of it runs on the loop's pass.
 pub(crate) struct SearchThrough(
     std::sync::Arc<dyn Fn(String, Option<String>, FoundSearch) + Send + Sync>,

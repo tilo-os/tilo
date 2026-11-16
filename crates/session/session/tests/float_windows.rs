@@ -58,7 +58,7 @@ fn session() -> Session {
     crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
         // A device that holds its workspaces: the layout and its steps are theirs.
-        state: Some(crate::common::seated_state()),
+        state: Some(crate::common::device_state()),
         shell: false,
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens

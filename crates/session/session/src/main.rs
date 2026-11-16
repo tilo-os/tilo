@@ -218,7 +218,7 @@ struct CommandLine {
 
 /// Whether this account's identity is the one that claimed this device at its first
 /// login — the fact that, with `wheel`, makes the session the device's owner and its
-/// control door the person's own.
+/// control socket the person's own.
 ///
 /// # Errors
 ///
@@ -507,7 +507,7 @@ fn test_control(ours: &[String]) -> Option<std::path::PathBuf> {
 /// Where the owner's control socket opens, when this session serves one.
 #[cfg(target_os = "linux")]
 fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf> {
-    // The owner's door: the seat's own for a session that owns the machine, the headless session's
+    // The owner's socket: this device's own for a session that owns the machine, the headless session's
     // own when it was asked to open one, and nothing for a session in another desktop's window.
     let named = ours
         .iter()
@@ -531,9 +531,9 @@ fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf
         Backend::Nested => false,
         Backend::Drm => true,
     };
-    // The owner's door is the device owner's: an account in `wheel` whose identity claimed the
+    // The owner's socket is the device owner's: an account in `wheel` whose identity claimed the
     // device at its first login. A path named on the command line is the person's own say-so,
-    // and a session in another desktop's window, or one nobody asked for an owner's door,
+    // and a session in another desktop's window, or one nobody asked for an owner's socket,
     // serves none.
     let owned = match named {
         Some(_) => this_machine,
@@ -544,7 +544,7 @@ fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf
         ) {
             Ok(()) => true,
             Err(refusal) => {
-                eprintln!("tilo-session: serving no owner's control door: {refusal}");
+                eprintln!("tilo-session: serving no owner's control socket: {refusal}");
                 false
             }
         },
@@ -587,7 +587,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::too_many_lines,
-    reason = "the session's startup reads in one place, from its services to the doors it opens"
+    reason = "the session's startup reads in one place, from its services to the sockets it opens"
 )]
 fn start(
     ours: &[String],
@@ -720,7 +720,7 @@ fn start(
     };
     // A session in another desktop's window serves no MCP server of its own, unless the person
     // started it naming a program they admit to act as them there (`--admit-repl`): that program
-    // reaches it only through a door, and the window's private runtime directory holds it.
+    // reaches it only through a socket, and the window's private runtime directory holds it.
     if options.mcp_server.is_none() && !options.admit_repl.is_empty() {
         options.mcp_server = tilo_session::mcp_server::path();
     }
@@ -804,7 +804,7 @@ fn start(
         session_bus.as_deref(),
         reach.export_displays,
         host_desktop,
-        &Doors {
+        &Sockets {
             agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
             admin: admin_control.as_deref(),
@@ -814,7 +814,7 @@ fn start(
 
 /// The sockets the session bound as it started, printed for what drives it.
 #[cfg(target_os = "linux")]
-struct Doors<'a> {
+struct Sockets<'a> {
     /// The MCP server (`TILO_MCP_SERVER=`).
     agent: Option<&'a std::path::Path>,
     /// The development test-control socket (`TILO_TEST_CONTROL=`).
@@ -887,7 +887,7 @@ fn run(
     session_bus: Option<&str>,
     export_displays: bool,
     host_desktop: bool,
-    doors: &Doors<'_>,
+    sockets: &Sockets<'_>,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
 
@@ -910,17 +910,17 @@ fn run(
     if host_desktop && let Err(error) = session.serve_folder_import(std::ffi::OsStr::new(&socket)) {
         tracing::warn!(%error, display = %socket, "Add folders cannot ask whether setup is done");
     }
-    // Where a program of this login asks to work here as an agent: what `tilolang repl --door`
+    // Where a program of this login asks to work here as an agent: what `tilolang repl --api`
     // connects to. The session bound it as it started.
-    if let Some(door) = doors.agent.filter(|door| door.exists()) {
-        println!("TILO_MCP_SERVER={}", door.display());
+    if let Some(agent) = sockets.agent.filter(|agent| agent.exists()) {
+        println!("TILO_MCP_SERVER={}", agent.display());
     }
     // Where `tilo-control` drives it, in a development build started with one.
-    if let Some(control) = doors.test_control.filter(|control| control.exists()) {
+    if let Some(control) = sockets.test_control.filter(|control| control.exists()) {
         println!("{}={}", tilo_session::test_control::ENV, control.display());
     }
     // Where the owner's own programs drive this desktop, when it serves them.
-    if let Some(admin) = doors.admin.filter(|admin| admin.exists()) {
+    if let Some(admin) = sockets.admin.filter(|admin| admin.exists()) {
         println!(
             "{}={}",
             tilo_session::test_control::ADMIN_ENV,
