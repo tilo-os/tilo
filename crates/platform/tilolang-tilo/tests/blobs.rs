@@ -11,7 +11,7 @@ use tilolang_runtime::ViewEvent;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, MAX_CHOSEN, SaveRequest};
 use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::{WebReply, WebTransport};
-use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, action_id, target};
 
@@ -609,7 +609,9 @@ fn asked(r: &Replica, action: &str, at: &tilolang_runtime::ResourceRef) -> Resul
         &r.host.package(APP).expect("the pictures package").meta,
         action,
     );
-    let who = Principal::new(r.name.clone());
+    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+        r.name.clone(),
+    ));
     let outcome = r
         .host
         .runtime()

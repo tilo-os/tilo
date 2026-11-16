@@ -1,9 +1,9 @@
 //! `embed(source, author: who)`: a block's source rendered inline, as in a chat message.
 //!
-//! The node carries the block's source, its author as a `Principal`, and for an action block
+//! The node carries the block's source, its author as an `Actor`, and for an action block
 //! the `Invocation` the host recorded when the message was posted. The host compiles the source
 //! against the loaded packages' metadata (cached by the source's hash and the package set),
-//! runs it as a nested boundary whose code author is the principal, and replaces the node's
+//! runs it as a nested boundary whose code author is the actor, and replaces the node's
 //! children with what the block's value shows. The node's `state` property says which:
 //!
 //! * `view`: the block was a view, or the source a written view (`crate::written`) that takes
@@ -28,7 +28,7 @@ use tilolang::{BlockKind, CompiledBlock, Diagnostic, INVOCATION_TYPE, Span};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::host_ui::shown_node;
-use crate::ids::{ModuleHash, Principal};
+use crate::ids::{Actor, ModuleHash};
 use crate::project::{ProjectOptions, project};
 use crate::registry::Package;
 use crate::render::{Acc, Build, ViewTarget, scope};
@@ -195,7 +195,7 @@ impl Core {
     pub(crate) fn resolve_embed(&self, cx: &Build<'_>, node: &mut UiNode, acc: &mut Acc) {
         let source = text_prop(node, "source");
         let author = match node.props.get("author") {
-            Some(Value::Principal(p)) => Some(p.clone()),
+            Some(Value::Actor(p)) => Some(p.clone()),
             _ => None,
         };
         let invocation = match node.props.get("invocation") {
@@ -217,10 +217,7 @@ impl Core {
                 "error",
                 vec![error_node(
                     &key,
-                    &[
-                        "an embed needs its source as text and its author as a principal"
-                            .to_owned(),
-                    ],
+                    &["an embed needs its source as text and its author as an actor".to_owned()],
                 )],
             ),
         };
@@ -233,7 +230,7 @@ impl Core {
         cx: &Build<'_>,
         key: &str,
         source: &str,
-        author: &Principal,
+        author: &Actor,
         invocation: Option<&ResourceRef>,
         acc: &mut Acc,
     ) -> Result<(&'static str, Vec<UiNode>), RuntimeError> {
@@ -247,7 +244,7 @@ impl Core {
                 return Ok(("error", vec![error_node(key, &lines)]));
             }
         };
-        let identity = ModuleHash::principal(&author.0);
+        let identity = ModuleHash::written_by(author);
         match block.block.kind {
             BlockKind::View => {
                 let target = ViewTarget {
@@ -309,7 +306,7 @@ impl Core {
         cx: &Build<'_>,
         key: &str,
         source: &str,
-        author: &Principal,
+        author: &Actor,
         acc: &mut Acc,
     ) -> Result<(&'static str, Vec<UiNode>), RuntimeError> {
         let view = match self.written_view(source, author) {
@@ -365,7 +362,7 @@ impl Core {
             ("action", Value::text(&rec.name)),
             ("label", Value::text(self.action_label(&rec.name))),
             ("app", Value::text(&rec.app)),
-            ("author", Value::Principal(rec.author.clone())),
+            ("author", Value::Actor(rec.author.clone())),
             ("invocation", Value::resource(inv)),
         ];
         if !rec.result.is_empty() {

@@ -24,7 +24,7 @@ mod cases {
         RustEvent, RustNode, RustRendered, RustResource, RustViewDecl, RustViews,
     };
     use tilolang_runtime::{
-        AmStore, Meta, Principal, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
+        Actor, AmStore, Meta, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
     };
 
     /// The app whose channel a view shows, and the verb its channel publishes.
@@ -94,7 +94,7 @@ view canvas() {
             _name: &str,
             target: &RustResource,
             _reading: Option<&serde_json::Value>,
-            _person: &Principal,
+            _person: &Actor,
             _window: &str,
         ) -> RustRendered {
             let button = RustNode {
@@ -157,7 +157,7 @@ view canvas() {
             .expect("a reading of the channel");
         let canvas = App::compile(CANVAS, std::slice::from_ref(&app));
         canvas.load(&rt);
-        rt.open_view(&Principal::new("ada"), &canvas.view("canvas"), Vec::new())
+        rt.open_view(&person("ada"), &canvas.view("canvas"), Vec::new())
             .unwrap_or_else(|why| panic!("{why}"))
     }
 

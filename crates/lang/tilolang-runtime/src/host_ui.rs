@@ -164,13 +164,7 @@ impl Core {
     /// The slot a `state` declaration of the running view names.
     fn state_key(&self, id: i32) -> HResult<StateKey> {
         let state = self.text(id)?;
-        self.with_view(|vs| {
-            Ok(StateKey::view(
-                vs.window.clone(),
-                vs.viewer.0.clone(),
-                state,
-            ))
-        })
+        self.with_view(|vs| Ok(StateKey::view(vs.window.clone(), vs.viewer.clone(), state)))
     }
 
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -252,7 +246,8 @@ impl Core {
             action: SET_ACTION.to_owned(),
             args: vec![
                 Value::Text(key.window),
-                Value::Text(key.principal.unwrap_or_default()),
+                key.actor
+                    .map_or_else(Value::none, |who| Value::some(Value::Actor(who))),
                 Value::Text(key.state),
                 value,
             ],
@@ -778,7 +773,7 @@ pub(crate) fn shown_node(key: &str, shown: &Value, phrase: &dyn Fn(&str) -> Stri
     match kind {
         "none" => shown_text(key, Value::Text(phrase("tilolang-none-value")), true),
         "date" | "time" => shown_moment(key, kind, value, extra),
-        "principal" => {
+        "actor" => {
             let avatar = shown_node_of(
                 "ui.Avatar",
                 &format!("{key}/who"),

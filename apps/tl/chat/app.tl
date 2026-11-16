@@ -42,7 +42,7 @@ type Message {
     /// Whether it is pinned to its channel, which search finds.
     pinned: Bool = false
     /// Who reacted, by emoji.
-    reactions: Map<Set<Principal>>
+    reactions: Map<Set<Actor>>
     /// A view the message sends, as its sender had it among their views: a reader adds it to
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
@@ -67,8 +67,8 @@ type Thread {
 type Direct {
     name: Text
     /// The one person it is with, for a direct message. TODO(language): a group holds several
-    /// (`people: Set<Principal>`); the language has no set literal to make one yet.
-    person: Principal
+    /// (`people: Set<Actor>`); the language has no set literal to make one yet.
+    person: Actor
     messages: Collection<Message>
     threads: Collection<Thread>
 }
@@ -120,7 +120,7 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
 
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
 /// person has one conversation, not a new empty one each time.
-action message_person(all: Conversations, who: Principal) -> Direct (
+action message_person(all: Conversations, who: Actor) -> Direct (
     icon: .message_circle,
     label: "Message",
 ) {
@@ -343,7 +343,7 @@ view sidebar(all: Conversations) {
                         }
                     }
                     // Everyone in the workspace: a press opens the conversation with them, or the
-                    // one already there. A person is a principal the workspace's membership knows,
+                    // one already there. A person is an actor the workspace's membership knows,
                     // never a copy Chat keeps.
                     if not workspace.members.is_empty() {
                         ui.NavSection("Direct messages", collapsible: true) {

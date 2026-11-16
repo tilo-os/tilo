@@ -339,11 +339,7 @@ impl Checker<'_> {
             return Ex::error();
         };
         let item = self.expr_as(&item.value, &Ty::Record(item_ty));
-        Ex::host(
-            Imp::SeenBy,
-            vec![c, item],
-            Ty::List(Box::new(Ty::Principal)),
-        )
+        Ex::host(Imp::SeenBy, vec![c, item], Ty::List(Box::new(Ty::Actor)))
     }
 
     /// `mentions(c)`: how many of `c`'s items name the person looking that they have not seen, from
@@ -444,7 +440,7 @@ impl Checker<'_> {
         let Some(r) = self.resource_arg("members", args, span) else {
             return Ex::error();
         };
-        Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Principal)))
+        Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Actor)))
     }
 
     /// `workspace.members`: everyone in the workspace now, read from the platform's membership.
@@ -454,7 +450,7 @@ impl Checker<'_> {
             return Ex::host(
                 Imp::WorkspaceMembers,
                 Vec::new(),
-                Ty::List(Box::new(Ty::Principal)),
+                Ty::List(Box::new(Ty::Actor)),
             );
         }
         if name.name == "me" {
@@ -470,7 +466,7 @@ impl Checker<'_> {
                 );
                 return Ex::error();
             }
-            return Ex::host(Imp::Viewer, Vec::new(), Ty::Principal);
+            return Ex::host(Imp::Viewer, Vec::new(), Ty::Actor);
         }
         self.err(
             "E021",
@@ -487,7 +483,7 @@ impl Checker<'_> {
     /// `speakers(items)`: the people who spoke in the conversation of `items`, most recent first,
     /// each once, at most five (or `max`). A composer's `@` drawer offers them.
     pub(super) fn builtin_speakers(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let people = Ty::List(Box::new(Ty::Principal));
+        let people = Ty::List(Box::new(Ty::Actor));
         let (items, max) = match args {
             [a] => (a, None),
             [a, m] => (a, Some(m)),
@@ -535,7 +531,7 @@ impl Checker<'_> {
     /// Who a rich input's `@` drawer offers after the conversation's own: the members who can read
     /// what a mention names (`subject`), or the workspace's members.
     pub(super) fn drawer_people(subject: Option<Ex>) -> Ex {
-        let people = Ty::List(Box::new(Ty::Principal));
+        let people = Ty::List(Box::new(Ty::Actor));
         match subject {
             Some(r) => Ex::host(Imp::Members, vec![r], people),
             None => Ex::host(Imp::WorkspaceMembers, Vec::new(), people),

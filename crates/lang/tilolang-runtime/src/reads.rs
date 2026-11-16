@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use crate::core::{Core, HResult, trap};
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::meta::FieldKind;
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::runtime::Runtime;
@@ -127,7 +127,7 @@ pub struct MatchRow {
     pub groups: Vec<String>,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub written_by: Option<String>,
+    pub written_by: Option<crate::ids::Actor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<String>,
 }
@@ -171,7 +171,7 @@ pub struct ProgramInputs {
     /// Answers the platform brought, by [`ReadRequest::key`].
     pub answers: BTreeMap<String, Json>,
     /// The person the program's task acts for: `me`.
-    pub me: Option<Principal>,
+    pub me: Option<Actor>,
 }
 
 /// Paragraphs a page of `read` shows.
@@ -411,11 +411,21 @@ impl Core {
 
     /// Who wrote the text of `target`, when the log says one person did: everyone who changed
     /// it is that one person.
-    fn sole_writer(&self, target: &ResourceRef) -> Option<String> {
+    fn sole_writer(&self, target: &ResourceRef) -> Option<crate::ids::Actor> {
         let versions = self.store.borrow().versions(target).ok()?;
-        let mut who = versions.iter().map(|v| v.who.as_str());
-        let first = who.next()?;
-        who.all(|w| w == first).then(|| first.to_owned())
+        let mut who = versions.iter().map(|v| v.who.as_ref());
+        let first = who.next()??;
+        who.all(|w| w == Some(first)).then(|| first.clone())
+    }
+
+    /// Who of those that changed `target` wrote the run of text marked `mark`: the actor whose
+    /// writer id the mark holds.
+    fn mark_writer(&self, target: &ResourceRef, mark: &str) -> Option<crate::ids::Actor> {
+        let versions = self.store.borrow().versions(target).ok()?;
+        versions.into_iter().find_map(|v| {
+            v.who
+                .filter(|who| automerge::ActorId::from(who.actor_bytes()).to_hex_string() == mark)
+        })
     }
 
     /// The lines of the text of `target` that `re` matches, each at its first match, leaving out
@@ -430,7 +440,7 @@ impl Core {
     ) -> Vec<MatchRow> {
         let mut out = Vec::new();
         let mut doc: Option<Shown> = None;
-        let mut writer: Option<Option<String>> = None;
+        let mut writer: Option<Option<crate::ids::Actor>> = None;
         for part in text.parts.iter().filter(|p| !not.contains(&p.kind)) {
             // A line is listed once, at its first match, as grep lists it: its other matches
             // would list the same line again.
@@ -442,7 +452,7 @@ impl Core {
                     *anchor == part.anchor && *start <= whole.start() && whole.end() <= *end
                 });
                 let written_by = match authored {
-                    Some((.., who)) => Some(who.clone()),
+                    Some((.., who)) => self.mark_writer(target, who),
                     None => writer
                         .get_or_insert_with(|| self.sole_writer(target))
                         .clone(),

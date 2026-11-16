@@ -625,8 +625,12 @@ impl RecordService {
     ) -> Result<(), String> {
         let _in_records = self.in_records();
         let author = context.invoker.as_ref().map_or_else(
-            || self.person.clone(),
-            |invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key(),
+            || {
+                crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
+                    self.person.clone(),
+                ))
+            },
+            |invoker: &tilo_actions::ActionInvoker| invoker.acting.by.clone(),
         );
         let store = self.host.store();
         self.host
@@ -636,7 +640,7 @@ impl RecordService {
                         crate::chunk::FIRST,
                         (action, part),
                         encoded,
-                        author.as_bytes(),
+                        &author,
                         context,
                         |_, _| (),
                     )
@@ -698,11 +702,9 @@ impl RecordService {
             // The action is planned to be carried out at once: what its plan writes is its
             // change, written once, as the invoker's.
             let resources = self.resources();
-            let encoded = self
-                .host
-                .carrying_out(invoker.acting.by.key().as_bytes(), || {
-                    tilo_actions::api::encode_json(&resources, &address, arguments)
-                })?;
+            let encoded = self.host.carrying_out(&invoker.acting.by, || {
+                tilo_actions::api::encode_json(&resources, &address, arguments)
+            })?;
             if encoded.type_id == crate::effects::OPEN_OPERATION {
                 let mut open =
                     open_asked(&encoded.payload, resource).map_err(ApiError::InvalidArguments)?;
@@ -862,7 +864,7 @@ pub fn reading_of(host: &Host, resource: &str) -> Option<Json> {
     }
     // What the person it is read for has not seen of its items: a view composed elsewhere
     // counts it as this app's own views do ([`tilolang_runtime::store::UNSEEN`]).
-    if let Some(unseen) = runtime.unseen_reading(&host.viewer().0, &at) {
+    if let Some(unseen) = runtime.unseen_reading(host.viewer(), &at) {
         fields.insert(tilolang_runtime::store::UNSEEN.to_owned(), unseen);
     }
     // What links to it, each with how: a view composed elsewhere draws them as this app's
@@ -925,14 +927,9 @@ fn published_refs(json: &mut Json) {
 }
 
 /// Who commits an action the packages committed on their own: the person or agent its
-/// authorship names, or the principal that runs a trigger of its app when it names nobody.
+/// authorship names, or its app acting by itself when it names nobody.
 fn invoker_of(action: &DynAction) -> tilo_actions::ActionInvoker {
-    let actor = if action.authorship.invoker.is_empty() {
-        crate::authority::trigger_principal(&action.app).0
-    } else {
-        action.authorship.invoker.clone()
-    };
-    tilo_actions::ActionInvoker::person(actor)
+    tilo_actions::ActionInvoker::admitted(&action.invoker().into())
 }
 
 impl RecordService {
@@ -948,7 +945,7 @@ impl RecordService {
             return false;
         }
         // What a trigger did is the app's own change, committed as its invocation says: the same
-        // commit as an action from the workspace, as the run's principal.
+        // commit as an action from the workspace, as the run's actor.
         let _ = self.flush();
         self.moved_unsaid = true;
         true

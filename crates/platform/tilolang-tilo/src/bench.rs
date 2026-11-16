@@ -70,7 +70,7 @@ use tilolang::{Compiled, SeededEntropy};
 use tilolang_runtime::meta::{Meta, Ty};
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{
-    EngineConfig, EngineKind, EngineProfile, Principal, Translation, UiNode, ViewInstance,
+    Actor, EngineConfig, EngineKind, EngineProfile, Translation, UiNode, ViewInstance,
 };
 
 use crate::action::{Authorship, DynAction, DynEdit};
@@ -513,9 +513,9 @@ fn fill_registers(record: &mut DynRecord, registers: &[(String, Ty)]) -> Result<
             Ty::Float => json!(0.0),
             Ty::Bool => json!(false),
             Ty::Text => json!("bench"),
-            Ty::Principal => {
-                tilolang_runtime::value::to_json(&Value::Principal(Principal::new(VIEWER)))?
-            }
+            Ty::Actor => tilolang_runtime::value::to_json(&Value::Actor(Actor::Member(
+                crate::runtime::ids::MemberId::person(VIEWER),
+            )))?,
             // What reads as a value unwritten (an option reads as none) is left unwritten.
             other if tilolang_runtime::meta::unwritten_value(other, None).is_ok() => continue,
             other => {
@@ -624,7 +624,7 @@ fn bench_step(action: &DynAction, who: &str) -> (DynAction, ActionContext) {
     // The action records who invoked it, as the runtime's own do: what a window reads of a
     // change is whose it was, so an action of the seed's is the person's it seeds as, not
     // nobody's.
-    who.clone_into(&mut action.authorship.invoker);
+    action.authorship.invoker = Some(Actor::Member(crate::runtime::ids::MemberId::person(who)));
     if action.authorship.at.is_none() {
         action.authorship.at = Some(BENCH_TIME.to_owned());
     }
@@ -660,7 +660,7 @@ fn commit(host: &Host, action: &DynAction, who: &str) -> Result<(), String> {
                     chunk,
                     (&part, Some(&part)),
                     encoded,
-                    who.as_bytes(),
+                    &Actor::Member(crate::runtime::ids::MemberId::person(who)),
                     context.clone(),
                     |_, _| (),
                 )
@@ -747,7 +747,7 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
                 index_dir: Some(dir.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new(VIEWER),
+            Actor::Member(crate::runtime::ids::MemberId::person(VIEWER)),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -881,7 +881,7 @@ impl Workspace {
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new(VIEWER),
+            Actor::Member(crate::runtime::ids::MemberId::person(VIEWER)),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -1818,7 +1818,7 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
                 index_dir: Some(index.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new(VIEWER),
+            Actor::Member(crate::runtime::ids::MemberId::person(VIEWER)),
             || None,
         )
         .map_err(|e| e.to_string())?;
@@ -2248,7 +2248,7 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
     let Some(nested) = &list.nested else {
         return Ok(None);
     };
-    let principals = thread::principals(sized.packages);
+    let actors = thread::actors(sized.packages);
     let mut peer = workspace.record();
     let mut changes = Changes::default();
     let first = sized.target(workspace.list.tree());
@@ -2259,7 +2259,7 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
             (&id, &nested.item_ty),
             &format!("Peer post {sample}"),
             1,
-            &principals,
+            &actors,
         )?;
         // The seeded items' own collections hold nothing: the post is their first.
         let at = tilolang_runtime::place::Placement::At {
@@ -2591,13 +2591,13 @@ mod tests {
         // writes one, so a view reading it reads a person rather than trapping.
         {
             let mut record = record_of("person");
-            fill_registers(&mut record, &[("person".to_owned(), Ty::Principal)])
+            fill_registers(&mut record, &[("person".to_owned(), Ty::Actor)])
                 .unwrap_or_else(|e| panic!("{e}"));
             let Some(DynValue::Register(person)) = record.get("person") else {
                 panic!("the person is a register");
             };
             let read = tilolang_runtime::value::from_json(person).unwrap_or_else(|e| panic!("{e}"));
-            assert_eq!(read, Value::Principal(Principal::new(VIEWER)));
+            assert_eq!(read, Value::Actor(Actor::Member(crate::runtime::ids::MemberId::person(VIEWER))));
         }
 
         phase a_field_the_seed_cannot_fill_is_named_when_seeding;

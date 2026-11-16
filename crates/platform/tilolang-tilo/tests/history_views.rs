@@ -10,7 +10,7 @@ use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, Vi
 use tilolang_tilo::instance::HistoryAsk;
 
 use crate::fixtures::{Replica, target};
-use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
+use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call, helper};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -65,7 +65,7 @@ fn entries(section: &UiNode) -> Vec<String> {
         .into_iter()
         .filter(|node| node.kind == "ui.Avatar")
         .filter_map(|node| match node.props.get("who") {
-            Some(Value::Principal(who)) => Some(who.0.clone()),
+            Some(Value::Actor(who)) => Some(who.id().to_owned()),
             _ => None,
         })
         .collect()
@@ -629,13 +629,13 @@ fn consecutive_changes_by_one_person_or_one_run_fold_into_one_entry() {
     for title in ["Plan A", "Plan B", "Plan C"] {
         call(
             &ada,
-            AGENT,
+            &helper(),
             NOTES_APP,
             "retitle",
             vec![note.clone(), Value::text(title)],
         );
     }
-    ada.commit_in_run(AGENT, RUN, "Tidy the notes");
+    ada.commit_in_run(&helper(), RUN, "Tidy the notes");
     call(
         &ada,
         "ada",
@@ -818,7 +818,9 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
         "assign",
         vec![
             assigned.clone(),
-            Value::some(Value::Principal(tilolang_runtime::Principal::new("ada"))),
+            Value::some(Value::Actor(tilolang_runtime::Actor::from(
+                tilolang_tilo::runtime::ids::MemberId::person("ada"),
+            ))),
         ],
     );
     ada.commit();
@@ -1240,7 +1242,8 @@ fn entry_work(paragraphs: usize) -> (u64, u64, usize) {
         .unwrap()
         .expect("the change that wrote the body");
     assert_eq!(
-        change.who, "bo",
+        change.who,
+        Some(tilolang_tilo::personal::actor("bo")),
         "the body was last changed by Bo's typing: {change:?}"
     );
     let change = change.change;
@@ -1517,11 +1520,11 @@ fn reading_one_entrys_body_diff_stays_within_a_fixed_budget_however_long_the_not
 struct Named;
 
 impl tilolang_tilo::runtime::NameHost for Named {
-    fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
-        match who.0.as_str() {
+    fn name(&self, who: &tilolang_tilo::runtime::Actor) -> String {
+        match who.id() {
             "ada" => "Ada Lovelace".to_owned(),
             "bo" => "Bo".to_owned(),
-            other => tilolang_tilo::names::unnamed(other),
+            _ => tilolang_tilo::names::unnamed(who),
         }
     }
 }
@@ -1582,12 +1585,12 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     ada.commit();
     call(
         &ada,
-        AGENT,
+        &helper(),
         NOTES_APP,
         "retitle",
         vec![note.clone(), Value::text("Shopping")],
     );
-    ada.commit_in_run(AGENT, RUN, "Tidy the notes");
+    ada.commit_in_run(&helper(), RUN, "Tidy the notes");
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
     // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
@@ -1972,22 +1975,22 @@ fn one_hands_steps_a_moment_apart_share_one_face_and_hours_apart_do_not() {
         ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
         call(
             &ada,
-            AGENT,
+            &helper(),
             NOTES_APP,
             "retitle",
             vec![note.clone(), Value::text("Groceries")],
         );
-        ada.commit_in_run(AGENT, "issue-7@8000000000000001", "Tidy the notes");
+        ada.commit_in_run(&helper(), "issue-7@8000000000000001", "Tidy the notes");
         let second = second.to_owned();
         ada.host.set_clock(move || second.clone());
         call(
             &ada,
-            AGENT,
+            &helper(),
             NOTES_APP,
             "retitle",
             vec![note.clone(), Value::text("Shopping")],
         );
-        ada.commit_in_run(AGENT, "issue-7@8000000000000002", "Tidy the notes");
+        ada.commit_in_run(&helper(), "issue-7@8000000000000002", "Tidy the notes");
         // Ada made the note, then the agent's two steps: each entry's face, newest first.
         entries(&history_of(&ada, &target(&note)))
     };

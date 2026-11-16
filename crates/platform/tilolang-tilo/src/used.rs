@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use crate::host::{Host, HostError};
 use crate::records_service::{app_of, reading_of};
-use crate::runtime::{Meta, Principal, ResourceRef, Runtime};
+use crate::runtime::{Actor, Meta, ResourceRef, Runtime};
 
 /// One used app, read from its own record through its own package.
 pub struct UsedApp {
@@ -32,7 +32,11 @@ impl UsedApp {
         let (_, last) = packages
             .last()
             .ok_or_else(|| HostError::NotFound("a used app's package".to_owned()))?;
-        let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)?;
+        let host = Host::new(
+            &tilo_resource::Doc::new(),
+            Actor::Member(crate::runtime::ids::MemberId::person(person)),
+            || None,
+        )?;
         for (wasm, meta) in packages {
             host.load_module(wasm, (*meta).clone(), String::new())?;
         }

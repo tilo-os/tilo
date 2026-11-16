@@ -31,7 +31,7 @@ use tilolang_runtime::store::{FieldValue, Left, Reflected, Run, Scalar, Version,
 use tilolang_runtime::value::ResourceRef;
 
 use tilo_resource::Doc;
-use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::ids::{Actor, AppId, DocId, TypeId};
 
 use crate::action::{ACTION_TYPE, DynAction, DynEdit};
 use crate::schema::{FieldSchema, MergeKind};
@@ -145,7 +145,10 @@ impl Stamp {
             );
         }
         if let (Some(who), Some(map)) = (&self.version.suggested_by, held.as_object_mut()) {
-            map.insert("suggested_by".to_owned(), Json::String(who.clone()));
+            map.insert(
+                "suggested_by".to_owned(),
+                serde_json::to_value(who).unwrap_or(Json::Null),
+            );
         }
         if self.version.count > 1
             && let Some(map) = held.as_object_mut()
@@ -169,6 +172,14 @@ impl Stamp {
             return None;
         };
         let text = |key: &str| json.get(key).and_then(Json::as_str).map(str::to_owned);
+        let actor = |key: &str| {
+            json.get(key).and_then(|who| {
+                tilo_failure::ignored!(
+                    "a stamp naming no actor reads as made by nobody named",
+                    serde_json::from_value::<Actor>(who.clone()).ok()
+                )
+            })
+        };
         // An index written before versions named their run holds none.
         let run = match json.get("task") {
             None => None,
@@ -205,7 +216,7 @@ impl Stamp {
             .unwrap_or_default();
         Some(Self {
             version: Version {
-                who: text("who")?,
+                who: actor("who"),
                 fields,
                 at: text("at")?,
                 action: text("action")?,
@@ -213,7 +224,7 @@ impl Stamp {
                 change: text("change").unwrap_or_default(),
                 op: json.get("op").and_then(Json::as_u64)?,
                 from,
-                suggested_by: text("suggested_by"),
+                suggested_by: actor("suggested_by"),
                 // An index written before versions named what they did holds only changes.
                 kind: text("kind")
                     .and_then(|word| VersionKind::of_word(&word))
@@ -492,10 +503,10 @@ fn parsed(change: &(impl ChangeHead + ?Sized)) -> std::rc::Rc<Parsed> {
 }
 
 /// The person `change` names as the one who made it, when its message names one.
-pub(crate) fn maker_of(change: &automerge::Change) -> Option<String> {
+pub(crate) fn maker_of(change: &automerge::Change) -> Option<Actor> {
     let parsed = parsed(change);
     let invoker = parsed.context.as_ref()?.invoker.as_ref()?;
-    Some(invoker.acting.by.key())
+    Some(invoker.acting.by.clone())
 }
 
 impl Parsed {
@@ -585,7 +596,7 @@ fn stamp_of_action(
     let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
-            who: action.authorship.invoker.clone(),
+            who: Some(action.invoker()),
             at,
             action: action.action_id.clone(),
             run: run.clone(),
@@ -937,7 +948,7 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
     let hash = change.hash().to_string();
     Some(Stamp {
         version: Version {
-            who: invoker.acting.by.key(),
+            who: Some(invoker.acting.by.clone()),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
             run: session_of(context),
@@ -1015,7 +1026,7 @@ mod tests {
     fn stamp(at: &str, op: u64, change: &str) -> Stamp {
         Stamp {
             version: Version {
-                who: "ada".to_owned(),
+                who: Some(tilolang_runtime::ids::MemberId::person("ada").into()),
                 at: at.to_owned(),
                 change: change.to_owned(),
                 op,

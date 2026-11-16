@@ -13,11 +13,11 @@ type Part {
     invocation: Option<host.Invocation>
 }
 
-/// A message is a list of parts and the principal that wrote it: a person, or an agent task.
+/// A message is a list of parts and the actor that wrote it: a person, or an agent task.
 /// The host records the author, so it cannot be claimed. It is also the code author of the
 /// message's blocks.
 type Message {
-    author: Principal
+    author: Actor
     parts: Collection<Part>
 }
 

@@ -173,7 +173,7 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
         Ty::Date => (ColumnKind::Date, Vec::new()),
         Ty::Time => (ColumnKind::Time, Vec::new()),
         Ty::Identifier => (ColumnKind::Ident, Vec::new()),
-        Ty::Principal => (ColumnKind::Principal, Vec::new()),
+        Ty::Actor => (ColumnKind::Actor, Vec::new()),
         Ty::Record(_) | Ty::Union(_) => (ColumnKind::Ref, Vec::new()),
         Ty::Enum(key) => {
             let cases = meta
@@ -382,7 +382,7 @@ type Task {
     title: Text
     due: Option<Date> = .none
     at: Option<Time> = .none
-    who: Option<Principal> = .none
+    who: Option<Actor> = .none
 }
 
 type Note {

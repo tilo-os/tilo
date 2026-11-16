@@ -1387,9 +1387,13 @@ const CLOSED: &str = "closed";
 fn sets(action: &ActionRef, state: &StateKey) -> bool {
     let named =
         |at: usize, text: &str| matches!(action.args.get(at), Some(Value::Text(t)) if t == text);
+    let whose = state
+        .actor
+        .clone()
+        .map_or_else(Value::none, |who| Value::some(Value::Actor(who)));
     action.action == SET_ACTION
         && named(0, &state.window)
-        && named(1, state.principal.as_deref().unwrap_or_default())
+        && action.args.get(1) == Some(&whose)
         && named(2, &state.state)
 }
 

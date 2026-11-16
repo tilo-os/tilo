@@ -11,7 +11,7 @@ mod cases {
 type Message {
     text: Text
     pinned: Bool = false
-    reactions: Map<List<Principal>>
+    reactions: Map<List<Actor>>
 }
 
 action react(m: Message, emoji: Text) {
@@ -55,7 +55,7 @@ view message(m: Message) {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].0, Value::text("👍"));
             assert!(
-                matches!(&entries[0].1, Value::List(who) if who == &vec![Value::Principal(me())]),
+                matches!(&entries[0].1, Value::List(who) if who == &vec![Value::Actor(me())]),
                 "{entries:?}"
             );
 
@@ -84,7 +84,7 @@ view message(m: Message) {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             app.load(&rt);
             let p = rt.create("Post").unwrap();
-            let ben = tilolang_runtime::Principal::new("ben");
+            let ben = person("ben");
             for (who, action, emoji) in [
                 (me(), "add", "👍"),
                 (ben.clone(), "add", "👍"),
@@ -107,7 +107,7 @@ view message(m: Message) {
             let Some(Value::Map(entries)) = node.props.get("reactions") else {
                 panic!("a map: {}", dump(view.tree()));
             };
-            let mut who = vec![Value::Principal(me()), Value::Principal(ben)];
+            let mut who = vec![Value::Actor(me()), Value::Actor(ben)];
             who.sort_by_key(|p| format!("{p:?}"));
             assert_eq!(
                 entries,
@@ -121,7 +121,7 @@ view message(m: Message) {
 
 type Post {
     text: Text
-    reactions: Map<Set<Principal>>
+    reactions: Map<Set<Actor>>
 }
 
 action add(p: Post, emoji: Text) {

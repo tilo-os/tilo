@@ -741,7 +741,7 @@ impl Decoder<'_> {
             | Ty::Date
             | Ty::Time
             | Ty::Identifier
-            | Ty::Principal
+            | Ty::Actor
             | Ty::Filter(_)
             | Ty::Length(_) => plain(json, ty),
             Ty::Option(inner) => match json {
@@ -877,10 +877,9 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Float | Ty::Length(_) => json.as_f64().map(Value::Float),
         Ty::Bool => json.as_bool().map(Value::Bool),
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => json.as_str().map(Value::text),
-        _ => tagged(json, "principal")
-            .unwrap_or(json)
-            .as_str()
-            .map(|who| Value::Principal(crate::ids::Principal::new(who))),
+        _ => tagged(json, "actor")
+            .and_then(|who| serde_json::from_value(who.clone()).ok())
+            .map(Value::Actor),
     };
     value.ok_or_else(|| format!("{json} is not a {}", ty.meta_text("")))
 }

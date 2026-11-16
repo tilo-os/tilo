@@ -63,7 +63,7 @@ pub enum Ty {
     Text,
     /// Who did something: a person or an agent task. Values come only from the host, never from
     /// `Text`.
-    Principal,
+    Actor,
     /// A calendar day, held as ISO text `YYYY-MM-DD`; not a `Text`.
     Date,
     /// An instant, held as ISO-8601 UTC text; ISO text orders chronologically, so both compare as
@@ -145,7 +145,7 @@ impl Ty {
             | Self::Time
             | Self::Duration
             | Self::Identifier
-            | Self::Principal
+            | Self::Actor
             | Self::Record(_)
             | Self::Enum(_) => true,
             Self::Option(inner) => !matches!(**inner, Self::Option(_)) && inner.asked_by_form(),
@@ -267,7 +267,7 @@ impl Ty {
             Self::Float => "Float".into(),
             Self::Bool => "Bool".into(),
             Self::Text => "Text".into(),
-            Self::Principal => "Principal".into(),
+            Self::Actor => "Actor".into(),
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
             Self::Duration => "Duration".into(),
@@ -351,7 +351,7 @@ pub fn language_type(name: &str) -> Option<Ty> {
         "Float" => Ty::Float,
         "Bool" => Ty::Bool,
         "Text" => Ty::Text,
-        "Principal" => Ty::Principal,
+        "Actor" => Ty::Actor,
         "Date" => Ty::Date,
         "Time" => Ty::Time,
         "Duration" => Ty::Duration,
@@ -366,20 +366,8 @@ pub fn language_type(name: &str) -> Option<Ty> {
 }
 
 pub const LANGUAGE_TYPE_NAMES: &[&str] = &[
-    "Int",
-    "Float",
-    "Bool",
-    "Text",
-    "RichText",
-    "Bytes",
-    "Principal",
-    "Date",
-    "Time",
-    "Duration",
-    "File",
-    "Response",
-    "Action",
-    "View",
+    "Int", "Float", "Bool", "Text", "RichText", "Bytes", "Actor", "Date", "Time", "Duration",
+    "File", "Response", "Action", "View",
 ];
 
 /// The type a path names that the language itself declares: `std`'s text-held types and a
@@ -517,7 +505,7 @@ impl MetaTy<'_> {
             "Float" => Some(Ty::Float),
             "Bool" => Some(Ty::Bool),
             "Text" => Some(Ty::Text),
-            "Principal" => Some(Ty::Principal),
+            "Actor" => Some(Ty::Actor),
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
             "Duration" => Some(Ty::Duration),
@@ -610,7 +598,7 @@ mod tests {
                 "Time",
                 "Duration",
                 "std.Identifier",
-                "Principal",
+                "Actor",
                 "Thing",
                 "enum Colour",
                 "Option<Duration>",

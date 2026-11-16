@@ -10,10 +10,11 @@
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value as AmValue};
 use tilo_resource::collection::{collection_entries, in_stored_order, read_entry};
 use tilolang::source::PackageSource;
+use tilolang_runtime::ids::MemberId;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{InvokeOutcome, Principal};
+use tilolang_runtime::{Actor, InvokeOutcome};
 use tilolang_tilo::schema::{MergeKind, TypeSchema, lookup};
 
 use crate::fixtures::Replica;
@@ -260,7 +261,7 @@ fn call(replica: &mut Replica, app: &str, name: &str, args: Vec<Value>) -> Value
     let outcome = replica
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+        .invoke_action(&Actor::from(MemberId::person("ada")), (id.as_str(), args))
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     replica.commit();
     match outcome {
@@ -464,12 +465,13 @@ tilo_test_env::scenario! {
         let authorship = &committed[0].action.authorship;
         assert_eq!(
             authorship.invoker,
-            tilolang_tilo::authority::migration_principal(app, &meta.module_hash).0
+            Some(tilolang_tilo::runtime::Actor::App(app.into())),
+            "the package's own change"
         );
         assert!(
-            tilolang_tilo::names::unnamed(&authorship.invoker) == "Board",
+            tilolang_tilo::names::unnamed(&committed[0].action.invoker()) == "Board",
             "history names Board, the app whose build made the change: {}",
-            tilolang_tilo::names::unnamed(&authorship.invoker)
+            tilolang_tilo::names::unnamed(&committed[0].action.invoker())
         );
         for done in &committed {
             replica.apply(&done.action);

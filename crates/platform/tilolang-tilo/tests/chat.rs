@@ -6,7 +6,7 @@
 use automerge::AutoCommit;
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{Store as _, VersionKind};
-use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 
@@ -26,7 +26,10 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -226,7 +229,9 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
         );
         assert_eq!(
             quote.props.get("author"),
-            Some(&Value::Principal(Principal::new("ada")))
+            Some(&Value::Actor(Actor::from(
+                tilolang_tilo::runtime::ids::MemberId::person("ada")
+            )))
         );
     }
 
@@ -265,7 +270,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
 }
 
 /// Who reacted with each emoji, as the row's reactions show it.
-fn reactions(row: &UiNode) -> Vec<(String, Vec<Principal>)> {
+fn reactions(row: &UiNode) -> Vec<(String, Vec<Actor>)> {
     let Some(node) = find(row, "ui.Reactions") else {
         return Vec::new();
     };
@@ -281,8 +286,8 @@ fn reactions(row: &UiNode) -> Vec<(String, Vec<Principal>)> {
             let who = who
                 .iter()
                 .map(|p| match p {
-                    Value::Principal(p) => p.clone(),
-                    other => panic!("a principal: {other:?}"),
+                    Value::Actor(p) => p.clone(),
+                    other => panic!("an actor: {other:?}"),
                 })
                 .collect();
             (emoji.as_text().unwrap_or_default().to_owned(), who)
@@ -322,9 +327,17 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
     let both = vec![
         (
             "👍".to_owned(),
-            vec![Principal::new("ada"), Principal::new("ben")],
+            vec![
+                Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")),
+            ],
         ),
-        ("🎉".to_owned(), vec![Principal::new("ben")]),
+        (
+            "🎉".to_owned(),
+            vec![Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                "ben",
+            ))],
+        ),
     ];
     for view in [&mut ada_design, &mut ben_design] {
         let mut shown = reactions(&rows(view)[0]);
@@ -343,7 +356,12 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
     for view in [&mut ada_design, &mut ben_design] {
         let shown = reactions(&rows(view)[0]);
         assert!(
-            shown.contains(&("👍".to_owned(), vec![Principal::new("ben")])),
+            shown.contains(&(
+                "👍".to_owned(),
+                vec![Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                    "ben"
+                ))]
+            )),
             "{shown:?}"
         );
     }
@@ -455,7 +473,7 @@ tilo_test_env::scenario! {
             .id
             .clone();
         let refused = ben.host.runtime().invoke_action(
-            &Principal::new("ben"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")),
             (edit_id.as_str(), vec![message, rich("Not mine to say.")]),
         );
         assert!(
@@ -564,7 +582,7 @@ tilo_test_env::scenario! {
             .event_action(&menu_item(&rows[1], "Delete"), "choose")
             .expect("Delete runs on the message");
         let outcome = ada.host.runtime().invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (delete.action.as_str(), delete.args.clone()),
         );
         assert!(
@@ -746,7 +764,7 @@ tilo_test_env::scenario! {
         // divider goes, and so does the badge; random's is its own.
         ada.host
             .runtime()
-            .mark_seen("ada", &target(&design))
+            .mark_seen(&tilolang_tilo::personal::actor("ada"), &target(&design))
             .unwrap();
         ada.commit();
         let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
@@ -830,7 +848,7 @@ tilo_test_env::scenario! {
         // Ada reads to the end: the row says nothing new and the header marks nothing.
         ada.host
             .runtime()
-            .mark_seen("ada", &target(&design))
+            .mark_seen(&tilolang_tilo::personal::actor("ada"), &target(&design))
             .unwrap();
         ada.commit();
         assert_eq!(badge_of(&mut ada.view(APP), "/design"), None, "read");
@@ -883,15 +901,15 @@ tilo_test_env::scenario! {
             ],
             None,
         );
-        runtime.set_seen("ben", &target(&design).id_string(), Some(read_to));
+        runtime.set_seen(&tilolang_tilo::personal::actor("ben"), &target(&design).id_string(), Some(read_to));
 
         // Ada's window says he read to the second line, and names him nowhere else.
         let seen_by = |at: &Value| {
             runtime
-                .seen_by("ada", &target(&design), &target(at))
+                .seen_by(&tilolang_tilo::personal::actor("ada"), &target(&design), &target(at))
                 .unwrap()
                 .into_iter()
-                .map(|who| who.0)
+                .map(|who| who.id().to_owned())
                 .collect::<Vec<_>>()
         };
         assert!(seen_by(&first).is_empty(), "he read past the first");
@@ -901,8 +919,8 @@ tilo_test_env::scenario! {
             "he read to the second"
         );
         // Her own reading is no receipt: the marks she reads are everyone's but hers.
-        let hers = runtime.seen("ben", &target(&design).id_string());
-        runtime.set_seen("ada", &target(&design).id_string(), hers);
+        let hers = runtime.seen(&tilolang_tilo::personal::actor("ben"), &target(&design).id_string());
+        runtime.set_seen(&tilolang_tilo::personal::actor("ada"), &target(&design).id_string(), hers);
         assert_eq!(seen_by(&second), ["ben".to_owned()], "her own face aside");
         ada.commit();
     }
@@ -1073,7 +1091,7 @@ fn the_transcript_marks_the_first_message_the_person_had_not_seen() {
     // She reads: opening the channel marks what it showed seen, and nothing is left unread.
     ada.host
         .runtime()
-        .mark_seen("ada", &target(&design))
+        .mark_seen(&tilolang_tilo::personal::actor("ada"), &target(&design))
         .unwrap();
     ada.commit();
     let mut reopened = ada.host.open_resource(&target(&design), None).unwrap();
@@ -1167,12 +1185,12 @@ tilo_test_env::scenario! {
         let dm = call(
             &ada,
             "message_person",
-            vec![all.clone(), Value::Principal(Principal::new("ben"))],
+            vec![all.clone(), Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")))],
         );
         let again = call(
             &ada,
             "message_person",
-            vec![all, Value::Principal(Principal::new("ben"))],
+            vec![all, Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")))],
         );
         assert_eq!(
             target(&dm).id_string(),
@@ -1231,7 +1249,7 @@ tilo_test_env::scenario! {
 
         // Ben has the channel open and is composing: the conversation says so, in his name. The
         // runtime's lenses are what `lenses(c)` reads; a view that read them runs again.
-        let ben = Principal::new("ben");
+        let ben = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben"));
         ada.host
             .runtime()
             .set_lenses(&channel, &[(ben.clone(), false, true)]);
@@ -1294,7 +1312,7 @@ tilo_test_env::scenario! {
             .expect("Ben's place");
         assert_eq!(
             ben.props.get("person"),
-            Some(&Value::Principal(Principal::new("ben"))),
+            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")))),
             "the place stands for Ben"
         );
         assert_eq!(
@@ -1313,7 +1331,7 @@ tilo_test_env::scenario! {
         let notes = call(
             &ada,
             "message_person",
-            vec![all, Value::Principal(Principal::new("ada"))],
+            vec![all, Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")))],
         );
         ada.commit();
         let sidebar = ada.view(APP);

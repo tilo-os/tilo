@@ -6,7 +6,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value as Json};
 
-use crate::ids::{ActionId, DocId, FieldId, ItemId, ModuleHash, Principal, TypeId};
+use crate::ids::{ActionId, Actor, DocId, FieldId, ItemId, ModuleHash, TypeId};
 
 /// A reference to a resource: a document, or an item of one, named by its id alone.
 ///
@@ -150,7 +150,7 @@ impl<'de> Deserialize<'de> for ResourceRef {
 }
 
 /// An action applied to arguments, with the module that wrote the application expression.
-/// `author` is `None` for a call made straight by a principal, with no code in between.
+/// `author` is `None` for a call made straight by an actor, with no code in between.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionRef {
     pub action: ActionId,
@@ -406,7 +406,7 @@ pub enum Value {
     Ref(RefValue),
     /// Who did something. Only the host makes one (`invoker`, or read back from a field it
     /// wrote); the language has no way to build one from text.
-    Principal(Principal),
+    Actor(Actor),
     Action(ActionRef),
     /// A UI node under construction in the current view invocation (host-internal).
     Node(usize),
@@ -517,7 +517,7 @@ impl Value {
             Self::Opt(_) => "option",
             Self::Enum(_) => "enum value",
             Self::Ref(_) => "resource reference",
-            Self::Principal(_) => "principal",
+            Self::Actor(_) => "actor",
             Self::Action(_) => "action reference",
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
@@ -603,7 +603,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             }
             Json::Object(m)
         }
-        Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
+        Value::Actor(p) => tagged("actor", serde_json::to_value(p).map_err(|e| e.to_string())?),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
         Value::Picture(src) => tagged("picture", Json::String(src.clone())),
         // A file: its address and what it is, never its bytes.
@@ -673,10 +673,10 @@ pub fn to_argument(v: &Value) -> Result<Json, String> {
                 .collect::<Result<Map<_, _>, String>>()?,
         ),
         Value::Ref(r) => Json::String(r.target.id_string()),
-        Value::Principal(p) => match p.0.strip_prefix("agent:") {
-            Some(agent) => serde_json::json!({ "agent": agent }),
-            None => serde_json::json!({ "person": p.0 }),
-        },
+        Value::Actor(Actor::Member(member)) => {
+            serde_json::to_value(member).map_err(|e| e.to_string())?
+        }
+        Value::Actor(p) => serde_json::to_value(p).map_err(|e| e.to_string())?,
         Value::Rich(r) if crate::rich::RichValue::from_text(&r.written_text()) == *r => {
             Json::String(r.written_text())
         }
@@ -786,8 +786,10 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
             fields,
         }));
     }
-    if let Some(Json::String(id)) = m.get("principal") {
-        return Ok(Value::Principal(Principal::new(id.clone())));
+    if let Some(actor) = m.get("actor") {
+        return serde_json::from_value(actor.clone())
+            .map(Value::Actor)
+            .map_err(|e| e.to_string());
     }
     if let Some(Json::String(msg)) = m.get("error") {
         return Ok(Value::Error(msg.clone()));

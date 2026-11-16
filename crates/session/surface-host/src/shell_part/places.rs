@@ -12,7 +12,8 @@
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service as _, Started};
 use tilolang_tilo::records_service::RecordService;
-use tilolang_tilo::runtime::Principal;
+use tilolang_tilo::runtime::Actor;
+use tilolang_tilo::runtime::ids::MemberId;
 
 use super::tests_support::{part_with, reading_with_windows};
 use super::*;
@@ -37,7 +38,12 @@ fn click(part: &mut ShellPart, name: &str) {
 
 /// A room's notebook, published as the session publishes it.
 fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
-    let host = Host::new(&tilo_resource::Doc::new(), Principal::new("Pat"), || None).unwrap();
+    let host = Host::new(
+        &tilo_resource::Doc::new(),
+        Actor::Member(MemberId::person("Pat")),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -411,7 +417,7 @@ fn call(host: &Host, meta: &tilolang_tilo::runtime::Meta, action: &str, args: Ve
     let id = action_id(meta, action);
     match host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+        .invoke_action(&Actor::Member(MemberId::person("ada")), (id.as_str(), args))
         .unwrap()
     {
         tilolang_tilo::runtime::InvokeOutcome::Done(value) => value,
@@ -443,7 +449,12 @@ struct Room {
 }
 
 fn room() -> Room {
-    let host = Host::new(&tilo_resource::Doc::new(), Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &tilo_resource::Doc::new(),
+        Actor::Member(MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
@@ -481,7 +492,11 @@ fn room() -> Room {
     let args = host.runtime().complete_args(&id, filled).unwrap();
     let made = match host
         .runtime()
-        .invoke_action_from(&Principal::new("ada"), (id.as_str(), args), &message)
+        .invoke_action_from(
+            &Actor::Member(MemberId::person("ada")),
+            (id.as_str(), args),
+            &message,
+        )
         .unwrap()
     {
         tilolang_tilo::runtime::InvokeOutcome::Done(made) => made,

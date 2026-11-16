@@ -213,12 +213,15 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// Who made a change: a member, or an automation running for one.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Who made a change: a member, an automation running for one, or an app acting by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Actor {
     Member(MemberId),
     Automation(AutomationId),
+    /// An app changing its own resources: a trigger it declares, or a migration of its
+    /// package.
+    App(AppId),
 }
 
 impl Actor {
@@ -244,17 +247,27 @@ impl Actor {
     pub fn member_id(&self) -> Option<&MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Automation(_) => None,
+            Self::Automation(_) | Self::App(_) => None,
         }
     }
 
     /// The spelling a stored id uses: a member's [`MemberId::key`], an
-    /// automation's `automation:<id>`.
+    /// automation's `automation:<id>`, an app's `app:<id>`.
     #[must_use]
     pub fn key(&self) -> String {
         match self {
             Self::Member(member) => member.key(),
             Self::Automation(id) => format!("automation:{}", id.as_str()),
+            Self::App(app) => format!("app:{app}"),
+        }
+    }
+
+    /// The app, when the actor is one acting by itself.
+    #[must_use]
+    pub fn app(&self) -> Option<&AppId> {
+        match self {
+            Self::App(app) => Some(app),
+            Self::Member(_) | Self::Automation(_) => None,
         }
     }
 
@@ -265,15 +278,17 @@ impl Actor {
         match self {
             Self::Member(member) => member.actor_bytes(),
             Self::Automation(id) => [b"automation:", id.as_str().as_bytes()].concat(),
+            Self::App(app) => [b"app:", app.as_str().as_bytes()].concat(),
         }
     }
 
-    /// The id inside the actor: a member's, or an automation's.
+    /// The id inside the actor: a member's, an automation's or an app's.
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
             Self::Member(member) => member.id(),
             Self::Automation(id) => id.as_str(),
+            Self::App(app) => app.as_str(),
         }
     }
 }
@@ -302,6 +317,7 @@ impl std::fmt::Display for Actor {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Automation(id) => write!(f, "automation {}", id.as_str()),
+            Self::App(app) => write!(f, "app {app}"),
         }
     }
 }

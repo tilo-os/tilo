@@ -919,7 +919,7 @@ impl Checker<'_> {
                 continue;
             };
             match name.name.as_str() {
-                "by" => by = Some(self.expr_as(&a.value, &Ty::Principal)),
+                "by" => by = Some(self.expr_as(&a.value, &Ty::Actor)),
                 "at" => at = Some(self.expr_as(&a.value, &Ty::Time)),
                 "from" => {
                     let source = self.expr(&a.value, None);
@@ -957,7 +957,7 @@ impl Checker<'_> {
             Some(t) => Self::some(t, &opt_at),
             None => Ex::host(Imp::NoneV, Vec::new(), opt_at),
         };
-        let by = by.unwrap_or_else(|| Ex::host(Imp::Invoker, Vec::new(), Ty::Principal));
+        let by = by.unwrap_or_else(|| Ex::host(Imp::Invoker, Vec::new(), Ty::Actor));
         let opt_from = Ty::Option(Box::new(from.as_ref().map_or(Ty::Error, |f| f.ty.clone())));
         let from = match from {
             Some(f) => Self::some(f, &opt_from),

@@ -49,10 +49,11 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
 use crate::publish::{COMMIT, HOST_RESOURCE};
+use crate::runtime::ids::MemberId;
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
-    ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
-    Principal, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
+    ActionRef, Actor, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink,
+    Patch, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use rows::ListRows;
@@ -231,7 +232,7 @@ pub fn queue_commits(
 struct SharedNames(Rc<dyn NameHost>);
 
 impl NameHost for SharedNames {
-    fn name(&self, who: &Principal) -> String {
+    fn name(&self, who: &Actor) -> String {
         self.0.name(who)
     }
 }
@@ -371,7 +372,7 @@ pub struct Instance {
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
     /// The lenses on each resource of the package, as presence last reported them.
-    lenses: HashMap<String, Vec<(Principal, bool, bool)>>,
+    lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
     lenses_changed: bool,
     /// The person and the workspace's policy the runtime's members were last read from.
     members_from: Option<(String, tilo_action_policy::WorkspacePolicy)>,
@@ -898,7 +899,7 @@ impl Instance {
             wake: (self.mode != Mode::Past).then(|| self.platform.waker()),
         };
         let standing = Rc::clone(&self.standing);
-        let built = Host::open(opening, Principal::new(self.me.clone()), move || {
+        let built = Host::open(opening, self.me_actor(), move || {
             standing.borrow().as_ref().and_then(|source| source())
         });
         let host = match built {
@@ -1097,22 +1098,20 @@ impl Instance {
     /// "… is typing" without reading a draft.
     pub fn set_peers_and_composers(
         &mut self,
-        peers: HashMap<String, String>,
-        composers: &[String],
+        peers: HashMap<String, MemberId>,
+        composers: &[MemberId],
     ) {
-        let mut now: HashMap<String, Vec<(Principal, bool, bool)>> = HashMap::new();
+        let mut now: HashMap<String, Vec<(Actor, bool, bool)>> = HashMap::new();
         for (resource, who) in peers {
             let typing = composers.contains(&who);
             now.entry(resource)
                 .or_default()
-                .push((Principal::new(who), false, typing));
+                .push((Actor::Member(who), false, typing));
         }
         if let Some(detail) = &self.detail {
-            now.entry(detail.target.id_string()).or_default().push((
-                Principal::new(self.me.clone()),
-                true,
-                false,
-            ));
+            now.entry(detail.target.id_string())
+                .or_default()
+                .push((self.me_actor(), true, false));
         }
         if now == self.lenses {
             return;
@@ -1190,7 +1189,7 @@ impl Instance {
             .map_err(|error| format!("the package has no root to stage: {error}"))?;
         match host
             .runtime()
-            .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
+            .invoke_action(&self.me_actor(), (action, Vec::new()))
         {
             Ok(InvokeOutcome::Done(Value::Ref(shown))) => {
                 Ok(Some(Rc::unwrap_or_clone(shown.target)))
@@ -1251,7 +1250,7 @@ impl Instance {
             .unwrap_or_else(|| suggestion.action.clone());
         self.out.push(ToUi::Ask(Some(ui::Ask {
             action,
-            invoker: suggestion.invoker.0.clone(),
+            invoker: crate::names::unnamed(&suggestion.invoker),
         })));
         self.ask = Some(suggestion);
     }
@@ -1480,7 +1479,7 @@ impl Instance {
                 let taken = std::mem::take(&mut self.seen_offer)
                     && self
                         .host()
-                        .is_some_and(|host| host.runtime().undo_seen(&self.me));
+                        .is_some_and(|host| host.runtime().undo_seen(&self.me_actor()));
                 if !taken {
                     self.history.push(HistoryAsk::Undo);
                 }
@@ -2149,7 +2148,7 @@ impl Instance {
             Resolution::Decline
         };
         host.runtime()
-            .resolve_invocation(&target, &Principal::new(self.me.clone()), resolution)
+            .resolve_invocation(&target, &self.me_actor(), resolution)
             .map(|_| ())
             .map_err(|error| Words::Plain(error.to_string()))
     }
@@ -2169,11 +2168,10 @@ impl Instance {
                 Resolution::Approve
             }
         };
-        if let Err(error) = host.runtime().resolve(
-            &suggestion.run,
-            &Principal::new(self.me.clone()),
-            resolution,
-        ) {
+        if let Err(error) = host
+            .runtime()
+            .resolve(&suggestion.run, &self.me_actor(), resolution)
+        {
             self.notice(Words::Plain(error.to_string()), ui::NoticeKind::Error);
         }
         self.out.push(ToUi::Ask(None));
@@ -2460,10 +2458,15 @@ impl Instance {
 
     /// What the workspace calls the person `me` and each of `others` by id now, as its member
     /// list says: the views show people by these.
-    pub fn name_people(&mut self, me: String, others: Vec<(String, String)>) {
+    pub fn name_people(&mut self, me: String, others: Vec<(MemberId, String)>) {
         if self.told.tell(me, others) {
             self.person_changed = true;
         }
+    }
+
+    /// The person at the window, as the runtime names them.
+    fn me_actor(&self) -> Actor {
+        Actor::Member(MemberId::person(self.me.clone()))
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.
@@ -2940,7 +2943,7 @@ mod tests {
         {
             let state = Binding {
                 target: BindTarget::State {
-                    key: crate::runtime::StateKey::view("w", "person:me", "draft"),
+                    key: crate::runtime::StateKey::view("w", MemberId::person("me").into(), "draft"),
                     name: "draft".to_owned(),
                     ty: "Text".to_owned(),
                 },

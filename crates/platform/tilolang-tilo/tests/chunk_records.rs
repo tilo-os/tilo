@@ -34,7 +34,7 @@ use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::items::Items;
 use tilolang_tilo::record::{DynRecord, DynValue};
-use tilolang_tilo::runtime::{MemorySink, NameHost, Principal};
+use tilolang_tilo::runtime::{Actor, MemorySink, NameHost};
 use tilolang_tilo::schema::{TypeSchema, lookup};
 
 use crate::chunks::{BOARD, BOARD_APP, Docs, act, board, held_in, left};
@@ -237,8 +237,8 @@ impl Platform for Board {
 struct Alone;
 
 impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
     }
 }
 
@@ -877,7 +877,7 @@ fn a_run_that_fails_leaves_nothing_in_any_chunk() {
     assert!(
         host.runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     boom.as_str(),
                     vec![tilolang_tilo::runtime::Value::resource(&tally)]
@@ -935,7 +935,7 @@ fn cards_added_past_a_full_run_are_each_written_once_into_the_next_chunk() {
         let first = host.next_ticket();
         host.runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     add.as_str(),
                     vec![
@@ -1091,7 +1091,7 @@ fn opened(docs: &Docs, dir: &Path, ids: &str, sent: bool) -> Host {
             index_dir: Some(dir.to_owned()),
             ..Opening::default()
         },
-        Principal::new("ada"),
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .unwrap();
@@ -1221,7 +1221,7 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
         .clone();
     lazy.runtime()
         .invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (
                 retitle.as_str(),
                 vec![Value::resource(&edited), Value::Text("changed".into())],

@@ -9,7 +9,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::{ModuleHash, Patch, Principal, Value, ViewInstance};
+use tilolang_runtime::{Actor, ModuleHash, Patch, Value, ViewInstance};
 use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
 
@@ -66,7 +66,12 @@ impl Invoker for Sent {
 /// reading `level`.
 fn workspace(level: f64) -> (Host, ViewInstance, String, ModuleHash) {
     let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     let meta = service();
     host.runtime().load_foreign(meta.clone()).unwrap();
     let compiled = tilolang::compile_package(VIEW, &IdsLock::new(), std::slice::from_ref(&meta))
@@ -217,7 +222,12 @@ scenario "one waiting" {
 }
 "#;
     let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     let metas = tilolang_tilo::platform_apps::platform_packages().unwrap();
     for meta in &metas {
         host.runtime().load_foreign(meta.clone()).unwrap();
@@ -233,7 +243,10 @@ scenario "one waiting" {
     host.runtime().set_reading(&centre, "{}").unwrap();
     let scenario = package.meta.scenarios[0].action.clone();
     host.runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.as_str(), vec![]),
+        )
         .unwrap_or_else(|why| panic!("the scenario runs: {why}"));
     let view = package
         .meta

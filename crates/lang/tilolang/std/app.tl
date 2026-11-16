@@ -47,7 +47,7 @@ template view list<T>(
     ungrouped: Option<Text> = .none,
     tail_title: Option<Text> = .none,
     in_column: Bool = true,
-    row: (T, Option<Principal>) -> View,
+    row: (T, Option<Actor>) -> View,
 ) {
     // The item the person opened where it stands: the row grows into it, and pressing it again,
     // Escape, or a press beside it closes it. A row without a document opens elsewhere, in the
@@ -795,12 +795,7 @@ view reply_banner<T>(to: T, cancel: Action) {
 /// `speakers` names who is in the conversation, newest first, which its `@` drawer offers first:
 /// a view that shows the conversation's items says so with `speakers(items)`, and a mention in
 /// it reads as the person it names wherever it lands.
-view composer(
-    draft: State<RichText>,
-    placeholder: Text,
-    send: Action,
-    speakers: List<Principal> = [],
-) {
+view composer(draft: State<RichText>, placeholder: Text, send: Action, speakers: List<Actor> = []) {
     row(gap: .none) {
         rich_input(bind: draft, placeholder: placeholder, speakers: speakers, fill) {
             on submit: send.then(set(draft, RichText("")))

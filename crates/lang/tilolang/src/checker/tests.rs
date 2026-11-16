@@ -639,7 +639,7 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
     phase a_document_page_and_transcript_are_shells_of_the_library;
     {
         let (m, _) = lower(
-            "type Person {\n    name: Text\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+            "type Person {\n    name: Text\n    vip: Bool = false\n    owner: Actor\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
         );
         let calls = ui_calls(func(&m, "person"));
         for want in [
@@ -797,22 +797,22 @@ fn host_imports(f: &Func) -> Vec<Imp> {
 
 tilo_test_env::scenario! {
     /// Members, links and rich inputs, which the host supplies.
-    fn principals_links_and_rich_inputs_are_read_from_the_host;
+    fn actors_links_and_rich_inputs_are_read_from_the_host;
 
-    phase workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role;
+    phase workspace_members_and_members_of_a_resource_are_actors_with_kind_and_role;
     {
         let (m, _) = lower(
             "type Topic {\n    topic: Text\n}\nfn agents(r: Topic) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview topic(r: Topic) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}\nview mine(r: Topic) {\n    text(\"{workspace.me.name()}\")\n}",
         );
         let agents = host_imports(func(&m, "agents"));
-        for want in [Imp::Members, Imp::PrincipalKind] {
+        for want in [Imp::Members, Imp::ActorKind] {
             assert!(agents.contains(&want), "{want:?} in {agents:?}");
         }
         let roles = host_imports(func(&m, "roles"));
         for want in [
             Imp::WorkspaceMembers,
-            Imp::PrincipalRole,
-            Imp::PrincipalName,
+            Imp::ActorRole,
+            Imp::ActorName,
         ] {
             assert!(roles.contains(&want), "{want:?} in {roles:?}");
         }
@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
             ("fn f() -> Int {\n    let w = workspace\n    0\n}", "E064"),
             ("fn f() -> Int {\n    members(3).len()\n}", "E020"),
             (
-                "fn f(p: Principal) -> Bool {\n    p.kind() == .robot\n}",
+                "fn f(p: Actor) -> Bool {\n    p.kind() == .robot\n}",
                 "",
             ),
         ] {
@@ -838,7 +838,7 @@ tilo_test_env::scenario! {
             if code.is_empty() {
                 assert!(
                     !found.is_empty(),
-                    "a principal is a person or an agent: {source}"
+                    "an actor is a person or an agent: {source}"
                 );
             } else {
                 assert!(

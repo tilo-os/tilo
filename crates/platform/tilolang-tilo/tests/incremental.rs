@@ -795,7 +795,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &tilolang_runtime::Principal::new("ada"),
+                &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     add_action.id.as_str(),
                     vec![Value::resource(&list), Value::text("jam")],
@@ -898,7 +898,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &tilolang_runtime::Principal::new("ada"),
+                &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     finish.id.as_str(),
                     vec![Value::resource(&list.item(&ids[1], item_ty.clone()))],

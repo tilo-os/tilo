@@ -26,7 +26,7 @@
 
 use crate::core::Core;
 use crate::error::RuntimeError;
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::render::{Acc, Walk};
 use crate::store::{FieldSpec, FieldValue, Scalar, Version, VersionKind};
 use crate::value::{ActionRef, CollRef, ResourceRef, Value};
@@ -96,7 +96,7 @@ impl Core {
     pub(crate) fn mark_unseen(
         &self,
         node: &mut UiNode,
-        (viewer, window): (&Principal, &str),
+        (viewer, window): (&Actor, &str),
         listed: Option<&CollRef>,
         walk: Walk<'_>,
         acc: &mut Acc,
@@ -128,7 +128,7 @@ impl Core {
     fn mark_row(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
+        viewer: &Actor,
         walk: Walk<'_>,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
@@ -178,7 +178,7 @@ impl Core {
     fn mark_removed(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
+        viewer: &Actor,
         coll: &CollRef,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
@@ -193,7 +193,7 @@ impl Core {
             Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let runs = self.seen_runs(&viewer.0);
+        let runs = self.seen_runs(viewer);
         // The field the items' type is named by, which a removed item's row shows.
         let title = {
             let registry = self.registry.borrow();
@@ -207,13 +207,9 @@ impl Core {
         let mut rows = Vec::new();
         for (resource, removal) in removed {
             self.note_seen_reads(viewer, &resource, acc);
-            let mark = self.seen_mark(&viewer.0, &resource);
-            let unseen = crate::seen::unseen(
-                std::slice::from_ref(&removal),
-                &viewer.0,
-                mark.as_ref(),
-                &runs,
-            );
+            let mark = self.seen_mark(viewer, &resource);
+            let unseen =
+                crate::seen::unseen(std::slice::from_ref(&removal), viewer, mark.as_ref(), &runs);
             if unseen.is_empty() {
                 continue;
             }
@@ -264,7 +260,7 @@ impl Core {
 
     /// The boundary reads every mark of `resource` makes: the person's seen mark of it and the
     /// runs they reviewed, the record's versions of it, and each of its fields.
-    fn note_unseen_reads(&self, viewer: &Principal, at: &ResourceRef, acc: &mut Acc) {
+    fn note_unseen_reads(&self, viewer: &Actor, at: &ResourceRef, acc: &mut Acc) {
         let id = at.id_string();
         self.note_seen_reads(viewer, &id, acc);
         // A step that makes a version of it reaches the mark even when the value it writes
@@ -283,7 +279,7 @@ impl Core {
     /// mark of the resource, or of what it was made from and what holds it, names. A mark of a
     /// resource whose newest version is such a one has nothing unseen to show, and says so
     /// without reading the resource's log.
-    fn seen_before(&self, person: &str, at: &ResourceRef, version: &Version) -> bool {
+    fn seen_before(&self, person: &Actor, at: &ResourceRef, version: &Version) -> bool {
         !crate::seen::is_marked(version, person)
             || self
                 .seen_mark_of_tree(person, at)
@@ -295,20 +291,20 @@ impl Core {
     /// resource without its log.
     fn newest_unseen_noted(
         &self,
-        viewer: &Principal,
+        viewer: &Actor,
         at: &ResourceRef,
         acc: &mut Acc,
     ) -> Result<Option<Version>, RuntimeError> {
         self.note_unseen_reads(viewer, at, acc);
-        Ok(self.newest_unseen_of(&viewer.0, at)?)
+        Ok(self.newest_unseen_of(viewer, at)?)
     }
 
     /// The boundary read `viewer`'s seen mark of `resource` and the runs they reviewed.
-    fn note_seen_reads(&self, viewer: &Principal, resource: &str, acc: &mut Acc) {
+    fn note_seen_reads(&self, viewer: &Actor, resource: &str, acc: &mut Acc) {
         let states = self.view_states.borrow();
         for key in [
-            crate::seen::seen_key(&viewer.0, resource),
-            crate::seen::runs_key(&viewer.0),
+            crate::seen::seen_key(viewer, resource),
+            crate::seen::runs_key(viewer),
         ] {
             let generation = states.generation(&key);
             let value = states.get(&key).cloned().unwrap_or_else(Value::none);
@@ -325,25 +321,21 @@ impl Core {
         mark: &mut UiNode,
         at: &ResourceRef,
         unseen: &[Version],
-        viewer: &Principal,
+        viewer: &Actor,
         acc: &mut Acc,
     ) {
         let Some(newest) = unseen.last() else {
             return;
         };
-        mark.props.insert(
-            "by".to_owned(),
-            Value::Principal(Principal::new(newest.who.clone())),
-        );
+        mark.props
+            .insert("by".to_owned(), Value::Actor(self.made_by(newest, at)));
         // Everyone who made one of the changes, oldest first: the label reads "Bo and Scout",
         // in the order they changed it.
         let mut by_all: Vec<Value> = Vec::new();
-        for who in unseen.iter().map(|v| &v.who) {
-            if !by_all
-                .iter()
-                .any(|seen| matches!(seen, Value::Principal(seen) if &seen.0 == who))
-            {
-                by_all.push(Value::Principal(Principal::new(who.clone())));
+        for version in unseen {
+            let who = Value::Actor(self.made_by(version, at));
+            if !by_all.contains(&who) {
+                by_all.push(who);
             }
         }
         mark.props.insert("by_all".to_owned(), Value::List(by_all));
@@ -351,7 +343,7 @@ impl Core {
         // a row says it under its title, and the catch-up lists it step by step.
         mark.props.insert(
             "said".to_owned(),
-            Value::Text(self.version_line(newest, at, &viewer.0)),
+            Value::Text(self.version_line(newest, at, viewer)),
         );
         // What one item of it is called, for a window's count: the type's own name in the
         // window's language, or of what it holds when it is a document (a window of tasks says
@@ -396,7 +388,7 @@ impl Core {
     fn mark_field(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
+        viewer: &Actor,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         let Some((target, field)) = node
@@ -413,10 +405,10 @@ impl Core {
         let Some(last) = self.store.borrow().field_changed(&target, &field)? else {
             return Ok(());
         };
-        if self.seen_before(&viewer.0, &target, &last) {
+        if self.seen_before(viewer, &target, &last) {
             return Ok(());
         }
-        let unseen = self.unseen_of(&viewer.0, &target)?;
+        let unseen = self.unseen_of(viewer, &target)?;
         let touching: Vec<&Version> = unseen
             .iter()
             .filter(|v| v.fields.contains(&field))
@@ -426,7 +418,7 @@ impl Core {
         };
         node.props.insert(
             "changed_by".to_owned(),
-            Value::Principal(Principal::new(newest.who.clone())),
+            Value::Actor(self.made_by(newest, &target)),
         );
         let (_, info) = self
             .type_of_ref(&target.ty)
@@ -464,7 +456,7 @@ impl Core {
     fn mark_nav_item(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
+        viewer: &Actor,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
         let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
@@ -476,11 +468,11 @@ impl Core {
         let newest = self.store.borrow().newest(&r.target)?;
         if newest
             .as_ref()
-            .is_none_or(|newest| self.seen_before(&viewer.0, &r.target, newest))
+            .is_none_or(|newest| self.seen_before(viewer, &r.target, newest))
         {
             return Ok(());
         }
-        let unseen = self.unseen_of(&viewer.0, &r.target)?;
+        let unseen = self.unseen_of(viewer, &r.target)?;
         if unseen.is_empty() {
             return Ok(());
         }
@@ -488,7 +480,7 @@ impl Core {
         // number the window of it says in its header ([`Self::mark_window`]): one count, read
         // from one place. A resource holding no items of its own counts its unseen changes.
         let count = self
-            .unread_count_of(&viewer.0, &r.target)?
+            .unread_count_of(viewer, &r.target)?
             .unwrap_or_else(|| i64::try_from(unseen.len()).unwrap_or(i64::MAX));
         // A `live` the view set itself (a count of what it knows) is the view's; the host
         // fills only what the view left for it, as with a row's change mark.
@@ -511,7 +503,7 @@ impl Core {
     fn mark_window(
         &self,
         node: &mut UiNode,
-        viewer: &Principal,
+        viewer: &Actor,
         window: &str,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
@@ -585,12 +577,12 @@ impl Core {
     fn changed_since(
         &self,
         at: &ResourceRef,
-        viewer: &Principal,
+        viewer: &Actor,
         window: &str,
         within: Vec<(String, Version)>,
         acc: &mut Acc,
     ) -> Vec<Changed> {
-        let runs = self.seen_runs(&viewer.0);
+        let runs = self.seen_runs(viewer);
         // The window of an item shows that item; the window of a document every item in it,
         // each counted once (the document's own versions are its collections moving as they
         // are made and removed).
@@ -601,16 +593,11 @@ impl Core {
         let mut changed: Vec<Changed> = Vec::new();
         for (resource, newest) in within.into_iter().filter(|(r, _)| shown(r)) {
             self.note_seen_reads(viewer, &resource, acc);
-            let mark = self.seen_mark(&viewer.0, &resource);
+            let mark = self.seen_mark(viewer, &resource);
             // Its newest change is the person's own, or one their mark names: nothing of it is
             // unseen, and its log is not read.
-            if crate::seen::unseen(
-                std::slice::from_ref(&newest),
-                &viewer.0,
-                mark.as_ref(),
-                &runs,
-            )
-            .is_empty()
+            if crate::seen::unseen(std::slice::from_ref(&newest), viewer, mark.as_ref(), &runs)
+                .is_empty()
             {
                 continue;
             }
@@ -630,7 +617,7 @@ impl Core {
             else {
                 continue;
             };
-            let fresh = crate::seen::unseen_after(&since.versions, &viewer.0, &runs);
+            let fresh = crate::seen::unseen_after(&since.versions, viewer, &runs);
             if fresh.is_empty() {
                 continue;
             }
@@ -683,7 +670,7 @@ impl Core {
         &self,
         at: &ResourceRef,
         changed: &[Changed],
-        viewer: &Principal,
+        viewer: &Actor,
     ) -> Result<(i64, bool), RuntimeError> {
         // Every change only put items in: what is new is said as new, not as changed.
         let added = changed
@@ -691,7 +678,7 @@ impl Core {
             .flat_map(|changed| &changed.versions)
             .all(|version| self.puts_items_in(version, at));
         if at.item.is_some()
-            && let Some(unread) = self.unread_count_of(&viewer.0, at)?
+            && let Some(unread) = self.unread_count_of(viewer, at)?
         {
             return Ok((unread, added));
         }
@@ -734,13 +721,7 @@ impl Core {
     /// change did in the words history says it in — and, where the record holds more than one
     /// change since, how many, as history folds a step's changes into one entry — and the one
     /// move that marks them all seen.
-    fn catch_up(
-        &self,
-        key: &str,
-        changed: &[Changed],
-        viewer: &Principal,
-        acc: &mut Acc,
-    ) -> UiNode {
+    fn catch_up(&self, key: &str, changed: &[Changed], viewer: &Actor, acc: &mut Acc) -> UiNode {
         let mut stack = UiNode::empty("stack", &format!("{key}~since"));
         stack.props.insert("gap".to_owned(), Value::text("related"));
         let mut title = UiNode::empty("ui.Text", &format!("{key}~since-title"));
@@ -799,7 +780,7 @@ impl Core {
         &self,
         row_key: &str,
         changed: &Changed,
-        viewer: &Principal,
+        viewer: &Actor,
         acc: &mut Acc,
     ) -> UiNode {
         let Changed {
@@ -888,7 +869,7 @@ impl Core {
         key: &str,
         of: &ResourceRef,
         versions: &[Version],
-        viewer: &Principal,
+        viewer: &Actor,
         said: Option<&str>,
     ) -> UiNode {
         let mut line = UiNode::empty("row", key);
@@ -903,25 +884,24 @@ impl Core {
         told.props.insert("fill".to_owned(), Value::Float(1.0));
         // Everyone who changed it since the person looked, oldest first, each once: a record two
         // people changed shows both their faces and names them both, as the window's chip does.
-        let mut changers: Vec<&str> = Vec::new();
+        let mut changers: Vec<Actor> = Vec::new();
         for version in versions {
-            if !changers.contains(&version.who.as_str()) {
-                changers.push(version.who.as_str());
+            let who = self.made_by(version, of);
+            if !changers.contains(&who) {
+                changers.push(who);
             }
         }
         for (index, who) in changers.iter().enumerate() {
             let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face-{index}"));
-            face.props.insert(
-                "who".to_owned(),
-                Value::Principal(Principal::new((*who).to_owned())),
-            );
+            face.props
+                .insert("who".to_owned(), Value::Actor(who.clone()));
             told.children.push(face);
         }
         // The line leads with the names, as history writes a sentence: name, then what they did
         // ("Scout marked it done"). A face alone does not say who.
         let names: Vec<String> = changers
             .iter()
-            .map(|who| self.actor(who, viewer.0 == *who))
+            .map(|who| self.actor(who, viewer == who))
             .collect();
         let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
         who.props
@@ -934,9 +914,7 @@ impl Core {
         let mut what = UiNode::empty("ui.Text", &format!("{key}~said"));
         what.props.insert(
             "value".to_owned(),
-            Value::Text(
-                said.map_or_else(|| self.version_line(newest, of, &viewer.0), str::to_owned),
-            ),
+            Value::Text(said.map_or_else(|| self.version_line(newest, of, viewer), str::to_owned)),
         );
         what.props.insert("truncate".to_owned(), Value::Bool(true));
         told.children.push(what);

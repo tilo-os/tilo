@@ -83,8 +83,8 @@ fn by_type(ty: &Ty, named: &str, after: &Value, gone: bool, was_gone: bool) -> S
             named,
         ),
         Ty::Time => after_naming("tilolang-did-set-time", "set the { $field } time to", named),
-        Ty::Principal if gone => plain("tilolang-did-unassigned", "unassigned it", Shows::None),
-        Ty::Principal => plain("tilolang-did-assigned", "assigned it to", Shows::After),
+        Ty::Actor if gone => plain("tilolang-did-unassigned", "unassigned it", Shows::None),
+        Ty::Actor => plain("tilolang-did-assigned", "assigned it to", Shows::After),
         Ty::Record(_) | Ty::Union(_) if gone => {
             plain("tilolang-did-taken-out", "moved it out of", Shows::Before)
         }
@@ -220,11 +220,11 @@ mod tests {
 
         phase a_person_reads_as_assigned_to_and_unassigned;
         {
-            let assignee = field("assignee", Ty::Option(Box::new(Ty::Principal)));
+            let assignee = field("assignee", Ty::Option(Box::new(Ty::Actor)));
             let nobody = shown("none", Value::Unit);
             let ben = shown(
-                "principal",
-                Value::Principal(crate::ids::Principal::new("ben")),
+                "actor",
+                Value::Actor(crate::ids::MemberId::person("ben").into()),
             );
             assert_eq!(
                 reads(&assignee, &nobody, &ben),

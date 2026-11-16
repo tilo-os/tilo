@@ -7,7 +7,7 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Principal, SourceWords};
+use tilolang_runtime::{Actor, SourceWords};
 use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::PlanRequest;
@@ -511,7 +511,7 @@ tilo_test_env::scenario! {
                 index_dir: Some(dir.clone()),
                 ..tilolang_tilo::host::Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -564,7 +564,7 @@ fn call(r: &Workspace, name: &str, column: &str, card: &str) -> Value {
         .host
         .runtime()
         .invoke_action(
-            &tilolang_runtime::Principal::new("ada"),
+            &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (
                 id.as_str(),
                 vec![Value::resource(&column), Value::resource(&card)],
@@ -762,7 +762,7 @@ tilo_test_env::scenario! {
             Value::resource(&ResourceRef::parse_id(&format!("{root}/{id}"), ty.id.clone()).unwrap())
         };
         let refused = r.ada.host.runtime().invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (action.as_str(), vec![node(&held), node(&top)]),
         );
         assert!(refused.is_err(), "{refused:?}");
@@ -825,7 +825,7 @@ fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
             index_dir: Some(dir.to_owned()),
             ..tilolang_tilo::host::Opening::default()
         },
-        Principal::new("ada"),
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .unwrap();

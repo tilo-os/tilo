@@ -9,7 +9,7 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::{FrameKind, Retained, ViewState};
 use crate::host_ui::VIEW_STATE;
-use crate::ids::{ModuleHash, Principal, ViewId};
+use crate::ids::{Actor, ModuleHash, ViewId};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
@@ -107,7 +107,7 @@ pub(crate) fn earliest(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 #[derive(Clone, Copy)]
 pub(crate) struct Offer<'a> {
     pub space: Space,
-    pub viewer: &'a Principal,
+    pub viewer: &'a Actor,
     pub window: &'a str,
     pub depth: usize,
 }
@@ -306,16 +306,14 @@ impl Core {
         params: &[ParamMeta],
         args: &[Value],
         window: &str,
-        viewer: &Principal,
+        viewer: &Actor,
         result: &str,
     ) -> Result<Value, RuntimeError> {
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::View(ViewState {
-                space: Space::default(),
                 window: window.to_owned(),
-                viewer: viewer.clone(),
-                ..ViewState::default()
+                ..ViewState::of(viewer.clone())
             }),
         );
         let out = self.call_in_frame(pkg, export, params, args, Some(result));
@@ -324,7 +322,7 @@ impl Core {
     }
 
     /// Render a view as its own boundary. `author` replaces the module as the author of what
-    /// the view creates: an embedded block is written by its principal, not by its module.
+    /// the view creates: an embedded block is written by its actor, not by its module.
     /// View calls inside are resolved in place, their reads joining this view's.
     pub(crate) fn render_at(
         &self,
@@ -381,8 +379,7 @@ impl Core {
                 space,
                 open,
                 window: offer.window.to_owned(),
-                viewer: offer.viewer.clone(),
-                ..ViewState::default()
+                ..ViewState::of(offer.viewer.clone())
             }),
         );
         let root = self.call_in_frame(&pkg, &target.export, &target.params, args, Some("View"));
@@ -1255,7 +1252,7 @@ impl Core {
             cx.offer.viewer,
             cx.offer.window,
         );
-        let author = crate::ids::ModuleHash::principal(app.app());
+        let author = crate::ids::ModuleHash::written_by(&crate::ids::Actor::App(app.app().into()));
         let root = {
             let mut retained = Vec::new();
             let mut retain = |value: Value| {
@@ -1317,7 +1314,7 @@ impl Core {
         }
         let key = StateKey::view(
             offer.window,
-            offer.viewer.0.clone(),
+            offer.viewer.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),
         );
         let (held, generation) = {
@@ -1345,7 +1342,7 @@ impl Core {
     fn chosen_view(&self, resource: &RefValue, offer: Offer<'_>, acc: &mut Acc) -> Option<ViewId> {
         let key = StateKey::view(
             offer.window,
-            offer.viewer.0.clone(),
+            offer.viewer.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),
         );
         let held = {

@@ -29,9 +29,9 @@ type Controls {
     /// How soon the report is due.
     urgency: Urgency = .none
     /// Who looks after the report.
-    owner: Option<Principal> = .none
+    owner: Option<Actor> = .none
     /// Who reviews it, nobody picked yet.
-    reviewer: Option<Principal> = .none
+    reviewer: Option<Actor> = .none
     /// Which view shows.
     showing: Int = 1
     /// Which step the run is on.

@@ -17,7 +17,7 @@ type WrittenView {
     definition: Text
     /// Who wrote it: the agent task that answered with it, the person, or who sent it to them.
     /// It cannot be claimed.
-    author: Principal
+    author: Actor
     /// Whether the person kept it. An answer they have not kept is still the agent's answer.
     kept: Bool = false
     /// The type of the one resource it takes (`mail.Thread`), so what it can be the default view

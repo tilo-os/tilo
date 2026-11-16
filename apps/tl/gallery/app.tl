@@ -9,7 +9,7 @@ type Item {
     title: Text
     notes: RichText
     stage: Text
-    reactions: Map<Set<Principal>>
+    reactions: Map<Set<Actor>>
 }
 
 /// The everyday parts of a window: navigation, text and buttons, chips, a card of facts, an
@@ -18,7 +18,7 @@ type Basics {
     title: Text
     note: Text
     /// Who looks after the basics.
-    owner: Option<Principal>
+    owner: Option<Actor>
     /// When the basics last changed.
     updated: Time
 }
@@ -35,7 +35,7 @@ type Release {
     title: Text
     items: Collection<Item>
     /// Who leads the release: at each of its tabs.
-    lead: Option<Principal>
+    lead: Option<Actor>
 }
 
 /// The gallery: a window of each group. A group's file adds its type here and a row to the

@@ -629,7 +629,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_scenario_runs_actions_as_named_people;
-    // Only a scenario runs an action as a named person: elsewhere a principal comes from `invoker`.
+    // Only a scenario runs an action as a named person: elsewhere an actor comes from `invoker`.
     {
         let base = with_t(
             "root T\ndefault view v for T\nview v(x: T) {\n    page {\n        text(x.t)\n    }\n}\naction bump(x: T) {\n    x.n = 1\n}\n",
@@ -829,9 +829,9 @@ tilo_test_env::scenario! {
     // A row shows a value derived from its resource, or a resource itself; a card counts.
     {
         ok(&with_t(
-            "view v(x: T) {\n    list(x.items) { i ->\n        row(i, meta: i.t, avatar: invoker_of(i))\n    }\n}\nfn invoker_of(i: T) -> Principal {\n    i.owner\n}",
+            "view v(x: T) {\n    list(x.items) { i ->\n        row(i, meta: i.t, avatar: invoker_of(i))\n    }\n}\nfn invoker_of(i: T) -> Actor {\n    i.owner\n}",
         )
-        .replace("    items: Collection<T>\n", "    items: Collection<T>\n    owner: Principal\n"));
+        .replace("    items: Collection<T>\n", "    items: Collection<T>\n    owner: Actor\n"));
         ok(&with_t(
             "fn ends(x: T) -> Int {\n    let a: Option<T> = x.items.first()\n    let b: Option<T> = x.items.last()\n    let n: Option<Int> = [1, 2].last()\n    match n {\n        .some(v) => v,\n        .none => 0,\n    }\n}",
         ));

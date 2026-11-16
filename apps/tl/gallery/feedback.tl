@@ -3,7 +3,7 @@
 type Feedback {
     title: Text
     /// Who is syncing the files.
-    owner: Option<Principal>
+    owner: Option<Actor>
 }
 
 default view feedback for Feedback

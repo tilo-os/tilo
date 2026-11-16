@@ -620,10 +620,20 @@ impl InstanceRecord {
         }
     }
 
+    /// The person at the window, as the runtime names them.
+    fn person_actor(&self) -> crate::runtime::Actor {
+        crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(self.person.clone()))
+    }
+
+    /// The steps that are the person's own: what their undo and redo take.
+    fn own_steps(&self) -> Scope {
+        Scope::Invoker(self.person_actor())
+    }
+
     /// Read and write the chunks through `store` from here on, which writes as the person at
     /// the window: what they do there is written once, as the change it makes.
     fn held_by(&mut self, store: &crate::store::TiloStore) {
-        store.set_author(self.person.as_bytes());
+        store.set_author(&self.person_actor());
         self.chunks = Docs::Store(store.clone());
     }
 
@@ -784,14 +794,14 @@ impl InstanceRecord {
     /// Whether the person at the window has a step to undo, or an undo to redo.
     #[must_use]
     pub fn can_undo(&self) -> (bool, bool) {
-        self.can_undo_as(&self.person)
+        self.can_undo_as(&self.person_actor())
     }
 
-    /// Whether `person` has a step to undo, or an undo to redo, in the record: what the
-    /// history verbs `undo` and `redo` would take for them.
+    /// Whether `who` has a step to undo, or an undo to redo, in the record: what the history
+    /// verbs `undo` and `redo` would take for them.
     #[must_use]
-    pub fn can_undo_as(&self, person: &str) -> (bool, bool) {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(person).by);
+    pub fn can_undo_as(&self, who: &crate::runtime::Actor) -> (bool, bool) {
+        let scope = Scope::Invoker(who.clone());
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let mut undo = false;
         let mut redo = false;
@@ -808,7 +818,7 @@ impl InstanceRecord {
     /// action that made it names, in this unit and in every other one the action wrote.
     #[must_use]
     pub fn last_step_invocation(&self) -> Option<InvocationId> {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let step = self.last_step(&scope)?;
         self.invocation_of(&step)
     }
@@ -891,7 +901,7 @@ impl InstanceRecord {
         let Some(chunk) = self.chunk_of_change(change) else {
             return false;
         };
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         self.read(|chunks| {
             chunks.held(chunk).is_some_and(|doc| {
                 steps::steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
@@ -946,7 +956,7 @@ impl InstanceRecord {
         resource: &str,
         kind: &str,
     ) -> Result<bool, RecordError> {
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let Some(step) = self.last_step(&scope) else {
             return Ok(false);
         };
@@ -1030,7 +1040,7 @@ impl InstanceRecord {
         if !self.can_undo().1 {
             return Ok(false);
         }
-        let scope = Scope::Invoker(tilo_actions::Acting::of_key(&self.person).by);
+        let scope = self.own_steps();
         let owns = |version: &tilo_resource::history::Version| scope.owns(version);
         let ambient = ActionContext {
             source_invocation: Some(InvocationId::new()),
@@ -1674,7 +1684,7 @@ impl InstanceRecord {
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let author = invoker.acting.by.key();
+        let author = invoker.acting.by.clone();
         let context = context.with_invoker(invoker);
         let workspace = self.route.cluster_id.to_string();
         let app = self.route.app_id.clone();
@@ -1698,20 +1708,14 @@ impl InstanceRecord {
         };
         let (before, refused) = match &self.chunks {
             Docs::Store(store) => {
-                let (out, moved) = store.commit_action(
-                    chunk,
-                    (action, part),
-                    encoded,
-                    author.as_bytes(),
-                    context,
-                    check,
-                );
+                let (out, moved) =
+                    store.commit_action(chunk, (action, part), encoded, &author, context, check);
                 self.moved |= moved;
                 out.map_err(|error| RecordError::Refused(error.to_string()))??
             }
             Docs::Own(_) => self.write_chunk(chunk, |doc| {
                 let before =
-                    crate::store::apply_step(doc, action, encoded, author.as_bytes(), context)
+                    crate::store::apply_step(doc, action, encoded, &author.actor_bytes(), context)
                         .map_err(|error| RecordError::Refused(error.to_string()))?;
                 check(doc, before)
             })?,

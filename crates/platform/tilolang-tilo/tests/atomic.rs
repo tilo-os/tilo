@@ -7,7 +7,7 @@ use collab_types::DocumentMutation;
 use tilo_actions::ActionContext;
 use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
-use tilolang_runtime::{Principal, Value};
+use tilolang_runtime::{Actor, Value};
 use tilolang_tilo::action::{DynAction, invocation_id};
 use tilolang_tilo::host::Host;
 
@@ -49,7 +49,12 @@ const APP: &str = "test.nested";
 /// A host over a fresh record, running `NESTED`, and the tally it counts.
 fn workspace() -> (Host, AutoCommit, tilolang_tilo::runtime::ResourceRef, Meta) {
     let mut doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     let package = host.load_builtin(NESTED, "").unwrap();
     let tally = host.root_of(APP).unwrap();
     // The root itself is a change of the record, committed before any action runs.
@@ -73,7 +78,7 @@ fn run(
         .id
         .clone();
     match host.runtime().invoke_action(
-        &Principal::new("ada"),
+        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         (id.as_str(), vec![Value::resource(tally)]),
     ) {
         Ok(_) => true,

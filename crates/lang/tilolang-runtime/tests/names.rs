@@ -11,8 +11,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, NameHost, Principal, Runtime, ShownHost, SimpleAuthority, Value, ViewInstance,
-        Words,
+        Actor, AmStore, NameHost, Runtime, ShownHost, SimpleAuthority, Value, ViewInstance, Words,
     };
 
     const SOURCE: &str = r#"app so.tilo.named "Named"
@@ -75,8 +74,8 @@ view when(m: Meeting) {
     /// What a window calls each participant, by id: the names it told the runtime.
     type Said = Rc<RefCell<HashMap<String, String>>>;
 
-    fn ada() -> Principal {
-        Principal::new("ada")
+    fn ada() -> Actor {
+        person("ada")
     }
 
     /// What the window calls the workspace's participants: the names it told the runtime, and
@@ -84,12 +83,12 @@ view when(m: Meeting) {
     struct Window(Said);
 
     impl NameHost for Window {
-        fn name(&self, who: &Principal) -> String {
+        fn name(&self, who: &Actor) -> String {
             self.0
                 .borrow()
-                .get(&who.0)
+                .get(who.id())
                 .cloned()
-                .unwrap_or_else(|| who.0.clone())
+                .unwrap_or_else(|| who.id().to_owned())
         }
     }
 

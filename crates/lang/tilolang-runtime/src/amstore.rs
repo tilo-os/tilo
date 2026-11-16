@@ -811,7 +811,7 @@ impl Store for AmStore {
             &ChangeNote {
                 action: "$create".into(),
                 args: Json::Null,
-                invoker: String::new(),
+                invoker: Some(crate::ids::Actor::App(record.app.clone())),
                 chain: Vec::new(),
                 module: String::new(),
                 approved_by: None,
@@ -996,7 +996,7 @@ impl Store for AmStore {
                 fields: fields.into_iter().collect(),
                 collections,
                 listings,
-                by: Some(note.invoker.clone()),
+                by: note.invoker.clone(),
             });
         }
         Ok(())

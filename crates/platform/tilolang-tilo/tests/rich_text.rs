@@ -399,8 +399,8 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
 struct Names;
 
 impl tilolang_tilo::runtime::NameHost for Names {
-    fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
-        match who.0.as_str() {
+    fn name(&self, who: &tilolang_tilo::runtime::Actor) -> String {
+        match who.id() {
             "grace" => "Grace Hopper".to_owned(),
             other => other.to_owned(),
         }
@@ -431,7 +431,9 @@ fn excerpt(replica: &Replica, meta: &tilolang_runtime::Meta, post: &str) -> Stri
         .host
         .runtime()
         .invoke_action(
-            &tilolang_runtime::Principal::new(replica.name.clone()),
+            &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                replica.name.clone(),
+            )),
             (
                 action.id.as_str(),
                 vec![tilolang_runtime::Value::resource(&at)],

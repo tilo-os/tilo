@@ -2,7 +2,7 @@
 //! at the time a record's field names, for each of its records of a type.
 //!
 //! The host runs a trigger as the app's own invocation of its action ([`crate::authority`]'s
-//! `trigger:` principal), on the workspace's origin, with the app's authority and declared
+//! `trigger:` actor), on the workspace's origin, with the app's authority and declared
 //! effects, and the change records in the same edit what the trigger last did for the record
 //! ([`crate::action::TRIGGERS_KEY`]): the period it ran in, or the instant it fired at. A second
 //! run of the same period or instant is refused there, so a trigger runs once across the
@@ -103,7 +103,7 @@ pub fn run(host: &Host, now: i64) -> usize {
         if host.package(&due.app).is_none() {
             continue;
         }
-        let by = crate::authority::trigger_principal(&due.app);
+        let by = crate::runtime::Actor::App(due.app.as_str().into());
         host.store().set_triggering(Some(due.triggering.clone()));
         let run = due.run();
         let outcome =

@@ -12,40 +12,58 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collaboration::history_source::authors::{ParticipantNames, actor_name, name_words};
+use collaboration::history_source::authors::{ParticipantNames, UNKNOWN_AUTHOR_NAME, name_words};
 
-use crate::runtime::{NameHost, Principal};
+use crate::runtime::ids::MemberId;
+use crate::runtime::{Actor, NameHost};
 
-/// The name of the participant `id` when nobody named them, by what they are: a sample person a
-/// scenario named (`person("Mia")`) by that name, an app by its own name, an agent by its name.
-/// A person the reader has no name for is
+/// The name of `who` when nobody named them, by what they are: a sample person a scenario named
+/// (`person("Mia")`) by that name, an app by its own name, an agent by its name. A person the
+/// reader has no name for is
 /// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
 /// their key.
 #[must_use]
-pub fn unnamed(id: &str) -> String {
-    named(id, &Unnamed)
+pub fn unnamed(who: &Actor) -> String {
+    named(who, &Unnamed)
 }
 
-/// The name of the participant `id` to a reader who calls people, apps and agents as `names`
-/// does: a sample person a scenario named by that name, a package acting on its own records (one
-/// of its own actions, or an update to a later build) as the app itself, and anyone else by
-/// [`actor_name`].
+/// The name of `who` to a reader who calls people, apps and agents as `names` does: a sample
+/// person or agent a scenario named by that name, an app acting by itself (one of its triggers,
+/// or an update to a later build) as the app, and anyone else as `names` calls them.
 #[must_use]
-pub fn named(id: &str, names: &dyn ParticipantNames) -> String {
-    if let Some(name) = id
-        .strip_prefix("scenario:")
-        .or_else(|| id.strip_prefix("agent:scenario:"))
-    {
-        return name.to_owned();
+pub fn named(who: &Actor, names: &dyn ParticipantNames) -> String {
+    match who {
+        Actor::Member(MemberId::Person(id)) => id.strip_prefix(SCENARIO).map_or_else(
+            || {
+                names
+                    .person(id)
+                    .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
+            },
+            str::to_owned,
+        ),
+        Actor::Member(MemberId::Agent(id)) => id
+            .strip_prefix(SCENARIO)
+            .map_or_else(|| names.agent(id), str::to_owned),
+        Actor::Member(MemberId::Bot(id)) => names.person(id).unwrap_or_else(|| name_words(id)),
+        Actor::Automation(id) => name_words(id.as_str()),
+        Actor::App(app) => names.app(app.as_str()),
     }
-    if let Some(app) = crate::authority::trigger_of(id) {
-        return names.app(app);
-    }
-    if let Some((app, _)) = crate::authority::migration_of(id) {
-        return names.app(app);
-    }
-    actor_name(id, names)
 }
+
+/// What the id of a sample person or agent a scenario named starts with.
+const SCENARIO: &str = "scenario:";
+
+/// The name of `who` as the session's catalogue says it: an app by its installed name, an agent
+/// by its name, a person nobody named as unknown.
+#[must_use]
+pub fn installed(who: &Actor) -> String {
+    named(who, &Installed)
+}
+
+/// The names the session's catalogue gives, and no roster of its own.
+struct Installed;
+
+impl ParticipantNames for Installed {}
 
 /// What a participant reads as when the reader's own process knows no name for them.
 pub struct Unnamed;
@@ -59,8 +77,8 @@ impl ParticipantNames for Unnamed {
 }
 
 impl NameHost for Unnamed {
-    fn name(&self, who: &Principal) -> String {
-        unnamed(&who.0)
+    fn name(&self, who: &Actor) -> String {
+        unnamed(who)
     }
 }
 
@@ -68,7 +86,7 @@ impl NameHost for Unnamed {
 #[derive(Default, PartialEq, Eq)]
 struct Said {
     me: Option<String>,
-    others: HashMap<String, String>,
+    others: HashMap<MemberId, String>,
 }
 
 /// The names an instance shows people by: what its host heard the member list call them
@@ -92,7 +110,7 @@ impl Told {
 
     /// The member list calls the person `me` and each of `others` by id now. Whether any name
     /// changed.
-    pub fn tell(&self, me: String, others: Vec<(String, String)>) -> bool {
+    pub fn tell(&self, me: String, others: Vec<(MemberId, String)>) -> bool {
         let next = Said {
             me: Some(me).filter(|me| !me.trim().is_empty()),
             others: others
@@ -109,14 +127,18 @@ impl Told {
 }
 
 impl NameHost for Told {
-    fn name(&self, who: &Principal) -> String {
+    fn name(&self, who: &Actor) -> String {
         let said = self.said.borrow();
-        if who.0 == self.me
+        let Some(member) = who.member_id() else {
+            drop(said);
+            return self.otherwise.name(who);
+        };
+        if member.person_id() == Some(self.me.as_str())
             && let Some(me) = &said.me
         {
             return me.clone();
         }
-        if let Some(name) = said.others.get(&who.0) {
+        if let Some(name) = said.others.get(member) {
             return name.clone();
         }
         drop(said);
@@ -127,73 +149,78 @@ impl NameHost for Told {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::ids::AppId;
 
-    /// What a window with nobody named yet calls each id: by what the id says it is, never by
-    /// part of a key.
+    fn person(id: &str) -> Actor {
+        MemberId::person(id).into()
+    }
+
+    fn agent(id: &str) -> Actor {
+        MemberId::agent(id).into()
+    }
+
+    fn app(id: &str) -> Actor {
+        Actor::App(AppId::from(id))
+    }
+
+    /// What a window with nobody named yet calls each actor: by what they are, never by part
+    /// of a key.
     #[test]
     fn a_participant_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
         let told = Told::new("me-id", Rc::new(Unnamed));
-        let rows: &[(&str, &str, &str)] = &[
-            ("agent:planner", "Planner (agent)", "an agent by its name"),
+        let rows: &[(Actor, &str, &str)] = &[
+            (agent("planner"), "Planner (agent)", "an agent by its name"),
             (
-                "0123456789abcdef0123456789abcdef",
+                person("0123456789abcdef0123456789abcdef"),
                 "Unknown participant",
                 "a key nobody named is never shown, in full or cut short",
             ),
-            ("tomas", "Unknown participant", "a person nobody named"),
-            ("scenario:Mia", "Mia", "a scenario's sample person"),
             (
-                "trigger:so.tilo.lang.today",
-                "Today",
-                "an app acting by itself",
+                person("tomas"),
+                "Unknown participant",
+                "a person nobody named",
             ),
-            ("app:so.tilo.lang.today", "Today", "an app by its own name"),
-            ("app:so.tilo.lang.notes", "Notes", "an app by its own name"),
+            (person("scenario:Mia"), "Mia", "a scenario's sample person"),
             (
-                "app:org.example.Editor",
+                agent("scenario:Scout"),
+                "Scout",
+                "a scenario's sample agent",
+            ),
+            (app("so.tilo.lang.today"), "Today", "an app by its own name"),
+            (app("so.tilo.lang.notes"), "Notes", "an app by its own name"),
+            (
+                app("org.example.Editor"),
                 "Editor",
                 "an app installed nowhere here reads as the words its id makes",
             ),
-            ("", "Unknown participant", "no id at all"),
             (
-                "agent:",
+                agent(""),
                 "Unknown participant (agent)",
                 "an agent that gave no name still reads as an agent",
             ),
             (
-                "  agent:planner  ",
-                "Planner (agent)",
-                "the spaces around an id are not part of it",
-            ),
-            ("app:", "Unknown participant", "an app id with no words"),
-            (
-                "app:org.gnome.TextEditor",
+                app("org.gnome.TextEditor"),
                 "Text Editor",
                 "a camel-case hump is a space",
             ),
             (
-                "app:so.tilo.lang.read-later",
+                app("so.tilo.lang.read-later"),
                 "Read Later",
                 "a dash is a space, and each word is capitalised",
             ),
             (
-                "bot:helper",
+                MemberId::bot("helper").into(),
                 "Helper",
                 "a bot nobody named, by its own name",
             ),
-            ("shortcut:morning", "Morning", "a shortcut by its name"),
             (
-                "migration:so.tilo.lang.today@1f2e",
-                "Today",
-                "an update to a later build is the app's own act",
+                Actor::automation("morning"),
+                "Morning",
+                "an automation by its name",
             ),
         ];
-        for (id, expected, why) in rows {
-            assert_eq!(
-                told.name(&Principal::new((*id).to_owned())),
-                *expected,
-                "{id:?}: {why}"
-            );
+        for (who, expected, why) in rows {
+            assert_eq!(told.name(who), *expected, "{who:?}: {why}");
         }
     }
 
@@ -202,29 +229,25 @@ mod tests {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
         let told = Told::new(id, Rc::new(Unnamed));
         assert_eq!(
-            told.name(&Principal::new(id.to_owned())),
+            told.name(&person(id)),
             "Unknown participant",
             "a key nobody named is never shown, in full or cut short"
         );
+        assert_eq!(told.name(&agent("planner")), "Planner (agent)");
         assert_eq!(
-            told.name(&Principal::new("agent:planner".to_owned())),
-            "Planner (agent)"
-        );
-        assert_eq!(
-            told.name(&Principal::new("app:so.tilo.lang.today".to_owned())),
+            told.name(&app("so.tilo.lang.today")),
             "Today",
             "an app is its own name"
         );
-        assert_eq!(unnamed("trigger:t.board"), "Board");
         assert!(told.tell(
             "Ada".to_owned(),
-            vec![("ben-id".to_owned(), "Ben".to_owned())]
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())]
         ));
         assert!(!told.tell(
             "Ada".to_owned(),
-            vec![("ben-id".to_owned(), "Ben".to_owned())]
+            vec![(MemberId::person("ben-id"), "Ben".to_owned())]
         ));
-        assert_eq!(told.name(&Principal::new(id.to_owned())), "Ada");
-        assert_eq!(told.name(&Principal::new("ben-id".to_owned())), "Ben");
+        assert_eq!(told.name(&person(id)), "Ada");
+        assert_eq!(told.name(&person("ben-id")), "Ben");
     }
 }

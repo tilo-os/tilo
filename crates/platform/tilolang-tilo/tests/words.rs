@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilolang_runtime::{Principal, Words};
+use tilolang_runtime::{Actor, Words};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::publish::{ActionTypes, PlanRequest, Planner, publish_package, publish_record};
@@ -73,7 +73,12 @@ fn notes(locale: &str) -> (Host, Package) {
             .expect("the notes package compiles");
     ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
     let record = automerge::AutoCommit::new();
-    let host = Host::new(&record, Principal::new("ada"), || None).expect("a host");
+    let host = Host::new(
+        &record,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
     host.set_words(Toolkit);
     host.load_compiled(&discussion)
         .expect("the discussion package loads");
@@ -331,7 +336,12 @@ fn a_german_counter_window_draws_german() {
         tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
     ui::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
     let record = automerge::AutoCommit::new();
-    let host = Host::new(&record, Principal::new("ada"), || None).expect("a host");
+    let host = Host::new(
+        &record,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
     host.set_words(Toolkit);
     host.load_compiled(&compiled).expect("the counter loads");
     let view = host
@@ -385,7 +395,10 @@ fn a_root_reads_as_the_apps_name_not_what_it_holds() {
         .first()
         .expect("Notes declares a scenario");
     host.runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.action.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.action.as_str(), vec![]),
+        )
         .expect("the scenario runs");
     assert_eq!(
         host.label_at(&notebook),

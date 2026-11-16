@@ -195,7 +195,7 @@ root names one such resource per workspace: `root notes: Notes` is `notes` in th
 `alias.notes` in a package that uses it.
 
 **A package's own name wins.** The language provides types of its own — `Int`, `Float`, `Bool`,
-`Text`, `RichText`, `Bytes`, `Principal`, `Date`, `Time`, `Duration`, `File`, `Response`,
+`Text`, `RichText`, `Bytes`, `Actor`, `Date`, `Time`, `Duration`, `File`, `Response`,
 `Action` and `View` — and a package that declares a type, enum or alias with one of those names
 takes the name for its own: in that package, everywhere and every time it is written, the bare
 name is the package's declaration, and what the language provides of that name is written
@@ -303,11 +303,11 @@ was made from, and the thread under that resource draws every comment about it, 
 draws a thread says what it draws itself (`std.linked(t, without: discussion.said_about(t))`).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
-`workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
+`workspace.members` is everyone in it, people and agents, a `List<Actor>`, and `members(r)`
 those of them the workspace's grants let read `r`. `workspace.me` is the person the view is
 shown to, the runtime's viewer read where the view runs (an action acts for the `invoker`
-instead). A principal says what it is: `p.name()`,
-`p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
+instead). An actor says what it is: `p.name()`,
+`p.kind()` (`.person` or `.agent`, an `ActorKind`) and `p.role()` (`Option<Text>`, the
 workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
 that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
 offers `members(r)` of the resource its view shows (the workspace's members in a view of no

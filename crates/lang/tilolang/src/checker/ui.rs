@@ -742,7 +742,7 @@ impl Checker<'_> {
             self.err(
                 "E022",
                 c.call.span,
-                "`embed` needs the code author of the block, a Principal: `embed(source, author: who)`",
+                "`embed` needs the code author of the block, an Actor: `embed(source, author: who)`",
             );
         }
     }
@@ -910,7 +910,7 @@ impl Checker<'_> {
         if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {
             let want = match name.as_str() {
                 "source" => Ty::Text,
-                "author" => Ty::Principal,
+                "author" => Ty::Actor,
                 _ => Ty::Option(Box::new(Ty::Record(crate::types::TypeKey {
                     app: crate::host::HOST_APP.to_string(),
                     name: "Invocation".to_string(),

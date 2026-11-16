@@ -812,7 +812,7 @@ type Shared {{
     title: Text
     done: Bool = false
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
 
     search {{
         filter \"Mine\" = assignee == workspace.me and not done
@@ -842,13 +842,14 @@ type Shared {{
             "the filter asks which item's assignee is the person looking"
         );
         assert!(pred.reads_viewer(), "it is asked for someone");
+        let ben = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ben"));
         assert_eq!(
-            pred.viewer("ben"),
+            pred.viewer(&ben),
             Pred::And(vec![
                 Pred::Cmp(
                     CmpOp::Eq,
                     Operand::Field(field_id(shared, "assignee")),
-                    Operand::Lit(Lit::Principal("ben".to_owned()))
+                    Operand::Lit(Lit::Actor(ben.clone()))
                 ),
                 Pred::Not(Box::new(Pred::Cmp(
                     CmpOp::Eq,
@@ -868,7 +869,7 @@ type Shared {{
 type Named {{
     title: Text
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
 
     search {{
         filter assignee
@@ -892,7 +893,7 @@ type Named {{
 type Quiet {{
     title: Text
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
 
     search {{
         hide assignee
@@ -946,7 +947,7 @@ type Task {
     title: Text
     done: Bool = false
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
 }
 
 /// The tasks a workspace shares.

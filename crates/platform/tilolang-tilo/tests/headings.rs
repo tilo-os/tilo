@@ -6,7 +6,7 @@ use automerge::AutoCommit;
 use serde_json::Value as Json;
 use tilo_document::action::RegionKind;
 use tilo_resource::{Edit, EditOp, Id, Segment};
-use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 
 use crate::fixtures::{Replica, field_id};
@@ -48,7 +48,9 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
         .unwrap_or_else(|| panic!("the action `{action}`"))
         .id
         .clone();
-    let who = Principal::new(r.name.clone());
+    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+        r.name.clone(),
+    ));
     match r.host.runtime().invoke_action(&who, (id.as_str(), args)) {
         Ok(InvokeOutcome::Done(value)) => value,
         other => panic!("`{action}` answered {other:?}"),

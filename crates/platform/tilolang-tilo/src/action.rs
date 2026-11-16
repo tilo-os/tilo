@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use crate::chunk::{ChunkNo, Chunks, FIRST};
 use crate::record::DynRecord;
-use tilolang_runtime::ids::AppId;
+use tilolang_runtime::ids::{Actor, AppId};
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 use tilolang_runtime::store::VersionKind;
 
@@ -87,8 +87,9 @@ pub const CREATE_ACTION: &str = tilo_actions::CREATE_ACTION;
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship {
-    /// The person, agent task or app the code ran for.
-    pub invoker: String,
+    /// Who the code ran for; `None` for a change the app's package made by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoker: Option<Actor>,
     /// The content hashes of the code authors, outermost first: the module that wrote the
     /// expression that invoked the action, then the modules it passed through.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -106,7 +107,7 @@ pub struct Authorship {
     /// Who proposed the action, when the person invoking it accepted their suggestion: what
     /// history says while the change is theirs ([`tilolang_runtime::store::Version::suggested_by`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<String>,
+    pub suggested_by: Option<Actor>,
     /// How many items the change was made over ([`ChangeNote::count`]): one for an action
     /// applied to its subject, as many as the items for one applied to many at once
     /// ([`tilolang_runtime::store::ChangeNote::count`]).
@@ -402,6 +403,15 @@ fn refused(error: &ModelError) -> ActionError {
 }
 
 impl DynAction {
+    /// Who made the action: its invoker, or its app acting by itself when it names nobody.
+    #[must_use]
+    pub fn invoker(&self) -> Actor {
+        self.authorship
+            .invoker
+            .clone()
+            .unwrap_or_else(|| Actor::App(AppId::from(self.app.as_str())))
+    }
+
     /// The schemas of the package version that wrote this action, installed while it applies:
     /// its types resolve by that version. `None` for an action with no module recorded (a
     /// record's creation, an action a test built): it resolves through whatever table the

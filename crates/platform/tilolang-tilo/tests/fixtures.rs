@@ -5,7 +5,7 @@ use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::{Principal, ViewInstance};
+use tilolang_runtime::{Actor, ViewInstance};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::{Host, Package};
 use tilolang_tilo::record::{DynRecord, DynValue};
@@ -62,6 +62,23 @@ view main(l: TodoList) {
 
 pub const APP: &str = "so.tilo.lang.counter";
 
+/// Who acts in a test: a person by their id, or any actor.
+pub trait AsActor {
+    fn actor(&self) -> Actor;
+}
+
+impl AsActor for str {
+    fn actor(&self) -> Actor {
+        tilolang_runtime::ids::MemberId::person(self).into()
+    }
+}
+
+impl AsActor for Actor {
+    fn actor(&self) -> Actor {
+        self.clone()
+    }
+}
+
 /// One collaborator's machine: a copy of the workspace record and a host over it.
 pub struct Replica {
     pub name: String,
@@ -85,7 +102,12 @@ impl Replica {
         packages: &[(&str, &str)],
         standing: Option<tilo_action_policy::Standing>,
     ) -> (Self, Vec<Package>) {
-        let host = Host::new(&doc, Principal::new(name), move || standing.clone()).unwrap();
+        let host = Host::new(
+            &doc,
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person(name)),
+            move || standing.clone(),
+        )
+        .unwrap();
         let loaded = packages
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())
@@ -116,7 +138,7 @@ impl Replica {
     /// Commit what the runtime committed on its own as the agent `agent`'s steps in the task
     /// run `group` (`runtime_collab::task_run_group`), titled `title`: what the broker stamps
     /// each change of an agent's run with.
-    pub fn commit_in_run(&mut self, agent: &str, group: &str, title: &str) {
+    pub fn commit_in_run(&mut self, agent: &(impl AsActor + ?Sized), group: &str, title: &str) {
         for committed in self.host.take_committed() {
             let ambient = ActionContext::default().with_group(
                 group,
@@ -125,7 +147,7 @@ impl Replica {
             );
             self.apply_as(
                 &committed.action,
-                ActionInvoker::person(agent.to_owned()),
+                ActionInvoker::admitted(&agent.actor().into()),
                 Some(&ambient),
             );
         }
@@ -133,11 +155,11 @@ impl Replica {
 
     /// Commit what the runtime committed on its own as `who`'s steps, as another person at their
     /// window made them.
-    pub fn commit_as(&mut self, who: &str) {
+    pub fn commit_as(&mut self, who: &(impl AsActor + ?Sized)) {
         for committed in self.host.take_committed() {
             self.apply_as(
                 &committed.action,
-                ActionInvoker::person(who.to_owned()),
+                ActionInvoker::admitted(&who.actor().into()),
                 None,
             );
         }

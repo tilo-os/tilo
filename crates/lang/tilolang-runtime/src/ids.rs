@@ -1,8 +1,8 @@
 //! Identifier types shared by the whole runtime.
 //!
 //! Declarations, fields, documents and runs are all named by plain strings: the ids the
-//! compiler assigned, or ids this runtime generated. Principals and module hashes are
-//! newtypes so a hash can never be passed where a person is expected.
+//! compiler assigned, or ids this runtime generated. Who acted is the shared [`Actor`], and a
+//! module hash a newtype, so a hash can never be passed where a person is expected.
 
 use std::fmt;
 
@@ -17,41 +17,21 @@ pub type ItemId = String;
 pub type DocId = String;
 pub type RunId = String;
 
-/// A person, an agent task or an app on whose behalf code runs.
-///
-/// Its id names it in every record and grant. Its name is what a person reads where it stands
-/// (an avatar's initials, a byline, a quote's "In reply to"), which a record does not keep and
-/// the host knows; a principal a record holds carries the id alone, and the host names it there
-/// ([`crate::core::NameHost`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Principal(pub String, #[serde(default)] pub String);
+/// Who code runs as and who made a change: a member, an automation, or an app acting by itself.
+pub use tilo_actions::{Actor, MemberId};
 
-impl Principal {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into(), String::new())
-    }
+const WRITTEN_BY: &str = "by:";
 
-    /// It, called `name` where a person reads it.
-    #[must_use]
-    pub fn named(self, name: impl Into<String>) -> Self {
-        Self(self.0, name.into())
-    }
-
-    /// What to show for it: the name it carries, else its id.
-    #[must_use]
-    pub fn shown(&self) -> String {
-        if self.1.trim().is_empty() {
-            self.0.clone()
-        } else {
-            self.1.clone()
-        }
-    }
+/// `actor` as text, where only text is kept: a set's element, a map's key, a window's control.
+#[must_use]
+pub fn actor_text(actor: &Actor) -> String {
+    serde_json::to_string(actor).unwrap_or_default()
 }
 
-impl fmt::Display for Principal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
+/// The actor [`actor_text`] wrote.
+#[must_use]
+pub fn actor_of_text(text: &str) -> Option<Actor> {
+    serde_json::from_str(text).ok()
 }
 
 /// The content hash of a compiled module: the identity of a code author.
@@ -66,11 +46,17 @@ impl ModuleHash {
 
 impl ModuleHash {
     /// The authorship identity of code written by a person or an agent task rather than by a
-    /// compiled package: the principal's id, tagged so it can never equal a module hash.
+    /// compiled package: the actor, tagged so it can never equal a module hash.
     /// An embedded block runs under it (`embed`), so the authority sees
-    /// "this code is the agent's" and a grant for the principal covers every block it wrote.
-    pub fn principal(id: &str) -> Self {
-        Self(format!("principal:{id}"))
+    /// "this code is the agent's" and a grant for the actor covers every block it wrote.
+    pub fn written_by(actor: &Actor) -> Self {
+        Self(format!("{WRITTEN_BY}{}", actor_text(actor)))
+    }
+
+    /// The actor whose code this is, when [`Self::written_by`] made it.
+    #[must_use]
+    pub fn writer(&self) -> Option<Actor> {
+        actor_of_text(self.0.strip_prefix(WRITTEN_BY)?)
     }
 }
 

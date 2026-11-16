@@ -141,16 +141,16 @@ tilo_test_env::scenario! {
         assert_eq!(codes("view v() {\n    grid(min: 11)\n}"), vec!["E063"]);
     }
 
-    phase embed_takes_text_source_a_principal_author_and_emits_one_node;
+    phase embed_takes_text_source_a_actor_author_and_emits_one_node;
     {
         let c = compile_body(
-            "type M {\n    who: Principal\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
+            "type M {\n    who: Actor\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
         );
         validate(&c.wasm);
         for want in ["embed", "source", "author", "invocation"] {
             assert!(contains(&c.wasm, want), "{want} is not in the module");
         }
-        let head = "type M {\n    who: Principal\n    src: Text\n    n: Int\n}\n";
+        let head = "type M {\n    who: Actor\n    src: Text\n    n: Int\n}\n";
         assert!(
             codes(&format!("{head}view v(m: M) {{\n    embed(m.src)\n}}"))
                 .contains(&"E022".to_string()),
@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
                 "{head}view v(m: M) {{\n    embed(m.src, author: m.src)\n}}"
             )),
             vec!["E020"],
-            "text is not a principal"
+            "text is not an actor"
         );
     }
 

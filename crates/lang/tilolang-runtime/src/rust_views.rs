@@ -104,7 +104,7 @@ pub trait RustViews {
         name: &str,
         target: &RustResource,
         reading: Option<&serde_json::Value>,
-        person: &crate::ids::Principal,
+        person: &crate::ids::Actor,
         window: &str,
     ) -> RustRendered;
 }
@@ -199,7 +199,7 @@ impl RustNode {
         subject: &ResourceRef,
         author: &ModuleHash,
         window: &str,
-        viewer: &crate::ids::Principal,
+        viewer: &crate::ids::Actor,
         retain: &mut dyn FnMut(Value) -> crate::handles::Retained,
     ) -> Result<UiNode, String> {
         let key = self.key.clone();
@@ -226,7 +226,7 @@ impl RustNode {
             // The view's own state, in the person's window: where a bound control types into.
             Some(RustBinding::State { name }) => Some(Binding {
                 target: crate::view::BindTarget::State {
-                    key: crate::view_state::StateKey::view(window, viewer.0.clone(), name.clone()),
+                    key: crate::view_state::StateKey::view(window, viewer.clone(), name.clone()),
                     name: name.clone(),
                     ty: "Text".to_owned(),
                 },
@@ -256,7 +256,7 @@ fn action(
     effect: &RustEvent,
     subject: &ResourceRef,
     window: &str,
-    viewer: &crate::ids::Principal,
+    viewer: &crate::ids::Actor,
     author: &ModuleHash,
 ) -> Result<ActionRef, String> {
     let author = Some(author.clone());
@@ -306,7 +306,7 @@ fn action(
             action: crate::host_ui::SET_ACTION.to_owned(),
             args: vec![
                 Value::Text(window.to_owned()),
-                Value::text(viewer.0.clone()),
+                Value::some(Value::Actor(viewer.clone())),
                 Value::Text(name.clone()),
                 Value::Event,
             ],
@@ -319,7 +319,7 @@ fn action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::Principal;
+    use crate::ids::Actor;
 
     /// A registry of every app's views, declaring the kinds `kinds`, as the session links one:
     /// [`EVERY_APP`] answers for the several Rust apps one process draws.
@@ -356,7 +356,7 @@ mod tests {
             _name: &str,
             _target: &RustResource,
             _reading: Option<&serde_json::Value>,
-            _person: &Principal,
+            _person: &Actor,
             _window: &str,
         ) -> RustRendered {
             RustRendered {

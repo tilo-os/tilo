@@ -250,7 +250,8 @@ impl Store for TiloStore {
         // invocation of the app by itself is one.
         let triggering = inner.triggering.clone().and_then(|triggering| {
             let (app, _) = inner.index.get(&triggering.doc)?;
-            (note.invoker == crate::authority::trigger_principal(app).0).then_some(triggering)
+            (note.invoker == Some(crate::runtime::Actor::App(AppId::from(app.as_str()))))
+                .then_some(triggering)
         });
         // A migration or a trigger that changed nothing still ran: its mark is a change of the
         // record like any other, and the next open or wake reads it instead of asking again.
@@ -283,7 +284,7 @@ impl Store for TiloStore {
         // sent or versioned. It stays there until the record moves on, which leaves it in the
         // mirror ([`Inner::drop_committed_local`]). An action writes one kind or the other;
         // one that tried both is a fault, and its derived writes still stay unsaved.
-        if unsaved::commit_derived(&mut inner, &mut state, &note.invoker) {
+        if unsaved::commit_derived(&mut inner, &mut state, note.invoker.as_ref()) {
             return Ok(());
         }
         if state.derived > 0 {

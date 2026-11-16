@@ -274,7 +274,13 @@ impl BrokerActor {
                 Acting::member(member).acting_for(Acting::person(person.clone()))
             }
             (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
-            (Some(tilo_action_policy::Actor::Automation(id)), _) => Acting::automation(id.as_str()),
+            (
+                Some(
+                    actor @ (tilo_action_policy::Actor::Automation(_)
+                    | tilo_action_policy::Actor::App(_)),
+                ),
+                _,
+            ) => Acting::from(actor),
         };
         let acting = match &self.app {
             Some(app) => acting.in_app(app.clone()),

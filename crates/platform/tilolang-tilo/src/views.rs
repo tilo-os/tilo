@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use tilo_view::registry::ViewInput;
 use tilo_view::{Effect, Node, Value as ViewValue, ViewCx};
-use tilolang_runtime::ids::Principal;
+use tilolang_runtime::ids::Actor;
 use tilolang_runtime::rust_views::{
     RustEvent, RustNode, RustRendered, RustResource, RustViewDecl, RustViews,
 };
@@ -61,7 +61,7 @@ impl RustViews for DeclaredViews {
         name: &str,
         target: &RustResource,
         reading: Option<&serde_json::Value>,
-        person: &Principal,
+        person: &Actor,
         window: &str,
     ) -> RustRendered {
         let Some(view) = tilo_view::ViewRegistry::resolve(kind, name) else {
@@ -78,14 +78,14 @@ impl RustViews for DeclaredViews {
             target.clone(),
             view.name.to_owned(),
             tilo_view::Principal {
-                id: person.0.clone(),
-                name: person.0.clone(),
+                id: crate::instance::wire::principal_id(person),
+                name: person.id().to_owned(),
             },
             BTreeMap::new(),
         );
         let input = ViewInput { target, reading };
         let tree = (view.render)(&input, &cx);
-        convert(tree, &cx.recorded(), window, &person.0)
+        convert(tree, &cx.recorded(), window, person)
     }
 }
 
@@ -102,7 +102,7 @@ pub fn convert(
     tree: Node,
     effects: &BTreeMap<(String, String), Effect>,
     window: &str,
-    person: &str,
+    person: &Actor,
 ) -> RustRendered {
     let events = effects
         .iter()
@@ -158,9 +158,10 @@ fn value_into_runtime(value: ViewValue) -> Value {
         ViewValue::Opt(held) => Value::Opt(held.map(|held| Box::new(value_into_runtime(*held)))),
         ViewValue::Ref(target) => ResourceRef::parse_id(&target.id, target.ty.clone())
             .map_or(Value::Unit, |at| Value::resource(&at)),
-        // A view names the person it draws (`who.name`), and that name is what a byline, an
-        // avatar's initials and a quote's "In reply to" show: the id is what a record keeps.
-        ViewValue::Principal(who) => Value::Principal(Principal::new(who.id).named(who.name)),
+        // The actor the view drew, by the id the runtime gave it; its name is the host's.
+        ViewValue::Principal(who) => {
+            crate::instance::wire::actor_of_principal(&who.id).map_or(Value::Unit, Value::Actor)
+        }
         // Its paragraphs as the view set them: each block's kind (a list's items, a heading),
         // marks and attributes, never only its words — a reply's bulleted list stays a list.
         ViewValue::Rich(rich) => Value::Rich(crate::instance::wire::runtime_rich(&rich)),
@@ -177,7 +178,7 @@ fn value_into_runtime(value: ViewValue) -> Value {
 }
 
 /// What a view's event does, as the runtime's.
-fn effect_to_runtime(effect: &Effect, window: &str, person: &str) -> Option<RustEvent> {
+fn effect_to_runtime(effect: &Effect, window: &str, person: &Actor) -> Option<RustEvent> {
     Some(match effect {
         Effect::Action { action, args } => RustEvent::Invoke {
             resource: String::new(),
@@ -213,13 +214,17 @@ fn effect_to_runtime(effect: &Effect, window: &str, person: &str) -> Option<Rust
 /// One argument of a view's action: the value it read, [`Value::Event`] for what the control's
 /// event carries at the press (the runtime fills it where it fires), or the view's own state
 /// `name`, read at the press — the slot a bound control holds, as a tilolang view's `draft`.
-fn arg_into_runtime(arg: &tilo_view::cx::Arg, window: &str, person: &str) -> Value {
+fn arg_into_runtime(arg: &tilo_view::cx::Arg, window: &str, person: &Actor) -> Value {
     use tilo_view::cx::Arg;
     match arg {
         Arg::Value(value) => value_into_runtime(value.clone()),
         Arg::Event => Value::Event,
         Arg::State(name) => Value::State {
-            key: tilolang_runtime::view_state::StateKey::view(window, person, name.as_str()),
+            key: tilolang_runtime::view_state::StateKey::view(
+                window,
+                person.clone(),
+                name.as_str(),
+            ),
             scalar: false,
         },
     }

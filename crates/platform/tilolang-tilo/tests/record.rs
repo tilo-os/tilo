@@ -16,7 +16,7 @@ use tilo_render_protocol::patch::local::{End, pair};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::runtime::{NameHost, Principal};
+use tilolang_tilo::runtime::{Actor, NameHost};
 
 use crate::fixtures::{APP, COUNTER};
 
@@ -48,8 +48,8 @@ impl Platform for Counter {
 struct Alone;
 
 impl NameHost for Alone {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
+    fn name(&self, who: &Actor) -> String {
+        who.id().to_owned()
     }
 }
 
@@ -355,7 +355,9 @@ fn queue_one(window: &Window, root: &tilolang_tilo::runtime::ResourceRef, who: &
     let first = host.next_ticket();
     host.runtime()
         .invoke_action(
-            &tilolang_tilo::runtime::Principal::new(who),
+            &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                who,
+            )),
             (
                 increment.as_str(),
                 vec![tilolang_tilo::runtime::Value::resource(root)],

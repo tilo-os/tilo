@@ -328,7 +328,7 @@ tilo_test_env::scenario! {
 }
 
 /// A note with a person to tell: what a notice is about.
-const NOTE: &str = "type Note {\n    title: Text\n    who: Option<Principal> = .none\n}\n";
+const NOTE: &str = "type Note {\n    title: Text\n    who: Option<Actor> = .none\n}\n";
 
 fn telling(body: &str) -> Vec<String> {
     codes(&format!("{NOTE}{body}"))

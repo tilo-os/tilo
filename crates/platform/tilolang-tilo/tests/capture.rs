@@ -9,7 +9,7 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::DynAction;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
@@ -106,7 +106,10 @@ fn invoke(replica: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value
     match replica
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(value) => value,

@@ -492,7 +492,7 @@ impl Checker<'_> {
         n
     }
 
-    /// A row's `avatar:`: a Principal, or an Option of one, as the row's `avatar` slot holding a
+    /// A row's `avatar:`: an Actor, or an Option of one, as the row's `avatar` slot holding a
     /// `ui.Avatar`. At `.none`, a row that names an `icon:` shows the item as its avatar; one that
     /// names none shows no avatar.
     fn avatar_arg(
@@ -503,16 +503,16 @@ impl Checker<'_> {
         icon: Option<&ast::Expr>,
         value: &ast::Expr,
     ) {
-        let v = self.expr(value, Some(&Ty::Principal));
+        let v = self.expr(value, Some(&Ty::Actor));
         let optional = match &v.ty {
-            Ty::Option(inner) if matches!(**inner, Ty::Principal) => true,
+            Ty::Option(inner) if matches!(**inner, Ty::Actor) => true,
             Ty::Error => return,
             _ => false,
         };
         let v = if optional {
             v
         } else {
-            self.coerce(v, &Ty::Principal, value.span)
+            self.coerce(v, &Ty::Actor, value.span)
         };
         if v.ty.is_error() {
             return;
@@ -532,18 +532,14 @@ impl Checker<'_> {
         self.push_sink();
         let who_key = concat(Ex::local(row_key, Ty::Text), Ex::str("#avatar/who"));
         let who = self.new_node(&avatar_kind, who_key);
-        let principal = if optional {
-            Ex::host(
-                Imp::UnwrapH,
-                vec![Ex::local(tmp, ty.clone())],
-                Ty::Principal,
-            )
+        let actor = if optional {
+            Ex::host(Imp::UnwrapH, vec![Ex::local(tmp, ty.clone())], Ty::Actor)
         } else {
             Ex::local(tmp, ty.clone())
         };
         self.emit(host(
             Imp::UiPropH,
-            vec![Ex::local(who, Ty::View), Ex::str("who"), principal],
+            vec![Ex::local(who, Ty::View), Ex::str("who"), actor],
         ));
         self.emit(host(
             Imp::UiChild,
@@ -879,7 +875,7 @@ impl Checker<'_> {
             self.binding_prop(n, d, &a.value, &given);
         }
         // Who may be picked, and which of them is Me: the workspace's, never a copy the app keeps.
-        let people = Ty::List(Box::new(Ty::Principal));
+        let people = Ty::List(Box::new(Ty::Actor));
         self.prop(
             Ex::local(n, Ty::View),
             "people",
@@ -889,7 +885,7 @@ impl Checker<'_> {
         self.prop(
             Ex::local(n, Ty::View),
             "me",
-            Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
+            Ex::host(Imp::Viewer, Vec::new(), Ty::Actor),
             c.call.span,
         );
         self.emit(host(
@@ -1325,8 +1321,8 @@ impl Checker<'_> {
                     Ty::Option(inner) if **inner == Ty::Date => {
                         self.date_chip(&key, &b, field, c.call.span)
                     }
-                    Ty::Principal => self.person_chip(&key, &b, field, c.call.span),
-                    Ty::Option(inner) if **inner == Ty::Principal => {
+                    Ty::Actor => self.person_chip(&key, &b, field, c.call.span),
+                    Ty::Option(inner) if **inner == Ty::Actor => {
                         self.person_chip(&key, &b, field, c.call.span)
                     }
                     Ty::Enum(enum_key) => self.enum_chip(&key, &b, field, enum_key),
@@ -1385,7 +1381,7 @@ impl Checker<'_> {
         );
         let view = Ex::local(n, Ty::View);
         self.bind_part(&view, d, b, field, span);
-        let people = Ty::List(Box::new(Ty::Principal));
+        let people = Ty::List(Box::new(Ty::Actor));
         self.prop(
             view.clone(),
             "people",
@@ -1395,7 +1391,7 @@ impl Checker<'_> {
         self.prop(
             view.clone(),
             "me",
-            Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
+            Ex::host(Imp::Viewer, Vec::new(), Ty::Actor),
             span,
         );
         Some(view)

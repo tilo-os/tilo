@@ -21,20 +21,15 @@ pub(crate) fn recorded(
     action: &DynAction,
 ) -> Result<(), String> {
     let encoded = action.encode().map_err(|error| error.to_string())?;
-    // Whom the action was made for: the person or agent its authorship names, or its app acting
-    // by itself when it names nobody.
-    let invoker = if action.authorship.invoker.is_empty() {
-        format!("{}{}", tilolang_tilo::authority::TRIGGER_PREFIX, action.app)
-    } else {
-        action.authorship.invoker.clone()
-    };
     let context = ActionContext::for_resource(
         // The workspace root's path, for an action that wrote no resource of its own.
         action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
         &action.kind,
     )
-    .with_invoker(ActionInvoker::person(invoker));
+    // Whom the action was made for: the person or agent its authorship names, or its app acting
+    // by itself when it names nobody.
+    .with_invoker(ActionInvoker::admitted(&action.invoker().into()));
     host.with_schemas(|| apply_local_with_context(record, action, encoded, None, context))
         .map(|_| ())
         .map_err(|error| error.to_string())

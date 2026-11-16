@@ -3,7 +3,7 @@
 //!
 //! The action is one a view built but for its `Text` parameter: a call of a create action
 //! (`new_task(tasks, p: project)`). Its parameters are the action's, and their types say what
-//! the words before the text typed take: a `Date` or `Time` from a phrase, a `Principal` from
+//! the words before the text typed take: a `Date` or `Time` from a phrase, an `Actor` from
 //! `@name` among the workspace's members, a record from `#title` among the records the subject's
 //! collection of its type holds. The reader is [`tilolang::entry`], which knows nothing of
 //! storage or people; this module answers it from the workspace and builds the values.
@@ -27,7 +27,7 @@ use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::{HostFail, Wasm};
 use crate::host_ui::THEN_ACTION;
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::meta::{ActionMeta, FieldKind, TypeKey, element_record, parse_ty};
 use crate::store::{FieldSpec, FieldValue};
 use crate::value::{ActionRef, RefValue, ResourceRef, Value};
@@ -201,7 +201,7 @@ impl Core {
         Ok(match filled {
             Filled::Day(day) => Value::Text(day.clone()),
             Filled::Time(at) => Value::Text(at.clone()),
-            Filled::Who(id) => Value::Principal(Principal::new(id.clone())),
+            Filled::Who(id) => Value::Actor(id.clone()),
             Filled::Record(id) => {
                 let Takes::What { app, ty } = &param.takes else {
                     return trap("a record filled a parameter that takes no record");
@@ -245,7 +245,7 @@ fn takes(ty: &str, entry: bool, app: &str) -> Takes {
     match ty {
         Ty::Date => Takes::Day,
         Ty::Time => Takes::Time,
-        Ty::Principal => Takes::Who,
+        Ty::Actor => Takes::Who,
         Ty::Record(key) => Takes::What {
             app: key.app,
             ty: key.name,
@@ -262,7 +262,7 @@ struct Workspace<'a> {
 }
 
 impl Look for Workspace<'_> {
-    fn people(&self) -> Vec<(String, String)> {
+    fn people(&self) -> Vec<(String, Actor)> {
         let names = self.core.names.borrow();
         self.core
             .read_members()
@@ -271,8 +271,8 @@ impl Look for Workspace<'_> {
                 let who = member.who();
                 let name = names
                     .as_ref()
-                    .map_or_else(|| who.0.clone(), |names| names.name(&who));
-                (name, who.0)
+                    .map_or_else(|| who.id().to_owned(), |names| names.name(&who));
+                (name, who)
             })
             .collect()
     }

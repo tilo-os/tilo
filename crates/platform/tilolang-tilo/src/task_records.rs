@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_runtime::reads::ReadRequest;
 
 use crate::bundle::Bundle;
@@ -161,7 +161,11 @@ impl RecordReads {
     /// the app's package over its record as this program read it, for `caller`: the preview the
     /// record's origin compares its own run with. The origin runs the action again against
     /// the record as it is then, so this decides nothing.
-    pub fn plan(&self, call: &Json, caller: &crate::publish::Caller) -> Result<Json, String> {
+    pub fn plan(
+        &self,
+        call: &Json,
+        caller: Option<&crate::publish::Caller>,
+    ) -> Result<Json, String> {
         let app = call["app"].as_str().ok_or("a call names its app")?;
         let action = call["action"].as_str().ok_or("a call names its action")?;
         let prefix = crate::publish::resource_id(app, "");
@@ -181,7 +185,7 @@ impl RecordReads {
                 action_id: &action.id,
                 resource,
                 args,
-                caller: Some(caller),
+                caller,
                 from: None,
             })?;
             serde_json::to_value(&planned).map_err(|error| error.to_string())
@@ -243,7 +247,9 @@ impl RecordReads {
                 format!("what the task wrote to {app}'s record does not apply to it: {error}")
             })?;
         }
-        let viewer = Principal::new(self.person.clone().unwrap_or_default());
+        let viewer = Actor::Member(crate::runtime::ids::MemberId::person(
+            self.person.clone().unwrap_or_default(),
+        ));
         let host = Host::new(&doc, viewer, || None).map_err(|error| error.to_string())?;
         self.load(&host, bundle, &mut Vec::new())?;
         host.wait_index();

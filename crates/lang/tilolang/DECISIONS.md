@@ -50,19 +50,19 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `;` separates statements on one line.
 - **`embed(source, author: p, invocation: i)`** is a UI primitive:
-  `source` is `Text`, `author` a `Principal` and `invocation` an
+  `source` is `Text`, `author` an `Actor` and `invocation` an
   `Option<host.Invocation>`. `source` and `author` are required (E022; E020 for a wrong
   type). It emits `ui_node("embed", key)` with props `source`, `author` and `invocation`.
   The host fills in the node's children (see the runtime's DECISIONS).
-- **`Principal`** is a type whose values come only from the host. It can be a field
+- **`Actor`** is a type whose values come only from the host. It can be a field
   (register), a `fn` or view parameter, and compared with `==`; `.name()` and string
   interpolation give its id as `Text`. There is no constructor and no conversion from `Text`.
-  An action may take one as a parameter: a person it acts on (`share(n, with: Principal)`,
-  `assign(t, to: Principal)`), never who acts, which is always `invoker`; its form asks for one
+  An action may take one as a parameter: a person it acts on (`share(n, with: Actor)`,
+  `assign(t, to: Actor)`), never who acts, which is always `invoker`; its form asks for one
   of the workspace's members.
-- **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
+- **`invoker`** (E049 outside actions) reads the actor the runtime authenticated for the
   running invocation: for a person's press, that person; for a call through the action API, the
-  caller; for an approved suggestion, the principal who first invoked it.
+  caller; for an approved suggestion, the actor who first invoked it.
 - **`run_block(part, source)`** (actions only, E047 elsewhere): queues a host step that runs
   after the action commits. `part` must be one of the module's own records with a field
   `invocation: Option<host.Invocation>` (E020, E045). The host evaluates `source` as a block
@@ -70,9 +70,9 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   it in that field.
 - **The `host` package** (`tilo.host`, `tilolang::host_meta()`) is imported implicitly by
   every module and block as `host`. It declares `Invocation` with the register fields
-  `action`, `name`, `app`, `args` (JSON text), `author` (Principal), `state`
+  `action`, `name`, `app`, `args` (JSON text), `author` (Actor), `state`
   (`done|suggested|declined|failed|denied`), `result` and `run`. Only the host writes them.
-- **New imports:** `invoker() -> h`, `principal_eq(a, b) -> i32`, `principal_name(p) -> h`,
+- **New imports:** `invoker() -> h`, `actor_eq(a, b) -> i32`, `actor_name(p) -> h`,
   `queue_block(part, field, source)`.
 - **Nested resource references.** A reference literal may carry the steps of a nested
   resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
@@ -879,7 +879,7 @@ holds and what the host reads from it.
 - **The run is recorded in the change it makes, in the same edit.** The host writes what the
   trigger last did for the record (the period it ran in, or the instant it fired at) into the
   record's `$triggers` map, in the same change as the action's own writes (`DynEdit::TriggerRan`),
-  and the change is committed under the app's own principal, `trigger:<app>`. A second run of the
+  and the change is committed as the app acting by itself (`Actor::App`). A second run of the
   same period or instant is refused where changes are applied in order, so two devices cannot
   both count a run.
 - **One device runs them: the workspace's origin.** Only the replica that governs the workspace

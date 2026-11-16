@@ -3,7 +3,7 @@
 //! person takes back at once, and a note's own follow their titles when the person asks it.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 use crate::legibility::call;
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
             .id
             .clone();
         let refused = ada.host.runtime().invoke_action(
-            &tilolang_runtime::Principal::new("ada"),
+            &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (
                 id.as_str(),
                 vec![
@@ -381,10 +381,10 @@ tilo_test_env::scenario! {
         // Ben has the note open: the tree says so.
         ada.host
             .runtime()
-            .set_lenses(&plan.id_string(), &[(Principal::new("ben"), false, false)]);
+            .set_lenses(&plan.id_string(), &[(Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ben")), false, false)]);
         let shown = presence_of(&mut window, &plan).expect("the row says who is at the note");
         match shown {
-            Value::Principal(who) => assert_eq!(who.0, "ben"),
+            Value::Actor(who) => assert_eq!(who.id(), "ben"),
             other => panic!("the row says who, as a person: {other:?}"),
         }
     }

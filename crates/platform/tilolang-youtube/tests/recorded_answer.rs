@@ -121,11 +121,12 @@ fn recorded_page() -> (tilolang_youtube::SearchPage, ui::content::ContentStore) 
 /// The client's package, loaded over a workspace of its own.
 fn workspace() -> tilolang_tilo::host::Host {
     let doc = tilo_resource::Doc::new();
-    let host =
-        tilolang_tilo::host::Host::new(&doc, tilolang_tilo::runtime::Principal::new("Ada"), || {
-            None
-        })
-        .unwrap();
+    let host = tilolang_tilo::host::Host::new(
+        &doc,
+        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("Ada")),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(
         include_str!("../../../../apps/tl/tube/app.tl"),
         include_str!("../../../../apps/tl/tube/app.ids"),
@@ -211,7 +212,9 @@ fn card_of(host: &tilolang_tilo::host::Host) -> (String, Vec<String>) {
     let rendered = host
         .runtime()
         .open_view(
-            &tilolang_tilo::runtime::Principal::new("Ada"),
+            &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                "Ada",
+            )),
             &view,
             vec![Value::List(items), Value::text("")],
         )

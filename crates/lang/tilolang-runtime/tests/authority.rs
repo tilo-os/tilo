@@ -61,7 +61,7 @@ mod cases {
             let out =
                 w.rt.resolve(
                     &s.run,
-                    &tilolang_runtime::Principal::new("boss"),
+                    &person("boss"),
                     Resolution::Approve,
                 )
                 .unwrap();
@@ -70,8 +70,8 @@ mod cases {
 
             let notes = w.rt.history(&c.doc).unwrap();
             let n = notes.iter().find(|n| n.action == "inc").unwrap();
-            assert_eq!(n.invoker, "me");
-            assert_eq!(n.approved_by.as_deref(), Some("boss"));
+            assert_eq!(n.invoker, Some(person("me")));
+            assert_eq!(n.approved_by, Some(person("boss")));
             assert_eq!(n.chain, vec![stranger.0], "history names the whole chain");
 
             assert!(

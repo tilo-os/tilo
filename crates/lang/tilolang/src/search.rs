@@ -43,7 +43,7 @@ fn scalar_kind(ty: &Ty) -> Option<FilterKind> {
         }
         Ty::Identifier => FilterKind::Identifier,
         // Whose a resource is: a person or an agent of the workspace.
-        Ty::Principal => FilterKind::Person,
+        Ty::Actor => FilterKind::Person,
         _ => return None,
     })
 }
@@ -761,7 +761,7 @@ impl Lower<'_> {
                 if name.name == "me"
                     && matches!(&base.kind, ExprKind::Ident(space) if space == "workspace") =>
             {
-                Some((Operand::Viewer, Ty::Principal))
+                Some((Operand::Viewer, Ty::Actor))
             }
             _ => None,
         }

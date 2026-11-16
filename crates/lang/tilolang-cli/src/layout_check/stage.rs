@@ -882,12 +882,10 @@ fn commit(
     // their actor: a gesture's continuation is written as the actor's, so a step of another
     // person's committed under this one would be read as a continuation of their gesture, and its
     // versions, which marks and history draw, would not be written down.
-    let author = if action.authorship.invoker.is_empty() {
-        person.to_owned()
-    } else {
-        action.authorship.invoker.clone()
-    };
-    let invoker = ActionInvoker::person(author.clone());
+    let author = action.authorship.invoker.clone().unwrap_or_else(|| {
+        tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(person))
+    });
+    let invoker = ActionInvoker::admitted(&author.clone().into());
     let context = ActionContext::for_resource(
         action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
@@ -895,7 +893,7 @@ fn commit(
     )
     .with_invoker(invoker);
     let encoded = action.encode().map_err(|error| error.to_string())?;
-    let actor = author.as_bytes().to_vec();
+    let actor = author.actor_bytes();
     host.with_schemas(|| apply_local_with_context(record, &action, encoded, Some(&actor), context))
         .map_err(|error| error.to_string())?;
     record.commit();

@@ -241,7 +241,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &tilolang_runtime::Principal::new("ada"),
+                &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     finish.id.as_str(),
                     vec![tilolang_runtime::Value::resource(&day)],
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
 const THREAD: &str = r#"app so.tilo.thread "Thread"
 
 type Message {
-    author: Principal
+    author: Actor
     text: Text
 }
 
@@ -329,7 +329,7 @@ fn a_scenario_posts_as_two_people_and_the_stored_authors_differ() {
     ada.commit();
     let rt = ada.host.runtime();
     rt.invoke_action(
-        &tilolang_runtime::Principal::new("ada"),
+        &tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         (meta.scenarios[0].action.as_str(), vec![]),
     )
     .unwrap();
@@ -345,7 +345,11 @@ fn a_scenario_posts_as_two_people_and_the_stored_authors_differ() {
             rt.read(&m.target, "author").unwrap()
         })
         .collect();
-    let who = |id: &str| tilolang_runtime::Value::Principal(tilolang_runtime::Principal::new(id));
+    let who = |id: &str| {
+        tilolang_runtime::Value::Actor(tilolang_runtime::Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::person(id),
+        ))
+    };
     assert_eq!(
         authors,
         [who("scenario:Mia"), who("scenario:Leo"), who("ada")]

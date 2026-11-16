@@ -341,7 +341,7 @@ view v(nb: Notebook) {
 
 const CHAT: &str = r#"type Message {
     text: Text
-    reactions: Map<List<Principal>>
+    reactions: Map<List<Actor>>
 }
 
 type Conversation {
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(code, "E020");
         assert!(
-            message.contains("Map<Text, Set<Principal>>") && message.contains("Map<Int>"),
+            message.contains("Map<Text, Set<Actor>>") && message.contains("Map<Int>"),
             "{message}"
         );
         let (code, _) = one_error(&format!(
@@ -444,7 +444,7 @@ view lines(items: Collection<Message>) {{
     }}
 }}
 
-view tally(r: Map<List<Principal>>) {{
+view tally(r: Map<List<Actor>>) {{
     ui.Reactions(reactions: r)
 }}
 
@@ -526,6 +526,6 @@ view thread(c: Conversation) {{
 
 const REACTED: &str = r"type Post {
     text: Text
-    reactions: Map<Set<Principal>>
+    reactions: Map<Set<Actor>>
 }
 ";

@@ -13,7 +13,7 @@
 
 use automerge::AutoCommit;
 use tilo_actions::ActionInvoker;
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -52,7 +52,12 @@ const SHELL_IDS: &str = "";
 /// A host over a fresh record, with the shell package loaded (its ids made fresh).
 fn host() -> (Host, AutoCommit) {
     let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
     host.load_builtin(SHELL, SHELL_IDS).unwrap();
     (host, doc)
 }

@@ -125,7 +125,7 @@ fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
 fn an_agent_passing_done_explicitly_wins() {
     let (mut ada, _, meta, item) = workspace();
     let agent = Caller {
-        actor: "task-1".to_owned(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
     };
@@ -138,7 +138,12 @@ fn an_agent_passing_done_explicitly_wins() {
         Some(&agent),
     );
     assert_eq!(unchecked.args.get("done"), Some(&json!(false)));
-    assert_eq!(unchecked.authorship.invoker, "task-1");
+    assert_eq!(
+        unchecked.authorship.invoker,
+        Some(tilolang_tilo::runtime::Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::agent("task-1")
+        ))
+    );
     ada.apply(&unchecked);
     assert_eq!(
         done(&ada, &meta, &item),

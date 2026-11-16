@@ -132,7 +132,7 @@ impl Core {
     ) -> HResult<Value> {
         let clock = self.query_clock()?;
         let viewer = self.looking().ok();
-        let resolved = resolve(query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
+        let resolved = resolve(query, declared, &pkg.meta.enums, &clock, viewer.as_ref())?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
         // read of it moves on, and only then: at the value the store keeps that lies closest
         // after now, or at the person's next midnight for the day.

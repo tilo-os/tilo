@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use serde_json::{Map, Value as Json, json};
 use tilo_ui_host::reconcile::{UiEvent, display};
 use tilo_ui_host::{UiNode, Value};
-use tilolang_tilo::runtime::{Principal, ResourceRef, Value as RtValue};
+use tilolang_tilo::runtime::{ResourceRef, Value as RtValue};
 use ui::component::RowSource as _;
 use ui::component_lifecycle::WindowTitle as _;
 use ui::tilo_actions::ActionInvoker;
@@ -690,7 +690,9 @@ fn a_note_that_left_with_the_note_it_stood_under_shows_nothing_of_it() {
         .expect("Notes declares `delete`");
     host.runtime()
         .invoke_action(
-            &Principal::new("ada"),
+            &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
+                "ada",
+            )),
             (
                 delete,
                 vec![RtValue::resource(&notebook), RtValue::resource(&parent)],
@@ -953,7 +955,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
         .unwrap();
     assert_eq!(
         record.author,
-        Principal::new(agent_session().0.acting.by.key()),
+        agent_session().0.acting.by,
         "the suggestion is the agent's"
     );
     assert!(!sent(&mut session, &draft), "nothing left");

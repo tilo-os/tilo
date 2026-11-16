@@ -8,7 +8,7 @@ use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::view::BindTarget;
-use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 
 use crate::fixtures::{Replica, target};
 
@@ -36,7 +36,10 @@ fn call(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -210,7 +213,10 @@ fn a_task_made_from_a_message_links_both_ways() {
     let made = match ada
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), chosen)
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            chosen,
+        )
         .unwrap()
     {
         InvokeOutcome::Done(made) => made,

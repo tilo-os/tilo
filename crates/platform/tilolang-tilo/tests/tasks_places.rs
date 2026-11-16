@@ -2,7 +2,7 @@
 //! root holds under a heading that adds one of them, and what each place says when it holds
 //! nothing, is all done with, or is someone's.
 
-use tilolang_runtime::{Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{Actor, UiNode, Value, ViewInstance};
 
 use crate::tasks::{
     APP, ShownPlace, ShownSection, all, call, count, create, go_to, home_list_rows, key_of,
@@ -348,7 +348,7 @@ tilo_test_env::scenario! {
             .clone();
         ada.host
             .runtime()
-            .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+            .invoke_action(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), (scenario.as_str(), vec![]))
             .unwrap();
         ada.commit();
         view.poll_patches().unwrap();
@@ -401,7 +401,10 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
         .clone();
     ada.host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (scenario.as_str(), vec![]))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.as_str(), vec![]),
+        )
         .unwrap();
     ada.commit();
     let post = task(&ada, "Write the launch post");
@@ -416,14 +419,20 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
     assert_eq!(
         node.props.get("people"),
         Some(&Value::List(vec![
-            Value::Principal(Principal::new("scenario:Mia")),
-            Value::Principal(Principal::new("agent:scenario:Scout")),
+            Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::person(
+                "scenario:Mia"
+            ))),
+            Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
+                "scenario:Scout"
+            ))),
         ])),
         "the list offers the workspace's people and agents"
     );
     assert_eq!(
         node.props.get("me"),
-        Some(&Value::Principal(Principal::new("ada"))),
+        Some(&Value::Actor(Actor::from(
+            tilolang_tilo::runtime::ids::MemberId::person("ada")
+        ))),
         "the list leads with the person the page is shown to"
     );
 }

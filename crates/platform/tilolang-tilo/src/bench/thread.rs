@@ -16,7 +16,7 @@ use serde_json::{Value as Json, json};
 use tilo_resource::{Collection, Id};
 use tilolang::Compiled;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Principal, UiNode, ViewInstance};
+use tilolang_runtime::{Actor, UiNode, ViewInstance};
 
 use super::{
     Changes, Doc, List, Nested, PAGE, Record, SCROLL_STEP, Shape, Sized, Work, Workspace,
@@ -31,46 +31,48 @@ fn thread_id() -> String {
     "thread".to_owned()
 }
 
-/// The fields of the packages' types that hold a principal (a message's author), by type and
+/// The fields of the packages' types that hold an actor (a message's author), by type and
 /// field id: a register a seeded record has no default for.
-pub(super) type Principals = HashSet<(String, String)>;
+pub(super) type Actors = HashSet<(String, String)>;
 
-pub(super) fn principals(packages: &[Compiled]) -> Principals {
+pub(super) fn actors(packages: &[Compiled]) -> Actors {
     packages
         .iter()
         .flat_map(|package| &package.meta.types)
         .flat_map(|ty| {
             ty.fields
                 .iter()
-                .filter(|field| field.ty == "Principal")
+                .filter(|field| field.ty == "Actor")
                 .map(|field| (ty.id.clone(), field.id.clone()))
         })
         .collect()
 }
 
-/// A record of type `ty` with `label` in every text and rich text field, a principal of its own in every
+/// A record of type `ty` with `label` in every text and rich text field, an actor of its own in every
 /// field that holds one, and, `depth` collections down, one item in each collection (a
 /// message's text part, when it has no rich text), whose id is the record's `id` and `-part`.
 pub(super) fn filled(
     (id, ty): (&str, &str),
     label: &str,
     depth: usize,
-    principals: &Principals,
+    actors: &Actors,
 ) -> Result<DynRecord, String> {
     let mut record = super::unwritten(ty)?;
     let schema = record.schema();
-    let author = tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?;
+    let author = tilolang_runtime::value::to_json(&Value::Actor(Actor::Member(
+        crate::runtime::ids::MemberId::person("bench"),
+    )))?;
     // What a record says in rich text it says there alone: a message with a rich text body
     // has no parts.
     let rich = schema.fields.iter().any(|f| f.kind == MergeKind::RichText);
     for field in &schema.fields {
-        let principal = principals.contains(&(ty.to_owned(), field.id.clone()));
+        let actor = actors.contains(&(ty.to_owned(), field.id.clone()));
         match (field.kind, record.get_mut(&field.id)) {
             (MergeKind::Text, Some(DynValue::Text(text))) => label.clone_into(text),
             (MergeKind::RichText, Some(DynValue::RichText(rich))) => {
                 **rich = tilo_document::RichText::from_markdown(label);
             }
-            (MergeKind::Register, Some(DynValue::Register(slot))) if principal => {
+            (MergeKind::Register, Some(DynValue::Register(slot))) if actor => {
                 slot.clone_from(&author);
             }
             (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 && !rich => {
@@ -79,7 +81,7 @@ pub(super) fn filled(
                     let part = format!("{id}-part");
                     items.push(
                         Id::from_raw(&part),
-                        filled((&part, inner), label, depth.saturating_sub(1), principals)?,
+                        filled((&part, inner), label, depth.saturating_sub(1), actors)?,
                     );
                     *slot = items;
                 }
@@ -98,12 +100,12 @@ pub(super) fn seeded(
     nested: &Nested,
     n: usize,
 ) -> Result<Doc, String> {
-    let principals = principals(packages);
+    let actors = actors(packages);
     let mut doc = Doc::new();
     // The one item of the root's list, then its own items: each run in the actions a change
     // records whole, as a channel's messages arrive.
     super::seed::create_root(&mut doc, shape, super::VIEWER)?;
-    let item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
+    let item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &actors)?;
     super::seed::add_in_runs(
         &mut doc,
         shape,
@@ -122,7 +124,7 @@ pub(super) fn seeded(
                 (&item_id(i), &nested.item_ty),
                 &format!("Message {i}"),
                 1,
-                &principals,
+                &actors,
             )?,
         ));
     }
@@ -258,7 +260,7 @@ fn post(
     thread: &mut Thread,
 ) -> Result<Record, String> {
     let shape = sized.shape;
-    let principals = principals(sized.packages);
+    let actors = actors(sized.packages);
     let mut peer = workspace.record();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
@@ -267,7 +269,7 @@ fn post(
             (&id, &nested.item_ty),
             &format!("Peer message {sample}"),
             1,
-            &principals,
+            &actors,
         )?;
         // After the seeded messages and the peer's earlier ones.
         let key = crate::action::keys_in_order(sized.n.saturating_add(sample).saturating_add(1))

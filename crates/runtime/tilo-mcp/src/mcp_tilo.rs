@@ -1273,7 +1273,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let caller = self.execution_caller();
         let acting = caller.acting();
         json!({
-            "actor": acting.by.id(),
+            "actor": acting.by,
             "agent": !acting.is_person(),
             "on_behalf_of": acting.acted_for_person(),
         })

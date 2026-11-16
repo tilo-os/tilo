@@ -5,7 +5,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilo_resource::{Collection, Id, Model as _};
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{InvokeOutcome, Principal, Value, ViewInstance};
+use tilolang_runtime::{Actor, InvokeOutcome, Value, ViewInstance};
 use tilolang_tilo::action::{DynAction, DynEdit};
 use tilolang_tilo::host::Package;
 use tilolang_tilo::meta::MetaExt as _;
@@ -31,7 +31,10 @@ fn call(replica: &Replica, action: &str, args: Vec<Value>) -> Value {
     match replica
         .host
         .runtime()
-        .invoke_action(&Principal::new(&replica.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&replica.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -184,7 +187,7 @@ tilo_test_env::scenario! {
             .host
             .runtime()
             .open_view(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 &ada.host.package(APP).unwrap().view_id("links").unwrap(),
                 vec![Value::resource(&source)],
             )

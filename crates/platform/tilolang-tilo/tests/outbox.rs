@@ -2,7 +2,7 @@
 //! letter leaves once.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{InvokeOutcome, MemorySink, Principal, Resolution, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, MemorySink, Resolution, Value};
 
 use crate::fixtures::Replica;
 use tilolang_tilo::meta::MetaExt as _;
@@ -20,7 +20,7 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     ada.host
         .runtime()
         .invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (new_draft.id.as_str(), vec![Value::resource(&letters)]),
         )
         .unwrap();
@@ -35,7 +35,10 @@ fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     let tilolang_runtime::AgentBlock::Invocation { record, resource } = ada
         .host
         .runtime()
-        .run_agent_block(&Principal::new("agent-task:1"), &source)
+        .run_agent_block(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task:1")),
+            &source,
+        )
         .unwrap()
     else {
         panic!("a send is an invocation");
@@ -64,7 +67,7 @@ tilo_test_env::scenario! {
             replica
                 .host
                 .runtime()
-                .resolve_invocation(&invocation, &Principal::new(who), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who)), Resolution::Approve)
                 .unwrap();
             replica.commit();
         }
@@ -100,7 +103,7 @@ tilo_test_env::scenario! {
         let approve = |ada: &Replica| {
             ada.host.runtime().resolve_invocation(
                 &invocation,
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 Resolution::Approve,
             )
         };
@@ -126,7 +129,7 @@ tilo_test_env::scenario! {
         ada.host.runtime().set_sink(sink.clone());
         ada.host
             .runtime()
-            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
             .unwrap();
         ada.commit();
         // Another process of this device marked it as being handed over, and stopped.
@@ -164,7 +167,7 @@ tilo_test_env::scenario! {
         // Approving the send queues the letter: committing that reaches outside the record.
         ada.host
             .runtime()
-            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+            .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
             .unwrap();
         let approved = ada.host.take_committed();
         assert!(
@@ -185,7 +188,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
                 .unwrap(),
             "done"
         );
@@ -196,7 +199,7 @@ tilo_test_env::scenario! {
             grace
                 .host
                 .runtime()
-                .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), Resolution::Approve)
                 .unwrap(),
             "suggested"
         );
@@ -205,7 +208,7 @@ tilo_test_env::scenario! {
             grace
                 .host
                 .runtime()
-                .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+                .resolve_invocation(&invocation, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), Resolution::Approve)
                 .unwrap(),
             "done"
         );
@@ -357,7 +360,7 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     ada.host
         .runtime()
         .invoke_action(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             (new_draft.id.as_str(), vec![Value::resource(&letters)]),
         )
         .unwrap();
@@ -378,7 +381,10 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let InvokeOutcome::Suggested(suggestion) = ada
         .host
         .runtime()
-        .invoke_action(&Principal::new("ada"), (post.id.as_str(), args.clone()))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (post.id.as_str(), args.clone()),
+        )
         .unwrap()
     else {
         panic!("recording the post asks first");
@@ -386,7 +392,12 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
     let invocation = ada
         .host
         .runtime()
-        .record_suggestion(&Principal::new("ada"), post.id.as_str(), args, &suggestion)
+        .record_suggestion(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            post.id.as_str(),
+            args,
+            &suggestion,
+        )
         .unwrap();
     ada.commit();
     let grace = Replica::standing(

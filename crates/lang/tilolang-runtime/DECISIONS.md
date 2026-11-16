@@ -65,7 +65,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   own boundary by the package that declares the view (so its action references are authored by it)
   and replaced by a `fragment` holding that tree. Its reads and `space` reads join the outer
   view's. Nesting deeper than 32 is refused.
-- **Blocks.** `Runtime::run_block(principal, &CompiledBlock)` registers the block's module and
+- **Blocks.** `Runtime::run_block(actor, &CompiledBlock)` registers the block's module and
   returns a rendered view, an invocation (so a block's action asks unless its module is trusted) or
   a value.
 - **One run is one action of the workspace.** An action and every action it calls are one commit.
@@ -119,13 +119,13 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 
 ## Embedded blocks and apps
 
-- **Principals.** `Value::Principal` is a host handle tagged like a resource reference. The
+- **Actors.** `Value::Actor` is a host handle tagged like a resource reference. The
   host makes one in `invoker` (the invoker of the running action frame) and when reading back
   a field it wrote; no guest import builds one from text, and a `Text` handle does not fit a
-  `Principal` field or parameter. A principal's authorship identity is
-  `ModuleHash::principal(id)` (`principal:<id>`); only the host resolves one (an embed's
-  `author` prop, an invocation's author). `SimpleAuthority::trust_principal` trusts every block
-  the principal wrote. Denials, grants and agents' answers are not the runtime's: a platform
+  `Actor` field or parameter. An actor's authorship identity is
+  `ModuleHash::written_by(actor)`; only the host resolves one (an embed's
+  `author` prop, an invocation's author). `SimpleAuthority::trust_actor` trusts every block
+  the actor wrote. Denials, grants and agents' answers are not the runtime's: a platform
   decides them in its one policy (`tilolang_tilo::authority`).
 - **`embed` nodes** are resolved while the tree is built, like foreign views. The host
   compiles the source with `tilolang::compile_block` against the newest loaded package of
@@ -138,7 +138,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Action blocks run when posted, never when rendered.** `run_block` queues a step in the
   action frame. After the action commits (`run_action`, so also when it runs as an approved
   suggestion or as one call of a run) the host compiles the block, and when it applies an action runs
-  it through the authority as the invoker with `[principal:<invoker>]` as the authorship
+  it through the authority as the invoker with `[ModuleHash::written_by(invoker)]` as the authorship
   chain: it runs, or becomes a suggestion, or is denied. The outcome is created as an
   `Invocation` resource (a host-registered type, `tilo.host`) and stored in the part's
   `invocation` field as two further changes attributed to the poster. A block that does not
@@ -154,7 +154,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   It needs no journal, so it works on any replica that has the documents. The authority must
   not deny the approver (`decide(approver, [], action)`; an Ask is the decision being made);
   `Denied` otherwise. Approving runs the action once, on that replica, with the poster as its
-  invoker, `[principal:<poster>]` as chain and the approver recorded as `approved_by`, then
+  invoker, `[ModuleHash::written_by(poster)]` as chain and the approver recorded as `approved_by`, then
   writes `state`, `result` and `run` back. Declining writes `declined`. A call whose run
   suspends again keeps `suggested` with the new local `run`.
 - **`outside` payloads are plain JSON** (lists and tuples as arrays, a resource as
@@ -178,7 +178,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - Two replicas can approve the same suggestion at once: each runs the action before the
   other's state change arrives, so it runs twice. Exactly-once needs a claim that merges
   (for example a register the approver sets before running, resolved deterministically).
-- A principal is a plain string id from the runtime's caller. Binding it to a verified
+- An actor is the shared typed `Actor` the runtime's caller gives. Binding it to a verified
   identity (device keys, the platform's authenticated session) is the platform's job.
 - A block that applies an action records one invocation; later suspensions inside the run are
   decided with `resolve(run)` on the device that has the journal, and do not update the card.
@@ -216,9 +216,9 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   the host. View state is not synced and has no history: it is the window's and the person's,
   not the resource's. Making it part of the workspace resource (shared windows across devices,
   lenses that follow a person) is the workspace window model's job.
-- **Windows.** A `ViewInstance` runs in a window: `Runtime::open_window(principal, window,
+- **Windows.** A `ViewInstance` runs in a window: `Runtime::open_window(actor, window,
   view, args)`; `open_view` uses the window of its first resource argument (a window is its
-  resource's), and `open_resource(principal, r, view)` opens `r`'s window through `view` or the
+  resource's), and `open_resource(actor, r, view)` opens `r`'s window through `view` or the
   default view of its type (`Runtime::default_view`). A foreign view or a block rendered inside
   a view runs in the outer view's window, so its state is kept with that window.
 - **Bindings** say what they edit: `BindTarget::Field` (an attributed change, as before) or

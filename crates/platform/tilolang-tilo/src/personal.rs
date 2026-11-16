@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::{Action, ActionError, ActionKey, ChangeKind, Described, Did};
 use tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use tilolang_runtime::ids::{Actor, MemberId};
 use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;
 use tilolang_runtime::view_state::StateKey;
@@ -76,6 +77,18 @@ pub fn of_window(tab: u64, kept: &str) -> Option<&str> {
     kept.strip_prefix(&format!("{tab}/"))
 }
 
+/// The person `id` as the runtime names them.
+#[must_use]
+pub fn actor(id: &str) -> Actor {
+    Actor::Member(MemberId::person(id))
+}
+
+/// The person `who` is, when they are one: whose own state the record keeps.
+#[must_use]
+pub fn person_of(who: &Actor) -> Option<&str> {
+    who.member_id()?.person_id()
+}
+
 /// One slot of the person's view state, as the runtime keys it and as their record keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
@@ -93,7 +106,7 @@ impl Slot {
     /// The runtime's key for the slot.
     #[must_use]
     pub fn key(&self) -> StateKey {
-        StateKey::view(self.window.clone(), self.person.clone(), self.state.clone())
+        StateKey::view(self.window.clone(), actor(&self.person), self.state.clone())
     }
 }
 
@@ -279,9 +292,11 @@ impl Keep {
             );
         }
         let person = key
-            .principal
-            .clone()
-            .ok_or_else(|| "a reading no person set is not a person's state".to_owned())?;
+            .actor
+            .as_ref()
+            .and_then(person_of)
+            .ok_or_else(|| "a reading no person set is not a person's state".to_owned())?
+            .to_owned();
         let value = tilolang_runtime::value::to_json(value)?;
         Ok(Self::View {
             person,
@@ -300,7 +315,8 @@ fn acting() -> Option<String> {
         invoker
             .acting
             .acted_for_person()
-            .map_or_else(|| invoker.acting.by.key(), str::to_owned),
+            .or_else(|| invoker.acting.by.member_id()?.person_id())?
+            .to_owned(),
     )
 }
 
@@ -620,12 +636,12 @@ mod tests {
             assert_eq!(theirs.slots.len(), 2);
             assert_eq!(
                 theirs.slots[0].key(),
-                StateKey::view("tasks", "ada", "place")
+                StateKey::view("tasks", actor("ada"), "place")
             );
             assert_eq!(theirs.slots[0].value, Value::text("today"));
             assert_eq!(
                 theirs.slots[1].key(),
-                StateKey::view("tasks", "ada", "scroll")
+                StateKey::view("tasks", actor("ada"), "scroll")
             );
             assert_eq!(theirs.seen.len(), 1);
             assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
@@ -652,7 +668,7 @@ mod tests {
             assert_eq!(value("draft"), Some(Value::text("hi")));
             assert_eq!(
                 theirs.slots[0].key(),
-                StateKey::view("tasks", "ada", theirs.slots[0].state.clone())
+                StateKey::view("tasks", actor("ada"), theirs.slots[0].state.clone())
             );
         }
 

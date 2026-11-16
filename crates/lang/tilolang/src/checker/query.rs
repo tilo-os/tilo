@@ -962,7 +962,7 @@ impl Checker<'_> {
                 2,
                 Ty::List(Box::new(Ty::Record(super::program::resource_key()))),
             ),
-            "people" => (3, Ty::List(Box::new(Ty::Principal))),
+            "people" => (3, Ty::List(Box::new(Ty::Actor))),
             other => {
                 self.err(
                     "E021",

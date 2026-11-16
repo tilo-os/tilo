@@ -179,7 +179,7 @@ impl Runtime {
         let note = ChangeNote {
             action: "$origin".into(),
             args: serde_json::Value::String(origin.to_owned()),
-            invoker: format!("origin:{origin}"),
+            invoker: None,
             chain: Vec::new(),
             module: "origin".into(),
             at,

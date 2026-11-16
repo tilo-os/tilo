@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::abi::IMPORTS;
 use tilolang_runtime::{
-    ActionInfo, AmStore, Authority, Decision, EngineLimits, Meta, ModuleHash, PackageId, Principal,
+    ActionInfo, Actor, AmStore, Authority, Decision, EngineLimits, Meta, ModuleHash, PackageId,
     Runtime, SimpleAuthority, Value,
 };
 
@@ -22,7 +22,7 @@ pub const TASKS_SOURCE: &str = concat!(
 struct Overrides {
     denied_modules: std::collections::HashSet<ModuleHash>,
     denied_actions: std::collections::HashSet<String>,
-    denied_invokers: std::collections::HashSet<Principal>,
+    denied_invokers: std::collections::HashSet<Actor>,
     granted_outside: std::collections::HashSet<String>,
 }
 
@@ -49,12 +49,12 @@ impl TestAuthority {
         self.authorship.revoke(module);
     }
 
-    pub fn trust_principal(&self, id: &str) {
-        self.authorship.trust_principal(id);
+    pub fn trust_actor(&self, actor: &Actor) {
+        self.authorship.trust_actor(actor);
     }
 
-    pub fn revoke_principal(&self, id: &str) {
-        self.authorship.revoke_principal(id);
+    pub fn revoke_actor(&self, actor: &Actor) {
+        self.authorship.revoke_actor(actor);
     }
 
     pub fn deny_module(&self, module: &ModuleHash) {
@@ -71,14 +71,14 @@ impl TestAuthority {
             .insert(action.to_owned());
     }
 
-    pub fn deny_invoker(&self, who: &Principal) {
+    pub fn deny_invoker(&self, who: &Actor) {
         self.overrides
             .borrow_mut()
             .denied_invokers
             .insert(who.clone());
     }
 
-    pub fn allow_invoker(&self, who: &Principal) {
+    pub fn allow_invoker(&self, who: &Actor) {
         self.overrides.borrow_mut().denied_invokers.remove(who);
     }
 
@@ -95,7 +95,7 @@ impl TestAuthority {
 }
 
 impl Authority for TestAuthority {
-    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+    fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         let overrides = self.overrides.borrow();
         if overrides.denied_actions.contains(&action.action)
             || overrides.denied_invokers.contains(invoker)
@@ -238,8 +238,8 @@ fn fill(v: &mut Json) {
     }
 }
 
-pub fn me() -> Principal {
-    Principal::new("me")
+pub fn me() -> Actor {
+    Actor::from(tilolang_runtime::ids::MemberId::person("me"))
 }
 
 /// A view that shows a counter and a "+1" button whose press is the action `inc`.
@@ -358,7 +358,7 @@ pub struct World {
     pub store: AmStore,
     pub auth: TestAuthority,
     pub counter: PackageId,
-    pub me: Principal,
+    pub me: Actor,
 }
 
 impl World {
@@ -731,4 +731,16 @@ pub fn text_prop(node: &tilolang_runtime::UiNode, name: &str) -> String {
         Some(Value::Text(t)) => t.clone(),
         other => panic!("property {name} of {} is {other:?}", node.kind),
     }
+}
+
+/// The person `id`.
+#[allow(dead_code, reason = "not every test target names people")]
+pub fn person(id: &str) -> Actor {
+    tilolang_runtime::ids::MemberId::person(id).into()
+}
+
+/// The agent `id`.
+#[allow(dead_code, reason = "not every test target names agents")]
+pub fn agent(id: &str) -> Actor {
+    tilolang_runtime::ids::MemberId::agent(id).into()
 }

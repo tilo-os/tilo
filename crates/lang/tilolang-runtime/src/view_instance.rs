@@ -17,7 +17,7 @@ use crate::host_ui::{
     CHOOSE_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SAVE_ACTION,
     SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
-use crate::ids::{AppId, DocId, ModuleHash, Principal};
+use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
@@ -95,7 +95,7 @@ pub(crate) fn default_window(target: &ViewTarget, args: &[Value]) -> String {
 impl ViewInstance {
     pub(crate) fn open(
         core: Rc<Core>,
-        (viewer, window): (Principal, String),
+        (viewer, window): (Actor, String),
         target: ViewTarget,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
@@ -119,7 +119,7 @@ impl ViewInstance {
     }
 
     /// The person looking.
-    pub fn viewer(&self) -> &Principal {
+    pub fn viewer(&self) -> &Actor {
         &self.live.viewer
     }
 
@@ -513,7 +513,7 @@ impl ViewInstance {
     fn state_key(&self, state: &str) -> StateKey {
         StateKey::view(
             self.live.window.clone(),
-            self.live.viewer.0.clone(),
+            self.live.viewer.clone(),
             state.to_owned(),
         )
     }
@@ -646,7 +646,7 @@ impl ViewInstance {
                     .collect();
                 let count = self
                     .core
-                    .mark_all_seen(&self.live.viewer.0, &ids)
+                    .mark_all_seen(&self.live.viewer, &ids)
                     .map_err(|error| RuntimeError::Package(error.to_string()))?;
                 if count > 0 {
                     self.events.borrow_mut().push(ViewEvent::Seen { count });
@@ -807,16 +807,27 @@ impl ViewInstance {
     /// person's window. A slot belongs to the person it was rendered for; nobody presses
     /// another's controls.
     fn platform_set(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [window, principal, state, value] = aref.args.as_slice() else {
+        let [window, actor, state, value] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
         let text = |v: &Value| v.as_text().map(str::to_owned);
-        let (Some(window), Some(principal), Some(state)) =
-            (text(window), text(principal), text(state))
-        else {
+        let actor = match actor {
+            Value::Opt(Some(who)) => match who.as_ref() {
+                Value::Actor(who) => Some(who.clone()),
+                _ => None,
+            },
+            Value::Opt(None) => None,
+            _ => return Err(RuntimeError::BadArgs("a malformed `set`".into())),
+        };
+        let (Some(window), Some(state)) = (text(window), text(state)) else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
-        let key = StateKey::view(window, principal, state);
+        let key = StateKey {
+            window,
+            actor,
+            state,
+            declared: true,
+        };
         self.core.view_states.borrow_mut().write(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
@@ -833,7 +844,7 @@ impl ViewInstance {
         };
         let key = StateKey::runtime(
             self.live.window.clone(),
-            Some(self.live.viewer.0.clone()),
+            Some(self.live.viewer.clone()),
             state.to_owned(),
         );
         self.core.view_states.borrow_mut().set(key, value.clone());
@@ -1074,7 +1085,7 @@ impl ViewInstance {
         let change = ChangeNote {
             action: "$edit".into(),
             args: serde_json::json!([field.id, to_json(value).map_err(RuntimeError::BadArgs)?]),
-            invoker: self.live.viewer.0.clone(),
+            invoker: Some(self.live.viewer.clone()),
             chain: vec![view_module.0.clone()],
             module: view_module.0,
             approved_by: None,
@@ -1244,7 +1255,7 @@ mod orphan_tests {
         let board = rt.create("Board").expect("a board");
         let mut view = rt
             .open_view(
-                &crate::Principal::new("me"),
+                &crate::Actor::Member(crate::ids::MemberId::person("me")),
                 &view_id(&app, "board"),
                 vec![Value::resource(&board)],
             )

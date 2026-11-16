@@ -5,8 +5,7 @@
 use automerge::AutoCommit;
 use tilolang_runtime::store::Version;
 use tilolang_runtime::{
-    AgentBlock, InvocationRecord, InvokeOutcome, Principal, Resolution, ResourceRef, Store as _,
-    Value,
+    Actor, AgentBlock, InvocationRecord, InvokeOutcome, Resolution, ResourceRef, Store as _, Value,
 };
 use tilolang_tilo::publish::Caller;
 
@@ -30,7 +29,10 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,
@@ -61,7 +63,7 @@ fn workspace() -> (Replica, Value) {
 
 fn agent(who: &str) -> Caller {
     Caller {
-        actor: who.to_owned(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent(who).into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
     }
@@ -85,7 +87,10 @@ fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationRe
     match ada
         .host
         .runtime()
-        .run_agent_block(&Principal::new(who), source)
+        .run_agent_block(
+            &tilolang_tilo::runtime::ids::MemberId::agent(who).into(),
+            source,
+        )
         .unwrap()
     {
         AgentBlock::Invocation { record, resource } => (resource, *record),
@@ -94,7 +99,7 @@ fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationRe
 }
 
 /// Who proposed the versions of the task.
-fn proposed(ada: &Replica, task: &Value) -> Vec<String> {
+fn proposed(ada: &Replica, task: &Value) -> Vec<tilolang_tilo::runtime::Actor> {
     ada.host
         .store()
         .versions(&target(task))
@@ -110,7 +115,7 @@ tilo_test_env::scenario! {
     phase a_proposed_change_waits_until_a_person_accepts_it;
     {
         let (mut ada, task) = workspace();
-        let (inv, record) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
         assert_eq!(record.state, "suggested");
         assert_eq!(
             record.subject.as_ref().map(ResourceRef::id_string),
@@ -124,7 +129,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
+                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
                 .unwrap(),
             "done"
         );
@@ -133,7 +138,10 @@ tilo_test_env::scenario! {
             read(&ada, &task, "due"),
             Value::some(Value::text("2026-10-31"))
         );
-        assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
+        assert_eq!(
+            proposed(&ada, &task),
+            [tilolang_tilo::runtime::ids::MemberId::agent("scout").into()]
+        );
         let due = ada
             .host
             .store()
@@ -142,19 +150,19 @@ tilo_test_env::scenario! {
             .into_iter()
             .rfind(|v| v.suggested_by.is_some())
             .unwrap();
-        assert_eq!(due.who, "ada");
+        assert_eq!(due.who, Some(tilolang_tilo::personal::actor("ada")));
     }
 
     phase a_dismissed_proposal_changes_nothing_and_asks_once;
     {
         let (mut ada, task) = workspace();
-        let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        let (inv, _) = suggest(&ada, "scout", &schedule_source(&task));
         ada.commit();
         let before = ada.host.store().versions(&target(&task)).unwrap().len();
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Decline)
+                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Decline)
                 .unwrap(),
             "declined"
         );
@@ -174,7 +182,7 @@ tilo_test_env::scenario! {
         assert!(
             ada.host
                 .runtime()
-                .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
+                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
                 .is_err()
         );
     }
@@ -183,10 +191,10 @@ tilo_test_env::scenario! {
     {
         let (mut ada, task) = workspace();
         let priority = read(&ada, &task, "priority");
-        let due = suggest(&ada, "agent:scout", &schedule_source(&task));
+        let due = suggest(&ada, "scout", &schedule_source(&task));
         let assign = suggest(
             &ada,
-            "agent:helper",
+            "helper",
             &format!(
                 "suggest tasks.set_priority_high(@tasks.Task:{})",
                 target(&task).id_string()
@@ -197,15 +205,15 @@ tilo_test_env::scenario! {
         let waiting = ada.host.runtime().proposals_of(&target(&task));
         let mut who: Vec<String> = waiting
             .iter()
-            .map(|(_, rec)| rec.author.0.clone())
+            .map(|(_, rec)| rec.author.id().to_owned())
             .collect();
         who.sort();
-        assert_eq!(who, ["agent:helper".to_owned(), "agent:scout".to_owned()]);
+        assert_eq!(who, ["helper".to_owned(), "scout".to_owned()]);
         // Accepting one applies only it; the other still waits.
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&due.0, &Principal::new("ada"), Resolution::Approve)
+                .resolve_invocation(&due.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
                 .unwrap(),
             "done"
         );
@@ -223,7 +231,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             ada.host
                 .runtime()
-                .resolve_invocation(&assign.0, &Principal::new("ada"), Resolution::Decline)
+                .resolve_invocation(&assign.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Decline)
                 .unwrap(),
             "declined"
         );
@@ -234,7 +242,10 @@ tilo_test_env::scenario! {
             "the dismissed proposal changed nothing"
         );
         assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
-        assert_eq!(proposed(&ada, &task), ["agent:scout".to_owned()]);
+        assert_eq!(
+            proposed(&ada, &task),
+            [tilolang_tilo::runtime::ids::MemberId::agent("scout").into()]
+        );
     }
 
     phase the_task_shows_what_waits_on_it_and_who_proposed_it;
@@ -244,7 +255,7 @@ tilo_test_env::scenario! {
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         assert!(cards(page.tree()).is_empty(), "{:?}", texts(page.tree()));
         assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
-        let (inv, _) = suggest(&ada, "agent:scout", &schedule_source(&task));
+        let (inv, _) = suggest(&ada, "scout", &schedule_source(&task));
         ada.commit();
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         let shown = cards(page.tree());
@@ -274,7 +285,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             card.props.get("author"),
-            Some(&Value::Principal(Principal::new("agent:scout"))),
+            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout")))),
             "who proposes it"
         );
         // The row of the task says it quietly, on a line of its own, in the same sentence.
@@ -289,7 +300,7 @@ tilo_test_env::scenario! {
         // Decided, the card and the row's line go away.
         ada.host
             .runtime()
-            .resolve_invocation(&inv, &Principal::new("ada"), Resolution::Approve)
+            .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve)
             .unwrap();
         ada.commit();
         let page = ada.host.open_resource(&target(&task), None).unwrap();
@@ -316,7 +327,7 @@ fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
     ada.host
         .runtime()
         .open_view(
-            &Principal::new("ada"),
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             &ada.host
                 .package(APP)
                 .unwrap()

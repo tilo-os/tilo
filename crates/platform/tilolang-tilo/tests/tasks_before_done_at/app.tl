@@ -29,7 +29,7 @@ type Task {
     /// Anything worth remembering about it.
     notes: RichText
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
     /// The project it belongs to; none while it waits in the inbox.
     project: Option<Project> = .none
     /// The section of its project it is in, a lane of the project's board; none for the
@@ -139,7 +139,7 @@ action take(t: Task) (label: "Assign to me", icon: .user) {
 }
 
 /// Gives a task to someone in the workspace to do.
-action assign(t: Task, to: Principal) (label: "Assign to…", icon: .user) {
+action assign(t: Task, to: Actor) (label: "Assign to…", icon: .user) {
     t.assignee = to
 }
 

@@ -7,6 +7,7 @@
 )]
 
 mod abi_additions;
+mod actor;
 mod agent;
 mod blocks;
 mod common;
@@ -23,7 +24,6 @@ mod native;
 mod origins;
 mod outcomes;
 mod placement;
-mod principal;
 mod roundtrip;
 mod search;
 mod semantics;

@@ -22,7 +22,11 @@ const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const NOTES_APP: &str = "so.tilo.lang.notes";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
-const AGENT: &str = "agent:helper";
+const AGENT: &str = "helper";
+
+fn helper() -> tilolang_tilo::runtime::Actor {
+    tilolang_tilo::runtime::ids::MemberId::agent(AGENT).into()
+}
 const RUN: &str = "issue-9@8000000000000001";
 
 fn packages() -> [(&'static str, &'static str); 3] {
@@ -332,19 +336,19 @@ fn an_agent_run_undone_while_a_person_edited_the_same_note_keeps_the_persons_edi
     let note = shared_note(&mut ada, &mut ben, "Plan the trip.");
     call(
         &ada,
-        AGENT,
+        &helper(),
         NOTES_APP,
         "retitle",
         vec![Value::resource(&note), Value::text("Trip")],
     );
     call(
         &ada,
-        AGENT,
+        &helper(),
         NOTES_APP,
         "pin",
         vec![Value::resource(&note), Value::Bool(true)],
     );
-    ada.commit_in_run(AGENT, RUN, "Tidy my notes");
+    ada.commit_in_run(&helper(), RUN, "Tidy my notes");
     ada.sync_with(&mut ben);
     // Ben edits the same note meanwhile: its body, and its title the agent set.
     type_at(&mut ben, &note, "Plan", " and enjoy");

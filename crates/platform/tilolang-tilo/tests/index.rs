@@ -10,7 +10,7 @@ use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilo_actions::{ActionContext, ActionInvoker};
 use tilo_resource::{Edit, EditOp, Id, Segment};
-use tilolang_runtime::Principal;
+use tilolang_runtime::Actor;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
@@ -139,7 +139,7 @@ fn random_change(rng: &mut Rng, replica: &mut Replica, root: &str, step: usize) 
                     .host
                     .runtime()
                     .invoke_action(
-                        &Principal::new(&replica.name),
+                        &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&replica.name)),
                         (finish.id.as_str(), vec![Value::resource(&item)]),
                     )
                     .unwrap();
@@ -824,7 +824,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     move_first.id.as_str(),
                     vec![
@@ -951,7 +951,7 @@ tilo_test_env::scenario! {
                 // A window with frames: what the record gained is derived off the frame.
                 wake: Some(Arc::new(|| {})),
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -972,7 +972,7 @@ tilo_test_env::scenario! {
         let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
         host.runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     add.id.as_str(),
                     vec![Value::resource(&list), Value::text("written meanwhile")],
@@ -1020,7 +1020,7 @@ tilo_test_env::scenario! {
                 device: None,
                 wake: Some(Arc::new(|| {})),
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1045,7 +1045,7 @@ tilo_test_env::scenario! {
         for step in 0..WRITES {
             host.runtime()
                 .invoke_action(
-                    &Principal::new("ada"),
+                    &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                     (
                         add.id.as_str(),
                         vec![
@@ -1193,7 +1193,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
             index_dir: Some(dir.to_owned()),
             ..Opening::default()
         },
-        Principal::new("ada"),
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .unwrap();
@@ -1240,7 +1240,7 @@ tilo_test_env::scenario! {
                 index_dir: Some(dir.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1286,7 +1286,7 @@ tilo_test_env::scenario! {
                 index_dir: Some(dir.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1320,7 +1320,7 @@ tilo_test_env::scenario! {
                     index_dir: Some(dir.path().to_owned()),
                     ..Opening::default()
                 },
-                Principal::new("ada"),
+                Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 || None,
             )
             .unwrap()
@@ -1371,7 +1371,7 @@ tilo_test_env::scenario! {
                 record: chunks.first(),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1385,7 +1385,7 @@ tilo_test_env::scenario! {
         drop(behind);
 
         // A host holding the record's chunks, the one copy of each.
-        let host = Host::open(Opening::default(), Principal::new("ada"), || None).unwrap();
+        let host = Host::open(Opening::default(), Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), || None).unwrap();
         host.adopt(chunks);
         host.load_builtin(TODO, &lock).unwrap();
         host.wait_index();
@@ -1413,7 +1413,7 @@ tilo_test_env::scenario! {
                 wake: Some(Arc::new(|| {})),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1451,7 +1451,7 @@ tilo_test_env::scenario! {
                 index_dir: Some(dir.path().to_owned()),
                 ..Opening::default()
             },
-            Principal::new("ada"),
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
             || None,
         )
         .unwrap();
@@ -1526,7 +1526,7 @@ fn a_window_opened_with_a_waker_reads_its_index_off_the_frame() {
             wake: Some(wake),
             ..Opening::default()
         },
-        Principal::new("ada"),
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
     )
     .unwrap();

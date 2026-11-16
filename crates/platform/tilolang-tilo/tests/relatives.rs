@@ -3,7 +3,7 @@
 //! collection's size, and following a change of a parent and a removal as it lands.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 
 use crate::fixtures::Replica;
 
@@ -81,7 +81,10 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     match r
         .host
         .runtime()
-        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&r.name)),
+            (id.as_str(), args),
+        )
         .unwrap()
     {
         InvokeOutcome::Done(v) => v,

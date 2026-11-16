@@ -77,7 +77,8 @@ impl<'a> Authority<'a> {
                     }
                 },
                 Actor::Automation(_) if owned => {}
-                Actor::Automation(_) => others.push(Party::default()),
+                // An app acting by itself holds no person's grants.
+                Actor::Automation(_) | Actor::App(_) => others.push(Party::default()),
             }
         }
         let mut parts = person_parts.into_iter().chain(others);

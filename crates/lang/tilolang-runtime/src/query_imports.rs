@@ -262,7 +262,7 @@ impl Core {
                 self.ret_h(self.single(items)?)
             }
             Imp::Me => match self.inputs().me {
-                Some(me) => self.ret_h(Value::Principal(me)),
+                Some(me) => self.ret_h(Value::Actor(me)),
                 None => trap(
                     "`me` is the person a session acts for; code that acts for no one has none",
                 ),
@@ -300,8 +300,8 @@ impl Core {
                 inputs
                     .me
                     .as_ref()
-                    .map(|p| p.0.clone())
-                    .ok_or_else(|| "`mentions: me`: this program acts for no one".to_owned())?,
+                    .and_then(|p| p.member_id()?.person_id().map(str::to_owned))
+                    .ok_or_else(|| "`mentions: me`: this program acts for no person".to_owned())?,
             ),
             other => other.map(str::to_owned),
         };
@@ -398,10 +398,7 @@ impl Core {
             Value::Text(m.line),
             Value::List(m.groups.into_iter().map(Value::Text).collect()),
             Value::Text(m.kind),
-            Value::Opt(
-                m.written_by
-                    .map(|w| Box::new(Value::Principal(crate::ids::Principal::new(w)))),
-            ),
+            Value::Opt(m.written_by.map(|w| Box::new(Value::Actor(w)))),
             Value::Opt(m.changed.map(|c| Box::new(Value::Text(c)))),
         ]))
     }

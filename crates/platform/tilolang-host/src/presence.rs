@@ -96,17 +96,16 @@ impl Presence {
                 .heard
                 .names
                 .keys()
-                .map(|user| (user.key(), self.heard.display_name(user)))
+                .map(|user| (user.clone(), self.heard.display_name(user)))
                 .collect();
             instance.name_people(me, others);
         }
         let now = ui::time::now();
         self.heard.prune_composing(now);
-        let composing: Vec<String> = instance.detail_target().map_or_else(Vec::new, |target| {
+        let composing: Vec<MemberId> = instance.detail_target().map_or_else(Vec::new, |target| {
             self.heard
                 .composing_at(&self.key(target), now)
                 .into_iter()
-                .map(|user| user.key())
                 .collect()
         });
         instance.set_peers_and_composers(self.peers(), &composing);
@@ -157,7 +156,7 @@ impl Presence {
     /// Someone other than the person at each resource of the app, by the resource's id: where
     /// their selection is, or their caret, which is how a selection of nothing reaches a device
     /// from another one.
-    fn peers(&self) -> HashMap<String, String> {
+    fn peers(&self) -> HashMap<String, MemberId> {
         let selected = self
             .heard
             .selections
@@ -174,7 +173,7 @@ impl Presence {
                 && *app == self.app
                 && let Some(user) = users.into_iter().find(|user| **user != self.me)
             {
-                peers.entry(id.clone()).or_insert_with(|| user.key());
+                peers.entry(id.clone()).or_insert_with(|| user.clone());
             }
         }
         peers
@@ -207,7 +206,7 @@ mod tests {
         heard(&mut presence, "bo", PresencePayload::Caret { pos: 0 });
         assert_eq!(
             presence.peers(),
-            HashMap::from([("channel-1".to_owned(), MemberId::person("ada").key())])
+            HashMap::from([("channel-1".to_owned(), MemberId::person("ada"))])
         );
         let mut selected = Presence::new(APP, "bo");
         heard(

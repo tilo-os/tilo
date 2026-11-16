@@ -16,7 +16,7 @@
 //! The run's journal records that it was told ([`crate::run::JournalEntry::Notified`]): a run
 //! resumed after waiting for a person, or replayed, writes no second notice.
 
-use crate::ids::Principal;
+use crate::ids::Actor;
 use crate::value::ResourceRef;
 
 /// The record of a notice written under the effect key `key`: one name for it, whatever the
@@ -33,7 +33,7 @@ pub fn record_id(key: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     /// Who is told: the person the notification reaches, on their devices.
-    pub to: Principal,
+    pub to: Actor,
     pub title: String,
     pub body: String,
     /// The resource choosing the notification opens: where the person lands.

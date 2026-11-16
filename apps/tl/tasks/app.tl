@@ -33,7 +33,7 @@ type Task {
     /// Anything worth remembering about it.
     notes: RichText
     /// Who is doing it.
-    assignee: Option<Principal> = .none
+    assignee: Option<Actor> = .none
     /// The project it belongs to; none while it waits in the inbox.
     project: Option<Project> = .none
     /// The lane of its project's board it is in; none for the first lane.
@@ -105,7 +105,7 @@ primary action new_task(
     s: Option<Section> = .none,
     due: Option<Date> = .none,
     at: Option<Time> = .none,
-    assignee: Option<Principal> = .none,
+    assignee: Option<Actor> = .none,
     title: Text = "",
 ) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.items.insert(
@@ -210,9 +210,7 @@ action remind(t: Task) uses notify {
     if t.done {
         return
     }
-    let who: Option<Principal> = if let a = t.assignee {
-        a
-    } else if let made = created(t) { made.who }
+    let who: Option<Actor> = if let a = t.assignee { a } else if let made = created(t) { made.who }
     if let w = who {
         notify(
             to: w,
@@ -270,7 +268,7 @@ action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") 
 }
 
 /// Gives a task to someone, or to nobody.
-action assign(t: Task, who: Option<Principal>) (label: "Assign", icon: .user) {
+action assign(t: Task, who: Option<Actor>) (label: "Assign", icon: .user) {
     t.assignee = who
 }
 
@@ -663,7 +661,7 @@ view task_list(
 /// One task as a row of a list, and the document that opens into it where it stands.
 view task_item(
     t: Task,
-    at: Option<Principal>,
+    at: Option<Actor>,
     project: Option<Project>,
     group: Option<Date>,
     group_done: Bool,

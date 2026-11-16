@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tilolang::Compiled;
 use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::bench::{
     BenchConfig, CountingAlloc, EngineWorkloads, Env, Record, Work, compile, run, seeded_record,
 };
@@ -437,8 +437,12 @@ struct Read {
 /// What the notebook's export of `n` notes reads of the workspace, from the moment it opens.
 fn export_work(packages: &[Compiled], n: usize) -> Read {
     let doc = seeded_record(packages, n).unwrap_or_else(|e| panic!("{n} notes: {e}"));
-    let host = Host::new(&doc, Principal::new("ada"), || None)
-        .unwrap_or_else(|e| panic!("a host over {n} notes: {e}"));
+    let host = Host::new(
+        &doc,
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap_or_else(|e| panic!("a host over {n} notes: {e}"));
     for compiled in packages {
         host.load_wasm(&compiled.wasm)
             .unwrap_or_else(|e| panic!("{} loads: {e}", compiled.meta.app));
@@ -459,7 +463,7 @@ fn export_work(packages: &[Compiled], n: usize) -> Read {
             || panic!("the notebook's export"),
             |action| action.id.clone(),
         );
-    let who = Principal::new("ada");
+    let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
     let export_once = || match host
         .runtime()
         .invoke_action(&who, (export.as_str(), vec![Value::resource(&nb)]))
@@ -526,8 +530,12 @@ fn an_import_of_ten_thousand_items_reads_as_what_it_made() {
     let packages = compile(&apps().join("tasks")).unwrap_or_else(|e| panic!("tasks: {e}"));
     let open = |n: usize, doc: tilo_resource::Doc| {
         let start = std::time::Instant::now();
-        let host = Host::new(&doc, Principal::new("ada"), || None)
-            .unwrap_or_else(|e| panic!("a host over {n} tasks: {e}"));
+        let host = Host::new(
+            &doc,
+            Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            || None,
+        )
+        .unwrap_or_else(|e| panic!("a host over {n} tasks: {e}"));
         for compiled in &packages {
             host.load_wasm(&compiled.wasm)
                 .unwrap_or_else(|e| panic!("{} loads: {e}", compiled.meta.app));

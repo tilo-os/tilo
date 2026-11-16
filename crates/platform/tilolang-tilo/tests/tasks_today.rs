@@ -1,7 +1,7 @@
 //! The Today place is one filter of the app's own: what is due today or late, and what the
 //! person looking holds, whenever it is due.
 
-use tilolang_runtime::{Principal, Value, ViewInstance};
+use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::{Replica, field_id};
 use crate::tasks::{
@@ -26,7 +26,9 @@ fn week() -> (Replica, Replica) {
             "assign",
             vec![
                 task.clone(),
-                Value::some(Value::Principal(Principal::new(who))),
+                Value::some(Value::Actor(Actor::from(
+                    tilolang_tilo::runtime::ids::MemberId::person(who),
+                ))),
             ],
         );
     }
@@ -106,7 +108,7 @@ fn seeded(n: usize) -> Replica {
             && let Some(DynValue::Register(who)) =
                 item.get_mut(&field_id(&meta, "Task", "assignee"))
         {
-            *who = json!({"some": {"principal": "ada"}});
+            *who = json!({"some": {"actor": {"member": {"person": "ada"}}}});
         }
         items.push(Id::from_raw(format!("task-{i:05}")), item);
     }

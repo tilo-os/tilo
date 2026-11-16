@@ -5,7 +5,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{ActionKind, Answer, Grantee, Standing, WorkspacePolicy};
-use tilolang_runtime::{AgentBlock, Principal};
+use tilolang_runtime::{Actor, AgentBlock};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};
 
@@ -22,7 +22,7 @@ const WORKSPACE: &str = "workspace";
 
 fn agent() -> Caller {
     Caller {
-        actor: "task-1".to_owned(),
+        actor: tilolang_tilo::runtime::ids::MemberId::agent("task-1").into(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
     }
@@ -95,7 +95,10 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let block = ada
         .host
         .runtime()
-        .run_agent_block(&Principal::new("task-1"), &add_block(&ada, "milk"))
+        .run_agent_block(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1")),
+            &add_block(&ada, "milk"),
+        )
         .unwrap();
     assert_eq!(state(block), "denied");
 }
@@ -117,21 +120,21 @@ tilo_test_env::scenario! {
         let untrusted = ada
             .host
             .runtime()
-            .run_agent_block(&Principal::new("grace"), &add_block(&ada, "milk"))
+            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("grace")), &add_block(&ada, "milk"))
             .unwrap();
         assert_eq!(state(untrusted), "suggested");
         // Someone the workspace does not know is refused outright.
         let stranger = ada
             .host
             .runtime()
-            .run_agent_block(&Principal::new("stranger"), &add_block(&ada, "milk"))
+            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("stranger")), &add_block(&ada, "milk"))
             .unwrap();
         assert_eq!(state(stranger), "denied");
         ada.host.admit_agent(&agent());
         let admitted = ada
             .host
             .runtime()
-            .run_agent_block(&Principal::new("task-1"), &add_block(&ada, "eggs"))
+            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1")), &add_block(&ada, "eggs"))
             .unwrap();
         assert_eq!(state(admitted), "done");
     }
@@ -151,7 +154,7 @@ tilo_test_env::scenario! {
         ada.host
             .runtime()
             .invoke_action(
-                &Principal::new("ada"),
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 (
                     new_draft.id.as_str(),
                     vec![tilolang_runtime::Value::resource(&letters)],
@@ -174,7 +177,14 @@ tilo_test_env::scenario! {
             let block = ada
                 .host
                 .runtime()
-                .run_agent_block(&Principal::new(who), &send)
+                .run_agent_block(
+                    &if who == "task-1" {
+                        Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(who))
+                    } else {
+                        Actor::from(tilolang_tilo::runtime::ids::MemberId::person(who))
+                    },
+                    &send,
+                )
                 .unwrap();
             assert_eq!(state(block), "suggested", "{who}");
         }

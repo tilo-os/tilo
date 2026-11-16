@@ -8,9 +8,7 @@
 mod cases {
     use crate::common::*;
     use tilolang::IdsLock;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, UiNode, Value,
-    };
+    use tilolang_runtime::{Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value};
 
     macro_rules! app_source {
         ($name:literal) => {
@@ -51,7 +49,7 @@ mod cases {
 
     /// One person: their runtime over their own store, every app installed.
     struct Person {
-        who: Principal,
+        who: Actor,
         rt: Runtime,
         store: AmStore,
         auth: TestAuthority,
@@ -69,7 +67,7 @@ mod cases {
             }
             let views = rt.create_root("Views").unwrap();
             Self {
-                who: Principal::new(who),
+                who: person(who),
                 rt,
                 store,
                 auth,
@@ -81,13 +79,7 @@ mod cases {
             self.call_as(&self.who, app, action, args)
         }
 
-        fn call_as(
-            &self,
-            who: &Principal,
-            app: &App,
-            action: &str,
-            args: Vec<Value>,
-        ) -> InvokeOutcome {
+        fn call_as(&self, who: &Actor, app: &App, action: &str, args: Vec<Value>) -> InvokeOutcome {
             let id = app.action(action);
             self.rt
                 .invoke_action(who, (id.as_str(), args))
@@ -138,10 +130,10 @@ mod cases {
                 .collect()
         }
 
-        fn author(&self, view: &ResourceRef) -> Principal {
+        fn author(&self, view: &ResourceRef) -> Actor {
             match self.rt.read(view, "author").unwrap() {
-                Value::Principal(p) => p,
-                other => panic!("the author is a principal, not {other:?}"),
+                Value::Actor(p) => p,
+                other => panic!("the author is an actor, not {other:?}"),
             }
         }
 
@@ -187,7 +179,7 @@ view unread_mail(m: mail.Mail) {\n\
 
     /// The agent's answer, as its task keeps it in the person's views: checked first, the type
     /// it shows found by the check.
-    fn answer(ada: &Person, apps: &Apps, task: &Principal) -> ResourceRef {
+    fn answer(ada: &Person, apps: &Apps, task: &Actor) -> ResourceRef {
         let info = ada
             .rt
             .check_written_view(UNREAD, task)
@@ -213,7 +205,7 @@ view unread_mail(m: mail.Mail) {\n\
         let apps = apps();
         let ada = Person::new(&apps, "person:ada");
         let mail = ada.inbox(&apps);
-        let task = Principal::new("agent-task:unread");
+        let task = person("agent-task:unread");
         let v = answer(&ada, &apps, &task);
         // The host recorded the task as its author; nobody can claim another.
         assert_eq!(ada.author(&v), task);
@@ -274,7 +266,7 @@ view unread_mail(m: mail.Mail) {\n\
             "mark_read",
             vec![Value::resource(&launch), Value::Bool(false)],
         );
-        let v = answer(&ada, &apps, &Principal::new("agent-task:unread"));
+        let v = answer(&ada, &apps, &person("agent-task:unread"));
         ada.call(&apps.views, "keep", vec![Value::resource(&v)]);
 
         // Ada sends it to the team's channel. Only the chat travels between them.
@@ -335,7 +327,7 @@ view unread_mail(m: mail.Mail) {\n\
 
     /// What a view `writer` wrote does with an action asks `p` first; once they trust the
     /// writer, it does not.
-    fn asks_before_acting(p: &Person, writer: &Principal, mail: &ResourceRef) {
+    fn asks_before_acting(p: &Person, writer: &Actor, mail: &ResourceRef) {
         let acting = "view mark_all(m: mail.Mail) {\n\
     for a in m.accounts {\n\
         for t in a.threads.filter(t -> t.unread) {\n\
@@ -357,13 +349,13 @@ view unread_mail(m: mail.Mail) {\n\
         match view.press(&button).unwrap() {
             InvokeOutcome::Suggested(s) => assert_eq!(
                 s.chain,
-                vec![tilolang_runtime::ModuleHash::principal(&writer.0)],
+                vec![tilolang_runtime::ModuleHash::written_by(writer)],
                 "the chain names who wrote the view"
             ),
             other => panic!("an untrusted author's view asks first, not {other:?}"),
         }
         assert_eq!(unread(), unread_before, "asking changed nothing");
-        p.auth.trust_principal(&writer.0);
+        p.auth.trust_actor(writer);
         let view =
             p.rt.open_written_view(&p.who, acting, writer, vec![Value::resource(mail)])
                 .unwrap();

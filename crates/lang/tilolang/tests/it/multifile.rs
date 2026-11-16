@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
             "a",
             &[(
                 "app.tl",
-                "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Principal {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
+                "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Actor {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
             )],
         );
         let order = dependency_order(&dir, &[]).unwrap();

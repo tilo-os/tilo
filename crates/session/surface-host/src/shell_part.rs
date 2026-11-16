@@ -983,7 +983,7 @@ impl ShellPart {
                 },
                 waker,
             }),
-            Rc::new(Person(person.to_owned())),
+            Rc::new(Person),
             Box::new(app_end),
         );
         instance.set_standing(Rc::new(shell_standing(app, person)));

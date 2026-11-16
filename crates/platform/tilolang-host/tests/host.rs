@@ -817,7 +817,7 @@ tilo_test_env::scenario! {
             "the broker is told it succeeded"
         );
         assert_eq!(
-            hosted.record().can_undo_as("grace"),
+            hosted.record().can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))),
             (true, false),
             "the step is grace's, who invoked it"
         );
@@ -867,8 +867,10 @@ fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
 /// the unit left it: the endpoints restarted since, so nothing but the record remembers it.
 fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
-    let principal = tilolang_tilo::runtime::Principal::new(person);
-    let host = tilolang_tilo::host::Host::new(&doc, principal.clone(), || None).unwrap();
+    let actor = tilolang_tilo::runtime::Actor::Member(
+        tilolang_tilo::runtime::ids::MemberId::person(person),
+    );
+    let host = tilolang_tilo::host::Host::new(&doc, actor.clone(), || None).unwrap();
     let package = host
         .load_builtin(
             include_str!("../../../../apps/tl/counter/app.tl"),
@@ -888,10 +890,7 @@ fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::Au
         .id
         .clone();
     host.runtime()
-        .invoke_action(
-            &principal,
-            (increment.as_str(), vec![Value::resource(&root)]),
-        )
+        .invoke_action(&actor, (increment.as_str(), vec![Value::resource(&root)]))
         .unwrap();
     for committed in host.take_committed() {
         applied(&mut doc, &committed.action, person, Some(invocation));
@@ -1011,7 +1010,7 @@ tilo_test_env::scenario! {
             }
             other => panic!("undo was answered {other:?}"),
         }
-        assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
+        assert_eq!(hosted.record().can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))), (false, true));
 
         // Ada's one step is the counter she created, which Grace has since counted in: her Undo
         // takes that step back without taking Grace's work with it, so the counter stays.
@@ -1031,7 +1030,7 @@ tilo_test_env::scenario! {
                 .next()
                 .unwrap()
                 .record()
-                .can_undo_as("ada")
+                .can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")))
                 .0
         );
 
@@ -2688,9 +2687,9 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
         "a_hosted_window_names_another_app_as_the_names_it_was_sent",
         || {
             use tilolang_tilo::names::Unnamed;
-            use tilolang_tilo::runtime::{NameHost as _, Principal};
+            use tilolang_tilo::runtime::{Actor, NameHost as _};
 
-            let today = Principal::new("app:so.tilo.lang.today".to_owned());
+            let today = Actor::App("so.tilo.lang.today".into());
             let (mut host, mut window, _sent, inbox, _route) = running("ada");
             settle(&mut host, &mut window);
             assert_eq!(
@@ -2717,7 +2716,7 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
                 "the app's own name in the window's language"
             );
             assert_eq!(
-                Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+                Unnamed.name(&Actor::App("org.example.Editor".into())),
                 "Editor",
                 "an app installed nowhere near this device reads as the words its id makes"
             );
