@@ -106,6 +106,10 @@ pub(super) struct OwnWorkspaces {
     /// ([`Workspaces::admit_own_through`]). Until it is named, only the
     /// host's person makes one.
     home: std::sync::OnceLock<String>,
+    /// How many times the records directory was listed: a test's measure of
+    /// what a create or a read costs, with no clock to read.
+    #[cfg(test)]
+    listed: std::sync::atomic::AtomicUsize,
 }
 
 impl OwnWorkspaces {
@@ -143,6 +147,8 @@ impl OwnWorkspaces {
             measured: std::sync::Mutex::default(),
             making: std::sync::Mutex::default(),
             home: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            listed: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -333,6 +339,11 @@ impl OwnWorkspaces {
             .filter_map(|(workspace, cached)| cached.is_none().then_some(workspace))
             .collect();
         if !stale.is_empty() {
+            #[cfg(test)]
+            {
+                self.listed
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let beside = beside_bytes(
                 dir,
                 &stale.iter().map(|workspace| workspace.as_str()).collect(),
@@ -649,6 +660,15 @@ impl Workspaces {
                 kind: NextStepKind::RaiseLimit,
                 url: None,
             }],
+        })
+    }
+
+    /// How many times this host listed the workspaces' records directory:
+    /// what a create or a read costs, in operations rather than in seconds.
+    #[cfg(test)]
+    pub(crate) fn own_directory_listings(&self) -> usize {
+        self.own().map_or(0, |own| {
+            own.listed.load(std::sync::atomic::Ordering::Relaxed)
         })
     }
 

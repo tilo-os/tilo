@@ -302,9 +302,6 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
 
 /// How many workspaces of their own one person is given in one test.
 const HUNDREDS: usize = 300;
-/// How long answering one more workspace of a person's own, listing the ones
-/// they have, or reading their account may take once they have hundreds.
-const QUICK: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[tokio::test]
 async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_quick() {
@@ -318,11 +315,8 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let (_, guest) = guest_device();
     let_in(&workspaces, &home, guest.user_public_key).await;
     let mut made = Vec::new();
-    // What a create costs once a person keeps hundreds: their last few, not
-    // one sample, which a loaded runner's disk makes slow on its own.
-    let mut last = std::collections::VecDeque::new();
+    let listed_before = workspaces.own_directory_listings();
     for number in 0..HUNDREDS {
-        let started = std::time::Instant::now();
         let created = create_own(
             &host,
             &guest,
@@ -330,10 +324,6 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         )
         .await
         .unwrap();
-        last.push_back(started.elapsed());
-        if last.len() > 10 {
-            last.pop_front();
-        }
         made.push(created.workspace.workspace);
     }
     assert_eq!(
@@ -341,31 +331,39 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         made,
         "there is no bound on how many workspaces of their own a person keeps"
     );
-    let mut typical: Vec<_> = last.iter().copied().collect();
-    typical.sort_unstable();
-    let typical = typical.get(typical.len() / 2).copied().unwrap_or_default();
-    assert!(
-        typical < QUICK,
-        "the {HUNDREDS}th workspace took {typical:?}"
+    // What a create costs does not grow with the workspaces on the host: it
+    // reads none of them, so the person's hundredth costs what their first
+    // did.
+    assert_eq!(
+        workspaces.own_directory_listings(),
+        listed_before,
+        "making one of a person's workspaces reads none of the host's"
     );
-    // Their listing names every one, in the time their own take.
+    // Their listing names every one, and is looked up by their own workspaces
+    // rather than by reading the ones the host keeps.
     let mut ask = own_request(json!({}));
     ask.target.address.action = tilo_relay_session::workspaces::LIST_WORKSPACES.into();
-    let started = std::time::Instant::now();
     let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
         serde_json::from_value(invoke(&host, &guest, ask).await.unwrap()).unwrap();
-    let listing = started.elapsed();
     assert_eq!(listed.len(), HUNDREDS, "{listed:?}");
     assert!(
         listed.iter().all(|one| made.contains(&one.workspace)),
         "a listing names the workspaces of their own"
     );
-    assert!(listing < QUICK, "listing {HUNDREDS} took {listing:?}");
-    // Their account read lists every one, measuring what they keep once for
-    // all of them.
-    let started = std::time::Instant::now();
+    assert_eq!(
+        workspaces.own_directory_listings(),
+        listed_before,
+        "listing their own reads none of the workspaces the host keeps"
+    );
+    // Their account read measures every one in a single pass over the
+    // records directory, not one pass per workspace.
+    let measured_before = workspaces.own_directory_listings();
     let account = workspaces.own_account(&guest.user_public_key).unwrap();
-    let read = started.elapsed();
+    assert_eq!(
+        workspaces.own_directory_listings() - measured_before,
+        1,
+        "their account read lists the records directory once for all {HUNDREDS}"
+    );
     let standing = account.standing.unwrap();
     assert_eq!(standing.usage.workspaces.len(), HUNDREDS);
     assert_eq!(
@@ -373,7 +371,6 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         None,
         "how many of their own a person may keep is unbounded"
     );
-    assert!(read < QUICK, "their account read took {read:?}");
     // The file that says whose each of them is holds every one, one rewrite
     // per workspace made.
     let index = dir.path().join("workspaces/own-workspaces.json");
@@ -385,9 +382,8 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
         Some(HUNDREDS)
     );
     eprintln!(
-        "{HUNDREDS} workspaces of their own: made in {typical:?} (median of the last {last_len}), listed in {listing:?}, read in {read:?}, whose-names file {} bytes",
-        std::fs::metadata(&index).unwrap().len(),
-        last_len = last.len()
+        "{HUNDREDS} workspaces of their own: made, listed and read with no pass over the host's records; whose-names file {} bytes",
+        std::fs::metadata(&index).unwrap().len()
     );
     relay.shutdown().await;
 }
