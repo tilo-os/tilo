@@ -27,7 +27,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 then(host, files.into_iter().next().map(ChosenFile::from), cx)
             }
             Some(ContentsOutcome::Cancelled) => then(host, None, cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(reason),
+            Some(ContentsOutcome::Failed(reason)) => Err(told(reason)),
             None => Err(CHOOSER_GONE.into()),
         })
     }
@@ -47,7 +47,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 then(host, files.into_iter().map(ChosenFile::from).collect(), cx)
             }
             Some(ContentsOutcome::Cancelled) => then(host, Vec::new(), cx),
-            Some(ContentsOutcome::Failed(reason)) => Err(reason),
+            Some(ContentsOutcome::Failed(reason)) => Err(told(reason)),
             None => Err(CHOOSER_GONE.into()),
         })
     }
@@ -67,7 +67,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
             Some(PortalOutcome::Opened(path)) => then(host, Some(path), cx),
             Some(PortalOutcome::Cancelled) => then(host, None, cx),
-            Some(PortalOutcome::Failed(reason)) => Err(reason),
+            Some(PortalOutcome::Failed(reason)) => Err(told(reason)),
             None => Err(CHOOSER_GONE.into()),
         })
     }
@@ -87,7 +87,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.wait_for(saved, move |host, outcome, cx| match outcome {
             Some(SaveOutcome::Saved) => then(host, true, cx),
             Some(SaveOutcome::Cancelled) => then(host, false, cx),
-            Some(SaveOutcome::Failed(reason)) => Err(reason),
+            Some(SaveOutcome::Failed(reason)) => Err(told(reason)),
             None => Err(CHOOSER_GONE.into()),
         })
     }
@@ -110,7 +110,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             move |host, outcome, cx| match outcome {
                 Some(DestinationOutcome::Chosen(destination)) => then(host, Some(destination), cx),
                 Some(DestinationOutcome::Cancelled) => then(host, None, cx),
-                Some(DestinationOutcome::Failed(reason)) => Err(reason),
+                Some(DestinationOutcome::Failed(reason)) => Err(told(reason)),
                 None => Err(CHOOSER_GONE.into()),
             },
         )
@@ -160,13 +160,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                                 then(host, Some(destination), cx)
                             }
                             Some(SaveOutcome::Cancelled) => Err("the save was cancelled".into()),
-                            Some(SaveOutcome::Failed(reason)) => Err(reason),
+                            Some(SaveOutcome::Failed(reason)) => Err(told(reason)),
                             None => Err(CHOOSER_GONE.into()),
                         }),
                     )
                 }
                 Some(DestinationOutcome::Cancelled) => then(host, None, cx),
-                Some(DestinationOutcome::Failed(reason)) => Err(reason),
+                Some(DestinationOutcome::Failed(reason)) => Err(told(reason)),
                 None => Err(CHOOSER_GONE.into()),
             },
         )
@@ -220,4 +220,14 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             self.show_file(path);
         }
     }
+}
+
+/// Tell the person on the window's bar why the chooser or its write failed: the host words the
+/// reason for them (the workspace is not on screen, the disk is full). The effect fails with it too.
+fn told(reason: String) -> String {
+    ui_core::window_toolbar::notify(Some(ui_core::window_toolbar::ToolbarNotice::new(
+        reason.clone(),
+        ui_core::widget::toast::ToastKind::Error,
+    )));
+    reason
 }
