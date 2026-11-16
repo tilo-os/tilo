@@ -1,7 +1,8 @@
 # Runs and history
 
 Nothing in a workspace changes anonymously. Each connection is a **run**, every change is a step in its
-record's **history**, and a run can be taken back as one piece.
+record's **history**, a run can be taken back as one piece, and the workspace lists **every run** in
+it.
 
 ## A run
 
@@ -109,6 +110,99 @@ curl -sS --fail-with-body -X POST "$api/workspaces/$workspace/runs/$invocation/u
   | jq -r '"status: \(.status)"'
 curl -sS --fail-with-body "$word/history" -H "$auth" -H "$json" -d '{"last": 10}' \
   | jq -r '"undone: \([.result.versions[] | select(.undone)] | length) steps"'
+```
+
+## Every run
+
+A workspace lists its runs, newest first, whoever ran them: every key of yours, every agent's key
+made for it, and you. Several agents each working in a workspace of their own leave one list per
+workspace of what ran, what waits for you, and what can still be taken back.
+
+`ws.runs()` (`GET /v1/workspaces/{workspace}/runs`; over MCP `tilo_read workspace/runs`; `tilo runs
+-w <workspace>`) answers a page of 50, `limit` up to 200, and reads on from the cursor a page ends
+with. Each run says:
+
+- **who ran it**: the name of its key or agent, and its kind (`agent` for every key; `person`,
+  `bot` or `automation` otherwise), and the title its client gave it with `ws.run(title)`;
+- **how it stands**: `waiting` for you to allow it, `running`, `ended`, `failed` (with a typed
+  `failure`, `confirmation_required` when you did not allow it), `cancelled`, or `undone` once
+  everything it changed was taken back;
+- **when**: `started_ms`, and `ended_ms` once it ended;
+- **what it touched**: how many `changes` it made and to which `records`, how many were `undone`,
+  and the `summary` of its newest change as History words it;
+- **whether it can still be taken back**: `undoable`, or `undo_blocked` naming whose change stands
+  on top of its own.
+
+The page also says the `total`, and how many runs are `waiting` for you.
+
+A run's `id` is the run id the other run calls take (`ws.status(id)`, its cancel and undo): the
+newest call of it. Which runs are listed, and how, holds across restarts of the host as far as the
+workspace's records keep them. A run that changed a record is kept in that record's history, so it
+is listed the same after the host restarts (`recorded`), only without an `id`: the host remembers
+a run's calls (`remembered`) until it restarts, or lets go of the oldest among many. Its `step`,
+the undo step its changes carry in every record's History, names it either way. A run that changed
+nothing (one still waiting for you, one that failed before it wrote) is known from the host's
+memory alone, and is not listed after a restart.
+
+Any key that reaches a workspace reads every run in it, as History shows every change there.
+What a run was given, what it answered and the words of its failure stay with whoever ran it.
+
+```python example=list-runs
+from tilo import Tilo
+
+tilo = Tilo()
+workspace = tilo.workspace(tilo.workspaces.create("Every run").id)
+
+with workspace.run("Write the cover letter"):
+    workspace.do("word-processor#append-paragraph", text="Dear Visa Officer,")
+
+runs = workspace.runs()
+print(runs.total, "runs, newest first;", runs.waiting, "waiting for you")
+for run in runs:
+    print(" ", run.status, "by", run.by, "|", run.title, "|", run.changes, "changes")
+
+letter = next(run for run in runs.runs if run.title == "Write the cover letter")
+assert letter.status == "ended" and letter.undoable, letter
+print("found:", letter.id, letter.records[0]["app"])
+```
+
+```typescript example=list-runs
+import { Tilo } from "tilo-sdk";
+
+const tilo = new Tilo();
+const workspace = tilo.workspace((await tilo.workspaces.create("Every run")).id);
+
+await workspace.run("Write the cover letter", async () => {
+  await workspace.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
+});
+
+const runs = await workspace.runs();
+console.log(runs.total, "runs, newest first;", runs.waiting, "waiting for you");
+for await (const run of runs) {
+  console.log(" ", run.status, "by", run.by, "|", run.title, "|", run.changes, "changes");
+}
+
+const letter = runs.runs.find((run) => run.title === "Write the cover letter");
+if (letter === undefined || letter.status !== "ended" || !letter.undoable) {
+  throw new Error(`the letter's run is listed as ended: ${JSON.stringify(letter)}`);
+}
+console.log("found:", letter.id, letter.records[0]?.app);
+```
+
+```curl example=list-runs
+api=$TILO_API_URL/v1
+auth="Authorization: Bearer $TILO_API_KEY"
+json="Content-Type: application/json"
+workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "$json" \
+  -d '{"name": "Every run"}' | jq -r .id)
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/word-processor/actions/append-paragraph" \
+  -H "$auth" -H "$json" -H "Tilo-Run: cover-letter" -H "Tilo-Run-Title: Write the cover letter" \
+  -d '{"text": "Dear Visa Officer,"}' > /dev/null
+
+# Newest first: who ran each, how it stands and what it changed.
+curl -sS --fail-with-body "$api/workspaces/$workspace/runs?limit=10" -H "$auth" \
+  | jq -e -r '.runs[] | select(.title == "Write the cover letter")
+      | "\(.status) by \(.by.name): \(.changes) changes, undoable: \(.undoable)"'
 ```
 
 ## Links for people

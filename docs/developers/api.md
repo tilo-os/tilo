@@ -129,10 +129,11 @@ with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Til
 
 ## Runs
 
-`{run}` is an invocation id from an action's answer.
+`{run}` is an invocation id from an action's answer, or a listed run's `id`.
 
 | | |
 |---|---|
+| `GET /v1/workspaces/{workspace}/runs?limit=&cursor=` | every run in the workspace, newest first, whoever ran it (MCP: `tilo_read workspace/runs`, `tilo_ls workspace/runs {limit, cursor}`): `{"runs": [...], "total", "waiting", "pending", "next_cursor", "text"}`, 50 a page unless `limit` says (at most 200). A run is `{"id", "calls", "step", "by": {"name", "kind"}, "title", "status": "waiting"|"running"|"ended"|"failed"|"cancelled"|"undone", "failure", "started_ms", "ended_ms", "action", "summary", "changes", "undone", "records", "undoable", "undo_blocked", "recorded", "remembered"}`. A run that changed a record is listed after the host restarts, from that record's history, without an `id` (`remembered: false`); `step` names it either way. Any key that reaches the workspace reads every run in it |
 | `GET /v1/workspaces/{workspace}/runs/{run}?wait=` | the run as the action answers it; `wait` (seconds, at most 60) holds until it is no longer pending |
 | `POST /v1/workspaces/{workspace}/runs/{run}/cancel` | stops it: the run, now `cancelled` |
 | `POST /v1/workspaces/{workspace}/runs/{run}/undo` | takes back what it changed: `{"status": "ok", "undone": [...]}` |
