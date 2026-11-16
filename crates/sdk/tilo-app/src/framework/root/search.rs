@@ -2,9 +2,9 @@
 //! provider the system's search reaches it through, and the pages a search
 //! that waits on its surfaces' answers continues in.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_resource::{ScopeDecl, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
@@ -41,64 +41,284 @@ impl tilo_search::BodySource for BodyText {
     }
 }
 
-/// A resource's search entries and their index, keyed by position.
+/// A resource's search entries and their index.
+///
+/// Every build after the first is a change to the one before it: an entry
+/// the resource still lists unchanged keeps its place in the index, and only
+/// the entries that came, went or changed are indexed. A notebook of a
+/// thousand long notes or a tracker of 25,000 issues costs, per edit, the
+/// edited note or issue rather than all of them. A change to most of the
+/// entries is indexed afresh, as the first build is.
+///
+/// The index is shared by every build that changed it: a search holding an
+/// earlier build finds what the latest one holds.
 pub(crate) struct IndexedEntries {
-    entries: Vec<SearchEntry>,
-    facets: Vec<ui_core::search::Facet>,
-    pub(crate) index: SearchIndex,
+    content: Arc<Mutex<Indexed>>,
     /// Which build of the entries this is: a page cursor from another build
     /// starts over rather than skipping or repeating.
     pub(crate) generation: u64,
 }
 
+/// The entries of the latest build, by the key the index holds each under.
+struct Indexed {
+    entries: HashMap<u64, SearchEntry>,
+    /// The keys of the entries with each [`fingerprint`], for finding what
+    /// a later build still lists.
+    keys_by_print: HashMap<u64, Vec<u64>>,
+    /// The key the next new entry is indexed under. Keys rise in the order
+    /// entries arrive, so hits of equal rank keep the order the resource
+    /// lists its entries in, newer entries after older ones.
+    next_key: u64,
+    /// How many entries offer each value of each facet: the facet's label,
+    /// and its values' counts, by its key.
+    facets: Facets,
+    index: SearchIndex,
+    /// How many entries were indexed, over every build.
+    #[cfg(test)]
+    indexings: usize,
+}
+
+/// More changed than this share of a build's entries is indexed afresh: the
+/// index's own bulk build is then cheaper than the changes one by one, and
+/// is built aside rather than in the index searches read.
+const FRESH_SHARE: usize = 4;
+
 impl IndexedEntries {
     pub(crate) fn built(entries: Vec<SearchEntry>, generation: u64) -> Self {
+        Self {
+            content: Arc::new(Mutex::new(Indexed::fresh(entries))),
+            generation,
+        }
+    }
+
+    /// `entries` indexed as a change to this build: only what came, went or
+    /// changed since it is indexed.
+    pub(crate) fn updated(&self, entries: Vec<SearchEntry>, generation: u64) -> Self {
+        let mut content = self.content.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(changes) = content.changes(&entries) else {
+            drop(content);
+            return Self::built(entries, generation);
+        };
+        content.apply(changes, entries);
+        drop(content);
+        Self {
+            content: Arc::clone(&self.content),
+            generation,
+        }
+    }
+
+    fn content(&self) -> std::sync::MutexGuard<'_, Indexed> {
+        self.content.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The facets the entries offer.
+    pub(crate) fn facets(&self) -> Vec<ui_core::search::Facet> {
+        self.content()
+            .facets
+            .iter()
+            .map(|(key, (label, values))| {
+                values.keys().fold(
+                    ui_core::search::Facet::new(key.clone(), label.clone()),
+                    |facet, value| facet.value(value.clone(), value.clone()),
+                )
+            })
+            .collect()
+    }
+
+    /// How many entries were indexed to bring this index where it is.
+    #[cfg(test)]
+    pub(crate) fn indexed_count(&self) -> usize {
+        self.content().indexings
+    }
+}
+
+/// What a build changes of the one before it: the keys of the entries it no
+/// longer lists, and the positions of its entries the earlier one does not
+/// hold.
+struct Changes {
+    gone: Vec<u64>,
+    added: Vec<(usize, u64)>,
+}
+
+impl Indexed {
+    fn fresh(entries: Vec<SearchEntry>) -> Self {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
-        index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
-            let mut document = Document::new(at as u64)
-                .field(entry.title.as_str(), FieldWeight::TITLE)
-                .field(entry.text.as_str(), FieldWeight::BODY)
-                .field(
-                    entry.subtitle.as_deref().unwrap_or_default(),
-                    FieldWeight::SUBTITLE,
-                );
-            for (text, weight) in &entry.fields {
-                document = document.field(text.as_str(), field_weight(*weight));
-            }
-            match &entry.body {
-                Some(body) => document.body(Arc::new(BodyText(body.shared()))),
-                None => document,
-            }
-        }));
+        index.replace_all(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(at, entry)| document(at as u64, entry)),
+        );
         if let Err(error) = index.commit() {
             tracing::warn!(%error, "could not index resource search entries");
         }
-        let mut groups: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-        for entry in &entries {
-            for (key, label, value) in &entry.facets {
-                groups
-                    .entry(key.clone())
-                    .or_insert_with(|| (label.clone(), BTreeSet::new()))
-                    .1
-                    .insert(value.clone());
-            }
+        let mut keys_by_print: HashMap<u64, Vec<u64>> = HashMap::new();
+        for (at, entry) in entries.iter().enumerate() {
+            keys_by_print
+                .entry(fingerprint(entry))
+                .or_default()
+                .push(at as u64);
         }
-        let facets = groups
-            .into_iter()
-            .map(|(key, (label, values))| {
-                values
-                    .into_iter()
-                    .fold(ui_core::search::Facet::new(key, label), |facet, value| {
-                        facet.value(value.clone(), value)
-                    })
-            })
-            .collect();
+        let mut facets = Facets::new();
+        for entry in &entries {
+            count_facets(&mut facets, entry, true);
+        }
         Self {
-            entries,
+            next_key: entries.len() as u64,
+            #[cfg(test)]
+            indexings: entries.len(),
+            entries: entries
+                .into_iter()
+                .enumerate()
+                .map(|(at, entry)| (at as u64, entry))
+                .collect(),
+            keys_by_print,
             facets,
             index,
-            generation,
+        }
+    }
+
+    /// What `entries` change of what is indexed, or `None` when they change
+    /// so much that indexing them afresh is cheaper.
+    fn changes(&self, entries: &[SearchEntry]) -> Option<Changes> {
+        let mut kept: HashSet<u64> = HashSet::with_capacity(entries.len());
+        let mut added = Vec::new();
+        let limit = entries.len().max(self.entries.len()) / FRESH_SHARE;
+        for (at, entry) in entries.iter().enumerate() {
+            let print = fingerprint(entry);
+            let same = self.keys_by_print.get(&print).and_then(|keys| {
+                keys.iter().copied().find(|key| {
+                    !kept.contains(key) && self.entries.get(key).is_some_and(|held| held == entry)
+                })
+            });
+            match same {
+                Some(key) => {
+                    kept.insert(key);
+                }
+                None => added.push((at, print)),
+            }
+            if added.len() > limit {
+                return None;
+            }
+        }
+        let gone: Vec<u64> = self
+            .entries
+            .keys()
+            .copied()
+            .filter(|key| !kept.contains(key))
+            .collect();
+        (added.len().saturating_add(gone.len()) <= limit).then_some(Changes { gone, added })
+    }
+
+    /// Index `changes`, which `entries` make.
+    fn apply(&mut self, changes: Changes, entries: Vec<SearchEntry>) {
+        if changes.gone.is_empty() && changes.added.is_empty() {
+            return;
+        }
+        for key in &changes.gone {
+            self.index.remove(*key);
+            if let Some(entry) = self.entries.remove(key) {
+                count_facets(&mut self.facets, &entry, false);
+                let print = fingerprint(&entry);
+                if let Some(keys) = self.keys_by_print.get_mut(&print) {
+                    keys.retain(|held| held != key);
+                    if keys.is_empty() {
+                        self.keys_by_print.remove(&print);
+                    }
+                }
+            }
+        }
+        let mut entries: Vec<Option<SearchEntry>> = entries.into_iter().map(Some).collect();
+        for (at, print) in changes.added {
+            let Some(entry) = entries.get_mut(at).and_then(Option::take) else {
+                continue;
+            };
+            let key = self.next_key;
+            self.next_key = key.saturating_add(1);
+            self.index.upsert(document(key, &entry));
+            self.keys_by_print.entry(print).or_default().push(key);
+            count_facets(&mut self.facets, &entry, true);
+            self.entries.insert(key, entry);
+            #[cfg(test)]
+            {
+                self.indexings = self.indexings.saturating_add(1);
+            }
+        }
+        if let Err(error) = self.index.commit() {
+            tracing::warn!(%error, "could not index resource search entries");
+        }
+    }
+}
+
+/// `entry` as the index keeps it, under `key`.
+fn document(key: u64, entry: &SearchEntry) -> Document {
+    let mut document = Document::new(key)
+        .field(entry.title.as_str(), FieldWeight::TITLE)
+        .field(entry.text.as_str(), FieldWeight::BODY)
+        .field(
+            entry.subtitle.as_deref().unwrap_or_default(),
+            FieldWeight::SUBTITLE,
+        );
+    for (text, weight) in &entry.fields {
+        document = document.field(text.as_str(), field_weight(*weight));
+    }
+    match &entry.body {
+        Some(body) => document.body(Arc::new(BodyText(body.shared()))),
+        None => document,
+    }
+}
+
+/// A hash of what tells `entry` apart from the entries beside it, for
+/// finding it among an earlier build's: two equal entries have the same
+/// one. A body is told apart by the text it shares, as entries compare it.
+fn fingerprint(entry: &SearchEntry) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    entry.title.hash(&mut hasher);
+    entry.text.hash(&mut hasher);
+    entry.anchor.hash(&mut hasher);
+    entry.subtitle.hash(&mut hasher);
+    entry.group.hash(&mut hasher);
+    entry
+        .action
+        .as_ref()
+        .map(|action| (&action.resource, &action.action))
+        .hash(&mut hasher);
+    entry
+        .body
+        .as_ref()
+        .map(|body| Arc::as_ptr(&body.shared()).cast::<()>() as usize)
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The label of each facet by its key, and how many entries offer each of
+/// its values.
+type Facets = BTreeMap<String, (String, BTreeMap<String, usize>)>;
+
+/// Count the facet values `entry` offers in `facets`, or take them away.
+fn count_facets(facets: &mut Facets, entry: &SearchEntry, add: bool) {
+    for (key, label, value) in &entry.facets {
+        if add {
+            let (_, values) = facets
+                .entry(key.clone())
+                .or_insert_with(|| (label.clone(), BTreeMap::new()));
+            let count = values.entry(value.clone()).or_default();
+            *count = count.saturating_add(1);
+            continue;
+        }
+        let Some((_, values)) = facets.get_mut(key) else {
+            continue;
+        };
+        if let Some(count) = values.get_mut(value) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                values.remove(value);
+            }
+        }
+        if values.is_empty() {
+            facets.remove(key);
         }
     }
 }
@@ -453,7 +673,7 @@ impl SearchProvider for ResourceSearch {
         if !self.readable {
             return Vec::new();
         }
-        self.indexed().facets.clone()
+        self.indexed().facets()
     }
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
@@ -478,13 +698,14 @@ impl ResourceSearch {
             return (Vec::new(), false, 0);
         }
         let indexed = self.indexed();
-        let found = indexed.index.search(query.text(), page);
+        let content = indexed.content();
+        let found = content.index.search(query.text(), page);
         let inspected = found.hits.len();
         let results = found
             .hits
             .into_iter()
             .filter_map(|hit| {
-                let parent = indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                let parent = content.entries.get(&hit.key)?;
                 // A match in a located segment of a body is that location's
                 // hit, listed with its entry unless it names its own group.
                 let located = hit.segment.and_then(|segment| {
@@ -553,6 +774,7 @@ impl ResourceSearch {
                 Some(result.with_score(hit.rank.unwrap_or(0).saturating_add(entry.boost)))
             })
             .collect();
+        drop(content);
         (results, found.more, inspected)
     }
 

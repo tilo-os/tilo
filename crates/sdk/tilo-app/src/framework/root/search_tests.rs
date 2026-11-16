@@ -772,3 +772,107 @@ tilo_test_env::scenario! {
         assert!(facets.is_empty(), "nor what its entries are filed under");
     }
 }
+
+/// A tracker-sized set of entries: one per issue, as Tasks lists them.
+fn issues(count: usize, edited: Option<(usize, &str)>) -> Vec<SearchEntry> {
+    (0..count)
+        .map(|at| {
+            let title = match edited {
+                Some((which, title)) if which == at => title.to_owned(),
+                _ => format!("Issue {at} about the relay"),
+            };
+            SearchEntry::new(title, format!("What issue {at} is about, at length."))
+                .anchored(format!("issue:{at}"))
+                .subtitled(format!("#{at}"))
+                .facet(
+                    "status",
+                    "Status",
+                    if at % 2 == 0 { "Todo" } else { "Done" },
+                )
+        })
+        .collect()
+}
+
+fn titles_found(indexed: &Arc<IndexedEntries>, query: &str) -> Vec<String> {
+    ResourceSearch::new("Tasks", "so.tilo.tasks", Arc::clone(indexed))
+        .search(query)
+        .into_iter()
+        .map(|hit| hit.title)
+        .collect()
+}
+
+/// An edit to one of 25,000 entries indexes that one entry, not all of them;
+/// what search finds is what a fresh index of the same entries finds.
+#[test]
+fn an_edit_indexes_only_the_entries_it_changed() {
+    const COUNT: usize = 25_000;
+    let all = issues(COUNT, None);
+    let started = std::time::Instant::now();
+    let first = Arc::new(IndexedEntries::built(all, 0));
+    let fresh = started.elapsed();
+    assert_eq!(first.indexed_count(), COUNT);
+
+    let one_edited = issues(COUNT, Some((7_123, "Storm warning")));
+    let started = std::time::Instant::now();
+    let edited = Arc::new(first.updated(one_edited, 1));
+    let changed = started.elapsed();
+    assert_eq!(
+        edited.indexed_count(),
+        COUNT + 1,
+        "the edited issue alone is indexed again"
+    );
+    assert_eq!(
+        titles_found(&edited, "storm warning")
+            .first()
+            .map(String::as_str),
+        Some("Storm warning")
+    );
+    assert!(
+        !titles_found(&edited, "issue 7123 about the relay")
+            .contains(&"Issue 7123 about the relay".to_owned()),
+        "the title it had is no longer found"
+    );
+    assert!(
+        titles_found(&edited, "issue 7124 about the relay")
+            .contains(&"Issue 7124 about the relay".to_owned())
+    );
+
+    // An issue added and one taken away: two changes.
+    let mut grown = issues(COUNT, Some((7_123, "Storm warning")));
+    grown.remove(9);
+    grown.push(SearchEntry::new("A new issue", "").anchored("issue:new"));
+    let grown = Arc::new(edited.updated(grown, 2));
+    assert_eq!(grown.indexed_count(), COUNT + 2);
+    assert!(
+        !titles_found(&grown, "issue 9 about the relay")
+            .contains(&"Issue 9 about the relay".to_owned())
+    );
+    assert_eq!(
+        titles_found(&grown, "a new issue")
+            .first()
+            .map(String::as_str),
+        Some("A new issue")
+    );
+    assert_eq!(grown.facets().len(), 1, "the facets stay the entries' own");
+
+    // Nothing changed: nothing is indexed.
+    let mut same = issues(COUNT, Some((7_123, "Storm warning")));
+    same.remove(9);
+    same.push(SearchEntry::new("A new issue", "").anchored("issue:new"));
+    let same = Arc::new(grown.updated(same, 3));
+    assert_eq!(same.indexed_count(), COUNT + 2);
+
+    // Most entries changed: indexed afresh, as the first build was.
+    let renamed: Vec<SearchEntry> = (0..COUNT)
+        .map(|at| SearchEntry::new(format!("Ticket {at}"), "").anchored(format!("issue:{at}")))
+        .collect();
+    let renamed = Arc::new(same.updated(renamed, 4));
+    assert_eq!(renamed.indexed_count(), COUNT);
+    assert_eq!(
+        titles_found(&renamed, "ticket 12345")
+            .first()
+            .map(String::as_str),
+        Some("Ticket 12345")
+    );
+    eprintln!("{COUNT} entries: indexed whole in {fresh:?}, one edit in {changed:?}");
+}

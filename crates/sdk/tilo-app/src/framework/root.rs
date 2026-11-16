@@ -1488,6 +1488,12 @@ impl SearchCache {
         {
             self.builds = self.builds.saturating_add(1);
         }
+        // The index before this one, which this one changes: only what came,
+        // went or changed since it is indexed.
+        let before = self
+            .answering
+            .as_ref()
+            .map(|answering| Arc::clone(&answering.indexed));
         if indexes_off_frame(&entries) {
             // The index landing wakes the window that asked: it is an
             // answer its next sync takes up, never one a frame polls for.
@@ -1496,7 +1502,11 @@ impl SearchCache {
             let spawned = ui_core::background::Background::current().spawn(
                 "resource-search-index",
                 move || {
-                    let _ = send.send(IndexedEntries::built(building, generation));
+                    let indexed = match before {
+                        Some(before) => before.updated(building, generation),
+                        None => IndexedEntries::built(building, generation),
+                    };
+                    let _ = send.send(indexed);
                 },
             );
             if spawned.is_ok() {
@@ -1508,7 +1518,10 @@ impl SearchCache {
                 return self.answering();
             }
         }
-        let indexed = Arc::new(IndexedEntries::built(entries, generation));
+        let indexed = Arc::new(match &self.answering {
+            Some(before) => before.indexed.updated(entries, generation),
+            None => IndexedEntries::built(entries, generation),
+        });
         self.answering = Some(AnsweringIndex {
             of: Some(state),
             indexed: Arc::clone(&indexed),
