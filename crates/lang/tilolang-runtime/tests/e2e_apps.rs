@@ -199,13 +199,13 @@ mod cases {
         w: &World,
         apps: &Apps,
         conv: &ResourceRef,
-        who: Actor,
+        who: &Actor,
         text: &str,
         block: &str,
     ) -> ResourceRef {
         let id = apps.chat.action("post");
         let args = vec![res(conv), Value::text(text), Value::text(block)];
-        returned_ref(w.rt.invoke_action(&who, (id.as_str(), args)).unwrap())
+        returned_ref(w.rt.invoke_action(who, (id.as_str(), args)).unwrap())
     }
 
     fn author_of(w: &World, message: &ResourceRef) -> Actor {
@@ -452,9 +452,9 @@ mod cases {
         let (_, conv) = start_chat(&wa, &apps);
         a.sync_with(&mut b).unwrap();
 
-        post(&wa, &apps, &conv, person("ada"), "first", "");
-        post(&wa, &apps, &conv, agent("helper"), "second", "1 + 2");
-        post(&wb, &apps, &conv, person("bo"), "concurrent", "");
+        post(&wa, &apps, &conv, &person("ada"), "first", "");
+        post(&wa, &apps, &conv, &agent("helper"), "second", "1 + 2");
+        post(&wb, &apps, &conv, &person("bo"), "concurrent", "");
         a.sync_with(&mut b).unwrap();
 
         let (ta, tb) = (thread(&wa, &conv), thread(&wb, &conv));
@@ -557,7 +557,14 @@ mod cases {
             vec![res(&note), Value::text("Groceries")],
         );
         let src = format!("notes.note_editor(@notes.Note:{})", note.id_string());
-        post(&w, &apps, &conv, agent("helper"), "Here is your note", &src);
+        post(
+            &w,
+            &apps,
+            &conv,
+            &agent("helper"),
+            "Here is your note",
+            &src,
+        );
 
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -605,12 +612,12 @@ mod cases {
             "rename",
             vec![res(&project), Value::text("Groceries")],
         );
-        post(&w, &apps, &conv, agent("helper"), "", "1 + 2");
+        post(&w, &apps, &conv, &agent("helper"), "", "1 + 2");
         post(
             &w,
             &apps,
             &conv,
-            agent("helper"),
+            &agent("helper"),
             "",
             &format!("@tasks.Project:{}", project.id_string()),
         );
@@ -635,8 +642,8 @@ mod cases {
             let apps = apps();
             let w = world(&apps, &AmStore::new());
             let (_, conv) = start_chat(&w, &apps);
-            post(&w, &apps, &conv, agent("helper"), "see", "tasks.nothing(1)");
-            post(&w, &apps, &conv, person("ada"), "still here", "");
+            post(&w, &apps, &conv, &agent("helper"), "see", "tasks.nothing(1)");
+            post(&w, &apps, &conv, &person("ada"), "still here", "");
             let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
             let found = embeds(view.tree());
             assert_eq!(state(found[0]), "error", "{}", dump(view.tree()));
@@ -679,7 +686,7 @@ mod cases {
             assert_eq!(own.chain.len(), 1);
 
             let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
-            post(&w, &apps, &conv, agent("helper"), "Shall I send it?", &src);
+            post(&w, &apps, &conv, &agent("helper"), "Shall I send it?", &src);
             let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
             let found = embeds(view.tree());
             assert_eq!(state(found[0]), "invocation", "{}", dump(view.tree()));
@@ -702,7 +709,7 @@ mod cases {
             assert!(w.rt.pending_outbox().is_empty(), "asking sends nothing");
 
             // A re-render shows the same suggestion rather than making another.
-            post(&w, &apps, &conv, person("ada"), "Looks right", "");
+            post(&w, &apps, &conv, &person("ada"), "Looks right", "");
             assert!(view.is_stale(), "a new message re-renders the thread");
             view.poll_patches().unwrap();
             let again = of_kind(view.tree(), "invocation")[0];
@@ -758,7 +765,7 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let before = w.rt.compiled_modules();
         for who in [agent("a"), agent("b"), person("c")] {
-            post(&w, &apps, &conv, who, "", "40 + 2");
+            post(&w, &apps, &conv, &who, "", "40 + 2");
         }
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         assert_eq!(embeds(view.tree()).len(), 3);
@@ -784,7 +791,7 @@ mod cases {
         let letters = w.create("Letters");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
         let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
-        let message = post(&w, &apps, &conv, agent("helper"), "", &src);
+        let message = post(&w, &apps, &conv, &agent("helper"), "", &src);
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let record = invocation_of(&w, &apps, &message);
         assert_eq!(
@@ -839,7 +846,7 @@ mod cases {
                 item.id_string()
             )
         };
-        post(&w, &apps, &conv, person("stranger"), "", &remove(&first));
+        post(&w, &apps, &conv, &person("stranger"), "", &remove(&first));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
         assert_eq!(state(found[0]), "view");
@@ -874,7 +881,7 @@ mod cases {
                 Value::text("bread"),
             ],
         ));
-        post(&w, &apps, &conv, person("stranger"), "", &remove(&third));
+        post(&w, &apps, &conv, &person("stranger"), "", &remove(&third));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
         let button = of_kind(found[1], "ui.Button")[0].key.clone();
@@ -906,7 +913,7 @@ mod cases {
             "tasks.new_task(@tasks.Tasks:{}, title: \"bread\")",
             list.id_string()
         );
-        let message = post(&wa, &apps, &conv, agent("helper"), "", &src);
+        let message = post(&wa, &apps, &conv, &agent("helper"), "", &src);
 
         assert_eq!(
             items(&wa, &list, "items").len(),
@@ -958,7 +965,7 @@ mod cases {
         );
 
         let mallory = person("mallory");
-        let message = post(&w, &apps, &conv, person("mallory"), "", &src);
+        let message = post(&w, &apps, &conv, &person("mallory"), "", &src);
         assert_eq!(author_of(&w, &message), person("mallory"));
         let record =
             w.rt.read_invocation(&invocation_of(&w, &apps, &message))
@@ -989,7 +996,7 @@ mod cases {
         assert_eq!(thread(&w, &conv).len(), 1, "no forged message was posted");
 
         // The agent's own post carries the agent's authority.
-        let real = post(&w, &apps, &conv, agent("helper"), "", &src);
+        let real = post(&w, &apps, &conv, &agent("helper"), "", &src);
         assert_eq!(
             w.rt.read_invocation(&invocation_of(&w, &apps, &real))
                 .unwrap()
@@ -1013,7 +1020,7 @@ mod cases {
             editor.edit(key, &Value::text(text)).unwrap();
         }
         let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
-        let message = post(&wa, &apps, &conv, agent("helper"), "Shall I?", &src);
+        let message = post(&wa, &apps, &conv, &agent("helper"), "Shall I?", &src);
         let record = invocation_of(&wa, &apps, &message);
         let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
         a.sync_with(&mut b).unwrap();
@@ -2503,8 +2510,8 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        post(&w, &apps, &conv, person("ada"), "hello", "");
-        post(&w, &apps, &conv, person("bo"), "hi", "");
+        post(&w, &apps, &conv, &person("ada"), "hello", "");
+        post(&w, &apps, &conv, &person("bo"), "hi", "");
         let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
