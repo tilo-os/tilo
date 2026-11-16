@@ -854,7 +854,7 @@ workspace-notice-agent-finished-in = { $agent } finished: { $count ->
     [one] 1 change
    *[other] { $count } changes
 } in { $workspace }
-workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
+workspace-notice-renamed = The workspace is now called { $workspace }
 # What the shell says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open

@@ -1,6 +1,6 @@
-//! The desktop's half of a workspace's governance: the people, bots and saved shortcuts the shell's
-//! workspaces show, projected from the governance this device holds, and the shell the grants are
-//! written into.
+//! The desktop's half of a workspace's governance: the name, people, bots and saved shortcuts the
+//! shell's workspaces show, projected from the governance this device holds, and the shell the
+//! grants are written into.
 
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_session_client::membership::{self, Workspaces};
@@ -49,6 +49,12 @@ impl crate::Shared {
         let projected = session.edit(&mut |workspaces| {
             let mut changed = false;
             for workspace in workspaces {
+                // The workspace's one name, which the shell keeps none of its own of.
+                if let Ok(Some(name)) = engine.owner().with_current(workspace.id(), |view| {
+                    Ok(view.peer().governance().workspace_name())
+                }) {
+                    changed |= workspace.named_as(&name);
+                }
                 let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
                     // A workspace whose governance this device does not hold keeps the people,
                     // bots and shortcuts the shell has of it.

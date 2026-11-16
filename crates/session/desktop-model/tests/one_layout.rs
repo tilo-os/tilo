@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
         // what the activity pane steps back through.
         let then = doc.get_heads();
         let mut renamed = held.tree.clone();
-        renamed.workspaces[0].name = "Studio · renamed".into();
+        renamed.workspaces[0].strips[0].name = "A · renamed".into();
         assert!(shared_record::write(&mut doc, &shared(renamed)).expect("written"));
         doc.commit();
         assert_eq!(
@@ -161,12 +161,13 @@ tilo_test_env::scenario! {
                 .expect("the layout then")
                 .tree
                 .workspaces[0]
+                .strips[0]
                 .name,
-            "Studio"
+            "A"
         );
         assert_eq!(
-            opened(&doc).tree.workspaces[0].name,
-            "Studio · renamed",
+            opened(&doc).tree.workspaces[0].strips[0].name,
+            "A · renamed",
             "and now it is the layout as it is"
         );
     }
@@ -220,7 +221,7 @@ tilo_test_env::scenario! {
         let mut peer = local.fork();
 
         let mut mine = held.clone();
-        mine.tree.workspaces[0].name = "Studio · mine".into();
+        mine.tree.workspaces[0].strips[0].name = "A · mine".into();
         assert!(shared_record::write(&mut local, &mine).expect("written"));
         local.commit();
 
@@ -236,7 +237,7 @@ tilo_test_env::scenario! {
         peer.merge_incoming(&mut local).expect("merged");
         for held in [opened(&local), opened(&peer)] {
             assert_eq!(
-                held.tree.workspaces[0].name, "Studio · mine",
+                held.tree.workspaces[0].strips[0].name, "A · mine",
                 "the rename both peers made is one layout"
             );
             assert_eq!(windows(&held.tree), windows(&theirs.tree));

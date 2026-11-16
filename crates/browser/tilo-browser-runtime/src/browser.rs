@@ -737,22 +737,10 @@ impl Desktop {
         }
     }
 
-    /// Notices for what other people did to the workspace's desktop since the
-    /// last frame: the workspace renamed by someone else.
-    fn post_workspace_notices(&self) {
-        let renames = std::mem::take(&mut *self.shared.renames.borrow_mut());
-        for rename in renames {
-            if let Some(notice) = rename.notice_for(&self.author, |user| self.person_name(user)) {
-                self.post(notice);
-            }
-        }
-    }
-
-    /// Take the workspace's one name onto the shell: its governance records it, and every device
-    /// and every list of the workspace reads it there. A page that landed in the workspace before
-    /// anything named it — served no name, or in one made on another device — keeps the name it
-    /// was given here, so its bar, its overview and search call the workspace what it is called.
-    /// Whether the shell changed.
+    /// Project the workspace's one name onto the shell: its governance records it, and every
+    /// device and every list of the workspace reads it there; the shell keeps no name of its own.
+    /// A name the governance took since the last projection, which this page did not ask for, is
+    /// someone else's rename, and the person hears it. Whether the shell changed.
     fn follow_workspace_name(&self, peer: Option<u32>) -> bool {
         let Some(peer) = peer else {
             return false;
@@ -763,6 +751,16 @@ impl Desktop {
         let Some(name) = crate::replication::governance_name(peer, workspace) else {
             return false;
         };
+        let before = self.shared.projected_name.replace(Some(name.clone()));
+        let asked = self.shared.asked_name.borrow().clone();
+        if asked.as_deref() == Some(name.as_str()) {
+            self.shared.asked_name.replace(None);
+        } else if before.is_some_and(|before| before != name) {
+            self.notify(&tilo_desktop_surface::i18n::t_args(
+                "workspace-notice-renamed",
+                &[("workspace", name.clone().into())],
+            ));
+        }
         let already = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -828,14 +826,6 @@ impl Desktop {
                 web_sys::console::warn_1(&format!("search: {why}").into());
             }
         }
-    }
-
-    /// The name presence shows for the person with user root `user`: here
-    /// now, else as last seen, else a guest's, never their key.
-    fn person_name(&self, user: &str) -> String {
-        let seen = self.here.borrow().person(user);
-        seen.or_else(|| self.people.borrow().get(user).cloned())
-            .map_or_else(tilo_desktop::here::guest_label, |(name, _)| name)
     }
 
     /// Tell the surface who holds each window this page's person may not
@@ -2695,7 +2685,6 @@ impl Mount {
             desktop
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
-            desktop.post_workspace_notices();
             desktop.announce_agents_finished();
             desktop.offer_uploads(false);
             desktop.follow_notice_choices();

@@ -64,7 +64,7 @@ mod native_history {
         doc.set_actor(ada.clone());
         stamp(&mut doc, &tree, 1_000);
 
-        tree.workspaces[0].name = "Plans".into();
+        tree.workspaces[0].strips[0].name = "Plans".into();
         let mut peer = doc.fork();
         peer.set_actor(grace.clone());
         stamp(&mut peer, &tree, 2_000);
@@ -107,9 +107,10 @@ mod native_history {
                 .iter()
                 .map(|entry| entry.summary.clone())
                 .collect();
-            assert!(
-                rows.iter().any(|summary| summary.contains("Plans")),
-                "the rename is what changed in the workspace: {rows:?}"
+            assert_eq!(
+                rows.len(),
+                2,
+                "Grace's rename of the strip and Ada's close are what changed: {rows:?}"
             );
             assert!(
                 pane.entries()
@@ -158,10 +159,8 @@ mod native_history {
                 .take()
                 .expect("the layout is written back");
             assert_eq!(
-                restored
-                    .active_workspace()
-                    .map(|workspace| workspace.name.as_str()),
-                Some("Plans"),
+                restored.workspaces[0].strips[0].name.as_str(),
+                "Plans",
                 "the workspace is back at the version restored"
             );
             assert_eq!(
