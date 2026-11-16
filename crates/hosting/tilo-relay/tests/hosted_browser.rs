@@ -2487,7 +2487,8 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
         }),
         Some(observe),
         &Caller::local_app("test"),
-    );
+    )
+    .await;
     assert!(
         matches!(&answer, RemoteActionMessage::Receipt(receipt) if matches!(receipt.status, ReceiptStatus::Accepted)),
         "the caller is answered its run, as it was"

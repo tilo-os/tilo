@@ -647,17 +647,28 @@ fn serve_with_browser(
         let browsers = Arc::clone(browsers?);
         let caller = caller.clone();
         let observe = observe.cloned();
-        return Some(serve(message)?.map(move |message| {
-            crate::hosted_browser::placed_linux_app(
-                &browsers,
-                workspace_id,
-                invocation,
-                &launch,
-                message,
-                observe,
-                &caller,
-            )
-        }));
+        let answer = serve(message)?;
+        return Some(placed_when_ready(
+            &browsers,
+            invocation,
+            answer,
+            "The app couldn't start. Try again in a minute.".to_owned(),
+            move |browsers: &Arc<crate::hosted_browser::HostedBrowsers>, message| {
+                let browsers = Arc::clone(browsers);
+                Box::pin(async move {
+                    crate::hosted_browser::placed_linux_app(
+                        &browsers,
+                        workspace_id,
+                        invocation,
+                        &launch,
+                        message,
+                        observe,
+                        &caller,
+                    )
+                    .await
+                })
+            },
+        ));
     }
     let opens = match &message {
         RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
@@ -687,16 +698,72 @@ fn serve_with_browser(
     let browsers = Arc::clone(browsers);
     let caller = caller.clone();
     let observe = observe.cloned();
-    Some(serve(message)?.map(move |message| {
-        crate::hosted_browser::placed(
-            &browsers,
-            workspace_id,
-            invocation,
-            message,
-            observe,
-            &caller,
-        )
-    }))
+    let answer = serve(message)?;
+    Some(placed_when_ready(
+        &browsers,
+        invocation,
+        answer,
+        "Browser is still starting. Try again in a minute.".to_owned(),
+        move |browsers: &Arc<crate::hosted_browser::HostedBrowsers>, message| {
+            let browsers = Arc::clone(browsers);
+            Box::pin(async move {
+                crate::hosted_browser::placed(
+                    &browsers,
+                    workspace_id,
+                    invocation,
+                    message,
+                    observe,
+                    &caller,
+                )
+                .await
+            })
+        },
+    ))
+}
+
+/// `answer`, an open's answer, settled with the window `place` gives it: an
+/// open answers with its window only once the host names the workspace and its
+/// VM's session is up, both of which wait, so the answer is settled from a
+/// task of its own rather than on whichever thread produced it. `still_starting`
+/// is what a host that places nothing yet refuses it with.
+/// An open's answer, once the window it asks for is up: what
+/// [`placed_when_ready`]'s placement answers when it runs.
+type Placed = std::pin::Pin<
+    Box<dyn std::future::Future<Output = tilo_actions::remote::RemoteActionMessage> + Send>,
+>;
+
+fn placed_when_ready(
+    browsers: &Arc<crate::hosted_browser::HostedBrowsers>,
+    invocation: tilo_actions::InvocationId,
+    answer: Pending<tilo_actions::remote::RemoteActionMessage>,
+    still_starting: String,
+    place: impl FnOnce(
+        &Arc<crate::hosted_browser::HostedBrowsers>,
+        tilo_actions::remote::RemoteActionMessage,
+    ) -> Placed
+    + Send
+    + 'static,
+) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+    let Some(runtime) = browsers.runtime() else {
+        return Pending::ready(crate::hosted_browser::refused(invocation, still_starting));
+    };
+    let browsers = Arc::clone(browsers);
+    let (completer, pending) = tilo_actions::remote::pending();
+    runtime.spawn(async move {
+        // A caller that stopped waiting takes its open with it: dropping the
+        // answer is what tells the service behind it.
+        if completer.is_abandoned() {
+            return;
+        }
+        let Some(message) = answer.await else {
+            return;
+        };
+        if completer.is_abandoned() {
+            return;
+        }
+        completer.complete(place(&browsers, message).await);
+    });
+    pending
 }
 
 /// The relay's own device, as the workspace actions service joins its workspaces.
