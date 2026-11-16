@@ -62,7 +62,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          login), whose key it then approves: an export
                          TILO_API_KEY=… line in $state/operator.env, with
                          which stack.sh invite prints an invite link.
-                         The Lounge names them by the identity's own name, or
+                         The Lounge names the operator "Operator" and KEY's person
                          by --name when given. It then prints a link to open in
                          the browser you use for the Lounge, which makes that
                          person an owner too. `up` declares the operator's
@@ -565,7 +565,7 @@ invite_link() {
 # why it did not.
 #
 # Without KEY it declares the stack's operator identity (operator_tilo),
-# under the name that identity goes by, and then prints a link that makes the
+# named Operator unless --name says otherwise, and then prints a link that makes the
 # browser someone opens it in an owner too: `--no-link` stops after the
 # identity, since `up` runs this with nobody there to open one.
 declare_owner() {
@@ -588,12 +588,15 @@ declare_owner() {
   if [[ -z $key ]]; then
     local identity
     operator=1
-    if identity=$(operator_tilo login --new-identity --json 2>/dev/null); then
+    # The stack's own account, never named after this computer's login: the
+    # person who runs the stack joins as themselves and must not see "their"
+    # name on invitations the stack made.
+    [[ -n $name ]] || name=Operator
+    if identity=$(operator_tilo login --new-identity --name "$name" --json 2>/dev/null); then
       key=$(printf '%s' "$identity" | json_field user_public_key)
-      [[ -n $name ]] || name=$(printf '%s' "$identity" | json_field name)
     else
       # A tilo from before it answered JSON declares the key alone.
-      key=$(operator_tilo login --new-identity) || die 'the tilo command made no operator identity (tilo login --new-identity)'
+      key=$(operator_tilo login --new-identity --name "$name") || die 'the tilo command made no operator identity (tilo login --new-identity)'
     fi
   fi
   [[ $key =~ ^[0-9a-f]{64}$ ]] || die 'owner KEY: the person'"'"'s user public key, 64 hex characters (a tab that opened the site names it in its localStorage key tilo-own-workspace-named:ORIGIN:KEY)'
