@@ -1504,3 +1504,36 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A file's version names the person whose device signed it and the device
+/// whose session vouched for the writer: both resolve as presence shows them,
+/// this page's own person too.
+#[test]
+fn a_persons_devices_and_name_resolve_as_presence_shows_them() {
+    let mut here = HereState::default();
+    let own = LiveMember {
+        user: Some("aa".into()),
+        ..member("me", "person", "Pat")
+    };
+    here.set_members(
+        Some(own),
+        Some(vec![LiveMember {
+            device: "ada-phone".into(),
+            user: Some("bb".into()),
+            ..member("ada-phone", "person", "Ada")
+        }]),
+    );
+    let mut authors = ui::AuthorDirectory::new();
+    register_presence(&mut authors, &here);
+    assert_eq!(authors.resolve(&hex::encode("bb")).name, "Ada");
+    assert_eq!(authors.device_name("ada-phone"), Some("Ada"));
+    assert_eq!(authors.device_name("me"), Some("Pat"));
+    assert_eq!(authors.resolve(&hex::encode("aa")).name, "Pat");
+    assert_eq!(
+        authors
+            .resolve(&automerge::ActorId::random().to_hex_string())
+            .name,
+        ui::history_source::UNKNOWN_AUTHOR_NAME,
+        "someone not here is nobody presence can name"
+    );
+}

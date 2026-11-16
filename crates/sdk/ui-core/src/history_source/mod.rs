@@ -54,9 +54,9 @@ pub(crate) use authors::workspace_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, ParticipantNames, RosterAgent, UNKNOWN_AUTHOR_NAME, WriterPlace,
     actor_handle, actor_name, agent_display_label, agent_principal_name, app_name, app_words,
-    author_coloured, author_for_identity, local_identity_author, name_words,
-    participant_display_label, participant_name, set_installed_apps, set_workspace_agents,
-    short_id, software_name, stable_hue,
+    author_coloured, author_for_identity, local_identity_author, name_words, note_mount_actor,
+    note_record_mount, participant_display_label, participant_name, set_installed_apps,
+    set_workspace_agents, short_id, software_name, stable_hue,
 };
 /// What changed in a workspace's records, as a host's replica took it in.
 pub use collaboration::history_source::feed;

@@ -167,11 +167,11 @@ pub(super) fn writers(people: People, author: &str, here: tilo_desktop::here::He
     let mine = author.to_owned();
     Writers {
         noted: tilo_session::platform::authors::new_noted(move |actor| {
-            crate::page_authors::note_mount(Some(actor), &mine, None);
+            ui::history_source::note_record_mount(Some(actor), &mine, None);
         }),
         register: tilo_session::platform::authors::new_register(move |authors| {
-            crate::page_authors::register(authors, &[], &*people);
-            crate::page_authors::register_presence(authors, &here.borrow());
+            authors.register_noted_mounts(&[], &*people);
+            tilo_desktop::here::register_presence(authors, &here.borrow());
         }),
     }
 }

@@ -232,8 +232,6 @@ mod link;
 #[cfg(target_arch = "wasm32")]
 mod mount_service_custody;
 #[cfg(target_arch = "wasm32")]
-mod page_authors;
-#[cfg(target_arch = "wasm32")]
 mod qr_code;
 // The page's user root: the envelope it is kept in, and what it signs.
 #[cfg(target_arch = "wasm32")]

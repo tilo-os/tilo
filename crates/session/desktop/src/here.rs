@@ -1282,6 +1282,30 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
 
 pub use ui::presence::guest_label;
 
+/// Name every person here and every device of theirs in `authors`, as
+/// presence shows them: what a folder file's version resolves through — the
+/// person whose device signed it, and the computer whose session vouched for
+/// the writer.
+pub fn register_presence(authors: &mut ui::AuthorDirectory, here: &HereState) {
+    let mut named = here.faces();
+    if let Some(own) = here.own_id().map(str::to_owned) {
+        let label = here.own_label().unwrap_or_default().to_owned();
+        named.entry(own).or_insert((label, (0, 0, 0)));
+    }
+    for (publisher, (label, _)) in named {
+        if !label.trim().is_empty() {
+            authors.register_device(&publisher, label);
+        }
+        let Some(user) = here.user_of(&publisher).map(str::to_owned) else {
+            continue;
+        };
+        let Some((name, _)) = here.person(&user) else {
+            continue;
+        };
+        authors.register_person(&user, ui::history_source::author_for_identity(name, &user));
+    }
+}
+
 /// The window showing `focus` : the record's window, else the first window of its app.
 fn window_of(tree: &Layout, records: &[(TabId, String, String)], focus: &Focus) -> Option<TabId> {
     let shown: HashSet<TabId> = tree

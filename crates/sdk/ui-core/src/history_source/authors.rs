@@ -220,6 +220,41 @@ impl AuthorDirectory {
         );
     }
 
+    /// Name every actor this thread's mounts write as
+    /// ([`note_record_mount`]): a document its mounts share is written by
+    /// each under its own author's actor, and history alone names none of
+    /// them. An agent mount's actor, and one whose author is among `agents`
+    /// (the workspace's agent members), is shown as that agent; a person
+    /// `person` knows (by the principal they write as) is named and coloured
+    /// as presence shows them.
+    pub fn register_noted_mounts(
+        &mut self,
+        agents: &[String],
+        person: &dyn Fn(&str) -> Option<(String, (u8, u8, u8))>,
+    ) {
+        NOTED_ACTORS.with_borrow(|actors| {
+            for (actor, noted) in actors {
+                let agent = noted.agent || agents.contains(&noted.name);
+                let name = if agent {
+                    format!("{AGENT_NAMESPACE}{}", noted.name)
+                } else {
+                    noted.name.clone()
+                };
+                // The key a participant's own handle actor has, so an actor
+                // history resolves by its handle alone agrees too.
+                let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
+                let (shown, rgb) = (!agent)
+                    .then(|| person(&name))
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        let rgb = crate::presence::user_color(&name);
+                        (name, rgb)
+                    });
+                self.register(actor, author_coloured(shown, short_id(&identity), rgb));
+            }
+        });
+    }
+
     /// An empty directory that names every agent the session verified for
     /// the workspaces this thread's app is in ([`set_workspace_agents`]): what an app's
     /// own history reads with.
@@ -625,6 +660,56 @@ thread_local! {
     /// Moves whenever [`WORKSPACE_AGENTS`] is replaced, so a history view that
     /// named them knows to name them again.
     static WORKSPACE_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The actors this thread's mounts write records as, with who each is:
+    /// only the shell that mounted them knows which is whose.
+    static NOTED_ACTORS: std::cell::RefCell<
+        std::collections::BTreeMap<String, NotedAuthor>,
+    > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// One actor a mount of this thread writes as, and who it writes for.
+struct NotedAuthor {
+    /// The author's name, or an agent mount's display name.
+    name: String,
+    /// Software, not a person.
+    agent: bool,
+}
+
+/// Actors one thread remembers: a shell mounts a handful.
+const MAX_NOTED_ACTORS: usize = 256;
+
+/// Note that `actor` writes for `author`, or for the agent `agent` names (an
+/// agent mount's display name). An actor stays with the first mount that
+/// noted it: a record's own writer is shared by every mount of it.
+pub fn note_mount_actor(actor: &automerge::ActorId, author: &str, agent: Option<&str>) {
+    let author = match agent {
+        Some(name) => NotedAuthor {
+            name: name.to_owned(),
+            agent: true,
+        },
+        None => NotedAuthor {
+            name: author.to_owned(),
+            agent: false,
+        },
+    };
+    let actor = actor.to_hex_string();
+    NOTED_ACTORS.with_borrow_mut(|actors| {
+        if actors.len() < MAX_NOTED_ACTORS {
+            actors.entry(actor).or_insert(author);
+        }
+    });
+}
+
+/// Note the actors a mount of `author` writes a record as, whose own writer
+/// is `writer`: its author's handle for actions, its author's writer on the
+/// record for edits, and the record's writer for what the record wrote before
+/// (its creation, when this mount made it).
+pub fn note_record_mount(writer: Option<&automerge::ActorId>, author: &str, agent: Option<&str>) {
+    note_mount_actor(&automerge::ActorId::from(author.as_bytes()), author, agent);
+    if let Some(writer) = writer {
+        note_mount_actor(&crate::record::author_writer(writer, author), author, agent);
+        note_mount_actor(writer, author, agent);
+    }
 }
 
 /// Which replacement of this thread's workspace agents
@@ -784,6 +869,106 @@ pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAu
         short_id(identity),
         crate::presence::user_color(identity),
     )
+}
+
+#[cfg(test)]
+mod noted_mount_tests {
+    use super::*;
+
+    #[test]
+    fn noted_writers_resolve_to_their_mounts_authors_and_agents_as_agents() {
+        let phone = automerge::ActorId::random();
+        let reader = automerge::ActorId::random();
+        let agent = automerge::ActorId::random();
+        let stranger = automerge::ActorId::random();
+        note_record_mount(Some(&phone), "You", None);
+        note_mount_actor(&reader, "Reading agent", None);
+        note_record_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
+        let mut directory = AuthorDirectory::new();
+        directory.register_noted_mounts(&["Reading agent".into()], &|_| None);
+        let name = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
+        assert_eq!(name(&phone), "You");
+        assert_eq!(
+            name(&reader),
+            "Reading agent · Agent",
+            "an author the workspace admits as an agent is shown as one"
+        );
+        assert_eq!(
+            name(&agent),
+            "Scribe · Agent",
+            "an agent mount's display name"
+        );
+        assert_eq!(
+            name(&automerge::ActorId::from("agent-task:reading".as_bytes())),
+            "Scribe · Agent",
+            "and its actions"
+        );
+        assert_eq!(name(&stranger), UNKNOWN_AUTHOR_NAME, "nobody noted it");
+
+        note_mount_actor(&phone, "Reading agent", None);
+        let mut shared = AuthorDirectory::new();
+        shared.register_noted_mounts(&[], &|_| None);
+        assert_eq!(
+            shared.resolve(&phone.to_hex_string()).name,
+            "You",
+            "a writer another mount shares stays its first mount's"
+        );
+        assert_eq!(
+            shared.resolve(&reader.to_hex_string()).name,
+            "Reading agent",
+            "a person unless the workspace names an agent"
+        );
+    }
+
+    /// A mount writes as its person's principal (a key, in a workspace): their
+    /// edits read by the name and colour presence shows them, not the key.
+    #[test]
+    fn a_person_presence_knows_reads_by_their_name_and_colour() {
+        let record = automerge::ActorId::random();
+        let key = "c0ffee00c0ffee00c0ffee00c0ffee00";
+        let pink = (0xee, 0x83, 0xaf);
+        note_record_mount(Some(&record), key, None);
+        let mut directory = AuthorDirectory::new();
+        directory.register_noted_mounts(&[], &|user| {
+            (user == key).then(|| ("Eager Dolphin".to_owned(), pink))
+        });
+        let author = directory.resolve(&crate::record::author_writer(&record, key).to_hex_string());
+        assert_eq!(author.name, "Eager Dolphin");
+        assert_eq!(author.rgb(), pink);
+    }
+
+    #[test]
+    fn every_mount_names_its_own_writer_on_a_shared_record_and_one_identity_per_author() {
+        let record = automerge::ActorId::random();
+        note_record_mount(Some(&record), "Ada", None);
+        note_record_mount(Some(&record), "Scout", None);
+        note_record_mount(Some(&record), "agent-task:scout", Some("Scout"));
+        let mut directory = AuthorDirectory::new();
+        directory.register_noted_mounts(&["Scout".into()], &|_| None);
+        let resolve = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string());
+        let ada = resolve(&crate::record::author_writer(&record, "Ada"));
+        assert_eq!(ada.name, "Ada");
+        assert_eq!(
+            resolve(&crate::record::author_writer(&record, "Scout")).name,
+            "Scout · Agent",
+            "a second mount's edits are its own, not the first mount's"
+        );
+        assert_eq!(
+            resolve(&record).name,
+            "Ada",
+            "the record's writer stays the first"
+        );
+        let handle = resolve(&automerge::ActorId::from("Ada".as_bytes()));
+        assert_eq!(
+            (handle.identity_short.as_str(), handle.avatar_hue),
+            (ada.identity_short.as_str(), ada.avatar_hue),
+            "one participant, one identity, whichever actor wrote"
+        );
+        let agent_task = resolve(&crate::record::author_writer(&record, "agent-task:scout"));
+        let scout = resolve(&crate::record::author_writer(&record, "Scout"));
+        assert_eq!(agent_task.name, scout.name);
+        assert_eq!(agent_task.identity_short, scout.identity_short);
+    }
 }
 
 #[cfg(test)]
