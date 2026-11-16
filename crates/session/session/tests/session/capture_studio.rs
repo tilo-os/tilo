@@ -175,12 +175,12 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
     key(&mut session, super::keys::LEFT_SHIFT, true);
     tap(&mut session, print);
     key(&mut session, super::keys::LEFT_SHIFT, false);
-    pump(&mut session, &mut [], |_, _| {
+    until(&mut session, "the screenshot is kept", |_| {
         !kept(pictures.path(), "png").is_empty()
     });
     // The shot answers at once: its card stands on the floating layer with the picture it caught,
     // without the studio's bar coming up.
-    pump(&mut session, &mut [], |session, _| {
+    until(&mut session, "the shot's card shows", |session| {
         session
             .compositor()
             .screenshot("HEADLESS-1")
@@ -222,10 +222,10 @@ fn a_shot_answers_after_the_studio_was_up_and_put_away() {
     key(&mut session, super::keys::LEFT_SHIFT, true);
     tap(&mut session, print);
     key(&mut session, super::keys::LEFT_SHIFT, false);
-    pump(&mut session, &mut [], |_, _| {
+    until(&mut session, "the screenshot is kept", |_| {
         !kept(pictures.path(), "png").is_empty()
     });
-    pump(&mut session, &mut [], |session, _| {
+    until(&mut session, "the shot's card shows", |session| {
         session
             .compositor()
             .screenshot("HEADLESS-1")
@@ -369,7 +369,7 @@ fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     let shell = quiet_shell(&mut session, "HEADLESS-1");
 
     ask_studio(&mut session, "open", &serde_json::json!({}));
-    pump(&mut session, &mut [], |session, _| {
+    until(&mut session, "the bar shows", |session| {
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
         frame.rgba != shell
     });
@@ -429,31 +429,80 @@ fn answered(
             started.elapsed() < tilo_test_env::hang_bound(),
             "the screenshot was never answered"
         );
-        session.step(Duration::from_millis(5)).expect("step");
+        frame(session, Duration::from_millis(5));
     }
     asking.join().unwrap()
 }
 
-/// Frames of the shell's own clock to run past before the shell is read: chrome
-/// the shell shows on activity (its overlay scroll bars) stays fully up for
-/// 0.9 s and fades over another 0.32 s, and `bar_down` runs the clock on past
-/// it, so the shell the bar is compared against has to be the one with that
-/// chrome gone.
+thread_local! {
+    /// Where the frames of one test stand: the toolkit's monotonic clock, from its first frame on.
+    ///
+    /// A test that runs a few seconds ahead of the real clock (past the chrome the shell fades by
+    /// itself) and then steps at the real clock again leaves what it woke timed after the frames
+    /// that follow it, and a loaded machine lands such a wake in a different frame than a quiet one
+    /// does: the shell then shows chrome the frame it is compared against does not have, and the
+    /// studio looks like it stayed behind. One clock for the whole test, moving only forward, has no
+    /// frame ahead of another.
+    static FRAMES: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// How far past the real clock a test's first frame stands: past everything the test did at that
+/// clock before it, however long a loaded machine took over it.
+const AHEAD: Duration = Duration::from_secs(60);
+
+/// Step `session` one frame, `advance` after the frame before it, at the test's own clock.
+#[track_caller]
+fn frame(session: &mut Session, advance: Duration) {
+    let at = FRAMES.with(|frames| {
+        let at = frames.get().unwrap_or_else(|| tilo_clock::now() + AHEAD) + advance;
+        frames.set(Some(at));
+        at
+    });
+    tilo_clock::testing::with_monotonic_time(at, || {
+        session.step(Duration::from_millis(2)).expect("step");
+    });
+}
+
+/// Step `session` a frame at a time until `done` holds: what the session waits for is often a frame
+/// of its own app, so counting frames would not do.
+#[track_caller]
+fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
+    let deadline = tilo_test_env::hang_deadline();
+    while !done(session) {
+        assert!(std::time::Instant::now() < deadline, "never came: {what}");
+        frame(session, Duration::from_millis(1));
+    }
+}
+
+/// Press or release `keycode` on the session's keyboard, as the person does, a frame of the test's
+/// clock for it.
+fn key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .expect("the key");
+    frame(session, Duration::from_millis(1));
+}
+
+/// Press and release `keycode`, as the person does.
+fn tap(session: &mut Session, keycode: u32) {
+    key(session, keycode, true);
+    key(session, keycode, false);
+}
+
+/// Frames to run past the chrome the shell shows on activity: its overlay scroll bars stay fully up
+/// for 0.9 s and fade over another 0.32 s, so the shell the bar is compared against is read past
+/// that fade.
 const QUIET_FRAMES: usize = 30;
 
 /// The shell on `display` with nothing of the studio on it and nothing of its own moving: the frame
 /// the bar arriving changes, and the one it must come back to.
 #[track_caller]
 fn quiet_shell(session: &mut Session, display: &str) -> Vec<u8> {
-    // Chrome the shell fades by itself fades on the clock, and the clock here is the test's: run it
-    // past that fade rather than catching the shell mid-activity, which a loaded machine would have
-    // timed differently.
-    let mut at = tilo_clock::now();
+    // The test's frames start past the real clock, and run on past that fade here: the shell read is
+    // the one with its own chrome gone, whatever a loaded machine timed the activity before it at.
     for _ in 0..QUIET_FRAMES {
-        at += Duration::from_millis(100);
-        tilo_clock::testing::with_monotonic_time(at, || {
-            session.step(Duration::from_millis(2)).expect("step");
-        });
+        frame(session, Duration::from_millis(100));
     }
     session
         .compositor()
@@ -465,7 +514,7 @@ fn quiet_shell(session: &mut Session, display: &str) -> Vec<u8> {
 /// Step `session` until the studio's bar shows on `display` : the frame there is no longer `shell` .
 #[track_caller]
 fn bar_up(session: &mut Session, display: &str, shell: &[u8]) {
-    pump(session, &mut [], |session, _| {
+    until(session, "the bar shows", |session| {
         session
             .compositor()
             .screenshot(display)
@@ -479,26 +528,35 @@ fn bar_up(session: &mut Session, display: &str, shell: &[u8]) {
 #[track_caller]
 fn bar_down(session: &mut Session, display: &str, shell: &[u8]) {
     // What the studio says of the send stays up long enough to be read, and that time is the
-    // clock's: every frame here is read a little later than the one before, so the wait is the same
-    // number of frames on a quiet machine and on a loaded one.
+    // clock's: every frame here is read a little later than the one before, on the test's own clock
+    // (see [`FRAMES`]), so the wait is the same number of frames on a quiet machine and on a loaded
+    // one.
     let deadline = tilo_test_env::hang_deadline();
-    let mut at = tilo_clock::now();
     loop {
-        at += Duration::from_millis(100);
-        tilo_clock::testing::with_monotonic_time(at, || {
-            session.step(Duration::from_millis(2)).expect("step");
-        });
-        let frame = session
+        frame(session, Duration::from_millis(100));
+        let shot = session
             .compositor()
             .screenshot(display)
             .expect("a picture of the display");
-        if frame.rgba == shell {
+        if shot.rgba == shell {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the studio stayed on {display}"
-        );
+        if std::time::Instant::now() >= deadline {
+            let width = usize::try_from(shot.width).unwrap();
+            let differing: Vec<(usize, usize)> = shot
+                .rgba
+                .chunks_exact(4)
+                .zip(shell.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (now, was))| now != was)
+                .map(|(at, _)| (at % width, at / width))
+                .collect();
+            panic!(
+                "the studio stayed on {display}: {} pixels differ, at {:?}",
+                differing.len(),
+                &differing[..differing.len().min(8)]
+            );
+        }
     }
 }
 
@@ -520,7 +578,7 @@ fn draw(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
         },
     ] {
         session.compositor().input(event).unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
+        frame(session, Duration::from_millis(1));
     }
 }
 
