@@ -425,8 +425,12 @@ mod inotify_watch {
         }
 
         /// Every directory below `top`, not `top` itself, without following links; a directory that
-        /// goes away meanwhile is skipped.
-        fn add_below(&mut self, top: &Path) -> std::io::Result<()> {
+        /// goes away meanwhile is skipped. Each entry found is added to `found` where it is given.
+        fn add_below(
+            &mut self,
+            top: &Path,
+            mut found: Option<&mut Vec<Event>>,
+        ) -> std::io::Result<()> {
             let mut failed = None;
             let mut pending = vec![top.to_path_buf()];
             while let Some(directory) = pending.pop() {
@@ -439,10 +443,15 @@ mod inotify_watch {
                     }
                 };
                 for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(found) = found.as_deref_mut()
+                        && !is_temporary(&path)
+                    {
+                        found.push(event_now(path.clone(), true));
+                    }
                     if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                         continue;
                     }
-                    let path = entry.path();
                     if (self.skip)(&path) {
                         continue;
                     }
@@ -461,14 +470,16 @@ mod inotify_watch {
             failed.map_or(Ok(()), Err)
         }
 
-        fn add(&mut self, directory: PathBuf) {
+        /// Watch a directory that came into the tree, and report what was written into it before
+        /// the watch was in place: a writer does not wait for the watch to take a new directory in.
+        fn add(&mut self, directory: PathBuf, batch: &mut Vec<Event>) {
             if (self.skip)(&directory) {
                 return;
             }
             // A directory the watch cannot reach is not reported later; the change that brought it is
             // reported now, and a reader re-reads what it can.
             if let Ok(descriptor) = self.watch(&directory) {
-                let _ = self.add_below(&directory);
+                let _ = self.add_below(&directory, Some(batch));
                 self.directories.insert(descriptor, directory);
             }
         }
@@ -531,24 +542,21 @@ mod inotify_watch {
                 return Step::Next;
             };
             let path = parent.join(name);
-            if self.depth == Depth::Tree && event.mask.contains(EventMask::ISDIR) {
-                if event.mask.contains(EventMask::MOVED_FROM) {
-                    self.tree.forget(&path);
-                } else if event
-                    .mask
-                    .intersects(EventMask::CREATE | EventMask::MOVED_TO)
-                {
-                    // Watched before the change is reported, so an entry written into it after the
-                    // reader looks is reported too.
-                    self.tree.add(path.clone());
-                }
+            let created = event
+                .mask
+                .intersects(EventMask::CREATE | EventMask::MOVED_TO);
+            let tree = self.depth == Depth::Tree && event.mask.contains(EventMask::ISDIR);
+            if tree && event.mask.contains(EventMask::MOVED_FROM) {
+                self.tree.forget(&path);
             }
             // An entry's attributes are not a change of it; a watched directory reports its own.
             if !event.mask.contains(EventMask::ATTRIB) && !is_temporary(&path) {
-                let created = event
-                    .mask
-                    .intersects(EventMask::CREATE | EventMask::MOVED_TO);
-                batch.push(event_now(path, created));
+                batch.push(event_now(path.clone(), created));
+            }
+            if tree && created {
+                // Watched, then read: an entry written into it before the watch was in place is
+                // reported with it, and one written after is reported as it lands.
+                self.tree.add(path, batch);
             }
             Step::Next
         }
@@ -556,7 +564,7 @@ mod inotify_watch {
         fn rescan(&mut self, batch: &mut Vec<Event>) {
             if self.depth == Depth::Tree {
                 // A directory created meanwhile may be unwatched.
-                let _ = self.tree.add_below(&self.root);
+                let _ = self.tree.add_below(&self.root, None);
             }
             batch.push(Event {
                 path: self.root.clone(),
@@ -601,7 +609,7 @@ mod inotify_watch {
             };
             let depth = if root.is_dir() { depth } else { Depth::Entries };
             if depth == Depth::Tree {
-                tree.add_below(&root).map_err(unsubscribe)?;
+                tree.add_below(&root, None).map_err(unsubscribe)?;
             }
             let mut reader = Reader {
                 tree,
@@ -992,14 +1000,41 @@ mod tests {
             let later = dir.path().join("later").join("deeper");
             std::fs::create_dir_all(&later).expect("new nested directory");
             assert!(reaches(&count, 2), "a new subdirectory is a change");
-            // Let the watch take the new directories in before writing into them.
-            std::thread::sleep(QUIET);
             let seen = count.load(Ordering::SeqCst);
             std::fs::write(later.join("manifest"), b"one").expect("write in new directory");
             assert!(
                 reaches(&count, seen + 1),
                 "a write in a directory created after the watch started is a change"
             );
+        }
+
+        phase a_tree_watch_reports_what_a_new_directory_held_before_it_was_watched;
+        {
+            // The watch's thread is held, as a busy machine holds it, while directories are made
+            // and written into: what landed before the watch took them in is reported with them.
+            let dir = tempfile::tempdir().expect("temporary directory");
+            let gate = dir.path().join("gate");
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&seen);
+            let held_at = gate.clone();
+            let _watch = Watcher::tree(dir.path())
+                .start(move |events: &[Event]| {
+                    record.lock().expect("events").extend_from_slice(events);
+                    if events.iter().any(|event| event.path == held_at) {
+                        let _ = held.recv();
+                    }
+                })
+                .expect("watch");
+            std::fs::write(&gate, b"").expect("gate");
+            until_seen(&seen, "the gate", |event| event.path == gate);
+            let file = dir.path().join("app").join("workspaces").join("index");
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("new directories");
+            std::fs::write(&file, b"one").expect("write in new directory");
+            release.send(()).expect("the watch is held");
+            until_seen(&seen, "the file written before its directory was watched", |event| {
+                event.path == file && event.kind == ChangeKind::Created
+            });
         }
 
         phase a_tree_watch_follows_a_directory_moved_within_it;
@@ -1011,7 +1046,6 @@ mod tests {
             let after = dir.path().join("after");
             std::fs::rename(&before, &after).expect("move");
             until_seen(&seen, "the moved directory", |event| event.path == after);
-            std::thread::sleep(QUIET);
             let file = after.join("inner").join("file");
             std::fs::write(&file, b"").expect("write");
             until_seen(&seen, "the entry by its new path", |event| {
@@ -1030,7 +1064,6 @@ mod tests {
             std::fs::write(skipped.join("debug").join("out"), b"").expect("write in skipped");
             let file = dir.path().join("src").join("main.rs");
             std::fs::create_dir(dir.path().join("src")).expect("directory");
-            std::thread::sleep(QUIET);
             std::fs::write(&file, b"one").expect("create");
             until_seen(&seen, "the created file", |event| {
                 event.path == file && event.kind == ChangeKind::Created
