@@ -582,6 +582,36 @@ impl HtmlCx<'_> {
         self.composed.children.last_mut()
     }
 
+    /// Every control `access` names with where it stands, as a button keyed `key` under the
+    /// widget's path: what a widget that paints its controls tells a reader of is what a page
+    /// shows as buttons, while the paint keeps the look.
+    pub fn controls(&mut self, key: &str, access: &crate::a11y::AccessNode) {
+        fn walk(
+            cx: &mut HtmlCx<'_>,
+            node: &crate::a11y::AccessNode,
+            key: &str,
+            index: &mut usize,
+        ) {
+            for child in &node.children {
+                if let Some(bounds) = child.bounds
+                    && (child.state.focusable || child.action_target.is_some())
+                {
+                    let rect = bounds.to_rect();
+                    if !rect.is_zero_area() {
+                        *index = index.saturating_add(1);
+                        let part = cx.part(&format!("{key}:{index}"), "ComposedControl", rect);
+                        part.tag = Some("button");
+                        part.focusable = true;
+                        part.semantics = Some(child.clone());
+                    }
+                }
+                walk(cx, child, key, index);
+            }
+        }
+        let mut index = 0;
+        walk(self, access, key, &mut index);
+    }
+
     /// The widget is a control showing `face`.
     pub fn face(&mut self, face: Face) {
         self.composed.own = Some(Own::Face(face));

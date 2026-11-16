@@ -420,40 +420,6 @@ impl ui::host_operation::ResourceOperations for BackgroundLayer {
     }
 }
 
-/// Every control a painted overlay tells a reader of, as a button in `cx` where it stands (`key`
-/// names them under the overlay's path): the paint keeps the look, and the element is what a
-/// reader finds, what the keyboard reaches and what the pointer presses.
-pub(crate) fn compose_targets(
-    cx: &mut ui::composition::HtmlCx<'_>,
-    root: &ui::a11y::AccessNode,
-    key: &str,
-) {
-    fn walk(
-        cx: &mut ui::composition::HtmlCx<'_>,
-        node: &ui::a11y::AccessNode,
-        key: &str,
-        index: &mut usize,
-    ) {
-        for child in &node.children {
-            if let Some(bounds) = child.bounds
-                && (child.state.focusable || child.action_target.is_some())
-            {
-                let rect = bounds.to_rect();
-                if !rect.is_zero_area() {
-                    *index = index.saturating_add(1);
-                    let part = cx.part(&format!("{key}:{index}"), "ComposedTarget", rect);
-                    part.tag = Some("button");
-                    part.focusable = true;
-                    part.semantics = Some(child.clone());
-                }
-            }
-            walk(cx, child, key, index);
-        }
-    }
-    let mut index = 0;
-    walk(cx, root, key, &mut index);
-}
-
 impl Widget for BackgroundLayer {
     ui::provides!(
         dyn ui::resources::PublishesResources,

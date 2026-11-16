@@ -105,6 +105,12 @@ impl LayerWidget {
 }
 
 impl Widget for LayerWidget {
+    /// The role's own tree, where the session stood this layer over the page.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     /// A role that changed what it shows, though no input reached it, is laid out again.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
         self.asked.replace(false)

@@ -300,6 +300,12 @@ impl<S> DerefMut for OverPage<S> {
 }
 
 impl<S: OverSheet + 'static> Widget for OverPage<S> {
+    /// The sheet it holds, over the whole page.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         self.follow()
     }

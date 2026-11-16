@@ -1140,13 +1140,13 @@ impl Widget for NotificationLayer {
             card.own = Some(ui::composition::Own::Text(look));
         }
         if let Some(access) = self.stack.accessibility() {
-            compose_targets(cx, &access, "banner-control");
+            cx.controls("banner-control", &access);
         }
         if let (Some(center), Some(layout)) = (self.centre(), self.layout()) {
             let panel = cx.part("centre", "NotificationCentre", layout.panel());
             panel.painted(self.notifications.revision());
             let access = center.accessibility(self.notifications.host(), &layout, ui::time::now());
-            compose_targets(cx, &access, "centre-control");
+            cx.controls("centre-control", &access);
         }
     }
 
@@ -1336,35 +1336,6 @@ impl Widget for NotificationLayer {
         self.dirty |= focused;
         focused
     }
-}
-
-/// Every control the painted overlay tells a reader of as a button where it stands, in `cx`: its
-/// paint keeps the look, and the element is what a reader finds and the pointer presses.
-fn compose_targets(cx: &mut ui::composition::HtmlCx<'_>, root: &AccessNode, key: &str) {
-    fn walk(
-        cx: &mut ui::composition::HtmlCx<'_>,
-        node: &AccessNode,
-        key: &str,
-        index: &mut usize,
-    ) {
-        for child in &node.children {
-            if let Some(bounds) = child.bounds
-                && (child.state.focusable || child.action_target.is_some())
-            {
-                let rect = bounds.to_rect();
-                if !rect.is_zero_area() {
-                    *index = index.saturating_add(1);
-                    let part = cx.part(&format!("{key}:{index}"), "NotificationControl", rect);
-                    part.tag = Some("button");
-                    part.focusable = true;
-                    part.semantics = Some(child.clone());
-                }
-            }
-            walk(cx, child, key, index);
-        }
-    }
-    let mut index = 0;
-    walk(cx, root, key, &mut index);
 }
 
 /// A leaf over the whole surface, out of the strip's flow.

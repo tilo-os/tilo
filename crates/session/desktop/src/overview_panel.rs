@@ -611,7 +611,7 @@ impl Widget for OverviewPanel {
         }
         cx.picture();
         if let Some(access) = self.accessibility() {
-            crate::desktop_host::compose_targets(cx, &access, "overview");
+            cx.controls("overview", &access);
         }
     }
 

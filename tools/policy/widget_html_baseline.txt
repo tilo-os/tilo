@@ -1,14 +1,5 @@
 # Widgets that still render as HTML through the toolkit's default
 # (tools/policy/check_widget_html.py). Counts only shrink.
-widget-without-html 1 crates/browser/tilo-browser-runtime/src/layers.rs
-widget-without-html 1 crates/browser/tilo-browser-runtime/src/over_page.rs
-widget-without-html 1 crates/browser/tilo-browser-runtime/src/shell.rs
-widget-without-html 1 crates/platform/zone-globe/src/lib.rs
-widget-without-html 1 crates/sdk/provider-settings-ui/src/app.rs
-widget-without-html 1 crates/sdk/tilo-app/src/framework/each.rs
-widget-without-html 1 crates/sdk/tilo-app/src/framework/endpoint.rs
-widget-without-html 1 crates/sdk/tilo-app/src/framework/hosted_actions.rs
-widget-without-html 1 crates/sdk/tilo-app/src/framework/switch.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/activity_timeline.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/arrival_failure.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/arriving_rows.rs
@@ -113,13 +104,3 @@ widget-without-html 1 crates/sdk/ui-core/src/widget/tooltip.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/undo_button.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/video_player.rs
 widget-without-html 1 crates/sdk/ui-core/src/widget/video_player_component.rs
-widget-without-html 1 crates/session/activities/src/surface.rs
-widget-without-html 1 crates/session/capture-studio/src/surface.rs
-widget-without-html 2 crates/session/greeter/src/greeter_app.rs
-widget-without-html 1 crates/session/greeter/src/greeter_app/touch_keyboard.rs
-widget-without-html 1 crates/session/notification-banners/src/surface.rs
-widget-without-html 1 crates/session/onboarding-host/src/view.rs
-widget-without-html 1 crates/session/onboarding/src/ceremony.rs
-widget-without-html 1 crates/session/session/src/people.rs
-widget-without-html 1 crates/session/sheets/src/power.rs
-widget-without-html 1 crates/session/window-menu/src/surface.rs

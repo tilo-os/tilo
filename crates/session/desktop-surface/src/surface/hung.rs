@@ -600,8 +600,10 @@ impl DesktopSurface {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::collect;
     use super::*;
     use crate::DesktopHandle;
+    use ui::composition::Own;
     use tilo_desktop_model::{IdMinter, Tab};
     use ui::widget::TileHost;
 
@@ -742,5 +744,38 @@ mod tests {
             handle.take_liveness_choices(),
             vec![(tab, LivenessChoice::ForceQuit)]
         );
+    }
+
+    /// The card of a window that stopped answering composes as its words and its two real buttons.
+    #[test]
+    fn the_hung_card_composes_as_words_and_buttons() {
+        let (mut frame, handle, _tab) = shell(91);
+        assert!(handle.set_unresponsive_windows(vec![91]));
+        frame.request_layout();
+        frame.poll_frame().expect("a frame draws the card");
+        let composition = frame.composition();
+        let cards = collect(&composition.root, "HungAppCard");
+        let card = cards.first().unwrap_or_else(|| panic!("a card: {composition:#?}"));
+        assert_eq!(card.tag, Some("section"));
+        let Some(Own::Text(look)) = &card.own else {
+            panic!("the card is words: {card:#?}");
+        };
+        assert!(look.text.contains(&t("hung-app-title")));
+        assert!(look.text.contains("Notes"), "whose window it is: {look:?}");
+        let buttons = collect(&composition.root, "HungAppChoice");
+        assert_eq!(buttons.len(), 2, "Wait and Force quit: {buttons:#?}");
+        for (button, label) in buttons
+            .iter()
+            .zip([t("hung-app-wait"), t("hung-app-force-quit")])
+        {
+            assert_eq!(button.tag, Some("button"));
+            let Some(Own::Face(face)) = &button.own else {
+                panic!("a button face: {button:#?}");
+            };
+            assert_eq!(
+                face.label.as_ref().map(|label| label.text.as_str()),
+                Some(label.as_str())
+            );
+        }
     }
 }

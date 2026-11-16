@@ -1875,6 +1875,13 @@ impl BrowserShell {
 }
 
 impl Widget for BrowserShell {
+    /// The shell's column: the desktop, the bar over it, the profile card, the session's layers and
+    /// the sheets, each where it lays them out.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.chrome.intents.borrow_mut());
         let mut changed = !intents.is_empty();

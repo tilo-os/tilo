@@ -1170,7 +1170,7 @@ impl Widget for WidgetLayer {
         }
         cx.picture();
         if let Some(access) = self.accessibility() {
-            crate::desktop_host::compose_targets(cx, &access, "widget");
+            cx.controls("widget", &access);
         }
     }
 

@@ -9,6 +9,28 @@ use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
 use ui::winit::dpi::PhysicalPosition;
 use ui::winit::event::MouseScrollDelta;
 
+/// Every composed node named `widget`, wherever it stands in `root`.
+pub(super) fn collect<'a>(
+    root: &'a ui::composition::Composed,
+    widget: &str,
+) -> Vec<&'a ui::composition::Composed> {
+    fn walk<'a>(
+        node: &'a ui::composition::Composed,
+        widget: &str,
+        found: &mut Vec<&'a ui::composition::Composed>,
+    ) {
+        if node.widget == widget {
+            found.push(node);
+        }
+        for child in &node.children {
+            walk(child, widget, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, widget, &mut found);
+    found
+}
+
 struct Notices;
 
 impl TileSource for Notices {
@@ -2836,4 +2858,32 @@ fn a_tab_dragged_onto_the_other_display_opens_its_window_there() {
         Some(1),
         "its window stands on the right display"
     );
+}
+
+/// The desk is a real `<main>` of strips: each strip a widget row of its own, never one picture of
+/// the desktop.
+#[test]
+fn the_desktop_composes_as_its_strips() {
+    let (surface, _handle) = desktop(2);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 900),
+        Theme::dark(),
+    );
+    frame.relayout();
+    frame.poll_frame().expect("a frame draws the desk");
+    let composition = frame.composition();
+    let desks = collect(&composition.root, "DesktopSurface");
+    let desk = desks.first().unwrap_or_else(|| panic!("the desk: {composition:#?}"));
+    assert_eq!(desk.tag, Some("main"));
+    assert!(desk.own.is_none(), "the desk is not a picture of itself");
+    assert!(!desk.children.is_empty(), "the strips stand in it");
+    assert!(
+        !collect(&composition.root, "GroupRow").is_empty(),
+        "a row per display, composed as what it holds"
+    );
+    let hints = collect(&composition.root, "ArrivalHints");
+    assert_eq!(hints.len(), 1, "the arrival hints stand over the strips");
+    assert_eq!(hints[0].tag, Some("aside"));
 }

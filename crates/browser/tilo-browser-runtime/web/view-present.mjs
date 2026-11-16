@@ -564,6 +564,17 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
 .tilo-view ul{margin:0;padding:0;list-style:none;}
+/* What the shell paints as cards, rows and keys, as elements: the lift and the edge
+   come from the theme's own variables, the words from each part's own look. */
+.tilo-view [data-widget=NotificationBanner]{box-sizing:border-box;padding:12px 14px;background:var(--tilo-raised,rgba(127,127,127,.08));color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
+.tilo-view [data-widget=HungAppCard]{box-sizing:border-box;padding:16px;background:var(--tilo-overlay,#f5f5f7);color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 16px 40px rgba(0,0,0,.24),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view [data-widget=ArrivalHint]{display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:0 16px;border-radius:9999px;background:var(--tilo-overlay,#f5f5f7);color:var(--tilo-text,#1d1d1f);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
+.tilo-view [data-widget=LaunchpadCard]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);transition:background .12s ease;}
+.tilo-view [data-widget=LaunchpadCard]:hover{background:color-mix(in srgb,var(--tilo-raised,rgba(127,127,127,.08)) 80%,var(--tilo-text,#1d1d1f) 6%);}
+.tilo-view [data-widget=PowerMenuRow]{box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view [data-widget=PowerMenuRow]:hover{background:color-mix(in srgb,var(--tilo-overlay,#f5f5f7) 80%,var(--tilo-text,#1d1d1f) 6%);}
+.tilo-view [data-widget=PowerMenuTitle]{box-sizing:border-box;padding:0 12px;display:flex;align-items:center;}
+.tilo-view [data-widget=PasscodeKey]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));display:flex;align-items:center;justify-content:center;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
 .tilo-view li:has(>.tilo-words){display:flex;align-items:center;padding:0 12px;border-radius:var(--tilo-radius,8px);}
 .tilo-view li[aria-selected=true]{background:var(--tilo-raised);}

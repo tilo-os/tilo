@@ -754,6 +754,12 @@ impl TimeZoneGlobe {
 impl Widget for TimeZoneGlobe {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
+    /// The globe is drawn: a page shows it as a picture of it.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.picture();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

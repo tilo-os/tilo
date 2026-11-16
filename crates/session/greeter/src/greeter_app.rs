@@ -224,6 +224,12 @@ impl Stack {
 }
 
 impl Widget for Stack {
+    /// The children it stacks, where its direction, gap and padding stand them.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2251,6 +2257,12 @@ impl Widget for GreeterApp {
         dyn ui::resources::PublishesResources,
         dyn ui::host_operation::ResourceOperations
     );
+
+    /// The page it composed for the output in use, and the clock of every other display.
+    fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
+        cx.element("div");
+        cx.children();
+    }
 
     /// Take what the controls reported since the last pass. The document is
     /// only lent on to the composed controls; the greeter itself neither
