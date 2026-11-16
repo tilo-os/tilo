@@ -1544,7 +1544,9 @@ try {
     // strip pans by the gesture and the windows stay as they were.
     centre = await centreOf(a.tab);
     await search(a.tab, a.command, 'notes', 'Notes');
-    await settle(a.tab, 2);
+    // The strip slides to Notes, or already did within the search's own
+    // frames: a strip already at rest draws nothing more, and that is no hang.
+    await drawn(a.tab, 2);
     // Where Notes' own window is once the strip is at rest: with a few windows
     // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
@@ -1587,7 +1589,7 @@ try {
     // whose sideways wheel the strip takes, as it should.
     // The search slides the strip to Sheets: the swipe waits until it is at rest.
     await search(a.tab, a.command, 'sheets', 'Sheets');
-    await settle(a.tab, 2);
+    await drawn(a.tab, 2);
     // Where B2 is, read once the strip is at rest: read while it still slides,
     // the fingers would land wherever B2 was, on another window by then.
     const keptPan = await restingPan(a.tab);
