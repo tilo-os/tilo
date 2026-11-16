@@ -5,7 +5,10 @@
 //! address, and the key of sealed content) reads the same in the branch. What
 //! the branch takes is what a pass over its records keeps
 //! ([`super::collection::named_by`]): every address any version of them names,
-//! and the chunks of the files those are.
+//! and the chunks of the files those are. The files the workspace's tree names
+//! now must all be here, each manifest and every chunk, or no branch is made: a
+//! file the host is still gathering would never reach the branch. What only an
+//! earlier version named is copied when it is here, and may be long collected.
 
 use std::sync::Arc;
 
@@ -23,6 +26,18 @@ impl crate::workspaces::BranchContent for StoresBranches {
     ) -> Result<(), String> {
         let from = self.0.get(source)?;
         let to = self.0.get(branch)?;
+        // The files the tree names now are the branch's: each must be here
+        // whole, or the branch is not made. A file the host is still gathering
+        // from the devices that wrote it would be a name in the branch whose
+        // bytes no member of it ever serves.
+        let gathering = not_whole_yet(&from, records);
+        if gathering > 0 {
+            tracing::debug!(%source, %branch, gathering, "a branch waits for files its source's host is still gathering");
+            return Err(format!(
+                "{gathering} pieces of the files its tree names are not on this host yet; \
+                 it is gathering them from the devices that wrote them"
+            ));
+        }
         let named = super::collection::named_by(records, &|address| from.read(address))?;
         let (count, mut copied, mut lacking) = (named.len(), 0_usize, 0_usize);
         for address in named {
@@ -61,13 +76,44 @@ impl crate::workspaces::BranchContent for StoresBranches {
     }
 }
 
-/// How many entries the Files tree among `records` holds: `None` when the
-/// branch took no tree, or it does not read.
-fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
+/// The Files tree among `records`, read; `None` when the branch took none, or
+/// it does not read.
+fn tree_of(records: &[((String, String), Vec<u8>)]) -> Option<fs_protocol::tree::Tree> {
     let tree = fs_protocol::tree::record_id();
     records
         .iter()
         .find(|((app, record), _)| app == fs_protocol::tree::FILES_APP && *record == tree)
         .and_then(|(_, document)| fs_protocol::tree::Tree::of_record(document).ok())
-        .map(|tree| tree.nodes.len())
+}
+
+/// How many pieces of the files the tree among `records` names now `store`
+/// lacks: each file's manifest, and every chunk of a manifest it keeps, as the
+/// host gathers them ([`crate::files_content`]). What only an earlier version of
+/// a record named is not counted: it may be long collected.
+fn not_whole_yet(
+    store: &tilo_content::ContentStore,
+    records: &[((String, String), Vec<u8>)],
+) -> usize {
+    let Some(tree) = tree_of(records) else {
+        return 0;
+    };
+    crate::files_content::files_named(&tree)
+        .iter()
+        .map(|manifest| match store.read(manifest) {
+            None => 1,
+            Some(listed) => fs::content::Manifest::decode(&listed).map_or(0, |manifest| {
+                manifest
+                    .chunks()
+                    .iter()
+                    .filter(|chunk| !store.has(&hex::encode(chunk.hash)))
+                    .count()
+            }),
+        })
+        .sum()
+}
+
+/// How many entries the Files tree among `records` holds: `None` when the
+/// branch took no tree, or it does not read.
+fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
+    tree_of(records).map(|tree| tree.nodes.len())
 }

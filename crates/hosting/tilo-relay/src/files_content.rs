@@ -403,6 +403,13 @@ fn referenced(tree: &Tree) -> Vec<String> {
         .collect()
 }
 
+/// The content of the files `tree` holds now, as this host keeps it for them
+/// ([`referenced`]): what a branch of the workspace must hold whole
+/// ([`crate::content::branch`]).
+pub(crate) fn files_named(tree: &Tree) -> Vec<String> {
+    referenced(tree)
+}
+
 /// A timer that keeps no backlog: a pass that ran late is not run twice.
 fn ticker(every: Duration) -> tokio::time::Interval {
     let mut ticker = tokio::time::interval(every);

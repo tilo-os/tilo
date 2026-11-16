@@ -224,3 +224,141 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
         "the branch keeps what it took"
     );
 }
+
+/// What a branch of `source` answers, asked by `key` under `name`.
+async fn branch_of(key: &Key<'_>, source: &str, name: &str) -> (u16, serde_json::Value) {
+    key.post(
+        &format!("/v1/workspaces/{source}/branches"),
+        &json!({"name": name}),
+        &[],
+    )
+    .await
+}
+
+/// The ids of the workspaces named `name` `key` lists.
+async fn listed_as(key: &Key<'_>, name: &str) -> Vec<String> {
+    let (status, listed) = key.get("/v1/workspaces").await;
+    assert_eq!(status, 200, "{listed}");
+    listed["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["name"] == name)
+        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_its_host_is_still_gathering_makes_no_branch_until_it_is_here() {
+    Box::pin(a_file_still_gathered_makes_no_branch_until_it_is_here()).await;
+}
+
+async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let workspaces = on_relay.hosted.relay.workspaces().unwrap().clone();
+    let (_, token) = person(&on_relay, "Ada").await;
+    let backend = Key { api: &api, token };
+    let (status, made) = backend
+        .post("/v1/workspaces", &json!({"name": "Scans"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let source = made["id"].as_str().unwrap().to_owned();
+    let scan = varied(700_000, 4);
+    put_file(&backend, &source, "scans", "passport.pdf", &scan).await;
+    keeps(&on_relay, &source, ("scans", "passport.pdf"), &scan).await;
+
+    // The tree names the file, but one of its chunks has not reached the host
+    // yet, as when a device that wrote it is still sending it.
+    let store = on_relay.hosted.relay.content().get(&source).unwrap();
+    let (manifest, _) = fs_content::build(&scan, None);
+    let chunk = hex::encode(manifest.chunks()[1].hash);
+    let held = store.read(&chunk).expect("the host keeps the chunk");
+    store.release(&chunk).unwrap();
+    assert!(!store.has(&chunk));
+
+    let (status, refused) = branch_of(&backend, &source, "Scans: Acme").await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (422, &json!("branch_incomplete")),
+        "{refused}"
+    );
+    let said = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(said.contains("the files its records name"), "{refused}");
+    assert!(listed_as(&backend, "Scans: Acme").await.is_empty());
+    assert!(
+        !workspaces
+            .list()
+            .await
+            .iter()
+            .any(|summary| summary.name == "Scans: Acme"),
+        "the relay governs nothing of it"
+    );
+
+    // The chunk arrives: the same call makes the branch, which holds the file
+    // whole.
+    store.put(&held).unwrap();
+    let (status, branched) = branch_of(&backend, &source, "Scans: Acme").await;
+    assert_eq!(status, 201, "{branched}");
+    let branch = branched["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        kept_bytes(&on_relay, &branch, &manifest_of(&scan)).as_deref(),
+        Some(scan.as_slice())
+    );
+    assert_eq!(listed_as(&backend, "Scans: Acme").await, [branch]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn content_only_an_earlier_version_named_does_not_stop_a_branch() {
+    Box::pin(content_only_earlier_named_does_not_stop_a_branch()).await;
+}
+
+async fn content_only_earlier_named_does_not_stop_a_branch() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let (_, token) = person(&on_relay, "Ada").await;
+    let backend = Key { api: &api, token };
+    let (status, made) = backend
+        .post("/v1/workspaces", &json!({"name": "Drafts"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let source = made["id"].as_str().unwrap().to_owned();
+
+    // A file written, then written over: the tree's history names the first
+    // version, its current state the second. The host let the first go.
+    let first = varied(300_000, 5);
+    put_file(&backend, &source, "", "draft.txt", &first).await;
+    keeps(&on_relay, &source, ("", "draft.txt"), &first).await;
+    let second = varied(300_000, 6);
+    put_file(&backend, &source, "", "draft.txt", &second).await;
+    keeps(&on_relay, &source, ("", "draft.txt"), &second).await;
+    let store = on_relay.hosted.relay.content().get(&source).unwrap();
+    let (old, _) = fs_content::build(&first, None);
+    let (now, _) = fs_content::build(&second, None);
+    let kept_now: Vec<String> = now
+        .chunks()
+        .iter()
+        .map(|chunk| hex::encode(chunk.hash))
+        .collect();
+    store.release(&manifest_of(&first)).unwrap();
+    for chunk in old.chunks() {
+        let chunk = hex::encode(chunk.hash);
+        if !kept_now.contains(&chunk) {
+            store.release(&chunk).unwrap();
+        }
+    }
+    assert!(!store.has(&manifest_of(&first)));
+
+    let (status, branched) = branch_of(&backend, &source, "Drafts: Acme").await;
+    assert_eq!(status, 201, "{branched}");
+    let branch = branched["id"].as_str().unwrap().to_owned();
+    let tree = tree_of(&on_relay, &branch).await;
+    assert_eq!(
+        file_at(&tree, "", "draft.txt").and_then(|node| node.hash.clone()),
+        Some(manifest_of(&second))
+    );
+    assert_eq!(
+        kept_bytes(&on_relay, &branch, &manifest_of(&second)).as_deref(),
+        Some(second.as_slice())
+    );
+}
