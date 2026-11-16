@@ -128,7 +128,7 @@ fn json(value: &serde_json::Value) -> InvokeArgument {
 /// refuses what came before it.
 fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>> {
     let changes = member.documents.get(route)?;
-    let record = ui::record::RecordId::parse(&route.record)?;
+    let record = ui::record::DocumentId::parse(&route.record)?;
     let replica = tilo_agent_session::Replica::open(
         &crate::common::catalogue(),
         &route.app_id,

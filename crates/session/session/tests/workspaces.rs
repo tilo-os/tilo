@@ -306,8 +306,8 @@ fn note_kept(data: &Path, workspace: &str, body: &str) -> std::path::PathBuf {
     let mut doc = automerge::AutoCommit::new();
     assert!(ui::record::init_scoped(
         &mut doc,
-        &ui::record::RecordId::minted(),
-        &ui::record::RecordKind::new("notes.page"),
+        &ui::record::DocumentId::minted(),
+        &ui::record::ResourceType::new("notes.page"),
         workspace,
         Some(workspace),
     ));

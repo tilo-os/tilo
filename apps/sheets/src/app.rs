@@ -446,7 +446,7 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
 }
 
 fn import_source(path: &std::path::Path) -> String {
-    ui::record::RecordId::identify_file(path).to_string()
+    ui::record::DocumentId::identify_file(path).to_string()
 }
 
 /// A reference takes every printable character but whitespace, so invalid input is reported.

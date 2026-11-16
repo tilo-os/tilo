@@ -9,7 +9,7 @@ use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
-use tilo_app::record::RecordCheckout;
+use tilo_app::record::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 
 use crate::kinds::{Tally, TallyApp};
@@ -29,7 +29,7 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
     AttachedView::open(
         definition,
         TEST_WORKSPACE,
-        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person(AGENT),
         permissions,
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open_for(
             definition,
             TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
             &agent,
             writer(),
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
                 app.read_document(|doc| doc.clone().save()),
                 &MemberId::person(AGENT),
                 PermissionContext::permissive(),
@@ -362,7 +362,7 @@ tilo_test_env::scenario! {
         let mut view = AttachedView::open(
             definition,
             TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
             app.read_document(|doc| doc.clone().save()),
             &MemberId::person(AGENT),
             PermissionContext::permissive(),
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
             AttachedView::open(
                 definition,
                 TEST_WORKSPACE,
-                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
                 saved.clone(),
                 &MemberId::person(AGENT),
                 writer(),

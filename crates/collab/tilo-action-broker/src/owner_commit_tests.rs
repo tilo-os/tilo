@@ -234,7 +234,7 @@ mod owner_commit_tests {
         fn join_route(
             &mut self,
             route: ui::collaboration::RouteSpec,
-            _: ui::record::RecordKind,
+            _: ui::record::ResourceType,
         ) -> Result<(), String> {
             assert_eq!(route, self.route);
             Ok(())
@@ -980,7 +980,7 @@ mod owner_commit_tests {
         use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use ui::portable_storage::{PortableStorage, StorageKey};
-        use ui::record::{RecordCheckout, RecordId, RecordOwners};
+        use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
         struct CurrentOwner(Arc<Mutex<Option<tilo_peer_state::StatePeer>>>);
         impl crate::certificate_authority::CertificateAuthority for CurrentOwner {
             fn authorize(
@@ -1040,7 +1040,7 @@ mod owner_commit_tests {
         let cert = owner.device();
         let workspace: uuid::Uuid = owner.peer().workspace_id().parse().unwrap();
         let key = owner.signing_key().clone();
-        let record = RecordId::for_tab(1);
+        let record = DocumentId::for_tab(1);
         let definition = word_processor::definition();
         let route = CrdtRoute::record(definition.app_id(), workspace.to_string(), record.as_str());
         let initial = owner
@@ -1149,7 +1149,7 @@ mod owner_commit_tests {
             ui::application_view::InstanceViewStore::portable(cache, &workspace.to_string())
                 .unwrap(),
         );
-        let checkout = RecordCheckout::new(record.clone(), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(record.clone(), definition.record_kind.clone());
         let target = LaunchTarget::Record {
             checkout,
             reveal: None,

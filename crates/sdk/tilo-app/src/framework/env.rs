@@ -32,7 +32,7 @@ pub struct RecordEnv<R: Resource> {
 /// them ([`RecordEnv::window_documents`]).
 pub struct WindowDocument<R: Resource> {
     /// The record it is.
-    pub record: ui_core::record::RecordId,
+    pub record: ui_core::record::DocumentId,
     /// What it holds, as last kept.
     pub state: Rc<R::State>,
     /// What the workspace's index calls it, when it names it: a document an
@@ -151,7 +151,7 @@ impl<R: Resource> RecordEnv<R> {
     /// The host-owned identity of the record this window shows. A durable
     /// activation link can name it without relying on the last-open window.
     /// Absent in a historical view that cannot launch live work.
-    pub fn record_id(&self) -> Option<&ui_core::record::RecordId> {
+    pub fn record_id(&self) -> Option<&ui_core::record::DocumentId> {
         self.run.launched.record.as_ref()
     }
 
@@ -181,7 +181,7 @@ impl<R: Resource> RecordEnv<R> {
         let Some(store) = self.storage.workspace_store() else {
             return Vec::new();
         };
-        let kind = ui_core::record::RecordKind::new(R::KIND);
+        let kind = ui_core::record::ResourceType::new(R::KIND);
         let shown = self.run.launched.record.as_ref();
         let mut documents: Vec<WindowDocument<R>> = store
             .workspace_records(&kind)
@@ -505,7 +505,7 @@ impl<R: Resource> RecordEnv<R> {
     }
 
     /// The record `P` that `owner` keeps in the window's workspace and every app
-    /// of the workspace opens (`collab_types::WORKSPACE_RECORDS`): the
+    /// of the workspace opens (`collab_types::WORKSPACE_DOCUMENTS`): the
     /// workspace's emoji, which are Chat's. Changes to it are decided by the
     /// workspace's grants on `owner`'s resource. `None` where the host keeps no
     /// such records (a view of a past version) or it cannot be opened.

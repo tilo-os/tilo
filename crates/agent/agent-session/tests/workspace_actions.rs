@@ -678,11 +678,11 @@ impl Page {
 }
 
 /// The record a route names.
-pub fn route_record(record: &str) -> ui::record::RecordId {
+pub fn route_record(record: &str) -> ui::record::DocumentId {
     if record.is_empty() {
-        ui::record::RecordId::package_primary()
+        ui::record::DocumentId::package_primary()
     } else {
-        ui::record::RecordId::parse(record).unwrap()
+        ui::record::DocumentId::parse(record).unwrap()
     }
 }
 

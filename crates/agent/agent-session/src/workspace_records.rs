@@ -367,7 +367,7 @@ impl WorkspaceRecords {
         holder: &crate::worker::ConfinedReplica,
         reading: Reading,
     ) -> Option<Arc<str>> {
-        let record = ui::record::RecordId::parse(&route.record)?;
+        let record = ui::record::DocumentId::parse(&route.record)?;
         holder.read_record(&record, |doc| self.held_text(route, doc, reading))
     }
 

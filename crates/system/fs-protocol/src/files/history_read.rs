@@ -1,5 +1,5 @@
 //! Bounded, read-only navigation of immutable file history. Cursors grant no authority.
-use super::{FileRecordId, FileVersionId, FileVersionV1};
+use super::{FileDocumentId, FileVersionId, FileVersionV1};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -12,7 +12,7 @@ pub const MAX_HISTORY_PAGE_VERSIONS: usize = 12;
 pub struct FileHistoryReadScopeV1 {
     pub workspace_id: Uuid,
     pub mount_lifetime: Uuid,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub frontier: [u8; 32],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,7 +168,7 @@ mod tests {
         let scope = FileHistoryReadScopeV1 {
             workspace_id: Uuid::from_u128(1),
             mount_lifetime: Uuid::from_u128(2),
-            record_id: FileRecordId(Uuid::from_u128(3)),
+            record_id: FileDocumentId(Uuid::from_u128(3)),
             frontier: [0xab; 32],
         };
         for query in [
@@ -216,7 +216,7 @@ mod tests {
         use collab_types::Ed25519PublicKey;
         let version = FileVersionV1 {
             id: FileVersionId(Uuid::from_u128(4)),
-            record_id: FileRecordId(Uuid::from_u128(3)),
+            record_id: FileDocumentId(Uuid::from_u128(3)),
             parents: vec![],
             actor: FileActor {
                 person: Ed25519PublicKey([1; 32]),
@@ -231,7 +231,7 @@ mod tests {
             scope: FileHistoryReadScopeV1 {
                 workspace_id: Uuid::from_u128(1),
                 mount_lifetime: Uuid::from_u128(2),
-                record_id: FileRecordId(Uuid::from_u128(3)),
+                record_id: FileDocumentId(Uuid::from_u128(3)),
                 frontier: [0xab; 32],
             },
             version,
@@ -271,7 +271,7 @@ mod tests {
             scope: FileHistoryReadScopeV1 {
                 workspace_id: Uuid::from_u128(1),
                 mount_lifetime: Uuid::from_u128(2),
-                record_id: FileRecordId(Uuid::from_u128(3)),
+                record_id: FileDocumentId(Uuid::from_u128(3)),
                 frontier: [0xab; 32],
             },
             versions: vec![],

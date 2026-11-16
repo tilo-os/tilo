@@ -15,7 +15,7 @@ use ui::collaboration::{
     DocumentPublicationError, RouteSpec,
 };
 use ui::lock::MutexRecover as _;
-use ui::record::RecordKind;
+use ui::record::ResourceType;
 
 /// One connection to the broker.
 pub struct Link {
@@ -192,7 +192,7 @@ impl Link {
     /// A cluster route holds no record, so it names no kind: only a route
     /// whose record a host may have to create names what it holds.
     pub fn join_route(&mut self, route: RouteSpec) {
-        self.manager.join_route(route, RecordKind::new(""));
+        self.manager.join_route(route, ResourceType::new(""));
     }
 
     fn record_enqueue(&mut self, req: &CollabRequest, queued: bool) -> Result<()> {

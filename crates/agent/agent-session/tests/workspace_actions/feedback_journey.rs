@@ -606,7 +606,7 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
         person,
         ReplicaActor::Owner,
         Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
+            record: ui::record::DocumentId::package_primary(),
             changes,
         },
     )

@@ -9,7 +9,7 @@ use ui::application::{AppComponent, HostContext, RestoreInput};
 use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
 use ui::permissions::MemberId;
-use ui::record::{RecordKind, RecordOwners};
+use ui::record::{RecordOwners, ResourceType};
 use ui::widget::IconDescriptor;
 
 use super::*;
@@ -32,7 +32,7 @@ fn definition(workspace_record: bool) -> ApplicationDefinition {
         app_id: PACKAGE.into(),
         title: "Page probe".into(),
         icon: IconDescriptor::Glyph("P"),
-        record_kind: RecordKind::new("probe"),
+        record_kind: ResourceType::new("probe"),
         required: vec![],
         optional: vec![],
         opens: &[],
@@ -50,9 +50,9 @@ fn author() -> MemberId {
 }
 
 /// The record a page naming none opens, as [`opening`] names it.
-fn default_record(definition: &ApplicationDefinition) -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(INSTANCE)),
+fn default_record(definition: &ApplicationDefinition) -> DocumentCheckout {
+    DocumentCheckout::new(
+        DocumentId::derived("default", &DocumentId::for_tab(INSTANCE)),
         definition.record_kind.clone(),
     )
 }
@@ -68,7 +68,7 @@ fn page(definition: &ApplicationDefinition) -> (Rc<MemoryStore>, RecordStore) {
 }
 
 /// The workspace's copy of `want`, as another device wrote it.
-fn written_elsewhere(want: &RecordCheckout, body: &str) -> Vec<u8> {
+fn written_elsewhere(want: &DocumentCheckout, body: &str) -> Vec<u8> {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
     let store = owners.open(PACKAGE, WORKSPACE).unwrap();
     store
@@ -84,7 +84,7 @@ fn written_elsewhere(want: &RecordCheckout, body: &str) -> Vec<u8> {
 
 /// What the page's replication does with a record the host sent and no window
 /// holds open: it keeps it in the page's storage and tells the store.
-fn arrives(memory: &MemoryStore, store: &RecordStore, id: &RecordId, bytes: Vec<u8>) {
+fn arrives(memory: &MemoryStore, store: &RecordStore, id: &DocumentId, bytes: Vec<u8>) {
     // An app's own document of the workspace is the workspace's index itself;
     // every other record is a document beneath it.
     let key = if id.is_package_primary() {
@@ -97,7 +97,7 @@ fn arrives(memory: &MemoryStore, store: &RecordStore, id: &RecordId, bytes: Vec<
 }
 
 /// What the record holds under `body`.
-fn body(store: &RecordStore, id: &RecordId) -> Option<String> {
+fn body(store: &RecordStore, id: &DocumentId) -> Option<String> {
     let doc = store.read(id, AutoCommit::clone)?;
     match doc.get(&ROOT, "body").ok().flatten()?.0 {
         ui::automerge::Value::Scalar(scalar) => match scalar.into_owned() {
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
     {
         let definition = definition(true);
         let (memory, store) = page(&definition);
-        let want = RecordCheckout::package_primary(definition.record_kind.clone());
+        let want = DocumentCheckout::package_primary(definition.record_kind.clone());
 
         assert!(matches!(
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
     {
         let mut definition = definition(true);
         definition.member_record = true;
-        let own = RecordId::of_member(&author().key(), definition.record_kind.as_str())
+        let own = DocumentId::of_member(&author().key(), definition.record_kind.as_str())
             .expect("a root key names an own record");
         let (_memory, store) = page(&definition);
         assert!(matches!(
@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
 
         // Theirs, once a device of theirs wrote it: that is what opens.
         let (memory, store) = page(&definition);
-        let checkout = RecordCheckout::new(own.clone(), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(own.clone(), definition.record_kind.clone());
         arrives(&memory, &store, &own, written_elsewhere(&checkout, "mine"));
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
             opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
     {
         let definition = definition(false);
         let (_memory, store) = page(&definition);
-        let theirs = RecordId::of_member(&"b0".repeat(32), definition.record_kind.as_str()).unwrap();
+        let theirs = DocumentId::of_member(&"b0".repeat(32), definition.record_kind.as_str()).unwrap();
         let Opening::Target(LaunchTarget::Record { checkout, .. }) = opening(
             &definition,
             &store,
@@ -302,8 +302,8 @@ tilo_test_env::scenario! {
     {
         let definition = definition(false);
         let (memory, store) = page(&definition);
-        let saved = RecordCheckout::new(
-            RecordId::derived("default", &RecordId::for_tab(INSTANCE + 1)),
+        let saved = DocumentCheckout::new(
+            DocumentId::derived("default", &DocumentId::for_tab(INSTANCE + 1)),
             definition.record_kind.clone(),
         );
         let prepare = |store: &RecordStore| {

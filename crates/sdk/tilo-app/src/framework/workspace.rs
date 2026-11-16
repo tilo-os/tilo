@@ -265,7 +265,7 @@ impl<P: Resource> WorkspaceRecord<P> {
     /// [`Self::open_at`] of the record `owner` keeps as its own primary one of
     /// `P::KIND` in the workspace: the record an app keeps as itself (Chat's
     /// of its chat, `chat.workspace`), which `open_record` cannot open because
-    /// the package's primary id is a sentinel no [`RecordId::parse`] accepts.
+    /// the package's primary id is a sentinel no [`DocumentId::parse`] accepts.
     /// An app's own window opens it this way; so does the session, reading the
     /// conversations its agents answer in.
     pub fn open_primary(
@@ -347,7 +347,7 @@ impl<P: Resource> WorkspaceRecord<P> {
 
     /// The record's id, which names it in the workspace.
     #[must_use]
-    pub fn id(&self) -> &ui_core::record::RecordId {
+    pub fn id(&self) -> &ui_core::record::DocumentId {
         &self.shared.record.checkout().id
     }
 

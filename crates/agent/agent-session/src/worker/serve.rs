@@ -18,7 +18,7 @@ use ui::collaboration::record_content::{ContentLane, RecordContent};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
-use ui::record::{RecordCheckout, RecordId, RecordOwners};
+use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
 
 use super::proto::{
     CONTENT_BATCH_BYTES, FRAMING, MAX_CONTENT_ITEM_BYTES, Mode, PROTOCOL_VERSION, ProbeReport,
@@ -580,7 +580,7 @@ fn wire_mutation(mutation: DocumentMutation) -> (bool, Vec<u8>) {
 fn record_change(
     wire: &str,
     change: DocumentMutation,
-    asked: impl FnOnce(&RecordId, DocumentMutation) -> Reply,
+    asked: impl FnOnce(&DocumentId, DocumentMutation) -> Reply,
 ) -> Reply {
     match parse_record(wire) {
         Some(record) => asked(&record, change),
@@ -635,13 +635,13 @@ fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
     }
 }
 
-/// A record id as [`RecordId::as_str`] spells it.
-pub(super) fn parse_record(text: &str) -> Option<RecordId> {
-    let primary = RecordId::package_primary();
+/// A record id as [`DocumentId::as_str`] spells it.
+pub(super) fn parse_record(text: &str) -> Option<DocumentId> {
+    let primary = DocumentId::package_primary();
     if text == primary.as_str() {
         Some(primary)
     } else {
-        RecordId::parse(text)
+        DocumentId::parse(text)
     }
 }
 
@@ -690,7 +690,7 @@ fn probe(path: &str) -> ProbeReport {
 struct ReadSource<'a> {
     app_id: &'a str,
     workspace: &'a str,
-    record: RecordId,
+    record: DocumentId,
     bytes: Vec<u8>,
 }
 
@@ -711,7 +711,7 @@ impl ReadSession {
         text_renderer: ui::TextRenderer,
     ) -> Result<Self, String> {
         let definition = catalogue.get(source.app_id).ok_or("unknown source app")?;
-        let checkout = RecordCheckout::new(source.record, definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(source.record, definition.record_kind.clone());
         if definition.keeps_workspace_record() != checkout.id.is_package_primary() {
             return Err("source record scope mismatch".into());
         }

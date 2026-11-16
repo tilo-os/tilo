@@ -411,8 +411,8 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         fn install(
             path: &std::path::Path,
             record: u128,
-        ) -> (fs_protocol::FileRecordId, fs_protocol::FileVersionId) {
-            let record_id = fs_protocol::FileRecordId(uuid::Uuid::from_u128(record));
+        ) -> (fs_protocol::FileDocumentId, fs_protocol::FileVersionId) {
+            let record_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(record));
             let id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(record + 100));
             std::fs::write(path, b"live file").unwrap();
             let scope = FileHistoryReadScopeV1 {

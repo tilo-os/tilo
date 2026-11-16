@@ -91,15 +91,18 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// package primary, like Notes.
 #[test]
 fn a_confined_record_created_under_a_workspace_route_names_that_route() {
-    assert_seed_route("so.tilo.sheets", ui::record::RecordId::workspace_default());
+    assert_seed_route(
+        "so.tilo.sheets",
+        ui::record::DocumentId::workspace_default(),
+    );
 }
 
 #[test]
 fn a_confined_workspace_record_is_created_under_the_package_primary_route() {
-    assert_seed_route("so.tilo.notes", ui::record::RecordId::package_primary());
+    assert_seed_route("so.tilo.notes", ui::record::DocumentId::package_primary());
 }
 
-fn assert_seed_route(app: &str, default: ui::record::RecordId) {
+fn assert_seed_route(app: &str, default: ui::record::DocumentId) {
     let catalogue = catalogue();
     let source = crate::common::confined(
         app,
@@ -124,7 +127,7 @@ fn assert_seed_route(app: &str, default: ui::record::RecordId) {
         );
         assert_eq!(
             ui::record::identity(&doc),
-            Some(ui::record::RecordCheckout::new(default, kind))
+            Some(ui::record::DocumentCheckout::new(default, kind))
         );
     }
     // Both route shapes must reopen through the actual confined factory.

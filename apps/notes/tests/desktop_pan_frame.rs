@@ -38,7 +38,7 @@ const RECORDS_PER_WINDOW: usize = 4;
 
 fn six_notes(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
 ) -> (FrameHarness, DesktopHandle) {
     let mut minter = IdMinter::new(7);
     let tabs: Vec<Tab> = (0..WINDOWS)

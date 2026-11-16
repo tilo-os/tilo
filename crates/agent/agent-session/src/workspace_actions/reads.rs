@@ -11,10 +11,10 @@ use tilo_actions::{
     api::{ActionAddress, ApiError},
 };
 use tilo_relay_protocol::WorkspaceId;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
-pub(super) fn record_id(wire: &str) -> Result<RecordId, String> {
-    RecordId::from_route(wire).ok_or_else(|| "invalid record route".into())
+pub(super) fn record_id(wire: &str) -> Result<DocumentId, String> {
+    DocumentId::from_route(wire).ok_or_else(|| "invalid record route".into())
 }
 
 pub(super) struct CanonicalRead {

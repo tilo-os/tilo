@@ -25,7 +25,7 @@ use tilo_actions::terminal_text;
 
 use super::serve::{author, hex, millis, scope};
 use super::{
-    ActivityTree, HistoryEntry, HistoryEntryId, IndexedAgentSession, RecordId, UndoRun,
+    ActivityTree, DocumentId, HistoryEntry, HistoryEntryId, IndexedAgentSession, UndoRun,
     WorkspaceActivityPane, humanize_app_id, t,
 };
 
@@ -445,7 +445,7 @@ impl WorkspaceActivityPane {
                     .to_owned(),
             });
         named.unwrap_or_else(|| {
-            let path = RecordId::parse(&segment.record).and_then(|record| record.file_path());
+            let path = DocumentId::parse(&segment.record).and_then(|record| record.file_path());
             wire::Target {
                 app_id,
                 app_label: Some(app_label),
@@ -466,7 +466,8 @@ impl WorkspaceActivityPane {
         newest: &HistoryEntry,
         target: wire::Target,
     ) -> wire::ActionView {
-        if let Some(path) = RecordId::parse(&segment.record).and_then(|record| record.file_path()) {
+        if let Some(path) = DocumentId::parse(&segment.record).and_then(|record| record.file_path())
+        {
             return wire::ActionView::File {
                 target,
                 path: path.to_string_lossy().into_owned(),

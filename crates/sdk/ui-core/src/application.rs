@@ -6,7 +6,7 @@ use crate::application_view::{
 use crate::launch::LaunchError;
 use crate::permissions::{MemberId, PermissionContext, PermissionScope, SharedPermissions};
 use crate::record::{
-    RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
+    DocumentCheckout, DocumentId, RecordOpenError, RecordReservation, RecordStore, ResourceType,
 };
 use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
@@ -37,7 +37,7 @@ pub struct ApplicationDefinition {
     /// The app's name, as the definition's runtime learns it.
     pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
-    pub record_kind: RecordKind,
+    pub record_kind: ResourceType,
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host hands it a file
@@ -49,7 +49,7 @@ pub struct ApplicationDefinition {
     /// the first creates it.
     pub workspace_record: bool,
     /// The record a window opens when it names none is the person record of the workspace
-    /// ([`RecordId::of_member`]) rather than the workspace's record of the app: what it keeps there
+    /// ([`DocumentId::of_member`]) rather than the workspace's record of the app: what it keeps there
     /// (their mail) only their devices read.
     pub member_record: bool,
     /// The app's window shows before the workspace's record is read: a record this device has opens
@@ -82,7 +82,7 @@ pub enum LaunchTarget {
     /// Explicit creation of the one workspace-scoped package-primary document.
     PrimaryNew,
     Record {
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         reveal: Option<tilo_actions::ActionAddress>,
     },
 }
@@ -113,7 +113,7 @@ pub struct HostContext {
     device_id: String,
     records: RecordStore,
     views: Rc<InstanceViewStore>,
-    record: RecordCheckout,
+    record: DocumentCheckout,
     reservation: Option<RecordReservation>,
     permissions: SharedPermissions,
     author: MemberId,
@@ -384,9 +384,9 @@ impl Reopener {
     pub fn prepare(
         &self,
         definition: &ApplicationDefinition,
-        record: RecordId,
+        record: DocumentId,
     ) -> Result<(HostContext, LaunchTarget), LaunchError> {
-        let checkout = RecordCheckout::new(record.clone(), definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(record.clone(), definition.record_kind.clone());
         let (target, new_record) = match self.records.try_open_record(&checkout) {
             Ok(_) => (
                 LaunchTarget::Record {
@@ -518,7 +518,7 @@ impl HostContext {
     pub fn prepare_new_record(
         definition: &ApplicationDefinition,
         inputs: HostContextInputs,
-        record_id: RecordId,
+        record_id: DocumentId,
     ) -> Result<Self, LaunchError> {
         Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(record_id))
     }
@@ -527,7 +527,7 @@ impl HostContext {
         definition: &ApplicationDefinition,
         inputs: HostContextInputs,
         target: &LaunchTarget,
-        new_record_id: Option<RecordId>,
+        new_record_id: Option<DocumentId>,
     ) -> Result<Self, LaunchError> {
         let HostContextInputs {
             records,
@@ -557,11 +557,11 @@ impl HostContext {
         }
         let (record, reservation) = match target {
             LaunchTarget::New => {
-                let checkout = RecordCheckout::new(
-                    new_record_id.unwrap_or_else(RecordId::minted),
+                let checkout = DocumentCheckout::new(
+                    new_record_id.unwrap_or_else(DocumentId::minted),
                     definition.record_kind.clone(),
                 );
-                if RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
+                if DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
                     return Err(mismatch("a new record id that does not read back"));
                 }
                 let reservation = records
@@ -573,8 +573,8 @@ impl HostContext {
                 if new_record_id.is_some() {
                     return Err(mismatch("a package primary given another id"));
                 }
-                let checkout = RecordCheckout::new(
-                    RecordId::package_primary(),
+                let checkout = DocumentCheckout::new(
+                    DocumentId::package_primary(),
                     definition.record_kind.clone(),
                 );
                 let reservation = records
@@ -585,7 +585,7 @@ impl HostContext {
             LaunchTarget::Record { checkout, .. } => {
                 if checkout.kind != definition.record_kind
                     || !checkout.id.is_package_primary()
-                        && RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+                        && DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
                     return Err(mismatch("a record of another kind, or a malformed id"));
                 }
@@ -749,7 +749,7 @@ impl HostContext {
             ));
         self.control_domain.clone()
     }
-    pub fn record(&self) -> &RecordCheckout {
+    pub fn record(&self) -> &DocumentCheckout {
         &self.record
     }
     /// The store the record is kept in, with the app's other records of the same workspace: what an app
@@ -761,7 +761,7 @@ impl HostContext {
     /// The per-window records this app's windows kept in this workspace before it [kept one record per
     /// workspace](ApplicationDefinition::keeps_workspace_record), read-only and sorted by id
     /// ([`RecordStore::window_records`]).
-    pub fn window_records(&self) -> Vec<(RecordId, AutoCommit)> {
+    pub fn window_records(&self) -> Vec<(DocumentId, AutoCommit)> {
         if !self.record.id.is_package_primary() {
             return Vec::new();
         }
@@ -984,11 +984,11 @@ impl ApplicationDefinition {
     /// The record a window of `author` opens when it names none, when the app keeps each member
     /// ([`Self::member_record`]): their own record of the workspace.
     #[must_use]
-    pub fn member_record_of(&self, author: &MemberId) -> Option<RecordCheckout> {
+    pub fn member_record_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
         self.member_record
-            .then(|| RecordId::of_member(&author.key(), self.record_kind.as_str()))
+            .then(|| DocumentId::of_member(&author.key(), self.record_kind.as_str()))
             .flatten()
-            .map(|id| RecordCheckout::new(id, self.record_kind.clone()))
+            .map(|id| DocumentCheckout::new(id, self.record_kind.clone()))
     }
 
     /// Whether the app keeps one record per workspace, its package primary, rather than a record per
@@ -1003,7 +1003,7 @@ impl ApplicationDefinition {
         if !self.keeps_workspace_record() {
             return Ok(LaunchTarget::New);
         }
-        let checkout = RecordCheckout::package_primary(self.record_kind.clone());
+        let checkout = DocumentCheckout::package_primary(self.record_kind.clone());
         match records.try_open_record(&checkout) {
             Ok(_) => Ok(LaunchTarget::Record {
                 checkout,
@@ -1608,7 +1608,7 @@ impl AppComponent {
             .map(|descriptor| descriptor.owned_by(binding.lifetime_id))
             .collect()
     }
-    pub fn record(&self) -> &RecordCheckout {
+    pub fn record(&self) -> &DocumentCheckout {
         self.context.record()
     }
     /// The content store this component reads its record's content from: the host's store joined to the
@@ -2115,7 +2115,7 @@ pub struct ComponentCloseReport {
     pub record_error: Option<String>,
     pub record_retry: Option<RecordStore>,
     /// Exact legacy owner for scoped close/retry; None keeps component close behavior.
-    pub record_retry_target: Option<crate::RecordId>,
+    pub record_retry_target: Option<crate::DocumentId>,
     /// Reserved for fallible lifecycle results. Arbitrary app panics propagate.
     pub teardown_error: Option<String>,
 }
@@ -2351,7 +2351,7 @@ mod bound_lifetime_tests {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: RecordKind::new("probe"),
+                record_kind: ResourceType::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
@@ -2360,7 +2360,7 @@ mod bound_lifetime_tests {
                 opens_before_record: false,
                 create: factory,
             };
-            let supplied = RecordId::for_tab(55);
+            let supplied = DocumentId::for_tab(55);
             let prepare = |target, supplied| {
                 HostContext::prepare_scoped(
                     &definition,
@@ -2385,7 +2385,7 @@ mod bound_lifetime_tests {
             drop(named);
 
             assert!(matches!(
-                prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
+                prepare(&LaunchTarget::PrimaryNew, Some(DocumentId::for_tab(56))),
                 Err(LaunchError::BindingMismatch)
             ));
             let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
@@ -2402,7 +2402,7 @@ mod bound_lifetime_tests {
                 app_id: "dev.tilo.mount-probe".into(),
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: RecordKind::new("probe"),
+                record_kind: ResourceType::new("probe"),
                 required: vec![],
                 optional: vec![],
                 opens: &[],
@@ -2432,15 +2432,15 @@ mod bound_lifetime_tests {
                 )
             };
 
-            let malformed = RecordCheckout::new(
-                RecordId::derived("invalid role", &RecordId::for_tab(55)),
+            let malformed = DocumentCheckout::new(
+                DocumentId::derived("invalid role", &DocumentId::for_tab(55)),
                 definition.record_kind.clone(),
             );
             assert!(matches!(
                 prepare(malformed),
                 Err(LaunchError::BindingMismatch)
             ));
-            let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
+            let foreign = DocumentCheckout::new(DocumentId::for_tab(56), definition.record_kind.clone());
             assert!(matches!(
                 prepare(foreign),
                 Err(LaunchError::Record(
@@ -2448,7 +2448,7 @@ mod bound_lifetime_tests {
                 ))
             ));
 
-            let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+            let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
             records.create_record(&primary).unwrap();
             let context = prepare(primary).expect("an existing local package primary must reopen");
             assert!(context.record.id.is_package_primary());
@@ -2466,7 +2466,7 @@ mod bound_lifetime_tests {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
-                    record_kind: RecordKind::new("probe"),
+                    record_kind: ResourceType::new("probe"),
                     required: vec![],
                     optional: vec![],
                     opens: &[],
@@ -2557,7 +2557,7 @@ mod bound_lifetime_tests {
                     app_id: "so.tilo.mount-probe".into(),
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
-                    record_kind: RecordKind::new("probe"),
+                    record_kind: ResourceType::new("probe"),
                     required: vec![],
                     optional: vec![],
                     opens: &[],
@@ -2721,7 +2721,7 @@ mod portable_tests {
             assert_eq!(context.callback_binding().host_person, probe::author());
             let (reopened, _) = context
                 .reopener()
-                .prepare(&definition, RecordId::minted())
+                .prepare(&definition, DocumentId::minted())
                 .unwrap();
             assert_eq!(reopened.author(), &MemberId::person("agent"));
             assert_eq!(reopened.host_person(), &probe::author());

@@ -804,7 +804,7 @@ mod window_tests {
     const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000f1";
 
     /// A version of `record_id` written by an agent session for the person at `[7; 32]`.
-    fn write_version(doc: &mut AutoCommit, record_id: fs_protocol::FileRecordId, id: u128) {
+    fn write_version(doc: &mut AutoCommit, record_id: fs_protocol::FileDocumentId, id: u128) {
         use ui::automerge::ScalarValue;
         use ui::tilo_resource::Slot;
 

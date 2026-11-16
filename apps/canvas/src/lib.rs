@@ -180,17 +180,17 @@ impl ResourceApp for App {
 
     /// A file named on the command line opens a record of its own, the same one
     /// each time; a picture gets an artwork derived from it, edits and all.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let path = std::path::Path::new(input.argument()?);
         let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_ascii_lowercase)?;
         if extension == document::EXTENSION {
-            return Some(RecordId::identify_file(path));
+            return Some(DocumentId::identify_file(path));
         }
         matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp")
-            .then(|| RecordId::derived("artwork", &RecordId::identify_file(path)))
+            .then(|| DocumentId::derived("artwork", &DocumentId::identify_file(path)))
     }
 
     /// The file, in the record it opened: an artwork file is that artwork, a

@@ -22,7 +22,7 @@ impl BoundRecordSync {
     pub(super) fn publishes(
         &self,
         records: &crate::RecordStore,
-        checkout: &crate::record::RecordCheckout,
+        checkout: &crate::record::DocumentCheckout,
     ) -> bool {
         self.binding.checkout == *checkout && self.binding.records.same_owner(records)
     }

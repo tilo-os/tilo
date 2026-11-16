@@ -911,12 +911,12 @@ mod tests {
 
         phase chat_and_what_names_other_people_stay_behind_and_the_rest_comes_along;
         {
-            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
-            let agents = collab_types::workspace_record_id("chat.agent");
+            let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
+            let agents = collab_types::workspace_document_id("chat.agent");
             assert!(stays(CHAT, "messages"), "every conversation");
             assert!(stays(
                 CHAT,
-                &collab_types::workspace_record_id("chat.workspace")
+                &collab_types::workspace_document_id("chat.workspace")
             ));
             assert!(!stays(CHAT, &emoji), "the workspace's own emoji");
             assert!(!stays(CHAT, &agents), "the workspace's agents");
@@ -927,7 +927,7 @@ mod tests {
             assert!(stays(tilo_desktop_model::ownership::DESKTOP_APP, "desktop"));
             assert!(stays(
                 "tilo.host",
-                &collab_types::workspace_record_id("tilolang.personal")
+                &collab_types::workspace_document_id("tilolang.personal")
             ));
             assert!(!stays("so.tilo.notes", "uuid:plan"));
         }
@@ -1132,7 +1132,7 @@ mod tests {
             .unwrap()
             .content_keys()
             .unwrap();
-            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             let mut party = record(FROM, "party-parrot");
             write(&engine, &keys, from, (CHAT, &emoji), &mut party);
             let home = tempfile::tempdir().unwrap();
@@ -1239,7 +1239,7 @@ mod tests {
                         .map_err(|error| error.to_string())
                 })
                 .unwrap();
-            let emoji = collab_types::workspace_record_id(EMOJI);
+            let emoji = collab_types::workspace_document_id(EMOJI);
             let mut held = source.read(AutoCommit::clone).unwrap();
             write(&engine, &keys, from, (CHAT, &emoji), &mut held);
 
@@ -1322,7 +1322,7 @@ mod tests {
             for held in targets {
                 engine.hand_keys(held, keys.clone());
             }
-            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             write(
                 &engine,
                 &keys,
@@ -1400,7 +1400,7 @@ mod tests {
                     .content_keys()
                     .unwrap();
             let notes = ("so.tilo.notes", "uuid-plan");
-            let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+            let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
             let mut plan = record(FROM, "plan");
             write(&engine, &keys, from, notes, &mut plan);
             write(
@@ -1489,8 +1489,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         assert!(ui::record::init_scoped(
             &mut doc,
-            &ui::record::RecordId::minted(),
-            &ui::record::RecordKind::new("notes.page"),
+            &ui::record::DocumentId::minted(),
+            &ui::record::ResourceType::new("notes.page"),
             workspace,
             Some(workspace),
         ));

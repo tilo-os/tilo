@@ -59,7 +59,7 @@ impl crate::collaboration::PeerTransport for CapturePeer {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::RecordKind,
+        _: crate::record::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -458,7 +458,7 @@ impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::RecordKind,
+        _: crate::record::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }

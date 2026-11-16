@@ -750,7 +750,7 @@ impl JoinedChannel {
 
 /// Whether `local`'s live launch holds `route` in its own workspace: `Some(true)`
 /// for a record of its own, `Some(false)` for another app's it reads — one
-/// every app of the workspace opens ([`collab_types::workspace_record`]), or
+/// every app of the workspace opens ([`collab_types::workspace_document`]), or
 /// one it joined `read_only` as its surface declares — and `None` otherwise.
 fn launch_holds(
     local: &super::native_media::LocalAppConnection,
@@ -763,7 +763,7 @@ fn launch_holds(
     if local.keeps_records_of(&route.app_id) {
         return Some(true);
     }
-    (read_only || collab_types::workspace_record(&route.app_id, &route.record_id).is_some())
+    (read_only || collab_types::workspace_document(&route.app_id, &route.record_id).is_some())
         .then_some(false)
 }
 

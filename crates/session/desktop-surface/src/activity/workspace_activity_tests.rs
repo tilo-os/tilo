@@ -82,9 +82,9 @@ mod workspace_activity {
         {
             let mut tree = causal_workspace();
             let records = RecordStore::in_memory();
-            let record = ui::record::RecordCheckout::new(
-                RecordId::for_file("review.note"),
-                ui::record::RecordKind::new("note"),
+            let record = ui::record::DocumentCheckout::new(
+                DocumentId::for_file("review.note"),
+                ui::record::ResourceType::new("note"),
             );
             assert!(records.open_record(&record));
             records.with(&record.id, |doc| {

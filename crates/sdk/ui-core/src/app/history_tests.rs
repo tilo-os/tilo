@@ -130,7 +130,7 @@ pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) 
                 "native-fixture",
                 "lifetime-904",
                 HISTORY.app_id,
-                crate::RecordId::for_tab(904),
+                crate::DocumentId::for_tab(904),
             ),
         }],
     )
@@ -1029,7 +1029,7 @@ impl RoutedPrimary {
             app_id: "dev.tilo.primary-probe".into(),
             title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
-            record_kind: crate::RecordKind::new("primary.probe"),
+            record_kind: crate::ResourceType::new("primary.probe"),
             required: vec![],
             optional: vec![],
             opens: &[],
@@ -3478,9 +3478,9 @@ fn component_control_root(
     let mut slots = Vec::new();
     let mut handles = Vec::new();
     for (index, (id, confirmation)) in specs.iter().enumerate() {
-        let checkout = crate::record::RecordCheckout::new(
-            crate::RecordId::for_tab(930 + index as u64),
-            crate::record::RecordKind::new("component-control"),
+        let checkout = crate::record::DocumentCheckout::new(
+            crate::DocumentId::for_tab(930 + index as u64),
+            crate::record::ResourceType::new("component-control"),
         );
         records
             .reserve_record(&checkout)
@@ -4318,7 +4318,7 @@ tilo_test_env::scenario! {
                     "native-fixture",
                     "lifetime-904",
                     HISTORY.app_id,
-                    crate::RecordId::for_tab(904),
+                    crate::DocumentId::for_tab(904),
                 ),
             }],
         )
@@ -4685,7 +4685,7 @@ struct CustodyControlsRoot {
     mark_drawn_callback: Option<Box<dyn FnMut()>>,
     unsettled_layout: Option<Rc<Cell<bool>>>,
     installed_output: Option<Rc<RefCell<Option<crate::ControlOutbox>>>>,
-    record: Option<Rc<RefCell<Option<crate::RecordCheckout>>>>,
+    record: Option<Rc<RefCell<Option<crate::DocumentCheckout>>>>,
     child: Box<dyn crate::widget::Widget>,
     resources: Vec<tilo_actions::ResourceSpec>,
     ledger: Rc<RefCell<Vec<serde_json::Value>>>,
@@ -4815,7 +4815,7 @@ impl crate::widget::ResourceOperations for CustodyControlsRoot {
 }
 
 impl crate::record::capability::RecordScoped for CustodyControlsRoot {
-    fn record_intent(&self) -> Option<crate::RecordCheckout> {
+    fn record_intent(&self) -> Option<crate::DocumentCheckout> {
         self.record
             .as_ref()
             .and_then(|record| record.borrow().clone())
@@ -4994,7 +4994,7 @@ fn custody_matrix_app_with_confirmation(
                 "fixture",
                 "matrix",
                 HISTORY.app_id,
-                crate::RecordId::for_tab(901),
+                crate::DocumentId::for_tab(901),
             ),
         }],
     )
@@ -5465,7 +5465,7 @@ tilo_test_env::scenario! {
                         "fixture",
                         "dynamic",
                         HISTORY.app_id,
-                        crate::RecordId::for_tab(998),
+                        crate::DocumentId::for_tab(998),
                     ),
                 }],
             )
@@ -5792,12 +5792,12 @@ fn header_history_control_opens_framework_history() {
 #[test]
 fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
     use crate::host_chrome::model::CommandGroup;
-    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+    use crate::record::{DocumentCheckout, DocumentId, RecordOwners, ResourceType};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
     let store = RecordOwners::portable(cache)
         .open("test", "workspace")
         .unwrap();
-    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
     store.create_record(&checkout).unwrap();
     let mut state = State::from_doc(
         store

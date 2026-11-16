@@ -17,7 +17,7 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::RecordKind,
+        _: crate::record::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
             app_id: "test.directory".into(),
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
-            record_kind: crate::record::RecordKind::new("directory"),
+            record_kind: crate::record::ResourceType::new("directory"),
             required: vec![],
             optional: vec![],
             opens: &[],

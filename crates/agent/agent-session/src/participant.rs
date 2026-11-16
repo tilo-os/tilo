@@ -1982,7 +1982,7 @@ impl AgentParticipant {
                 match self.unopened.seed(&route) {
                     Some(saved) => {
                         let seed = Seed::Existing {
-                            record: ui::record::RecordId::from_route(record)
+                            record: ui::record::DocumentId::from_route(record)
                                 .ok_or_else(|| format!("{record} is not a record route"))?,
                             changes: vec![saved?],
                         };

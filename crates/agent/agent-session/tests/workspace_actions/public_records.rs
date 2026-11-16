@@ -224,7 +224,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let missing = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
-        record: ui::record::RecordId::minted().as_str().to_owned(),
+        record: ui::record::DocumentId::minted().as_str().to_owned(),
     };
     let refused = catalogue(&mut member, &record_provider(&missing)).await;
     assert!(

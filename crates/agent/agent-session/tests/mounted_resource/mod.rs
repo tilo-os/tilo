@@ -19,7 +19,7 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
             name.into(),
         )))
         .unwrap();
-    let kind = ui::record::RecordKind::new("tilo.accounts");
+    let kind = ui::record::ResourceType::new("tilo.accounts");
     ui::record::init(
         replica.doc_mut(),
         &ui::record::person::record_id(&kind),
@@ -166,7 +166,7 @@ pub async fn run() {
             .await
             .unwrap();
         Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
+            record: ui::record::DocumentId::package_primary(),
             changes: vec![canonical.save()],
         }
     } else {

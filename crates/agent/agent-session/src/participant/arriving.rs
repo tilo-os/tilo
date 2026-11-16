@@ -45,7 +45,7 @@ impl AgentParticipant {
         );
         // What a held record asked for of what it keeps beside it (a chain's head or part) is
         // told to it.
-        if let Some(record) = ui::record::RecordId::parse(&route.record) {
+        if let Some(record) = ui::record::DocumentId::parse(&route.record) {
             for (held, app) in &self.apps {
                 if held.app_id == route.app_id
                     && let Err(error) = app.workspace_answered(&record, told)

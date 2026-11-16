@@ -80,7 +80,7 @@ fn original_remote_authorizer_with_spec(
             crate::collaboration::RouteSpec::record(
                 "test.counter",
                 uuid::Uuid::from_u128(1),
-                crate::RecordId::for_tab(900).as_str(),
+                crate::DocumentId::for_tab(900).as_str(),
             ),
             std::sync::Arc::new(move || {
                 grant
@@ -175,7 +175,7 @@ tilo_test_env::scenario! {
                 crate::collaboration::RouteSpec::record(
                     "test.counter",
                     uuid::Uuid::from_u128(1),
-                    crate::RecordId::for_tab(900).as_str(),
+                    crate::DocumentId::for_tab(900).as_str(),
                 ),
                 Arc::new(|| Ok(())),
             ))

@@ -224,7 +224,7 @@ fn check_restore_authority(
     current: &PermissionContext,
     author: &MemberId,
     app_id: &str,
-    record: Option<&crate::record::RecordId>,
+    record: Option<&crate::record::DocumentId>,
 ) -> Result<(), RestoreRefusal> {
     use crate::permissions::{Access, ActionKind, MemberId};
     // The installed solo-workspace person is the runner's existing local-author mapping.
@@ -246,7 +246,7 @@ fn check_restore_authority(
     {
         return Err(RestoreRefusal::App);
     }
-    if let Some(path) = record.and_then(crate::record::RecordId::file_path)
+    if let Some(path) = record.and_then(crate::record::DocumentId::file_path)
         && !current.check(&crate::permissions::PermissionScope::path(
             path.to_string_lossy().into_owned(),
             Access::Write,

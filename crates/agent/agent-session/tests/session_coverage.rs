@@ -134,7 +134,7 @@ fn page(
 ) -> String {
     // The workspace's own record (Chat's) is not mounted from a copy: its
     // document is what the browser holds.
-    let Some(record) = ui::record::RecordId::parse(&route.record) else {
+    let Some(record) = ui::record::DocumentId::parse(&route.record) else {
         use tilo_automerge::ApplyIncoming as _;
         let mut doc = automerge::AutoCommit::new();
         for change in changes {

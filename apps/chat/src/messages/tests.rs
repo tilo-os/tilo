@@ -238,7 +238,7 @@ struct TwoDevices {
     guest_store: ui::record::RecordStore,
     guest_backend: Rc<durable_store::MemoryStore>,
     /// The record the guest's window shows beside the chain.
-    shown: ui::record::RecordId,
+    shown: ui::record::DocumentId,
 }
 
 impl TwoDevices {
@@ -286,9 +286,9 @@ impl TwoDevices {
         )
         .unwrap();
         assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
-        let shown = ui::record::RecordCheckout::new(
-            ui::record::RecordId::derived("shown", &ui::record::RecordId::workspace_default()),
-            ui::record::RecordKind::new("test.shown"),
+        let shown = ui::record::DocumentCheckout::new(
+            ui::record::DocumentId::derived("shown", &ui::record::DocumentId::workspace_default()),
+            ui::record::ResourceType::new("test.shown"),
         );
         guest_store
             .reserve_record(&shown)

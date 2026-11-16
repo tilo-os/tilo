@@ -7,7 +7,7 @@ use tilo_ui::application::{
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
-use tilo_ui::record::RecordId;
+use tilo_ui::record::DocumentId;
 use tilo_ui::view::{FocusView, ThawError, View};
 
 #[test]
@@ -182,7 +182,7 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
                 "app" => bad.app_id = "foreign.app".into(),
                 "device" => bad.device_id = "other-device".into(),
                 "workspace" => bad.workspace_id = "other-workspace".into(),
-                "record" => bad.record_id = RecordId::minted().as_str().into(),
+                "record" => bad.record_id = DocumentId::minted().as_str().into(),
                 "kind" => bad.record_kind = "other-kind".into(),
                 "instance" => bad.instance_id = 99,
                 _ => unreachable!(),
@@ -1244,7 +1244,7 @@ mod save_status_fixture {
     use std::cell::RefCell;
     use tilo_ui::{
         Widget,
-        record::{RecordCheckout, RecordOpenError, RecordSaveStatus, RecordStore},
+        record::{DocumentCheckout, RecordOpenError, RecordSaveStatus, RecordStore},
         widget::{AppKind, AppWidget, IconDescriptor, TileHost},
     };
     thread_local! {
@@ -1253,7 +1253,7 @@ mod save_status_fixture {
     }
     struct StatusRoot {
         records: RecordStore,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
     }
     impl Widget for StatusRoot {
         fn build_layout(
@@ -1341,7 +1341,7 @@ mod save_status_fixture {
     pub(super) struct Fixture {
         tile: TileHost,
         outer: automerge::AutoCommit,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         _clear: ClearStatusFixture,
         host: ProbeHost,
         edits: u64,

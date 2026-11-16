@@ -163,7 +163,7 @@ mod tests {
                 "profile",
                 "workspace",
                 "app",
-                crate::RecordId::for_tab(1),
+                crate::DocumentId::for_tab(1),
             ),
             side: PreviewSide::After,
             heads: vec![],

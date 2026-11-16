@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
 use ui::framework::{EffectCx, LaunchInput, ResourceApp, ViewCx};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::{ActionRef, Invoke, ResourceKind};
 use ui::widget::Element;
 
@@ -93,11 +93,11 @@ impl ResourceApp for CodeEditorShell {
         )
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let path = launched_path(input.argument()?);
-        Some(RecordId::derived(
+        Some(DocumentId::derived(
             "code-editor",
-            &RecordId::for_file(crate::disk::canonical(&path)),
+            &DocumentId::for_file(crate::disk::canonical(&path)),
         ))
     }
 
@@ -192,7 +192,7 @@ mod tests {
         file_id(&state, "ferris-cli/Cargo.toml");
         assert_eq!(
             sample.app.record(),
-            &RecordId::derived("code-editor", &RecordId::for_file(&root)),
+            &DocumentId::derived("code-editor", &DocumentId::for_file(&root)),
             "the folder names its record"
         );
 

@@ -1,7 +1,7 @@
 //! What each window of a host's desktop shows, as the workspace's shared layout names it: the
 //! records a joining host adopts and the records it writes back.
 //!
-//! A shared layout names a window's record by its route ([`RecordId::route`]): the package
+//! A shared layout names a window's record by its route ([`DocumentId::route`]): the package
 //! primary's route is empty, every other record's is its id ([`wire_record`]). A host that joins a
 //! layout adopts the record each of its windows shows ([`adopted`]) and writes every one of them back
 //! ([`live`]), so it never holds a window on another record than the layout showed
@@ -14,12 +14,12 @@ use std::hash::BuildHasher;
 
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{Layout, TabId, TileContent};
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 
 /// The record `id` travels under on the workspace's shared layout: its route, empty for the
 /// package's primary record.
 #[must_use]
-pub fn wire_record(id: &RecordId) -> &str {
+pub fn wire_record(id: &DocumentId) -> &str {
     id.route()
 }
 
@@ -37,7 +37,7 @@ pub fn app_of(tree: &Layout, tab: TabId) -> Option<&str> {
 #[must_use]
 pub fn of_window<S: BuildHasher>(
     tree: &Layout,
-    bindings: &HashMap<TabId, RecordCheckout, S>,
+    bindings: &HashMap<TabId, DocumentCheckout, S>,
     tab: TabId,
 ) -> Option<(String, String)> {
     let app = app_of(tree, tab)?;
@@ -49,7 +49,7 @@ pub fn of_window<S: BuildHasher>(
 /// record the layout showed it, in wire spelling.
 #[must_use]
 pub fn live<S: BuildHasher>(
-    bindings: &HashMap<TabId, RecordCheckout, S>,
+    bindings: &HashMap<TabId, DocumentCheckout, S>,
     held: &HashMap<TabId, String, S>,
     tree: &Layout,
 ) -> Vec<(TabId, String)> {
@@ -75,8 +75,8 @@ pub fn live<S: BuildHasher>(
 #[must_use]
 pub fn adopted(
     layout: &SharedDesktop,
-    kind_of: impl Fn(&str) -> Option<RecordKind>,
-) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
+    kind_of: impl Fn(&str) -> Option<ResourceType>,
+) -> (HashMap<TabId, DocumentCheckout>, HashMap<TabId, String>) {
     let apps: HashMap<TabId, &str> = layout
         .tree
         .tabs()
@@ -91,10 +91,10 @@ pub fn adopted(
         let opened = apps
             .get(tab)
             .and_then(|app| kind_of(app))
-            .and_then(|kind| Some((RecordId::from_route(record)?, kind)));
+            .and_then(|kind| Some((DocumentId::from_route(record)?, kind)));
         match opened {
             Some((id, kind)) => {
-                bound.insert(*tab, RecordCheckout::new(id, kind));
+                bound.insert(*tab, DocumentCheckout::new(id, kind));
             }
             None => {
                 held.insert(*tab, record.clone());
@@ -159,10 +159,10 @@ mod tests {
         }
     }
 
-    fn running(app: &str) -> Option<RecordKind> {
+    fn running(app: &str) -> Option<ResourceType> {
         ["so.tilo.chat", "so.tilo.notes"]
             .contains(&app)
-            .then(|| RecordKind::new("test.record"))
+            .then(|| ResourceType::new("test.record"))
     }
 
     tilo_test_env::scenario! {
@@ -180,12 +180,12 @@ mod tests {
             assert!(held.is_empty(), "{held:?}");
             assert_eq!(
                 bound[&1].id,
-                RecordId::package_primary(),
+                DocumentId::package_primary(),
                 "chat's window shows the workspace's primary record"
             );
             assert_eq!(
                 bound[&2].id,
-                RecordId::from_route("derived:default@tab:0000000000000002").unwrap()
+                DocumentId::from_route("derived:default@tab:0000000000000002").unwrap()
             );
             assert_eq!(
                 live(&bound, &held, &layout.tree),
@@ -218,7 +218,7 @@ mod tests {
             // The host runs chat now: it binds that window to the record the layout showed, and keeps
             // the one whose application it does not run.
             let (bound, held) = adopted(&shown, |app| running(app).filter(|_| app == "so.tilo.chat"));
-            assert_eq!(bound[&1].id, RecordId::package_primary());
+            assert_eq!(bound[&1].id, DocumentId::package_primary());
             assert!(held.contains_key(&3), "{held:?}");
             assert_eq!(
                 live(&bound, &held, &shown.tree),
@@ -239,8 +239,8 @@ mod tests {
         phase the_primary_record_travels_as_its_route;
         // The package primary travels as the empty route; every other record travels as its id.
         {
-            assert_eq!(wire_record(&RecordId::package_primary()), "");
-            let derived = RecordId::from_route("derived:default@tab:0000000000000002").unwrap();
+            assert_eq!(wire_record(&DocumentId::package_primary()), "");
+            let derived = DocumentId::from_route("derived:default@tab:0000000000000002").unwrap();
             assert_eq!(
                 wire_record(&derived),
                 "derived:default@tab:0000000000000002"

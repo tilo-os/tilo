@@ -433,7 +433,7 @@ enum FileServices {
 )]
 pub struct FilesState {
     framework_history: ui::history_mode::checked_files::FileHistorySource,
-    framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
+    framework_history_binding: Option<(PathBuf, fs_protocol::FileDocumentId)>,
     services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,

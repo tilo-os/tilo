@@ -21,7 +21,7 @@ use tilo_app::framework::WorkspaceRecord;
 use tilo_broker_core::services::AgentTurn;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, MemberId, PermissionContext};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::record::workspace::WorkspaceRecords;
 
 /// The app that keeps the conversations: its own record of a workspace.
@@ -114,7 +114,7 @@ impl Conversations {
         opened: &Opened,
     ) -> Option<WorkspaceRecord<tilo_app::tilo_workspace_agent::WorkspaceAgents>> {
         use tilo_app::tilo_workspace_agent::{KIND as AGENTS_KIND, OWNER as AGENTS_OWNER};
-        let id = collab_types::workspace_record_id(AGENTS_KIND);
+        let id = collab_types::workspace_document_id(AGENTS_KIND);
         let held = opened
             .records
             .holds_record(AGENTS_OWNER, &id, AGENTS_KIND)
@@ -321,7 +321,7 @@ impl Conversations {
             person.to_owned(),
         ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let chat_id = RecordId::package_primary();
+        let chat_id = DocumentId::package_primary();
         if opened.chat.is_none() {
             let held = opened
                 .records

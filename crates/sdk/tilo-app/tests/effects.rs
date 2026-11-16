@@ -1606,7 +1606,7 @@ pub enum FileEffect {
 
 thread_local! {
     /// The identity of the file last imported.
-    static CHOSEN: RefCell<Option<RecordId>> = const { RefCell::new(None) };
+    static CHOSEN: RefCell<Option<DocumentId>> = const { RefCell::new(None) };
 }
 
 /// Imports and exports through the host's file chooser.
@@ -1673,7 +1673,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().fetched, "from a file");
         assert_eq!(
             CHOSEN.with(|chosen| chosen.borrow_mut().take()),
-            Some(RecordId::identify_file(&incoming)),
+            Some(DocumentId::identify_file(&incoming)),
             "the chosen file is known by its durable identity"
         );
         assert_eq!(recorder.pick_requests()[0].title(), "Import a message");

@@ -7,7 +7,7 @@ use fs_protocol::files::{
     FileHistoryReadValueV1 as ReadValue, FileRestoreReceiptV1 as Receipt,
     FileRestoreReviewV1 as Review,
 };
-use fs_protocol::{FileRecordId, FileVersionId};
+use fs_protocol::{FileDocumentId, FileVersionId};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Trusted owner-side transport. This handle is never included in preview input.
@@ -21,7 +21,7 @@ pub trait FileHistoryTransport: Send + Sync {
 #[derive(Clone)]
 pub struct FileHistoryTarget {
     pub binding: uuid::Uuid,
-    pub record: FileRecordId,
+    pub record: FileDocumentId,
     pub label: String,
     /// The file's parent folder inside the workspace, `/`-rooted: the hover
     /// that names a change's writer names where the file is.
@@ -256,7 +256,7 @@ mod tests {
             assert!(session.receive(request, Outcome::Unavailable));
             assert_eq!(session.request, Some(request));
             let mut foreign = request;
-            foreign.review.record_id = FileRecordId(uuid::Uuid::from_u128(6));
+            foreign.review.record_id = FileDocumentId(uuid::Uuid::from_u128(6));
             assert!(!session.receive(foreign, Outcome::NotVisible));
             assert_eq!(session.request, Some(request));
         }
@@ -334,7 +334,7 @@ mod tests {
             schema_version: 1,
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }

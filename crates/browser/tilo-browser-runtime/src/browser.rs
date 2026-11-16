@@ -13,7 +13,7 @@ use js_sys::{Function, Reflect};
 use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
 use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
-use ui::record::{RecordCheckout, RecordStore};
+use ui::record::{DocumentCheckout, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -468,7 +468,7 @@ pub(crate) struct Mount {
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
-    checkout: Option<RecordCheckout>,
+    checkout: Option<DocumentCheckout>,
     /// The workspace's files, as the page's search reads them.
     files_of_the_workspace: Option<Rc<crate::page_files::WorkspaceFiles>>,
     /// The single application's package id; `None` for the desktop.
@@ -1379,7 +1379,7 @@ struct Presentation {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The workspace's files, as the page's search reads them.
     files: Option<Rc<crate::page_files::WorkspaceFiles>>,
-    checkout: Option<RecordCheckout>,
+    checkout: Option<DocumentCheckout>,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     image_owners: crate::page_content::ImageOwners,
     desktop: Option<Desktop>,

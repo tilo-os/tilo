@@ -187,7 +187,7 @@ fn payload(
 }
 fn saved_view(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     local: ui::application_view::ApplicationLocalView,
 ) -> ui::application_view::SavedInstanceView {
     let mut component = component(f, 11, existing(checkout));
@@ -204,7 +204,7 @@ fn saved_view(
 }
 fn fingerprint(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
 ) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
     let (heads, pending, bytes) = f
         .records
@@ -216,7 +216,7 @@ fn fingerprint(
 }
 fn stamp_current_runs(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     page: notes::PageId,
     index: usize,
 ) {
@@ -257,7 +257,7 @@ fn stamp_current_runs(
 }
 fn app_from_payload(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     local: &ui::application_view::ApplicationLocalView,
 ) -> notes::NotesApp {
     use ui::application_view::ApplicationViewState;

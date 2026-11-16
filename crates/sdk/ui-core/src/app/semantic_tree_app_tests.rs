@@ -650,7 +650,7 @@ impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     fn join_route(
         &mut self,
         _: crate::collaboration::RouteSpec,
-        _: crate::record::RecordKind,
+        _: crate::record::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }

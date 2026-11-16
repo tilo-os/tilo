@@ -9,7 +9,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
 use ui::permissions::{Acting, KindSet, MemberId, Role, policy};
-use ui::record::{RecordCheckout, RecordOwners};
+use ui::record::{DocumentCheckout, RecordOwners};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const ID: &str = "0123456789abcdef0123456789abcdef";
@@ -140,7 +140,7 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
     let admitted = enrollment();
     let mut owners = RecordOwners::new(profile.to_owned());
     let records = owners.open(chat::definition().app_id(), WORKSPACE).unwrap();
-    let checkout = RecordCheckout::package_primary(chat::definition().record_kind.clone());
+    let checkout = DocumentCheckout::package_primary(chat::definition().record_kind.clone());
     let missing = match records.try_open_record(&checkout) {
         Ok(_) => false,
         Err(ui::record::RecordOpenError::MissingRecord) => true,
@@ -236,7 +236,7 @@ fn endpoint(records: RecordStore) -> CanonicalDestination {
         enrollment().destination,
         CanonicalRecord {
             records,
-            record: RecordId::package_primary(),
+            record: DocumentId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
             content: None,
         },
@@ -284,7 +284,7 @@ fn canonical_owner_process() {
         assert_eq!(phase, "read");
     }
     let stored = records
-        .read(&RecordId::package_primary(), |doc| {
+        .read(&DocumentId::package_primary(), |doc| {
             let reports = chat::feedback::reports(doc).unwrap();
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0].submission, report);
@@ -415,7 +415,7 @@ fn canonical_owner_refuses_pending_edits_wrong_owner_and_wrong_reporter() {
         Err(Error::ReceiptMismatch)
     ));
     records
-        .with(&RecordId::package_primary(), |doc| {
+        .with(&DocumentId::package_primary(), |doc| {
             doc.put(ROOT, "newer_unsaved_edit", true).unwrap();
         })
         .unwrap();
@@ -467,7 +467,7 @@ fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() 
         admission.destination.clone(),
         CanonicalRecord {
             records,
-            record: RecordId::package_primary(),
+            record: DocumentId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
             content: None,
         },
@@ -512,7 +512,7 @@ fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
             enrollment().destination,
             CanonicalRecord {
                 records: records.clone(),
-                record: RecordId::package_primary(),
+                record: DocumentId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
                 content: Some(content.clone()),
             },
@@ -564,7 +564,7 @@ fn canonical_owner_acknowledges_a_recording_only_once_it_keeps_the_bytes() {
             enrollment().destination,
             CanonicalRecord {
                 records: records.clone(),
-                record: RecordId::package_primary(),
+                record: DocumentId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
                 content: Some(content.clone()),
             },
@@ -617,7 +617,7 @@ fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
             enrollment().destination,
             CanonicalRecord {
                 records: records.clone(),
-                record: RecordId::package_primary(),
+                record: DocumentId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
                 content: Some(content.clone()),
             },
@@ -904,7 +904,7 @@ fn retained_receipt_source_cannot_substitute_report_identity_or_destination() {
         let source = CorruptSource {
             canonical: CanonicalRecord {
                 records: records.clone(),
-                record: RecordId::package_primary(),
+                record: DocumentId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
                 content: None,
             },

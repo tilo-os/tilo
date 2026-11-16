@@ -8,7 +8,7 @@ use notes::{
 use std::{cell::RefCell, collections::HashMap, path::PathBuf};
 use ui::{
     permissions::{MemberId, PermissionContext, Role},
-    record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore},
+    record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore, ResourceType},
 };
 use uuid::Uuid;
 
@@ -144,10 +144,10 @@ impl NotebookFixture {
 
     /// Write the notebook into its record, the workspace's default, once, and
     /// make it durable.
-    pub fn write_notebook(&self) -> RecordCheckout {
-        let checkout = RecordCheckout::new(
-            RecordId::workspace_default(),
-            RecordKind::new("notes.notebook"),
+    pub fn write_notebook(&self) -> DocumentCheckout {
+        let checkout = DocumentCheckout::new(
+            DocumentId::workspace_default(),
+            ResourceType::new("notes.notebook"),
         );
         let actions = self.actions();
         self.records

@@ -377,7 +377,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
                     route,
                     author: Some(author),
                 } if author == agent_key
-                    && chat::parts::part_index(&ui::record::RecordId::parse(&route.record)?)
+                    && chat::parts::part_index(&ui::record::DocumentId::parse(&route.record)?)
                         .is_some() =>
                 {
                     Some(route.record)

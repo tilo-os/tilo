@@ -26,7 +26,7 @@ tilo_test_env::scenario! {
         let author = MemberId::person("11".repeat(32));
         let mut owners = RecordOwners::new(root.clone());
         let settings = PersonRecords::open(&mut owners, "so.tilo.settings", author.clone()).unwrap();
-        let kind = RecordKind::new("synthetic.accounts");
+        let kind = ResourceType::new("synthetic.accounts");
         let original = settings
             .open_original_record(kind.clone(), |doc| {
                 doc.put(automerge::ROOT, "enabled", true)
@@ -88,7 +88,7 @@ tilo_test_env::scenario! {
     {
         let records = PersonRecords::replica("so.tilo.settings", MemberId::person("11".repeat(32))).unwrap();
         let initialized = std::cell::Cell::new(0);
-        let result = records.open_original_record(RecordKind::new("synthetic.accounts"), |_| {
+        let result = records.open_original_record(ResourceType::new("synthetic.accounts"), |_| {
             initialized.set(initialized.get() + 1);
             Ok(())
         });

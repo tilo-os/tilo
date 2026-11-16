@@ -2,7 +2,7 @@
 use super::{HistoryRegistrationError, HistoryResource};
 use crate::{
     bound_dispatch::CallbackBinding,
-    record::{RecordCheckout, RecordStore},
+    record::{DocumentCheckout, RecordStore},
 };
 use automerge::{AutoCommit, transaction::Transactable};
 use std::{
@@ -56,7 +56,7 @@ pub(crate) enum OwnerKind {
     Component(CallbackBinding),
     Record {
         store: RecordStore,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         lifetime: Weak<RecordOwnerLifetime>,
         /// Whether this app publishes the record's changes: the identity service signs a change on a
         /// route only for the app of that route, or for one of the workspace's shared records
@@ -96,7 +96,7 @@ impl HistoryOwner {
     /// published on it.
     pub(crate) fn record(
         store: RecordStore,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         lifetime: &Rc<RecordOwnerLifetime>,
         publishes: bool,
     ) -> Self {
@@ -369,14 +369,14 @@ mod publication_tests {
     #[test]
     fn legacy_publication_rejects_same_id_with_stale_checkout_metadata() {
         let store = RecordStore::in_memory();
-        let live = RecordCheckout::new(
-            crate::RecordId::for_tab(919),
-            crate::record::RecordKind::new("note"),
+        let live = DocumentCheckout::new(
+            crate::DocumentId::for_tab(919),
+            crate::record::ResourceType::new("note"),
         );
         store.open_record(&live);
-        let stale = RecordCheckout::new(
+        let stale = DocumentCheckout::new(
             live.id.clone(),
-            crate::record::RecordKind::new("different-kind"),
+            crate::record::ResourceType::new("different-kind"),
         );
         let lifetime = RecordOwnerLifetime::new();
         let owner = HistoryOwner::record(store, stale, &lifetime, true);
@@ -399,7 +399,7 @@ impl HistoryOwner {
         let (b, bc) = other.store_checkout();
         a.same_owner(b) && ac == bc
     }
-    pub(crate) fn store_checkout(&self) -> (&RecordStore, &RecordCheckout) {
+    pub(crate) fn store_checkout(&self) -> (&RecordStore, &DocumentCheckout) {
         match &self.0 {
             OwnerKind::Component(binding) => (&binding.records, &binding.checkout),
             OwnerKind::Record {
@@ -410,7 +410,7 @@ impl HistoryOwner {
     /// What the owner's record holds, as the checkout that opened it says. A host that must create the
     /// record on this device's first write needs the kind named here; a route joined without one can
     /// only be written where the record already exists.
-    pub(crate) fn record_kind(&self) -> crate::record::RecordKind {
+    pub(crate) fn record_kind(&self) -> crate::record::ResourceType {
         self.store_checkout().1.kind.clone()
     }
 
@@ -519,7 +519,7 @@ pub(crate) struct RecordOwnerFixture {
     _temp: tempfile::TempDir,
     _owners: crate::record::RecordOwners,
     pub(crate) store: RecordStore,
-    pub(crate) checkout: RecordCheckout,
+    pub(crate) checkout: DocumentCheckout,
     pub(crate) owner: HistoryOwner,
     _lifetime: Rc<RecordOwnerLifetime>,
 }
@@ -532,9 +532,9 @@ impl RecordOwnerFixture {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().join("profile"));
         let store = owners.open("so.tilo.controlled", workspace).unwrap();
-        let checkout = RecordCheckout::new(
-            crate::RecordId::for_tab(id),
-            crate::record::RecordKind::new("controlled"),
+        let checkout = DocumentCheckout::new(
+            crate::DocumentId::for_tab(id),
+            crate::record::ResourceType::new("controlled"),
         );
         store
             .reserve_record(&checkout)

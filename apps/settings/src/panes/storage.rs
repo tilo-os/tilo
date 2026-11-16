@@ -1351,7 +1351,7 @@ mod tests {
     fn opening_the_storage_page_writes_no_change() {
         fn documents(
             app: &ui::prelude::TestApp<crate::SettingsShell>,
-        ) -> Vec<(ui::record::RecordId, Option<Vec<u8>>)> {
+        ) -> Vec<(ui::record::DocumentId, Option<Vec<u8>>)> {
             app.open_records()
                 .into_iter()
                 .map(|record| {

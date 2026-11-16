@@ -96,21 +96,21 @@ pub enum BlobRecordLookupError {
     Namespace(#[from] LiveRecordBlobScanError),
     #[error("live record {record_id:?} manifest {manifest} is not locally available")]
     ManifestUnavailable {
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         manifest: Hash,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} encoded bytes")]
     ManifestTooLarge {
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         limit: usize,
     },
     #[error("live record {record_id:?} has a malformed manifest")]
     MalformedManifest {
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
     },
     #[error("live record {record_id:?} manifest exceeds {limit} chunks")]
     TooManyChunks {
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         limit: usize,
     },
 }
@@ -926,7 +926,7 @@ impl ContentStore {
         namespace: &Namespace,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileDocumentId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -945,7 +945,7 @@ impl ContentStore {
         roots: Vec<LiveRecordBlobRoots>,
         requested: Hash,
         limits: BlobRecordLookupLimits,
-    ) -> std::result::Result<Vec<fs_protocol::FileRecordId>, BlobRecordLookupError> {
+    ) -> std::result::Result<Vec<fs_protocol::FileDocumentId>, BlobRecordLookupError> {
         if limits.max_manifest_bytes == 0
             || limits.max_manifest_bytes > MAX_BLOB_LOOKUP_MANIFEST_BYTES
             || limits.max_chunks_per_record == 0
@@ -1001,7 +1001,7 @@ impl ContentStore {
     #[cfg(feature = "filesystem")]
     pub async fn inspect_version_payload(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         version_id: fs_protocol::FileVersionId,
         manifest_hash: Hash,
     ) -> Result<VersionPayload> {
@@ -1477,7 +1477,7 @@ mod tests {
             let manifest_hash = store.write_content(&data).await.unwrap().unwrap();
             let payload = store
                 .inspect_version_payload(
-                    fs_protocol::FileRecordId::new(),
+                    fs_protocol::FileDocumentId::new(),
                     fs_protocol::FileVersionId::new(),
                     manifest_hash,
                 )
@@ -1513,7 +1513,7 @@ mod tests {
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
             let revision = fs_protocol::ContentRevisionV1 {
                 schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: fs_protocol::FileRecordId::new(),
+                record_id: fs_protocol::FileDocumentId::new(),
                 version_id: fs_protocol::FileVersionId::new(),
                 content_hash: Some(fs_protocol::ContentHash(*manifest_hash.as_bytes())),
                 byte_len: 13,
@@ -1533,7 +1533,7 @@ mod tests {
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
 
             let make_plan = |hash| EvictionPlan {
-                record_id: fs_protocol::FileRecordId::new(),
+                record_id: fs_protocol::FileDocumentId::new(),
                 version_id: fs_protocol::FileVersionId::new(),
                 mode: EvictionMode::Safe,
                 reclaimable: vec![BlobExtent {
@@ -1607,9 +1607,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            let target_id = fs_protocol::FileRecordId::new();
+            let target_id = fs_protocol::FileDocumentId::new();
             let target_version = fs_protocol::FileVersionId::new();
-            let other_id = fs_protocol::FileRecordId::new();
+            let other_id = fs_protocol::FileDocumentId::new();
             let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
@@ -1747,9 +1747,9 @@ mod tests {
                 .ingest(Bytes::from_static(b"other root"))
                 .await
                 .unwrap();
-            let target_id = fs_protocol::FileRecordId::new();
+            let target_id = fs_protocol::FileDocumentId::new();
             let target_version = fs_protocol::FileVersionId::new();
-            let other_id = fs_protocol::FileRecordId::new();
+            let other_id = fs_protocol::FileDocumentId::new();
             let other_version = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
@@ -1849,7 +1849,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let record_id = fs_protocol::FileRecordId::new();
+            let record_id = fs_protocol::FileDocumentId::new();
             let version_id = fs_protocol::FileVersionId::new();
             let mut registry =
                 AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();

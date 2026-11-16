@@ -352,7 +352,7 @@ fn a_record_route_opening_on_the_apps_own_channel_wakes_its_owner() {
     };
     manager.join_route(
         part.clone(),
-        collab_types::record::RecordKind::new("chat.part"),
+        collab_types::document::ResourceType::new("chat.part"),
     );
     poll_on_wakes(
         &mut manager,

@@ -2666,7 +2666,7 @@ mod own_record_tests {
             .expect("each member keeps their own Mail record");
         assert_eq!(
             own.id,
-            ui::record::RecordId::of_member(&person.key(), "mail.mailbox").unwrap()
+            ui::record::DocumentId::of_member(&person.key(), "mail.mailbox").unwrap()
         );
         assert_eq!(own.kind.as_str(), "mail.mailbox");
     }

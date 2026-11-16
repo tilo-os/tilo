@@ -5,7 +5,7 @@
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::record::RecordId;
+use crate::record::DocumentId;
 
 /// The mark a mention's run carries, valued with the participant's id.
 pub const MARK: &str = "mention";
@@ -526,13 +526,13 @@ fn decode(part: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The route of the chain whose part the record `route` names ([`RecordId::part`]): empty for a part of
+/// The route of the chain whose part the record `route` names ([`DocumentId::part`]): empty for a part of
 /// the app's own record.
 #[must_use]
 pub fn chain_of(route: &str) -> Option<&str> {
     let (role, chain) = route.strip_prefix("derived:")?.split_once('@')?;
     role.starts_with("part.")
-        .then_some(if chain == RecordId::package_primary().as_str() {
+        .then_some(if chain == DocumentId::package_primary().as_str() {
             ""
         } else {
             chain

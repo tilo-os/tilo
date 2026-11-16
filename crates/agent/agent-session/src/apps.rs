@@ -30,7 +30,7 @@ use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, ResourceSelection};
 use ui::permissions::{PermissionContext, Role, policy};
 use ui::portable_storage::PortableStorage;
-use ui::record::{RecordCheckout, RecordId, RecordOwners};
+use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
 use ui::tilo_resource::{Place, ResourceKind};
 
 /// An app whose records this host keeps and whose windows another device
@@ -207,10 +207,10 @@ pub enum Seed {
     /// A new record under the id a workspace route names (the workspace's default
     /// record a host seeds before any member opens it): its genesis names
     /// that id, as the record every member's first window opens.
-    NewAt(RecordId),
+    NewAt(DocumentId),
     /// An existing record, from the durable changes the host replayed.
     Existing {
-        record: RecordId,
+        record: DocumentId,
         /// Its Automerge changes (a snapshot, then increments), in order.
         changes: Vec<Vec<u8>>,
     },
@@ -527,7 +527,7 @@ impl Replica {
         self.app_id
     }
 
-    /// Collaboration route of this record ([`RecordId::route`]): the record
+    /// Collaboration route of this record ([`DocumentId::route`]): the record
     /// id a `DocumentRoute` names it by.
     #[must_use]
     pub fn wire_record(&self) -> &str {
@@ -535,7 +535,7 @@ impl Replica {
     }
 
     #[must_use]
-    pub const fn record_id(&self) -> &RecordId {
+    pub const fn record_id(&self) -> &DocumentId {
         &self.view.checkout().id
     }
 
@@ -850,7 +850,7 @@ impl Replica {
     #[must_use]
     pub fn changed_keys(
         &self,
-        record: &ui::record::RecordId,
+        record: &ui::record::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         self.view.changed_keys(record, mutation)
@@ -1177,7 +1177,7 @@ impl Replica {
     /// ([`Self::apply_record`]) and the app's actions reach through the
     /// chain, as in a window.
     #[must_use]
-    pub fn keeps_beside(&self, record: &RecordId) -> bool {
+    pub fn keeps_beside(&self, record: &DocumentId) -> bool {
         self.view.beside(record).is_some()
     }
 
@@ -1191,19 +1191,19 @@ impl Replica {
 
     /// What this replica's records ask the workspace's hosts for.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<RecordId> {
+    pub fn wanted_records(&self) -> Vec<DocumentId> {
         self.view.wanted_records()
     }
 
     /// The workspace's hosts answered `record`, which this replica asked for: they hold none
     /// of it, or it is another person's own, which never reaches this replica.
-    pub fn workspace_answered(&mut self, record: RecordId, answer: ui::record::WorkspaceAnswer) {
+    pub fn workspace_answered(&mut self, record: DocumentId, answer: ui::record::WorkspaceAnswer) {
         self.view.workspace_answered(record, answer);
     }
 
     /// The records held beside this one ([`Self::keeps_beside`]), by id.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<RecordId> {
+    pub fn records_beside(&self) -> Vec<DocumentId> {
         self.view
             .records_beside()
             .into_iter()
@@ -1223,7 +1223,7 @@ impl Replica {
     /// the change.
     pub fn apply_record(
         &mut self,
-        record: &RecordId,
+        record: &DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<(), AppError> {
         if record == self.record_id() {
@@ -1243,7 +1243,9 @@ impl Replica {
     ///
     /// As [`Self::take_mutation`]: none is taken then, every part's changes
     /// go with the next call.
-    pub fn take_record_mutations(&mut self) -> Result<Vec<(RecordId, DocumentMutation)>, AppError> {
+    pub fn take_record_mutations(
+        &mut self,
+    ) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
         self.view
             .take_records_beside_changes()
             .map_err(AppError::Merge)
@@ -1252,7 +1254,7 @@ impl Replica {
     /// Read `record`: this replica's own, or one held beside it.
     pub fn read_record<R>(
         &self,
-        record: &RecordId,
+        record: &DocumentId,
         read: impl FnOnce(&automerge::AutoCommit) -> R,
     ) -> Option<R> {
         if record == self.record_id() {
@@ -1367,13 +1369,13 @@ fn seeded(
     workspace: &str,
     participant: &ui::tilo_resource::MemberId,
     seed: Seed,
-) -> Result<(RecordCheckout, Vec<u8>, bool), AppError> {
+) -> Result<(DocumentCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
         Seed::New => {
             let checkout = if definition.keeps_workspace_record() {
-                RecordCheckout::package_primary(definition.record_kind.clone())
+                DocumentCheckout::package_primary(definition.record_kind.clone())
             } else {
-                RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
+                DocumentCheckout::new(DocumentId::minted(), definition.record_kind.clone())
             };
             let bytes = genesis(definition, workspace, &checkout, kind, participant)?;
             (checkout, bytes, true)
@@ -1384,7 +1386,7 @@ fn seeded(
                     "record route does not match the app's workspace scope".into(),
                 ));
             }
-            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(record, definition.record_kind.clone());
             let bytes = genesis(definition, workspace, &checkout, kind, participant)?;
             (checkout, bytes, true)
         }
@@ -1399,7 +1401,7 @@ fn seeded(
                 tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
             }
-            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(record, definition.record_kind.clone());
             (checkout, doc.save(), false)
         }
     };
@@ -1415,7 +1417,7 @@ fn seeded(
 fn genesis(
     definition: &ApplicationDefinition,
     workspace: &str,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     kind: ResourceKind,
     creator: &ui::tilo_resource::MemberId,
 ) -> Result<Vec<u8>, AppError> {

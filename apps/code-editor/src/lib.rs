@@ -72,7 +72,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 }
 
 #[must_use]
-pub fn launch_record(path: &std::path::Path) -> Option<ui::record::RecordId> {
+pub fn launch_record(path: &std::path::Path) -> Option<ui::record::DocumentId> {
     use ui::framework::{LaunchInput, ResourceApp as _};
     let arguments = [path.display().to_string()];
     CodeEditorShell::launch_record(&LaunchInput::new(&arguments, None))

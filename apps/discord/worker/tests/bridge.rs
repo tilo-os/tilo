@@ -138,7 +138,7 @@ impl Workspace {
             .unwrap();
         let mut held = Vec::new();
         for (app, record) in self.workspaces.record_routes(&self.id).await.unwrap() {
-            let Some(part) = ui::record::RecordId::parse(&record)
+            let Some(part) = ui::record::DocumentId::parse(&record)
                 .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
             else {
                 continue;
@@ -171,7 +171,7 @@ impl Workspace {
                 author,
                 ReplicaActor::Owner,
                 Seed::Existing {
-                    record: ui::record::RecordId::package_primary(),
+                    record: ui::record::DocumentId::package_primary(),
                     changes: vec![chat],
                 },
             )
@@ -1958,7 +1958,7 @@ impl Bridge {
         &self,
         change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
     ) {
-        let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
+        let record = collab_types::workspace_document_id(ui::tilo_workspace_emoji::KIND);
         let saved = self
             .workspace
             .workspaces
@@ -1995,8 +1995,8 @@ impl Bridge {
             .unwrap_or_default();
         ui::record::init_scoped(
             &mut doc,
-            &ui::record::RecordId::parse(record).unwrap(),
-            &ui::record::RecordKind::new(KIND),
+            &ui::record::DocumentId::parse(record).unwrap(),
+            &ui::record::ResourceType::new(KIND),
             CHAT,
             Some(&self.workspace.id),
         );

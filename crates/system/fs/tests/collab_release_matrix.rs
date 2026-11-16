@@ -10,13 +10,13 @@ fn hash(byte: u8) -> Hash {
 }
 
 type StructuralProjection = Vec<(
-    fs_protocol::FileRecordId,
-    Option<(fs_protocol::FileRecordId, Vec<u8>)>,
+    fs_protocol::FileDocumentId,
+    Option<(fs_protocol::FileDocumentId, Vec<u8>)>,
 )>;
 
 fn structural_projection(
     namespace: &mut Namespace,
-    records: &[fs_protocol::FileRecordId],
+    records: &[fs_protocol::FileDocumentId],
 ) -> StructuralProjection {
     let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey([0x91; 32]),
@@ -59,7 +59,7 @@ fn structural_projection(
 fn converge_structural_partition(
     left: &[u8],
     right: &[u8],
-    records: &[fs_protocol::FileRecordId],
+    records: &[fs_protocol::FileDocumentId],
 ) -> (Namespace, Namespace) {
     let mut left_peer = Namespace::from_bytes("structural-left-restart", left).unwrap();
     let mut right_peer = Namespace::from_bytes("structural-right-restart", right).unwrap();

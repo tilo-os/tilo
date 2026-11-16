@@ -118,7 +118,7 @@ mod tests {
             OwnRecord::new("chat.drafts", [1; 32]).unwrap().record_id()
         );
         assert!(ada.names(&ada.record_id()));
-        assert!(crate::record::RecordId::parse(&ada.record_id()).is_some());
+        assert!(crate::document::DocumentId::parse(&ada.record_id()).is_some());
         let bo = OwnRecord::new("chat.drafts", [2; 32]).unwrap();
         let other_kind = OwnRecord::new("mail.mailbox", [1; 32]).unwrap();
         assert_ne!(ada.record_id(), bo.record_id());

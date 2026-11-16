@@ -519,9 +519,9 @@ impl App {
     /// they sync on their own routes from then on
     /// ([`crate::history_mode::routes`]).
     pub(super) fn records_arrived(&mut self, records: &[String]) {
-        let records: Vec<crate::record::RecordId> = records
+        let records: Vec<crate::record::DocumentId> = records
             .iter()
-            .filter_map(|record| crate::record::RecordId::parse(record))
+            .filter_map(|record| crate::record::DocumentId::parse(record))
             .collect();
         for store in &self.live_record_stores() {
             store.announce(records.iter().cloned());
@@ -536,7 +536,7 @@ impl App {
         let Some(id) = route
             .record
             .as_deref()
-            .and_then(crate::record::RecordId::parse)
+            .and_then(crate::record::DocumentId::parse)
         else {
             return;
         };
@@ -561,7 +561,7 @@ impl App {
             || !route
                 .record
                 .as_deref()
-                .and_then(crate::record::RecordId::parse)
+                .and_then(crate::record::DocumentId::parse)
                 .is_some_and(|id| id.arrives_on_demand())
         {
             return;

@@ -38,7 +38,7 @@ use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
 #[cfg(target_os = "linux")]
 use tilo_actions::remote::workspace_activity as wire;
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 
 #[cfg(target_os = "linux")]
 use crate::platform::fabric::SharedLink;
@@ -581,7 +581,7 @@ impl Activity {
                 // The service's record is the app's record of the workspace, which the history
                 // names as its primary: one document may hold several apps' records, and the
                 // kind says whose steps in it this entry's are.
-                checkout: RecordCheckout::package_primary(RecordKind::new(record.kind)),
+                checkout: DocumentCheckout::package_primary(ResourceType::new(record.kind)),
                 app: record.app,
                 document: Some(record.document),
             })
@@ -793,13 +793,13 @@ fn read_workspace_records(
         if let Some(document) = primary
             && seen.insert((
                 package.clone(),
-                RecordId::package_primary().as_str().to_owned(),
+                DocumentId::package_primary().as_str().to_owned(),
             ))
         {
             noted(document.get_actor());
             read.push(DetachedRecordHistory {
                 app: package.clone(),
-                checkout: RecordCheckout::package_primary(RecordKind::new(package.as_str())),
+                checkout: DocumentCheckout::package_primary(ResourceType::new(package.as_str())),
                 document: Some(document),
             });
         }
@@ -824,7 +824,7 @@ fn read_workspace_records(
     // the packages it opened, and a computer's folder writes are its versions.
     let tree_id = collab_types::person_record_id(fs_protocol::tree::TREE_KIND);
     if seen.insert((fs_protocol::tree::FILES_APP.to_owned(), tree_id.clone()))
-        && let Some(record_id) = RecordId::parse(&tree_id)
+        && let Some(record_id) = DocumentId::parse(&tree_id)
         && let Some(document) = crate::platform::records::document(
             store,
             fs_protocol::tree::FILES_APP,
@@ -835,7 +835,10 @@ fn read_workspace_records(
         noted(document.get_actor());
         read.push(DetachedRecordHistory {
             app: fs_protocol::tree::FILES_APP.to_owned(),
-            checkout: RecordCheckout::new(record_id, RecordKind::new(fs_protocol::tree::TREE_KIND)),
+            checkout: DocumentCheckout::new(
+                record_id,
+                ResourceType::new(fs_protocol::tree::TREE_KIND),
+            ),
             document: Some(document),
         });
     }
@@ -1427,8 +1430,8 @@ mod tests {
         let store = app_state::FsStore::new(dir.path());
         let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
         let app = "so.tilo.word-processor";
-        let id = RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
-        let kind = RecordKind::new("word-processor.document");
+        let id = DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let kind = ResourceType::new("word-processor.document");
         let write = |key: &StorageKey, doc: &mut ui::automerge::AutoCommit| {
             let _lease = store.lease(key).unwrap();
             store
@@ -1973,7 +1976,7 @@ mod tests {
         assert_eq!(action.changes, 2, "its two writes: {action:?}");
         assert_eq!(
             action.record,
-            ui::record::RecordId::package_primary().as_str(),
+            ui::record::DocumentId::package_primary().as_str(),
             "{action:?}"
         );
         let finished = tilo_desktop::here::AgentFinished {

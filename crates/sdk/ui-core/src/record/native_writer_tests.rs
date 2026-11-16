@@ -17,7 +17,7 @@ fn writer(doc: &AutoCommit) -> automerge::ActorId {
 fn a_change_taken_back_replaces_the_writer_the_record_saved() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("state");
-    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
     let (refused, saved) = {
         let mut owners = RecordOwners::new(root.clone());
         let store = owners.open("so.tilo.test", "workspace").unwrap();

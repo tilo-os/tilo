@@ -852,7 +852,7 @@ fn close_memory(
 }
 fn reopened_body(
     backend: Rc<durable_store::MemoryStore>,
-    checkout: &crate::record::RecordCheckout,
+    checkout: &crate::record::DocumentCheckout,
 ) -> String {
     let mut owners = crate::record::RecordOwners::with_store(backend);
     let records = owners.open(probe::APP, probe::WORKSPACE).unwrap();

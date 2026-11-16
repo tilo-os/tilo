@@ -63,7 +63,7 @@ mod tests {
                     schema_version: CHECKED_HISTORY_VERSION,
                     workspace_id: uuid::Uuid::new_v4(),
                     mount_lifetime: uuid::Uuid::new_v4(),
-                    record_id: fs_protocol::FileRecordId(uuid::Uuid::new_v4()),
+                    record_id: fs_protocol::FileDocumentId(uuid::Uuid::new_v4()),
                     frontier: [1; 32],
                 },
                 operation: CheckedHistoryOperationV1::Restore { version_id },

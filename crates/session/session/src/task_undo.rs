@@ -552,7 +552,7 @@ mod tests {
             let (doc, body) = edited(TASK);
             let api = session_api(doc);
             // The activity names a session-kept record as the app's own record of the workspace.
-            let primary = ui::record::RecordId::package_primary().as_str().to_owned();
+            let primary = ui::record::DocumentId::package_primary().as_str().to_owned();
             let undone = undo_task_run(
                 &api,
                 &caller(),

@@ -1,7 +1,7 @@
 //! Immutable file versions and conflicts, held in the tree document. A version
 //! records one state a record was in: the content hash, the metadata hash, who made
 //! it, when, and which versions it descends from. History is keyed by
-//! [`FileRecordId`], never by path, and lives inside the namespace document, so it
+//! [`FileDocumentId`], never by path, and lives inside the namespace document, so it
 //! syncs with the tree and every device derives the same heads and conflicts.
 //!
 //! Versions are never rewritten: a restore appends a version, so an eviction root or
@@ -13,8 +13,8 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue, Value};
 use fs_protocol::files::{CheckedHistoryRequestV1, FileRestoreReceiptV1};
 use fs_protocol::{
-    ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileRecordError,
-    FileRecordId, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
+    ConflictResolution, ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId,
+    FileProvenance, FileVersionAttributionV1, FileVersionId, FileVersionV1, HistoryProjectionV1,
     prefer_conflict_resolution,
 };
 use thiserror::Error;
@@ -45,7 +45,7 @@ pub enum HistoryError {
     #[error(transparent)]
     Document(#[from] automerge::AutomergeError),
     #[error(transparent)]
-    Record(#[from] FileRecordError),
+    Record(#[from] FileDocumentError),
     #[error(transparent)]
     Canonical(#[from] collab_types::CanonicalError),
     #[error("version id {0:?} is already bound to different content")]
@@ -53,7 +53,7 @@ pub enum HistoryError {
     #[error("conflict id {0} is already bound to different content")]
     ConflictIdCollision(Uuid),
     #[error("record {0:?} has no history")]
-    UnknownRecord(FileRecordId),
+    UnknownRecord(FileDocumentId),
     #[error("the record has no version {0:?}")]
     UnknownVersion(FileVersionId),
     #[error("conflict {0} is unknown")]
@@ -143,14 +143,14 @@ impl Namespace {
 
     pub(crate) fn record_versions(
         &self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionV1> {
         fs_protocol::history::record_versions(&*self.doc, record_id)
     }
 
     pub(crate) fn record_conflicts(
         &self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
     ) -> BTreeMap<Uuid, FileConflictV1> {
         fs_protocol::history::record_conflicts(&*self.doc, record_id)
     }
@@ -168,7 +168,7 @@ impl Namespace {
             .collect()
     }
 
-    fn history_slot(&mut self, record_id: FileRecordId) -> Result<ObjId, HistoryError> {
+    fn history_slot(&mut self, record_id: FileDocumentId) -> Result<ObjId, HistoryError> {
         let root = self.ensure_history_root()?;
         let key = record_id.0.to_string();
         if let Some(record) = object(self.doc.get(&root, &key)?) {
@@ -186,7 +186,7 @@ impl Namespace {
 
     fn write_version(
         &mut self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         version: &FileVersionV1,
     ) -> Result<(), HistoryError> {
         let record = self.history_slot(record_id)?;
@@ -198,7 +198,7 @@ impl Namespace {
 
     fn write_conflict(
         &mut self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         conflict: &FileConflictV1,
     ) -> Result<(), HistoryError> {
         let record = self.history_slot(record_id)?;
@@ -208,18 +208,18 @@ impl Namespace {
         Ok(())
     }
 
-    pub fn record_history(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
+    pub fn record_history(&self, record_id: FileDocumentId) -> Option<RecordHistorySnapshot> {
         fs_protocol::history::record_history(&*self.doc, record_id)
     }
 
     pub fn record_history_projection(
         &self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
     ) -> Option<HistoryProjectionV1> {
         fs_protocol::history::record_history_projection(&*self.doc, record_id)
     }
 
-    pub fn record_history_heads(&self, record_id: FileRecordId) -> Vec<FileVersionId> {
+    pub fn record_history_heads(&self, record_id: FileDocumentId) -> Vec<FileVersionId> {
         fs_protocol::history::computed_heads(&self.record_versions(record_id))
             .into_iter()
             .collect()
@@ -227,7 +227,7 @@ impl Namespace {
 
     pub fn record_version(
         &self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         version_id: FileVersionId,
     ) -> (Option<FileVersionV1>, Vec<FileVersionId>) {
         let versions = self.record_versions(record_id);
@@ -241,7 +241,7 @@ impl Namespace {
     /// Check a batch of versions against the record's history without writing it; the
     /// same checks [`Self::append_versions`] applies.
     pub fn check_versions(&self, versions: &[FileVersionV1]) -> Result<(), HistoryError> {
-        let mut known: BTreeMap<FileRecordId, BTreeMap<FileVersionId, FileVersionV1>> =
+        let mut known: BTreeMap<FileDocumentId, BTreeMap<FileVersionId, FileVersionV1>> =
             BTreeMap::new();
         for version in versions {
             let current = known
@@ -262,7 +262,7 @@ impl Namespace {
         &mut self,
         versions: &[FileVersionV1],
     ) -> Result<Vec<bool>, HistoryError> {
-        let mut known: BTreeMap<FileRecordId, BTreeMap<FileVersionId, FileVersionV1>> =
+        let mut known: BTreeMap<FileDocumentId, BTreeMap<FileVersionId, FileVersionV1>> =
             BTreeMap::new();
         let mut appended = Vec::with_capacity(versions.len());
         let mut accepted = Vec::new();
@@ -317,7 +317,7 @@ impl Namespace {
     /// Resolve a conflict with a version that made the resolution.
     pub fn resolve_history_conflict(
         &mut self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         conflict_id: Uuid,
         resolution: &ConflictResolution,
     ) -> Result<bool, HistoryError> {
@@ -352,12 +352,12 @@ impl Namespace {
 
     pub(crate) fn record_attributions(
         &self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
     ) -> BTreeMap<FileVersionId, FileVersionAttributionV1> {
         fs_protocol::history::record_attributions(&*self.doc, record_id)
     }
 
-    pub fn version_attributions(&self, record_id: FileRecordId) -> Vec<FileVersionAttributionV1> {
+    pub fn version_attributions(&self, record_id: FileDocumentId) -> Vec<FileVersionAttributionV1> {
         let mut versions = self.record_versions(record_id);
         self.record_attributions(record_id)
             .into_iter()
@@ -371,7 +371,7 @@ impl Namespace {
     /// no-op.
     pub fn attribute_version(
         &mut self,
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         attributed: &FileVersionAttributionV1,
     ) -> Result<bool, HistoryError> {
         attributed.attribution.validate()?;
@@ -483,7 +483,7 @@ impl Namespace {
         })
     }
 
-    pub fn has_history(&self, record_id: FileRecordId) -> bool {
+    pub fn has_history(&self, record_id: FileDocumentId) -> bool {
         !self.record_versions(record_id).is_empty()
     }
 }
@@ -520,7 +520,7 @@ mod tests {
     }
 
     fn version(
-        record_id: FileRecordId,
+        record_id: FileDocumentId,
         parents: Vec<FileVersionId>,
         provenance: FileProvenance,
         timestamp_ms: u64,
@@ -547,7 +547,7 @@ mod tests {
         phase versions_append_once_and_heads_follow_the_graph;
         {
             let mut namespace = history();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let root = version(record, vec![], FileProvenance::Create, 1);
             assert!(namespace.append_version(root.clone()).unwrap());
             assert!(
@@ -588,7 +588,7 @@ mod tests {
             );
             assert_eq!(namespace.record_history(record).unwrap(), snapshot);
 
-            let other = FileRecordId::new();
+            let other = FileDocumentId::new();
             let good = version(other, vec![], FileProvenance::Create, 1);
             let mut collision = version(other, vec![], FileProvenance::Edit, 2);
             collision.id = good.id;
@@ -602,7 +602,7 @@ mod tests {
         phase a_version_arriving_before_its_parent_is_kept;
         {
             let mut namespace = history();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let root = version(record, vec![], FileProvenance::Create, 1);
             let child = version(record, vec![root.id], FileProvenance::Edit, 2);
             assert!(namespace.append_version(child.clone()).unwrap());
@@ -618,7 +618,7 @@ mod tests {
         phase a_peer_that_takes_the_document_changes_has_the_versions;
         {
             let mut here = history();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let root = version(record, vec![], FileProvenance::Create, 1);
             let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
             here.append_versions(&[root.clone(), edit.clone()]).unwrap();
@@ -641,7 +641,7 @@ mod tests {
         phase conflicts_are_recorded_once_and_resolved_by_their_version;
         {
             let mut namespace = history();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let root = version(record, vec![], FileProvenance::Create, 1);
             let left = version(record, vec![root.id], FileProvenance::Edit, 2);
             let right = version(record, vec![root.id], FileProvenance::Edit, 3);
@@ -709,7 +709,7 @@ mod tests {
         phase the_projection_is_bounded_and_round_trips;
         {
             let mut namespace = history();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let mut parent = None;
             for timestamp in 0..20 {
                 let item = version(

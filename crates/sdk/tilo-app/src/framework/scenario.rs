@@ -100,7 +100,7 @@ pub(crate) struct Run {
 #[derive(Default)]
 pub(crate) struct Launched {
     /// The record selected by the host for this launch.
-    pub(crate) record: Option<ui_core::record::RecordId>,
+    pub(crate) record: Option<ui_core::record::DocumentId>,
     pub(crate) arguments: Vec<String>,
     pub(crate) options: Vec<ui_core::application::LaunchOption>,
     pub(crate) file: Option<ui_core::application::OpenFile>,

@@ -14,7 +14,7 @@ use fs_protocol::{
     HistoryProjectionV1, METADATA_XATTR, MetadataProjectionV1, Residency, SYNC_XATTR, SyncState,
     THUMB_XATTR,
 };
-use ui::prelude::RECORD_ID_XATTR;
+use ui::prelude::DOCUMENT_ID_XATTR;
 
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     match xattr::get(path, SYNC_XATTR) {
@@ -73,7 +73,7 @@ pub fn read_content_hash(path: &Path) -> Option<[u8; 32]> {
 }
 
 pub fn read_record_id(path: &Path) -> Option<[u8; 16]> {
-    let bytes = xattr::get(path, RECORD_ID_XATTR).ok()??;
+    let bytes = xattr::get(path, DOCUMENT_ID_XATTR).ok()??;
     bytes.as_slice().try_into().ok()
 }
 
@@ -98,7 +98,7 @@ pub struct WorkspaceRecordIndexPager {
     roots: Vec<PathBuf>,
     root_index: usize,
     cursor: Option<RecordIndexCursor>,
-    opaque_cursor: Option<(String, String, Option<fs_protocol::FileRecordId>)>,
+    opaque_cursor: Option<(String, String, Option<fs_protocol::FileDocumentId>)>,
     discovered: bool,
     reset_pending: bool,
     observed_generation: Option<String>,
@@ -121,7 +121,7 @@ struct TestV2Source {
 struct RecordIndexCursor {
     revision: String,
     offset: usize,
-    last_record_id: Option<fs_protocol::FileRecordId>,
+    last_record_id: Option<fs_protocol::FileDocumentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -408,7 +408,7 @@ impl WorkspaceRecordIndexPager {
                 .min(source.records);
             let records = ((offset + 1)..=end)
                 .map(|ordinal| RecordIndexEntryV1 {
-                    record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(ordinal as u128)),
+                    record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(ordinal as u128)),
                     path: if ordinal == source.records {
                         "/late-target.txt".into()
                     } else {
@@ -1192,9 +1192,9 @@ pub(crate) mod sync_state_tests {
                 std::fs::write(&f, b"content").unwrap();
                 assert_eq!(read_record_id(&f), None);
                 let id = [0x7bu8; 16];
-                xattr::set(&f, RECORD_ID_XATTR, &id).unwrap();
+                xattr::set(&f, DOCUMENT_ID_XATTR, &id).unwrap();
                 assert_eq!(read_record_id(&f), Some(id));
-                xattr::set(&f, RECORD_ID_XATTR, &[0u8; 15]).unwrap();
+                xattr::set(&f, DOCUMENT_ID_XATTR, &[0u8; 15]).unwrap();
                 assert_eq!(read_record_id(&f), None);
             }
         }
@@ -1214,7 +1214,7 @@ pub(crate) mod sync_state_tests {
                 let projected_hash = [0x33u8; 32];
                 xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();
                 let projected_record = [0x44u8; 16];
-                xattr::set(&projected, RECORD_ID_XATTR, &projected_record).unwrap();
+                xattr::set(&projected, DOCUMENT_ID_XATTR, &projected_record).unwrap();
                 let projected_availability =
                     availability_json(&serde_json::json!({"state": "unknown"}));
                 xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();

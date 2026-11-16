@@ -1,5 +1,5 @@
 //! The records an app keeps beside one of its own: the parts of a chain
-//! (a chat's messages, [`ui::record::RecordId::part`]). A part is never a
+//! (a chat's messages, [`ui::record::DocumentId::part`]). A part is never a
 //! record the agent opens; it is held in the replica of the record that
 //! keeps it, as a window holds it, so the record's operations read and
 //! write it (a post goes to the chat's head part). A part that arrives
@@ -16,7 +16,7 @@ use super::AgentParticipant;
 /// Whether the wire record `record` is a part of a chain, held beside its
 /// app's record rather than opened.
 pub(crate) fn is_part(record: &str) -> bool {
-    ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
+    ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
 impl AgentParticipant {
@@ -28,7 +28,7 @@ impl AgentParticipant {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Option<DocumentRoute> {
-        let record = ui::record::RecordId::parse(&route.record)?;
+        let record = ui::record::DocumentId::parse(&route.record)?;
         let known = self
             .beside
             .get(route)
@@ -87,7 +87,7 @@ impl AgentParticipant {
             let Some(Ok(saved)) = self.unopened.seed(&part) else {
                 continue;
             };
-            let Some(record) = ui::record::RecordId::parse(&part.record) else {
+            let Some(record) = ui::record::DocumentId::parse(&part.record) else {
                 continue;
             };
             let Some(app) = self.apps.get(holder) else {

@@ -832,15 +832,15 @@ struct Mounted {
 }
 
 /// Whether the wire record `record` is a part of a chain an app keeps
-/// beside its own record ([`ui::record::RecordId::part`]): held with that
+/// beside its own record ([`ui::record::DocumentId::part`]): held with that
 /// record, never on its own.
 fn is_part(record: &str) -> bool {
-    ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some())
+    ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
 /// How a person reads the record `record` of `app` in a message or a log: an
 /// app's own record of the workspace travels with no id
-/// ([`ui::record::RecordId::package_primary`]), so it is named for its app
+/// ([`ui::record::DocumentId::package_primary`]), so it is named for its app
 /// rather than left blank.
 fn named_record(app: &str, record: &str) -> String {
     if record.is_empty() {

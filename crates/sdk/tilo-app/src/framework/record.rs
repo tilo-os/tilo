@@ -605,7 +605,7 @@ impl<'a> Records<'a> {
     }
 
     /// The record `P` that every app of the workspace opens and this app keeps
-    /// (`collab_types::WORKSPACE_RECORDS`; the workspace's emoji are
+    /// (`collab_types::WORKSPACE_DOCUMENTS`; the workspace's emoji are
     /// Chat's): opened with the window, so the app's surface lists it and
     /// every member's change to it is decided against that surface.
     pub fn shared_workspace<P: Resource>(&mut self) -> &mut Self {

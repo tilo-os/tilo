@@ -5,12 +5,14 @@ use automerge::{ROOT, transaction::Transactable as _};
 
 /// Part `index` of the workspace's messages, written with `text` as an
 /// action that creates it does.
-fn write_part(fixture: &RoutedOwners, index: u64, text: &str) -> crate::record::RecordCheckout {
-    let base =
-        crate::record::RecordId::derived("messages", &crate::record::RecordId::workspace_default());
-    let part = crate::record::RecordCheckout::new(
+fn write_part(fixture: &RoutedOwners, index: u64, text: &str) -> crate::record::DocumentCheckout {
+    let base = crate::record::DocumentId::derived(
+        "messages",
+        &crate::record::DocumentId::workspace_default(),
+    );
+    let part = crate::record::DocumentCheckout::new(
         base.part(index),
-        crate::record::RecordKind::new("test.part"),
+        crate::record::ResourceType::new("test.part"),
     );
     fixture
         .records

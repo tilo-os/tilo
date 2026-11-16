@@ -5,7 +5,7 @@ use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
     self as probe, ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
 };
-use crate::record::{RecordCheckout, RecordSaveStatus};
+use crate::record::{DocumentCheckout, RecordSaveStatus};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::rc::Rc;
 
@@ -13,7 +13,7 @@ struct Fixture {
     host: ProbeHost,
     backend: Rc<durable_store::MemoryStore>,
     frame: FrameHarness,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
 }
 
 #[expect(

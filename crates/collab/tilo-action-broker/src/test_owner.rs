@@ -59,9 +59,9 @@ pub struct SessionOwner {
 
 /// The Writer record as a record store reserves it, carrying its identity.
 fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
-    use ui::record::{RecordCheckout, RecordId, RecordOwners};
+    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
     let definition = word_processor::definition();
-    let checkout = RecordCheckout::new(RecordId::for_tab(1), definition.record_kind.clone());
+    let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.record_kind.clone());
     let mut owners = RecordOwners::portable(ui::portable_storage::PortableStorage::new(
         "test-owner-initialize",
         workspace,

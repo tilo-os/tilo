@@ -88,7 +88,7 @@ pub struct ChosenFile {
     /// file it can name: the same file chosen again, even renamed or moved,
     /// has the same identity, so an import can tell it already came in.
     /// `None` where files have no paths (a browser page).
-    pub identity: Option<ui_core::record::RecordId>,
+    pub identity: Option<ui_core::record::DocumentId>,
 }
 
 impl From<PickedContents> for ChosenFile {
@@ -97,7 +97,7 @@ impl From<PickedContents> for ChosenFile {
             identity: picked
                 .location
                 .as_deref()
-                .map(ui_core::record::RecordId::identify_file),
+                .map(ui_core::record::DocumentId::identify_file),
             name: picked.name,
             media_type: picked.media_type,
             bytes: picked.bytes,

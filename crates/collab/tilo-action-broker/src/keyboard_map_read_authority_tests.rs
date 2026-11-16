@@ -34,7 +34,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
     use ui::portable_storage::{PortableStorage, StorageKey};
-    use ui::record::{RecordCheckout, RecordId, RecordOwners};
+    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
     tokio::task::LocalSet::new()
         .run_until(async {
             let directions = Arc::new(Mutex::new(Vec::new()));
@@ -42,7 +42,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let env = Environment::with_owner_initializer(|path| {
                 crate::test_owner::SessionOwner::initialize_with_documents(path, |workspace| {
                     let definition = settings::definition();
-                    let record = RecordId::for_tab(1);
+                    let record = DocumentId::for_tab(1);
                     let mut document = automerge::AutoCommit::new();
                     assert!(ui::record::init_scoped(&mut document, &record, &definition.record_kind, workspace, Some(workspace)));
                     Ok(vec![tilo_peer_state::SeedDocument {
@@ -59,7 +59,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let private = env.root.path().canonicalize().unwrap();
             std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
             env.route.app_id = "so.tilo.settings".into();
-            env.route.record_id = RecordId::for_tab(1).as_str().to_owned();
+            env.route.record_id = DocumentId::for_tab(1).as_str().to_owned();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let broker = crate::collab_broker::spawn_native_peer_with_services(
@@ -89,7 +89,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             )
             .unwrap();
             let definition = settings::definition();
-            let record = RecordId::parse(&env.route.record_id).unwrap();
+            let record = DocumentId::parse(&env.route.record_id).unwrap();
             let mut initial = automerge::AutoCommit::new();
             assert!(ui::record::init_scoped(&mut initial, &record, &definition.record_kind, &env.route.cluster_id, Some(&env.route.cluster_id)));
             let cache = PortableStorage::new("keyboard-read-authority", "device").unwrap();
@@ -113,7 +113,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     .unwrap(),
             );
             let target = LaunchTarget::Record {
-                checkout: RecordCheckout::new(record.clone(), definition.record_kind.clone()),
+                checkout: DocumentCheckout::new(record.clone(), definition.record_kind.clone()),
                 reveal: None,
             };
             let principal = person_id_for_root(env.cert.user_public_key);

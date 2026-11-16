@@ -16,7 +16,7 @@ use ui::framework::testing::TEST_WORKSPACE;
 use ui::framework::{AttachedView, definition};
 use ui::permissions::PermissionContext;
 use ui::prelude::*;
-use ui::record::RecordCheckout;
+use ui::record::DocumentCheckout;
 use ui::tilo_resource::{FIELD_EDIT, Id, Resource};
 use video_editor::VideoEditor;
 use video_editor::model::{MediaItem, MediaKind, Project, Track, TrackKind};
@@ -66,7 +66,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     let mut agent = AttachedView::open(
         definition,
         TEST_WORKSPACE,
-        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        DocumentCheckout::new(app.record().clone(), definition.record_kind.clone()),
         app.read_document(|doc| doc.clone().save()),
         &ui::tilo_resource::MemberId::person("headless-driver"),
         PermissionContext::permissive(),

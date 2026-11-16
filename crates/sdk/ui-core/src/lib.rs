@@ -449,7 +449,7 @@ pub use reader_hud::{
     HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
 };
 pub use record::{
-    RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
+    DocumentCheckout, DocumentId, DocumentRef, RecordRefusal, RecordSet, RecordStore, ResourceType,
 };
 pub use remote_actions::{
     CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,

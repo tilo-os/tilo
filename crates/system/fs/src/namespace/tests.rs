@@ -124,10 +124,10 @@ tilo_test_env::scenario! {
                 .create_file(ROOT_INO, "old.txt", Some(&h(2)), 2, 1)
                 .unwrap();
             let ids: Vec<_> = legacy.doc.keys(&legacy.nodes).collect();
-            let _ = legacy.doc.delete(&ROOT, ROOT_RECORD_ID_KEY);
+            let _ = legacy.doc.delete(&ROOT, ROOT_DOCUMENT_ID_KEY);
             for id in ids {
                 let node = legacy.node(&id).unwrap();
-                let _ = legacy.doc.delete(&node, RECORD_ID_KEY);
+                let _ = legacy.doc.delete(&node, DOCUMENT_ID_KEY);
             }
             let legacy_bytes = legacy.doc.save();
 
@@ -458,7 +458,7 @@ tilo_test_env::scenario! {
             ns.record_index.clear();
             ns.record_index_order.clear();
             for value in 1..=100_001_u128 {
-                let record_id = FileRecordId(Uuid::from_u128(value));
+                let record_id = FileDocumentId(Uuid::from_u128(value));
                 ns.record_index.insert(
                     record_id,
                     IndexedRecord {
@@ -800,7 +800,7 @@ tilo_test_env::scenario! {
             let duplicate_id = ns.id_for_ino(duplicate).unwrap().to_string();
             let duplicate_obj = ns.node(&duplicate_id).unwrap();
             ns.doc
-                .put(&duplicate_obj, RECORD_ID_KEY, record_id.0.to_string())
+                .put(&duplicate_obj, DOCUMENT_ID_KEY, record_id.0.to_string())
                 .unwrap();
             ns.rebuild_record_index();
             assert!(
@@ -812,7 +812,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut ns = Namespace::new("recipient").unwrap();
-            let record = FileRecordId::new();
+            let record = FileDocumentId::new();
             let ino = ns
                 .create_projected_file(ROOT_INO, "shared.png", record, Some(&h(8)), 42, 9)
                 .unwrap();
@@ -824,11 +824,11 @@ tilo_test_env::scenario! {
                     .is_none()
             );
             assert!(
-                ns.create_projected_file(ROOT_INO, "shared.png", FileRecordId::new(), None, 0, 0)
+                ns.create_projected_file(ROOT_INO, "shared.png", FileDocumentId::new(), None, 0, 0)
                     .is_none()
             );
             assert!(
-                ns.create_projected_file(ROOT_INO, "../escape", FileRecordId::new(), None, 0, 0)
+                ns.create_projected_file(ROOT_INO, "../escape", FileDocumentId::new(), None, 0, 0)
                     .is_none()
             );
         }
@@ -849,7 +849,7 @@ tilo_test_env::scenario! {
         assert_eq!(rebuilt.apply_signed_binding(&root_binding), Ok(true));
         assert_eq!(rebuilt.record_id_for(ROOT_INO), Some(root_record));
 
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let binding = FileBindingV1 {
             schema_version: FILE_BINDING_VERSION,
             record_id: record,
@@ -874,11 +874,11 @@ tilo_test_env::scenario! {
             .unwrap();
         let unsigned_id = rebuilt.id_for_ino(unsigned).unwrap().to_string();
         let unsigned_obj = rebuilt.node(&unsigned_id).unwrap();
-        rebuilt.doc.delete(&unsigned_obj, RECORD_ID_KEY).unwrap();
+        rebuilt.doc.delete(&unsigned_obj, DOCUMENT_ID_KEY).unwrap();
         rebuilt.rebuild_record_index();
         assert!(rebuilt.record_id_for(unsigned).is_none());
 
-        let signed_record = FileRecordId::new();
+        let signed_record = FileDocumentId::new();
         let contested = FileBindingV1 {
             schema_version: FILE_BINDING_VERSION,
             record_id: signed_record,

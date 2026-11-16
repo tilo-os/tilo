@@ -377,7 +377,7 @@ A child that can need its own permissions, sharing or history (a chat's
 channel, a category) is a record of its own, not a field: `Children` in the
 parent lists each one by id, in order, with its kind, the sibling it is
 grouped under and whether it is in the workspace's trash
-(`tilo_resource::children`). Its record is `RecordId::child` of the parent,
+(`tilo_resource::children`). Its record is `DocumentId::child` of the parent,
 under an id minted once that never changes, so moving it moves only its
 reference and every reference to it keeps working.
 

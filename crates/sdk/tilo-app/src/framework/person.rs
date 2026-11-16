@@ -17,7 +17,7 @@ use super::section::{SectionApi, SectionKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
-use ui_core::record::RecordKind;
+use ui_core::record::ResourceType;
 use ui_core::record::StoredRecord;
 use ui_core::record::person::PersonRecords;
 
@@ -861,7 +861,7 @@ fn open_record(
     initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
 ) -> Result<StoredRecord, String> {
     records
-        .open_record(RecordKind::new(kind), initialize)
+        .open_record(ResourceType::new(kind), initialize)
         .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
 }
 

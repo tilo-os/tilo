@@ -402,11 +402,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
 /// The record a document route names. A workspace-record app (Notes, Chat)
 /// publishes its package-primary record under the empty record id.
-fn route_record(record: &str) -> ui::record::RecordId {
+fn route_record(record: &str) -> ui::record::DocumentId {
     if record.is_empty() {
-        ui::record::RecordId::package_primary()
+        ui::record::DocumentId::package_primary()
     } else {
-        ui::record::RecordId::parse(record).unwrap()
+        ui::record::DocumentId::parse(record).unwrap()
     }
 }
 

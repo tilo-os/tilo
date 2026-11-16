@@ -564,7 +564,7 @@ mod tests {
             use crate::history_mode::checked_files::FileHistoryTarget;
             use fs_protocol::files::*;
             let mut host = test_host();
-            let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+            let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
             let mut files = FileController::new(FileHistoryTarget {
                 binding: uuid::Uuid::new_v4(),
                 record,
@@ -618,7 +618,7 @@ mod tests {
                     panic!()
                 };
                 let source = source.clone();
-                let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+                let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
                 let target = FileHistoryTarget {
                     binding: uuid::Uuid::new_v4(),
                     record,
@@ -750,7 +750,7 @@ mod tests {
         let scope = FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         };
         let original = Arc::new(Transport {
@@ -906,7 +906,7 @@ mod tests {
                 person: hex::encode(ada),
             },
         );
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
         let mut files = FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
             record,
@@ -1120,7 +1120,7 @@ mod tests {
         use crate::history_mode::checked_files::FileHistoryTarget;
         use fs_protocol::files::*;
         let (ada, ada_laptop) = ([1; 32], [2; 32]);
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3));
         let mut files = FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::new_v4(),
             record,

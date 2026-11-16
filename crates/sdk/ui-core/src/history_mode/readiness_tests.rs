@@ -60,7 +60,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> FrameHarnes
                 "draft",
                 "lifetime",
                 RESTORABLE.app_id,
-                crate::RecordId::for_tab(180),
+                crate::DocumentId::for_tab(180),
             ),
         }],
     )

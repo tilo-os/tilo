@@ -233,7 +233,9 @@ impl FileController {
         self.load();
     }
     /// Learned only from a successful authorized immutable metadata read.
-    pub fn resource_identity(&self) -> Option<(uuid::Uuid, uuid::Uuid, fs_protocol::FileRecordId)> {
+    pub fn resource_identity(
+        &self,
+    ) -> Option<(uuid::Uuid, uuid::Uuid, fs_protocol::FileDocumentId)> {
         self.scope
             .map(|scope| (scope.workspace_id, scope.mount_lifetime, scope.record_id))
     }
@@ -340,7 +342,7 @@ impl FileController {
         &self,
         workspace: uuid::Uuid,
         mount: uuid::Uuid,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
     ) -> bool {
         record == self.target.record
             && self.scope.is_none_or(|s| {
@@ -817,7 +819,7 @@ mod tests {
     fn controller() -> FileController {
         FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::from_u128(9),
-            record: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
+            record: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             label: "Report.txt".into(),
             transport: Arc::new(Transport),
             folder: None,
@@ -1081,7 +1083,7 @@ mod tests {
         Scope {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }
@@ -1234,7 +1236,7 @@ mod tests {
             controller.drain();
             assert!(controller.review.is_none());
             let mut foreign = scope();
-            foreign.record_id = fs_protocol::FileRecordId(uuid::Uuid::from_u128(7));
+            foreign.record_id = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
             controller
                 .tx
                 .send(Completion {

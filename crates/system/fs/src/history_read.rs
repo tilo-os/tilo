@@ -88,7 +88,7 @@ impl QuickFS {
     }
     fn version_attributions(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
     ) -> Vec<fs_protocol::FileVersionAttributionV1> {
         self.ns().version_attributions(record_id)
     }

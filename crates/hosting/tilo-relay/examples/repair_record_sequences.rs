@@ -856,7 +856,7 @@ fn build(
 /// The messages of a part of a chat's messages, by id; for any other record,
 /// the keys at its top.
 fn count(app: &str, record: &str, doc: &AutoCommit) -> BTreeSet<String> {
-    let part = ui::record::RecordId::parse(record)
+    let part = ui::record::DocumentId::parse(record)
         .is_some_and(|id| app == CHAT && chat::parts::part_index(&id).is_some());
     if part {
         return chat::messages::read_part(doc)

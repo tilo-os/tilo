@@ -637,7 +637,7 @@ impl TileSource for Source {
             app_id: APP.into(),
             title: "Keyboard".into(),
             icon: IconDescriptor::Glyph("K"),
-            record_kind: ui::record::RecordKind::new("keyboard-test"),
+            record_kind: ui::record::ResourceType::new("keyboard-test"),
             workspace_record: false,
             member_record: false,
             opens_before_record: false,

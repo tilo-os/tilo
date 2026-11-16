@@ -2,7 +2,7 @@
 
 use automerge::AutoCommit;
 
-use super::{RecordId, RecordStore};
+use super::{DocumentId, RecordStore};
 
 /// Why a record could not be changed now ([`RecordStore::with_history_or_why`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -38,7 +38,7 @@ impl RecordStore {
     /// Why `f` did not run.
     pub fn with_history_or_why<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Result<R, HistoryUnavailable> {
         let mut set = self

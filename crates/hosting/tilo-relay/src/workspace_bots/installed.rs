@@ -479,9 +479,9 @@ impl BotRunner {
             // part of a chat's messages) is what happened since: read whole.
             // So is a record every app of the workspace opens (the workspace's
             // emoji), which its first change creates.
-            let part = ui::record::RecordId::parse(&record)
+            let part = ui::record::DocumentId::parse(&record)
                 .is_some_and(|record| record.chain_part().is_some())
-                || collab_types::workspace_record(&app, &record).is_some();
+                || collab_types::workspace_document(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
                 None if part && self.follows_app(&app) => Vec::new(),
@@ -576,7 +576,8 @@ impl BotRunner {
         // with it.
         let mut routes = self.routes().await?;
         routes.sort_by_key(|(_, record)| {
-            ui::record::RecordId::parse(record).is_some_and(|record| record.chain_part().is_some())
+            ui::record::DocumentId::parse(record)
+                .is_some_and(|record| record.chain_part().is_some())
         });
         for (app, record) in routes {
             if let Some(saved) = self.reads(&app, &record).await {
@@ -719,7 +720,7 @@ impl BotRunner {
     pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
         use tilo_resource::Resource as _;
         use tilo_workspace_emoji::{KIND, OWNER, WorkspaceEmoji};
-        let record = collab_types::workspace_record_id(KIND);
+        let record = collab_types::workspace_document_id(KIND);
         let Some(saved) = self.read(OWNER, &record).await? else {
             return Ok(serde_json::json!({ "emoji": [] }));
         };

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
-use collab_types::record::RecordId;
+use collab_types::document::DocumentId;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, HistoryEdit};
@@ -206,7 +206,7 @@ impl Writers {
 }
 
 /// The document the copy of chunk `chunk` of `route`'s record is kept in, in `documents`: the
-/// record of the chunk above the record ([`RecordId::chunk`]), a record of its own beside the
+/// record of the chunk above the record ([`DocumentId::chunk`]), a record of its own beside the
 /// record's copy. `None` for the record's own chunk, which the record itself opens, and for a
 /// route whose record is no record id.
 fn copy_document(
@@ -217,7 +217,7 @@ fn copy_document(
     if chunk == FIRST {
         return None;
     }
-    let base = RecordId::from_route(route.record.as_deref().unwrap_or(""))?;
+    let base = DocumentId::from_route(route.record.as_deref().unwrap_or(""))?;
     let key = base.chunk(chunk).storage_key();
     record_document(
         documents,
@@ -240,7 +240,7 @@ fn route_document(
             collaboration::record::save::workspace_document(documents, &route.app_id, &workspace)
         }
         Some(record) => {
-            let id = RecordId::parse(record)
+            let id = DocumentId::parse(record)
                 .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
             record_document(documents, &route.app_id, &workspace, &id.storage_key())
         }
@@ -1466,7 +1466,7 @@ impl InstanceRecord {
             }
             self.manager.join_route(
                 self.chunk_route(chunk),
-                collab_types::record::RecordKind::new(self.kind.clone()),
+                collab_types::document::ResourceType::new(self.kind.clone()),
             );
         }
     }
@@ -2002,7 +2002,10 @@ pub struct ReadRecord {
 impl ReadRecord {
     /// The record on `route`, joined through `manager`: held empty until the workspace sends it.
     pub fn join(route: RouteSpec, manager: &mut CollaborationManager, kind: &str) -> Self {
-        manager.join_route(route.clone(), collab_types::record::RecordKind::new(kind));
+        manager.join_route(
+            route.clone(),
+            collab_types::document::ResourceType::new(kind),
+        );
         Self {
             route,
             kind: kind.to_owned(),
@@ -2091,7 +2094,7 @@ impl ReadRecord {
             }
             manager.join_route(
                 chunk_route(&self.route, chunk),
-                collab_types::record::RecordKind::new(self.kind.clone()),
+                collab_types::document::ResourceType::new(self.kind.clone()),
             );
         }
     }

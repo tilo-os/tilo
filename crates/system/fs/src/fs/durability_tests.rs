@@ -61,7 +61,7 @@ impl Fixture {
         loaded
     }
 
-    fn versions(&self, record_id: fs_protocol::FileRecordId) -> usize {
+    fn versions(&self, record_id: fs_protocol::FileDocumentId) -> usize {
         self.history.snapshot(record_id).unwrap().versions.len()
     }
 }

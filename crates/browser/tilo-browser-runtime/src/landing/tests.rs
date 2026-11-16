@@ -18,7 +18,7 @@ use durable_store::{DurableStore, MemoryStore, StorageKey};
 use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::headless::{HeadlessApp, fixture_runner_inputs};
-use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
+use ui::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordOwners};
 
 use super::{Landed, answered, keep};
 
@@ -26,7 +26,7 @@ const WORKSPACE: &str = "workspace-a";
 
 /// The page's storage key of `app`'s record `id` in the workspace, as its
 /// replication keeps a landed record.
-fn key(app: &str, id: &RecordId) -> StorageKey {
+fn key(app: &str, id: &DocumentId) -> StorageKey {
     StorageKey::document(app, WORKSPACE, id.storage_key())
 }
 
@@ -45,8 +45,8 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
 
     // The window opens the workspace's record of Settings, which is not here:
     // the host is asked for it and the window waits.
-    let record = RecordCheckout::new(
-        RecordId::workspace_default(),
+    let record = DocumentCheckout::new(
+        DocumentId::workspace_default(),
         definition.record_kind.clone(),
     );
     assert!(matches!(
@@ -143,7 +143,7 @@ fn settings_opened_on_a_record_the_host_holds_empty_shows_its_pane() {
 #[test]
 fn a_record_with_changes_is_kept_for_whoever_opens_it() {
     let memory = MemoryStore::queued();
-    let id = RecordId::workspace_default();
+    let id = DocumentId::workspace_default();
     let key = key("so.tilo.notes", &id);
     let mut doc = AutoCommit::new();
     doc.put(ui::automerge::ROOT, "body", "hello").unwrap();

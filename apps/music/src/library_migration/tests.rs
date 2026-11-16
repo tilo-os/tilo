@@ -199,18 +199,18 @@ fn populated_legacy_library() -> AutoCommit {
 #[test]
 fn opening_a_retained_profile_migrates_and_restores_live_player_actions() {
     use ui::framework::testing::{TEST_WORKSPACE, TestApp};
-    use ui::record::{RecordId, RecordKind};
+    use ui::record::{DocumentId, ResourceType};
 
     let mut doc = populated_legacy_library();
-    let window = RecordId::workspace_default();
+    let window = DocumentId::workspace_default();
     assert!(ui::record::init_scoped(
         &mut doc,
         &window,
-        &RecordKind::new(Library::KIND),
+        &ResourceType::new(Library::KIND),
         TEST_WORKSPACE,
         Some(TEST_WORKSPACE),
     ));
-    let record = RecordId::package_primary();
+    let record = DocumentId::package_primary();
     let mut app = TestApp::<crate::MusicShell>::launched_replica(&[], &mut doc).unwrap();
     assert_eq!(app.record(), &record);
     assert_eq!(

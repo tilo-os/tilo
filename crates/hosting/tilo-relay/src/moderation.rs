@@ -18,7 +18,7 @@ use tilo_actions::entry::Did;
 use tilo_agent_session::Replica;
 use tilo_moderation::{Activity, Moderation, Source, WorkspaceApi, activity_of, destructive_verbs};
 use tilo_resource::Resource;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 /// The history group kind a run's steps are recorded under, which the
 /// record's `undo { run }` takes back as one.
@@ -84,7 +84,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
     /// The address of `action` the replica offers: on the record itself,
     /// or with `chain`, on the chain of parts the record's app publishes
     /// beside it.
-    fn address(&self, action: &str, chain: Option<&RecordId>) -> Result<ActionAddress, String> {
+    fn address(&self, action: &str, chain: Option<&DocumentId>) -> Result<ActionAddress, String> {
         self.replica
             .survey()
             .into_iter()
@@ -113,7 +113,7 @@ impl<'a, R: Resource> ReplicaApi<'a, R> {
 
     /// The verbs the chain `chain` publishes as destructive, on itself and
     /// on its items.
-    fn destructive_in_chain(&self, chain: &RecordId) -> Vec<String> {
+    fn destructive_in_chain(&self, chain: &DocumentId) -> Vec<String> {
         let id = ui::record::chain_resource_id(chain);
         let resources = self.replica.resources();
         // Published beside the app's resource, among its children; its
@@ -223,7 +223,7 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
         }
         // A part held beside the record is changed through the chain its
         // app publishes, naming the part.
-        let part = RecordId::parse(record)
+        let part = DocumentId::parse(record)
             .filter(|part| self.replica.keeps_beside(part))
             .ok_or_else(|| format!("{app}/{record} is not held here"))?;
         let (chain, index) = part

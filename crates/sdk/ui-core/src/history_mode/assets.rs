@@ -99,7 +99,7 @@ mod tests {
         {
             let key = AssetResponseKey {
                 host: uuid::Uuid::new_v4(),
-                resource: HistoryResource::new("p", "r", "app", crate::RecordId::for_tab(3)),
+                resource: HistoryResource::new("p", "r", "app", crate::DocumentId::for_tab(3)),
                 generation: 4,
                 side: PreviewSide::After,
                 heads: vec![],
@@ -122,7 +122,7 @@ mod tests {
                     "profile",
                     "workspace",
                     "app",
-                    crate::RecordId::for_tab(3),
+                    crate::DocumentId::for_tab(3),
                 ),
                 generation: 4,
                 side: PreviewSide::Before,
@@ -153,7 +153,7 @@ mod algorithm_regressions {
     fn admit(assets: BTreeMap<String, Arc<[u8]>>) -> Result<FrozenPreviewAssets, String> {
         let key = AssetResponseKey {
             host: uuid::Uuid::new_v4(),
-            resource: HistoryResource::new("p", "w", "a", crate::RecordId::for_tab(9)),
+            resource: HistoryResource::new("p", "w", "a", crate::DocumentId::for_tab(9)),
             generation: 7,
             side: PreviewSide::Before,
             heads: vec![],

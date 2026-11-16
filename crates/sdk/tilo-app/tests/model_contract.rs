@@ -14,7 +14,7 @@ use tilo_actions::{
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjType, ROOT, ReadDoc};
 use tilo_app::prelude::*;
-use tilo_app::record::RecordId;
+use tilo_app::record::DocumentId;
 use tilo_app::record::transfer::Origin;
 use tilo_automerge::ReadTyped as _;
 use tilo_resource::{ActionDecl, Doc, Invoke, ModelError};
@@ -324,7 +324,7 @@ tilo_test_env::scenario! {
         assert!(!carried.is_empty());
         let origin = tilo_app::record::identity(&source).expect("record identity");
         let from = tilo_app::record::workspace_scope(&source).expect("workspace scope");
-        let target = RecordId::minted();
+        let target = DocumentId::minted();
         let mut arrived = tilo_app::record::transfer::rehome(
             &source,
             &Origin::Record(origin.clone()),

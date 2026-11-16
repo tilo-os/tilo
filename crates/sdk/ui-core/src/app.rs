@@ -124,13 +124,13 @@ struct ActionDirectoryCursor {
 #[cfg(test)]
 mod record_index_launch_tests {
     use super::App;
-    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet, index};
+    use crate::record::{DocumentCheckout, DocumentId, RecordSet, ResourceType, index};
     use crate::{State, widget::Text};
     use automerge::AutoCommit;
 
     #[test]
     fn launch_reads_the_existing_index_without_opening_its_records() {
-        let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+        let entry = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("annotations"));
         let mut workspace_index = AutoCommit::new();
         assert!(index::reference(
             &mut workspace_index,
@@ -3141,7 +3141,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     "ordinary:fixture",
                     "lifetime-confirmation",
                     HISTORY.app_id,
-                    crate::RecordId::for_tab(990),
+                    crate::DocumentId::for_tab(990),
                 ),
             }],
         )

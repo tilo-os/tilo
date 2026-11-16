@@ -30,7 +30,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::automerge::AutoCommit;
 use ui::permissions::{MemberId, SharedPermissions};
-use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
 
@@ -341,7 +341,7 @@ pub(crate) struct Shared {
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
     /// The record each tab shows, once its component created or opened it.
-    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
     /// A tab bound a record since the desktop was last saved.
     records_changed: Rc<Cell<bool>>,
     /// Tabs that could not open yet: a peer's desktop named a record
@@ -429,7 +429,7 @@ pub(crate) struct Shared {
 
 impl Shared {
     /// The record the window of `tab` shows, once its component opened one.
-    pub fn record_of(&self, tab: TabId) -> Option<RecordCheckout> {
+    pub fn record_of(&self, tab: TabId) -> Option<DocumentCheckout> {
         self.records.borrow().get(&tab).cloned()
     }
 
@@ -698,7 +698,7 @@ impl Shared {
         )
     }
 
-    pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
+    pub fn bound_records(&self) -> Vec<(TabId, DocumentCheckout)> {
         self.records
             .borrow()
             .iter()
@@ -950,9 +950,9 @@ impl Tiles {
         let app_id = self.ready_app(tab)?;
         let definition = application(app_id).ok_or_else(|| not_in_the_browser(app_id))?;
         let unbound = self.shared.unbound.borrow().get(&tab.id).cloned();
-        if let Some(id) = unbound.as_deref().and_then(RecordId::from_route) {
+        if let Some(id) = unbound.as_deref().and_then(DocumentId::from_route) {
             self.shared.unbound.borrow_mut().remove(&tab.id);
-            let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+            let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
         if definition.app_id() == tilo_desktop::feedback::PACKAGE {
@@ -1002,7 +1002,7 @@ impl Tiles {
         &self,
         definition: &'static ApplicationDefinition,
         store: RecordStore,
-        (target, named_new): (LaunchTarget, Option<RecordId>),
+        (target, named_new): (LaunchTarget, Option<DocumentId>),
         instance: TabId,
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
@@ -1089,9 +1089,9 @@ impl Tiles {
         let definition = application(&view.app)
             .filter(|definition| definition.app_id() != tilo_desktop::feedback::PACKAGE)
             .ok_or_else(|| not_in_the_browser(&view.app))?;
-        let id = RecordId::from_route(&view.record).ok_or("It is no longer there")?;
+        let id = DocumentId::from_route(&view.record).ok_or("It is no longer there")?;
         let store = self.store(definition)?;
-        let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+        let checkout = DocumentCheckout::new(id, definition.record_kind.clone());
         match store.try_open_record(&checkout) {
             Ok(_) => {}
             Err(
@@ -1225,7 +1225,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         let saved = self.shared.records.borrow().get(&tab).cloned();
         match saved {
             Some(checkout) => Ok((
@@ -1248,7 +1248,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Option<Result<(LaunchTarget, Option<RecordId>), Unready>> {
+    ) -> Option<Result<(LaunchTarget, Option<DocumentId>), Unready>> {
         let author = MemberId::person(self.inputs.author.clone());
         let opening = crate::app_page::own_opening(definition, store, &author)?;
         Some(match opening {
@@ -1271,7 +1271,7 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
         if !definition.keeps_workspace_record() {
             return self.unbound_target(definition, store, tab);
         }
@@ -1301,9 +1301,9 @@ impl Tiles {
         definition: &'static ApplicationDefinition,
         store: &RecordStore,
         tab: TabId,
-    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
-        let default = RecordCheckout::new(
-            RecordId::workspace_default(),
+    ) -> Result<(LaunchTarget, Option<DocumentId>), Unready> {
+        let default = DocumentCheckout::new(
+            DocumentId::workspace_default(),
             definition.record_kind.clone(),
         );
         let taken = self
@@ -1535,7 +1535,7 @@ pub(crate) struct Persistence {
     store: Rc<dyn DurableStore>,
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
-    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    records: Rc<RefCell<HashMap<TabId, DocumentCheckout>>>,
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
     authors: Authors,
     /// The layout's own document: the profile's copy of it, which is the layout's
@@ -1775,7 +1775,7 @@ pub(crate) fn return_to(
 /// shell's own spelling otherwise ([`tilo_desktop_surface::host::records::adopted`]).
 fn adopted_records(
     desktop: &tilo_desktop_model::ownership::SharedDesktop,
-) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
+) -> (HashMap<TabId, DocumentCheckout>, HashMap<TabId, String>) {
     tilo_desktop_surface::host::records::adopted(desktop, |app| {
         application(app).map(|definition| definition.record_kind.clone())
     })

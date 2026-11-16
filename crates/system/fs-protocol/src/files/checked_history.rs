@@ -1,6 +1,6 @@
 //! Mount-scoped checked history protocol. These types are deliberately distinct
 //! from V1's unchecked history-control operation; callers must not downgrade.
-use super::{ContentRevisionV1, FileRecordId, FileVersionId};
+use super::{ContentRevisionV1, FileDocumentId, FileVersionId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ pub struct FileRestoreReviewV1 {
     pub schema_version: u16,
     pub workspace_id: Uuid,
     pub mount_lifetime: Uuid,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     /// Freshness only: never an authorization capability.
     pub frontier: [u8; 32],
 }
@@ -46,7 +46,7 @@ pub struct FileRestoreReceiptV1 {
     pub intent_id: Uuid,
     pub workspace_id: Uuid,
     pub mount_lifetime: Uuid,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub selected_version: FileVersionId,
     pub prior_revision: ContentRevisionV1,
     pub restored_revision: ContentRevisionV1,
@@ -137,7 +137,7 @@ mod tests {
                 schema_version: 1,
                 workspace_id: Uuid::new_v4(),
                 mount_lifetime: Uuid::new_v4(),
-                record_id: FileRecordId::new(),
+                record_id: FileDocumentId::new(),
                 frontier: [7; 32],
             },
             operation: CheckedHistoryOperationV1::Restore {

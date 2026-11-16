@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 use crate::files::{
-    ConflictStatus, FileConflictV1, FilePropertiesV1, FileRecordError, FileRecordId, FileVersionId,
-    FileVersionV1, MAX_CONFLICT_VERSIONS,
+    ConflictStatus, FileConflictV1, FileDocumentError, FileDocumentId, FilePropertiesV1,
+    FileVersionId, FileVersionV1, MAX_CONFLICT_VERSIONS,
 };
 
 pub const SYNC_XATTR: &str = "user.tilo.sync";
@@ -79,7 +79,7 @@ pub enum ProjectionError {
     #[error("invalid projection: {0}")]
     Invalid(&'static str),
     #[error("invalid file record: {0}")]
-    Record(#[from] FileRecordError),
+    Record(#[from] FileDocumentError),
     #[error("projection names a different record")]
     WrongRecord,
     #[error("projection exceeds its entry bound")]
@@ -153,7 +153,7 @@ impl SyncState {
 #[serde(deny_unknown_fields)]
 pub struct MetadataProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub properties: FilePropertiesV1,
 }
 
@@ -183,7 +183,7 @@ impl MetadataProjectionV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordIndexEntryV1 {
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     /// Absolute path within this mount, never global authority.
     pub path: String,
     pub is_dir: bool,
@@ -426,7 +426,7 @@ pub enum AvailabilityPolicy {
 #[serde(deny_unknown_fields)]
 pub struct AvailabilityProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub current_version: Option<FileVersionId>,
     pub residency: Residency,
     pub transfer: ProjectedTransfer,
@@ -538,7 +538,7 @@ impl AvailabilityProjectionV1 {
 #[serde(deny_unknown_fields)]
 pub struct HistoryProjectionV1 {
     pub schema_version: u16,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub total_versions: u64,
     pub versions_truncated: bool,
     pub heads: Vec<FileVersionId>,
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn shared_record_index_decoders_keep_the_wire_schema() {
         let record = RecordIndexEntryV1 {
-            record_id: FileRecordId(Uuid::from_u128(7)),
+            record_id: FileDocumentId(Uuid::from_u128(7)),
             path: "/Documents/report.txt".into(),
             is_dir: false,
         };
@@ -695,7 +695,7 @@ mod tests {
         {
             let projection = MetadataProjectionV1 {
                 schema_version: METADATA_PROJECTION_VERSION,
-                record_id: FileRecordId(Uuid::from_u128(7)),
+                record_id: FileDocumentId(Uuid::from_u128(7)),
                 properties: FilePropertiesV1 {
                     schema_version: crate::files::FILE_PROPERTIES_VERSION,
                     image_width: Some(800),

@@ -962,7 +962,7 @@ fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {
 
 fn assert_empty_retypes_once(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     page: notes::PageId,
     driver: &mut ui::headless::FrameHarness,
 ) {
@@ -1073,7 +1073,7 @@ fn bound_open_tag_uses_current_membership_without_prior_sync() {
 
 fn assert_open_tag_view(
     f: &NotebookFixture,
-    checkout: &ui::record::RecordCheckout,
+    checkout: &ui::record::DocumentCheckout,
     a: &mut ui::headless::FrameHarness,
     tag: uuid::Uuid,
     title: &str,

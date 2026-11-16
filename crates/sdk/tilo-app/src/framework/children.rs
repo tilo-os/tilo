@@ -7,7 +7,7 @@
 //!
 //! - **Held where the parent is.** Every child the container lists (of this
 //!   kind) is a record of the app's store beside the parent
-//!   ([`RecordId::child`]), opened as it is listed, read as it changes
+//!   ([`DocumentId::child`]), opened as it is listed, read as it changes
 //!   ([`Children::children`]), synced on its own route like every record of
 //!   the app.
 //! - **One API.** The container is published beside the app's resource
@@ -40,7 +40,7 @@ use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Child
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
 use ui_core::arriving::{Arrival, Arriving, Source};
 use ui_core::permissions::{PermissionScope, TreePath};
-use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError};
+use ui_core::record::{DocumentCheckout, DocumentId, RecordOpenError, ResourceType};
 use ui_core::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, WorkspaceRecords};
@@ -79,8 +79,8 @@ pub trait ChildRecord: Resource<State: tilo_resource::Model + Default> {
 
     /// The record that lists them: the app's own record in its workspace.
     #[must_use]
-    fn parent_record() -> RecordId {
-        RecordId::workspace_default()
+    fn parent_record() -> DocumentId {
+        DocumentId::workspace_default()
     }
 
     /// The container of the parent that lists them.
@@ -235,7 +235,7 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     workspace: WorkspaceRecords,
     parent: Parent<C>,
     id: String,
-    kind: RecordKind,
+    kind: ResourceType,
     held: RefCell<BTreeMap<Id, Live<C>>>,
     /// Each listed child as a read: pending while its record is on its way
     /// from the workspace, its state once it is here.
@@ -268,7 +268,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             workspace,
             parent,
             id: ui_core::record::children_resource_id(&C::parent_record(), C::KIND),
-            kind: RecordKind::new(C::KIND),
+            kind: ResourceType::new(C::KIND),
             held: RefCell::default(),
             arrivals: RefCell::default(),
             unreadable: RefCell::default(),
@@ -291,7 +291,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         *self.parent_api.borrow_mut() = Some(api);
     }
 
-    fn record(child: &Id) -> Result<RecordId, String> {
+    fn record(child: &Id) -> Result<DocumentId, String> {
         C::parent_record()
             .child(child.as_str())
             .ok_or_else(|| format!("`{child}` cannot name a record"))
@@ -430,7 +430,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         if self.held.borrow().contains_key(id) {
             return Ok(());
         }
-        let checkout = RecordCheckout::new(Self::record(id)?, self.kind.clone());
+        let checkout = DocumentCheckout::new(Self::record(id)?, self.kind.clone());
         if !self.workspace.store.is_ready(&checkout.id) {
             if !self.workspace.store.takes_writes() {
                 return Err(Unheld::Missing);
@@ -474,7 +474,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     /// Make child `id`'s record with the child type's genesis.
     fn start(&self, id: &Id) -> Result<(), String> {
-        let checkout = RecordCheckout::new(Self::record(id)?, self.kind.clone());
+        let checkout = DocumentCheckout::new(Self::record(id)?, self.kind.clone());
         if !self.workspace.store.is_ready(&checkout.id) {
             let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
                 C::initialize(doc).map_err(|error| error.to_string())
@@ -1443,9 +1443,9 @@ mod tests {
     /// A workspace's record in a store of its own, and its topics held over it.
     fn workspace() -> (RecordStore, Children<Topic>) {
         let store = RecordStore::in_memory();
-        let parent = RecordCheckout::new(
-            RecordId::workspace_default(),
-            RecordKind::new(Workspace::KIND),
+        let parent = DocumentCheckout::new(
+            DocumentId::workspace_default(),
+            ResourceType::new(Workspace::KIND),
         );
         store.create_record(&parent).unwrap();
         store
@@ -1460,7 +1460,7 @@ mod tests {
             "so.tilo.test",
             &tilo_resource::MemberId::person("ana"),
             move || {
-                read.read(&RecordId::workspace_default(), |doc| {
+                read.read(&DocumentId::workspace_default(), |doc| {
                     Reader::<Workspace>::read(doc).unwrap().state().clone()
                 })
                 .unwrap()
@@ -1501,7 +1501,7 @@ mod tests {
             let general = children
                 .create(serde_json::json!({ "name": "general" }), None, None)
                 .unwrap();
-            let record = RecordId::workspace_default().child(ui.as_str()).unwrap();
+            let record = DocumentId::workspace_default().child(ui.as_str()).unwrap();
             assert_eq!(
                 store.read(&record, |doc| Reader::<Topic>::read(doc)
                     .unwrap()
@@ -1563,7 +1563,7 @@ mod tests {
                 order(&children),
                 [("ui".to_owned(), Some("design".to_owned()))]
             );
-            let record = RecordId::workspace_default()
+            let record = DocumentId::workspace_default()
                 .child(design.as_str())
                 .unwrap();
             assert_eq!(
@@ -1656,9 +1656,9 @@ mod tests {
         phase a_child_whose_record_is_on_its_way_reads_pending_until_it_arrives;
         {
             let here = device();
-            let parent = RecordCheckout::new(
-                RecordId::workspace_default(),
-                RecordKind::new(Workspace::KIND),
+            let parent = DocumentCheckout::new(
+                DocumentId::workspace_default(),
+                ResourceType::new(Workspace::KIND),
             );
             here.create_record(&parent).unwrap();
             here.with(&parent.id, |doc| {
@@ -1674,7 +1674,7 @@ mod tests {
             copy(
                 &here,
                 &there,
-                &RecordId::workspace_default(),
+                &DocumentId::workspace_default(),
                 Workspace::KIND,
             );
             let theirs = children_of(&there);
@@ -1693,7 +1693,7 @@ mod tests {
             copy(
                 &here,
                 &there,
-                &RecordId::workspace_default()
+                &DocumentId::workspace_default()
                     .child(design.as_str())
                     .unwrap(),
                 Topic::KIND,
@@ -1708,9 +1708,9 @@ mod tests {
     }
 
     /// The saved record `id` of `store`, as another device receives it.
-    fn copy(from: &RecordStore, to: &RecordStore, id: &RecordId, kind: &str) {
+    fn copy(from: &RecordStore, to: &RecordStore, id: &DocumentId, kind: &str) {
         let saved = from.read(id, |doc| doc.clone().save()).unwrap();
-        to.create_record(&RecordCheckout::new(id.clone(), RecordKind::new(kind)))
+        to.create_record(&DocumentCheckout::new(id.clone(), ResourceType::new(kind)))
             .unwrap();
         to.with(id, |doc| {
             *doc = ui_core::automerge::AutoCommit::load(&saved).unwrap();
@@ -1734,7 +1734,7 @@ mod tests {
             "so.tilo.test",
             &tilo_resource::MemberId::person("ana"),
             move || {
-                read.read(&RecordId::workspace_default(), |doc| {
+                read.read(&DocumentId::workspace_default(), |doc| {
                     Reader::<Workspace>::read(doc).unwrap().state().clone()
                 })
                 .unwrap()

@@ -41,7 +41,8 @@ fn bot_base(
     existing: Option<Vec<u8>>,
 ) -> Result<(automerge::AutoCommit, Vec<automerge::ChangeHash>, bool), CollaborationError> {
     let Some(bytes) = existing else {
-        let part = ui::record::RecordId::parse(record).is_some_and(|id| id.chain_part().is_some());
+        let part =
+            ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some());
         return if part {
             Ok((automerge::AutoCommit::new(), Vec::new(), true))
         } else {
@@ -496,7 +497,7 @@ impl Workspaces {
             if record.is_empty() {
                 Seed::New
             } else {
-                Seed::NewAt(ui::record::RecordId::parse(record).ok_or_else(|| {
+                Seed::NewAt(ui::record::DocumentId::parse(record).ok_or_else(|| {
                     CollaborationError::new("application record is not a record id")
                 })?)
             };

@@ -226,7 +226,7 @@ pub struct LeaseKeeper {
     notified: HashSet<(PathBuf, u64)>,
     write_gates: Arc<WriteGates>,
     authority: bool,
-    answered: HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
+    answered: HashSet<(fs_protocol::FileDocumentId, [u8; 32], u64)>,
 }
 
 impl LeaseKeeper {

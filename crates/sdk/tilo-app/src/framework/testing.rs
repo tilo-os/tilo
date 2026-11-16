@@ -13,7 +13,7 @@ use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, Role};
-use ui_core::record::RecordId;
+use ui_core::record::DocumentId;
 
 use tilo_resource::Resource;
 
@@ -235,7 +235,7 @@ pub fn window_record<A: ResourceApp>(
     let kind = definition::<A>().record_kind.clone();
     if !ui_core::record::init_scoped(
         &mut doc,
-        &RecordId::window_default(instance),
+        &DocumentId::window_default(instance),
         &kind,
         TEST_WORKSPACE,
         Some(TEST_WORKSPACE),

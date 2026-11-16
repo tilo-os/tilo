@@ -412,7 +412,7 @@ tilo_test_env::scenario! {
             app_id: "dev.tilo.two-views".into(),
             title: "Two views".into(),
             icon: crate::widget::IconDescriptor::Glyph("T"),
-            record_kind: crate::record::RecordKind::new("two-views"),
+            record_kind: crate::record::ResourceType::new("two-views"),
             required: vec![],
             optional: vec![],
             opens: &[],

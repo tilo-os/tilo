@@ -163,7 +163,7 @@ async fn post_with(
         .unwrap();
     let mut held = Vec::new();
     for (app, record) in workspaces.record_routes(workspace).await.unwrap() {
-        let Some(part) = ui::record::RecordId::parse(&record)
+        let Some(part) = ui::record::DocumentId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
         else {
             continue;
@@ -184,7 +184,7 @@ async fn post_with(
             author,
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::RecordId::package_primary(),
+                record: ui::record::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )
@@ -1041,7 +1041,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             &hex::encode(guest_cert.user_public_key),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: ui::record::RecordId::package_primary(),
+                record: ui::record::DocumentId::package_primary(),
                 changes: vec![chat],
             },
         )

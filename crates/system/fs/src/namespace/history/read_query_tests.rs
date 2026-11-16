@@ -6,14 +6,14 @@ use fs_protocol::files::{
 };
 use fs_protocol::history::RecordHistorySnapshot;
 use fs_protocol::{
-    ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileProvenance, FileRecordId,
+    ConflictStatus, ContentHash, Ed25519PublicKey, FileActor, FileDocumentId, FileProvenance,
     FileVersionAttributionV1, FileVersionId, FileVersionV1,
 };
 use uuid::Uuid;
 
 /// The snapshot a record with `count` versions has: each version its
 /// parent's child, all metadata-only.
-fn metadata_snapshot(record: FileRecordId, count: u64) -> RecordHistorySnapshot {
+fn metadata_snapshot(record: FileDocumentId, count: u64) -> RecordHistorySnapshot {
     let mut versions = Vec::new();
     let mut parent = None;
     for index in 0..count {
@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
 
     phase metadata_history_uses_exact_bounded_shared_query;
     {
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let snapshot = metadata_snapshot(record, 25);
         let latest = snapshot.heads[0];
         let scope = Scope {
@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
     // caused, and nothing about versions on other pages; a single-version
     // read carries that version's.
     {
-        let record = FileRecordId::new();
+        let record = FileDocumentId::new();
         let snapshot = metadata_snapshot(record, 25);
         let latest = snapshot.heads[0];
         let oldest = snapshot.versions.first().unwrap().id;

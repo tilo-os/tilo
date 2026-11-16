@@ -83,7 +83,7 @@ impl Desktop {
     /// `windows` Notes windows, every app arrived and drawn.
     fn with_windows(
         f: &NotebookFixture,
-        checkout: &ui::record::RecordCheckout,
+        checkout: &ui::record::DocumentCheckout,
         windows: usize,
     ) -> Self {
         let mut minter = IdMinter::new(7);
@@ -128,7 +128,7 @@ impl Desktop {
     }
 
     /// The app's component for `tab` is ready: the window shows it.
-    fn arrive(&mut self, f: &NotebookFixture, checkout: &ui::record::RecordCheckout, tab: TabId) {
+    fn arrive(&mut self, f: &NotebookFixture, checkout: &ui::record::DocumentCheckout, tab: TabId) {
         self.instance = self.instance.saturating_add(1);
         let mut component =
             component_support::component(f, self.instance, component_support::existing(checkout));

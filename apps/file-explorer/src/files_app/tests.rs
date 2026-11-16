@@ -2267,7 +2267,7 @@ mod command_path_tests {
         entry.path = path;
         entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
             schema_version: 1,
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(1)),
             current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
             residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
             transfer: fs_protocol::ProjectedTransfer {
@@ -3749,7 +3749,7 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, ui::prelude::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, ui::prelude::DOCUMENT_ID_XATTR, record.as_bytes()).unwrap();
         xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let widget = FileExplorerWidget::new();
@@ -4326,7 +4326,7 @@ mod command_path_tests {
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, ui::prelude::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(&file, ui::prelude::DOCUMENT_ID_XATTR, record_id.as_bytes()).unwrap();
         crate::model::sync_state_tests::set_record_index(
             dir.path(),
             &[serde_json::json!({

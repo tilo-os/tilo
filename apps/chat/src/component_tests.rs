@@ -413,7 +413,7 @@ fn semantic_component_harness(
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
-    ui::record::RecordCheckout,
+    ui::record::DocumentCheckout,
 ) {
     let cache = ui::portable_storage::PortableStorage::new(profile, "device").unwrap();
     component_mount(&cache, "author", 1)
@@ -428,7 +428,7 @@ fn component_mount(
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
-    ui::record::RecordCheckout,
+    ui::record::DocumentCheckout,
 ) {
     component_mount_in_workspace(cache, author, instance, "workspace")
 }
@@ -441,7 +441,7 @@ fn component_mount_in_workspace(
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
-    ui::record::RecordCheckout,
+    ui::record::DocumentCheckout,
 ) {
     component_mount_as(
         cache,
@@ -461,7 +461,7 @@ fn component_mount_as(
 ) -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
-    ui::record::RecordCheckout,
+    ui::record::DocumentCheckout,
 ) {
     let (component, records) = component_as(cache, author, instance, workspace, role);
     let checkout = component.record().clone();
@@ -492,7 +492,7 @@ fn component_as(
     let permissions = ui::permissions::SharedPermissions::new(
         ui::permissions::PermissionContext::member(author, role),
     );
-    let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
+    let primary = ui::record::DocumentCheckout::package_primary(definition.record_kind.clone());
     let target = if records.try_open_record(&primary).is_ok() {
         LaunchTarget::Record {
             checkout: primary,
@@ -679,12 +679,12 @@ fn two_real_components_open_the_existing_recordless_chat_migrating_it_once() {
     use ui::{
         application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
-        record::{RecordCheckout, RecordOwners},
+        record::{DocumentCheckout, RecordOwners},
     };
     let cache = PortableStorage::new("component-profile", "component-device").unwrap();
     let definition = crate::definition();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
+    let checkout = DocumentCheckout::package_primary(definition.record_kind.clone());
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
     // The app-state document an older build wrote; opening it migrates it once to this
@@ -1728,11 +1728,11 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
     use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
     use std::rc::Rc;
     use ui::application::LaunchTarget;
-    use ui::record::{RecordCheckout, RecordOpenError, RecordOwners};
+    use ui::record::{DocumentCheckout, RecordOpenError, RecordOwners};
 
     let definition = crate::definition();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
-    let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+    let primary = DocumentCheckout::package_primary(definition.record_kind.clone());
     // The workspace's chat, as a member's device started it.
     let elsewhere = RecordOwners::with_store(Rc::new(MemoryStore::queued()))
         .open(definition.app_id(), workspace)

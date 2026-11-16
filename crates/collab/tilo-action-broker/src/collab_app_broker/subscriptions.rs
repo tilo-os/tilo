@@ -365,8 +365,8 @@ mod tests {
     const CHAT: &str = "so.tilo.chat";
 
     /// Chat's messages: a chain of parts of the workspace's default record.
-    fn messages() -> ui::record::RecordId {
-        ui::record::RecordId::derived("messages", &ui::record::RecordId::workspace_default())
+    fn messages() -> ui::record::DocumentId {
+        ui::record::DocumentId::derived("messages", &ui::record::DocumentId::workspace_default())
     }
 
     /// Part `index` of Chat's messages.
@@ -376,7 +376,7 @@ mod tests {
 
     /// A child of a note, a record of the note's tree.
     fn note_child() -> String {
-        ui::record::RecordId::for_tab(7)
+        ui::record::DocumentId::for_tab(7)
             .child("a")
             .unwrap()
             .to_string()

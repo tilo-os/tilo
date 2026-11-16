@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use fs_protocol::{FileRecordId, FileVersionId, NO_PEER_DELIVERED_ERROR, Residency, TransferPhase};
+use fs_protocol::{
+    FileDocumentId, FileVersionId, NO_PEER_DELIVERED_ERROR, Residency, TransferPhase,
+};
 use iroh_blobs::Hash;
 use tilo_lock::MutexRecover as _;
 
@@ -24,7 +26,7 @@ use crate::hydration::Hydrator;
 #[derive(Clone)]
 pub(super) struct UnavailableNote {
     pub(super) registry: Arc<Mutex<AvailabilityRegistry>>,
-    pub(super) record_id: FileRecordId,
+    pub(super) record_id: FileDocumentId,
     /// What the read fetches, when it is the file's committed content.
     pub(super) content: Option<NotedContent>,
 }
@@ -69,7 +71,7 @@ struct StoredState {
 }
 
 struct FoundWhole {
-    record_id: FileRecordId,
+    record_id: FileDocumentId,
     version: FileVersionId,
     hash: Hash,
 }
@@ -307,7 +309,7 @@ mod tests {
         ));
         let note = UnavailableNote {
             registry,
-            record_id: FileRecordId::new(),
+            record_id: FileDocumentId::new(),
             content: None,
         };
         (dir, note)
@@ -507,7 +509,7 @@ mod tests {
         for seed in 0..24_u64 {
             let data = crate::test_bytes::pseudo(16 * 1024, seed);
             let hash = store.write_content(&data).await.unwrap().unwrap();
-            files.push((FileRecordId::new(), hash, data.len() as u64));
+            files.push((FileDocumentId::new(), hash, data.len() as u64));
         }
         let hydrator = Arc::new(Hydrator::new(
             Endpoint::bind(presets::Minimal).await.unwrap(),

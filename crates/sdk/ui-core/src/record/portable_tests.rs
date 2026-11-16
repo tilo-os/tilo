@@ -10,7 +10,7 @@ tilo_test_env::scenario! {
         let store = owners.open("so.tilo.test", "workspace").unwrap();
         let again = owners.open("so.tilo.test", "workspace").unwrap();
         assert!(store.same_owner(&again));
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();
         assert!(again.reserve_record(&checkout).is_err());
         assert!(!store.is_ready(&checkout.id));
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             Some("\"Hello\""),
             "what the first page wrote"
         );
-        let wrong_kind = RecordCheckout::new(checkout.id.clone(), RecordKind::new("other"));
+        let wrong_kind = DocumentCheckout::new(checkout.id.clone(), ResourceType::new("other"));
         assert!(matches!(
             reopened.try_open_record(&wrong_kind),
             Err(RecordOpenError::IdentityMismatch)
@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
         let store = RecordOwners::portable(cache.clone())
             .open("so.tilo.test", "workspace")
             .unwrap();
-        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();
         assert!(reservation.initialize(|_| Err("failed".into())).is_err());
         assert!(store.reserve_record(&checkout).is_err());
@@ -85,7 +85,7 @@ tilo_test_env::scenario! {
     {
         use collab_types::CommitNamed as _;
         let store = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::for_tab(78), RecordKind::new("tab"));
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(78), ResourceType::new("tab"));
         store.create_record(&checkout).unwrap();
         let commit = |field: &str, value: &str| {
             store
@@ -155,7 +155,7 @@ tilo_test_env::scenario! {
     {
         use collab_types::CommitNamed as _;
         let store = RecordStore::in_memory();
-        let checkout = RecordCheckout::new(RecordId::for_tab(77), RecordKind::new("tab"));
+        let checkout = DocumentCheckout::new(DocumentId::for_tab(77), ResourceType::new("tab"));
         store.create_record(&checkout).unwrap();
         let commit = |field: &str, value: &str| {
             store

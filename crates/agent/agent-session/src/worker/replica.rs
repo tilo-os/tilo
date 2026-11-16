@@ -10,7 +10,7 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_content::ContentStore;
 use tilo_relay_protocol::live::LiveAnchor;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 use super::process::{Lease, Stopped};
 use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
@@ -57,7 +57,7 @@ pub struct ConfinedReplica {
     participant: String,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
-    record: RecordId,
+    record: DocumentId,
     content: Option<ContentStore>,
     inner: Mutex<Inner>,
 }
@@ -76,7 +76,7 @@ struct Inner {
     kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
     /// (the parts of its chain), each mirrored as this one is.
-    beside: BTreeMap<RecordId, AutoCommit>,
+    beside: BTreeMap<DocumentId, AutoCommit>,
     /// An operation ran since the last take of the records beside.
     beside_dirty: bool,
     /// Content the worker holds, put again into a worker that replaces it.
@@ -246,7 +246,7 @@ impl ConfinedReplica {
     }
 
     #[must_use]
-    pub const fn record_id(&self) -> &RecordId {
+    pub const fn record_id(&self) -> &DocumentId {
         &self.record
     }
 
@@ -389,7 +389,7 @@ impl ConfinedReplica {
     /// What the record's store asks its workspace's hosts for:
     /// [`crate::Replica::wanted_records`]. Empty when the worker cannot answer.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<RecordId> {
+    pub fn wanted_records(&self) -> Vec<DocumentId> {
         let reply = self.call(&mut self.lock(), &Request::Wanted);
         match reply {
             Ok(Reply::Wanted(records)) => records
@@ -408,7 +408,7 @@ impl ConfinedReplica {
     /// The worker could not be told.
     pub fn workspace_answered(
         &self,
-        record: &RecordId,
+        record: &DocumentId,
         answer: ui::record::WorkspaceAnswer,
     ) -> Result<(), AppError> {
         let mut inner = self.lock();
@@ -495,7 +495,7 @@ impl ConfinedReplica {
     /// now, or `None` when it holds none of it.
     pub fn changed_keys(
         &self,
-        record: &ui::record::RecordId,
+        record: &ui::record::DocumentId,
         mutation: &DocumentMutation,
     ) -> Option<Result<Vec<Vec<String>>, String>> {
         let (snapshot, bytes) = match mutation {
@@ -1074,7 +1074,7 @@ impl ConfinedReplica {
     /// As [`Self::apply`]; a record that is no part of a chain is refused.
     pub fn apply_record(
         &self,
-        record: &RecordId,
+        record: &DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<(), AppError> {
         if record == &self.record {
@@ -1152,7 +1152,7 @@ impl ConfinedReplica {
     /// # Errors
     ///
     /// As [`Self::take_mutation`].
-    pub fn take_record_mutations(&self) -> Result<Vec<(RecordId, DocumentMutation)>, AppError> {
+    pub fn take_record_mutations(&self) -> Result<Vec<(DocumentId, DocumentMutation)>, AppError> {
         let mut inner = self.lock();
         if !std::mem::take(&mut inner.beside_dirty) {
             return Ok(Vec::new());
@@ -1190,12 +1190,12 @@ impl ConfinedReplica {
     /// on top of it.
     fn admit_beside(
         &self,
-        beside: &mut BTreeMap<RecordId, AutoCommit>,
+        beside: &mut BTreeMap<DocumentId, AutoCommit>,
         record: &str,
         snapshot: bool,
         bytes: Vec<u8>,
-    ) -> Result<(RecordId, DocumentMutation), AppError> {
-        let record = RecordId::parse(record)
+    ) -> Result<(DocumentId, DocumentMutation), AppError> {
+        let record = DocumentId::parse(record)
             .filter(|record| record.chain_part().is_some() && record != &self.record)
             .ok_or_else(|| worker_error("the worker named a record it does not hold beside"))?;
         match (snapshot, beside.get_mut(&record)) {
@@ -1222,7 +1222,7 @@ impl ConfinedReplica {
 
     /// The records held beside this one ([`Self::apply_record`]), by id.
     #[must_use]
-    pub fn records_beside(&self) -> Vec<RecordId> {
+    pub fn records_beside(&self) -> Vec<DocumentId> {
         self.lock().beside.keys().cloned().collect()
     }
 
@@ -1230,7 +1230,7 @@ impl ConfinedReplica {
     /// beside it. `None` for a record not held here.
     pub fn read_record<R>(
         &self,
-        record: &RecordId,
+        record: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Option<R> {
         let inner = self.lock();
@@ -1243,7 +1243,7 @@ impl ConfinedReplica {
     /// [`Self::read_record`] through the record's history.
     pub fn read_record_history<R>(
         &self,
-        record: &RecordId,
+        record: &DocumentId,
         read: impl FnOnce(&automerge::Automerge) -> R,
     ) -> Option<R> {
         let mut inner = self.lock();

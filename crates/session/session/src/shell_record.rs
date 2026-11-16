@@ -67,7 +67,7 @@ impl ShellRecord {
         let key = durable_store::StorageKey::document(
             APP,
             ui::record::person::PERSONAL_SCOPE,
-            ui::record::RecordId::parse(&id)
+            ui::record::DocumentId::parse(&id)
                 .map_or_else(|| id.clone(), |parsed| parsed.storage_key()),
         );
         let mut opened = match app_state::DocStore::shared(store, key) {
@@ -224,7 +224,7 @@ impl ShellRecord {
 /// and, for a person without a root identity, the id every device derives alike.
 fn record_id(person: &str) -> String {
     tilolang_tilo::member_record_of(APP, person).unwrap_or_else(|| {
-        ui::record::person::record_id(&ui::record::RecordKind::new(APP))
+        ui::record::person::record_id(&ui::record::ResourceType::new(APP))
             .as_str()
             .to_owned()
     })

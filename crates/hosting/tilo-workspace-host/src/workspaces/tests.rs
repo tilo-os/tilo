@@ -553,7 +553,7 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     // a workspace record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
     assert!(!catalogue.get(app).unwrap().keeps_workspace_record());
-    let record = ui::record::RecordId::workspace_default()
+    let record = ui::record::DocumentId::workspace_default()
         .as_str()
         .to_owned();
     assert!(
@@ -571,8 +571,8 @@ async fn a_seeded_workspace_default_record_names_the_default_id() {
     let kind = catalogue.get(app).unwrap().record_kind.clone();
     assert_eq!(
         ui::record::identity(&doc),
-        Some(ui::record::RecordCheckout::new(
-            ui::record::RecordId::workspace_default(),
+        Some(ui::record::DocumentCheckout::new(
+            ui::record::DocumentId::workspace_default(),
             kind
         ))
     );

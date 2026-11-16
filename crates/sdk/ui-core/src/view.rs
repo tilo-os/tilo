@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     use crate::Theme;
     use crate::app::App;
-    use crate::record::{RecordCheckout, RecordId, RecordKind};
+    use crate::record::{DocumentCheckout, DocumentId, ResourceType};
     use crate::state::State;
     use crate::widget::TaffyTreeExt;
     use crate::widget::Widget;
@@ -385,9 +385,9 @@ mod tests {
     }
 
     impl crate::record::capability::RecordScoped for DocRoot {
-        fn record_intent(&self) -> Option<RecordCheckout> {
-            RecordId::parse(&self.resource)
-                .map(|id| RecordCheckout::new(id, RecordKind::new("document")))
+        fn record_intent(&self) -> Option<DocumentCheckout> {
+            DocumentId::parse(&self.resource)
+                .map(|id| DocumentCheckout::new(id, ResourceType::new("document")))
         }
     }
 
@@ -421,8 +421,8 @@ mod tests {
             state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
             crate::record::init(
                 &mut state.doc,
-                &RecordId::parse(file_record).unwrap(),
-                &RecordKind::new("document"),
+                &DocumentId::parse(file_record).unwrap(),
+                &ResourceType::new("document"),
                 "home-workspace",
             );
 

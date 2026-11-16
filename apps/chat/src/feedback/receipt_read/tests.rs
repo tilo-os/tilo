@@ -168,7 +168,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
     };
-    use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+    use ui::record::{DocumentCheckout, RecordOwners, ResourceType};
 
     let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
     let temp = tempfile::tempdir().unwrap();
@@ -176,7 +176,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
     let records = owners
         .open(crate::definition().app_id(), workspace)
         .unwrap();
-    let checkout = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+    let checkout = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
     let submission = fixture_submission(workspace);
     records
         .reserve_record(&checkout)

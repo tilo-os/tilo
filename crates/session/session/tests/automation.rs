@@ -341,9 +341,9 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
     std::fs::create_dir_all(&staged).expect("the index's directory");
     let mut index = automerge::AutoCommit::new();
     for (id, kind) in rows {
-        let id = ui::record::RecordId::parse(id).expect("a record id");
+        let id = ui::record::DocumentId::parse(id).expect("a record id");
         assert!(
-            ui::record::index::reference(&mut index, &id, &ui::record::RecordKind::new(*kind)),
+            ui::record::index::reference(&mut index, &id, &ui::record::ResourceType::new(*kind)),
             "the index names {id}"
         );
     }
@@ -353,7 +353,7 @@ fn write_index(home: &tilo_test_env::TestHome, rows: &[(&str, &str)]) {
 
 /// Where the record document lives.
 fn record_path(home: &tilo_test_env::TestHome) -> std::path::PathBuf {
-    let key = ui::record::RecordId::parse(RECORD)
+    let key = ui::record::DocumentId::parse(RECORD)
         .expect("a record id")
         .storage_key();
     app_state::DocStore::workspace_document_dir_at(home.data(), PACKAGE, WORKSPACE, &key)
@@ -366,8 +366,8 @@ fn seed_record(home: &tilo_test_env::TestHome) {
     let mut doc = automerge::AutoCommit::new();
     ui::record::init(
         &mut doc,
-        &ui::record::RecordId::parse(RECORD).expect("a record id"),
-        &ui::record::RecordKind::new(KIND),
+        &ui::record::DocumentId::parse(RECORD).expect("a record id"),
+        &ui::record::ResourceType::new(KIND),
         WORKSPACE,
     );
     doc.put(automerge::ROOT, "seed", 1).expect("a field");

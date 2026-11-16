@@ -265,7 +265,7 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
 fn report_unsettled_scene(
     driver: &FrameHarness,
     records: &ui::record::RecordStore,
-    record: &ui::record::RecordId,
+    record: &ui::record::DocumentId,
     background: Color,
 ) {
     eprintln!(

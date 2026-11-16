@@ -41,8 +41,8 @@ use ui::widget::{
 };
 use ui::{
     ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRun,
-    GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
-    NamedRange, NarrativeRequest, RecordId, format_relative_time, participant_display_label,
+    DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
+    HistorySource, NamedRange, NarrativeRequest, format_relative_time, participant_display_label,
 };
 
 use super::index::{
@@ -162,7 +162,7 @@ impl DetailAction {
 /// marker in the workspace tree itself.
 #[derive(Clone, Debug, PartialEq)]
 struct IndexedAgentSession {
-    source_record: Option<RecordId>,
+    source_record: Option<DocumentId>,
     session: AgentSession,
 }
 
@@ -485,7 +485,7 @@ pub struct WorkspaceActivityPane {
     /// Records the last task undo did not reach, as sentences naming each: reported beside the run,
     /// never left out of it.
     unreverted: Vec<String>,
-    open_agent_records: HashSet<RecordId>,
+    open_agent_records: HashSet<DocumentId>,
     /// What a deep link last asked the feed to show, and how many it asked.
     focus: Option<tilo_actions::remote::workspace_activity::Focus>,
     focus_serial: u64,
@@ -1116,7 +1116,7 @@ impl WorkspaceActivityPane {
                     .iter()
                     .filter(|step| !asked.contains(step))
                     .map(|(app, record)| {
-                        let record = RecordId::parse(record)
+                        let record = DocumentId::parse(record)
                             .and_then(|id| id.file_path())
                             .and_then(|path| {
                                 path.file_name()
@@ -1188,11 +1188,11 @@ impl WorkspaceActivityPane {
     /// a document this host admitted is that record, named as the history names it — a record's
     /// own id, or a package's record of the workspace, which travels as its primary.
     fn record_id_is_open(&self, record: &str) -> bool {
-        let primary = RecordId::package_primary();
+        let primary = DocumentId::package_primary();
         let id = if record == primary.as_str() {
             Some(primary)
         } else {
-            RecordId::parse(record)
+            DocumentId::parse(record)
         };
         id.is_some_and(|id| self.open_agent_records.contains(&id))
     }

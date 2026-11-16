@@ -254,7 +254,7 @@ tilo_test_env::scenario! {
     phase an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy;
     {
         use std::rc::Rc;
-        use tilo_app::record::{RecordKind, RecordOwners, person::PersonRecords};
+        use tilo_app::record::{ResourceType, RecordOwners, person::PersonRecords};
 
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let held = PersonRecords::open(
@@ -268,7 +268,7 @@ tilo_test_env::scenario! {
         owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
 
         let kept = held
-            .open_existing_record(RecordKind::new(Saved::KIND))
+            .open_existing_record(ResourceType::new(Saved::KIND))
             .unwrap()
             .expect("the host keeps the record the app changed");
         assert_eq!(

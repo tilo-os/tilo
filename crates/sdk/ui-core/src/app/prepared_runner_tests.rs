@@ -976,9 +976,9 @@ fn activate_palette_action(app: &mut App, action: &str) {
 /// The component a window shows asking for another record of its app, as an
 /// app's own Open does: built through the same checked construction as the
 /// first, on the same store.
-fn request_another_record(component: &AppComponent) -> crate::record::RecordId {
+fn request_another_record(component: &AppComponent) -> crate::record::DocumentId {
     let reopener = component.reopener();
-    let record = crate::record::RecordId::minted();
+    let record = crate::record::DocumentId::minted();
     let (context, target) = reopener
         .prepare(runner_probe_definition(), record.clone())
         .unwrap();
@@ -1021,7 +1021,10 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let first = component.callback_binding();
         let reopener = component.reopener();
         let (context, target) = reopener
-            .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+            .prepare(
+                runner_probe_definition(),
+                crate::record::DocumentId::minted(),
+            )
             .unwrap();
         let replacement = runner_probe_definition()
             .instantiate(context, target, RestoreInput::None)
@@ -1118,7 +1121,7 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     );
     assert_saved_body(&host, &first, "edited");
     assert_eq!(body(&shown.records, &shown.checkout), "initialized");
-    let retained_id = crate::record::RecordId::minted();
+    let retained_id = crate::record::DocumentId::minted();
     let (retained, target) = retained_reopener
         .prepare(runner_probe_definition(), retained_id.clone())
         .expect("retirement preserves the authorized same-store preparation capability");
@@ -1238,7 +1241,10 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
     );
     let (context, _) = component
         .reopener()
-        .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+        .prepare(
+            runner_probe_definition(),
+            crate::record::DocumentId::minted(),
+        )
         .unwrap();
     let successor = context.wake_handle();
     let unused: crate::image_store::Fetcher =
@@ -1295,7 +1301,10 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     // The window opens another record in its place, on a lane of its own.
     let (mut next, target) = component
         .reopener()
-        .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+        .prepare(
+            runner_probe_definition(),
+            crate::record::DocumentId::minted(),
+        )
         .unwrap();
     let next_lane = Arc::new(ContentLane::default());
     let next_local = tilo_content::ContentStore::memory();

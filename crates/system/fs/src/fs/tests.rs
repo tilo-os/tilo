@@ -10,7 +10,7 @@ mod availability_control_tests {
 
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         wait_for_availability_with_timeout(
@@ -24,7 +24,7 @@ mod availability_control_tests {
 
     async fn wait_for_availability_with_timeout(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
         timeout: Duration,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
@@ -1504,7 +1504,7 @@ mod predictive_tests {
                     ns.create_projected_file(
                         ROOT_INO,
                         format!("visible-{index:04}"),
-                        fs_protocol::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
+                        fs_protocol::FileDocumentId(uuid::Uuid::from_u128((index + 1) as u128)),
                         None,
                         0,
                         1,

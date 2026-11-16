@@ -269,8 +269,8 @@ mod tests {
                 .write(key, WriteOp::Replace(doc.save()), None)
                 .unwrap();
         };
-        let id = ui::record::RecordId::for_file("/run/tilo/documents/Budget for Friday.txt");
-        let kind = ui::record::RecordKind::new("word-processor.document");
+        let id = ui::record::DocumentId::for_file("/run/tilo/documents/Budget for Friday.txt");
+        let kind = ui::record::ResourceType::new("word-processor.document");
         let mut index = AutoCommit::new();
         assert!(ui::record::index::reference(&mut index, &id, &kind));
         index.commit();

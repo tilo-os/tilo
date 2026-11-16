@@ -7521,7 +7521,7 @@ fn route_record_kind(
     route: &CrdtRoute,
     named: Option<String>,
 ) -> Result<Option<String>, BrokerError> {
-    let Some(record) = collab_types::workspace_record(&route.app_id, &route.record_id) else {
+    let Some(record) = collab_types::workspace_document(&route.app_id, &route.record_id) else {
         return Ok(named);
     };
     match named {
@@ -7579,7 +7579,7 @@ fn joined_record_kind(kind: &str) -> Result<Option<String>, BrokerError> {
     if kind.is_empty() {
         return Ok(None);
     }
-    if !ui::record::RecordKind::new(kind).is_valid() {
+    if !ui::record::ResourceType::new(kind).is_valid() {
         return Err(BrokerError::failed(format!("invalid record kind `{kind}`")));
     }
     Ok(Some(kind.to_owned()))

@@ -6,7 +6,7 @@ fn store_definition() -> &'static ui::application::ApplicationDefinition {
 
 fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
     let definition = store_definition();
-    let record = ui::record::RecordId::for_tab(1);
+    let record = ui::record::DocumentId::for_tab(1);
     let mut document = automerge::AutoCommit::new();
     assert!(ui::record::init_scoped(
         &mut document,
@@ -26,9 +26,9 @@ fn store_genesis(workspace: &str) -> Vec<tilo_peer_state::SeedDocument> {
 fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManager) -> ui::App {
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::portable_storage::{PortableStorage, StorageKey};
-    use ui::record::{RecordCheckout, RecordId, RecordOwners};
+    use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
     let definition = store_definition();
-    let record = RecordId::parse(&env.route.record_id).unwrap();
+    let record = DocumentId::parse(&env.route.record_id).unwrap();
     let mut initial = automerge::AutoCommit::new();
     assert!(ui::record::init_scoped(
         &mut initial,
@@ -57,7 +57,7 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
         ui::application_view::InstanceViewStore::portable(cache, &env.route.cluster_id).unwrap(),
     );
     let target = LaunchTarget::Record {
-        checkout: RecordCheckout::new(record, definition.record_kind.clone()),
+        checkout: DocumentCheckout::new(record, definition.record_kind.clone()),
         reveal: None,
     };
     let context = HostContext::prepare(
@@ -208,7 +208,7 @@ fn prove_store_directory(mut env: Environment) {
     let private = env.root.path().canonicalize().unwrap();
     std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700)).unwrap();
     env.route.app_id = store_definition().app_id().into();
-    env.route.record_id = ui::record::RecordId::for_tab(1).as_str().into();
+    env.route.record_id = ui::record::DocumentId::for_tab(1).as_str().into();
     env.authority = CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
     let broker = crate::collab_broker::spawn_native_peer_with_services(
         private.join("store-worker.sock"),

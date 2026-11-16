@@ -256,7 +256,7 @@ impl ViewStorage {
     /// first use, its actions reading that record from `base_state`.
     pub(crate) fn chain_beside<P: super::Chained>(
         &self,
-        base: &ui_core::record::RecordId,
+        base: &ui_core::record::DocumentId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
         super::controls::opened_record::<P>();

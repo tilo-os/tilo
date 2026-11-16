@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{LaunchInput, Publishes, ResourceApp, RunMode, ViewCx};
-use ui::record::RecordId;
+use ui::record::DocumentId;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Id, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
 };
@@ -838,11 +838,13 @@ impl ResourceApp for PdfViewerShell {
         }
     }
 
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         input.argument().map(|path| {
-            RecordId::derived(
+            DocumentId::derived(
                 MARKUP_ROLE,
-                &RecordId::identify_file(std::path::absolute(path).unwrap_or_else(|_| path.into())),
+                &DocumentId::identify_file(
+                    std::path::absolute(path).unwrap_or_else(|_| path.into()),
+                ),
             )
         })
     }

@@ -24,7 +24,7 @@ pub struct TreeEntry {
     /// Whether this device holds the content the tree names. A file whose bytes have not arrived yet
     /// reads as empty; it is not empty, just not known.
     pub known: bool,
-    pub record: Option<fs_protocol::FileRecordId>,
+    pub record: Option<fs_protocol::FileDocumentId>,
     pub posix: PosixAttrs,
     pub lease: Option<WriteLease>,
     /// The tenancy the current version was written in, and who held the lease in that epoch.
@@ -645,7 +645,7 @@ impl QuickFS {
 
     pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
         self.ns().lease_holder(
-            fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record)),
+            fs_protocol::FileDocumentId(uuid::Uuid::from_bytes(record)),
             epoch,
         )
     }
@@ -749,7 +749,7 @@ impl QuickFS {
     pub fn arbitrate_lease_requests(
         &self,
         ttl: std::time::Duration,
-        answered: &mut std::collections::HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
+        answered: &mut std::collections::HashSet<(fs_protocol::FileDocumentId, [u8; 32], u64)>,
     ) -> Vec<(std::path::PathBuf, WriteLease)> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let mut granted = Vec::new();
@@ -790,7 +790,7 @@ impl QuickFS {
 
     fn take_lease(
         &self,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
         me: [u8; 32],
         ttl: std::time::Duration,
         granted: bool,

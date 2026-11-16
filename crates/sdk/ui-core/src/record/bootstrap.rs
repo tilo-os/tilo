@@ -128,9 +128,9 @@ mod tests {
 
     fn fresh(workspace: &str, writer: &[u8]) -> Result<AutoCommit> {
         let mut doc = AutoCommit::new().with_actor(ActorId::from(writer));
-        let checkout = crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_tab(73),
-            crate::record::RecordKind::new("test.document"),
+        let checkout = crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::for_tab(73),
+            crate::record::ResourceType::new("test.document"),
         );
         super::super::genesis(&mut doc, &checkout, workspace, |_| Ok(()))?;
         Ok(doc)

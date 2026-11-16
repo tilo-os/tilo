@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use ui::application::{ApplicationDefinition, LaunchTarget};
 use ui::permissions::MemberId;
-use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners, RecordStore};
+use ui::record::{DocumentCheckout, DocumentId, RecordOpenError, RecordOwners, RecordStore};
 
 /// What a page showing one app opens now.
 pub(crate) enum Opening {
@@ -24,7 +24,7 @@ pub(crate) enum Opening {
     Target(LaunchTarget),
     /// A new record, which the host names: the app founds it when its factory
     /// runs.
-    New(RecordId),
+    New(DocumentId),
     /// Nothing of it is here and the workspace has not answered: the page
     /// shows the app arriving, and opens it once the record is here or the
     /// workspace answered it holds none of it — then as a new record.
@@ -112,8 +112,8 @@ pub(crate) fn opening(
     }
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
-    let default = RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(instance)),
+    let default = DocumentCheckout::new(
+        DocumentId::derived("default", &DocumentId::for_tab(instance)),
         definition.record_kind.clone(),
     );
     match record {
@@ -122,13 +122,13 @@ pub(crate) fn opening(
         // wrote it (the first write founds it), as it does natively.
         Some(existing)
             if definition.keeps_workspace_record()
-                && existing == RecordId::package_primary().as_str() =>
+                && existing == DocumentId::package_primary().as_str() =>
         {
             unsaved(definition, records)
         }
         Some(existing) => Ok(Opening::Target(LaunchTarget::Record {
-            checkout: RecordCheckout::new(
-                RecordId::parse(existing).ok_or(Unopened::InvalidRecord)?,
+            checkout: DocumentCheckout::new(
+                DocumentId::parse(existing).ok_or(Unopened::InvalidRecord)?,
                 definition.record_kind.clone(),
             ),
             reveal: None,

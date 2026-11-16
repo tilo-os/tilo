@@ -195,7 +195,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
     }
 
     /// The parts of the chat's messages the workspace holds, each whole.
-    async fn parts(&self) -> Result<Vec<(ui::record::RecordId, Vec<u8>)>, String> {
+    async fn parts(&self) -> Result<Vec<(ui::record::DocumentId, Vec<u8>)>, String> {
         let mut parts = Vec::new();
         for (app, record) in self
             .workspaces
@@ -203,7 +203,7 @@ impl<J: Judge + Sync + Send + 'static> ModerationBot<J> {
             .await
             .map_err(|error| error.to_string())?
         {
-            let Some(part) = ui::record::RecordId::parse(&record)
+            let Some(part) = ui::record::DocumentId::parse(&record)
                 .filter(|record| app == CHAT && chat::parts::part_index(record).is_some())
             else {
                 continue;
@@ -284,7 +284,7 @@ fn bot_replica(
     workspace: &str,
     installer: &str,
     bytes: Vec<u8>,
-    parts: Vec<(ui::record::RecordId, Vec<u8>)>,
+    parts: Vec<(ui::record::DocumentId, Vec<u8>)>,
 ) -> Result<Replica, String> {
     let bot = Grantee::bot(MODERATION_INSTALLATION);
     let grant = Grant::new(
@@ -311,7 +311,7 @@ fn bot_replica(
             standing,
         },
         Seed::Existing {
-            record: ui::record::RecordId::package_primary(),
+            record: ui::record::DocumentId::package_primary(),
             changes: vec![bytes],
         },
     )
@@ -359,7 +359,7 @@ where
 pub fn workspace_record(catalogue: &tilo_agent_session::AppCatalogue, app: &str) -> String {
     match catalogue.get(app) {
         Some(definition) if !definition.keeps_workspace_record() => {
-            ui::record::RecordId::workspace_default()
+            ui::record::DocumentId::workspace_default()
                 .as_str()
                 .to_owned()
         }

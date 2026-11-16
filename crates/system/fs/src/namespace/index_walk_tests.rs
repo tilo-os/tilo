@@ -14,7 +14,7 @@
 
 use automerge::ObjType;
 use automerge::transaction::Transactable;
-use fs_protocol::FileRecordId;
+use fs_protocol::FileDocumentId;
 use iroh_blobs::Hash;
 
 use super::tests::assert_indexes_match_rebuild;
@@ -242,13 +242,13 @@ tilo_test_env::scenario! {
         let rows = ns.indexed_record_count();
         let revision = ns.indexed_record_revision().to_owned();
 
-        let own_record = FileRecordId::new();
+        let own_record = FileDocumentId::new();
         let node = ns.doc.put_object(&ns.nodes, ROOT_ID, ObjType::Map).unwrap();
         ns.doc.put(&node, "parent", ROOT_ID).unwrap();
         ns.doc.put(&node, "name", b"loop".to_vec()).unwrap();
         ns.doc.put(&node, "kind", "file").unwrap();
         ns.doc
-            .put(&node, "record_id", own_record.0.to_string())
+            .put(&node, "document_id", own_record.0.to_string())
             .unwrap();
 
         ns.rebuild_record_index();

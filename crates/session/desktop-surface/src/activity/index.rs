@@ -13,7 +13,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
 use super::ActivityTree;
@@ -30,8 +30,8 @@ pub enum HistoryOrigin {
     Layout,
     AppRecord {
         app: String,
-        id: RecordId,
-        kind: RecordKind,
+        id: DocumentId,
+        kind: ResourceType,
     },
 }
 
@@ -48,7 +48,7 @@ impl HistoryOrigin {
     }
 
     /// The record this row came from, if it is not the workspace document.
-    pub fn record(&self) -> Option<&RecordId> {
+    pub fn record(&self) -> Option<&DocumentId> {
         match self {
             Self::Layout => None,
             Self::AppRecord { id, .. } => Some(id),
@@ -68,7 +68,7 @@ impl HistoryOrigin {
 #[derive(Clone)]
 pub struct DetachedRecordHistory {
     pub app: String,
-    pub checkout: RecordCheckout,
+    pub checkout: DocumentCheckout,
     pub document: Option<AutoCommit>,
 }
 impl DetachedRecordHistory {
@@ -269,7 +269,7 @@ pub struct FeedCoverage {
     pub pending_tree: bool,
     pub referenced_records: usize,
     pub indexed_records: usize,
-    pub unavailable_records: Vec<RecordCheckout>,
+    pub unavailable_records: Vec<DocumentCheckout>,
     pub capped_records: usize,
     pub excluded_apps: Vec<String>,
 }
@@ -584,7 +584,7 @@ fn insert_rows(
     }
 }
 
-fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
+fn artifact_kind(kind: &ResourceType) -> ArtifactKind {
     let lower = kind.as_str().to_ascii_lowercase();
     if lower.contains("kanban") || lower.contains("board") {
         ArtifactKind::Kanban
@@ -619,7 +619,7 @@ mod folder_rows_tests {
 
     fn write_version(
         doc: &mut AutoCommit,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         id: u128,
         agent: Option<fs_protocol::AttributedWriter>,
     ) {

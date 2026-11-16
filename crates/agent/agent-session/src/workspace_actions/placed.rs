@@ -25,7 +25,9 @@ impl Worker {
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: ui::record::RecordId::workspace_default().route().to_owned(),
+            record: ui::record::DocumentId::workspace_default()
+                .route()
+                .to_owned(),
         };
         let start = !self.held_or_owed(workspace_id, &route)?;
         let genesis =

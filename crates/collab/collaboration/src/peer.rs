@@ -31,7 +31,7 @@ pub trait PeerTransport {
     fn join_route(
         &mut self,
         _: RouteSpec,
-        _: collab_types::record::RecordKind,
+        _: collab_types::document::ResourceType,
     ) -> Result<(), String> {
         Err("route joining unavailable".into())
     }
@@ -270,7 +270,7 @@ mod tests {
         fn join_route(
             &mut self,
             _: RouteSpec,
-            _: collab_types::record::RecordKind,
+            _: collab_types::document::ResourceType,
         ) -> Result<(), String> {
             Ok(())
         }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::Theme;
-use crate::record::{RecordCheckout, RecordId, RecordKind};
+use crate::record::{DocumentCheckout, DocumentId, ResourceType};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
 use crate::widget::TaffyTreeExt;
@@ -65,9 +65,9 @@ impl crate::view::capability::ViewState for ViewRoot {
 }
 
 impl crate::record::capability::RecordScoped for ViewRoot {
-    fn record_intent(&self) -> Option<RecordCheckout> {
+    fn record_intent(&self) -> Option<DocumentCheckout> {
         let r = self.resource.as_ref()?;
-        RecordId::parse(r).map(|id| RecordCheckout::new(id, RecordKind::new("document")))
+        DocumentId::parse(r).map(|id| DocumentCheckout::new(id, ResourceType::new("document")))
     }
 }
 

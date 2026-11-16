@@ -4,7 +4,7 @@
 use tilo_actions::ActionOutput;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::remote::ViewResourceQuery;
-use ui::record::RecordId;
+use ui::record::DocumentId;
 
 use super::process::{Lease, Stopped};
 use super::proto::{Mode, Reply, Request};
@@ -52,7 +52,7 @@ impl ConfinedRead {
     pub(crate) fn prepare(
         app_id: &str,
         workspace: &str,
-        record: &RecordId,
+        record: &DocumentId,
         source: Vec<u8>,
         policy: &ViewReadPolicy,
     ) -> Result<Self, String> {

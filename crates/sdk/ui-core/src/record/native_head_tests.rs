@@ -12,7 +12,7 @@ use durable_store::MemoryStore;
 use crate::collaboration::CollaborationManager;
 use crate::collaboration::native_initial::NativeConstruction;
 use crate::record::{
-    RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore,
+    DocumentCheckout, DocumentId, RecordOpenError, RecordOwners, RecordStore, ResourceType,
 };
 
 const PACKAGE: &str = "so.tilo.test";
@@ -31,10 +31,10 @@ fn native_store(
 }
 
 /// The name of the newest part of a chat's chain of messages.
-fn head() -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::derived("messages", &RecordId::workspace_default()).chain_head(),
-        RecordKind::new("chat.part"),
+fn head() -> DocumentCheckout {
+    DocumentCheckout::new(
+        DocumentId::derived("messages", &DocumentId::workspace_default()).chain_head(),
+        ResourceType::new("chat.part"),
     )
 }
 

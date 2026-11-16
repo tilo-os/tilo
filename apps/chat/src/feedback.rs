@@ -223,7 +223,7 @@ pub fn canonical_feedback_projection(
 /// external URL selects this store or record.
 pub fn receipt_from_record(
     store: &ui::record::RecordStore,
-    record: &ui::record::RecordId,
+    record: &ui::record::DocumentId,
     id: &str,
     actual_destination: &Destination,
 ) -> Result<Receipt, ActionError> {
@@ -615,14 +615,14 @@ mod tests {
 
         phase canonical_owner_receipt_refuses_newer_unsaved_edits_and_memory_only_records;
         {
-            use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
+            use ui::record::{DocumentCheckout, DocumentId, ResourceType, RecordOwners, RecordStore};
             let (_, submission) = seeded();
             let temp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(temp.path().join("profile"));
             let store = owners
                 .open("so.tilo.chat", &submission.destination.workspace)
                 .unwrap();
-            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("chat.workspace"));
+            let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("chat.workspace"));
             store
                 .reserve_record(&checkout)
                 .unwrap()
@@ -691,7 +691,7 @@ mod tests {
 
         phase primary_chat_receipt_uses_its_saved_store_namespace_without_a_fake_record_stamp;
         {
-            use ui::record::{RecordCheckout, RecordKind, RecordOwners};
+            use ui::record::{DocumentCheckout, ResourceType, RecordOwners};
             let (_, submission) = seeded();
             let temp = tempfile::tempdir().unwrap();
             let mut owners = RecordOwners::new(temp.path().join("profile"));
@@ -701,7 +701,7 @@ mod tests {
                     &submission.destination.workspace,
                 )
                 .unwrap();
-            let primary = RecordCheckout::package_primary(RecordKind::new("chat.workspace"));
+            let primary = DocumentCheckout::package_primary(ResourceType::new("chat.workspace"));
             store
                 .reserve_record(&primary)
                 .unwrap()

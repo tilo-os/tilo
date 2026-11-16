@@ -35,7 +35,7 @@ use crate::platform::Store;
 use crate::platform::records::{Reading, Watch};
 use durable_store::DurableStore;
 use tilo_desktop_search::providers::records::HeldRecord;
-use ui::record::RecordCheckout;
+use ui::record::DocumentCheckout;
 
 /// A record one or more workspaces on this device hold: what search offers,
 /// without the names of the workspaces, which only the shell knows.
@@ -189,7 +189,7 @@ impl Records {
     /// holds from then on, and the whole of what bringing a record here does. Written away from the
     /// loop, through the one store the records are in, whose write notes the change in the stream
     /// the activity and the mentions follow. Whether this host brings records here at all.
-    pub fn bring_here(&self, workspace: &str, package: &str, record: RecordCheckout) -> bool {
+    pub fn bring_here(&self, workspace: &str, package: &str, record: DocumentCheckout) -> bool {
         #[cfg(target_os = "linux")]
         if let Some(root) = self.root.clone() {
             let (workspace, package) = (workspace.to_owned(), package.to_owned());
@@ -219,8 +219,8 @@ impl Records {
 
 /// Name `record` in the index of `package` in `workspace` , as its app would. Whether it is named.
 #[cfg(target_os = "linux")]
-fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) -> bool {
-    let RecordCheckout { id, kind, .. } = record;
+fn name_in(root: &Path, workspace: &str, package: &str, record: DocumentCheckout) -> bool {
+    let DocumentCheckout { id, kind, .. } = record;
     let store: std::rc::Rc<dyn DurableStore> =
         std::rc::Rc::new(app_state::FsStore::new(root.to_path_buf()));
     let key = durable_store::StorageKey::workspace_index(package, workspace);
@@ -298,7 +298,7 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
         }
     };
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
-    let primary = ui::record::RecordId::package_primary();
+    let primary = ui::record::DocumentId::package_primary();
     for (package, workspace) in indexes {
         // The app's own record in the workspace (Notes' notebook, Tasks' tracker) is the document
         // that keeps the index, which names the other records and not itself: what it holds is
@@ -373,11 +373,13 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
 /// it holds is read from it. `None` for a record whose document is not here yet.
 fn record_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
     let workspace = record.workspaces.first()?;
-    let primary = ui::record::RecordId::package_primary();
+    let primary = ui::record::DocumentId::package_primary();
     let route = if record.id == primary.as_str() {
         primary.route().to_owned()
     } else {
-        ui::record::RecordId::parse(&record.id)?.route().to_owned()
+        ui::record::DocumentId::parse(&record.id)?
+            .route()
+            .to_owned()
     };
     crate::platform::records::document(store, &record.package, workspace, &route)
 }
@@ -387,7 +389,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use durable_store::{StorageKey, WriteOp};
-    use ui::record::{RecordId, RecordKind};
+    use ui::record::{DocumentId, ResourceType};
 
     const NOTES: &str = "so.tilo.notes";
     const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
@@ -407,8 +409,8 @@ mod tests {
 
         // The app names its record in the workspace's index, and writes the record.
         let (id, kind) = (
-            RecordId::parse(NOTE).expect("a record id"),
-            RecordKind::new("notes.notebook"),
+            DocumentId::parse(NOTE).expect("a record id"),
+            ResourceType::new("notes.notebook"),
         );
         let mut index = AutoCommit::new();
         assert!(ui::record::index::reference(&mut index, &id, &kind));

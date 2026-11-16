@@ -10,7 +10,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use fs_protocol::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
+use fs_protocol::{FileDocumentId, FileNameV1, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
 use crate::namespace::{Namespace, ROOT_ID};
@@ -24,7 +24,7 @@ pub struct ContentConflict {
     pub loser: Hash,
     /// Present for revision-aware conflicts. Legacy hash-only conflicts keep
     /// these empty and cannot be projected as first-class signed conflicts.
-    pub record_id: Option<FileRecordId>,
+    pub record_id: Option<FileDocumentId>,
     pub winner_version: Option<FileVersionId>,
     pub loser_version: Option<FileVersionId>,
 }
@@ -298,7 +298,7 @@ fn push_copy(
     parent: &str,
     name: &FileNameV1,
     loser_hex: &str,
-    revision_binding: Option<(FileRecordId, FileVersionId, FileVersionId)>,
+    revision_binding: Option<(FileDocumentId, FileVersionId, FileVersionId)>,
 ) {
     let Some(loser) = hash_from_hex(loser_hex) else {
         return;

@@ -15,7 +15,7 @@ use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::MemberId;
 use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope};
-use ui_core::record::{RecordId, RecordKind};
+use ui_core::record::{DocumentId, ResourceType};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
 
@@ -29,7 +29,7 @@ use {
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{PermissionContext, Role},
-    ui_core::record::RecordCheckout,
+    ui_core::record::DocumentCheckout,
 };
 
 use ui_core::permissions::MemberId;
@@ -209,13 +209,13 @@ pub trait ResourceApp: 'static {
     }
 
     /// The record a launch naming `input` opens: the file's own record
-    /// ([`RecordId::identify_file`]), a record derived from it
-    /// ([`RecordId::derived`]), a minted one. `None`, the default, opens the
+    /// ([`DocumentId::identify_file`]), a record derived from it
+    /// ([`DocumentId::derived`]), a minted one. `None`, the default, opens the
     /// record the app would open anyway: the one the window showed last, else
     /// the workspace's default. Asked by a launcher that picks the record (the
     /// command line, a test host), before the record is opened, so it must
     /// not depend on anything but `input`.
-    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+    fn launch_record(input: &LaunchInput<'_>) -> Option<DocumentId> {
         let _ = input;
         None
     }
@@ -495,7 +495,7 @@ impl SeedCx<'_> {
     /// id order. The workspace's record is created once, so a seed that copies
     /// these into it migrates them exactly once; the records themselves are
     /// left as they were. Empty for any other record, and without a host.
-    pub fn window_records(&self) -> Vec<(RecordId, tilo_resource::Doc)> {
+    pub fn window_records(&self) -> Vec<(DocumentId, tilo_resource::Doc)> {
         self.host
             .map(HostContext::window_records)
             .unwrap_or_default()
@@ -570,7 +570,7 @@ fn application_definition(
         app_id: app.id().into(),
         title: app.title().into(),
         icon: icon(app),
-        record_kind: RecordKind::new(app.kind),
+        record_kind: ResourceType::new(app.kind),
         required: vec![],
         optional: vec![],
         opens,
@@ -615,7 +615,7 @@ pub(crate) struct AppHooks {
     flags: &'static [&'static str],
     catalog: fn() -> Option<&'static EmbeddedCatalog>,
     definition: fn() -> &'static ApplicationDefinition,
-    launch_record: fn(&LaunchInput<'_>) -> Option<RecordId>,
+    launch_record: fn(&LaunchInput<'_>) -> Option<DocumentId>,
     local_operations: fn() -> Vec<tilo_actions::ActionSpec>,
     declarations: fn() -> Rc<[tilo_resource::Declaration]>,
     /// Initialize a record the launch created: the resource's own
@@ -776,7 +776,7 @@ fn write_scope(app: &AppHooks, run: &Run) -> PermissionScope {
         .launched
         .record
         .as_ref()
-        .map(ui_core::record::RecordId::route)
+        .map(ui_core::record::DocumentId::route)
     {
         Some(record) if own_kind => PermissionScope::Action {
             node: ui_core::permissions::TreePath::root()
@@ -1628,20 +1628,24 @@ pub(crate) fn prepare_on(
     host: &mut ApplicationHost,
     definition: &ApplicationDefinition,
     instance: u64,
-    named: Option<RecordId>,
+    named: Option<DocumentId>,
     inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let kind = definition.record_kind.clone();
     match named {
         // A launch naming the workspace's own record (a notification about
         // something in it) opens it as a launch naming nothing does.
-        Some(id) if !(id.is_package_primary() && definition.keeps_workspace_record()) => {
-            host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
-        }
+        Some(id) if !(id.is_package_primary() && definition.keeps_workspace_record()) => host
+            .prepare_record(
+                definition,
+                instance,
+                DocumentCheckout::new(id, kind),
+                inputs,
+            ),
         _ => host.prepare_default(
             definition,
             instance,
-            RecordCheckout::new(RecordId::workspace_default(), kind),
+            DocumentCheckout::new(DocumentId::workspace_default(), kind),
             None,
             inputs,
         ),
@@ -1822,7 +1826,7 @@ fn open_in_place(
         let (named, rest) = record_argument(&arguments);
         let record = named
             .or_else(|| (app.launch_record)(&LaunchInput::new(rest, None)))
-            .unwrap_or_else(RecordId::minted);
+            .unwrap_or_else(DocumentId::minted);
         let (mut context, target) = reopener.prepare(definition, record)?;
         hand_launch_to(definition, rest, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
@@ -1871,11 +1875,11 @@ fn prepare_definition(
 }
 
 /// The record a launch names with a first argument
-/// `tilo-record:<id>` ([`RecordId::uri`]), as the session launches an app to
+/// `tilo-record:<id>` ([`DocumentId::uri`]), as the session launches an app to
 /// run an action on one of its records, and the arguments after it.
-fn record_argument(arguments: &[String]) -> (Option<RecordId>, &[String]) {
+fn record_argument(arguments: &[String]) -> (Option<DocumentId>, &[String]) {
     match arguments.split_first() {
-        Some((first, rest)) => match RecordId::from_uri(first) {
+        Some((first, rest)) => match DocumentId::from_uri(first) {
             Some(record) => (Some(record), rest),
             None => (None, arguments),
         },
@@ -1889,7 +1893,7 @@ mod record_argument_tests {
 
     #[test]
     fn a_record_uri_names_the_record_and_is_not_handed_to_the_app() {
-        let record = RecordId::minted();
+        let record = DocumentId::minted();
         let arguments = vec![record.uri(), "--then".to_owned()];
         let (named, rest) = record_argument(&arguments);
         assert_eq!(named, Some(record));
@@ -1925,7 +1929,7 @@ fn isolated(args: &LaunchArgs, private: bool) -> bool {
 fn prepare_named(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
-    named: Option<RecordId>,
+    named: Option<DocumentId>,
     private: bool,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();

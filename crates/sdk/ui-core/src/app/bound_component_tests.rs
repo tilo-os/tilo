@@ -683,7 +683,7 @@ fn bound_components_keep_child_binding() {
             app_id: "so.tilo.binding-probe".into(),
             title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
-            record_kind: crate::record::RecordKind::new("probe"),
+            record_kind: crate::record::ResourceType::new("probe"),
 
             required: vec![],
             optional: vec![],
@@ -909,7 +909,7 @@ impl ActionFixture {
                 app_id: "so.tilo.binding-probe".into(),
                 title: "Probe".into(),
                 icon: IconDescriptor::Glyph("P"),
-                record_kind: crate::record::RecordKind::new("probe"),
+                record_kind: crate::record::ResourceType::new("probe"),
 
                 required: vec![],
                 optional: vec![],
@@ -2697,7 +2697,7 @@ tilo_test_env::scenario! {
             app_id: "so.tilo.binding-probe".into(),
             title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
-            record_kind: crate::record::RecordKind::new("probe"),
+            record_kind: crate::record::ResourceType::new("probe"),
             workspace_record: true,
             member_record: false,
             opens_before_record: false,

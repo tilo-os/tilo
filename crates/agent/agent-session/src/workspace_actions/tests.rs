@@ -469,7 +469,7 @@ fn an_apps_index_is_not_one_of_its_records() {
             app_id: app.into(),
             title: "Index probe".into(),
             icon: ui::widget::IconDescriptor::Glyph("P"),
-            record_kind: ui::record::RecordKind::new("probe"),
+            record_kind: ui::record::ResourceType::new("probe"),
             required: vec![],
             optional: vec![],
             opens: &[],

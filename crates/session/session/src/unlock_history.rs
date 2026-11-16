@@ -22,7 +22,7 @@ use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjType, OnPartialLoad, ROOT, ReadDoc as _};
 use tilo_actions::{ActionApp, ActionContext, ActionFacet, ActionItem, ActionKey, Did, Scalar};
 use tilo_desktop_surface::activity::DetachedRecordHistory;
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 
 use crate::i18n::t;
 use crate::network::slot_name;
@@ -73,7 +73,7 @@ pub(crate) struct UnlockHistory {
     path: Option<PathBuf>,
     /// The person's own record the answers belong to. `None` on a session with no certified person:
     /// it is on no fabric, so nothing answers.
-    record: Option<RecordCheckout>,
+    record: Option<DocumentCheckout>,
     /// The person's fabric, while this session takes part in one.
     link: RefCell<Option<SharedLink>>,
     /// The answers already in the document, by the key each is kept under.
@@ -85,8 +85,8 @@ impl UnlockHistory {
     /// nothing on a device that answered nothing yet. `person` is who sits here: the record is
     /// theirs, on every one of their devices.
     pub(crate) fn new(state: Option<&Path>, person: &str) -> Self {
-        let record = RecordId::of_member(person, KIND)
-            .map(|id| RecordCheckout::new(id, RecordKind::new(KIND)));
+        let record = DocumentId::of_member(person, KIND)
+            .map(|id| DocumentCheckout::new(id, ResourceType::new(KIND)));
         let (doc, path) = match state {
             Some(state) => open(&path(state)),
             None => (AutoCommit::new(), None),

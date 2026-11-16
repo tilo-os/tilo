@@ -7,8 +7,8 @@ use pdf_viewer::PdfViewerShell;
 use pdf_viewer::app::{PdfApp, WorkspaceDocument};
 use pdf_viewer::markup::PdfMarkup;
 
-fn markup_record(path: &str) -> ui::record::RecordId {
-    ui::record::RecordId::derived("annotations", &ui::record::RecordId::for_file(path))
+fn markup_record(path: &str) -> ui::record::DocumentId {
+    ui::record::DocumentId::derived("annotations", &ui::record::DocumentId::for_file(path))
 }
 
 fn paper(pages: usize, hash: [u8; 32], len: u64, name: &str) -> ui::tilo_resource::Doc {
@@ -41,7 +41,7 @@ fn apply(doc: &mut ui::tilo_resource::Doc, action: ui::tilo_resource::Invoke<Pdf
     *doc = std::mem::take(replica.doc_mut());
 }
 
-fn application_pdf() -> (&'static str, ui::record::RecordId, ui::tilo_resource::Doc) {
+fn application_pdf() -> (&'static str, ui::record::DocumentId, ui::tilo_resource::Doc) {
     (
         "application.pdf",
         markup_record("/papers/application.pdf"),

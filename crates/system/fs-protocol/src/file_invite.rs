@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::files::FileRecordId;
+use crate::files::FileDocumentId;
 use collab_types::canonical::CanonicalError;
 use collab_types::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 
@@ -40,7 +40,7 @@ pub enum FileInviteSubject {
 pub struct FileInviteV1 {
     pub id: Uuid,
     pub workspace_id: Uuid,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub subject: FileInviteSubject,
     pub permission: FilePermission,
     pub expires_at_ms: Option<u64>,
@@ -54,7 +54,7 @@ pub struct FileInviteV1 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileInviteSpec {
     pub workspace_id: Uuid,
-    pub record_id: FileRecordId,
+    pub record_id: FileDocumentId,
     pub subject: FileInviteSubject,
     pub permission: FilePermission,
     pub expires_at_ms: Option<u64>,
@@ -83,7 +83,7 @@ struct FileInviteView<'a> {
     tag: &'a str,
     id: Uuid,
     workspace_id: Uuid,
-    record_id: FileRecordId,
+    record_id: FileDocumentId,
     subject: &'a FileInviteSubject,
     permission: FilePermission,
     expires_at_ms: Option<u64>,
@@ -214,7 +214,7 @@ mod tests {
     fn spec(subject: FileInviteSubject) -> FileInviteSpec {
         FileInviteSpec {
             workspace_id: Uuid::new_v4(),
-            record_id: FileRecordId::new(),
+            record_id: FileDocumentId::new(),
             subject,
             permission: FilePermission::View,
             expires_at_ms: Some(2_000),
@@ -265,7 +265,7 @@ mod tests {
             ));
 
             let mut tampered = token;
-            tampered.record_id = FileRecordId::new();
+            tampered.record_id = FileDocumentId::new();
             assert!(matches!(
                 tampered.verify_at(1_000),
                 Err(FileInviteError::BadSignature(_))

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::record::person::{PERSONAL_SCOPE, PersonRecords, StoredRecord};
-use crate::record::{RecordKind, RecordOwners};
+use crate::record::{RecordOwners, ResourceType};
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use std::rc::Rc;
@@ -25,7 +25,7 @@ fn personal_device() -> StoredRecord {
     let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonRecords::open(&mut owners, APP, person())
         .unwrap()
-        .open_record(RecordKind::new("test.watched"), &|doc| {
+        .open_record(ResourceType::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -46,7 +46,7 @@ fn device() -> StoredRecord {
         .unwrap()
         .in_workspace(WORKSPACE)
         .unwrap()
-        .open_record(RecordKind::new("test.watched"), &|doc| {
+        .open_record(ResourceType::new("test.watched"), &|doc| {
             doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
@@ -230,7 +230,7 @@ tilo_test_env::scenario! {
         assert_eq!(route.app_id, APP);
         assert_eq!(
             app.collaboration.manager.joined_record_kind(&route),
-            Some(RecordKind::new("test.watched")),
+            Some(ResourceType::new("test.watched")),
             "the join names what the record holds"
         );
     }
@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let record = PersonRecords::open(&mut owners, APP, crate::permissions::MemberId::person("local"))
             .unwrap()
-            .open_record(RecordKind::new("test.watched"), &|doc| {
+            .open_record(ResourceType::new("test.watched"), &|doc| {
                 doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                     .map(|_| ())
                     .map_err(|error| error.to_string())
@@ -296,13 +296,13 @@ tilo_test_env::scenario! {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let personal = PersonRecords::open(&mut owners, APP, person())
             .unwrap()
-            .open_record(RecordKind::new("test.watched"), &|_| Ok(()))
+            .open_record(ResourceType::new("test.watched"), &|_| Ok(()))
             .unwrap();
         let in_workspace = PersonRecords::open(&mut owners, APP, person())
             .unwrap()
             .in_workspace(WORKSPACE)
             .unwrap()
-            .open_record(RecordKind::new("test.watched"), &|_| Ok(()))
+            .open_record(ResourceType::new("test.watched"), &|_| Ok(()))
             .unwrap();
         assert_eq!(
             personal
@@ -383,7 +383,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .in_workspace(WORKSPACE)
                 .unwrap()
-                .open_record(RecordKind::new("test.watched"), &|doc| {
+                .open_record(ResourceType::new("test.watched"), &|doc| {
                     doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
                         .map(|_| ())
                         .map_err(|error| error.to_string())
@@ -500,14 +500,14 @@ fn owned_and_read(kind: &str) -> (StoredRecord, StoredRecord) {
     let mut owner_owners = RecordOwners::with_store(Rc::clone(&store));
     let owned = PersonRecords::open(&mut owner_owners, OWNER_APP, person())
         .unwrap()
-        .open_record(RecordKind::new(kind), &initialize)
+        .open_record(ResourceType::new(kind), &initialize)
         .unwrap();
     let mut reader_owners = RecordOwners::with_store(Rc::clone(&store));
     let read = PersonRecords::open(&mut reader_owners, APP, person())
         .unwrap()
         .of_app(OWNER_APP)
         .unwrap()
-        .open_record(RecordKind::new(kind), &initialize)
+        .open_record(ResourceType::new(kind), &initialize)
         .unwrap();
     (owned, read)
 }
@@ -596,7 +596,7 @@ fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
         .unwrap()
         .in_workspace(WORKSPACE)
         .unwrap()
-        .open_record(RecordKind::new("test.watched"), &|_| Ok(()));
+        .open_record(ResourceType::new("test.watched"), &|_| Ok(()));
     assert!(
         matches!(
             refused,

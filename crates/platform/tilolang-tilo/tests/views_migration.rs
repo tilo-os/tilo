@@ -120,7 +120,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
 
     // Ada's own record of Views has no copy here yet: it starts as the workspace's record.
     let own = tilolang_tilo::member_record_of(VIEWS, ADA).unwrap();
-    let key = collab_types::record::RecordId::parse(&own)
+    let key = collab_types::document::DocumentId::parse(&own)
         .unwrap()
         .storage_key();
     let (doc, _writer) = open_stored_adopting(

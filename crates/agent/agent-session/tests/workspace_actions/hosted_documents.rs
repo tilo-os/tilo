@@ -288,7 +288,7 @@ async fn indexed(
         record: String::new(),
         ..route.clone()
     };
-    let record = ui::record::RecordId::from_route(&route.record).expect("a record route");
+    let record = ui::record::DocumentId::from_route(&route.record).expect("a record route");
     let deadline = tilo_test_env::hang_deadline();
     loop {
         page.pump();
@@ -603,9 +603,9 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     assert_eq!(hit.title, "application.pdf", "{found:?}");
     assert_eq!(
         Some(hit.id.as_str()),
-        ui::record::RecordId::from_route(&pdf.record)
+        ui::record::DocumentId::from_route(&pdf.record)
             .as_ref()
-            .map(ui::record::RecordId::as_str),
+            .map(ui::record::DocumentId::as_str),
         "the row is the agent's form"
     );
 

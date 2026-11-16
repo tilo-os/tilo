@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use tilo_app::framework::{Chain, ChainList, ChainPager, ChainRow, Chained, Paged, PartArrival};
 use tilo_app::prelude::*;
-use tilo_app::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore};
+use tilo_app::record::{DocumentCheckout, DocumentId, RecordOwners, RecordStore, ResourceType};
 use tilo_app::tilo_resource::Collection;
 use tilo_app::widget::virtual_list::ListModel;
 
@@ -53,8 +53,8 @@ impl LogPart {
 impl Chained for LogPart {
     type Base = Log;
 
-    fn chain() -> RecordId {
-        RecordId::derived("lines", &RecordId::workspace_default())
+    fn chain() -> DocumentId {
+        DocumentId::derived("lines", &DocumentId::workspace_default())
     }
 
     fn part_for(_: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
@@ -127,7 +127,7 @@ impl Joined {
         let id = LogPart::chain().part(index);
         let mut frontier = tilo_app::DocumentFrontier::default();
         let (changes, _) = self.writer.replication_delta(&id, &mut frontier).unwrap();
-        let checkout = RecordCheckout::new(id, RecordKind::new(LogPart::KIND));
+        let checkout = DocumentCheckout::new(id, ResourceType::new(LogPart::KIND));
         self.reader.merge_peer_changes(&checkout, changes).unwrap();
     }
 

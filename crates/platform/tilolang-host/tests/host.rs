@@ -1336,7 +1336,7 @@ impl PeerTransport for SlowBroker {
     fn join_route(
         &mut self,
         _: RouteSpec,
-        _: collab_types::record::RecordKind,
+        _: collab_types::document::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }

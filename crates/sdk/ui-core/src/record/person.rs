@@ -4,7 +4,7 @@
 //! the keyboard, where reading stopped — and is one record of its kind: it grows, it has history,
 //! edits to it are undone. It is kept with the app's other records in the workspace it is open in
 //! ([`PersonRecords::in_workspace`]) and syncs with the workspace, each member's own there
-//! ([`RecordId::of_member`]): one per member, read and changed by that person's devices alone.
+//! ([`DocumentId::of_member`]): one per member, read and changed by that person's devices alone.
 //!
 //! The person's shared records — their accounts, their contacts — and the settings sections belong
 //! to the person, not to any workspace: they are kept in the person's own scope
@@ -25,8 +25,8 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 
 use super::{
-    HistoryUnavailable, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners,
-    RecordStore,
+    DocumentCheckout, DocumentId, HistoryUnavailable, RecordOpenError, RecordOwners, RecordStore,
+    ResourceType,
 };
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::RecordOwnerLifetime;
@@ -46,8 +46,8 @@ pub const PERSONAL_SCOPE: &str = "personal";
 /// the kind's role for the app's base record rather than for a window's or
 /// a workspace's, so it is the same wherever the app opens its records.
 #[must_use]
-pub fn record_id(kind: &RecordKind) -> RecordId {
-    RecordId::derived(kind.as_str(), &RecordId::for_tab(0))
+pub fn record_id(kind: &ResourceType) -> DocumentId {
+    DocumentId::derived(kind.as_str(), &DocumentId::for_tab(0))
 }
 
 /// Where one app keeps the person's records on this device. Cloning shares
@@ -65,7 +65,7 @@ pub struct PersonRecords {
     /// ([`Self::sharing`]).
     others: Option<RecordOwners>,
     /// These are the app's own records in a workspace, each the author's
-    /// own there ([`RecordId::of_member`]).
+    /// own there ([`DocumentId::of_member`]).
     member: bool,
     /// The app these are the person's records of: `open`'s package, carried
     /// across [`Self::of_app`], which opens another app's.
@@ -149,7 +149,7 @@ impl PersonRecords {
     }
 
     /// The app's own records of a kind in the workspace `workspace`, kept
-    /// where these are: one per kind and member ([`RecordId::of_member`]),
+    /// where these are: one per kind and member ([`DocumentId::of_member`]),
     /// the same on each of the author's devices, synced on the ordinary
     /// route of a record of the app in that workspace and read or changed
     /// by the author's devices alone. They are kept apart from the store of
@@ -160,7 +160,7 @@ impl PersonRecords {
     /// # Errors
     /// Rejects an invalid workspace.
     pub fn in_workspace(&self, workspace: &str) -> Result<Self, RecordOpenError> {
-        if RecordId::of_member(&self.author.key(), "kind").is_none() {
+        if DocumentId::of_member(&self.author.key(), "kind").is_none() {
             return Ok(Self {
                 others: None,
                 ..self.clone()
@@ -196,7 +196,7 @@ impl PersonRecords {
     /// member's own (`[resources] own`): what its every write carries, so the
     /// workspace's hosts send it to the author's devices alone. An undeclared
     /// kind is refused rather than kept where every member would receive it.
-    fn id_of(&self, kind: &RecordKind) -> Result<RecordId, RecordOpenError> {
+    fn id_of(&self, kind: &ResourceType) -> Result<DocumentId, RecordOpenError> {
         if !self.member {
             return Ok(record_id(kind));
         }
@@ -206,7 +206,7 @@ impl PersonRecords {
         {
             return Err(RecordOpenError::UndeclaredOwnKind(kind.as_str().to_owned()));
         }
-        Ok(RecordId::of_member(&self.author.key(), kind.as_str())
+        Ok(DocumentId::of_member(&self.author.key(), kind.as_str())
             .unwrap_or_else(|| record_id(kind)))
     }
 
@@ -261,10 +261,10 @@ impl PersonRecords {
     /// The record could not be read, created or replicated.
     pub fn open_record(
         &self,
-        kind: RecordKind,
+        kind: ResourceType,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
         match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
@@ -303,9 +303,9 @@ impl PersonRecords {
     /// The record could not be read or replicated.
     pub fn open_existing_record(
         &self,
-        kind: RecordKind,
+        kind: ResourceType,
     ) -> Result<Option<StoredRecord>, RecordOpenError> {
-        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
         let store = match self.store.try_open_record(&checkout) {
             Ok(_) => self.store.clone(),
             Err(RecordOpenError::MissingRecord) => return Ok(None),
@@ -339,13 +339,13 @@ impl PersonRecords {
     /// a busy/missing writer is never replaced by an empty local replica.
     pub fn open_original_record(
         &self,
-        kind: RecordKind,
+        kind: ResourceType,
         initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
         if self.replica {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        let checkout = RecordCheckout::new(self.id_of(&kind)?, kind);
+        let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
         open_in(&self.store, &checkout, &initialize)?;
         Ok(StoredRecord::new(
             self.store.clone(),
@@ -358,7 +358,7 @@ impl PersonRecords {
 
 pub(super) fn open_in(
     store: &RecordStore,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
 ) -> Result<(), RecordOpenError> {
     match store.try_open_record(checkout) {
@@ -376,7 +376,7 @@ pub(super) fn open_in(
 /// steps of their own and synced on the record's route where it has one.
 pub struct StoredRecord {
     store: RecordStore,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     author: MemberId,
     /// Whether this app publishes the record's changes on its route: the
     /// records of its own package, and the workspace's shared ones. Another
@@ -390,7 +390,7 @@ pub struct StoredRecord {
 impl StoredRecord {
     pub(super) fn new(
         store: RecordStore,
-        checkout: RecordCheckout,
+        checkout: DocumentCheckout,
         author: MemberId,
         publishes: bool,
     ) -> Self {
@@ -425,7 +425,7 @@ impl StoredRecord {
 
     /// The record's identity.
     #[must_use]
-    pub fn checkout(&self) -> &RecordCheckout {
+    pub fn checkout(&self) -> &DocumentCheckout {
         &self.checkout
     }
 
@@ -598,18 +598,18 @@ mod record_id_tests {
     /// from the kind alone, so each opens the record the others have.
     #[test]
     fn a_person_record_has_one_id_per_kind() {
-        let kind = crate::record::RecordKind::new("terminal.history");
+        let kind = crate::record::ResourceType::new("terminal.history");
         assert_eq!(
             super::record_id(&kind),
-            super::record_id(&crate::record::RecordKind::new("terminal.history"))
+            super::record_id(&crate::record::ResourceType::new("terminal.history"))
         );
         assert_ne!(
             super::record_id(&kind),
-            super::record_id(&crate::record::RecordKind::new("terminal.bookmarks"))
+            super::record_id(&crate::record::ResourceType::new("terminal.bookmarks"))
         );
         assert_ne!(
             super::record_id(&kind),
-            crate::record::RecordId::window_default(0),
+            crate::record::DocumentId::window_default(0),
             "the person's record of a kind is no window's"
         );
         assert_eq!(

@@ -99,7 +99,7 @@ impl TileSource for Source {
             app_id: APP.into(),
             title: "Retained owner".into(),
             icon: IconDescriptor::Glyph("R"),
-            record_kind: ui::record::RecordKind::new("retained-owner"),
+            record_kind: ui::record::ResourceType::new("retained-owner"),
             workspace_record: false,
             member_record: false,
             opens_before_record: false,

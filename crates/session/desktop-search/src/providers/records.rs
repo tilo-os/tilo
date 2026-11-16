@@ -17,7 +17,7 @@
 //! The rows come from the workspaces' record indexes: the source only ranks
 //! the list a host collected, so it never reads a workspace's state itself.
 
-use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::record::{DocumentCheckout, DocumentId, ResourceType};
 use ui::search::FieldWeight;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
@@ -73,10 +73,10 @@ pub struct HeldRecord {
 impl HeldRecord {
     /// The record, as its index names it.
     #[must_use]
-    pub fn checkout(&self) -> Option<RecordCheckout> {
-        Some(RecordCheckout::new(
-            RecordId::parse(&self.id)?,
-            RecordKind::new(self.kind.clone()),
+    pub fn checkout(&self) -> Option<DocumentCheckout> {
+        Some(DocumentCheckout::new(
+            DocumentId::parse(&self.id)?,
+            ResourceType::new(self.kind.clone()),
         ))
     }
 
@@ -91,7 +91,7 @@ impl HeldRecord {
         {
             return name.to_owned();
         }
-        let Some(id) = RecordId::parse(&self.id) else {
+        let Some(id) = DocumentId::parse(&self.id) else {
             return self.id.clone();
         };
         if let Some(path) = id.file_path() {
@@ -131,7 +131,7 @@ impl HeldRecord {
             }
         };
         let mut facts = vec![where_it_lives];
-        match RecordId::parse(&self.id).and_then(|id| id.file_path()) {
+        match DocumentId::parse(&self.id).and_then(|id| id.file_path()) {
             Some(path) => facts.push(display_path(&path)),
             None if !self.kind.is_empty() => facts.push(self.kind.clone()),
             None => {}

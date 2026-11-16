@@ -296,7 +296,7 @@ impl QuickFS {
         }
     }
 
-    fn project_checked_availability(&self, record_id: fs_protocol::FileRecordId) {
+    fn project_checked_availability(&self, record_id: fs_protocol::FileDocumentId) {
         let Some(registry) = &self.availability else {
             return;
         };

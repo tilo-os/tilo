@@ -444,7 +444,7 @@ impl Worker {
     pub(super) fn index_record(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()
             || is_part(&route.record)
-            || collab_types::workspace_record(&route.app_id, &route.record).is_some()
+            || collab_types::workspace_document(&route.app_id, &route.record).is_some()
             || self.catalogue.get(&route.app_id).is_none()
         {
             return;

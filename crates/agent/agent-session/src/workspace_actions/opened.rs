@@ -24,15 +24,15 @@ use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
-pub(super) fn chain_of(record: &str) -> Option<ui::record::RecordId> {
-    let part = ui::record::RecordId::parse(record)?;
+pub(super) fn chain_of(record: &str) -> Option<ui::record::DocumentId> {
+    let part = ui::record::DocumentId::parse(record)?;
     part.chain_part().map(|(chain, _)| chain)
 }
 
 /// The records a request naming `record` of `app_id` asks the workspace's
 /// host for, in the workspace whose channels are `cluster_id`: the record
 /// itself, and for a part of a chain the chain's head
-/// ([`ui::record::RecordId::chain_head`]), which names whichever part is
+/// ([`ui::record::DocumentId::chain_head`]), which names whichever part is
 /// the newest rather than a guess at its oldest, beside the record a part
 /// is kept with.
 fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRoute> {
@@ -247,8 +247,8 @@ mod tests {
     }
 
     /// The chat's chain: the record its numbered parts hang off.
-    fn chain() -> ui::record::RecordId {
-        ui::record::RecordId::derived("messages", &ui::record::RecordId::workspace_default())
+    fn chain() -> ui::record::DocumentId {
+        ui::record::DocumentId::derived("messages", &ui::record::DocumentId::workspace_default())
     }
 
     #[test]

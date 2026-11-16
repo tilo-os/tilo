@@ -135,7 +135,7 @@ pub(super) fn published_message(page: &super::Replica, message: &str) -> (String
 }
 
 /// The route of `record`, one of the chat's message parts, in `workspace`.
-pub(super) fn part_route(workspace: &str, record: &ui::record::RecordId) -> super::DocumentRoute {
+pub(super) fn part_route(workspace: &str, record: &ui::record::DocumentId) -> super::DocumentRoute {
     super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.to_owned(),

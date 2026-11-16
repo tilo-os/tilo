@@ -29,7 +29,7 @@
 //!
 //! A package's workspace-primary document travels with an empty record, as the
 //! native broker sends it; in the page's stores it is
-//! [`ui::record::RecordId::package_primary`], kept at the workspace index.
+//! [`ui::record::DocumentId::package_primary`], kept at the workspace index.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;

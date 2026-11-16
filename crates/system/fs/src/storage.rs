@@ -107,7 +107,7 @@ struct LogicalFile {
     path: String,
     logical_bytes: u64,
     hash: Option<Hash>,
-    record_id: fs_protocol::FileRecordId,
+    record_id: fs_protocol::FileDocumentId,
     mtime: u64,
 }
 
@@ -189,7 +189,7 @@ impl StorageAuthority {
         file: LogicalFile,
         dirty: &HashSet<u64>,
         records: &[RecordAvailability],
-        plans: &HashMap<fs_protocol::FileRecordId, Option<EvictionPlan>>,
+        plans: &HashMap<fs_protocol::FileDocumentId, Option<EvictionPlan>>,
     ) -> FileBlobs {
         let LogicalFile {
             identity,
@@ -302,7 +302,7 @@ impl StorageAuthority {
             })
     }
 
-    fn root_record(&self) -> Option<fs_protocol::FileRecordId> {
+    fn root_record(&self) -> Option<fs_protocol::FileDocumentId> {
         self.namespace.lock_recover().record_id_for(ROOT_INO)
     }
 
@@ -502,7 +502,7 @@ impl StorageAuthority {
 
     async fn enqueue_canonical_eviction(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         expected_hash: Hash,
         identity: String,
         inode: u64,
@@ -552,7 +552,7 @@ impl StorageAuthority {
 
     async fn observe_once(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         request_id: EvictionRequestId,
     ) -> Result<bool> {
         self.coordinator()?
@@ -560,7 +560,11 @@ impl StorageAuthority {
             .await
     }
 
-    fn spawn_observer(&self, record_id: fs_protocol::FileRecordId, request_id: EvictionRequestId) {
+    fn spawn_observer(
+        &self,
+        record_id: fs_protocol::FileDocumentId,
+        request_id: EvictionRequestId,
+    ) {
         if let Ok(coordinator) = self.coordinator() {
             coordinator.spawn_observer(record_id, request_id);
         }
@@ -665,7 +669,7 @@ fn add_to(split: &mut ResidencySplit, facts: &FileFacts) {
 fn kept_by_policy(
     ns: &mut Namespace,
     ino: u64,
-    records: &HashMap<fs_protocol::FileRecordId, &RecordAvailability>,
+    records: &HashMap<fs_protocol::FileDocumentId, &RecordAvailability>,
 ) -> bool {
     let mut cursor = Some(ino);
     // A namespace is a tree; the bound only keeps a corrupt one finite.
@@ -710,7 +714,7 @@ fn snapshot_candidate_ids(
     dirty: &HashSet<u64>,
     records: &[RecordAvailability],
     now: u64,
-) -> Vec<fs_protocol::FileRecordId> {
+) -> Vec<fs_protocol::FileDocumentId> {
     logical
         .iter()
         .filter(|file| {
@@ -737,7 +741,7 @@ fn validate_live_eviction_token<Stage>(
     dirty: &HashMap<u64, Stage>,
     identity: &str,
     inode: u64,
-    record_id: fs_protocol::FileRecordId,
+    record_id: fs_protocol::FileDocumentId,
     expected_hash: Hash,
 ) -> Result<()> {
     if dirty.contains_key(&inode) {
@@ -983,14 +987,14 @@ mod tests {
                 assert_eq!(app_from_path("/apps"), None);
             }
             {
-                let record = fs_protocol::FileRecordId::new();
-                let missing_parent = fs_protocol::FileRecordId::new();
+                let record = fs_protocol::FileDocumentId::new();
+                let missing_parent = fs_protocol::FileDocumentId::new();
                 let mut row = RecordAvailability::new(record, crate::availability::RecordKind::File);
                 row.parent = Some(missing_parent);
                 assert!(pinned_in_snapshot(&[row], record));
             }
             {
-                let record_id = fs_protocol::FileRecordId::new();
+                let record_id = fs_protocol::FileDocumentId::new();
                 let logical = vec![LogicalFile {
                     identity: "candidate".into(),
                     inode: 7,

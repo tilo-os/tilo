@@ -81,7 +81,7 @@ pub type DurabilityHook = Arc<dyn Fn() -> io::Result<()> + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VersionSnapshot {
-    record_id: fs_protocol::FileRecordId,
+    record_id: fs_protocol::FileDocumentId,
     content_hash: Option<fs_protocol::ContentHash>,
     metadata_hash: fs_protocol::ContentHash,
     byte_len: u64,
@@ -91,7 +91,7 @@ struct VersionSnapshot {
 fn keep_both_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileRecordId,
+    source_record: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     selected_version: fs_protocol::FileVersionId,
     actor: fs_protocol::FileActor,
@@ -115,7 +115,7 @@ fn keep_both_uuid(
 fn merge_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: fs_protocol::FileRecordId,
+    source_record: fs_protocol::FileDocumentId,
     conflict_id: uuid::Uuid,
     versions: &[fs_protocol::FileVersionId],
     actor: fs_protocol::FileActor,
@@ -142,7 +142,7 @@ fn merge_uuid(
 
 fn keep_both_name(
     source_name: impl AsRef<[u8]>,
-    target_record: fs_protocol::FileRecordId,
+    target_record: fs_protocol::FileDocumentId,
 ) -> fs_protocol::FileNameV1 {
     let source_name = source_name.as_ref();
     let simple = target_record.0.simple().to_string();
@@ -163,7 +163,7 @@ mod exact_conflict_name_tests {
 
     #[test]
     fn keep_both_suffix_preserves_invalid_utf8_and_bounds_the_result() {
-        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(7));
+        let record = fs_protocol::FileDocumentId(uuid::Uuid::from_u128(7));
         let original = [b'f', 0xff, b'o'];
         let name = keep_both_name(original, record);
         assert!(name.as_bytes().starts_with(&original));
@@ -412,7 +412,7 @@ mod staging_limit_tests {
 }
 
 /// The record ids from `ino` up to the root, or `None` when one of them has no record id.
-fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileRecordId>> {
+fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::FileDocumentId>> {
     let mut ancestry = Vec::new();
     let mut cursor = Some(ino);
     while let Some(current) = cursor {
@@ -424,7 +424,7 @@ fn record_ancestry(ns: &mut Namespace, ino: u64) -> Option<Vec<fs_protocol::File
 
 fn inherited_policy(
     registry: &AvailabilityRegistry,
-    ancestry: &[fs_protocol::FileRecordId],
+    ancestry: &[fs_protocol::FileDocumentId],
 ) -> AvailabilityPolicy {
     if ancestry.iter().any(|id| {
         registry
@@ -552,8 +552,8 @@ enum PinnedProbe {
 
 #[derive(Clone)]
 struct PinnedCandidate {
-    record_id: fs_protocol::FileRecordId,
-    parent: Option<fs_protocol::FileRecordId>,
+    record_id: fs_protocol::FileDocumentId,
+    parent: Option<fs_protocol::FileDocumentId>,
     kind: RecordKind,
     version: Option<fs_protocol::FileVersionId>,
     hash: Option<Hash>,
@@ -579,11 +579,11 @@ struct AclVisibleRecordIndex {
     acl_revision: u64,
     revision: String,
     records: Vec<RecordIndexEntryV1>,
-    by_id: HashMap<fs_protocol::FileRecordId, RecordIndexEntryV1>,
+    by_id: HashMap<fs_protocol::FileDocumentId, RecordIndexEntryV1>,
     /// Rows this authority may not see, with the path they were judged at.
     /// With `by_id` it lets the next refresh under the same ACL revision
     /// re-evaluate only rows whose path changed.
-    hidden: HashMap<fs_protocol::FileRecordId, String>,
+    hidden: HashMap<fs_protocol::FileDocumentId, String>,
     #[cfg(test)]
     acl_evaluations: usize,
 }
@@ -592,7 +592,7 @@ impl AclVisibleRecordIndex {
     /// The visibility this view already decided for `record_id` at `path`, if it judged
     /// that exact row. Visibility is a function of the ACL revision and the path alone, so
     /// the verdict holds for the same pair.
-    fn verdict(&self, record_id: fs_protocol::FileRecordId, path: &str) -> Option<bool> {
+    fn verdict(&self, record_id: fs_protocol::FileDocumentId, path: &str) -> Option<bool> {
         if self
             .by_id
             .get(&record_id)
@@ -672,7 +672,7 @@ pub struct QuickFS {
     /// them without hydrating the payload.
     rich_metadata: Mutex<
         HashMap<
-            fs_protocol::FileRecordId,
+            fs_protocol::FileDocumentId,
             (fs_protocol::ContentHash, fs_protocol::FilePropertiesV1),
         >,
     >,
@@ -893,7 +893,7 @@ impl QuickFS {
         self
     }
 
-    fn unsaved_key(&self, ino: u64) -> (String, Option<fs_protocol::FileRecordId>) {
+    fn unsaved_key(&self, ino: u64) -> (String, Option<fs_protocol::FileDocumentId>) {
         let record_id = self.ns().record_id_for(ino);
         let key = record_id.map_or_else(|| format!("ino-{ino}"), |id| id.0.to_string());
         (key, record_id)
@@ -2399,7 +2399,7 @@ impl QuickFS {
     /// the last writer of its file.
     fn writer_of(
         &self,
-        record: fs_protocol::FileRecordId,
+        record: fs_protocol::FileDocumentId,
     ) -> Option<fs_protocol::FileAttributionV1> {
         self.writers.as_ref()?;
         match CURRENT_WRITER.with(|current| current.borrow().clone()) {
@@ -3022,7 +3022,7 @@ impl QuickFS {
         (bytes.len() <= fs_protocol::projection::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn record_index_by_id_v2(&self, record_id: fs_protocol::FileRecordId) -> Option<Vec<u8>> {
+    fn record_index_by_id_v2(&self, record_id: fs_protocol::FileDocumentId) -> Option<Vec<u8>> {
         let index = self.acl_visible_record_index()?;
         let entry = index.by_id.get(&record_id)?.clone();
         let projection = fs_protocol::projection::RecordIndexExactV2 {
@@ -3613,7 +3613,7 @@ impl QuickFS {
                 *actor,
             )
         };
-        let target_record = fs_protocol::FileRecordId(derive(b"target-record"));
+        let target_record = fs_protocol::FileDocumentId(derive(b"target-record"));
         let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
         let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
         let transaction_id = derive(b"transaction");
@@ -4027,7 +4027,7 @@ impl QuickFS {
 
     fn prepare_eviction_request(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         mode: EvictionMode,
         existing_request: Option<EvictionRequestId>,
     ) -> Result<EvictionRequestId, i32> {
@@ -4043,7 +4043,7 @@ impl QuickFS {
 
     fn spawn_eviction_observer(
         &self,
-        record_id: fs_protocol::FileRecordId,
+        record_id: fs_protocol::FileDocumentId,
         request_id: EvictionRequestId,
     ) -> Result<(), i32> {
         self.eviction_coordinator()?
@@ -4840,7 +4840,7 @@ fn child_path(dir: &str, name: &[u8]) -> String {
 
 fn update_retry_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
-    record_id: fs_protocol::FileRecordId,
+    record_id: fs_protocol::FileDocumentId,
     update: impl FnOnce(&mut RecordAvailability),
 ) {
     let mut registry = registry.lock_recover();
@@ -4930,8 +4930,8 @@ fn update_candidate_state(
 /// them.
 fn covered_by_pin(
     registry: &AvailabilityRegistry,
-    parents: &HashMap<fs_protocol::FileRecordId, Option<fs_protocol::FileRecordId>>,
-    record_id: fs_protocol::FileRecordId,
+    parents: &HashMap<fs_protocol::FileDocumentId, Option<fs_protocol::FileDocumentId>>,
+    record_id: fs_protocol::FileDocumentId,
 ) -> bool {
     let mut seen = std::collections::HashSet::new();
     let mut cursor = Some(record_id);
@@ -5059,7 +5059,7 @@ struct PinnedPassPlan {
 fn plan_pinned_pass(
     registry: &mut AvailabilityRegistry,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileDocumentId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut plan = PinnedPassPlan::default();
@@ -5153,7 +5153,7 @@ fn plan_pinned_pass(
 fn commit_pinned_pass(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileDocumentId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut registry = registry.lock_recover();
@@ -6222,7 +6222,7 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(collab_types::record::RECORD_ID_XATTR) {
+        if name.to_str() == Some(collab_types::document::DOCUMENT_ID_XATTR) {
             let record_id = self.ns().record_id_for(ino.0);
             match record_id {
                 Some(record_id) => reply_xattr_bytes(reply, record_id.0.as_bytes(), size),
@@ -6286,7 +6286,7 @@ impl Filesystem for QuickFS {
                 name.strip_prefix(fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX)
             })
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
-            .map(fs_protocol::FileRecordId)
+            .map(fs_protocol::FileDocumentId)
         {
             if ino.0 != crate::namespace::ROOT_INO {
                 reply.error(to_errno(libc::ENODATA));
@@ -6407,7 +6407,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
         if self.ns().record_id_for(ino.0).is_some() {
-            buf.extend_from_slice(collab_types::record::RECORD_ID_XATTR.as_bytes());
+            buf.extend_from_slice(collab_types::document::DOCUMENT_ID_XATTR.as_bytes());
             buf.push(0);
         }
         if self.metadata_projection_for(ino.0).is_some() {

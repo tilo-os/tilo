@@ -27,7 +27,7 @@ use crate::{ResourceRef, Span, SpanUnit};
 /// The launcher's `--open-uri` bound, so a link that opens on the web also
 /// opens natively.
 pub const MAX_ROUTE_BYTES: usize = 8 * 1024;
-pub const MAX_RECORD_ID_BYTES: usize = 1024;
+pub const MAX_DOCUMENT_ID_BYTES: usize = 1024;
 pub const MAX_RESOURCE_ID_BYTES: usize = 2048;
 pub const MAX_KIND_BYTES: usize = 128;
 pub const MAX_VIEW_ID_BYTES: usize = 128;
@@ -59,7 +59,7 @@ impl RecordSegment {
         let prefixed = id
             .split_once(':')
             .is_some_and(|(prefix, _)| !prefix.is_empty());
-        if prefixed && id.len() <= MAX_RECORD_ID_BYTES && !id.contains('\0') {
+        if prefixed && id.len() <= MAX_DOCUMENT_ID_BYTES && !id.contains('\0') {
             Ok(Self::Id(id.to_owned()))
         } else {
             Err(LinkError::BadRecord)

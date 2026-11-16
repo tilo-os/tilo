@@ -133,7 +133,7 @@ async fn conversations(workspaces: &Workspaces, workspace: &str) -> Vec<(String,
         .unwrap_or_default()
         .into_iter()
         .filter(|(app, record)| {
-            app == "so.tilo.chat" && collab_types::workspace_record(app, record).is_none()
+            app == "so.tilo.chat" && collab_types::workspace_document(app, record).is_none()
         })
         .collect()
 }

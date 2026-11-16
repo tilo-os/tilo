@@ -7,9 +7,9 @@
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
 pub use ::collaboration::record::RecordSaveStatus;
-pub use collab_types::record::{
-    MAX_FORMER_IDS, MAX_RECORD_RELATION_BYTES, RECORD_ID_XATTR, RecordCheckout, RecordId,
-    RecordKind, RecordRef, valid_label,
+pub use collab_types::document::{
+    DOCUMENT_ID_XATTR, DocumentCheckout, DocumentId, DocumentRef, MAX_DOCUMENT_RELATION_BYTES,
+    MAX_FORMER_IDS, ResourceType, valid_label,
 };
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -75,7 +75,7 @@ fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
 
 /// Stamp a document with the identity of the record it holds; idempotent, so a reopen does not
 /// author a change graph entry that says nothing new.
-pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) {
+pub fn init(doc: &mut AutoCommit, id: &DocumentId, kind: &ResourceType, home: &str) {
     let _ = init_scoped(doc, id, kind, home, None);
 }
 
@@ -84,8 +84,8 @@ pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) 
 /// workspaces. A document naming none may be adopted once, after its identity is checked.
 pub fn init_scoped(
     doc: &mut AutoCommit,
-    id: &RecordId,
-    kind: &RecordKind,
+    id: &DocumentId,
+    kind: &ResourceType,
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
@@ -94,7 +94,7 @@ pub fn init_scoped(
     if id.is_package_primary() {
         return primary_document(doc);
     }
-    if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
+    if DocumentId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
     // A stamp written on its own is the record's genesis and is committed as one; with other
@@ -117,8 +117,8 @@ pub fn init_scoped(
 
 fn stamp_scoped(
     doc: &mut AutoCommit,
-    id: &RecordId,
-    kind: &RecordKind,
+    id: &DocumentId,
+    kind: &ResourceType,
     home: &str,
     workspace: Option<&str>,
 ) -> bool {
@@ -200,17 +200,17 @@ fn stamp_surface(doc: &mut AutoCommit) -> Option<bool> {
 }
 
 /// The identity stamped into `doc`, if it holds a record.
-pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
+pub fn identity(doc: &AutoCommit) -> Option<DocumentCheckout> {
     let m = meta_ro(doc)?;
-    let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
-    let kind = RecordKind::new(str_at(doc, &m, "kind")?);
-    let checkout = RecordCheckout::new(id, kind);
+    let id = DocumentId::parse(&str_at(doc, &m, "id")?)?;
+    let kind = ResourceType::new(str_at(doc, &m, "kind")?);
+    let checkout = DocumentCheckout::new(id, kind);
     checkout.is_valid().then_some(checkout)
 }
 
 /// Identities this record's document was known by before adoption, oldest
-/// first (see [`RecordCheckout::formerly`]).
-pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
+/// first (see [`DocumentCheckout::formerly`]).
+pub fn former_identities(doc: &AutoCommit) -> Vec<DocumentId> {
     let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
@@ -220,7 +220,7 @@ pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
     (0..doc.length(&list))
         .filter_map(|i| match doc.get(&list, i) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => RecordId::parse(s),
+                ScalarValue::Str(s) => DocumentId::parse(s),
                 _ => None,
             },
             _ => None,
@@ -231,7 +231,7 @@ pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
 /// Give an adopted document `want`'s identity: the stamped id becomes the new one, the old is
 /// remembered, and references to a former identity of a declared reference target now name that
 /// target. Untouched when it isn't `former`'s document of `want`'s kind.
-fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bool {
+fn restamp(doc: &mut AutoCommit, former: &DocumentId, want: &DocumentCheckout) -> bool {
     if identity(doc).is_none_or(|found| found.id != *former || found.kind != want.kind) {
         return false;
     }
@@ -270,7 +270,7 @@ fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bo
         else {
             continue;
         };
-        let successor_ref = RecordRef::new(successor.id.clone(), relation);
+        let successor_ref = DocumentRef::new(successor.id.clone(), relation);
         if references(doc).contains(&successor_ref) {
             let _ = doc.delete(&refs, i);
         } else {
@@ -285,9 +285,9 @@ fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bo
 /// read: the copy is restamped and returned to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
-    want: &RecordCheckout,
+    want: &DocumentCheckout,
     workspace: &str,
-    key: impl Fn(&RecordId) -> StorageKey,
+    key: impl Fn(&DocumentId) -> StorageKey,
     mut load: impl FnMut(&StorageKey) -> Result<Option<AutoCommit>, app_state::StoreError>,
 ) -> Result<Option<AutoCommit>, app_state::StoreError> {
     for former in &want.formerly {
@@ -352,9 +352,9 @@ fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
 
 /// Idempotent on `(target, relation)`: a reference is a fact, not an
 /// event.
-pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
-    if RecordId::parse(r.target.as_str()).is_none()
-        || !valid_label(&r.relation, MAX_RECORD_RELATION_BYTES)
+pub fn add_reference(doc: &mut AutoCommit, r: &DocumentRef) -> bool {
+    if DocumentId::parse(r.target.as_str()).is_none()
+        || !valid_label(&r.relation, MAX_DOCUMENT_RELATION_BYTES)
     {
         return false;
     }
@@ -374,7 +374,7 @@ pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
 }
 
 /// Every record this one references.
-pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
+pub fn references(doc: &AutoCommit) -> Vec<DocumentRef> {
     let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
@@ -386,12 +386,12 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
             let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, i) else {
                 return None;
             };
-            let target = RecordId::parse(&str_at(doc, &entry, "target")?)?;
+            let target = DocumentId::parse(&str_at(doc, &entry, "target")?)?;
             let relation = str_at(doc, &entry, "relation")?;
-            if !valid_label(&relation, MAX_RECORD_RELATION_BYTES) {
+            if !valid_label(&relation, MAX_DOCUMENT_RELATION_BYTES) {
                 return None;
             }
-            Some(RecordRef { target, relation })
+            Some(DocumentRef { target, relation })
         })
         .collect()
 }
@@ -425,8 +425,8 @@ fn blobs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
 /// `(hash, relation)`. Returns whether a reference was added.
 pub fn add_blob_reference(doc: &mut AutoCommit, blob: &BlobRef) -> bool {
     if !valid_blob_hash(&blob.hash)
-        || !valid_label(&blob.relation, MAX_RECORD_RELATION_BYTES)
-        || blob.mime.len() > MAX_RECORD_RELATION_BYTES
+        || !valid_label(&blob.relation, MAX_DOCUMENT_RELATION_BYTES)
+        || blob.mime.len() > MAX_DOCUMENT_RELATION_BYTES
     {
         return false;
     }
@@ -495,7 +495,7 @@ struct Parked {
     /// `None` exactly while checked out — the live document is the
     /// toolkit's, not this one's.
     doc: Option<AutoCommit>,
-    kind: RecordKind,
+    kind: ResourceType,
     /// Debounced writer for this record's file. `None` for an in-memory
     /// set, or when the store failed to open (reported once, not per frame).
     autosave: Option<app_state::DocWriter>,
@@ -517,12 +517,12 @@ pub struct RecordSet {
     /// record of an app is one record on every device they use, in their store rather than a
     /// workspace's.
     person: Option<uuid::Uuid>,
-    open: HashMap<RecordId, Parked>,
+    open: HashMap<DocumentId, Parked>,
     /// Names currently granted by the workspace index. Discovery is separate from `open`: a hostile
     /// or merely large index must not create local replicas or subscribe the app to unrelated
     /// documents.
-    known: BTreeMap<RecordId, RecordKind>,
-    active: Option<RecordId>,
+    known: BTreeMap<DocumentId, ResourceType>,
+    active: Option<DocumentId>,
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
@@ -534,13 +534,13 @@ pub struct RecordSet {
     backend: Option<Rc<dyn DurableStore>>,
     /// A hydrated, host-acknowledged browser cache (Cloud portable sessions).
     portable: Option<PortableStorage>,
-    pending: HashMap<RecordId, Reserved>,
+    pending: HashMap<DocumentId, Reserved>,
     /// Records being opened off the frame ([`RecordStore::begin_opening`]): not open until they
     /// are taken in.
-    opening: HashMap<RecordId, opening::Opening>,
+    opening: HashMap<DocumentId, opening::Opening>,
     /// The records lent out to an action frame: their documents are with the frame, so the other
     /// records stay open to it meanwhile.
-    lent: HashSet<RecordId>,
+    lent: HashSet<DocumentId>,
     next_reservation: u64,
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
@@ -550,17 +550,17 @@ pub struct RecordSet {
     kept: std::cell::Cell<u64>,
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
-    announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    announced: std::cell::RefCell<std::collections::BTreeSet<DocumentId>>,
     /// Records the workspace's hosts answered for, and what they answered, until something of them
     /// arrives.
-    answered: std::cell::RefCell<std::collections::BTreeMap<RecordId, WorkspaceAnswer>>,
+    answered: std::cell::RefCell<std::collections::BTreeMap<DocumentId, WorkspaceAnswer>>,
     /// This store's records come from its workspace's hosts
     /// ([`RecordStore::ask_workspace_for_missing`]): a record not here is
     /// asked for and new only once they answered they hold none of it.
     asks_workspace: std::cell::Cell<bool>,
     /// The records not here that were opened while [`Self::asks_workspace`]:
     /// what the workspace is asked for ([`RecordStore::wanted_records`]).
-    wanted: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    wanted: std::cell::RefCell<std::collections::BTreeSet<DocumentId>>,
     /// The windows that read this store's records, woken when another replica's change arrives,
     /// which no input or wake of theirs announces.
     readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
@@ -571,7 +571,7 @@ pub struct RecordSet {
 
 struct Reserved {
     generation: u64,
-    kind: RecordKind,
+    kind: ResourceType,
     /// The durable owner reserved for a store-backed record; `None` for a
     /// portable reservation, whose cache has no single-writer owner.
     store: Option<Rc<app_state::DocOwner>>,
@@ -683,7 +683,7 @@ impl RecordSet {
     }
 
     /// The record currently checked out, if any.
-    pub fn active(&self) -> Option<&RecordId> {
+    pub fn active(&self) -> Option<&DocumentId> {
         self.active.as_ref()
     }
 
@@ -714,11 +714,11 @@ impl RecordSet {
     }
 
     /// Every record this process has open, checked-out one included.
-    pub fn open_records(&self) -> Vec<RecordCheckout> {
-        let mut out: Vec<RecordCheckout> = self
+    pub fn open_records(&self) -> Vec<DocumentCheckout> {
+        let mut out: Vec<DocumentCheckout> = self
             .open
             .iter()
-            .map(|(id, p)| RecordCheckout::new(id.clone(), p.kind.clone()))
+            .map(|(id, p)| DocumentCheckout::new(id.clone(), p.kind.clone()))
             .collect();
         out.compact_sort();
         out
@@ -726,17 +726,17 @@ impl RecordSet {
 
     /// The bounded, validated names currently granted by the workspace index, without implying
     /// their documents are loaded, persisted or joined on the transport.
-    pub fn known_records(&self) -> Vec<RecordCheckout> {
+    pub fn known_records(&self) -> Vec<DocumentCheckout> {
         self.known
             .iter()
-            .map(|(id, kind)| RecordCheckout::new(id.clone(), kind.clone()))
+            .map(|(id, kind)| DocumentCheckout::new(id.clone(), kind.clone()))
             .collect()
     }
 
     /// Refresh the workspace-granted names without opening any: a removed or tombstoned entry
     /// disappears from future discovery, but open data stays in memory, since revocation cannot
     /// un-share bytes already received.
-    pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
+    pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<DocumentCheckout> {
         let found = index::discoverable_references(workspace);
         self.known = found
             .iter()
@@ -746,7 +746,7 @@ impl RecordSet {
     }
 
     /// [`RecordOpenError::Busy`] while `id` is lent to an action frame.
-    fn not_lent(&self, id: &RecordId) -> Result<(), RecordOpenError> {
+    fn not_lent(&self, id: &DocumentId) -> Result<(), RecordOpenError> {
         if self.lent.contains(id) {
             Err(RecordOpenError::Busy)
         } else {
@@ -754,7 +754,7 @@ impl RecordSet {
         }
     }
 
-    fn remember(&mut self, want: &RecordCheckout) {
+    fn remember(&mut self, want: &DocumentCheckout) {
         if want.is_valid() {
             self.known.insert(want.id.clone(), want.kind.clone());
             for (target, _) in &want.references {
@@ -767,7 +767,7 @@ impl RecordSet {
 
     /// Read a parked record's document without checking it out. `None` for
     /// the record currently checked out — its document is the live one.
-    pub fn peek(&self, id: &RecordId) -> Option<&AutoCommit> {
+    pub fn peek(&self, id: &DocumentId) -> Option<&AutoCommit> {
         self.open.get(id).and_then(|p| p.doc.as_ref())
     }
 
@@ -783,7 +783,7 @@ impl RecordSet {
     /// Primary stays `record=None` on every host.
     fn wire_route(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
         let cluster = self.cluster()?;
         Ok(if id.is_package_primary() {
@@ -799,7 +799,7 @@ impl RecordSet {
         &mut self,
         state: &mut crate::state::State,
         workspace: Option<&mut AutoCommit>,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
         mutation: &collab_types::DocumentMutation,
     ) -> bool {
         let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
@@ -871,7 +871,7 @@ impl RecordSet {
         &mut self,
         state: &mut crate::state::State,
         workspace: Option<&mut AutoCommit>,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> bool {
         if !want.is_valid() {
             tracing::warn!(record = %want.id, "refusing invalid record checkout");
@@ -960,7 +960,7 @@ impl RecordSet {
         &mut self,
         state: &mut crate::state::State,
         workspace: Option<&mut AutoCommit>,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> bool {
         // Persistent records always have an explicit workspace: failing closed keeps a
         // launcher-less process from recreating the old app-global namespace.
@@ -976,7 +976,7 @@ impl RecordSet {
         for (target, relation) in &want.references {
             add_reference(
                 &mut state.doc,
-                &RecordRef::new(target.id.clone(), relation.clone()),
+                &DocumentRef::new(target.id.clone(), relation.clone()),
             );
         }
         if let Some(workspace) = workspace {
@@ -995,7 +995,7 @@ impl RecordSet {
     /// Open a record's stored document, and the writer for it.
     fn load(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<(AutoCommit, Option<app_state::DocWriter>), RecordOpenError> {
         if self.persistent && self.home.is_empty() {
             return Err(RecordOpenError::IdentityMismatch);
@@ -1067,7 +1067,7 @@ impl RecordSet {
     /// (see [`adopt_former`]). Launch-environment route.
     fn adopt_former_scoped(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<Option<AutoCommit>, app_state::StoreError> {
         if want.formerly.is_empty() {
             return Ok(None);
@@ -1087,7 +1087,7 @@ impl RecordSet {
     /// read as already saved.
     fn persist_for(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
         doc: &mut AutoCommit,
     ) -> Result<Option<app_state::DocWriter>, RecordOpenError> {
         let id = &want.id;
@@ -1187,7 +1187,7 @@ impl RecordSet {
     /// it into the workspace's index; returns whether it opened it.
     pub fn open_record(
         &mut self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
         workspace: Option<&mut AutoCommit>,
     ) -> bool {
         if !want.is_valid() {
@@ -1214,7 +1214,7 @@ impl RecordSet {
             for (target, relation) in &want.references {
                 add_reference(
                     &mut doc,
-                    &RecordRef::new(target.id.clone(), relation.clone()),
+                    &DocumentRef::new(target.id.clone(), relation.clone()),
                 );
             }
             let history = crate::state::UndoLog::new(&mut doc);
@@ -1241,7 +1241,7 @@ impl RecordSet {
 
     fn canonical_key(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<(Rc<dyn DurableStore>, StorageKey), RecordOpenError> {
         let backend = self
             .backend
@@ -1267,21 +1267,21 @@ impl RecordSet {
     /// Whether `id` is a record of the workspace rather than of one window: its own document and
     /// the records its people share, each written by every window and host, which join as shared
     /// writers. Any other record has one owner.
-    fn shared_in_workspace(&self, id: &RecordId) -> bool {
+    fn shared_in_workspace(&self, id: &DocumentId) -> bool {
         id.is_package_primary()
-            || collab_types::workspace_record(&self.app_id, id.as_str()).is_some()
+            || collab_types::workspace_document(&self.app_id, id.as_str()).is_some()
     }
 
     fn try_open_record(
         &mut self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
         self.try_open_record_with_recovery(want, true)
     }
 
     fn try_open_record_with_recovery(
         &mut self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
         recover_partial: bool,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
         if !want.is_valid_local_storage_request() {
@@ -1412,7 +1412,7 @@ impl RecordSet {
 
     /// An open record's document, for a host showing several at once; `None` for a record not held
     /// here or the one checked out, whose live document is the toolkit's.
-    pub fn document_mut(&mut self, id: &RecordId) -> Option<&mut AutoCommit> {
+    pub fn document_mut(&mut self, id: &DocumentId) -> Option<&mut AutoCommit> {
         let parked = self.open.get_mut(id)?;
         if let Some(doc) = parked.doc.as_mut() {
             parked
@@ -1430,7 +1430,7 @@ impl RecordSet {
     /// driving undo can do both against the same record.
     pub fn document_and_history_mut(
         &mut self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Option<(&mut AutoCommit, &mut crate::state::UndoLog)> {
         let parked = self.open.get_mut(id)?;
         if let Some(doc) = parked.doc.as_mut() {
@@ -1964,7 +1964,7 @@ fn primary_document(doc: &AutoCommit) -> bool {
 
 fn validate_identity(
     doc: &AutoCommit,
-    want: &RecordCheckout,
+    want: &DocumentCheckout,
     workspace: &str,
 ) -> Result<(), RecordOpenError> {
     match object_at(doc, &ROOT, META, ObjType::Map) {
@@ -2017,12 +2017,12 @@ impl From<crate::collaboration::native_initial::RecordReadError> for RecordOpenE
 
 #[derive(Clone)]
 pub(crate) struct RecordAdmission {
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     workspace: String,
 }
 
 impl RecordAdmission {
-    pub(crate) fn matches(&self, doc: &AutoCommit, checkout: &RecordCheckout) -> bool {
+    pub(crate) fn matches(&self, doc: &AutoCommit, checkout: &DocumentCheckout) -> bool {
         if &self.checkout != checkout {
             return false;
         }
@@ -2034,29 +2034,29 @@ impl RecordAdmission {
     }
 }
 
-/// The address the chain `chain` (whose parts are [`RecordId::part`]) is
+/// The address the chain `chain` (whose parts are [`DocumentId::part`]) is
 /// published under, as one resource beside its app's own.
 #[must_use]
-pub fn chain_resource_id(chain: &RecordId) -> String {
+pub fn chain_resource_id(chain: &DocumentId) -> String {
     format!("chain:{}", chain.as_str())
 }
 
 /// The address the child records of `kind` that `parent` lists are
 /// published under, as one container resource beside the app's own.
 #[must_use]
-pub fn children_resource_id(parent: &RecordId, kind: &str) -> String {
+pub fn children_resource_id(parent: &DocumentId, kind: &str) -> String {
     format!("children:{kind}@{}", parent.as_str())
 }
 
 /// The chain a resource published under `id` is ([`chain_resource_id`]),
 /// or `None` when `id` names no chain.
 #[must_use]
-pub fn chain_of_resource_id(id: &str) -> Option<RecordId> {
-    RecordId::parse(id.strip_prefix("chain:")?)
+pub fn chain_of_resource_id(id: &str) -> Option<DocumentId> {
+    DocumentId::parse(id.strip_prefix("chain:")?)
 }
 
 /// The actor [`genesis`] makes record `id` of `workspace` under.
-fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> automerge::ActorId {
+fn genesis_actor_of(id: &DocumentId, kind: &ResourceType, workspace: &str) -> automerge::ActorId {
     use sha2::Digest as _;
     let digest = sha2::Sha256::new()
         .chain_update(b"tilo.record.genesis\0")
@@ -2097,7 +2097,7 @@ pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
 /// it at time zero, so two members creating the same record hash the same change.
 fn genesis(
     doc: &mut AutoCommit,
-    checkout: &RecordCheckout,
+    checkout: &DocumentCheckout,
     workspace: &str,
     initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
 ) -> Result<(), RecordOpenError> {
@@ -2119,7 +2119,7 @@ fn genesis(
             Some(workspace),
         )
     } else {
-        RecordId::parse(checkout.id.as_str()).is_some()
+        DocumentId::parse(checkout.id.as_str()).is_some()
             && checkout.kind.is_valid()
             && stamp_scoped(
                 &mut made,
@@ -2157,12 +2157,12 @@ fn genesis(
 /// The unique construction owner of a not-yet-live record. Drop cancels only this generation.
 pub struct RecordReservation {
     store: RecordStore,
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     generation: u64,
 }
 
 impl RecordReservation {
-    pub fn checkout(&self) -> &RecordCheckout {
+    pub fn checkout(&self) -> &DocumentCheckout {
         &self.checkout
     }
 
@@ -2254,7 +2254,7 @@ impl RecordReservation {
 /// returned to its set when the frame ends, however it ends.
 struct RecordLoan<'a> {
     store: &'a RecordStore,
-    id: &'a RecordId,
+    id: &'a DocumentId,
     parts: Option<(
         AutoCommit,
         crate::state::UndoLog,
@@ -2300,10 +2300,10 @@ fn read_record(
     store: &Rc<dyn DurableStore>,
     app: &str,
     home: &str,
-    id: &RecordId,
-    kind: &RecordKind,
+    id: &DocumentId,
+    kind: &ResourceType,
 ) -> Option<AutoCommit> {
-    let origin = transfer::Origin::Record(RecordCheckout::new(id.clone(), kind.clone()));
+    let origin = transfer::Origin::Record(DocumentCheckout::new(id.clone(), kind.clone()));
     match transfer::read(store, app, home, &origin) {
         Ok(doc) => Some(doc),
         Err(error) => {
@@ -2319,7 +2319,7 @@ impl RecordStore {
     /// content lane) keys by it.
     pub fn wire_route(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
         self.0
             .try_borrow()
@@ -2330,7 +2330,7 @@ impl RecordStore {
     /// Checked custody-to-wire mapping. Primary stays `record=None` on every host.
     pub fn route(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let doc = set
@@ -2345,7 +2345,7 @@ impl RecordStore {
     /// creation whose genesis the factory has yet to write.
     pub(crate) fn admission_route(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
     ) -> Result<crate::collaboration::RouteSpec, RecordOpenError> {
         {
             let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
@@ -2375,7 +2375,7 @@ impl RecordStore {
     /// Schedule this already committed History result through its existing writer, without sweeping
     /// or closing other owners' unfinished edits. # Errors The cache could not take the document,
     /// or the store is busy and took nothing.
-    pub fn schedule_committed_history(&self, id: &RecordId) -> Result<(), String> {
+    pub fn schedule_committed_history(&self, id: &DocumentId) -> Result<(), String> {
         let Ok(mut set) = self.0.try_borrow_mut() else {
             return Err("record store is busy".to_string());
         };
@@ -2428,7 +2428,7 @@ impl RecordStore {
     /// Captured storage identity for History; never samples ambient launch scope.
     pub(crate) fn history_namespace(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<(Option<String>, String, String), RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
@@ -2470,7 +2470,7 @@ impl RecordStore {
     /// and those kept on this device unopened. Listing reads the store's index, so a frame loop
     /// asks on [`Self::kept_revision`] instead of every frame.
     #[must_use]
-    pub fn held_parts(&self, base: &RecordId) -> Vec<u64> {
+    pub fn held_parts(&self, base: &DocumentId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
             return Vec::new();
         };
@@ -2478,7 +2478,7 @@ impl RecordStore {
             .open
             .keys()
             .chain(set.lent.iter())
-            .filter_map(RecordId::chain_part)
+            .filter_map(DocumentId::chain_part)
             .filter(|(chain, _)| chain == base)
             .map(|(_, index)| index)
             .collect();
@@ -2495,7 +2495,7 @@ impl RecordStore {
             // storage key.
             held.extend(kept.iter().filter_map(|key| {
                 base.part_of_storage_key(key).or_else(|| {
-                    RecordId::parse(key)?
+                    DocumentId::parse(key)?
                         .chain_part()
                         .filter(|(chain, _)| chain == base)
                         .map(|(_, index)| index)
@@ -2518,7 +2518,7 @@ impl RecordStore {
     /// Peers wrote `records` of this store's trees, which it does not hold: whatever follows those
     /// trees takes them up at once, as after [`Self::note_kept`]. Callable while a frame reads the
     /// store.
-    pub fn announce(&self, records: impl IntoIterator<Item = RecordId>) {
+    pub fn announce(&self, records: impl IntoIterator<Item = DocumentId>) {
         if let Ok(set) = self.0.try_borrow() {
             set.announced
                 .borrow_mut()
@@ -2531,14 +2531,14 @@ impl RecordStore {
     /// The numbers of the parts of the chain `base` peers wrote
     /// ([`Self::announce`]), in order.
     #[must_use]
-    pub fn announced_parts(&self, base: &RecordId) -> Vec<u64> {
+    pub fn announced_parts(&self, base: &DocumentId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
             return Vec::new();
         };
         let announced = set.announced.borrow();
         announced
             .iter()
-            .filter_map(RecordId::chain_part)
+            .filter_map(DocumentId::chain_part)
             .filter(|(chain, _)| chain == base)
             .map(|(_, index)| index)
             .collect()
@@ -2554,7 +2554,7 @@ impl RecordStore {
     /// The numbers of the parts of the chain `base` open here and ready to read, in order. Reads no
     /// index, so it is cheap enough for every frame.
     #[must_use]
-    pub fn open_parts(&self, base: &RecordId) -> Vec<u64> {
+    pub fn open_parts(&self, base: &DocumentId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
             return Vec::new();
         };
@@ -2574,7 +2574,7 @@ impl RecordStore {
     /// last made durable: what an app's windows started, so a closed window's document is reached
     /// again. Read without taking a writer; a record that cannot be read, is retired or is not of
     /// `kind` here is left out and logged.
-    pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
+    pub fn window_records(&self, kind: &ResourceType) -> Vec<(DocumentId, AutoCommit)> {
         let Some(store) = self.backend() else {
             return Vec::new();
         };
@@ -2591,7 +2591,7 @@ impl RecordStore {
         };
         let mut found = keys
             .iter()
-            .filter_map(|key| RecordId::window_default_of_storage_key(key))
+            .filter_map(|key| DocumentId::window_default_of_storage_key(key))
             .filter_map(|id| Some((id.clone(), read_record(&store, &package, &home, &id, kind)?)))
             .collect::<Vec<_>>();
         found.compact_sort_by(|a, b| a.0.cmp(&b.0));
@@ -2606,8 +2606,8 @@ impl RecordStore {
     /// index does not name has no name.
     pub fn workspace_records(
         &self,
-        kind: &RecordKind,
-    ) -> Vec<(RecordId, AutoCommit, Option<String>)> {
+        kind: &ResourceType,
+    ) -> Vec<(DocumentId, AutoCommit, Option<String>)> {
         let Some(store) = self.backend() else {
             return Vec::new();
         };
@@ -2615,7 +2615,7 @@ impl RecordStore {
         if home.is_empty() {
             return Vec::new();
         }
-        let mut found: Vec<(RecordId, AutoCommit, Option<String>)> = self
+        let mut found: Vec<(DocumentId, AutoCommit, Option<String>)> = self
             .window_records(kind)
             .into_iter()
             .map(|(id, doc)| (id, doc, None))
@@ -2637,11 +2637,11 @@ impl RecordStore {
     /// The records of `kind` the workspace's index names, each with the name it gives it, sorted by
     /// id: what an app's windows and a hosted workspace's agent published here, whether or not a
     /// window of this device started them.
-    fn indexed_records(&self, kind: &RecordKind) -> Vec<(RecordId, Option<String>)> {
+    fn indexed_records(&self, kind: &ResourceType) -> Vec<(DocumentId, Option<String>)> {
         let Some(index) = self.workspace_index() else {
             return Vec::new();
         };
-        let mut named: Vec<(RecordId, Option<String>)> = index::discoverable_references(&index)
+        let mut named: Vec<(DocumentId, Option<String>)> = index::discoverable_references(&index)
             .into_iter()
             .filter(|checkout| &checkout.kind == kind)
             .map(|checkout| {
@@ -2706,7 +2706,7 @@ impl RecordStore {
     /// ownership contention, absence, identity or schema refusal and storage failures.
     pub fn try_open_record(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
         let opened = self
             .0
@@ -2740,7 +2740,7 @@ impl RecordStore {
     /// As [`Self::try_open_record`], a record not here always missing.
     pub fn open_if_held(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
         self.0
             .try_borrow_mut()
@@ -2767,7 +2767,7 @@ impl RecordStore {
     /// The records opened here that are not here yet and that the
     /// workspace's hosts have not answered: what to ask them for.
     #[must_use]
-    pub fn wanted_records(&self) -> Vec<RecordId> {
+    pub fn wanted_records(&self) -> Vec<DocumentId> {
         self.0
             .try_borrow()
             .map(|set| set.wanted.borrow().iter().cloned().collect())
@@ -2776,7 +2776,7 @@ impl RecordStore {
 
     /// Whether `id`, not here, waits for the workspace's hosts to send it or
     /// to say they have none of it; it is wanted from them then.
-    fn awaits_workspace(&self, id: &RecordId) -> bool {
+    fn awaits_workspace(&self, id: &DocumentId) -> bool {
         let Ok(set) = self.0.try_borrow() else {
             return false;
         };
@@ -2795,7 +2795,7 @@ impl RecordStore {
     /// Refuses collisions, malformed existing data and unavailable storage.
     pub fn reserve_record(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<RecordReservation, RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if !want.is_valid_local_storage_request() {
@@ -2851,7 +2851,7 @@ impl RecordStore {
         })
     }
 
-    pub fn is_ready(&self, id: &RecordId) -> bool {
+    pub fn is_ready(&self, id: &DocumentId) -> bool {
         self.0.try_borrow().is_ok_and(|set| set.peek(id).is_some())
     }
 
@@ -2859,7 +2859,7 @@ impl RecordStore {
     ///
     /// # Errors
     /// Reports missing/reserved records.
-    pub fn save_status(&self, id: &RecordId) -> Result<RecordSaveStatus, RecordOpenError> {
+    pub fn save_status(&self, id: &DocumentId) -> Result<RecordSaveStatus, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         if set.pending.contains_key(id) {
             return Err(RecordOpenError::Busy);
@@ -2889,7 +2889,7 @@ impl RecordStore {
     /// without input: its store resolving its writer's writes, or a host
     /// acknowledging a portable cache. A memory-only record never changes.
     /// Sample again once armed: a write that landed before is not heard of.
-    pub fn wake_on_save_progress(&self, id: &RecordId, wake: durable_store::ReadyWake) {
+    pub fn wake_on_save_progress(&self, id: &DocumentId, wake: durable_store::ReadyWake) {
         let Ok(set) = self.0.try_borrow() else {
             return;
         };
@@ -2910,7 +2910,7 @@ impl RecordStore {
     /// # Errors
     /// Reports missing/busy records, an unpersisted record, and the writer's
     /// outstanding failure.
-    pub fn await_submitted(&self, id: &RecordId) -> Result<(), String> {
+    pub fn await_submitted(&self, id: &DocumentId) -> Result<(), String> {
         let set = self
             .0
             .try_borrow()
@@ -2926,7 +2926,7 @@ impl RecordStore {
         saver.try_flush().map_err(|error| format!("{id}: {error}"))
     }
 
-    pub fn durability_error(&self, id: &RecordId) -> Option<String> {
+    pub fn durability_error(&self, id: &DocumentId) -> Option<String> {
         if self.0.borrow().portable.is_some() {
             return match self.save_status(id) {
                 Ok(RecordSaveStatus::Failed(error)) => Some(error),
@@ -2944,7 +2944,7 @@ impl RecordStore {
     /// Stage private evidence on the exact record owner, never its CRDT.
     pub(crate) fn record_private_action(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         action: app_state::PrivateAction,
     ) -> Result<(), String> {
         let mut set = self
@@ -2962,7 +2962,7 @@ impl RecordStore {
     /// the document or opening a second owner.
     pub(crate) fn private_actions(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<Vec<app_state::PrivateAction>, String> {
         let set = self.0.try_borrow().map_err(|_| "record store is busy")?;
         let slot = set.open.get(id).ok_or("record is not open")?;
@@ -2978,7 +2978,7 @@ impl RecordStore {
 
     /// Offer one serviced canonical record without awaiting host ACK or
     /// touching another record. Accepted bytes remain Saving until durable.
-    pub(crate) fn offer_record(&self, id: &RecordId) -> Result<(), String> {
+    pub(crate) fn offer_record(&self, id: &DocumentId) -> Result<(), String> {
         let mut set = self
             .0
             .try_borrow_mut()
@@ -3002,7 +3002,7 @@ impl RecordStore {
     }
 
     /// Close/retry one actual owner without settling another record's edit.
-    pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
+    pub(crate) fn try_flush_record(&self, id: &DocumentId) -> Result<(), String> {
         let mut set = self
             .0
             .try_borrow_mut()
@@ -3066,7 +3066,7 @@ impl RecordStore {
 
     /// Open `want` if it is not open already. Returns whether this opened
     /// it.
-    pub fn open_record(&self, want: &RecordCheckout) -> bool {
+    pub fn open_record(&self, want: &DocumentCheckout) -> bool {
         self.0.borrow_mut().open_record(want, None)
     }
 
@@ -3075,7 +3075,7 @@ impl RecordStore {
     ///
     /// # Errors
     /// Refuses existing identities, unavailable persistence, and invalid scope.
-    pub fn create_record(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
+    pub fn create_record(&self, want: &DocumentCheckout) -> Result<(), RecordOpenError> {
         if !want.is_valid_local_storage_request() {
             return Err(RecordOpenError::IdentityMismatch);
         }
@@ -3122,7 +3122,7 @@ impl RecordStore {
         for (target, relation) in &want.references {
             add_reference(
                 &mut doc,
-                &RecordRef::new(target.id.clone(), relation.clone()),
+                &DocumentRef::new(target.id.clone(), relation.clone()),
             );
         }
         commit_genesis(&mut doc);
@@ -3155,7 +3155,7 @@ impl RecordStore {
     /// existing explicit one-workspace migration claim and their original history.
     pub(crate) fn open_existing_record_checked(
         &self,
-        want: &RecordCheckout,
+        want: &DocumentCheckout,
     ) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if set.backend.is_some() || set.portable.is_some() {
@@ -3256,7 +3256,7 @@ impl RecordStore {
 
     pub(crate) fn admission(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
     ) -> Result<RecordAdmission, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let slot = set
@@ -3280,7 +3280,7 @@ impl RecordStore {
 
     pub(crate) fn with_checked<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         f: impl FnOnce(&mut AutoCommit) -> R,
     ) -> Result<R, RecordOpenError> {
         // A checked mutable loan is external to any action frame, exactly as
@@ -3297,7 +3297,7 @@ impl RecordStore {
 
     pub(crate) fn read_checked<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         read: impl FnOnce(&AutoCommit) -> R,
     ) -> Result<R, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
@@ -3326,7 +3326,7 @@ impl RecordStore {
     /// anyone else until the frame returns it.
     pub(crate) fn with_action_state<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         callback: impl FnOnce(
             &mut AutoCommit,
             &mut crate::state::UndoLog,
@@ -3361,7 +3361,7 @@ impl RecordStore {
 
     pub(crate) fn invocation_provenance(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<
         std::rc::Rc<std::cell::RefCell<crate::invocation_scope::InvocationProvenance>>,
         RecordOpenError,
@@ -3380,7 +3380,7 @@ impl RecordStore {
     /// The record is not open here or its owner is busy.
     pub(crate) fn writing_actors(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<crate::state::WritingActors, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         set.not_lent(id)?;
@@ -3391,7 +3391,7 @@ impl RecordStore {
     #[cfg(test)]
     pub(crate) fn require_invocation_provenance(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
     ) -> Result<(), String> {
         self.open_existing_record_checked(checkout)
             .map_err(|error| error.to_string())?;
@@ -3418,7 +3418,7 @@ impl RecordStore {
     ///
     /// # Errors
     /// Returns `Busy` if the record set is borrowed, or `MissingRecord` if the record is not open.
-    pub fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
+    pub fn action_generation(&self, id: &DocumentId) -> Result<Option<u64>, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         set.not_lent(id)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
@@ -3430,7 +3430,7 @@ impl RecordStore {
     /// instead follows document changes and actual undo/redo transitions.
     pub(crate) fn document_edit_stamp(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         lifetime: uuid::Uuid,
     ) -> Result<crate::bound_dispatch::DocumentEditStamp, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
@@ -3457,7 +3457,7 @@ impl RecordStore {
     /// Capture the exact operational identity before admitting remote bytes.
     pub(crate) fn replica_identity_stamp(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
     ) -> Result<ReplicaIdentityStamp, String> {
         let (_, _, workspace) = self
             .history_namespace(&checkout.id)
@@ -3474,7 +3474,7 @@ impl RecordStore {
     /// The bytes are not a valid mutation of this record, or it is not open.
     pub fn merge_replica(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
         // The workspace's record may still be decoding off the frame when its
@@ -3601,7 +3601,7 @@ impl RecordStore {
     /// Returns why the peer's document was refused; the record is unchanged.
     pub fn merge_peer_document(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         document: Vec<u8>,
     ) -> Result<bool, String> {
         self.merge_replica(checkout, collab_types::DocumentMutation::Snapshot(document))
@@ -3617,7 +3617,7 @@ impl RecordStore {
     /// The record is not open here or the changes do not merge.
     pub fn merge_peer_changes(
         &self,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         changes: Vec<u8>,
     ) -> Result<bool, String> {
         self.merge_replica(
@@ -3648,7 +3648,7 @@ impl RecordStore {
     /// does not rebuild.
     pub fn withdraw_refused(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         refused: &[automerge::ChangeHash],
         reason: &str,
     ) -> Result<Option<Vec<automerge::ChangeHash>>, String> {
@@ -3759,7 +3759,7 @@ impl RecordStore {
     ///
     /// # Errors
     /// The record is not open here or its owner is busy.
-    pub fn hold_notice(&self, id: &RecordId, text: String) -> Result<(), RecordOpenError> {
+    pub fn hold_notice(&self, id: &DocumentId, text: String) -> Result<(), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
             let heads = doc.get_heads();
@@ -3769,7 +3769,7 @@ impl RecordStore {
 
     /// The workspace's host answered every commit of record `id` it published:
     /// what was held for them is said ([`Self::take_said`]).
-    pub fn workspace_settled(&self, id: &RecordId) {
+    pub fn workspace_settled(&self, id: &DocumentId) {
         if let Ok(mut set) = self.0.try_borrow_mut()
             && let Some(parked) = set.open.get_mut(id)
         {
@@ -3778,7 +3778,7 @@ impl RecordStore {
     }
 
     /// What to say now of record `id` ([`Self::hold_notice`]), each once.
-    pub fn take_said(&self, id: &RecordId) -> Vec<String> {
+    pub fn take_said(&self, id: &DocumentId) -> Vec<String> {
         let Ok(mut set) = self.0.try_borrow_mut() else {
             return Vec::new();
         };
@@ -3790,7 +3790,7 @@ impl RecordStore {
 
     /// The refusals of record `id` noted since the last call
     /// ([`Self::withdraw_refused`]).
-    pub fn take_refusals(&self, id: &RecordId) -> Vec<RecordRefusal> {
+    pub fn take_refusals(&self, id: &DocumentId) -> Vec<RecordRefusal> {
         let Ok(mut set) = self.0.try_borrow_mut() else {
             return Vec::new();
         };
@@ -3811,7 +3811,7 @@ impl RecordStore {
     /// The record is not open here or its owner is busy.
     pub fn replication_delta(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         frontier: &mut crate::state::DocumentFrontier,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
@@ -3837,7 +3837,7 @@ impl RecordStore {
     /// The record is not open here or its owner is busy.
     pub fn own_delta(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         frontier: &mut crate::state::DocumentFrontier,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
@@ -3863,7 +3863,7 @@ impl RecordStore {
     /// The record is not open here, its owner is busy, or `migrate` refused.
     pub fn migrate<T>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<T, String> {
         self.with_action_state(id, |doc, _, actions| {
@@ -3884,7 +3884,7 @@ impl RecordStore {
     /// The record is not open here or its owner is busy.
     pub fn replication_snapshot(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
     ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
         self.with_action_state(id, |doc, _, actions| {
             actions.commit_for_save(doc);
@@ -3895,7 +3895,7 @@ impl RecordStore {
     }
 
     /// Do something with a record's document. `None` if the record is not open here.
-    pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
+    pub fn with<R>(&self, id: &DocumentId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
         set.document_mut(id)
             .map(|document| crate::invocation_scope::with_record_loan(self, id, document, f))
@@ -3908,7 +3908,7 @@ impl RecordStore {
         self.0.try_borrow_mut().is_ok()
     }
 
-    pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
+    pub fn read<R>(&self, id: &DocumentId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
         self.read_checked(id, f).ok()
     }
 
@@ -3916,7 +3916,7 @@ impl RecordStore {
     /// action, undo one.
     pub fn with_history<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
     ) -> Option<R> {
         let mut set = self.0.try_borrow_mut().ok()?;
@@ -3927,7 +3927,7 @@ impl RecordStore {
     /// Inspect committed history without turning a pending burst into a boundary.
     pub fn read_history<R>(
         &self,
-        id: &RecordId,
+        id: &DocumentId,
         read: impl FnOnce(&AutoCommit, &crate::state::UndoLog) -> R,
     ) -> Option<R> {
         let set = self.0.try_borrow().ok()?;
@@ -3939,21 +3939,21 @@ impl RecordStore {
     }
 
     /// Every record this store holds.
-    pub fn open_records(&self) -> Vec<RecordCheckout> {
+    pub fn open_records(&self) -> Vec<DocumentCheckout> {
         self.0.borrow().open_records()
     }
 
-    /// The open records that belong to another's tree ([`RecordId::tree`]),
+    /// The open records that belong to another's tree ([`DocumentId::tree`]),
     /// ready to read; none while a frame holds the store.
     #[must_use]
-    pub fn open_tree_records(&self) -> Vec<RecordCheckout> {
+    pub fn open_tree_records(&self) -> Vec<DocumentCheckout> {
         let Ok(set) = self.0.try_borrow() else {
             return Vec::new();
         };
         set.open
             .iter()
             .filter(|(id, parked)| parked.doc.is_some() && id.tree().is_some())
-            .map(|(id, parked)| RecordCheckout::new(id.clone(), parked.kind.clone()))
+            .map(|(id, parked)| DocumentCheckout::new(id.clone(), parked.kind.clone()))
             .collect()
     }
 
@@ -3985,7 +3985,7 @@ fn record_metadata_present(doc: &AutoCommit) -> Result<bool, String> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ReplicaIdentityStamp {
-    checkout: RecordCheckout,
+    checkout: DocumentCheckout,
     workspace: String,
     metadata: bool,
     home: Option<String>,
@@ -3996,7 +3996,7 @@ pub(crate) struct ReplicaIdentityStamp {
 impl ReplicaIdentityStamp {
     fn capture(
         doc: &AutoCommit,
-        checkout: &RecordCheckout,
+        checkout: &DocumentCheckout,
         workspace: &str,
     ) -> Result<Self, String> {
         validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
@@ -4045,7 +4045,7 @@ pub fn tick(
     state: &mut crate::state::State,
     workspace: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
-) -> Option<RecordCheckout> {
+) -> Option<DocumentCheckout> {
     let want = crate::record::capability::record_intent(widget)?;
     set.checkout(state, workspace, &want).then_some(want)
 }

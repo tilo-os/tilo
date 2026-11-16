@@ -221,7 +221,7 @@ fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
 pub fn target(
     path: &Path,
     roots: &[std::path::PathBuf],
-    record: fs_protocol::FileRecordId,
+    record: fs_protocol::FileDocumentId,
     label: String,
     authors: ui::history_source::AuthorDirectory,
 ) -> std::io::Result<FileHistoryTarget> {
@@ -387,7 +387,7 @@ mod tests {
         FileHistoryReadScopeV1 {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileDocumentId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }

@@ -123,10 +123,10 @@ impl HeldRecords {
         // workspace's emoji) is kept under its owner's routes but is no
         // record of the owner's kind: a bot acts on the app's own records,
         // and reads what such a record says through the app's actions.
-        if collab_types::workspace_record(&route.app_id, &route.record).is_some() {
+        if collab_types::workspace_document(&route.app_id, &route.record).is_some() {
             return Ok(());
         }
-        let record = ui::record::RecordId::from_route(&route.record)
+        let record = ui::record::DocumentId::from_route(&route.record)
             .ok_or_else(|| format!("{} is not a record route", route.record))?;
         if record.chain_part().is_some() {
             return self.hold_beside(route, &record, saved);
@@ -166,7 +166,7 @@ impl HeldRecords {
     fn hold_beside(
         &mut self,
         route: &DocumentRoute,
-        record: &ui::record::RecordId,
+        record: &ui::record::DocumentId,
         saved: Vec<u8>,
     ) -> Result<(), String> {
         let mutation = DocumentMutation::Snapshot(saved);
@@ -387,7 +387,7 @@ mod tests {
         let emoji = DocumentRoute {
             app_id: "so.tilo.chat".into(),
             cluster_id: "workspace-1".into(),
-            record: collab_types::workspace_record_id("tilo.workspace.emoji"),
+            record: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
         assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
         assert!(held.offered().is_empty(), "nothing is held for it");
@@ -430,7 +430,7 @@ mod tests {
         let route = |app: &str| DocumentRoute {
             app_id: app.into(),
             cluster_id: workspace.into(),
-            record: collab_types::workspace_record_id("tilo.workspace.emoji"),
+            record: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
         held.hold(&route("so.tilo.chat"), b"emoji".to_vec())
             .unwrap();

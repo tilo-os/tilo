@@ -360,7 +360,7 @@ pub enum LaunchError {
     /// so the caller can reopen or flush it.
     ComponentSetup {
         source: Box<LaunchError>,
-        record: Box<crate::record::RecordCheckout>,
+        record: Box<crate::record::DocumentCheckout>,
         recovery: LaunchRecovery,
     },
     /// A capture failed or closed dirty: `recovery` holds the close reports.
@@ -2063,9 +2063,9 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("note"),
+        let want = crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
@@ -2118,8 +2118,8 @@ mod tests {
             .unwrap();
         assert_eq!(joined(), 2);
         drop(construction);
-        let other = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
+        let other = crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
             want.kind.clone(),
         );
         assert!(records.open_existing_record_checked(&other).is_err());
@@ -2134,9 +2134,9 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("note"),
+        let want = crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
@@ -2189,9 +2189,9 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let mut _env_override = tilo_test_env::ScopedEnv::new();
         _env_override.set("TILO_WORKSPACE_ID", workspace.to_string());
-        let want = crate::record::RecordCheckout::package_primary(crate::record::RecordKind::new(
-            "primary",
-        ));
+        let want = crate::record::DocumentCheckout::package_primary(
+            crate::record::ResourceType::new("primary"),
+        );
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
             &mut history,
@@ -2241,8 +2241,8 @@ mod tests {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
             let workspace = args.value("--fixture-workspace").unwrap();
             let id =
-                crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
-            let want = crate::record::RecordCheckout::new(id, definition.record_kind.clone());
+                crate::record::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
+            let want = crate::record::DocumentCheckout::new(id, definition.record_kind.clone());
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
                 .open(definition.app_id(), workspace)
@@ -2296,12 +2296,12 @@ mod tests {
         }
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let id = crate::record::RecordId::minted();
+        let id = crate::record::DocumentId::minted();
         let mut history = automerge::AutoCommit::new();
         assert!(crate::record::init_scoped(
             &mut history,
             &id,
-            &crate::record::RecordKind::new("probe"),
+            &crate::record::ResourceType::new("probe"),
             &workspace.to_string(),
             Some(&workspace.to_string())
         ));
@@ -2391,7 +2391,7 @@ mod tests {
             let root = std::path::PathBuf::from(args.value("--fixture-root").unwrap());
             let workspace = args.value("--fixture-workspace").unwrap();
             let id =
-                crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
+                crate::record::DocumentId::parse(args.value("--fixture-record").unwrap()).unwrap();
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
                 .open(definition.app_id(), workspace)
@@ -2424,7 +2424,7 @@ mod tests {
         }
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let id = crate::record::RecordId::minted();
+        let id = crate::record::DocumentId::minted();
         let manager = crate::collaboration::CollaborationManager::connected_fixture_for_test(
             probe::APP,
             workspace,
@@ -2486,9 +2486,9 @@ mod tests {
         use automerge::transaction::Transactable;
         let environment = LaunchFixtureEnv::new();
         let workspace = uuid::Uuid::new_v4();
-        let want = crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("note"),
+        let want = crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
+            crate::record::ResourceType::new("note"),
         );
         let mut history = automerge::AutoCommit::new();
         history.put(automerge::ROOT, "primary", "existing").unwrap();
@@ -2574,7 +2574,7 @@ mod tests {
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
         let manager = crate::collaboration::CollaborationManager::for_native_launch(
-            &crate::record::RecordKind::new("launch-fixture.document"),
+            &crate::record::ResourceType::new("launch-fixture.document"),
             crate::collaboration::NativeConnection::Launch,
         );
         drop(env_override);
@@ -3038,8 +3038,8 @@ mod prepared_launch_tests {
                 .load(11)
                 .unwrap()
                 .unwrap();
-                let checkout = crate::record::RecordCheckout::new(
-                    crate::record::RecordId::parse(&saved.record_id).unwrap(),
+                let checkout = crate::record::DocumentCheckout::new(
+                    crate::record::DocumentId::parse(&saved.record_id).unwrap(),
                     runner_probe_definition().record_kind.clone(),
                 );
                 let records = crate::record::RecordOwners::new(root)
@@ -3121,8 +3121,8 @@ mod prepared_launch_tests {
                     .load(11)
                     .unwrap()
                     .unwrap();
-            let checkout = crate::record::RecordCheckout::new(
-                crate::record::RecordId::parse(&saved.record_id).unwrap(),
+            let checkout = crate::record::DocumentCheckout::new(
+                crate::record::DocumentId::parse(&saved.record_id).unwrap(),
                 runner_probe_definition().record_kind.clone(),
             );
             let records = crate::record::RecordOwners::new(root)
@@ -3272,8 +3272,8 @@ mod prepared_launch_tests {
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let mut prepared = prepare(definition, args)?;
-        prepared.target = existing(&crate::record::RecordCheckout::new(
-            crate::record::RecordId::minted(),
+        prepared.target = existing(&crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::minted(),
             definition.record_kind.clone(),
         ));
         Ok(prepared)
@@ -3284,10 +3284,10 @@ mod prepared_launch_tests {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         prepare_target(definition, args, LaunchTarget::New, permissions())
     }
-    fn corrupt_checkout() -> crate::record::RecordCheckout {
-        crate::record::RecordCheckout::new(
-            crate::record::RecordId::for_file("/explicit-test-record"),
-            crate::record::RecordKind::new("probe"),
+    fn corrupt_checkout() -> crate::record::DocumentCheckout {
+        crate::record::DocumentCheckout::new(
+            crate::record::DocumentId::for_file("/explicit-test-record"),
+            crate::record::ResourceType::new("probe"),
         )
     }
     fn existing_preparer(
