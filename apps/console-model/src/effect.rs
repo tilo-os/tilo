@@ -8,9 +8,9 @@ use tilo_resource::Effect;
 #[effect(operation = "console.effects")]
 pub enum ConsoleEffect {
     #[effect(view, participant)]
-    ViewRun {
-        #[param("Id of the run")]
-        run: String,
+    ViewSession {
+        #[param("Id of the session")]
+        session: String,
     },
     #[effect(view, participant)]
     ViewAgent {
@@ -23,7 +23,7 @@ pub enum ConsoleEffect {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
-    UndoAgentRun {
+    UndoAgentSession {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },

@@ -86,7 +86,7 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
@@ -200,7 +200,7 @@ async fn an_agent_finds_a_conversation_by_its_name() {
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)

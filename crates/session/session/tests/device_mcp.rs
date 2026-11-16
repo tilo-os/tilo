@@ -950,13 +950,14 @@ fn listed_run(session: &mut Session, workspace: &str, person: &str, named: &str)
         .follow(
             &caller,
             following,
-            wire::RUNS,
-            query(&wire::RunsQuery::default()),
+            wire::SESSIONS,
+            query(&wire::SessionsQuery::default()),
         )
         .expect("the Activity follows its runs");
-    let listed: wire::Runs = activity_read(session, &requests, &following, "the runs are listed");
+    let listed: wire::Sessions =
+        activity_read(session, &requests, &following, "the runs are listed");
     let run = listed
-        .runs
+        .sessions
         .iter()
         .find(|run| run.id == named)
         .unwrap_or_else(|| {
@@ -971,7 +972,7 @@ fn listed_run(session: &mut Session, workspace: &str, person: &str, named: &str)
 
 /// The person presses Undo run on `range` in the Activity, and the model takes it.
 fn undo_from_activity(session: &mut Session, range: &wire::Range) {
-    let mut asked = session.activity().act(wire::UNDO_RUN, query(range));
+    let mut asked = session.activity().act(wire::UNDO_SESSION, query(range));
     crate::common::wait_for(session, "the Activity takes the undo", |_| {
         match asked.poll_ready() {
             PendingPoll::Ready(Ok(())) => Some(()),
@@ -1199,7 +1200,7 @@ impl ShellWithNotes {
 /// history keeps the session's work under, and undo takes back whole.
 fn a_step_of(taken: &runtime_collab::Invocation, session: &str) -> bool {
     let context: Value = serde_json::from_str(&taken.context_json).unwrap_or_default();
-    context["group"]["kind"].as_str() == Some(tilo_actions::context::AGENT_RUN_GROUP)
+    context["group"]["kind"].as_str() == Some(tilo_actions::context::AGENT_SESSION_GROUP)
         && context["group"]["id"].as_str() == Some(session)
 }
 

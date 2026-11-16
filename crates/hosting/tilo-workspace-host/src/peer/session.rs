@@ -324,7 +324,7 @@ async fn until_ended<C: std::future::Future>(
         // written, or after a moment on a connection that takes nothing.
         () = stopping.stop.notified() => {
             if (stopping.stopped)() {
-                let _ = stopping.outbound.try_send(Envelope::AgentRunStopped);
+                let _ = stopping.outbound.try_send(Envelope::AgentSessionStopped);
             }
             let _ = end_writer.send(true);
             // Written is not read: closing the connection now would drop the word on the way,

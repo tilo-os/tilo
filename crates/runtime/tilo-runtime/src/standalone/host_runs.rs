@@ -1,6 +1,6 @@
 //! The runtime's broker behind the workspace host it runs: the record actions
 //! of the profile's workspace, answered for the person's keys that entered it
-//! there ([`crate::key_runs`]).
+//! there ([`crate::key_sessions`]).
 //!
 //! A key's run is admitted as an MCP client of this runtime is: the profile's
 //! person on this device, handing the run to an agent named after the key.
@@ -18,7 +18,7 @@ pub(super) struct HostRuns {
     pub(super) policy_time: tilo_action_broker::policy_clock::PolicyTime,
 }
 
-impl crate::key_runs::Runs for HostRuns {
+impl crate::key_sessions::Sessions for HostRuns {
     fn workspace(&self, workspace_id: WorkspaceId) -> Option<String> {
         (tilo_desktop_model::WorkspaceId::parse(&self.workspace) == Some(workspace_id))
             .then(|| self.workspace.clone())
@@ -28,10 +28,10 @@ impl crate::key_runs::Runs for HostRuns {
         &self,
         workspace: &str,
         key: &DeviceCert,
-    ) -> Result<(crate::key_runs::RunHost, Caller), String> {
+    ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
         let (run, caller, _) = self
             .host
-            .agent_run(workspace, &self.actor, &self.policy_time, |_| {
+            .agent_session(workspace, &self.actor, &self.policy_time, |_| {
                 tilo_mcp::devices::agent_id("agent", key)
             })
             .map_err(|error| error.to_string())?;

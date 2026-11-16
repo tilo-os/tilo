@@ -391,20 +391,20 @@ impl Caller {
     /// it back whole, whatever the client says of itself. `None` for anyone
     /// else.
     #[must_use]
-    pub fn agent_run(&self) -> Option<crate::WorkGroup> {
+    pub fn agent_session(&self) -> Option<crate::WorkGroup> {
         let agent = self.acting.agent_id()?;
         let id = match &self.acting.agent_session {
             Some(session) => session.as_str().to_owned(),
             None => format!(
                 "{}:{}",
-                crate::context::AGENT_RUN_GROUP,
+                crate::context::AGENT_SESSION_GROUP,
                 self.execution_id()?
             ),
         };
         Some(crate::WorkGroup {
             id,
             label: self.agent_name().unwrap_or(agent).to_owned(),
-            kind: crate::context::AGENT_RUN_GROUP.to_owned(),
+            kind: crate::context::AGENT_SESSION_GROUP.to_owned(),
             title: None,
             declared_id: None,
         })

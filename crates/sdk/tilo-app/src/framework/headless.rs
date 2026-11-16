@@ -1706,7 +1706,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let ambient = tilo_actions::ActionContext::default().with_group(
             run,
             run,
-            ui_core::history_source::steps::AGENT_RUN,
+            ui_core::history_source::steps::AGENT_SESSION,
         );
         self.call_within(Some(&ambient), id, arguments)
     }

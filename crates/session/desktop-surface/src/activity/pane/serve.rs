@@ -197,8 +197,8 @@ pub fn is_read(action: &str) -> bool {
         wire::REPLAY,
         wire::DETAIL,
         wire::FOCUS,
-        wire::RUNS,
-        wire::RUN_OUTPUT,
+        wire::SESSIONS,
+        wire::SESSION_OUTPUT,
     ]
     .contains(&action)
 }
@@ -214,7 +214,7 @@ pub fn is_document_write(action: &str) -> bool {
         wire::MOVE_BOUNDARY,
         wire::UNDO,
         wire::RESTORE,
-        wire::UNDO_RUN,
+        wire::UNDO_SESSION,
         wire::UNDO_RECORD,
     ]
     .contains(&action)
@@ -231,7 +231,7 @@ pub fn refused_to_agent(
     let all_workspaces = match action {
         wire::FEED => read::<wire::FeedQuery>(arguments)
             .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
-        wire::RUNS => read::<wire::RunsQuery>(arguments)
+        wire::SESSIONS => read::<wire::SessionsQuery>(arguments)
             .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces),
         _ => false,
     };
@@ -267,7 +267,7 @@ impl WorkspaceActivityPane {
             .map(|frame| frame.entry_id)
             .hash(&mut hasher);
         self.replay_unavailable.hash(&mut hasher);
-        self.agent_runs.len().hash(&mut hasher);
+        self.agent_sessions.len().hash(&mut hasher);
         self.agent_undo_notice.hash(&mut hasher);
         self.unreverted.hash(&mut hasher);
         self.undo_pending.is_some().hash(&mut hasher);
@@ -305,12 +305,12 @@ impl WorkspaceActivityPane {
             wire::SUMMARY => serde_json::to_value(self.serve_summary()),
             wire::REPLAY => serde_json::to_value(self.serve_replay()),
             wire::FOCUS => serde_json::to_value(self.serve_focus()),
-            wire::RUNS => {
-                let query: wire::RunsQuery = read(arguments)?;
+            wire::SESSIONS => {
+                let query: wire::SessionsQuery = read(arguments)?;
                 serde_json::to_value(tree.read(|tree| self.serve_runs(&query, tree)))
             }
-            wire::RUN_OUTPUT => {
-                let query: wire::CommandRun = read(arguments)?;
+            wire::SESSION_OUTPUT => {
+                let query: wire::CommandExecution = read(arguments)?;
                 serde_json::to_value(tree.read(|tree| self.serve_run_output(&query, tree)))
             }
             wire::DETAIL => {
@@ -611,7 +611,7 @@ impl WorkspaceActivityPane {
             group: detail.group_id.clone(),
             group_label: detail.group_label.clone(),
             offers: self.offers(&detail),
-            run: self.detail_run(),
+            session: self.detail_run(),
             comparison,
             changes: self
                 .comparison
@@ -623,10 +623,10 @@ impl WorkspaceActivityPane {
 
     /// The agent task the selection is, as its detail shows it: what was asked, by whom, each
     /// record it changed and what Undo can reach.
-    fn detail_run(&self) -> Option<wire::Run> {
-        self.selected_agent_run().map(|indexed| {
-            let run = &indexed.run;
-            wire::Run {
+    fn detail_run(&self) -> Option<wire::Session> {
+        self.selected_agent_session().map(|indexed| {
+            let run = &indexed.session;
+            wire::Session {
                 instruction: run.instruction.clone().unwrap_or_else(|| run.label.clone()),
                 byline: t_args(
                     "activity-agent-task-people",
@@ -651,7 +651,7 @@ impl WorkspaceActivityPane {
                                     .map(|name| name.to_string_lossy().into_owned())
                             })
                             .unwrap_or_else(|| step.record.clone());
-                        wire::RunRecord {
+                        wire::SessionRecord {
                             record,
                             app,
                             id: step.record.clone(),
@@ -711,7 +711,7 @@ impl WorkspaceActivityPane {
             DetailAction::Restore => detail.can_compare && self.selection_is_writable(detail),
             DetailAction::Undo => {
                 detail.can_undo
-                    && self.selected_agent_run().is_none()
+                    && self.selected_agent_session().is_none()
                     && self.selection_is_writable(detail)
             }
             DetailAction::UndoTask => self.can_undo_agent_run(),
@@ -725,12 +725,12 @@ impl WorkspaceActivityPane {
                 DetailAction::Compare => wire::DetailAction::Compare,
                 DetailAction::Restore => wire::DetailAction::Restore,
                 DetailAction::Undo => wire::DetailAction::Undo,
-                DetailAction::UndoTask => wire::DetailAction::UndoRun,
+                DetailAction::UndoTask => wire::DetailAction::UndoSession,
                 DetailAction::Split => wire::DetailAction::Split,
                 DetailAction::Merge => wire::DetailAction::Merge,
             },
             // An agent connection's run is no task: it is named as the run it is.
-            label: if action == DetailAction::UndoTask && self.selected_group_run().is_some() {
+            label: if action == DetailAction::UndoTask && self.selected_group_session().is_some() {
                 t("activity-detail-undo-run")
             } else {
                 self.detail_action_label(action)
@@ -928,7 +928,7 @@ impl WorkspaceActivityPane {
                 };
                 Ok(self.apply_detail_action(action, tree))
             }
-            wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
+            wire::UNDO_SESSION => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
             wire::UNDO_RECORD => self.serve_undo_record(&read(arguments)?),
             wire::CHOOSE_SOURCE => {
                 detail(self, &read(arguments)?, DetailAction::MorningSource, tree)
@@ -957,8 +957,8 @@ impl WorkspaceActivityPane {
         // Named by its task, the run is the one recorded for it, if it changed anything.
         if let Some(task) = query.task.as_deref() {
             let Some(task) = self
-                .task_agent_run(task)
-                .and_then(|indexed| indexed.run.task.clone())
+                .task_agent_session(task)
+                .and_then(|indexed| indexed.session.task.clone())
             else {
                 return Err(t("activity-undo-task-unavailable"));
             };
@@ -975,11 +975,11 @@ impl WorkspaceActivityPane {
         // Asked of the run as the record's history knows it, so undo names its group in that
         // document: the same step a run-wide undo would take back, one record at a time.
         let asked = if let Some(task) = self
-            .selected_agent_run()
-            .and_then(|indexed| indexed.run.task.clone())
+            .selected_agent_session()
+            .and_then(|indexed| indexed.session.task.clone())
         {
             self.undo_task_record(&task, &query.app_id, &query.id)
-        } else if let Some(group) = self.selected_group_run() {
+        } else if let Some(group) = self.selected_group_session() {
             self.undo_group_record(&group, &query.app_id, &query.id)
         } else {
             return Err(t("activity-undo-task-unavailable"));

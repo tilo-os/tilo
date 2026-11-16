@@ -383,7 +383,7 @@ impl Shared {
             AgentAsk::Stop => {
                 self.agent_sessions.stop(session);
             }
-            AgentAsk::UndoRun => self.undo_session_run(&working),
+            AgentAsk::UndoSession => self.undo_session_run(&working),
             AgentAsk::TakeOver => {
                 // The person picks up where it was: the session ends, and the app it was working
                 // in comes forward, as the history's own opening does.

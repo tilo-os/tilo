@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
         view.set_context(Some(tilo_actions::ActionContext::default().with_group(
             "run-1",
             "Count",
-            "agent-run",
+            "agent-session",
         )));
         view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
         view.set_context(None);

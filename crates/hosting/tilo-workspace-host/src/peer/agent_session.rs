@@ -1,5 +1,5 @@
 //! A device says the session it opened is one run of an agent
-//! ([`Envelope::AgentRun`]): from then on every request the session makes is
+//! ([`Envelope::AgentSession`]): from then on every request the session makes is
 //! the agent's, for the device's person, within what bounds an agent, and the
 //! person's MCP server lists the run while the session lasts.
 
@@ -13,7 +13,7 @@ use tilo_relay_protocol::WorkspaceId;
 /// (`subscribed`), the one a device enters for its agent just before it says
 /// so: a person sees the agent there as soon as it connected, not only from
 /// its first request.
-pub(super) fn handle_agent_run(
+pub(super) fn handle_agent_session(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
@@ -35,13 +35,13 @@ pub(super) fn handle_agent_run(
         if let (Some(plane), Some(&workspace_id)) = (session.app_serving, subscribed.last())
             && let Ok(caller) = super::actions::session_caller(peer, session)
         {
-            plane.run_arrived(workspace_id, &caller);
+            plane.session_arrived(workspace_id, &caller);
         }
         None
     } else {
         Some("this session is already the run of another agent".to_owned())
     };
-    Envelope::AgentRunAnswer {
+    Envelope::AgentSessionAnswer {
         request_id,
         refusal,
     }

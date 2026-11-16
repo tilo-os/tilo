@@ -107,7 +107,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
     // The agent's computer enters as a device of the person's and says, as
     // `tilo login` makes it, that its session runs the agent.
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
@@ -399,7 +399,7 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
     .await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
@@ -536,8 +536,8 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
                 groups
                     .iter()
                     .all(|group| group.as_ref().is_some_and(|group| {
-                        group.kind == "agent-run"
-                            && group.id.starts_with("agent-run:")
+                        group.kind == "agent-session"
+                            && group.id.starts_with("agent-session:")
                             && group.label == "Claude Code"
                     })),
                 "every change the agent made is its run: {groups:?}"
@@ -635,7 +635,7 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
     .await;
     let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
     let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = person_of(&root);
     let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
     let titles = open_and_write(&runs).await;
@@ -701,7 +701,7 @@ async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     tab.peer.close();
     drop(tab);
     let agent = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = person_of(&root);
     let runs = agent_runs(&agent, &host, &person, &["run-a", "run-b"]);
     let titles = open_and_write(&runs).await;
@@ -749,7 +749,7 @@ fn agents_changes(tab: &mut Browser, person: &str) -> usize {
                     && invoker.acting.acted_for_person() == Some(person)
             }) && run
                 .as_ref()
-                .is_some_and(|run| run.starts_with("agent-run:"))
+                .is_some_and(|run| run.starts_with("agent-session:"))
         })
         .count()
 }
@@ -819,10 +819,10 @@ async fn the_first_call_after_tilo_login_is_the_agents() {
     let mut tab = Browser::open_at(&relay, &tab_device, &host, WORKSPACE).await;
     // The peer, as the login's check of its tools starts it.
     let peer = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::run_as_agent(&peer.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&peer.peer, "Claude Code").await;
     // The login's own entry as the same device, closed once the tab saw it.
     let login = Browser::open_at(&relay, &computer, &host, WORKSPACE).await;
-    let _ = tilo_session_client::device::run_as_agent(&login.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&login.peer, "Claude Code").await;
     login.peer.close();
     drop(login);
     let person = person_of(&root);

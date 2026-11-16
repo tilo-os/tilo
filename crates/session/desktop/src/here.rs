@@ -162,7 +162,7 @@ pub struct Person {
     /// The person (user root, hex) their device's certificate names: the id that stays theirs on
     /// every device.
     pub user: Option<String>,
-    /// The agent's workspace key, as its presence names it: what tells two runs of one agent, or a
+    /// The agent's workspace key, as its presence names it: what tells two sessions of one agent, or a
     /// client of two people, apart in the member list.
     pub member: Option<String>,
     /// What everyone here calls them: the person's name, whichever of their devices is the one
@@ -287,39 +287,42 @@ pub struct AgentFinished {
     pub label: String,
 }
 
-/// What an agent's newest run did, as its finished notice says it: the run, as the history keeps
-/// it, so one run is told once however many sessions of the agent worked it; how many of its
+/// What an agent's newest session did, as its finished notice says it: the session, as the history keeps
+/// it, so one session is told once however many sessions of the agent worked it; how many of its
 /// actions changed a record (a command it ran or a page it read changed none); what it worked, in
-/// the words its card lists the run by ("Edited Launch notes", or the instruction as the person
+/// the words its card lists the session by ("Edited Launch notes", or the instruction as the person
 /// phrased it); and the workspace it worked in, when the history names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunSummary {
-    pub run: String,
+pub struct SessionSummary {
+    pub session: String,
     pub changes: usize,
     pub worked: String,
     pub workspace: Option<String>,
 }
 
 impl AgentFinished {
-    /// What this agent's newest run in `runs` did: the history names a connection's run as the
-    /// connection named its agent ("Claude Code", or "Claude Code #2" for a numbered run of it).
-    /// `None` when the history lists no run of it.
+    /// What this agent's newest session in `sessions` did: the history names a connection's session as the
+    /// connection named its agent ("Claude Code", or "Claude Code #2" for a numbered session of it).
+    /// `None` when the history lists no session of it.
     #[must_use]
     pub fn summary(
         &self,
-        runs: &tilo_actions::remote::workspace_activity::Runs,
-    ) -> Option<RunSummary> {
+        sessions: &tilo_actions::remote::workspace_activity::Sessions,
+    ) -> Option<SessionSummary> {
         let client = ui::presence::agent_client(&self.label);
-        let run = runs
-            .runs
+        let session = sessions
+            .sessions
             .iter()
-            .filter(|run| ui::presence::agent_client(&run.agent.name) == client)
-            .max_by_key(|run| run.last_ms)?;
-        Some(RunSummary {
-            run: run.id.clone(),
-            changes: run.changes(),
-            worked: run.instruction.trim().to_owned(),
-            workspace: run.workspace.clone().filter(|name| !name.trim().is_empty()),
+            .filter(|session| ui::presence::agent_client(&session.agent.name) == client)
+            .max_by_key(|session| session.last_ms)?;
+        Some(SessionSummary {
+            session: session.id.clone(),
+            changes: session.changes(),
+            worked: session.instruction.trim().to_owned(),
+            workspace: session
+                .workspace
+                .clone()
+                .filter(|name| !name.trim().is_empty()),
         })
     }
 }
@@ -330,27 +333,27 @@ const AGENTS_APP: &str = "so.tilo.console";
 /// after it.
 pub const AGENT_CARD_ACTION: &str = "agent-card:";
 
-/// The notice that `agent` finished: what its run changed and where, when `summary` says
-/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the run
+/// The notice that `agent` finished: what its session changed and where, when `summary` says
+/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the session
 /// worked, in the words its card lists it by ("Edited Launch notes"), never what the agent was
 /// doing (it is done); with its own face and its card one choice away.
 ///
-/// `None` when there is nothing to tell: a run that changed nothing, or one `told` already says
+/// `None` when there is nothing to tell: a session that changed nothing, or one `told` already says
 /// a notice told of, as another session of the same agent that worked it did.
 pub fn finished_notice(
     agent: &AgentFinished,
-    summary: Option<&RunSummary>,
+    summary: Option<&SessionSummary>,
     told: &mut std::collections::BTreeSet<String>,
 ) -> Option<tilo_desktop_surface::notifications::Notification> {
     use tilo_desktop_surface::i18n::{t, t_args};
     if let Some(summary) = summary
-        && (summary.changes == 0 || !told.insert(summary.run.clone()))
+        && (summary.changes == 0 || !told.insert(summary.session.clone()))
     {
         return None;
     }
     let name = || agent.label.clone().into();
     let title = match summary {
-        Some(RunSummary {
+        Some(SessionSummary {
             changes,
             workspace: Some(workspace),
             ..
@@ -362,7 +365,7 @@ pub fn finished_notice(
                 ("workspace", workspace.clone().into()),
             ],
         ),
-        Some(RunSummary {
+        Some(SessionSummary {
             changes,
             workspace: None,
             ..
@@ -599,7 +602,7 @@ impl HereState {
     /// An agent's finishing is news the person did not cause, which a notice says.
     ///
     /// An agent's client restarts its session often (a new `tilo mcp` per restart), each a
-    /// publisher of its own working the same run: an agent is finished once no session of its
+    /// publisher of its own working the same session: an agent is finished once no session of its
     /// client is here, and its sessions that left are said finished together, as one.
     pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
         let Some(members) = &self.members else {
@@ -1314,7 +1317,7 @@ fn worded_place(
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|t| t.id == tab)?;
-        // The app the window runs: from its tile where the shell's own model names it, else from
+        // The app the window sessions: from its tile where the shell's own model names it, else from
         // the app its presence focuses (a window drawn by its app's own surface names none here).
         let app = match &tab.tile {
             TileContent::LocalApp { app_id, .. } => app_name(app_id),
@@ -1368,7 +1371,10 @@ fn names(text: &str, name: &str) -> bool {
             .collect()
     };
     let (text, name) = (words(text), words(name));
-    !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
+    !name.is_empty()
+        && text
+            .windows(name.len())
+            .any(|session| session == name.as_slice())
 }
 
 /// `people` written into `tree` as the bar reads who is here: the active workspace's member rows,

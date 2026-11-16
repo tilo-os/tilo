@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         let base = doc.fork();
         let context =
-            ActionContext::for_resource("r", "k", "l").with_group("run-7", "Run", "agent-run");
+            ActionContext::for_resource("r", "k", "l").with_group("run-7", "Run", "agent-session");
         let encoded = EncodedAction::encode(TYPE, &StampGroup).unwrap();
         let mut transport = LocalTransport::new();
         dispatch_with_context(&mut doc, &StampGroup, encoded, &mut transport, context).unwrap();

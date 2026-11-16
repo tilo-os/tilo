@@ -18,7 +18,7 @@ pub struct RunGroup {
     pub label: String,
 }
 
-pub const COMMAND_RUN: &str = "command-run";
+pub const COMMAND_GROUP: &str = "command-run";
 
 pub struct Io<'a> {
     pub out: &'a mut dyn Write,

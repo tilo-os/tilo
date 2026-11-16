@@ -13,7 +13,7 @@ use vello::kurbo::Affine;
 
 fn run(title: &str) -> OpenedBy {
     OpenedBy {
-        run: "agent-run:7".into(),
+        run: "agent-session:7".into(),
         label: "Jane Doe\u{2019}s agent".into(),
         title: title.into(),
     }

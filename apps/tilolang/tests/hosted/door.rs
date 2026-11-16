@@ -160,7 +160,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     }
 
     // Undoing the task takes back what the task did, and nothing of the person's.
-    let task_scope = Scope::Run("task:7".to_owned());
+    let task_scope = Scope::Session("task:7".to_owned());
     assert!(by_task.iter().all(|version| task_scope.owns(version)));
     assert!(person.iter().all(|version| !task_scope.owns(version)));
     let left = app.read(|doc| {
@@ -181,7 +181,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
 /// The undo steps of the task's that are in effect in `app`'s record, newest first, each the
 /// number of changes it takes back.
 fn task_steps(app: &mut Session) -> Vec<usize> {
-    let scope = Scope::Run("task:7".to_owned());
+    let scope = Scope::Session("task:7".to_owned());
     app.read(|doc| {
         ui::history_source::steps::steps_in_effect(doc, &|version| scope.owns(version), 16)
             .iter()

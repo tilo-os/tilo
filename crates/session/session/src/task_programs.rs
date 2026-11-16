@@ -149,7 +149,7 @@ impl HostStepServices for TaskPrograms {
             .unwrap_or_else(|| tilo_actions::WorkGroup {
                 id: session.to_owned(),
                 label: agent.to_owned(),
-                kind: tilo_actions::context::AGENT_RUN_GROUP.to_owned(),
+                kind: tilo_actions::context::AGENT_SESSION_GROUP.to_owned(),
                 title: None,
                 declared_id: None,
             });

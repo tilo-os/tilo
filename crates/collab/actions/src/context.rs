@@ -1387,15 +1387,10 @@ pub struct Cause {
     pub depth: u8,
 }
 
-/// The [`WorkGroup::kind`] of an agent's run of a workspace task: every change
-/// the run makes carries its group (`runtime_collab::task_run_group`), so
-/// history keeps and undoes the run whole and each version names its run.
-pub const TASK_RUN_GROUP: &str = "task";
-
-/// The [`WorkGroup::kind`] of an agent connection's run: every action one
-/// connection of an agent (or a key it holds) takes, which history keeps,
-/// lists in Activity and undoes whole.
-pub const AGENT_RUN_GROUP: &str = "agent-run";
+/// The [`WorkGroup::kind`] of an agent session: every action one connection of
+/// an agent (or a key it holds) takes, which history keeps, lists in Activity
+/// and undoes whole.
+pub const AGENT_SESSION_GROUP: &str = "agent-session";
 
 /// The unit of work an action belongs to: an issue, a task, an agent run.
 /// Not a group of actions applied as one; that is `tilo_resource::ActionGroup`.
@@ -1719,7 +1714,7 @@ mod tests {
             let entry = ActionContext::for_resource("lib", "snippets.library", "Snippets")
                 .with_app("org.tilo.Snippets", "Snippets")
                 .with_described(starred())
-                .with_group("run:7", "Tidy snippets", "agent-run")
+                .with_group("run:7", "Tidy snippets", "agent-session")
                 .with_invoker(
                     ActionInvoker::agent("claude").acting_for("person:ada"),
                 )

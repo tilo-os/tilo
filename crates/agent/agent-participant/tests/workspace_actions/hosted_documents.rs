@@ -383,7 +383,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     // person's page is open.
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, RUN_LABEL).await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, RUN_LABEL).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
@@ -582,7 +582,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
                 && runs.iter().all(|each| {
                     Some(&each.id) == id.as_ref()
                         && each.id != RUN
-                        && each.id.starts_with("agent-run:")
+                        && each.id.starts_with("agent-session:")
                         && each.label == RUN_LABEL
                 })
                 && run.as_ref().is_none_or(|run| Some(run) == id.as_ref()),

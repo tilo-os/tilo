@@ -232,9 +232,9 @@ impl Standalone {
         // Elsewhere nobody here answers, and such an action is refused.
         #[cfg(target_os = "macos")]
         confirm::ask_the_person(&broker, &actor, &apps);
-        if let Some((_, key_runs)) = &placed {
-            serve_key_runs(
-                key_runs,
+        if let Some((_, key_sessions)) = &placed {
+            serve_key_sessions(
+                key_sessions,
                 &broker,
                 &joined,
                 &personal.sync,
@@ -656,7 +656,7 @@ impl RuntimeActionHost {
             // of the durable owner, so people are shown a short label for it
             // instead of the whole run id.
             let (session_host, caller, agent) =
-                host.agent_run(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
+                host.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
             let label = tilo_mcp::agent_label(&agent);
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
         })
@@ -665,7 +665,7 @@ impl RuntimeActionHost {
     /// A run of an agent the person's device hands it, in `workspace`, as
     /// `actor`: the host its calls go through, the caller its admission is,
     /// and the agent `agent` names for that caller.
-    fn agent_run(
+    fn agent_session(
         &self,
         workspace: &str,
         actor: &str,
@@ -1265,19 +1265,19 @@ fn place_own_workspace(
     (apps, dev): (&Arc<apps::Apps>, bool),
 ) -> io::Result<(
     Arc<tilo_workspace_host::host::WorkspaceHost>,
-    Arc<crate::key_runs::KeyRuns>,
+    Arc<crate::key_sessions::KeySessions>,
 )> {
     let workspace_id = workspace.workspace();
     let (key, cert) = tilo_identity_host::broker::trusted_current_device(&workspace_id)?;
     let workspace_id = WorkspaceId::parse(&workspace_id)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
-    let key_runs = crate::key_runs::KeyRuns::new();
+    let key_sessions = crate::key_sessions::KeySessions::new();
     let host = Arc::new(
         tilo_rt::app()
             .handle()
             .block_on(tilo_workspace_host::host::WorkspaceHost::open(
                 tilo_workspace_host::host::HostConfig {
-                    apps: Some(Arc::clone(&key_runs)
+                    apps: Some(Arc::clone(&key_sessions)
                         as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
                     ..tilo_workspace_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
@@ -1313,14 +1313,14 @@ fn place_own_workspace(
         .block_on(joined.place(workspace_id, &workspace.name()))
         .map_err(io::Error::other)?;
     joined.hold_session(workspace_id);
-    Ok((host, key_runs))
+    Ok((host, key_sessions))
 }
 
 /// Answer the record actions of the profile's workspace (`workspace`, as
 /// `actor`) for the person's keys from `broker` from now on. The host opened
 /// before the broker and refused them as not running yet until now.
-fn serve_key_runs(
-    key_runs: &crate::key_runs::KeyRuns,
+fn serve_key_sessions(
+    key_sessions: &crate::key_sessions::KeySessions,
     broker: &BrokerHandle,
     joined: &Arc<Joined>,
     personal: &PersonalSync,
@@ -1330,7 +1330,7 @@ fn serve_key_runs(
     let broker = broker
         .app_action_broker()
         .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
-    key_runs.serve(
+    key_sessions.serve(
         Arc::new(PersonalDevices::new(personal.clone())),
         Arc::new(host_runs::HostRuns {
             host: RuntimeActionHost {

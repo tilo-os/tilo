@@ -500,7 +500,7 @@ mod tests {
         // workspace's history.
         {
             let (_tree, _records, mut pane, _record) = agent_task_fixture();
-            let run = pane.agent_runs[0].run.steps[0].run.clone();
+            let run = pane.agent_sessions[0].session.steps[0].run.clone();
             let middle = pane
                 .timeline
                 .entries()
@@ -514,14 +514,14 @@ mod tests {
                         context
                             .group
                             .as_ref()
-                            .is_some_and(|group| group.kind == "agent-run")
+                            .is_some_and(|group| group.kind == "agent-session")
                     })
                 })
                 .expect("three-change task has an interior history entry");
             pane.timeline.set_selection(Some((middle, middle)));
             let task = pane
-                .selected_agent_run()
-                .map(|indexed| &indexed.run)
+                .selected_agent_session()
+                .map(|indexed| &indexed.session)
                 .expect("selected task receipt");
             assert_eq!(
                 task.instruction.as_deref(),
@@ -553,7 +553,7 @@ mod tests {
                 .last()
                 .cloned()
                 .expect("the pane asks the host to undo the run in the documents it changed");
-            assert_eq!(undo.task_id, pane.agent_runs[0].run.task.clone().unwrap());
+            assert_eq!(undo.task_id, pane.agent_sessions[0].session.task.clone().unwrap());
             assert_eq!(undo.steps.len(), 1);
             assert!(pane.undo_pending.is_some(), "one undo at a time");
         }
@@ -563,15 +563,15 @@ mod tests {
             let (mut tree, records, mut pane, record) = agent_task_fixture();
             pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
             assert!(
-                !pane.agent_runs.is_empty(),
+                !pane.agent_sessions.is_empty(),
                 "the refresh the pane uses reads the runs"
             );
-            let end = pane.agent_runs[0].run.steps[0].run.end;
+            let end = pane.agent_sessions[0].session.steps[0].run.end;
             let row = detached_row(&pane, end);
             pane.timeline.set_selection(Some((row, row)));
             let task = pane
-                .selected_agent_run()
-                .map(|indexed| &indexed.run)
+                .selected_agent_session()
+                .map(|indexed| &indexed.session)
                 .expect("the run's receipt");
             assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
             assert!(pane.can_undo_agent_run());
@@ -679,9 +679,9 @@ mod tests {
                 .with_described(crate::activity::testing::verb(action))
                 .with_purpose("Make the opening concrete")
                 .with_group(
-                    "agent-run:test",
+                    "agent-session:test",
                     "Rewrite the opening and preserve the pricing table",
-                    "agent-run",
+                    "agent-session",
                 );
                 doc.commit_with(
                     CommitOptions::default()
@@ -726,7 +726,7 @@ mod tests {
         );
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        let end = pane.agent_runs[0].run.steps[0].run.end;
+        let end = pane.agent_sessions[0].session.steps[0].run.end;
         let selected = pane
             .timeline
             .entries()
@@ -747,9 +747,9 @@ mod tests {
     #[test]
     fn a_served_run_is_the_agents_timeline_of_actions_over_the_historys_changes() {
         let (tree, _records, mut pane, record) = agent_task_fixture();
-        let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
+        let served = pane.serve_runs(&wire::SessionsQuery::default(), &tree);
         assert_eq!(served.total, 1);
-        let run = &served.runs[0];
+        let run = &served.sessions[0];
         assert_eq!(run.agent.name, "Quill");
         assert_eq!(run.agent.relation, wire::Relation::Software);
         assert_eq!(run.agent.on_behalf_of.as_deref(), Some("Ada"));
@@ -825,7 +825,7 @@ mod tests {
     fn an_app_records_rows_are_restored_and_undone_by_its_app() {
         let (mut tree, records, mut pane, record) = agent_task_fixture();
         pane.refresh_detached_records(&mut tree, detached_records(&records, &record));
-        let newest = pane.agent_runs[0].run.steps[0].run.end;
+        let newest = pane.agent_sessions[0].session.steps[0].run.end;
         let row = detached_row(&pane, newest);
         pane.timeline.set_selection(Some((row, row)));
         let before = records
@@ -2706,7 +2706,7 @@ mod tasks_link_tests {
     /// Once an agent's run of a task recorded what it changed under the task, undoing it asks the
     /// host to undo the run in each changed document, and tells how that ended.
     #[test]
-    fn an_agent_runs_task_is_undone_by_the_host_as_one() {
+    fn an_agent_sessions_task_is_undone_by_the_host_as_one() {
         let (mut tree, mut pane, host) = fixture();
         let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
         let doc = tree.document_mut();

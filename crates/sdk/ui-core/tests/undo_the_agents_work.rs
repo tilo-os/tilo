@@ -19,7 +19,7 @@ use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value}
 
 use tilo_ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_revert, revert_run};
 use tilo_ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
-use tilo_ui::history_source::runs::{AgentRun, RunStep, read_runs, record_run};
+use tilo_ui::history_source::runs::{AgentSession, RunStep, read_runs, record_run};
 use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
 use tilo_ui::permissions::MemberId;
 use tilo_ui::state::State;
@@ -817,7 +817,7 @@ fn workspace() -> AutoCommit {
 }
 
 /// "Crop the photograph and put it in the report" — one instruction, two apps.
-fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
+fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentSession) {
     let mut photo = photo_started_by_a_person();
     let (mut report, _intro) = Report::started_by_a_person();
 

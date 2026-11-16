@@ -47,13 +47,13 @@ pub(crate) fn live_agent(client: &str) -> LiveRow {
     LiveRow::typed::<Agent>(agent_resource_id(client), client.to_owned())
         .effect(&ConsoleEffect::ViewAgent { agent: agent() })
         .effect(&ConsoleEffect::StopAgent { agent: agent() })
-        .effect(&ConsoleEffect::UndoAgentRun { agent: agent() })
+        .effect(&ConsoleEffect::UndoAgentSession { agent: agent() })
         .effect(&ConsoleEffect::TakeOverAgent { agent: agent() })
         .effect(&ConsoleEffect::RevokeAgent { agent: agent() })
         .view(card_view())
 }
 
-/// Every client `names` (runs' agents, grants) name, each once, in order.
+/// Every client `names` (sessions' agents, grants) name, each once, in order.
 pub(crate) fn clients<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut clients: Vec<String> = Vec::new();
     for name in names {
@@ -65,16 +65,16 @@ pub(crate) fn clients<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<Strin
     clients
 }
 
-/// The runs of `client`, newest first.
-fn runs_of<'a>(seen: &'a Seen, client: &str) -> Vec<&'a wire::AgentRun> {
-    let mut runs: Vec<&wire::AgentRun> = seen
-        .runs
-        .runs
+/// The sessions of `client`, newest first.
+fn sessions_of<'a>(seen: &'a Seen, client: &str) -> Vec<&'a wire::AgentSession> {
+    let mut sessions: Vec<&wire::AgentSession> = seen
+        .history
+        .sessions
         .iter()
-        .filter(|run| crate::client::of(&run.agent.name).name() == client)
+        .filter(|session| crate::client::of(&session.agent.name).name() == client)
         .collect();
-    runs.sort_by_key(|run| std::cmp::Reverse(run.last_ms));
-    runs
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_ms));
+    sessions
 }
 
 /// The grant `client` came in by, when the door lists one.
@@ -87,12 +87,14 @@ fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a mcp_server::Grant> {
 
 /// Carry out `command` on the agent of `client`, as its card's buttons do.
 pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentCommand) -> bool {
-    let newest = runs_of(seen, client).into_iter().next();
+    let newest = sessions_of(seen, client).into_iter().next();
     match command {
-        AgentCommand::Stop => newest.is_some_and(|run| agents::stop(doors, seen, run)),
-        AgentCommand::UndoRun => newest.is_some_and(|run| agents::undo_run(doors, run)),
-        AgentCommand::TakeOver => newest.is_some_and(|run| {
-            agents::take_over(doors, seen, run);
+        AgentCommand::Stop => newest.is_some_and(|session| agents::stop(doors, seen, session)),
+        AgentCommand::UndoSession => {
+            newest.is_some_and(|session| agents::undo_session(doors, session))
+        }
+        AgentCommand::TakeOver => newest.is_some_and(|session| {
+            agents::take_over(doors, seen, session);
             true
         }),
         AgentCommand::Revoke => grant_of(seen, client).is_some_and(|grant| {
@@ -107,16 +109,16 @@ pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentComman
     }
 }
 
-/// The card of `client`: once the runs and the door have answered, the command asked from
+/// The card of `client`: once the sessions and the door have answered, the command asked from
 /// outside it (`nav.command`) is carried out, once.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str) -> Element {
     let door_state = reads.door.answer().state();
     let (nav, client) = (nav.clone(), client.to_owned());
-    Box::new(cx.arriving(&reads.runs.answer(), move |cx, runs| {
-        let (nav, runs, client) = (nav.clone(), runs.clone(), client.clone());
+    Box::new(cx.arriving(&reads.sessions.answer(), move |cx, sessions| {
+        let (nav, sessions, client) = (nav.clone(), sessions.clone(), client.clone());
         cx.switch(&door_state, move |cx, door| {
             let seen = Seen {
-                runs: runs.clone(),
+                history: sessions.clone(),
                 door: agents::ready(door),
             };
             if let Some(command) = nav.command.get()
@@ -132,24 +134,24 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads, client: &str)
 
 fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
     let doors = Doors::of(cx);
-    let runs = runs_of(seen, client);
-    let newest = runs.first().copied();
-    let working = newest.filter(|run| seen.working(run));
+    let sessions = sessions_of(seen, client);
+    let newest = sessions.first().copied();
+    let working = newest.filter(|session| seen.working(session));
     let face = wire::Author {
         name: client.to_owned(),
         relation: wire::Relation::Software,
         ..wire::Author::default()
     };
     let now = match (working, newest) {
-        (Some(run), _) => run
+        (Some(session), _) => session
             .now
             .as_ref()
-            .map_or_else(|| run.instruction.clone(), agents::now_line),
-        (None, Some(run)) => trf(
+            .map_or_else(|| session.instruction.clone(), agents::now_line),
+        (None, Some(session)) => trf(
             "console-agent-last-worked",
-            &[("when", ago(run.last_ms).into())],
+            &[("when", ago(session.last_ms).into())],
         ),
-        (None, None) => tr("console-agent-no-runs"),
+        (None, None) => tr("console-agent-no-sessions"),
     };
     let mut head =
         faced(ListRow::new("console-agent-head", client.to_owned()), &face).subtitle(now);
@@ -157,9 +159,9 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
         head = head.active();
     }
     let mut parts: Vec<Element> = vec![Box::new(head)];
-    if let Some(run) = newest {
-        parts.push(agents::commands(&doors, seen, run));
-        if let Some(blocked) = &run.undo_blocked {
+    if let Some(session) = newest {
+        parts.push(agents::commands(&doors, seen, session));
+        if let Some(blocked) = &session.undo_blocked {
             parts.push(Box::new(
                 Text::new(blocked)
                     .with_role(TextRole::Caption)
@@ -190,19 +192,19 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
             )],
         )));
     }
-    let rows: Vec<Element> = runs
+    let rows: Vec<Element> = sessions
         .iter()
-        .map(|run| agents::run_row(nav, seen, run, false))
+        .map(|session| agents::session_row(nav, seen, session, false))
         .collect();
     if rows.is_empty() {
         parts.push(Box::new(
-            EmptyState::new(tr("console-agent-no-runs"))
+            EmptyState::new(tr("console-agent-no-sessions"))
                 .with_icon(Icon::Bot)
                 .with_id("console-agent-empty"),
         ));
     } else {
         parts.push(Box::new(
-            Section::new(rows).with_header(SectionHeader::group(tr("console-agent-runs"))),
+            Section::new(rows).with_header(SectionHeader::group(tr("console-agent-sessions"))),
         ));
     }
     page(parts)
@@ -220,7 +222,7 @@ mod tests {
         );
         assert_eq!(agent_of("console.agent:Claude Code"), Some("Claude Code"));
         assert_eq!(agent_of("console.agent:"), None);
-        assert_eq!(agent_of("console.run:Claude Code"), None);
+        assert_eq!(agent_of("console.session:Claude Code"), None);
     }
 
     /// The desktop asks these of an agent by name (its face's card, a notice): each is one
@@ -229,7 +231,7 @@ mod tests {
     fn the_cards_actions_are_the_names_the_desktop_asks_for() {
         assert_eq!(ConsoleEffect::VIEW_AGENT.id, "view-agent");
         assert_eq!(ConsoleEffect::STOP_AGENT.id, "stop-agent");
-        assert_eq!(ConsoleEffect::UNDO_AGENT_RUN.id, "undo-agent-run");
+        assert_eq!(ConsoleEffect::UNDO_AGENT_SESSION.id, "undo-agent-session");
         assert_eq!(ConsoleEffect::TAKE_OVER_AGENT.id, "take-over-agent");
         assert_eq!(ConsoleEffect::REVOKE_AGENT.id, "revoke-agent");
     }

@@ -38,7 +38,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
-mod agent_run;
+mod agent_session;
 mod connect;
 mod entry;
 mod governance;
@@ -49,7 +49,7 @@ mod outbound;
 mod plane;
 mod voice;
 
-use agent_run::AgentRunCompletion;
+use agent_session::AgentSessionCompletion;
 use connect::Dial;
 pub use connect::{SessionMemberHost, member_host};
 #[cfg(test)]
@@ -340,9 +340,9 @@ fn session_task(
         voice: crate::voice::Participations::default(),
         workspaces_pending: BTreeMap::new(),
         workspaces_next: 0,
-        agent_runs_pending: BTreeMap::new(),
-        agent_runs_next: 0,
-        agent_run: None,
+        agent_sessions_pending: BTreeMap::new(),
+        agent_sessions_next: 0,
+        agent_session: None,
         held_actions: Vec::new(),
         begun: BTreeSet::new(),
         unadmitted: BTreeMap::new(),
@@ -529,13 +529,13 @@ struct Task {
     workspaces_next: u64,
     /// The agent runs this session declared and the host has not answered yet, by the
     /// id they asked with.
-    agent_runs_pending: BTreeMap<u64, AgentRunCompletion>,
+    agent_sessions_pending: BTreeMap<u64, AgentSessionCompletion>,
     /// The id the next agent run is declared with.
-    agent_runs_next: u64,
+    agent_sessions_next: u64,
     /// The agent whose run this session said it is, declared again on every
     /// connection: the host keeps it per connection, and a session that came
     /// back without it would act as the person.
-    agent_run: Option<String>,
+    agent_session: Option<String>,
     /// Action frames owed to workspaces the host has not admitted this session
     /// to yet, oldest first, with the workspace each is for: sent before the
     /// admission, they are refused by the host and the request they carry is
@@ -1227,7 +1227,7 @@ impl Task {
                     loop {
                         // The person stopped the agent this session is a run of: it ends here, and
                         // connects no more, so nothing of the agent is said again.
-                        if matches!(envelope, Envelope::AgentRunStopped) {
+                        if matches!(envelope, Envelope::AgentSessionStopped) {
                             self.admit_governance();
                             self.fail("agent-run-stopped", "The person stopped this agent in Tilo.");
                             client.disconnect().await;
@@ -1584,7 +1584,9 @@ impl Task {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
-            Command::Client(Cmd::AgentRun(label, done)) => self.run_as_agent(label, done, client),
+            Command::Client(Cmd::AgentSession(label, done)) => {
+                self.session_as_agent(label, done, client)
+            }
             Command::Client(Cmd::AskMember(approval, done)) => {
                 self.ask_member(approval, done);
                 true
@@ -1821,7 +1823,7 @@ impl Task {
         for (_, done) in std::mem::take(&mut self.workspaces_pending) {
             let _ = done.send(Err("the session ended before the host answered".into()));
         }
-        for (_, done) in std::mem::take(&mut self.agent_runs_pending) {
+        for (_, done) in std::mem::take(&mut self.agent_sessions_pending) {
             let _ = done.send(Err("the session ended before the host answered".into()));
         }
     }

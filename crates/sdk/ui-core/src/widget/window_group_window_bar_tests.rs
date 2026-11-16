@@ -1557,7 +1557,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
     assert!(g.set_tab_opened_by(
         1,
         Some(tilo_desktop_model::ownership::OpenedBy {
-            run: "agent-run:7".into(),
+            run: "agent-session:7".into(),
             label: AGENT.into(),
             title: "Fill Jane Doe's visa application".into(),
         })
@@ -1618,7 +1618,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
     frame.relayout();
     assert_eq!(
         frame.root_mut::<WindowGroup>().take_opened_by_press(),
-        Some((1, "agent-run:7".to_owned())),
+        Some((1, "agent-session:7".to_owned())),
         "Enter on the mark opens its run, as a press does"
     );
 }

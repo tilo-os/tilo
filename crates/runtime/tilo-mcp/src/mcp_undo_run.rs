@@ -411,12 +411,12 @@ mod tests {
                 invocations: BTreeSet::new(),
             };
             let recorded =
-                tilo_actions::context::recorded_gesture(step, Some(("agent-run", "agent-run:1")));
+                tilo_actions::context::recorded_gesture(step, Some(("agent-session", "agent-session:1")));
             let ours = json!({"change": "b1", "step": recorded.0.to_string(),
-                              "run_kind": "agent-run", "run_id": "agent-run:1"});
+                              "run_kind": "agent-session", "run_id": "agent-session:1"});
             assert!(run.made(&ours));
             let elsewhere = json!({"change": "b1", "step": recorded.0.to_string(),
-                                   "run_kind": "agent-run", "run_id": "agent-run:2"});
+                                   "run_kind": "agent-session", "run_id": "agent-session:2"});
             assert!(!run.made(&elsewhere));
             assert!(!run.made(&json!({"change": "c1"})));
         }

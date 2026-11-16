@@ -76,12 +76,12 @@ pub trait AppServingPlane: Send + Sync {
     }
 
     /// `caller`'s session became an agent's run
-    /// ([`Envelope::AgentRun`](tilo_relay_protocol::transport::Envelope::AgentRun))
+    /// ([`Envelope::AgentSession`](tilo_relay_protocol::transport::Envelope::AgentSession))
     /// in `workspace_id`, the workspace the session entered: a plane that
     /// speaks for the runs it executes makes the run present there now, so an
     /// agent that connected and has not acted yet is already seen, waiting.
     /// Nothing by default.
-    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
+    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         let _ = (workspace_id, caller);
     }
 

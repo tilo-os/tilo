@@ -103,7 +103,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(execution) = self.caller.execution_id() {
             hasher.update(execution.as_bytes());
         }
-        let run = self.agent_run().map(|run| run.id).unwrap_or_default();
+        let run = self.agent_session().map(|run| run.id).unwrap_or_default();
         hasher.update(&u64::try_from(run.len()).unwrap_or(u64::MAX).to_le_bytes());
         hasher.update(run.as_bytes());
         hasher.update(step.as_bytes());

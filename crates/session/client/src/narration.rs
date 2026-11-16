@@ -216,7 +216,7 @@ mod tests {
         // as that run's speaker is not drawn.
         {
             let (host, other) = ([5; 32], [6; 32]);
-            let run = "agent-run:7";
+            let run = "agent-session:7";
             let stand_in = collab_types::presence::stand_in(host, run);
             let present = vec![Shown {
                 publisher: hex::encode(stand_in),

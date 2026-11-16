@@ -200,7 +200,7 @@ impl HostSaid {
 /// Whether `run` names a run: an `agent-run:` id, as the host mints them.
 fn is_run(run: Option<&str>) -> bool {
     run.is_some_and(|run| {
-        run.strip_prefix("agent-run:")
+        run.strip_prefix("agent-session:")
             .is_some_and(|id| !id.is_empty() && id.len() <= crate::live::MAX_OBJECT_ID_BYTES * 2)
     })
 }
@@ -269,7 +269,7 @@ mod tests {
             let frame = said(
                 &host,
                 Payload::Shell(Box::new(face())),
-                Some("agent-run:abc"),
+                Some("agent-session:abc"),
             );
             let (bytes, signature) = sign(&host, &frame);
             let opened = HostSaid::open(
@@ -287,7 +287,7 @@ mod tests {
             let host = key(1);
             let other = key(2);
             // Signed by another device, under its own name: not the host's.
-            let frame = said(&other, Payload::Arrived, Some("agent-run:abc"));
+            let frame = said(&other, Payload::Arrived, Some("agent-session:abc"));
             let (bytes, signature) = sign(&other, &frame);
             assert_eq!(
                 HostSaid::open(
@@ -299,7 +299,7 @@ mod tests {
                 Err(HostSaidError::Signature)
             );
             // Signed by another device, under the host's name: not the host's.
-            let frame = said(&host, Payload::Arrived, Some("agent-run:abc"));
+            let frame = said(&host, Payload::Arrived, Some("agent-session:abc"));
             let (bytes, _) = sign(&host, &frame);
             let forged = other.sign(&[SAID_DOMAIN, &bytes].concat()).to_bytes();
             assert_eq!(
@@ -316,7 +316,7 @@ mod tests {
         phase a_frame_is_read_only_in_its_workspace_and_version;
         {
             let host = key(1);
-            let frame = said(&host, Payload::Left, Some("agent-run:abc"));
+            let frame = said(&host, Payload::Left, Some("agent-session:abc"));
             let (bytes, signature) = sign(&host, &frame);
             let pinned = host.verifying_key().to_bytes();
             assert_eq!(
@@ -366,7 +366,7 @@ mod tests {
             person.agent = false;
             for view in [chatty, desktop, person] {
                 assert_eq!(
-                    said(&host, Payload::Shell(Box::new(view)), Some("agent-run:abc")).signing_bytes(),
+                    said(&host, Payload::Shell(Box::new(view)), Some("agent-session:abc")).signing_bytes(),
                     Err(HostSaidError::NotARunsWord)
                 );
             }
@@ -375,7 +375,7 @@ mod tests {
                 automatic: false,
             };
             assert_eq!(
-                said(&host, status, Some("agent-run:abc")).signing_bytes(),
+                said(&host, status, Some("agent-session:abc")).signing_bytes(),
                 Err(HostSaidError::NotARunsWord)
             );
             // A frame a forging host signed anyway is still not taken.

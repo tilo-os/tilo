@@ -447,7 +447,7 @@ impl AuthorDirectory {
             invoker.acting.agent_session.as_ref(),
             on_behalf_of.as_deref(),
         ) {
-            return self.agent_session_author(invoker, (agent, session.as_str()), person, entry);
+            return self.agent_session_author(invoker, (agent, session.as_str()), person);
         }
         // A delegated agent writing as itself, under its own principal.
         if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
@@ -509,7 +509,7 @@ impl AuthorDirectory {
         // as its person through it.
         let task = entry
             .and_then(|entry| entry.group.as_ref())
-            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
+            .filter(|group| group.kind == crate::history_source::steps::AGENT_SESSION)
             .map(|task| task.label.clone())
             .filter(|label| !label.trim().is_empty());
         let attribution = software.then(|| {
@@ -531,7 +531,6 @@ impl AuthorDirectory {
         invoker: &tilo_actions::ActionInvoker,
         (agent, session): (&str, &str),
         person: &str,
-        entry: Option<&tilo_actions::ActionContext>,
     ) -> HistoryAuthor {
         let principal = hex::encode(person.as_bytes());
         let name = self.resolve(&principal).name;
@@ -559,11 +558,6 @@ impl AuthorDirectory {
                     .written_by(writer, label),
             );
         author.for_reader = reads;
-        author.task = entry
-            .and_then(|entry| entry.group.as_ref())
-            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN)
-            .map(|task| task.label.clone())
-            .filter(|label| !label.trim().is_empty());
         author
     }
 
@@ -1118,7 +1112,7 @@ mod tests {
             .with_group(
                 "t1",
                 "Workspace folder",
-                crate::history_source::steps::TASK_RUN,
+                crate::history_source::steps::AGENT_SESSION,
             )
             .with_invoker(invoker);
         let author = authors.resolve_entry(&device, Some(&entry));

@@ -127,11 +127,11 @@ pub struct Grant {
     /// opens, fills, selects and clicks runs on the person's word, while
     /// submitting a page still asks them.
     pub browser_pages: bool,
-    /// Where the agent runs, as its key's certificate names it: the
+    /// The device the agent runs on, as its key's certificate names it: the
     /// machine it was connected from, or the service that holds the key
     /// for it.
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub runs_on: String,
+    pub device: String,
     /// When the grant ends, Unix milliseconds; `None` for one that lasts
     /// until the person revokes it.
     #[serde(skip_serializing_if = "Option::is_none")]

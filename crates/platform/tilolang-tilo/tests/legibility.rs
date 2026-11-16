@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
             ..
         } = a_run_in_notes_and_tasks();
         // History takes the run back, as Ada.
-        let scope = ui::history_source::steps::Scope::Run(RUN.to_owned());
+        let scope = ui::history_source::steps::Scope::Session(RUN.to_owned());
         let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)
             .iter()
             .filter(|version| scope.owns(version))

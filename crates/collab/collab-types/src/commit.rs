@@ -697,7 +697,7 @@ mod tests {
             Some(CommitGroup {
                 id: "run-1".to_owned(),
                 label: "Alex".to_owned(),
-                kind: "agent-run".to_owned(),
+                kind: "agent-session".to_owned(),
             }),
             vec![part("tasks", "a", 1), part("tasks", "b", 2)],
         )
@@ -740,7 +740,7 @@ mod tests {
             assert_eq!(commit.invocation, Some(uuid::Uuid::from_u128(9)));
             assert_eq!(
                 commit.run.as_ref().map(|run| run.kind.as_str()),
-                Some("agent-run")
+                Some("agent-session")
             );
         }
 
@@ -1133,7 +1133,7 @@ mod tests {
                 group: Some(tilo_actions::WorkGroup {
                     id: "run-1".to_owned(),
                     label: "Alex".to_owned(),
-                    kind: "agent-run".to_owned(),
+                    kind: "agent-session".to_owned(),
                     title: None,
                     declared_id: None,
                 }),
@@ -1152,7 +1152,7 @@ mod tests {
 
             let run = commit.run.as_ref().expect("the run it ran in");
             assert_eq!(run.id, "run-1");
-            assert_eq!(run.kind, "agent-run");
+            assert_eq!(run.kind, "agent-session");
             assert_eq!(run.label, "Alex");
             assert_eq!(
                 WorkspaceCommit::decode(&commit.encode()).as_ref(),

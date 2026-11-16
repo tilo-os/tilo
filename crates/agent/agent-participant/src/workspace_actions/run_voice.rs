@@ -2,7 +2,7 @@
 //!
 //! An agent or a key acting through the host need not say anything of itself
 //! (an SDK client never does), so the host says it for each run it executes
-//! ([`Caller::agent_run`]): the run is present as a member of its own, in the
+//! ([`Caller::agent_session`]): the run is present as a member of its own, in the
 //! agent's name and colour, saying the action it takes and the record it works
 //! in, and each action is narrated on the record's stream. Every frame names
 //! the run it is said for ([`Presence::on_behalf`]), so a reader takes it only
@@ -119,7 +119,7 @@ impl Runs {
         let Some(narrated) = self.at((peer, cluster), caller, said) else {
             return;
         };
-        let (Some(run), Some(record)) = (caller.agent_run(), record) else {
+        let (Some(run), Some(record)) = (caller.agent_session(), record) else {
             return;
         };
         let event = narration::Narrated {
@@ -180,7 +180,7 @@ impl Runs {
         caller: &Caller,
         update: impl FnOnce(&mut Voice) -> R,
     ) -> Option<R> {
-        let run = caller.agent_run()?;
+        let run = caller.agent_session()?;
         // A run is its session's: every run has the execution its session was
         // minted, which closes with it.
         let lease = caller.execution_lease()?;

@@ -11,35 +11,35 @@ console-every-agent = Jeder Agent
 console-every-workspace = Jeder Arbeitsbereich
 console-show-everything = Alles anzeigen
 
-console-runs-working = Jetzt bei der Arbeit
-console-runs-earlier = Früher
-console-runs-pending = Der Verlauf deiner Arbeitsbereiche wird gelesen
-console-runs-empty = Noch kein Agent hat hier gearbeitet
-console-runs-empty-message = Verbinde einen Agenten und bitte ihn um etwas: Du kannst seine Läufe verfolgen, während er arbeitet.
-console-runs-none-here = Keine Läufe passen
-console-runs-none-here-message = Kein Lauf dieses Agenten in diesem Arbeitsbereich. Zeige alles, um den Rest zu sehen.
-console-run-actions = { $count ->
+console-sessions-working = Jetzt bei der Arbeit
+console-sessions-earlier = Früher
+console-sessions-pending = Der Verlauf deiner Arbeitsbereiche wird gelesen
+console-sessions-empty = Noch kein Agent hat hier gearbeitet
+console-sessions-empty-message = Verbinde einen Agenten und bitte ihn um etwas: Du kannst seine Sitzungen verfolgen, während er arbeitet.
+console-sessions-none-here = Keine Sitzungen passen
+console-sessions-none-here-message = Keine Sitzung dieses Agenten in diesem Arbeitsbereich. Zeige alles, um den Rest zu sehen.
+console-session-actions = { $count ->
     [one] 1 Aktion
    *[other] { $count } Aktionen
 }
-console-run-changes = { $count ->
+console-session-changes = { $count ->
     [one] 1 Änderung
    *[other] { $count } Änderungen
 }
-console-run-started-by-you = Von dir gestartet
-console-run-started-by = Von { $name } gestartet
+console-session-started-by-you = Von dir gestartet
+console-session-started-by = Von { $name } gestartet
 
-console-run = Agentenlauf
-console-run-copy-link = Link kopieren
-console-run-pending = Dieser Lauf wird gelesen
-console-run-missing = Dieser Lauf ist nicht hier
-console-run-missing-message = Der Verlauf kennt keinen solchen Lauf, oder er war in einem Arbeitsbereich, in dem du nicht bist.
+console-session = Agentensitzung
+console-session-copy-link = Link kopieren
+console-session-pending = Diese Sitzung wird gelesen
+console-session-missing = Diese Sitzung ist nicht hier
+console-session-missing-message = Der Verlauf kennt keine solche Sitzung, oder sie war in einem Arbeitsbereich, in dem du nicht bist.
 
-console-run-stop = Stoppen
-console-run-take-over = Übernehmen
-console-run-undo = Lauf rückgängig machen
-console-run-why = Warum
-console-run-timeline = { $count ->
+console-session-stop = Stoppen
+console-session-take-over = Übernehmen
+console-session-undo = Sitzung rückgängig machen
+console-session-why = Warum
+console-session-timeline = { $count ->
     [one] 1 Aktion
    *[other] { $count } Aktionen
 }
@@ -68,7 +68,7 @@ console-connect-heading = Einen Agenten verbinden
 console-client-claude-code = Claude Code
 console-client-codex = Codex
 console-client-other = Jeder MCP-Client
-console-client-every-run = Jeder Lauf von { $client }
+console-client-every-session = Jede Sitzung von { $client }
 console-grants-heading = Verbundene Agenten
 console-grants-empty = Noch kein Agent verbunden
 console-reach-account = Jeder Arbeitsbereich, und darf neue anlegen
@@ -76,7 +76,7 @@ console-reach-workspace = Nur { $workspace }
 console-grant-browser-pages = Browserseiten
 console-grant-running = { $count ->
     [one] Jetzt bei der Arbeit
-   *[other] { $count } Läufe jetzt bei der Arbeit
+   *[other] { $count } Sitzungen jetzt bei der Arbeit
 }
 console-grant-last-active = Zuletzt aktiv { $when }
 console-grant-granted = Hereingelassen { $when }
@@ -85,9 +85,9 @@ console-grant-revoke = Entziehen
 console-usage-empty = Noch keine Linux-Rechenzeit
 console-usage-empty-message = Ein Agent, der Linux braucht, führt es auf einem eigenen Rechner aus, und diese Zeit wird gezählt.
 
-console-agent-runs = Läufe
+console-agent-sessions = Sitzungen
 console-agent-access = Zugriff
-console-agent-no-runs = Noch keine Läufe
+console-agent-no-sessions = Noch keine Sitzungen
 console-agent-last-worked = Zuletzt gearbeitet { $when }
 
 ## What the app is called in a window and in the launcher

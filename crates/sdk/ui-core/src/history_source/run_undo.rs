@@ -19,7 +19,7 @@ use automerge::AutoCommit;
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::revert::{KeptSlot, RevertError, revert_run};
-use crate::history_source::runs::{AgentRun, RunStep};
+use crate::history_source::runs::{AgentSession, RunStep};
 
 /// What happened to one application's share of a run.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,12 +118,15 @@ impl RunUndoReport {
 ///
 /// The pre-flight a coordinator runs **before** undoing anything. An empty
 /// result means every step can be attempted; a non-empty one is a refusal.
-pub fn unreachable_steps(run: &AgentRun, reachable: impl Fn(&RunStep) -> bool) -> Vec<&RunStep> {
+pub fn unreachable_steps(
+    run: &AgentSession,
+    reachable: impl Fn(&RunStep) -> bool,
+) -> Vec<&RunStep> {
     run.steps.iter().filter(|s| !reachable(s)).collect()
 }
 
 /// Build the report for a run that was refused whole. Nothing was written.
-pub fn refuse_run(run: &AgentRun, missing: &[&RunStep]) -> RunUndoReport {
+pub fn refuse_run(run: &AgentSession, missing: &[&RunStep]) -> RunUndoReport {
     RunUndoReport {
         label: run.label.clone(),
         steps: run
@@ -190,7 +193,7 @@ pub fn undo_step(
 /// Each visited document is left with an **open** transaction. The caller
 /// commits per document, so each undo is stamped and attributed where it lands.
 pub fn undo_run(
-    run: &AgentRun,
+    run: &AgentSession,
     by: Option<&str>,
     authors: &AuthorDirectory,
     open: &mut [(String, String, &mut AutoCommit)],

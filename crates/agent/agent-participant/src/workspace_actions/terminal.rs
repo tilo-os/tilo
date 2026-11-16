@@ -257,7 +257,7 @@ impl Worker {
         {
             return Some(receipt);
         }
-        let run = caller.agent_run();
+        let run = caller.agent_session();
         let agent = run.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
         // An agent's run has a shell of its own, wherever its runs are

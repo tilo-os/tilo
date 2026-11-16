@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
             kind: String::new(),
             label: "Welcome".into(),
         };
-        let action = |view: wire::ActionView| wire::RunAction {
+        let action = |view: wire::ActionView| wire::SessionAction {
             range: wire::Range {
                 from: "aa".into(),
                 to: "ab".into(),
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
                 target: target.clone(),
             })
         };
-        let run = |name: &str, last_ms: i64, actions: Vec<wire::RunAction>| wire::AgentRun {
+        let run = |name: &str, last_ms: i64, actions: Vec<wire::SessionAction>| wire::AgentSession {
             id: format!("mcp:{name}{last_ms}"),
             agent: wire::Author {
                 name: name.into(),
@@ -136,8 +136,8 @@ tilo_test_env::scenario! {
             undo_blocked: None,
             now: None,
         };
-        let runs = wire::Runs {
-            runs: vec![
+        let sessions = wire::Sessions {
+            sessions: vec![
                 run("Claude Code", 5, vec![record()]),
                 run(
                     "Claude Code #2",
@@ -154,7 +154,7 @@ tilo_test_env::scenario! {
                             exit: Some(0),
                             started_ms: None,
                             ended_ms: None,
-                            run: None,
+                            execution: None,
                         }),
                         record(),
                         record(),
@@ -171,9 +171,9 @@ tilo_test_env::scenario! {
             label: "Claude Code".into(),
         };
         assert_eq!(
-            finished.summary(&runs),
-            Some(RunSummary {
-                run: "mcp:Claude Code #29".into(),
+            finished.summary(&sessions),
+            Some(SessionSummary {
+                session: "mcp:Claude Code #29".into(),
                 changes: 8,
                 worked: String::new(),
                 workspace: Some("Storefront".into()),
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
             label: "Cursor".into(),
             ..finished
         };
-        assert_eq!(unknown.summary(&runs), None);
+        assert_eq!(unknown.summary(&sessions), None);
     }
 
     phase an_agent_gone_for_good_has_finished;
@@ -1445,9 +1445,9 @@ fn finished_agent(publisher: &str) -> AgentFinished {
     }
 }
 
-fn run_summary(run: &str, changes: usize, worked: &str) -> RunSummary {
-    RunSummary {
-        run: run.into(),
+fn session_summary(session: &str, changes: usize, worked: &str) -> SessionSummary {
+    SessionSummary {
+        session: session.into(),
         changes,
         worked: worked.into(),
         workspace: Some("Workspace".into()),
@@ -1464,7 +1464,7 @@ tilo_test_env::scenario! {
         let mut told = std::collections::BTreeSet::new();
         let notice = finished_notice(
             &finished_agent("claude"),
-            Some(&run_summary("run-1", 8, "Edited Launch notes")),
+            Some(&session_summary("run-1", 8, "Edited Launch notes")),
             &mut told,
         )
         .expect("a run that changed records is told");
@@ -1480,7 +1480,7 @@ tilo_test_env::scenario! {
     // changed nothing tells nothing.
     {
         let mut told = std::collections::BTreeSet::new();
-        let run = run_summary("run-1", 8, "Edited Launch notes");
+        let run = session_summary("run-1", 8, "Edited Launch notes");
         assert!(finished_notice(&finished_agent("first"), Some(&run), &mut told).is_some());
         assert!(
             finished_notice(&finished_agent("second"), Some(&run), &mut told).is_none(),
@@ -1489,7 +1489,7 @@ tilo_test_env::scenario! {
         assert!(
             finished_notice(
                 &finished_agent("third"),
-                Some(&run_summary("run-2", 0, "")),
+                Some(&session_summary("run-2", 0, "")),
                 &mut told
             )
             .is_none(),

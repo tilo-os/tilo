@@ -312,7 +312,7 @@ impl ActionHost for AgentConnection {
         // session, and taking its work back names it.
         let mut request = request;
         let mut context = request.context.take().unwrap_or_default();
-        context.group = self.0.caller.agent_run();
+        context.group = self.0.caller.agent_session();
         request.context = Some(context);
         self.0.host.invoke(&self.0.caller, request)
     }

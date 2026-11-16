@@ -472,7 +472,7 @@ tilo_test_env::scenario! {
             granted_ms: 0,
             last_ms: None,
             sessions: Vec::new(),
-            runs_on: "laptop".into(),
+            device: "laptop".into(),
             expires_ms: None,
             browser_pages: true,
             script_key: false,

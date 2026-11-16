@@ -24,7 +24,7 @@ use ui::record::RecordId;
 
 /// The history group kind a run's steps are recorded under, which the
 /// record's `undo { run }` takes back as one.
-const AGENT_RUN: &str = "agent-run";
+const AGENT_SESSION: &str = "agent-session";
 
 /// The record verbs that file a report, on which the agent looks.
 pub const REPORT_VERBS: [&str; 2] = ["report-message", "report-person"];
@@ -218,7 +218,7 @@ impl<R: Resource> WorkspaceDoor for ReplicaDoor<'_, R> {
             return Err(format!("{app}/{record} is not held here"));
         }
         let context =
-            tilo_actions::ActionContext::default().with_group(run, "Moderation", AGENT_RUN);
+            tilo_actions::ActionContext::default().with_group(run, "Moderation", AGENT_SESSION);
         if record == self.record() {
             let address = self.address(action, None)?;
             return self.run_action(&address, args, Some(context));

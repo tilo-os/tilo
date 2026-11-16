@@ -121,7 +121,7 @@ impl Replica {
             let ambient = ActionContext::default().with_group(
                 group,
                 title,
-                tilo_actions::context::TASK_RUN_GROUP,
+                tilo_actions::context::AGENT_SESSION_GROUP,
             );
             self.apply_as(
                 &committed.action,

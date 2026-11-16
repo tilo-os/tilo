@@ -1,17 +1,17 @@
-//! Every agent run as the timeline of what it did ([`wire::RUNS`]), and what a command it ran
-//! printed ([`wire::RUN_OUTPUT`]).
+//! Every agent session as the timeline of what it did ([`wire::SESSIONS`]), and what a command it ran
+//! printed ([`wire::SESSION_OUTPUT`]).
 //!
-//! A run is either a recorded marker (an instruction an agent worked across records, with its
+//! A session is either a recorded marker (an instruction an agent worked across records, with its
 //! steps) or a work group the history keeps (every invocation of one agent connection, or every
-//! step of one agent's run of a task, which the history groups as `agent-run` and `task`). Both
-//! read as the same timeline: each action is one record's share of the run, opening as what that
+//! step of one agent's session of a task, which the history groups as `agent-session` and `task`). Both
+//! read as the same timeline: each action is one record's share of the session, opening as what that
 //! record is. Both undo the same way: by asking each changed document's own history to undo the
-//! run it grouped under, so a task and a connection's group are named alike.
+//! session it grouped under, so a task and a connection's group are named alike.
 //!
-//! A command is never copied into the history. An agent asks a shell session to run a command
-//! line, which queues a request in the session's record; the shell runs it and records the run as
+//! A command is never copied into the history. An agent asks a shell session to session a command
+//! line, which queues a request in the session's record; the shell sessions it and records the session as
 //! an item of that same record, under the request's id, with its directory, exit status, times
-//! and output. An action that queued a request therefore reads its run from the session's record
+//! and output. An action that queued a request therefore reads its session from the session's record
 //! as the change left it, and a request the shell has not answered is the command running now.
 
 use std::collections::{HashMap, HashSet};
@@ -25,7 +25,7 @@ use tilo_actions::terminal_text;
 
 use super::serve::{author, hex, millis, scope};
 use super::{
-    ActivityTree, HistoryEntry, HistoryEntryId, IndexedAgentRun, RecordId, UndoRun,
+    ActivityTree, HistoryEntry, HistoryEntryId, IndexedAgentSession, RecordId, UndoRun,
     WorkspaceActivityPane, humanize_app_id, t,
 };
 
@@ -35,34 +35,32 @@ pub(super) const TERMINAL_APP: &str = "so.tilo.terminal";
 const BROWSER_APP: &str = "so.tilo.browser";
 /// The field of a shell session's record that queues the command lines asked of it.
 const REQUESTS: &str = "requests";
-/// The field of a shell session's record that keeps the runs it recorded.
+/// The field of a shell session's record that keeps the command lines it recorded.
 const RUNS: &str = "runs";
-/// The group kind of an agent connection's invocations.
-const AGENT_RUN: &str = ui::history_source::steps::AGENT_RUN;
-/// The group kind of an agent's run of a task.
-const TASK_RUN: &str = ui::history_source::steps::TASK_RUN;
+/// The group kind of an agent session's invocations.
+const AGENT_SESSION: &str = ui::history_source::steps::AGENT_SESSION;
 /// The most bytes of a command's output an action carries.
 const COMMAND_TAIL_BYTES: usize = 4 * 1024;
-/// The most bytes of a command's output a [`wire::RUN_OUTPUT`] read answers: as much as a shell
-/// keeps of one run.
-const RUN_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-/// Output tails kept between reads, by content hash: a run's output never changes once recorded.
+/// The most bytes of a command's output a [`wire::SESSION_OUTPUT`] read answers: as much as a shell
+/// keeps of one session.
+const SESSION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+/// Output tails kept between reads, by content hash: a session's output never changes once recorded.
 const MAX_TAILS: usize = 512;
 
-/// One command line an action asked a shell to run, as the session's record holds it.
+/// One command line an action asked a shell to session, as the session's record holds it.
 struct Asked {
     command: String,
-    /// The run's id: the request's, unless the shell answered with another.
-    run_id: String,
-    /// The run, once the shell recorded it.
-    run: Option<Value>,
-    /// The shell answered the request, with a run or without one.
+    /// The session's id: the request's, unless the shell answered with another.
+    execution_id: String,
+    /// The session, once the shell recorded it.
+    execution: Option<Value>,
+    /// The shell answered the request, with a session or without one.
     settled: bool,
 }
 
-/// A run's output as its record names it: `blake3:<hex>:<len>`.
-fn output_hash(run: &Value) -> Option<String> {
-    let reference = run.get("output")?.as_str()?;
+/// A session's output as its record names it: `blake3:<hex>:<len>`.
+fn output_hash(session: &Value) -> Option<String> {
+    let reference = session.get("output")?.as_str()?;
     let rest = reference.strip_prefix("blake3:")?;
     let (hash, _) = rest.split_once(':')?;
     Some(hash.to_owned())
@@ -85,30 +83,34 @@ fn is_web_address(text: &str) -> bool {
     text.starts_with("https://") || text.starts_with("http://")
 }
 
-/// The changes of one run in one record, back to back: one action of its timeline.
+/// The changes of one session in one record, back to back: one action of its timeline.
 struct Segment<'a> {
     app: String,
     record: String,
     entries: Vec<&'a HistoryEntry>,
 }
 
-/// The run `entry` is a change of, when it is one Activity lists every change of: an agent
-/// connection's work group, or an agent's run of a task. Both are named by their group, which is
-/// what each document's history undoes, and a run a marker records is listed as that marker
+/// The session `entry` is a change of, when it is one Activity lists every change of: an agent
+/// connection's work group, or an agent's session of a task. Both are named by their group, which is
+/// what each document's history undoes, and a session a marker records is listed as that marker
 /// rather than again here.
 fn run_group(entry: &HistoryEntry) -> Option<&tilo_actions::WorkGroup> {
     entry
         .context
         .as_ref()
         .and_then(|context| context.group.as_ref())
-        .filter(|group| group.kind == AGENT_RUN || group.kind == TASK_RUN)
+        .filter(|group| group.kind == AGENT_SESSION)
 }
 
 impl WorkspaceActivityPane {
-    /// Every agent run the history holds in `query`'s scope, newest first, each as the actions it
-    /// took. A run none of whose changes the history lists here is left out, as the feed leaves
+    /// Every agent session the history holds in `query`'s scope, newest first, each as the actions it
+    /// took. A session none of whose changes the history lists here is left out, as the feed leaves
     /// out what it does not hold.
-    pub fn serve_runs(&mut self, query: &wire::RunsQuery, tree: &impl ActivityTree) -> wire::Runs {
+    pub fn serve_runs(
+        &mut self,
+        query: &wire::SessionsQuery,
+        tree: &impl ActivityTree,
+    ) -> wire::Sessions {
         self.set_scope(scope(query.scope), tree);
         self.served_documents.borrow_mut().clear();
         let workspace = tree
@@ -116,38 +118,39 @@ impl WorkspaceActivityPane {
             .map(|workspace| workspace.id().to_string());
         let entries = self.timeline.entries();
         let mut covered: HashSet<HistoryEntryId> = HashSet::new();
-        let mut runs = Vec::new();
-        for indexed in &self.agent_runs {
-            if let Some(run) = self.marker_run(indexed, entries, workspace.as_deref(), &mut covered)
+        let mut sessions = Vec::new();
+        for indexed in &self.agent_sessions {
+            if let Some(session) =
+                self.marker_session(indexed, entries, workspace.as_deref(), &mut covered)
             {
-                runs.push(run);
+                sessions.push(session);
             }
         }
-        runs.extend(self.group_runs(entries, workspace.as_deref(), &covered));
-        runs.compact_sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
-        let total = runs.len();
-        runs.truncate(query.page());
-        wire::Runs {
-            runs,
+        sessions.extend(self.group_sessions(entries, workspace.as_deref(), &covered));
+        sessions.compact_sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
+        let total = sessions.len();
+        sessions.truncate(query.page());
+        wire::Sessions {
+            sessions,
             total,
             pending: self.feed_coverage.pending_tree,
             mutations: self.host.mutations_available(),
         }
     }
 
-    /// A recorded run: one action per record it changed, with the changes of the history that are
-    /// that action, and a command per line it asked a shell to run.
-    fn marker_run(
+    /// A recorded session: one action per record it changed, with the changes of the history that are
+    /// that action, and a command per line it asked a shell to session.
+    fn marker_session(
         &self,
-        indexed: &IndexedAgentRun,
+        indexed: &IndexedAgentSession,
         entries: &[HistoryEntry],
         workspace: Option<&str>,
         covered: &mut HashSet<HistoryEntryId>,
-    ) -> Option<wire::AgentRun> {
+    ) -> Option<wire::AgentSession> {
         let mut actions = Vec::new();
         let mut first: Option<&HistoryEntry> = None;
         let mut last: Option<&HistoryEntry> = None;
-        for step in &indexed.run.steps {
+        for step in &indexed.session.steps {
             let mut changes: Vec<&HistoryEntry> = entries
                 .iter()
                 .filter(|entry| self.agent_step_contains(indexed, step, &entry.id))
@@ -177,24 +180,26 @@ impl WorkspaceActivityPane {
             actions.extend(self.segment_actions(&segment, workspace, Some(&summary), undo));
         }
         let (first, last) = (first?, last?);
-        let run = &indexed.run;
+        let session = &indexed.session;
         let undoable = self.host.mutations_available()
-            && run.task.is_some()
-            && run.steps.iter().all(|step| self.record_is_open(step));
-        // A run is an agent's work whatever its changes' author record says, and it acted for
+            && session.steps.iter().all(|step| self.record_is_open(step));
+        // A session is an agent's work whatever its changes' author record says, and it acted for
         // whoever issued it: the person and their agent never read alike.
         let mut agent = author(&first.author);
-        agent.name = self.agent_name(run);
+        agent.name = self.agent_name(session);
         agent.relation = wire::Relation::Software;
-        if agent.on_behalf_of.is_none() && run.issued_by.is_some() {
-            agent.on_behalf_of = Some(self.issuer_name(run));
+        if agent.on_behalf_of.is_none() && session.issued_by.is_some() {
+            agent.on_behalf_of = Some(self.issuer_name(session));
         }
-        Some(wire::AgentRun {
-            id: run.id.clone(),
+        Some(wire::AgentSession {
+            id: session.id.clone(),
             agent,
             workspace: workspace_facet(first),
-            instruction: run.instruction.clone().unwrap_or_else(|| run.label.clone()),
-            decision: run.decision.clone(),
+            instruction: session
+                .instruction
+                .clone()
+                .unwrap_or_else(|| session.label.clone()),
+            decision: session.decision.clone(),
             started_ms: millis(first.timestamp),
             last_ms: millis(last.timestamp),
             range: wire::Range {
@@ -207,15 +212,15 @@ impl WorkspaceActivityPane {
         })
     }
 
-    /// Every run the history keeps as a work group that no recorded run holds: one agent
-    /// connection's work, or one agent's run of a task, named as the history names it ("Claude
+    /// Every session the history keeps as a work group that no recorded session holds: one agent
+    /// connection's work, or one agent's session of a task, named as the history names it ("Claude
     /// Code #2"), its actions the records it changed in the order it changed them.
-    fn group_runs(
+    fn group_sessions(
         &self,
         entries: &[HistoryEntry],
         workspace: Option<&str>,
         covered: &HashSet<HistoryEntryId>,
-    ) -> Vec<wire::AgentRun> {
+    ) -> Vec<wire::AgentSession> {
         let mut groups: Vec<(&tilo_actions::WorkGroup, Vec<&HistoryEntry>)> = Vec::new();
         for entry in entries {
             if covered.contains(&entry.id) {
@@ -229,7 +234,7 @@ impl WorkspaceActivityPane {
                 None => groups.push((group, vec![entry])),
             }
         }
-        let mut runs = Vec::new();
+        let mut sessions = Vec::new();
         for (group, mut members) in groups {
             members.compact_sort_by_key(|entry| entry.timestamp);
             let (Some(first), Some(last)) = (members.first().copied(), members.last().copied())
@@ -269,7 +274,7 @@ impl WorkspaceActivityPane {
                 })
                 .or_else(|| actions.first().map(|action| action.summary.clone()))
                 .unwrap_or_else(|| group.label.clone());
-            runs.push(wire::AgentRun {
+            sessions.push(wire::AgentSession {
                 id: group.id.clone(),
                 agent,
                 workspace: workspace_facet(first),
@@ -286,7 +291,7 @@ impl WorkspaceActivityPane {
                 undo_blocked: self.undo_blocked(&self.run_steps(&members)),
             });
         }
-        runs
+        sessions
     }
 
     /// The app and record a change is of, as the history's index names its document: a change of
@@ -313,7 +318,7 @@ impl WorkspaceActivityPane {
     }
 
     /// The offer to take back one segment's record on its own, when its document is open here: it
-    /// goes through the host like the whole run, one document of it at a time.
+    /// goes through the host like the whole session, one document of it at a time.
     fn segment_undo(&self, segment: &Segment<'_>) -> Option<wire::Offer> {
         if !Self::step_is_undoable(&segment.app, &segment.record) {
             return None;
@@ -327,8 +332,8 @@ impl WorkspaceActivityPane {
             })
     }
 
-    /// The documents `entries` are changes of, as the steps undoing a run asks each history for:
-    /// each distinct app and record, but for a command line the run asked a shell session to run
+    /// The documents `entries` are changes of, as the steps undoing a session asks each history for:
+    /// each distinct app and record, but for a command line the session asked a shell session to session
     /// and a change of the workspace's own layout, which no document takes back.
     fn run_steps(&self, entries: &[&HistoryEntry]) -> Vec<(String, String)> {
         let mut steps: Vec<(String, String)> = Vec::new();
@@ -348,9 +353,9 @@ impl WorkspaceActivityPane {
         app != TERMINAL_APP && !record.is_empty()
     }
 
-    /// The run whose work group the timeline selection names, with the documents its changes in
-    /// the selection are: the selection is one run's work.
-    pub(super) fn selected_group_run(&self) -> Option<UndoRun> {
+    /// The session whose work group the timeline selection names, with the documents its changes in
+    /// the selection are: the selection is one session's work.
+    pub(super) fn selected_group_session(&self) -> Option<UndoRun> {
         let entries = self.selected_entries();
         let mut id: Option<String> = None;
         for entry in entries {
@@ -370,14 +375,14 @@ impl WorkspaceActivityPane {
         Some(UndoRun {
             steps: self.run_steps(&members),
             // Each document's history knows the connection by its group, which is also how the
-            // activity shows the run.
+            // activity shows the session.
             shown: id.clone(),
             named: id,
         })
     }
 
-    /// The actions one run's changes in one record are: one per command line it asked a shell
-    /// session to run, else one that opens the record. `summary` is what the run's marker said of
+    /// The actions one session's changes in one record are: one per command line it asked a shell
+    /// session to session, else one that opens the record. `summary` is what the session's marker said of
     /// the step, when it said anything.
     fn segment_actions(
         &self,
@@ -385,7 +390,7 @@ impl WorkspaceActivityPane {
         workspace: Option<&str>,
         summary: Option<&str>,
         undo: Option<wire::Offer>,
-    ) -> Vec<wire::RunAction> {
+    ) -> Vec<wire::SessionAction> {
         let (Some(oldest), Some(newest)) = (
             segment.entries.first().copied(),
             segment.entries.last().copied(),
@@ -404,7 +409,7 @@ impl WorkspaceActivityPane {
             str::to_owned,
         );
         let view = Self::record_view(segment, newest, target);
-        vec![wire::RunAction {
+        vec![wire::SessionAction {
             range: wire::Range {
                 from: hex(&oldest.id),
                 to: hex(&newest.id),
@@ -478,7 +483,7 @@ impl WorkspaceActivityPane {
                 exit: None,
                 started_ms: None,
                 ended_ms: None,
-                run: None,
+                execution: None,
             },
             BROWSER_APP => {
                 // The page the action named, else the page it acted on; its title is the page's
@@ -504,7 +509,7 @@ impl WorkspaceActivityPane {
         segment: &Segment<'_>,
         workspace: Option<&str>,
         target: &wire::Target,
-    ) -> Vec<wire::RunAction> {
+    ) -> Vec<wire::SessionAction> {
         let wanted: HashSet<[u8; 16]> = segment
             .entries
             .iter()
@@ -557,14 +562,14 @@ impl WorkspaceActivityPane {
         target: &wire::Target,
         workspace: Option<&str>,
         asked: Asked,
-    ) -> wire::RunAction {
+    ) -> wire::SessionAction {
         let (output, more) = asked
-            .run
+            .execution
             .as_ref()
             .and_then(output_hash)
             .and_then(|hash| self.output_tail(workspace, &segment.app, &hash))
             .unwrap_or_default();
-        let ran = asked.run.as_ref();
+        let ran = asked.execution.as_ref();
         let number = |key: &str| ran.and_then(|run| run.get(key)).and_then(Value::as_i64);
         let view = wire::ActionView::Command {
             target: target.clone(),
@@ -581,16 +586,16 @@ impl WorkspaceActivityPane {
             exit: number("exit").and_then(|exit| i32::try_from(exit).ok()),
             started_ms: number("started_ms"),
             ended_ms: number("ended_ms"),
-            run: (ran.is_some() || !asked.settled).then(|| wire::CommandRun {
+            execution: (ran.is_some() || !asked.settled).then(|| wire::CommandExecution {
                 workspace: workspace.map(str::to_owned),
                 app_id: segment.app.clone(),
                 record: segment.record.clone(),
-                run: asked.run_id.clone(),
+                execution: asked.execution_id.clone(),
             }),
         };
         // A request the shell answered without a run never ran: it has no time of its own.
         let at_ms = number("started_ms").unwrap_or_else(|| millis(entry.timestamp));
-        wire::RunAction {
+        wire::SessionAction {
             range: wire::Range::one(&hex(&entry.id)),
             changes: 1,
             at_ms,
@@ -646,31 +651,32 @@ impl WorkspaceActivityPane {
     /// Everything the run `query` names printed, as far as this device keeps it.
     pub fn serve_run_output(
         &mut self,
-        query: &wire::CommandRun,
+        query: &wire::CommandExecution,
         tree: &impl ActivityTree,
-    ) -> wire::RunOutput {
-        let unavailable = wire::RunOutput {
+    ) -> wire::SessionOutput {
+        let unavailable = wire::SessionOutput {
             unavailable: true,
-            ..wire::RunOutput::default()
+            ..wire::SessionOutput::default()
         };
         self.served_documents.borrow_mut().clear();
         let Some((run, running)) = self.with_record_document(&query.app_id, &query.record, |doc| {
             let heads = doc.get_heads();
-            let run = tilo_automerge::items::collection_item_json(doc, &heads, RUNS, &query.run)
-                .filter(|run| run.get("command").is_some());
+            let run =
+                tilo_automerge::items::collection_item_json(doc, &heads, RUNS, &query.execution)
+                    .filter(|run| run.get("command").is_some());
             // A request the shell has not answered yet is a run still going.
             let running = tilo_automerge::items::outbox_entries(doc, &heads, REQUESTS)
                 .into_iter()
-                .any(|row| row.id == query.run && row.settled.is_none());
+                .any(|row| row.id == query.execution && row.settled.is_none());
             (run, running)
         }) else {
             return unavailable;
         };
         let Some(run) = run else {
-            return wire::RunOutput {
+            return wire::SessionOutput {
                 running,
                 unavailable: !running,
-                ..wire::RunOutput::default()
+                ..wire::SessionOutput::default()
             };
         };
         let workspace = query.workspace.clone().or_else(|| {
@@ -683,8 +689,9 @@ impl WorkspaceActivityPane {
         }) else {
             return unavailable;
         };
-        let (lines, cut) = terminal_text::tail(&bytes, wire::RUN_OUTPUT_LINES, RUN_OUTPUT_BYTES);
-        wire::RunOutput {
+        let (lines, cut) =
+            terminal_text::tail(&bytes, wire::SESSION_OUTPUT_LINES, SESSION_OUTPUT_BYTES);
+        wire::SessionOutput {
             lines,
             truncated: cut || run.get("truncated") == Some(&Value::Bool(true)),
             unavailable: false,
@@ -724,8 +731,8 @@ fn queued(
                 .filter(|run| run.get("command").is_some());
             Asked {
                 command: str_of(&row.value, "command").to_owned(),
-                run_id,
-                run,
+                execution_id: run_id,
+                execution: run,
                 settled,
             }
         })
@@ -745,7 +752,7 @@ fn workspace_facet(entry: &HistoryEntry) -> Option<String> {
 
 /// What a run whose actions are `actions` is doing: a command still running, else its newest
 /// action.
-fn now(actions: &[wire::RunAction]) -> Option<wire::Now> {
+fn now(actions: &[wire::SessionAction]) -> Option<wire::Now> {
     if let Some(running) = actions.iter().rev().find(|action| action.view.is_running()) {
         let wire::ActionView::Command { command, .. } = &running.view else {
             return None;

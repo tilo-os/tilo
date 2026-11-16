@@ -205,7 +205,7 @@ impl Task {
             Envelope::WorkspacesReply { request_id, frame } => {
                 self.workspaces_reply(request_id, &frame);
             }
-            answer @ Envelope::AgentRunAnswer { .. } => self.agent_run_answered(answer),
+            answer @ Envelope::AgentSessionAnswer { .. } => self.agent_run_answered(answer),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Ok(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
                 self.fail("protocol-rejected", reason.clone());

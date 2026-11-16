@@ -621,7 +621,7 @@ tilo_test_env::scenario! {
     {
         use collab_types::presence::{ShellPresence, stand_in};
         let (host, member) = ([3; 32], [4; 32]);
-        let run = "agent-run:9";
+        let run = "agent-session:9";
         let face = Presence::desktop(
             WORKSPACE,
             Payload::Shell(Box::new(ShellPresence {
@@ -668,7 +668,7 @@ tilo_test_env::scenario! {
         assert_eq!(row.activity.as_deref(), Some("New note"));
 
         // Another run is another member; both leave with the host.
-        assert!(board.hear(host, &face.clone().spoken_for("agent-run:10"), 4.0));
+        assert!(board.hear(host, &face.clone().spoken_for("agent-session:10"), 4.0));
         assert_eq!(board.here().count(), 2);
         board.depart(host);
         assert_eq!(board.here().count(), 0);
@@ -685,7 +685,7 @@ tilo_test_env::scenario! {
     // one already taken and is not taken again.
     {
         use collab_types::presence::{ShellPresence, stand_in};
-        let (host, run) = ([3; 32], "agent-run:4");
+        let (host, run) = ([3; 32], "agent-session:4");
         let saying = |seq: u32, line: &str| {
             Presence::desktop(
                 WORKSPACE,

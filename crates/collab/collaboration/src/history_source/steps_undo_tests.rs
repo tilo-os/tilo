@@ -30,7 +30,7 @@ fn step(doc: &mut AutoCommit, actor: &[u8], run: Option<&str>, edit: impl FnOnce
     match run {
         Some(run) => {
             let message = ActionContext::default()
-                .with_group(run, "Tidy", AGENT_RUN)
+                .with_group(run, "Tidy", AGENT_SESSION)
                 .change_message()
                 .unwrap();
             doc.commit_with(CommitOptions::default().with_message(message));
@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
         doc.set_actor(ActorId::from(ALICE));
         let undone = super::undo(
             &mut doc,
-            &Scope::Run(RUN.into()),
+            &Scope::Session(RUN.into()),
             usize::MAX,
             plain,
             &TestWords,

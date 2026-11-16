@@ -233,10 +233,10 @@ impl Stamp {
 /// revert from History; [`tilolang_runtime::store::STEP_ACTION`]).
 pub const STEP_ACTION: &str = tilolang_runtime::store::STEP_ACTION;
 
-/// The run a change's context names: its group, when its kind is a run's (`TASK_RUN_GROUP`).
-pub fn run_of(context: &tilo_actions::ActionContext) -> Option<Run> {
+/// The agent session a change's context names: its group, when its kind is one's.
+pub fn session_of(context: &tilo_actions::ActionContext) -> Option<Run> {
     let group = context.group.as_ref()?;
-    (group.kind == tilo_actions::context::TASK_RUN_GROUP).then(|| Run {
+    (group.kind == tilo_actions::context::AGENT_SESSION_GROUP).then(|| Run {
         id: group.id.clone(),
         title: group.label.clone(),
     })
@@ -581,7 +581,7 @@ fn stamp_of_action(
         .at
         .clone()
         .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
-    let run = run_of(context);
+    let run = session_of(context);
     let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
@@ -940,7 +940,7 @@ pub fn step_stamp(change: &(impl ChangeHead + ?Sized)) -> Option<Stamp> {
             who: invoker.key(),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
-            run: run_of(context),
+            run: session_of(context),
             change: hash,
             op: change.start_op(),
             count: 1,

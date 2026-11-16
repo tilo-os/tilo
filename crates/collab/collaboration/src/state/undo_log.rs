@@ -354,7 +354,7 @@ impl UndoLog {
             .context
             .as_ref()
             .and_then(|context| context.group.as_ref())
-            .is_some_and(|group| group.kind == steps::AGENT_RUN)
+            .is_some_and(|group| group.kind == steps::AGENT_SESSION)
         {
             return false;
         }

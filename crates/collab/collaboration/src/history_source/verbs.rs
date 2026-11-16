@@ -736,7 +736,7 @@ pub fn recent(doc: &AutoCommit, last: usize, words: &dyn HistoryWords) -> Vec<Hi
             let context = version.context.as_ref();
             let run = context
                 .and_then(|context| context.group.as_ref())
-                .filter(|group| steps::names_a_run(&group.kind));
+                .filter(|group| steps::names_a_session(&group.kind));
             HistoryVersion {
                 change: steps::short(&version.hash),
                 action: sentence(version, words),
@@ -1029,7 +1029,7 @@ impl HistoryEdit {
                 step,
             } => {
                 let (scope, default) = match run {
-                    Some(run) => (Scope::Run(run.clone()), usize::MAX),
+                    Some(run) => (Scope::Session(run.clone()), usize::MAX),
                     None => (
                         by.as_ref().map_or_else(
                             || Scope::invoking(doc),

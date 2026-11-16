@@ -1,4 +1,4 @@
-//! Agents: every run of every agent across the person's workspaces, and the run chosen, as
+//! Agents: every session of every agent across the person's workspaces, and the session chosen, as
 //! the timeline of its actions.
 
 use ui::icons::Icon;
@@ -14,111 +14,117 @@ use ui::widget::{
 use crate::effects::ConsoleEffect;
 use crate::{Console, Doors, Nav, Reads, ago, faced, page, tr, trf};
 
-/// What Agents reads: every run in every workspace.
-pub(crate) fn query() -> wire::RunsQuery {
-    wire::RunsQuery {
+/// What Agents reads: every session in every workspace.
+pub(crate) fn query() -> wire::SessionsQuery {
+    wire::SessionsQuery {
         scope: wire::Scope::AllWorkspaces,
         limit: 0,
     }
 }
 
-pub(crate) const RUN_KIND: &str = "console.run";
+pub(crate) const SESSION_KIND: &str = "console.session";
 
-/// A run as the type its rows are items of: what a published run says it is, so search
-/// names it as it names a record's item ("runs of Console") instead of taking the app's
+/// A session as the type its rows are items of: what a published session says it is, so search
+/// names it as it names a record's item ("sessions of Console") instead of taking the app's
 /// word for it.
-pub(crate) struct Run;
+pub(crate) struct Session;
 
-impl ui::tilo_resource::words::RowType for Run {
-    const KIND: &'static str = RUN_KIND;
-    const LABEL: &'static str = "Run";
+impl ui::tilo_resource::words::RowType for Session {
+    const KIND: &'static str = SESSION_KIND;
+    const LABEL: &'static str = "Session";
 }
 
-/// How many of the runs read are published as resources of their own: a published tree
-/// stays bounded, and any other run's address is answered by [`live_run`] alone.
-pub(crate) const RUN_RESOURCE_LIMIT: usize = 16;
+/// How many of the sessions read are published as resources of their own: a published tree
+/// stays bounded, and any other session's address is answered by [`live_session`] alone.
+pub(crate) const SESSION_RESOURCE_LIMIT: usize = 16;
 
-/// The address of the run `id`: what a link to it names.
-pub(crate) fn run_resource_id(id: &str) -> String {
-    format!("{RUN_KIND}:{id}")
+/// The address of the session `id`: what a link to it names.
+pub(crate) fn session_resource_id(id: &str) -> String {
+    format!("{SESSION_KIND}:{id}")
 }
 
-/// The run whose address `resource` is, when it is a run's.
-pub(crate) fn run_id(resource: &str) -> Option<&str> {
+/// The session whose address `resource` is, when it is a session's.
+pub(crate) fn session_id(resource: &str) -> Option<&str> {
     resource
-        .strip_prefix(RUN_KIND)?
+        .strip_prefix(SESSION_KIND)?
         .strip_prefix(':')
         .filter(|id| !id.is_empty())
 }
 
-/// The view a run opens in: its page in this window, opened by [`ConsoleEffect::ViewRun`].
-fn run_view() -> ui::tilo_actions::ResourceViewSpec {
-    ui::tilo_actions::ResourceViewSpec::new("run", "Run", ConsoleEffect::VIEW_RUN.id)
+/// The view a session opens in: its page in this window, opened by [`ConsoleEffect::ViewSession`].
+fn session_view() -> ui::tilo_actions::ResourceViewSpec {
+    ui::tilo_actions::ResourceViewSpec::new("session", "Session", ConsoleEffect::VIEW_SESSION.id)
         .with_primary(true)
         .on_desktop()
 }
 
-/// The run `id` as the resource its address names, labelled by the run when `runs` lists
+/// The session `id` as the resource its address names, labelled by the session when `sessions` lists
 /// it: its page in this window, and its link.
-pub(crate) fn live_run(runs: &[wire::AgentRun], id: &str) -> LiveRow {
-    let label = runs
+pub(crate) fn live_session(sessions: &[wire::AgentSession], id: &str) -> LiveRow {
+    let label = sessions
         .iter()
-        .find(|run| run.id == id)
-        .map_or_else(|| tr("console-run"), |run| run.instruction.clone());
-    LiveRow::typed::<Run>(run_resource_id(id), label)
-        .effect(&ConsoleEffect::ViewRun { run: id.to_owned() })
-        .view(run_view())
+        .find(|session| session.id == id)
+        .map_or_else(
+            || tr("console-session"),
+            |session| session.instruction.clone(),
+        );
+    LiveRow::typed::<Session>(session_resource_id(id), label)
+        .effect(&ConsoleEffect::ViewSession {
+            session: id.to_owned(),
+        })
+        .view(session_view())
 }
 
-/// The runs `runs` lists as resources of their own, up to the limit, first run first.
-pub(crate) fn live_runs(runs: &[wire::AgentRun]) -> Vec<LiveRow> {
-    runs.iter()
-        .take(RUN_RESOURCE_LIMIT)
-        .map(|run| live_run(runs, &run.id))
+/// The sessions `sessions` lists as resources of their own, up to the limit, first session first.
+pub(crate) fn live_sessions(sessions: &[wire::AgentSession]) -> Vec<LiveRow> {
+    sessions
+        .iter()
+        .take(SESSION_RESOURCE_LIMIT)
+        .map(|session| live_session(sessions, &session.id))
         .collect()
 }
 
-/// The row the address `resource` names, when it names a run: a link opens it before the
-/// history has answered, so the run's page shows at once and the run arrives on it.
-pub(crate) fn live_run_at(runs: &[wire::AgentRun], resource: &str) -> Option<LiveRow> {
-    Some(live_run(runs, run_id(resource)?))
+/// The row the address `resource` names, when it names a session: a link opens it before the
+/// history has answered, so the session's page shows at once and the session arrives on it.
+pub(crate) fn live_session_at(sessions: &[wire::AgentSession], resource: &str) -> Option<LiveRow> {
+    Some(live_session(sessions, session_id(resource)?))
 }
 
-/// The runs, beside the door that says which agents are connected.
+/// The sessions, beside the door that says which agents are connected.
 #[derive(Clone, Default)]
 pub(crate) struct Seen {
-    pub(crate) runs: wire::Runs,
+    pub(crate) history: wire::Sessions,
     pub(crate) door: mcp_server::Server,
 }
 
 impl Seen {
-    /// The door's open agent session `run` is, with the grant it came in by: History names a
+    /// The door's open agent session `session` is, with the grant it came in by: History names a
     /// session as the door does ("Claude Code #2").
-    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<mcp_server::AgentSessionRef> {
+    pub(crate) fn open(&self, session: &wire::AgentSession) -> Option<mcp_server::AgentSessionRef> {
         self.door
-            .session(&run.agent.name)
+            .session(&session.agent.name)
             .map(|(grant, session)| mcp_server::AgentSessionRef {
                 grant: grant.id.clone(),
                 session: session.name.clone(),
             })
     }
 
-    /// Whether `run` is working now: its agent session through the door is open and it is that
+    /// Whether `session` is working now: its agent session through the door is open and it is that
     /// session's newest work.
-    pub(crate) fn working(&self, run: &wire::AgentRun) -> bool {
-        self.open(run).is_some()
+    pub(crate) fn working(&self, session: &wire::AgentSession) -> bool {
+        self.open(session).is_some()
             && self
-                .runs
-                .runs
+                .history
+                .sessions
                 .iter()
-                .filter(|other| other.agent.name == run.agent.name)
+                .filter(|other| other.agent.name == session.agent.name)
                 .max_by_key(|other| other.last_ms)
-                .is_some_and(|newest| newest.id == run.id)
+                .is_some_and(|newest| newest.id == session.id)
     }
 
-    /// The workspace `run` worked in, as the door lists it.
-    pub(crate) fn workspace(&self, run: &wire::AgentRun) -> Option<&mcp_server::Workspace> {
-        let name = run.workspace.as_deref()?;
+    /// The workspace `session` worked in, as the door lists it.
+    pub(crate) fn workspace(&self, session: &wire::AgentSession) -> Option<&mcp_server::Workspace> {
+        let name = session.workspace.as_deref()?;
         self.door
             .workspaces
             .iter()
@@ -126,24 +132,27 @@ impl Seen {
     }
 }
 
-/// The place's content: every run, or the run chosen, whose way back is the shell's.
+/// The place's content: every session, or the session chosen, whose way back is the shell's.
 pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
-    let runs = &reads.runs;
+    let sessions = &reads.sessions;
     let door_state = reads.door.answer().state();
-    let chosen = nav.run.get();
+    let chosen = nav.session.get();
     let nav = nav.clone();
-    Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
-        let (nav, runs, chosen) = (nav.clone(), runs.clone(), chosen.clone());
+    Box::new(cx.arriving(&sessions.answer(), move |cx, sessions| {
+        let (nav, sessions, chosen) = (nav.clone(), sessions.clone(), chosen.clone());
         cx.switch(&door_state, move |cx, door| {
             let seen = Seen {
-                runs: runs.clone(),
+                history: sessions.clone(),
                 door: ready(door),
             };
-            let run = chosen
-                .as_deref()
-                .and_then(|id| seen.runs.runs.iter().find(|run| run.id == id));
-            match (run, chosen.as_deref()) {
-                (Some(run), _) => inspect(cx, &nav, &seen, run),
+            let session = chosen.as_deref().and_then(|id| {
+                seen.history
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == id)
+            });
+            match (session, chosen.as_deref()) {
+                (Some(session), _) => inspect(cx, &nav, &seen, session),
                 (None, Some(_)) => unknown(&seen),
                 (None, None) => list(cx, &nav, &seen),
             }
@@ -160,57 +169,64 @@ pub(crate) fn ready<E>(door: &Arrival<mcp_server::Server, E>) -> mcp_server::Ser
     }
 }
 
-/// A run's page whose run the history has not listed: still being read, or not here at all
-/// (a workspace this person is not in, a run long gone).
+/// A session's page whose session the history has not listed: still being read, or not here at all
+/// (a workspace this person is not in, a session long gone).
 pub(crate) fn unknown(seen: &Seen) -> Element {
-    let state = if seen.runs.pending {
-        EmptyState::new(tr("console-run-pending")).with_icon(Icon::Clock)
+    let state = if seen.history.pending {
+        EmptyState::new(tr("console-session-pending")).with_icon(Icon::Clock)
     } else {
-        EmptyState::new(tr("console-run-missing"))
-            .with_message(tr("console-run-missing-message"))
+        EmptyState::new(tr("console-session-missing"))
+            .with_message(tr("console-session-missing-message"))
             .with_icon(Icon::Bot)
     };
-    page(vec![Box::new(state.with_id("console-run-missing"))])
+    page(vec![Box::new(state.with_id("console-session-missing"))])
 }
 
-/// Every run the record lets show: working ones first, then the rest.
+/// Every session the record lets show: working ones first, then the rest.
 fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
     let filter = cx.value(Console::clone).get();
     let mut parts = vec![filters(cx, seen, &filter)];
-    let shown: Vec<&wire::AgentRun> = seen
-        .runs
-        .runs
+    let shown: Vec<&wire::AgentSession> = seen
+        .history
+        .sessions
         .iter()
-        .filter(|run| crate::record::shows(&filter, run))
+        .filter(|session| crate::record::shows(&filter, session))
         .collect();
     if shown.is_empty() {
-        let state = if seen.runs.pending {
-            EmptyState::new(tr("console-runs-pending")).with_icon(Icon::Clock)
+        let state = if seen.history.pending {
+            EmptyState::new(tr("console-sessions-pending")).with_icon(Icon::Clock)
         } else if filter.narrows() {
-            EmptyState::new(tr("console-runs-none-here"))
-                .with_message(tr("console-runs-none-here-message"))
+            EmptyState::new(tr("console-sessions-none-here"))
+                .with_message(tr("console-sessions-none-here-message"))
                 .with_icon(Icon::Bot)
         } else {
-            EmptyState::new(tr("console-runs-empty"))
-                .with_message(tr("console-runs-empty-message"))
+            EmptyState::new(tr("console-sessions-empty"))
+                .with_message(tr("console-sessions-empty-message"))
                 .with_icon(Icon::Bot)
         };
-        parts.push(Box::new(state.with_id("console-runs-empty")));
+        parts.push(Box::new(state.with_id("console-sessions-empty")));
         return page(parts);
     }
-    let (working, earlier): (Vec<&wire::AgentRun>, Vec<&wire::AgentRun>) =
-        shown.into_iter().partition(|run| seen.working(run));
-    let chosen = nav.run.get();
-    for (heading, runs) in [
-        ("console-runs-working", working),
-        ("console-runs-earlier", earlier),
+    let (working, earlier): (Vec<&wire::AgentSession>, Vec<&wire::AgentSession>) =
+        shown.into_iter().partition(|session| seen.working(session));
+    let chosen = nav.session.get();
+    for (heading, sessions) in [
+        ("console-sessions-working", working),
+        ("console-sessions-earlier", earlier),
     ] {
-        if runs.is_empty() {
+        if sessions.is_empty() {
             continue;
         }
-        let rows = runs
+        let rows = sessions
             .into_iter()
-            .map(|run| run_row(nav, seen, run, chosen.as_deref() == Some(run.id.as_str())))
+            .map(|session| {
+                session_row(
+                    nav,
+                    seen,
+                    session,
+                    chosen.as_deref() == Some(session.id.as_str()),
+                )
+            })
             .collect();
         parts.push(Box::new(
             Section::new(rows).with_header(SectionHeader::group(tr(heading))),
@@ -219,38 +235,52 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
     page(parts)
 }
 
-pub(crate) fn run_row(nav: &Nav, seen: &Seen, run: &wire::AgentRun, selected: bool) -> Element {
-    let working = seen.working(run);
+pub(crate) fn session_row(
+    nav: &Nav,
+    seen: &Seen,
+    session: &wire::AgentSession,
+    selected: bool,
+) -> Element {
+    let working = seen.working(session);
     let mut row = faced(
-        ListRow::new(format!("console-run-{}", run.id), run.instruction.clone()),
-        &run.agent,
+        ListRow::new(
+            format!("console-session-{}", session.id),
+            session.instruction.clone(),
+        ),
+        &session.agent,
     )
     .subtitle(
-        run.now
+        session
+            .now
             .as_ref()
             .filter(|_| working)
-            .map_or_else(|| started_by(&run.agent), now_line),
+            .map_or_else(|| started_by(&session.agent), now_line),
     )
-    .secondary(run.workspace.clone().unwrap_or_else(|| run_size(run)))
-    .meta(ago(run.last_ms))
+    .secondary(
+        session
+            .workspace
+            .clone()
+            .unwrap_or_else(|| session_size(session)),
+    )
+    .meta(ago(session.last_ms))
     .selected(selected);
     if working {
         row = row.active();
     }
-    let (chosen, id) = (nav.clone(), run.id.clone());
-    Box::new(row.on_view(move || chosen.open_run(&id)))
+    let (chosen, id) = (nav.clone(), session.id.clone());
+    Box::new(row.on_view(move || chosen.open_session(&id)))
 }
 
-/// Who started a run, as its row says it: "Started by you" for the reader's own, the
+/// Who started a session, as its row says it: "Started by you" for the reader's own, the
 /// starter's name for someone else's.
 fn started_by(agent: &wire::Author) -> String {
     starter(agent).unwrap_or_else(|| agent.name.clone())
 }
 
-/// The line naming who started a run, when the agent worked for someone.
+/// The line naming who started a session, when the agent worked for someone.
 fn starter(agent: &wire::Author) -> Option<String> {
     if agent.for_reader {
-        return Some(tr("console-run-started-by-you"));
+        return Some(tr("console-session-started-by-you"));
     }
     agent
         .on_behalf_of
@@ -258,26 +288,26 @@ fn starter(agent: &wire::Author) -> Option<String> {
         .filter(|name| !name.trim().is_empty())
         .map(|name| {
             trf(
-                "console-run-started-by",
+                "console-session-started-by",
                 &[("name", name.to_owned().into())],
             )
         })
 }
 
-/// How much a run did, as its row says it: the changes it made, as its finished notice
+/// How much a session did, as its row says it: the changes it made, as its finished notice
 /// counts them ("4 changes" for four paragraphs written in one note), else the commands and
 /// pages it went through.
-fn run_size(run: &wire::AgentRun) -> String {
-    match run.changes() {
+fn session_size(session: &wire::AgentSession) -> String {
+    match session.changes() {
         0 => trf(
-            "console-run-actions",
-            &[("count", run.actions.len().into())],
+            "console-session-actions",
+            &[("count", session.actions.len().into())],
         ),
-        changes => trf("console-run-changes", &[("count", changes.into())]),
+        changes => trf("console-session-changes", &[("count", changes.into())]),
     }
 }
 
-/// What a working run is doing now, as its row says it: "Running `cargo test`…", "Editing
+/// What a working session is doing now, as its row says it: "Running `cargo test`…", "Editing
 /// src/email.rs".
 pub(crate) fn now_line(now: &wire::Now) -> String {
     match now {
@@ -324,15 +354,15 @@ fn picker(
     ))
 }
 
-/// The agent picker's options: every agent, then each client with all of its runs under it,
-/// so a person narrows to one run or to the client behind every one of them.
+/// The agent picker's options: every agent, then each client with all of its sessions under it,
+/// so a person narrows to one session or to the client behind every one of them.
 fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     let mut groups: Vec<(String, Vec<(String, String)>)> = vec![(
         String::new(),
         vec![(String::new(), tr("console-every-agent"))],
     )];
-    for run in &seen.runs.runs {
-        let client = crate::client::of(&run.agent.name);
+    for session in &seen.history.sessions {
+        let client = crate::client::of(&session.agent.name);
         let known = groups
             .iter()
             .skip(1)
@@ -344,7 +374,7 @@ fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
                     vec![(
                         client.name().to_owned(),
                         trf(
-                            "console-client-every-run",
+                            "console-client-every-session",
                             &[("client", client.name().to_owned().into())],
                         ),
                     )],
@@ -353,10 +383,12 @@ fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
             },
             |found| found.saturating_add(1),
         );
-        if let Some((_, runs)) = groups.get_mut(at)
-            && !runs.iter().any(|(value, _)| value == &run.agent.name)
+        if let Some((_, sessions)) = groups.get_mut(at)
+            && !sessions
+                .iter()
+                .any(|(value, _)| value == &session.agent.name)
         {
-            runs.push((run.agent.name.clone(), run.agent.name.clone()));
+            sessions.push((session.agent.name.clone(), session.agent.name.clone()));
         }
     }
     groups
@@ -367,8 +399,8 @@ fn agent_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
 fn workspace_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     let mut workspaces: Vec<(String, String)> =
         vec![(String::new(), tr("console-every-workspace"))];
-    for run in &seen.runs.runs {
-        if let Some(workspace) = &run.workspace
+    for session in &seen.history.sessions {
+        if let Some(workspace) = &session.workspace
             && !workspaces.iter().any(|(value, _)| value == workspace)
         {
             workspaces.push((workspace.clone(), workspace.clone()));
@@ -377,7 +409,7 @@ fn workspace_options(seen: &Seen) -> Vec<(String, Vec<(String, String)>)> {
     vec![(String::new(), workspaces)]
 }
 
-/// The row narrowing the runs by agent and workspace, with a way back to all of them while
+/// The row narrowing the sessions by agent and workspace, with a way back to all of them while
 /// it narrows them, and only then.
 fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
     let paths = Console::paths();
@@ -406,53 +438,56 @@ fn filters(cx: &ViewCx<Console>, seen: &Seen, filter: &Console) -> Element {
     Box::new(row)
 }
 
-/// The chosen run: what it was asked, what can be done with it, and its actions.
+/// The chosen session: what it was asked, what can be done with it, and its actions.
 pub(crate) fn inspect(
     cx: &ViewCx<Console>,
     nav: &Nav,
     seen: &Seen,
-    run: &wire::AgentRun,
+    session: &wire::AgentSession,
 ) -> Element {
     let doors = Doors::of(cx);
-    let mut facts = vec![Fact::with_icon(Icon::Bot, run.agent.name.clone())];
-    if let Some(starter) = starter(&run.agent) {
+    let mut facts = vec![Fact::with_icon(Icon::Bot, session.agent.name.clone())];
+    if let Some(starter) = starter(&session.agent) {
         facts.push(Fact::with_icon(Icon::User, starter));
     }
     facts.extend(
-        run.workspace
+        session
+            .workspace
             .clone()
             .map(|workspace| Fact::with_icon(Icon::LayoutGrid, workspace)),
     );
-    facts.push(Fact::with_icon(Icon::Clock, ago(run.started_ms)));
+    facts.push(Fact::with_icon(Icon::Clock, ago(session.started_ms)));
     let mut parts: Vec<Element> = vec![
-        Box::new(ObjectHeader::new(run.instruction.clone())),
+        Box::new(ObjectHeader::new(session.instruction.clone())),
         Box::new(Facts::new(facts)),
     ];
-    parts.push(commands(&doors, seen, run));
-    if let Some(blocked) = &run.undo_blocked {
+    parts.push(commands(&doors, seen, session));
+    if let Some(blocked) = &session.undo_blocked {
         parts.push(Box::new(
             Text::new(blocked)
                 .with_role(TextRole::Caption)
                 .dimmed()
-                .with_id("console-run-undo-blocked"),
+                .with_id("console-session-undo-blocked"),
         ));
     }
-    if let Some(decision) = &run.decision {
+    if let Some(decision) = &session.decision {
         parts.push(Box::new(Section::titled(
-            tr("console-run-why"),
+            tr("console-session-why"),
             vec![Box::new(Text::new(decision))],
         )));
     }
     let nav = nav.clone();
-    let shown = run.clone();
+    let shown = session.clone();
     parts.push(cx.switch(&nav.action.clone(), move |cx, open| {
         let (nav, shown, open) = (nav.clone(), shown.clone(), *open);
         cx.switch(&nav.full_output.clone(), move |cx, full| {
-            let Some((index, run)) = full.and_then(|index| Some((index, more_of(&shown, index)?)))
+            let Some((index, session)) =
+                full.and_then(|index| Some((index, more_of(&shown, index)?)))
             else {
                 return actions(cx, &nav, &shown, open, None);
             };
-            let read = Doors::of(cx).follow_history::<wire::RunOutput>(wire::RUN_OUTPUT, &run);
+            let read =
+                Doors::of(cx).follow_history::<wire::SessionOutput>(wire::SESSION_OUTPUT, &session);
             let (nav, shown) = (nav.clone(), shown.clone());
             Box::new(cx.arriving(&read.answer(), move |cx, whole| {
                 actions(cx, &nav, &shown, open, Some((index, whole)))
@@ -462,62 +497,66 @@ pub(crate) fn inspect(
     page(parts)
 }
 
-/// Stop, Take over and Undo, as the run allows them.
-pub(crate) fn commands(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> Element {
+/// Stop, Take over and Undo, as the session allows them.
+pub(crate) fn commands(doors: &Doors, seen: &Seen, session: &wire::AgentSession) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related);
-    if seen.open(run).is_some() && seen.working(run) {
-        let (doors, seen, run) = (doors.clone(), seen.clone(), run.clone());
+    if seen.open(session).is_some() && seen.working(session) {
+        let (doors, seen, session) = (doors.clone(), seen.clone(), session.clone());
         row = row.push(Box::new(
-            Button::new("console-run-stop", "console-run-stop")
+            Button::new("console-session-stop", "console-session-stop")
                 .with_icon(Icon::Square)
                 .role(ButtonRole::Destructive)
                 .on_view(move || {
-                    stop(&doors, &seen, &run);
+                    stop(&doors, &seen, &session);
                 }),
         ));
     }
-    if take_over_target(seen, run).is_some() {
-        let (doors, seen, run) = (doors.clone(), seen.clone(), run.clone());
+    if take_over_target(seen, session).is_some() {
+        let (doors, seen, session) = (doors.clone(), seen.clone(), session.clone());
         row = row.push(Box::new(
-            Button::new("console-run-take-over", "console-run-take-over")
+            Button::new("console-session-take-over", "console-session-take-over")
                 .with_icon(Icon::Hand)
-                .on_view(move || take_over(&doors, &seen, &run)),
+                .on_view(move || take_over(&doors, &seen, &session)),
         ));
     }
-    let (undo, undone) = (doors.clone(), run.clone());
+    let (undo, undone) = (doors.clone(), session.clone());
     row = row.push(Box::new(
-        Button::new("console-run-undo", "console-run-undo")
+        Button::new("console-session-undo", "console-session-undo")
             .with_icon(Icon::Undo2)
-            .with_enabled(run.undo_blocked.is_none())
+            .with_enabled(session.undo_blocked.is_none())
             .on_view(move || {
-                undo_run(&undo, &undone);
+                undo_session(&undo, &undone);
             }),
     ));
     let link = doors.clone();
-    let resource = run_resource_id(&run.id);
+    let resource = session_resource_id(&session.id);
     row = row.push(Box::new(
-        Button::new("console-run-copy-link", "console-run-copy-link")
+        Button::new("console-session-copy-link", "console-session-copy-link")
             .with_icon(Icon::Link)
             .on_view(move || link.share_link(&resource)),
     ));
     Box::new(row)
 }
 
-/// Where taking `run` over opens: the record of its last action, else its workspace in the
+/// Where taking `session` over opens: the record of its last action, else its workspace in the
 /// full desktop.
-fn take_over_target(seen: &Seen, run: &wire::AgentRun) -> Option<Result<wire::Target, String>> {
-    run.actions
+fn take_over_target(
+    seen: &Seen,
+    session: &wire::AgentSession,
+) -> Option<Result<wire::Target, String>> {
+    session
+        .actions
         .last()
         .map(|action| Ok(action.view.target().clone()))
         .or_else(|| {
-            seen.workspace(run)
+            seen.workspace(session)
                 .map(|workspace| Err(workspace.open.clone()))
         })
 }
 
-/// End `run` now, keeping its grant, when it is working.
-pub(crate) fn stop(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> bool {
-    match seen.open(run).filter(|_| seen.working(run)) {
+/// End `session` now, keeping its grant, when it is working.
+pub(crate) fn stop(doors: &Doors, seen: &Seen, session: &wire::AgentSession) -> bool {
+    match seen.open(session).filter(|_| seen.working(session)) {
         Some(open) => {
             doors.door(mcp_server::STOP, &open);
             true
@@ -526,22 +565,22 @@ pub(crate) fn stop(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> bool {
     }
 }
 
-/// Take `run` over: stop the agent and open where it was working.
-pub(crate) fn take_over(doors: &Doors, seen: &Seen, run: &wire::AgentRun) {
-    stop(doors, seen, run);
-    match take_over_target(seen, run) {
+/// Take `session` over: stop the agent and open where it was working.
+pub(crate) fn take_over(doors: &Doors, seen: &Seen, session: &wire::AgentSession) {
+    stop(doors, seen, session);
+    match take_over_target(seen, session) {
         Some(Ok(target)) => doors.history(wire::OPEN, &target),
         Some(Err(href)) => doors.open_in_tilo(&href),
         None => {}
     }
 }
 
-/// Undo all of `run`, when the history lets it.
-pub(crate) fn undo_run(doors: &Doors, run: &wire::AgentRun) -> bool {
-    if run.undo_blocked.is_some() {
+/// Undo all of `session`, when the history lets it.
+pub(crate) fn undo_session(doors: &Doors, session: &wire::AgentSession) -> bool {
+    if session.undo_blocked.is_some() {
         return false;
     }
-    doors.history(wire::UNDO_RUN, &run.range);
+    doors.history(wire::UNDO_SESSION, &session.range);
     true
 }
 
@@ -554,17 +593,17 @@ const fn kind_icon(view: &wire::ActionView) -> Icon {
     }
 }
 
-/// The run's actions, oldest first, the one `open` names with its view under it.
+/// The session's actions, oldest first, the one `open` names with its view under it.
 fn actions(
     cx: &ViewCx<Console>,
     nav: &Nav,
-    run: &wire::AgentRun,
+    session: &wire::AgentSession,
     open: Option<usize>,
-    full: Option<(usize, &wire::RunOutput)>,
+    full: Option<(usize, &wire::SessionOutput)>,
 ) -> Element {
     let doors = Doors::of(cx);
     let mut rows: Vec<Element> = Vec::new();
-    for (index, action) in run.actions.iter().enumerate() {
+    for (index, action) in session.actions.iter().enumerate() {
         let target = action.view.target();
         let mut row = ListRow::new(format!("console-action-{index}"), action.summary.clone())
             .icon(kind_icon(&action.view))
@@ -574,7 +613,7 @@ fn actions(
         if let Some(offer) = &action.undo {
             let doors = doors.clone();
             let query = wire::RecordQuery {
-                range: run.range.clone(),
+                range: session.range.clone(),
                 task: None,
                 app_id: action.app_id.clone(),
                 id: action.record.clone(),
@@ -612,8 +651,8 @@ fn actions(
     }
     Box::new(Section::titled(
         trf(
-            "console-run-timeline",
-            &[("count", run.actions.len().into())],
+            "console-session-timeline",
+            &[("count", session.actions.len().into())],
         ),
         rows,
     ))
@@ -625,8 +664,8 @@ fn action_view(
     nav: &Nav,
     doors: &Doors,
     index: usize,
-    action: &wire::RunAction,
-    whole: Option<&wire::RunOutput>,
+    action: &wire::SessionAction,
+    whole: Option<&wire::SessionOutput>,
 ) -> Element {
     let id = format!("console-action-{index}-view");
     let target = action.view.target().clone();
@@ -654,7 +693,7 @@ fn action_view(
             exit,
             started_ms,
             ended_ms,
-            run,
+            execution,
             ..
         } => {
             if !cwd.is_empty() {
@@ -665,7 +704,7 @@ fn action_view(
                         .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
                 ));
             }
-            if run.is_some() && *more {
+            if execution.is_some() && *more {
                 let output = Output {
                     index,
                     prompt: format!("$ {command}"),
@@ -758,7 +797,7 @@ fn command_status(
     })
 }
 
-/// One command's output as its view shows it: the command's place in the run, its prompt
+/// One command's output as its view shows it: the command's place in the session, its prompt
 /// line and the last lines it printed.
 struct Output {
     index: usize,
@@ -767,10 +806,10 @@ struct Output {
 }
 
 /// A command's output: its last lines, or every line once the person asks, read from the
-/// run's record as the history serves it.
+/// session's record as the history serves it.
 fn output_part(
     shown: &LocalState<Option<usize>>,
-    whole: Option<&wire::RunOutput>,
+    whole: Option<&wire::SessionOutput>,
     output: &Output,
 ) -> Element {
     let index = output.index;
@@ -815,12 +854,12 @@ fn output_part(
     )
 }
 
-/// The run record of the command at `index` of `run`, when it printed more than its view
+/// The session record of the command at `index` of `session`, when it printed more than its view
 /// shows.
-fn more_of(run: &wire::AgentRun, index: usize) -> Option<wire::CommandRun> {
-    match &run.actions.get(index)?.view {
+fn more_of(session: &wire::AgentSession, index: usize) -> Option<wire::CommandExecution> {
+    match &session.actions.get(index)?.view {
         wire::ActionView::Command {
-            run: Some(record),
+            execution: Some(record),
             more: true,
             ..
         } => Some(record.clone()),
@@ -910,7 +949,7 @@ fn well(lines: Vec<Element>) -> Element {
 mod tests {
     use super::*;
 
-    fn run_by(for_reader: bool, on_behalf_of: Option<&str>) -> wire::Author {
+    fn session_by(for_reader: bool, on_behalf_of: Option<&str>) -> wire::Author {
         wire::Author {
             name: "Claude Code".to_owned(),
             relation: wire::Relation::Software,
@@ -920,11 +959,14 @@ mod tests {
         }
     }
 
-    /// A run's row names who started it, not the agent its face already shows.
+    /// A session's row names who started it, not the agent its face already shows.
     #[test]
     fn a_run_row_says_who_started_it() {
-        assert_eq!(started_by(&run_by(true, Some("Ada"))), "Started by you");
-        assert_eq!(started_by(&run_by(false, Some("Ada"))), "Started by Ada");
-        assert_eq!(started_by(&run_by(false, None)), "Claude Code");
+        assert_eq!(started_by(&session_by(true, Some("Ada"))), "Started by you");
+        assert_eq!(
+            started_by(&session_by(false, Some("Ada"))),
+            "Started by Ada"
+        );
+        assert_eq!(started_by(&session_by(false, None)), "Claude Code");
     }
 }

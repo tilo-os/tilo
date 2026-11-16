@@ -1852,7 +1852,7 @@ mod tests {
                 ))),
                 ..tilo_actions::ActionContext::default()
             }
-            .with_group("run-7", "Claude Code", "agent-run");
+            .with_group("run-7", "Claude Code", "agent-session");
             let end = notebook.length(body);
             notebook
                 .splice_text(body, end, 0, &format!("Launch notes, line {line}.\n"))
@@ -1934,20 +1934,20 @@ mod tests {
         session.surface.serve_activity(session.activity.requests());
         session.open_history();
         let invocation = InvocationId::new();
-        let InvokeArgument::Json(query) = wire::argument(&wire::RunsQuery::default()) else {
+        let InvokeArgument::Json(query) = wire::argument(&wire::SessionsQuery::default()) else {
             panic!("the runs take a query");
         };
         session
             .activity
             .requests()
-            .follow(&person(), invocation, wire::RUNS, query)
+            .follow(&person(), invocation, wire::SESSIONS, query)
             .expect("the runs are followed");
         // The records are read again on a worker once the stream says they moved: a pass lists
         // what that read found once it landed.
-        let mut runs_until = |landed: &dyn Fn(&wire::AgentRun) -> bool| -> wire::Runs {
+        let mut runs_until = |landed: &dyn Fn(&wire::AgentSession) -> bool| -> wire::Sessions {
             for _ in 0..300 {
                 session.frame();
-                let runs: wire::Runs = serde_json::from_value(
+                let runs: wire::Sessions = serde_json::from_value(
                     session
                         .activity
                         .requests()
@@ -1956,7 +1956,7 @@ mod tests {
                         .expect("runs"),
                 )
                 .expect("runs");
-                if runs.runs.iter().any(landed) {
+                if runs.sessions.iter().any(landed) {
                     return runs;
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -1964,7 +1964,7 @@ mod tests {
             panic!("the agent's run is never listed");
         };
         let first = runs_until(&|run| run.last_ms == 2_000);
-        let [run] = first.runs.as_slice() else {
+        let [run] = first.sessions.as_slice() else {
             panic!("the agent's one run: {first:?}");
         };
         assert_eq!(run.agent.name, "Claude Code", "{run:?}");
@@ -1991,7 +1991,11 @@ mod tests {
         // It writes again: the run ends at what it added, its fifth change.
         write(&mut notebook, 3);
         let again = runs_until(&|run| run.last_ms == 5_000);
-        assert_eq!(again.runs.len(), 1, "still the agent's one run: {again:?}");
+        assert_eq!(
+            again.sessions.len(),
+            1,
+            "still the agent's one run: {again:?}"
+        );
     }
 
     /// What the person is doing is read off their newest steps on every tick, across every record of

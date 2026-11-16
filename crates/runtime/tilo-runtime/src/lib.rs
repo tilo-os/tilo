@@ -21,7 +21,7 @@ mod daemon;
 pub mod device_grants;
 #[cfg(target_os = "macos")]
 mod i18n;
-pub mod key_runs;
+pub mod key_sessions;
 pub mod mcp_process;
 pub mod offload;
 mod os_search;

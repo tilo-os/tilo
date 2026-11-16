@@ -17,7 +17,7 @@ fn marked_run() -> (ActionInvoker, ActionContext) {
         ActionContext::default().with_group(
             RUN,
             "Tidy the tasks",
-            ui::tilo_actions::context::TASK_RUN_GROUP,
+            ui::tilo_actions::context::AGENT_SESSION_GROUP,
         ),
     )
 }

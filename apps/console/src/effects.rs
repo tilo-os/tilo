@@ -5,22 +5,22 @@
 pub use console_model::ConsoleEffect;
 
 /// What a person asked of an agent from outside its card, carried out once the card has
-/// read the runs and the door.
+/// read the sessions and the door.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgentCommand {
     Stop,
-    UndoRun,
+    UndoSession,
     TakeOver,
     Revoke,
 }
 
-/// The agent `effect` is about and what it asks of it: `None` for a run's page.
+/// The agent `effect` is about and what it asks of it: `None` for a session's page.
 pub(crate) fn agent(effect: &ConsoleEffect) -> Option<(&str, Option<AgentCommand>)> {
     match effect {
-        ConsoleEffect::ViewRun { .. } | ConsoleEffect::ViewConnect => None,
+        ConsoleEffect::ViewSession { .. } | ConsoleEffect::ViewConnect => None,
         ConsoleEffect::ViewAgent { agent } => Some((agent, None)),
         ConsoleEffect::StopAgent { agent } => Some((agent, Some(AgentCommand::Stop))),
-        ConsoleEffect::UndoAgentRun { agent } => Some((agent, Some(AgentCommand::UndoRun))),
+        ConsoleEffect::UndoAgentSession { agent } => Some((agent, Some(AgentCommand::UndoSession))),
         ConsoleEffect::TakeOverAgent { agent } => Some((agent, Some(AgentCommand::TakeOver))),
         ConsoleEffect::RevokeAgent { agent } => Some((agent, Some(AgentCommand::Revoke))),
     }

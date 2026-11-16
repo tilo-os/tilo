@@ -203,7 +203,7 @@ enum FocusedRow {
 fn work_icon(kind: &str) -> Option<(crate::icons::Icon, &'static str)> {
     match kind {
         "task" | "issue" => Some((crate::icons::Icon::ListChecks, "history-work-task")),
-        "agent-run" => Some((crate::icons::Icon::Bot, "history-work-agent-run")),
+        "agent-session" => Some((crate::icons::Icon::Bot, "history-work-agent-run")),
         "shortcut" => Some((crate::icons::Icon::Play, "history-work-shortcut")),
         _ => None,
     }

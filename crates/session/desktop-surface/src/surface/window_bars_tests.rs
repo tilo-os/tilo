@@ -493,7 +493,7 @@ fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_
     let (surface, handle) = crate::surface::tests::shell_with(2, Box::new(WithHistory));
     let tabs: Vec<u64> = handle.read(|tree| tree.tabs().map(|tab| tab.id).collect());
     let run = tilo_desktop_model::ownership::OpenedBy {
-        run: "agent-run:7".into(),
+        run: "agent-session:7".into(),
         label: AGENT.into(),
         title: "Fill Jane Doe's visa application".into(),
     };
@@ -663,7 +663,7 @@ fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_ru
     assert!(handle.set_opened_by(std::collections::BTreeMap::from([(
         focused,
         tilo_desktop_model::ownership::OpenedBy {
-            run: "agent-run:7".into(),
+            run: "agent-session:7".into(),
             label: AGENT.into(),
             title: "Fill Jane Doe's visa application".into(),
         },

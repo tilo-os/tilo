@@ -18,7 +18,7 @@ pub(super) fn said_run_title(request: &InvokeRequest) -> Option<String> {
         .as_ref()?
         .group
         .as_ref()
-        .filter(|group| group.kind == tilo_actions::context::AGENT_RUN_GROUP)?
+        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)?
         .title
         .as_deref()?
         .chars()
@@ -40,7 +40,7 @@ pub(super) fn said_run_id(request: &InvokeRequest) -> Option<String> {
         .as_ref()?
         .group
         .as_ref()
-        .filter(|group| group.kind == tilo_actions::context::AGENT_RUN_GROUP)?
+        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)?
         .declared_id
         .as_deref()?;
     ((1..=MAX_RUN_ID).contains(&id.len()) && id.chars().all(|c| c.is_ascii_graphic()))
@@ -50,7 +50,7 @@ pub(super) fn said_run_id(request: &InvokeRequest) -> Option<String> {
 /// The context the host stamps on what `caller`'s `request` changes: the
 /// purpose and gesture the caller said, and the work it is part of. A run is
 /// the host's to say: an agent's or a key's actions on one connection are the
-/// run [`Caller::agent_run`] names, by the title the agent gave it
+/// run [`Caller::agent_session`] names, by the title the agent gave it
 /// ([`said_run_title`]), else by the name the host knows for the agent, and
 /// naming the id the agent gave it ([`said_run_id`]); a run a client claims
 /// for itself is never taken.
@@ -59,7 +59,7 @@ pub(super) fn caller_context(
     request: &InvokeRequest,
 ) -> Option<tilo_actions::ActionContext> {
     let said = request.context.as_ref();
-    let group = match caller.agent_run() {
+    let group = match caller.agent_session() {
         Some(mut run) => {
             if let Some(title) = said_run_title(request) {
                 run.label.clone_from(&title);
@@ -70,10 +70,7 @@ pub(super) fn caller_context(
         }
         None => said
             .and_then(|context| context.group.clone())
-            .filter(|group| {
-                group.kind != tilo_actions::context::AGENT_RUN_GROUP
-                    && group.kind != tilo_actions::context::TASK_RUN_GROUP
-            }),
+            .filter(|group| group.kind != tilo_actions::context::AGENT_SESSION_GROUP),
     };
     if said.is_none() && group.is_none() {
         return None;

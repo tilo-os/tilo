@@ -434,7 +434,7 @@ mod tests {
             .with_group(
                 run,
                 "Ship the release",
-                ui::history_source::steps::AGENT_RUN,
+                ui::history_source::steps::AGENT_SESSION,
             )
             .change_message()
             .unwrap();

@@ -83,7 +83,7 @@ impl Place {
 pub(crate) struct Nav {
     pub(crate) place: LocalState<Option<String>>,
     pub(crate) pane: LocalState<ui::widget::NavPane>,
-    pub(crate) run: LocalState<Option<String>>,
+    pub(crate) session: LocalState<Option<String>>,
     pub(crate) action: LocalState<Option<usize>>,
     pub(crate) full_output: LocalState<Option<usize>>,
     pub(crate) agent: LocalState<Option<String>>,
@@ -107,62 +107,62 @@ impl Nav {
         self.pane.set(ui::widget::NavPane::Content);
     }
 
-    /// Show the run `id`, no action of it open.
-    pub(crate) fn open_run(&self, id: &str) {
+    /// Show the session `id`, no action of it open.
+    pub(crate) fn open_session(&self, id: &str) {
         self.action.set(None);
         self.full_output.set(None);
-        self.run.set(Some(id.to_owned()));
+        self.session.set(Some(id.to_owned()));
     }
 
-    /// Show the run `id` from wherever the window is: a run's page is the Agents place, so
-    /// opening the run a link names shows it there.
-    pub(crate) fn show_run(&self, id: &str) {
+    /// Show the session `id` from wherever the window is: a session's page is the Agents place, so
+    /// opening the session a link names shows it there.
+    pub(crate) fn show_session(&self, id: &str) {
         self.place.set(Some(Place::Agents.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
-        self.open_run(id);
+        self.open_session(id);
     }
 
     /// Show the card of the agent `client`, and carry out `command` there.
     pub(crate) fn show_agent(&self, client: &str, command: Option<effects::AgentCommand>) {
         self.place.set(Some(Place::Agents.key().to_owned()));
         self.pane.set(ui::widget::NavPane::Content);
-        self.close_run();
+        self.close_session();
         self.command.set(command);
         self.agent.set(Some(client.to_owned()));
     }
 
-    /// Go back one step: from a run to the card it was opened from or every run, from a
-    /// card to every run.
+    /// Go back one step: from a session to the card it was opened from or every session, from a
+    /// card to every session.
     pub(crate) fn back(&self) {
-        if self.run.get().is_some() {
-            self.close_run();
+        if self.session.get().is_some() {
+            self.close_session();
         } else {
             self.agent.set(None);
         }
     }
 
-    /// Show every run again.
-    pub(crate) fn close_run(&self) {
+    /// Show every session again.
+    pub(crate) fn close_session(&self) {
         self.action.set(None);
         self.full_output.set(None);
-        self.run.set(None);
+        self.session.set(None);
     }
 }
 
-/// What every place reads, followed once for the window: a place shown again, or a run
+/// What every place reads, followed once for the window: a place shown again, or a session
 /// chosen, reads the answers already here rather than asking anew.
 #[derive(Clone)]
 pub(crate) struct Reads {
-    pub(crate) runs: Query<wire::Runs>,
+    pub(crate) sessions: Query<wire::Sessions>,
     pub(crate) door: Query<mcp_server::Server>,
 }
 
 impl Reads {
-    /// Every run the history listed, once it answered: none before, so a run's address
-    /// resolves meanwhile without its run.
-    pub(crate) fn runs(&self) -> Vec<wire::AgentRun> {
-        self.runs.answer().with(|read| match read {
-            Arrival::Ready(runs) => runs.runs.clone(),
+    /// Every session the history listed, once it answered: none before, so a session's address
+    /// resolves meanwhile without its session.
+    pub(crate) fn sessions(&self) -> Vec<wire::AgentSession> {
+        self.sessions.answer().with(|read| match read {
+            Arrival::Ready(sessions) => sessions.sessions.clone(),
             Arrival::Pending { .. } | Arrival::Failed(_) => Vec::new(),
         })
     }
@@ -206,7 +206,7 @@ impl Doors {
     }
 
     /// Ask for the link to `resource`, as the framework's `share-link` hands it out:
-    /// copying it is the framework's, so a link to a run is the same link any resource
+    /// copying it is the framework's, so a link to a session is the same link any resource
     /// gets.
     pub(crate) fn share_link(&self, resource: &str) {
         self.0.dispatcher().share_link(resource);
@@ -297,7 +297,7 @@ impl ResourceApp for App {
         let nav = Nav {
             place: cx.local(Some(Place::Agents.key().to_owned())),
             pane: cx.local(ui::widget::NavPane::Content),
-            run: cx.local(None),
+            session: cx.local(None),
             action: cx.local(None),
             full_output: cx.local(None),
             agent: cx.local(None),
@@ -310,7 +310,7 @@ impl ResourceApp for App {
         }
         let doors = Doors::of(cx);
         let reads = Reads {
-            runs: doors.follow_history(wire::RUNS, &agents::query()),
+            sessions: doors.follow_history(wire::SESSIONS, &agents::query()),
             door: doors.follow_door(),
         };
         let opened = nav.clone();
@@ -318,7 +318,7 @@ impl ResourceApp for App {
             match effects::agent(&effect) {
                 Some((client, command)) => opened.show_agent(client, command),
                 None => match &effect {
-                    ConsoleEffect::ViewRun { run } => opened.show_run(run),
+                    ConsoleEffect::ViewSession { session } => opened.show_session(session),
                     ConsoleEffect::ViewConnect => opened.show_place(Place::Connect),
                     _ => {}
                 },
@@ -330,11 +330,11 @@ impl ResourceApp for App {
         let filter = cx.value(Console::clone);
         let content = cx.switch(&filter, move |cx, _| {
             let (nav, reads) = (nav.clone(), reads.clone());
-            let (place, run) = (nav.place.clone(), nav.run.clone());
+            let (place, session) = (nav.place.clone(), nav.session.clone());
             cx.switch(&place, move |cx, _| {
                 let (nav, reads) = (nav.clone(), reads.clone());
                 let (nav, reads, agent) = (nav.clone(), reads, nav.agent);
-                cx.switch(&run, move |cx, _| {
+                cx.switch(&session, move |cx, _| {
                     let (nav, reads) = (nav.clone(), reads.clone());
                     cx.switch(&agent, move |cx, _| window(cx, &nav, &reads))
                 })
@@ -343,17 +343,17 @@ impl ResourceApp for App {
         cx.publishing(
             Publishes::new()
                 .live_rows(move || {
-                    let runs = listed.runs();
+                    let sessions = listed.sessions();
                     let door = door_read.answer().with(|read| match read {
                         Arrival::Ready(door) => door.clone(),
                         Arrival::Pending { .. } | Arrival::Failed(_) => {
                             mcp_server::Server::default()
                         }
                     });
-                    let mut rows = agents::live_runs(&runs);
-                    let agent_names = runs
+                    let mut rows = agents::live_sessions(&sessions);
+                    let agent_names = sessions
                         .iter()
-                        .map(|run| run.agent.name.as_str())
+                        .map(|session| session.agent.name.as_str())
                         .chain(door.grants.iter().map(|grant| grant.agent.as_str()));
                     rows.extend(
                         agent_card::clients(agent_names)
@@ -363,7 +363,7 @@ impl ResourceApp for App {
                     rows
                 })
                 .live_row(move |resource| {
-                    agents::live_run_at(&named.runs(), resource)
+                    agents::live_session_at(&named.sessions(), resource)
                         .or_else(|| agent_card::agent_of(resource).map(agent_card::live_agent))
                 }),
             content,
@@ -400,11 +400,11 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
         .sidebar(Box::new(sidebar))
         .sidebar_header(tr("console-title"), Vec::new())
         .on_back(
-            move || open.run.get().is_some() || open.agent.get().is_some(),
+            move || open.session.get().is_some() || open.agent.get().is_some(),
             move || close.back(),
         );
     let (shell, location) = match place {
-        Place::Agents if nav.run.get().is_none() && nav.agent.get().is_some() => {
+        Place::Agents if nav.session.get().is_none() && nav.agent.get().is_some() => {
             let client = nav.agent.get().unwrap_or_default();
             let shell = shell.content(agent_card::view(cx, nav, reads, &client));
             (shell, client)

@@ -66,8 +66,8 @@ fn answer(app: &mut TestApp<App>, request: &InvokeRequest, value: serde_json::Va
 }
 
 /// Claude Code's session "Claude Code #2", working now through grant `g1`.
-fn run() -> wire::AgentRun {
-    wire::AgentRun {
+fn run() -> wire::AgentSession {
+    wire::AgentSession {
         id: "mcp:r2".into(),
         agent: wire::Author {
             name: "Claude Code #2".into(),
@@ -112,14 +112,14 @@ fn opened() -> TestApp<App> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
-    let runs = find(&requests, &wire::target(wire::RUNS));
+    let runs = find(&requests, &wire::target(wire::SESSIONS));
     let read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         &runs,
-        serde_json::to_value(wire::Runs {
+        serde_json::to_value(wire::Sessions {
             total: 1,
-            runs: vec![run()],
+            sessions: vec![run()],
             pending: false,
             mutations: true,
         })
@@ -158,7 +158,7 @@ fn each_agent_is_published_with_its_card_and_its_commands() {
     assert_eq!(view.open_action, ConsoleEffect::VIEW_AGENT.id);
     for action in [
         "stop-agent",
-        "undo-agent-run",
+        "undo-agent-session",
         "take-over-agent",
         "revoke-agent",
     ] {

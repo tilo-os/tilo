@@ -187,7 +187,7 @@ pub enum AgentAsk {
     /// Pull its card out into a window beside the work.
     Card,
     Stop,
-    UndoRun,
+    UndoSession,
     TakeOver,
     Revoke,
 }
@@ -199,7 +199,7 @@ impl AgentAsk {
         match self {
             Self::Card => "view-agent",
             Self::Stop => "stop-agent",
-            Self::UndoRun => "undo-agent-run",
+            Self::UndoSession => "undo-agent-run",
             Self::TakeOver => "take-over-agent",
             Self::Revoke => "revoke-agent",
         }
@@ -986,7 +986,7 @@ impl ProfileCard {
                 "profile-agent-undo-run",
                 "profile-agent-undo-run",
                 Icon::Undo2,
-                AgentAsk::UndoRun,
+                AgentAsk::UndoSession,
                 ButtonRole::Plain,
             ),
             (

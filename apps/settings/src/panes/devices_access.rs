@@ -317,11 +317,11 @@ impl AgentEntry<'_> {
         }
         match self.grant {
             Some(grant) if grant.script_key && !grant.agent.is_empty() => grant.agent.clone(),
-            Some(grant) if !grant.runs_on.is_empty() && !grant.agent.is_empty() => t_args(
+            Some(grant) if !grant.device.is_empty() && !grant.agent.is_empty() => t_args(
                 "settings-access-agent-on",
                 &[
                     ("agent", grant.agent.clone().into()),
-                    ("place", grant.runs_on.clone().into()),
+                    ("device", grant.device.clone().into()),
                 ],
             ),
             Some(grant) => app_of(grant),

@@ -369,9 +369,9 @@ fn key(person: [u8; 32], device: [u8; 32], label: &str) -> Caller {
 fn claimed_run() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
         group: Some(tilo_actions::WorkGroup {
-            id: "agent-run:claimed".into(),
+            id: "agent-session:claimed".into(),
             label: "Not me".into(),
-            kind: tilo_actions::context::AGENT_RUN_GROUP.into(),
+            kind: tilo_actions::context::AGENT_SESSION_GROUP.into(),
             title: None,
             declared_id: None,
         }),
@@ -634,7 +634,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             }
             if app == NOTES
                 && by_host == Admitted::Runs
-                && let Some(run) = caller.agent_run()
+                && let Some(run) = caller.agent_session()
             {
                 agents.push(run.label);
             }
@@ -685,7 +685,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
             .collect();
         if named.len() != 1
             || named.iter().any(|(id, kind)| {
-                kind != tilo_actions::context::AGENT_RUN_GROUP || id == "agent-run:claimed"
+                kind != tilo_actions::context::AGENT_SESSION_GROUP || id == "agent-session:claimed"
             })
         {
             differences.push(format!("{name}'s changes on the host: runs {named:?}"));
@@ -813,7 +813,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     let codex = Browser::open(&hosted, &computer, &host).await;
-    let _ = tilo_session_client::device::run_as_agent(&codex.peer, "Codex").await;
+    let _ = tilo_session_client::device::session_as_agent(&codex.peer, "Codex").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = tilo_session_client::remote::SessionActions::new(
         &codex.peer,
@@ -902,7 +902,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         super::resource_support::open_admitted_peer(&hosted, &page_device, &host, &cluster).await;
     let agent =
         super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
-    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(guest.verifying_key().to_bytes());
     let actions = tilo_session_client::remote::SessionActions::new(
         &agent.peer,
@@ -951,7 +951,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
             None,
         ))),
     )
-    .spoken_for("agent-run:forged");
+    .spoken_for("agent-session:forged");
     agent
         .peer
         .send(Cmd::SayForRun(

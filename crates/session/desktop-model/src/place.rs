@@ -162,7 +162,7 @@ mod tests {
         Opener {
             person: PERSON,
             run: Some(OpenedBy {
-                run: "agent-run:7".into(),
+                run: "agent-session:7".into(),
                 label: "Scribe".into(),
                 title: "File the receipts".into(),
             }),

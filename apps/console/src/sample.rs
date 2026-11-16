@@ -10,7 +10,7 @@ use crate::{Console, Nav, Place};
 
 pub(crate) const SCENARIOS: &[&str] = &[
     "agents",
-    "run",
+    "session",
     "command",
     "command-output",
     "workspaces",
@@ -32,9 +32,9 @@ fn minutes_ago_ms(minutes: i64) -> i64 {
 
 const CLAUDE: &str = "agent:claude-code";
 const CODEX: &str = "agent:codex";
-const CLAUDE_RUN: &str = "Claude Code #3";
+const CLAUDE_SESSION: &str = "Claude Code #3";
 const CLAUDE_EARLIER: &str = "Claude Code #1";
-const CODEX_RUN: &str = "Codex #1";
+const CODEX_SESSION: &str = "Codex #1";
 
 fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
     wire::Author {
@@ -48,11 +48,11 @@ fn agent(name: &str, identity: &str, rgb: [u8; 3]) -> wire::Author {
 }
 
 fn claude() -> wire::Author {
-    agent(CLAUDE_RUN, CLAUDE, [214, 130, 77])
+    agent(CLAUDE_SESSION, CLAUDE, [214, 130, 77])
 }
 
 fn codex() -> wire::Author {
-    agent(CODEX_RUN, CODEX, [90, 140, 220])
+    agent(CODEX_SESSION, CODEX, [90, 140, 220])
 }
 
 /// The id of the `n`th change, as the history names it.
@@ -70,13 +70,13 @@ fn target(app: &str, app_label: &str, id: &str, label: &str) -> wire::Target {
     }
 }
 
-fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wire::RunAction {
+fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wire::SessionAction {
     let target = view.target().clone();
     let undoable = matches!(
         view,
         wire::ActionView::File { .. } | wire::ActionView::Record { .. }
     );
-    wire::RunAction {
+    wire::SessionAction {
         range: wire::Range::one(&id(n)),
         changes: 1,
         at_ms: minutes_ago_ms(minutes_ago),
@@ -91,11 +91,11 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
     }
 }
 
-/// A command Claude Code ran in the Storefront shell, as the shell's run record serves it:
+/// A command Claude Code ran in the Storefront shell, as the shell's execution record serves it:
 /// its last lines, the rest one read away, and how it ended `minutes_ago`, after `took_ms`
 /// (`None`: still running).
 fn command(
-    run: &str,
+    execution: &str,
     command: &str,
     printed: &[&str],
     exit: Option<i32>,
@@ -116,11 +116,11 @@ fn command(
         exit,
         started_ms: Some(started_ms),
         ended_ms: took_ms.map(|took| started_ms.saturating_add(took)),
-        run: Some(wire::CommandRun {
+        execution: Some(wire::CommandExecution {
             workspace: Some("ws-storefront".to_owned()),
             app_id: "so.tilo.terminal".to_owned(),
             record: "tab:1".to_owned(),
-            run: run.to_owned(),
+            execution: execution.to_owned(),
         }),
     }
 }
@@ -143,10 +143,10 @@ const FAILING_TEST_OUTPUT: [&str; 14] = [
 ];
 
 /// Everything the failing test run printed, as the full-output read answers it.
-fn whole_output() -> wire::RunOutput {
-    wire::RunOutput {
+fn whole_output() -> wire::SessionOutput {
+    wire::SessionOutput {
         lines: FAILING_TEST_OUTPUT.map(str::to_owned).to_vec(),
-        ..wire::RunOutput::default()
+        ..wire::SessionOutput::default()
     }
 }
 
@@ -157,12 +157,12 @@ fn line(side: wire::DiffSide, text: &str) -> wire::DiffLine {
     }
 }
 
-/// Claude Code's run, working now: a test it ran, a file it changed, the test again, and
+/// Claude Code's session, working now: a test it ran, a file it changed, the test again, and
 /// the page it opened.
-fn fix_run() -> wire::AgentRun {
+fn fix_session() -> wire::AgentSession {
     use wire::DiffSide::{Added, Both, Removed};
-    wire::AgentRun {
-        id: "run:fix-signup".to_owned(),
+    wire::AgentSession {
+        id: "fix-signup".to_owned(),
         agent: claude(),
         workspace: Some("Storefront".to_owned()),
         instruction: "Fix the failing signup test and open a draft PR".to_owned(),
@@ -182,7 +182,7 @@ fn fix_run() -> wire::AgentRun {
                 14,
                 "Ran the signup tests",
                 command(
-                    "run-1",
+                    "exec-1",
                     "cargo test -p signup",
                     &FAILING_TEST_OUTPUT,
                     Some(101),
@@ -210,7 +210,7 @@ fn fix_run() -> wire::AgentRun {
                 5,
                 "Ran the signup tests again",
                 command(
-                    "run-2",
+                    "exec-2",
                     "cargo test -p signup",
                     &[
                         "running 12 tests",
@@ -239,7 +239,7 @@ fn fix_run() -> wire::AgentRun {
                 5,
                 0,
                 "cargo clippy -p signup",
-                command("run-3", "cargo clippy -p signup", &[], None, (0, None)),
+                command("exec-3", "cargo clippy -p signup", &[], None, (0, None)),
             ),
         ],
         undo_blocked: None,
@@ -250,9 +250,9 @@ fn fix_run() -> wire::AgentRun {
     }
 }
 
-fn runs() -> wire::Runs {
-    let notes = wire::AgentRun {
-        id: "run:release-notes".to_owned(),
+fn sessions() -> wire::Sessions {
+    let notes = wire::AgentSession {
+        id: "release-notes".to_owned(),
         agent: codex(),
         workspace: Some("Launch".to_owned()),
         instruction: "Draft the release notes from this week's merged changes".to_owned(),
@@ -287,8 +287,8 @@ fn runs() -> wire::Runs {
             at_ms: minutes_ago_ms(80),
         }),
     };
-    let budget = wire::AgentRun {
-        id: "run:budget".to_owned(),
+    let budget = wire::AgentSession {
+        id: "budget".to_owned(),
         agent: agent(CLAUDE_EARLIER, CLAUDE, [214, 130, 77]),
         workspace: Some("Launch".to_owned()),
         instruction: "Total the venue quotes in the budget sheet".to_owned(),
@@ -307,12 +307,12 @@ fn runs() -> wire::Runs {
                 target: target("so.tilo.sheets", "Sheets", "budget", "Budget"),
             },
         )],
-        undo_blocked: Some("Open Budget to undo this run".to_owned()),
+        undo_blocked: Some("Open Budget to undo this session".to_owned()),
         now: None,
     };
-    wire::Runs {
+    wire::Sessions {
         total: 3,
-        runs: vec![fix_run(), notes, budget],
+        sessions: vec![fix_session(), notes, budget],
         pending: false,
         mutations: true,
     }
@@ -329,7 +329,7 @@ fn the_door() -> mcp_server::Server {
                 granted_ms: minutes_ago_ms(9 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(1)),
                 sessions: vec![mcp_server::AgentSession {
-                    name: CLAUDE_RUN.to_owned(),
+                    name: CLAUDE_SESSION.to_owned(),
                     started_ms: minutes_ago_ms(14),
                 }],
                 browser_pages: true,
@@ -385,28 +385,28 @@ fn detail() -> wire::Detail {
 
 /// The answers a capture's reads get.
 pub(crate) fn fixture(fixture: &mut Fixture<Console>) {
-    fixture.answer(&wire::target(wire::RUNS), &runs());
+    fixture.answer(&wire::target(wire::SESSIONS), &sessions());
     fixture.answer(&wire::target(wire::DETAIL), &detail());
-    fixture.answer(&wire::target(wire::RUN_OUTPUT), &whole_output());
+    fixture.answer(&wire::target(wire::SESSION_OUTPUT), &whole_output());
     fixture.answer(&mcp_server::target(mcp_server::SERVER), &the_door());
 }
 
 /// The view state a scenario shows.
 pub(crate) fn stage(scenario: Option<&str>, nav: &Nav) {
     match scenario {
-        Some("run") => {
+        Some("session") => {
             nav.show(Place::Agents);
-            nav.open_run("run:fix-signup");
+            nav.open_session("fix-signup");
             nav.action.set(Some(1));
         }
         Some("command") => {
             nav.show(Place::Agents);
-            nav.open_run("run:fix-signup");
+            nav.open_session("fix-signup");
             nav.action.set(Some(0));
         }
         Some("command-output") => {
             nav.show(Place::Agents);
-            nav.open_run("run:fix-signup");
+            nav.open_session("fix-signup");
             nav.action.set(Some(0));
             nav.full_output.set(Some(0));
         }

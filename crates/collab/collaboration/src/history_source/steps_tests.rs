@@ -219,19 +219,19 @@ tilo_test_env::scenario! {
             context: group.map(|(id, kind)| ActionContext::default().with_group(id, "Tidy", kind)),
             message: None,
         };
-        let task = version(Some(("task:7", TASK_RUN)));
-        let agent = version(Some(("run:7", AGENT_RUN)));
+        let task = version(Some(("task:7", AGENT_SESSION)));
+        let agent = version(Some(("run:7", AGENT_SESSION)));
         let issue = version(Some(("issue:7", "issue")));
-        assert!(Scope::Run("task:7".into()).owns(&task));
-        assert!(Scope::Run("run:7".into()).owns(&agent));
-        assert!(!Scope::Run("task:8".into()).owns(&task));
-        assert!(!Scope::Run("issue:7".into()).owns(&issue));
+        assert!(Scope::Session("task:7".into()).owns(&task));
+        assert!(Scope::Session("run:7".into()).owns(&agent));
+        assert!(!Scope::Session("task:8".into()).owns(&task));
+        assert!(!Scope::Session("issue:7".into()).owns(&issue));
         assert!(!scope(ALICE).owns(&agent));
         assert!(!scope(ALICE).owns(&task));
         assert!(scope(ALICE).owns(&issue));
         assert_eq!(
             Scope::of(task.context.as_ref(), "alice"),
-            Scope::Run("task:7".into())
+            Scope::Session("task:7".into())
         );
     }
 }

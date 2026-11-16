@@ -1290,14 +1290,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
             id: id.into(),
             label: label.into(),
-            kind: "agent-run".into(),
+            kind: "agent-session".into(),
             title: None,
             declared_id: None,
         });
         self
     }
     /// The agent run this session's invocations are attributed to now.
-    fn agent_run(&self) -> Option<tilo_actions::WorkGroup> {
+    fn agent_session(&self) -> Option<tilo_actions::WorkGroup> {
         self.run.lock_recover().clone()
     }
     /// The page detail this session answers with when a call names none.
@@ -1517,7 +1517,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 *run = Some(tilo_actions::WorkGroup {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
-                    kind: "agent-run".into(),
+                    kind: "agent-session".into(),
                     title: None,
                     declared_id: None,
                 });
@@ -2927,7 +2927,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.agent_run().map(|mut run| {
+        self.agent_session().map(|mut run| {
             // A call naming the run it is a step of (`_meta` run) is
             // attributed to that run's title, which is what people read in
             // history and see in presence, not the connection's own label,

@@ -4,7 +4,7 @@
 //! workspace (the host invites it on the session and it redeems there), and
 //! runs a record action addressed to the host's own device, which the
 //! device's own action broker answers in a run of the key's
-//! ([`tilo_runtime::key_runs`]).
+//! ([`tilo_runtime::key_sessions`]).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -30,7 +30,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_mcp::devices::PersonalDevices;
 use tilo_mcp::enter::Entered;
 use tilo_peer_state::{PersonalStore, PersonalSync};
-use tilo_runtime::key_runs::{KeyRuns, RunHost, Runs};
+use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -207,13 +207,13 @@ struct DeviceRuns {
     opened: Mutex<Vec<DeviceCert>>,
 }
 
-impl Runs for DeviceRuns {
+impl Sessions for DeviceRuns {
     fn workspace(&self, workspace_id: WorkspaceId) -> Option<String> {
         (tilo_desktop_model::WorkspaceId::parse(&self.workspace) == Some(workspace_id))
             .then(|| self.workspace.clone())
     }
 
-    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(RunHost, Caller), String> {
+    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String> {
         if workspace != self.workspace {
             return Err(format!("no workspace {workspace} here"));
         }
@@ -239,7 +239,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let (key, cert) = certified(root, 2, "Build box", DeviceCapabilities::primary());
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
-    let key_runs = KeyRuns::new();
+    let key_sessions = KeySessions::new();
     // A host opens only after its endpoint had its whole wait to reach a relay
     // (`tilo_workspace_host::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
@@ -255,7 +255,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let host = Arc::new(
         WorkspaceHost::open(
             HostConfig {
-                apps: Some(Arc::clone(&key_runs)
+                apps: Some(Arc::clone(&key_sessions)
                     as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
                 ..HostConfig::new(
                     state.path().join("workspace-host"),
@@ -292,9 +292,9 @@ async fn device_host(root: &SigningKey) -> Box_ {
         },
         opened: Mutex::default(),
     });
-    key_runs.serve(
+    key_sessions.serve(
         Arc::new(PersonalDevices::new(PersonalSync::new(store, key))),
-        Arc::clone(&runs) as Arc<dyn Runs>,
+        Arc::clone(&runs) as Arc<dyn Sessions>,
     );
     let router = host
         .protocols()

@@ -114,8 +114,8 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
         )),
         None => {}
     }
-    if let Some(run) = &detail.run {
-        parts.extend(agent_run(&provider, range, run));
+    if let Some(session) = &detail.session {
+        parts.extend(agent_session(&provider, range, session));
     }
     parts.push(name(cx, &provider, range, detail));
     crate::page(parts)
@@ -151,7 +151,7 @@ fn offers(provider: &Provider, nav: &Nav, range: &wire::Range, detail: &wire::De
     Box::new(row)
 }
 
-fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<Element> {
+fn agent_session(provider: &Provider, range: &wire::Range, run: &wire::Session) -> Vec<Element> {
     let facts = vec![
         Property::new(tr("activity-why-this-work"), run.instruction.clone()),
         Property::new(tr("activity-agent-task-by"), run.byline.clone()),

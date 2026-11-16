@@ -6,11 +6,11 @@
 //! with the host, enters a workspace there, and runs that workspace's actions
 //! addressed to the host's own device. A relay answers them with its app
 //! workers; a person's device answers them with its own action broker, which
-//! is what [`KeyRuns`] puts behind the host
+//! is what [`KeySessions`] puts behind the host
 //! ([`HostConfig::apps`](tilo_workspace_host::host::HostConfig::apps)).
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
-//! admits an agent at the device's MCP server ([`Runs::open`]). Before every
+//! admits an agent at the device's MCP server ([`Sessions::open`]). Before every
 //! message the key is checked against the person's own store of their devices
 //! ([`PersonsDevices::admit`]: theirs, current, not revoked) and its grant's
 //! scope against the workspace; a key that no longer holds loses its run.
@@ -26,51 +26,51 @@ use tilo_workspace_host::app_serving::AppServingPlane;
 use collab_types::WorkspaceId;
 use tilo_mcp::devices::PersonsDevices;
 
-/// The most runs one device keeps for its person's keys at once.
-const MAX_RUNS: usize = 256;
+/// The most sessions one device keeps for its person's keys at once.
+const MAX_SESSIONS: usize = 256;
 
 /// An action host every call of one run goes through, as the caller it
 /// admitted.
-pub type RunHost = Arc<dyn ActionHost + Send + Sync>;
+pub type SessionHost = Arc<dyn ActionHost + Send + Sync>;
 
-/// A device's action broker as a key's runs reach it.
-pub trait Runs: Send + Sync {
+/// A device's action broker as a key's sessions reach it.
+pub trait Sessions: Send + Sync {
     /// The workspace (its UUID) the host's session calls `workspace_id`, when
     /// this device answers its actions.
     fn workspace(&self, workspace_id: WorkspaceId) -> Option<String>;
 
-    /// A run for `key` in `workspace`: the host its calls go through and the
+    /// A session for `key` in `workspace`: the host its calls go through and the
     /// caller they go as. The broker admits it as it admits an agent at this
     /// device's MCP server; a refusal says why.
     ///
     /// # Errors
-    /// The broker does not admit a run for the key.
-    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(RunHost, Caller), String>;
+    /// The broker does not admit a session for the key.
+    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String>;
 }
 
 /// The record actions of the workspaces a device hosts, answered for its
 /// person's keys by its own broker: the device's
 /// [`AppServingPlane`](tilo_workspace_host::app_serving::AppServingPlane).
-pub struct KeyRuns {
+pub struct KeySessions {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.
     serving: OnceLock<Serving>,
-    open: std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Run>>,
+    open: std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Session>>,
 }
 
 struct Serving {
     devices: Arc<dyn PersonsDevices>,
-    runs: Arc<dyn Runs>,
+    sessions: Arc<dyn Sessions>,
 }
 
-struct Run {
+struct Session {
     cert: DeviceCert,
-    host: RunHost,
+    host: SessionHost,
     caller: Caller,
 }
 
-impl KeyRuns {
-    /// Runs nobody answers yet: every message is refused as not running
+impl KeySessions {
+    /// Sessions nobody answers yet: every message is refused as not running
     /// until [`Self::serve`].
     #[must_use]
     pub fn new() -> Arc<Self> {
@@ -80,26 +80,26 @@ impl KeyRuns {
         })
     }
 
-    /// Answer the keys `devices` says are the person's through `runs` from
+    /// Answer the keys `devices` says are the person's through `sessions` from
     /// now on. A second call is ignored.
-    pub fn serve(&self, devices: Arc<dyn PersonsDevices>, runs: Arc<dyn Runs>) {
-        let _ = self.serving.set(Serving { devices, runs });
+    pub fn serve(&self, devices: Arc<dyn PersonsDevices>, sessions: Arc<dyn Sessions>) {
+        let _ = self.serving.set(Serving { devices, sessions });
     }
 
-    /// The run `key` works in on `workspace_id`, opened now if it has none,
+    /// The session `key` works in on `workspace_id`, opened now if it has none,
     /// once the key is the person's and its scope reaches the workspace.
     fn run(
         &self,
         workspace_id: WorkspaceId,
         key: &DeviceCert,
-    ) -> Result<(RunHost, Caller), ActionHostError> {
-        let Serving { devices, runs } =
+    ) -> Result<(SessionHost, Caller), ActionHostError> {
+        let Serving { devices, sessions } =
             self.serving
                 .get()
                 .ok_or_else(|| ActionHostError::Unavailable {
                     reason: "this device's actions are not running yet".into(),
                 })?;
-        let workspace = runs
+        let workspace = sessions
             .workspace(workspace_id)
             .ok_or(ActionHostError::UnknownAction)?;
         if let Err(refusal) = devices.admit(key.device_public_key, key) {
@@ -129,17 +129,17 @@ impl KeyRuns {
         if let Some(run) = renewed {
             run.host.retire_execution(&run.caller);
         }
-        if open.len() >= MAX_RUNS {
+        if open.len() >= MAX_SESSIONS {
             return Err(ActionHostError::Unavailable {
-                reason: "this device runs as many of its person's keys as it takes".into(),
+                reason: "this device sessions as many of its person's keys as it takes".into(),
             });
         }
-        let (host, caller) = runs
+        let (host, caller) = sessions
             .open(&workspace, key)
             .map_err(|reason| ActionHostError::Refused { reason })?;
         open.insert(
             (workspace_id, key.device_public_key),
-            Run {
+            Session {
                 cert: key.clone(),
                 host: Arc::clone(&host),
                 caller: caller.clone(),
@@ -158,7 +158,7 @@ impl KeyRuns {
     }
 }
 
-impl AppServingPlane for KeyRuns {
+impl AppServingPlane for KeySessions {
     /// Only a key's certified session reaches a run: without the certificate
     /// there is no key to hold to its scope.
     fn serve(
@@ -184,7 +184,7 @@ impl AppServingPlane for KeyRuns {
     }
 
     fn forget_workspace(&self, workspace_id: WorkspaceId) {
-        let ended: Vec<Run> = {
+        let ended: Vec<Session> = {
             let mut open = self.open.lock_recover();
             let keys: Vec<_> = open
                 .keys()

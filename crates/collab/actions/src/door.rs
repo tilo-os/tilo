@@ -1649,11 +1649,11 @@ mod tests {
     }
 
     /// The context an agent run hands every invocation it makes.
-    fn agent_run() -> ActionContext {
+    fn agent_session() -> ActionContext {
         ActionContext::default()
             .with_app("org.tilo.Agent", "Agent")
             .with_purpose("Remove the draft marks")
-            .with_group("agent-run:7", "Remove the draft marks", "agent-run")
+            .with_group("agent-session:7", "Remove the draft marks", "agent-session")
     }
 
     /// Read the durable change the door just committed back from its message,
@@ -1689,8 +1689,8 @@ mod tests {
             "the resource stays authoritative"
         );
         let group = context.group.as_ref().expect("the run's group is recorded");
-        assert_eq!(group.id, "agent-run:7");
-        assert_eq!(group.kind, "agent-run");
+        assert_eq!(group.id, "agent-session:7");
+        assert_eq!(group.kind, "agent-session");
         assert_eq!(context.purpose.as_deref(), Some("Remove the draft marks"));
     }
 
@@ -1799,7 +1799,7 @@ mod tests {
                         .destructive(),
                 ),
             ];
-            let run = agent_run();
+            let run = agent_session();
             let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
             let mut doc = AutoCommit::new();
             let mut transport = LocalTransport::new();
@@ -1835,7 +1835,7 @@ mod tests {
                     .as_ref()
                     .and_then(|context| context.group.as_ref())
                     .map(|group| group.id.as_str()),
-                Some("agent-run:7"),
+                Some("agent-session:7"),
                 "the replicated envelope carries the run too"
             );
             assert_recorded_within_run(&mut doc, "star");
@@ -1847,7 +1847,7 @@ mod tests {
         // [`invoke_json_confirmed`].
         {
             let resources = edit_by_value();
-            let run = agent_run();
+            let run = agent_session();
             let provenance = InvocationProvenance::caller(b"agent:ada").within(&run);
             let mut doc = AutoCommit::new();
             let mut transport = LocalTransport::new();

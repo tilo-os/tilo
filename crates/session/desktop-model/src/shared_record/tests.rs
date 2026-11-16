@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
     phase the_run_that_opened_a_window_stays_until_the_window_closes;
     {
         let run = crate::ownership::OpenedBy {
-            run: "agent-run:7".into(),
+            run: "agent-session:7".into(),
             label: "Jane Doe's agent".into(),
             title: "Fill Jane Doe's visa application".into(),
         };

@@ -87,7 +87,7 @@ pub enum Request {
     },
 }
 
-pub use crate::file_actions::command::{COMMAND_RUN, RunGroup};
+pub use crate::file_actions::command::{COMMAND_GROUP, RunGroup};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]

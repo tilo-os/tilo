@@ -2091,9 +2091,9 @@ impl AppServingPlane for GovernedPlane {
         self.apps.as_ref()?.relayed(workspace_id, from, message)
     }
 
-    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
+    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         if let Some(apps) = self.apps.as_ref() {
-            apps.run_arrived(workspace_id, caller);
+            apps.session_arrived(workspace_id, caller);
         }
     }
 

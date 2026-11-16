@@ -344,8 +344,8 @@ impl WorkspaceActions {
     /// present there from now on, waiting, before its first request, as the
     /// host speaks for the runs it executes ([`run_voice`]). Nothing for a
     /// caller in no run.
-    pub fn run_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
-        if caller.agent_run().is_none() {
+    pub fn session_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
+        if caller.agent_session().is_none() {
             return;
         }
         let _ = self.submit(Job::Arrived {
@@ -2547,14 +2547,11 @@ impl Worker {
         };
         let run = caller_context(caller, request)
             .and_then(|context| context.group)
-            .filter(|group| {
-                group.kind == tilo_actions::context::AGENT_RUN_GROUP
-                    || group.kind == tilo_actions::context::TASK_RUN_GROUP
-            })
+            .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
                 // The agent, by its own name; the run, by the title it gave.
-                label: caller.agent_run().map_or(group.label, |run| run.label),
+                label: caller.agent_session().map_or(group.label, |run| run.label),
                 title: group.title.unwrap_or_default(),
             });
         let title = self

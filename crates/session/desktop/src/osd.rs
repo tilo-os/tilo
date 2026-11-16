@@ -1613,11 +1613,11 @@ mod tests {
             let (value_w, _) = text.measure_style(&shown, None, &styles.value);
             // The two runs of words, where they are drawn: apart, never over each other, whatever
             // the device is called.
-            let name_run = pill.name.x0..pill.name.x0 + f64::from(name_w);
+            let name_session = pill.name.x0..pill.name.x0 + f64::from(name_w);
             let value_run = value.x1 - f64::from(value_w)..value.x1;
             assert!(
-                name_run.end <= value_run.start,
-                "{}: the device's name runs into the value: {name_run:?} {value_run:?}",
+                name_session.end <= value_run.start,
+                "{}: the device's name runs into the value: {name_session:?} {value_run:?}",
                 pill.name_text
             );
         }

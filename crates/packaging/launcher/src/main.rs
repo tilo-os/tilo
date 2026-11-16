@@ -202,7 +202,7 @@ enum Cmd {
     },
     /// Launch an application Tilo did **not** package: a `.desktop` entry already installed on the
     /// host, Flatpak or otherwise.
-    RunHost(RunHostArgs),
+    SessionHost(RunHostArgs),
     /// Build or retire the pre-built read-only system view every sandbox mounts
     /// (`launcher::sandbox_view`).
     #[command(subcommand)]
@@ -369,7 +369,7 @@ fn dispatch_command(
     // killer, which it may have inherited from the compositor: an app is always a candidate.
     if matches!(
         command,
-        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::RunHost(_)
+        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::SessionHost(_)
     ) {
         launcher::priority::leave_session_protection();
     }
@@ -406,7 +406,7 @@ fn dispatch_command(
                 capabilities_path: None,
             },
         ),
-        Cmd::RunHost(args) => run_host(args),
+        Cmd::SessionHost(args) => run_host(args),
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),

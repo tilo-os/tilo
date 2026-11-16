@@ -2,7 +2,7 @@
 //! (`tilo login`, then `tilo mcp`), and each session of one open now.
 //!
 //! A device says it runs an agent when its session opens
-//! ([`tilo_relay_protocol::transport::Envelope::AgentRun`]), naming the agent
+//! ([`tilo_relay_protocol::transport::Envelope::AgentSession`]), naming the agent
 //! as History names it; the host keeps that only for a device of its own
 //! person. Each of the device's sessions is one agent session, ended at once by
 //! [`McpServer::stop`] while the device stays the person's, so the agent can
@@ -165,7 +165,7 @@ impl McpServer {
                     }
                     Some(AgentScope::AllWorkspaces) | None => Reach::Account,
                 },
-                runs_on: agent.cert.device_label.clone(),
+                device: agent.cert.device_label.clone(),
                 expires_ms: agent
                     .cert
                     .expires_at_ns
@@ -314,7 +314,7 @@ mod tests {
                 name: id
             }
         );
-        assert_eq!(agent.runs_on, "Framework 16");
+        assert_eq!(agent.device, "Framework 16");
         assert_eq!(agent.expires_ms, Some(9_000));
         assert!(agent.browser_pages);
         assert!(!agent.script_key);

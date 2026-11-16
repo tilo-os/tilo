@@ -78,7 +78,7 @@ impl RunStep {
 
 /// One instruction that spanned one or more applications.
 #[derive(Clone, Debug, PartialEq)]
-pub struct AgentRun {
+pub struct AgentSession {
     /// Document key of the record. A caller addresses an update through this.
     pub id: String,
     /// The instruction, as the person phrased it.
@@ -105,7 +105,7 @@ pub struct AgentRun {
     pub steps: Vec<RunStep>,
 }
 
-impl AgentRun {
+impl AgentSession {
     /// The applications this run touched, in first-seen order and without
     /// repeats — what a sentence naming the run needs.
     pub fn apps(&self) -> Vec<&str> {
@@ -126,7 +126,7 @@ impl AgentRun {
     }
 }
 
-/// Record a run. Returns the document key, which is also [`AgentRun::id`].
+/// Record a run. Returns the document key, which is also [`AgentSession::id`].
 /// The transaction is left open — the caller commits, so the record lands
 /// stamped and attributed like any other edit. A run with no steps is not
 /// recorded: nothing changed, so there is nothing to offer undo on.
@@ -189,7 +189,7 @@ pub fn record_run_with_details(
 /// Read every recorded run out of `doc`, oldest key first. A record that
 /// does not parse is skipped rather than guessed at: an undo affordance
 /// pointing at the wrong changes is worse than no affordance.
-pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
+pub fn read_runs(doc: &AutoCommit) -> Vec<AgentSession> {
     let mut out = Vec::new();
     for key in doc.keys(automerge::ROOT) {
         if !key.starts_with(RUNS_KEY) {
@@ -236,7 +236,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         if steps.is_empty() {
             continue;
         }
-        out.push(AgentRun {
+        out.push(AgentSession {
             id: key.clone(),
             label,
             by: doc.str_at(&rec, "by"),
@@ -254,7 +254,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
 }
 
 /// Mark run `key` as an agent's run of an issue whose changes carry the
-/// group `task` (kind [`super::steps::TASK_RUN`]): what undoing it names.
+/// group `task` (kind [`super::steps::AGENT_SESSION`]): what undoing it names.
 /// Leaves the transaction open, as [`record_run_with_details`] does.
 pub fn set_run_task(doc: &mut AutoCommit, key: &str, task: &str) -> bool {
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, key) else {
@@ -282,7 +282,7 @@ pub fn forget_run(doc: &mut AutoCommit, id: &str) -> bool {
 }
 
 /// The run whose first step starts at `start`, if one is recorded.
-pub fn run_starting_at(doc: &AutoCommit, start: &HistoryEntryId) -> Option<AgentRun> {
+pub fn run_starting_at(doc: &AutoCommit, start: &HistoryEntryId) -> Option<AgentSession> {
     let key = format!("{RUNS_KEY}{}", hex16(start));
     read_runs(doc).into_iter().find(|r| r.id == key)
 }

@@ -24,7 +24,7 @@ use tilo_relay_client::login::PairingLink;
 use tilo_relay_client::login::{Door, sign_in};
 use tilo_relay_client::{CertifyError, answer_pairing, pending_pairings};
 use tilo_relay_protocol::web::API_PREFIX;
-use tilo_session_client::device::{Device, run_as_agent};
+use tilo_session_client::device::{Device, session_as_agent};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{door, enrol, enter as enter_as, start_workspace_host, wait_for};
@@ -175,12 +175,12 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
         .unwrap();
     assert_eq!(agent.workspace_id(), lounge.workspace_id);
     assert_eq!(
-        run_as_agent(agent.session(), "Claude Code").await,
+        session_as_agent(agent.session(), "Claude Code").await,
         Ok(()),
         "its session is already the agent's run, and says so again"
     );
     assert!(
-        run_as_agent(agent.session(), "Codex").await.is_err(),
+        session_as_agent(agent.session(), "Codex").await.is_err(),
         "a session handed to one agent is never another's"
     );
 

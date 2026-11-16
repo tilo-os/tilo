@@ -179,7 +179,7 @@ impl Device {
             ..device
         };
         // The session is the agent's run: the person's MCP server lists it while it lasts.
-        let _ = run_as_agent(&device.peer, &sign_in.agent).await;
+        let _ = session_as_agent(&device.peer, &sign_in.agent).await;
         Ok(device)
     }
 
@@ -1043,14 +1043,14 @@ impl From<HostRefusal> for CertifyError {
 ///
 /// # Errors
 /// The session is already another agent's run, the session is closed, or the host did not answer.
-pub async fn run_as_agent(peer: &Link, label: &str) -> Result<(), String> {
+pub async fn session_as_agent(peer: &Link, label: &str) -> Result<(), String> {
     let label: String = label
         .chars()
         .filter(|character| !character.is_control())
         .take(tilo_relay_protocol::transport::MAX_AGENT_LABEL_CHARS)
         .collect();
     let (done, receive) = crate::answer();
-    peer.send(Cmd::AgentRun(label, done))?;
+    peer.send(Cmd::AgentSession(label, done))?;
     receive
         .await
         .map_err(|_| "the session ended before the host answered".to_owned())?

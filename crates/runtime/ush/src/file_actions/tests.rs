@@ -1084,7 +1084,7 @@ tilo_test_env::scenario! {
             let group = entry.group.as_ref().expect("the run's group");
             assert_eq!(group.id, run.id);
             assert_eq!(group.label, run.label);
-            assert_eq!(group.kind, crate::broker::COMMAND_RUN);
+            assert_eq!(group.kind, crate::broker::COMMAND_GROUP);
         }
     }
 

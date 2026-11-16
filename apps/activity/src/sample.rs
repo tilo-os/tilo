@@ -256,7 +256,7 @@ fn detail() -> wire::Detail {
             label: label.to_owned(),
         })
         .collect(),
-        run: None,
+        session: None,
         comparison: Some(wire::Comparison::Changes {
             lines: vec![
                 "Edited text".to_owned(),

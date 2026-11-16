@@ -94,7 +94,7 @@ fn ask(
                 tilo_actions::entry::Scalar::argument(&serde_json::json!(command)).unwrap(),
             )],
         )))
-        .with_group(group, "Claude Code #2", "agent-run");
+        .with_group(group, "Claude Code #2", "agent-session");
     doc.commit_with(
         CommitOptions::default()
             .with_time(at)
@@ -195,7 +195,7 @@ impl Fixture {
         self.doc.set_actor(ActorId::from(b"ada-laptop".as_slice()));
     }
 
-    fn runs(&mut self) -> wire::Runs {
+    fn sessions(&mut self) -> wire::Sessions {
         self.pane.refresh(&mut self.tree);
         self.pane.refresh_detached_records(
             &mut self.tree,
@@ -206,7 +206,7 @@ impl Fixture {
             }],
         );
         self.pane
-            .serve_runs(&wire::RunsQuery::default(), &self.tree)
+            .serve_runs(&wire::SessionsQuery::default(), &self.tree)
     }
 }
 
@@ -243,9 +243,9 @@ tilo_test_env::scenario! {
             20,
         );
 
-        let served = fixture.runs();
+        let served = fixture.sessions();
         let run = served
-            .runs
+            .sessions
             .iter()
             .find(|run| run.id == "mcp:session-2")
             .unwrap_or_else(|| panic!("the session's work is one run: {served:#?}"));
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
             exit,
             started_ms,
             ended_ms,
-            run: recorded,
+            execution: recorded,
             ..
         } = &run.actions[0].view
         else {
@@ -286,7 +286,7 @@ tilo_test_env::scenario! {
             (
                 recorded.app_id.as_str(),
                 recorded.record.as_str(),
-                recorded.run.as_str()
+                recorded.execution.as_str()
             ),
             (TERMINAL_APP, record.as_str(), "req-1")
         );
@@ -312,9 +312,9 @@ tilo_test_env::scenario! {
         // The second command ends: the run did that last, and is running nothing.
         fixture.as_terminal();
         record_run(&mut fixture.doc, "req-2", 0, 30);
-        let served = fixture.runs();
+        let served = fixture.sessions();
         let run = served
-            .runs
+            .sessions
             .iter()
             .find(|run| run.id == "mcp:session-2")
             .expect("the run is still there");
@@ -336,7 +336,7 @@ tilo_test_env::scenario! {
         let run = connection.run();
         assert_eq!(run.actions.len(), 3, "two documents and one command");
         assert_eq!(run.undo_blocked, None, "every document it changed is open");
-        let offered = |run: &wire::AgentRun| {
+        let offered = |run: &wire::AgentSession| {
             run.actions
                 .iter()
                 .filter_map(|action| action.undo.as_ref().map(|undo| undo.action))
@@ -357,7 +357,7 @@ tilo_test_env::scenario! {
         assert!(!detail.gone);
         assert!(
             detail.offers.iter().any(|offer| {
-                offer.action == wire::DetailAction::UndoRun
+                offer.action == wire::DetailAction::UndoSession
                     && offer.label == t("activity-detail-undo-run")
             }),
             "the run is offered whole under its own name, not a task's: {:?}",
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let outcome = connection
             .pane
-            .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
+            .serve_action(wire::UNDO_SESSION, &query, &mut connection.tree)
             .expect("the run is in the history");
         assert!(outcome.handled);
         let undo = connection.undo();
@@ -418,7 +418,7 @@ tilo_test_env::scenario! {
         // One undo at a time: asking again while it runs asks nothing more, and the run says so.
         connection
             .pane
-            .serve_action(wire::UNDO_RUN, &query, &mut connection.tree)
+            .serve_action(wire::UNDO_SESSION, &query, &mut connection.tree)
             .expect("the run is still in the history");
         assert_eq!(connection.host.undos.borrow().len(), 1);
         assert_eq!(
@@ -513,7 +513,7 @@ tilo_test_env::scenario! {
         let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
         doc.splice_text(&note, 0, 0, "Shopping").unwrap();
         let context = tilo_actions::ActionContext::for_resource(NOTES_ROOT, NOTES_KIND, "Shopping")
-            .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+            .with_group(RUN, "Claude Code", ui::history_source::steps::AGENT_SESSION);
         doc.commit_with(
             CommitOptions::default()
                 .with_time(10)
@@ -522,7 +522,7 @@ tilo_test_env::scenario! {
         let channel = doc.put_object(ROOT, "channel", ObjType::Text).unwrap();
         doc.splice_text(&channel, 0, 0, "Morning").unwrap();
         let other = tilo_actions::ActionContext::for_resource(CHAT_ROOT, CHAT_KIND, "Lounge")
-            .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+            .with_group(RUN, "Claude Code", ui::history_source::steps::AGENT_SESSION);
         doc.commit_with(
             CommitOptions::default()
                 .with_time(20)
@@ -539,9 +539,9 @@ tilo_test_env::scenario! {
                 document: Some(doc),
             }],
         );
-        let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
+        let served = pane.serve_runs(&wire::SessionsQuery::default(), &tree);
         let run = served
-            .runs
+            .sessions
             .iter()
             .find(|run| run.id == RUN)
             .unwrap_or_else(|| panic!("the agent's run is listed: {served:#?}"));
@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
             .cloned()
             .unwrap();
         let outcome = pane
-            .serve_action(wire::UNDO_RUN, &arguments, &mut tree)
+            .serve_action(wire::UNDO_SESSION, &arguments, &mut tree)
             .expect("the run is in the history");
         assert!(outcome.handled);
         let undo = host.undos.borrow().first().cloned().expect("an undo");
@@ -615,7 +615,7 @@ impl Connection {
                 .with_group(
                     GROUP,
                     "Claude Code #2",
-                    ui::history_source::steps::AGENT_RUN,
+                    ui::history_source::steps::AGENT_SESSION,
                 );
             let at = 10_i64.saturating_add(i64::try_from(index).unwrap_or(0));
             doc.commit_with(
@@ -686,14 +686,14 @@ impl Connection {
     }
 
     /// The connection's run, as the activity serves it now.
-    fn run(&mut self) -> wire::AgentRun {
+    fn run(&mut self) -> wire::AgentSession {
         self.refresh();
         let served = self
             .pane
-            .serve_runs(&wire::RunsQuery::default(), &self.tree);
+            .serve_runs(&wire::SessionsQuery::default(), &self.tree);
         let total = served.total;
         served
-            .runs
+            .sessions
             .into_iter()
             .find(|run| run.id == GROUP)
             .unwrap_or_else(|| panic!("the connection's work is one of {total} runs"))

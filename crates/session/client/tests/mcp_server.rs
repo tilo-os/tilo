@@ -24,7 +24,7 @@ use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
 };
 use tilo_relay_client::revoke_device;
-use tilo_session_client::device::run_as_agent;
+use tilo_session_client::device::session_as_agent;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::RevocationReason::Retired;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -112,7 +112,7 @@ fn stop(grant: &str) -> InvokeArgument {
 }
 
 async fn agent_says_its_run(agent: &Link) -> bool {
-    run_as_agent(agent, "Claude Code").await.is_ok()
+    session_as_agent(agent, "Claude Code").await.is_ok()
 }
 
 /// Someone else (`other`) reads nothing of the door and stops nothing of
@@ -125,7 +125,7 @@ async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_
     assert!(!ask(&others, mcp_server::STOP, stop(&grant)).1);
     let own = SessionActions::new(agent, workspace, host_key);
     assert!(!ask(&own, mcp_server::STOP, stop(&grant)).1);
-    let still = run_as_agent(agent, "Claude Code").await;
+    let still = session_as_agent(agent, "Claude Code").await;
     assert!(
         still.is_ok(),
         "the agent is still in: {still:?} {:?}",

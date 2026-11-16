@@ -689,7 +689,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
 
 /// A plain key is a shortcut too, and a press with any modifier held is another.
 #[test]
-fn a_plain_declared_key_runs_it_alone() {
+fn a_plain_declared_key_sessions_it_alone() {
     let (mut app, mut window) = window();
     send(&mut app, &keyed_menu("e"));
     window.receive();

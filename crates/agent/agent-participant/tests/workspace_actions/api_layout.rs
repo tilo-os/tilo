@@ -180,7 +180,7 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_layout() {
     let opened = |tab: u64| desktop.opened_by.get(&tab).expect("the run that opened it");
     let (form, letter) = (opened(form_windows[0]), opened(letter_windows[0]));
     assert!(
-        form.run.starts_with("agent-run:") && !form.label.is_empty(),
+        form.run.starts_with("agent-session:") && !form.label.is_empty(),
         "{desktop:?}"
     );
     assert_eq!(form.title, RUN, "{desktop:?}");

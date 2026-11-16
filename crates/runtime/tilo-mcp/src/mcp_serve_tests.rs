@@ -128,7 +128,7 @@ tilo_test_env::scenario! {
             (groups[0].label.as_str(), groups[1].label.as_str()),
             ("Painter", "Critic")
         );
-        assert!(groups.iter().all(|group| group.kind == "agent-run"));
+        assert!(groups.iter().all(|group| group.kind == "agent-session"));
     }
 
     phase a_client_label_is_bounded_and_printable;

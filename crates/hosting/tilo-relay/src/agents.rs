@@ -508,8 +508,8 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         self.actions.forget_workspace(workspace_id);
     }
 
-    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
-        self.actions.run_arrived(workspace_id, caller);
+    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
+        self.actions.session_arrived(workspace_id, caller);
     }
 }
 
@@ -584,8 +584,8 @@ impl crate::AppServingPlane for HostActionsPlane {
         self.host.actions.forget_workspace(workspace_id);
     }
 
-    fn run_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
-        self.host.actions.run_arrived(workspace_id, caller);
+    fn session_arrived(&self, workspace_id: WorkspaceId, caller: &tilo_actions::remote::Caller) {
+        self.host.actions.session_arrived(workspace_id, caller);
     }
 }
 

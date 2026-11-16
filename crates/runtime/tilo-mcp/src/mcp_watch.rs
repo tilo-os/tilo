@@ -134,7 +134,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The run a watch attributes this session's calls to: the title a call
     /// grouped under, else the connection's own run.
     fn run_named(&self) -> (String, String) {
-        let run = self.agent_run();
+        let run = self.agent_session();
         let id = run.as_ref().map(|run| run.id.clone()).unwrap_or_default();
         let label = match DeclaredRun::current().map(|run| run.title) {
             Some(title) if !title.is_empty() => title,

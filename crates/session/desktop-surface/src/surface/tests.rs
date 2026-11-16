@@ -2608,7 +2608,7 @@ fn agent_opens_notes_out_of_sight(
         handle.set_opened_by(std::collections::BTreeMap::from([(
             notes,
             tilo_desktop_model::ownership::OpenedBy {
-                run: "agent-run:1".into(),
+                run: "agent-session:1".into(),
                 label: "Claude Code".into(),
                 title: String::new(),
             },

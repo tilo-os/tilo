@@ -225,9 +225,9 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::WorkspacesReply { .. }
         | Envelope::RetiredHereRequest { .. }
         | Envelope::RetiredHereReply { .. }
-        | Envelope::AgentRun { .. }
-        | Envelope::AgentRunAnswer { .. }
-        | Envelope::AgentRunStopped
+        | Envelope::AgentSession { .. }
+        | Envelope::AgentSessionAnswer { .. }
+        | Envelope::AgentSessionStopped
         | Envelope::Entered(_)
         | Envelope::FetchGrant { .. } => false,
     }

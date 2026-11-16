@@ -12,7 +12,7 @@ pub(crate) fn run() -> (ActionInvoker, ActionContext) {
         ActionContext::default().with_group(
             RUN,
             "Tidy the notes",
-            ui::tilo_actions::context::TASK_RUN_GROUP,
+            ui::tilo_actions::context::AGENT_SESSION_GROUP,
         ),
     )
 }

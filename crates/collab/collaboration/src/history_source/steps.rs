@@ -5,7 +5,7 @@
 //! [`UndoLog`](crate::state::UndoLog) is the process's own stack: it knows
 //! only what this window did, and only while it runs. The verbs here read
 //! the change graph instead, so "undo my last two steps" means the same on
-//! every replica and after a restart, and an agent run is undone by naming
+//! every replica and after a restart, and an agent session is undone by naming
 //! it. Every verb writes forward: the step being undone keeps its author,
 //! and the undo is itself a step that can be undone.
 //!
@@ -37,27 +37,24 @@ pub const CHECKPOINT_KEY: &str = "tilo:checkpoint:";
 pub const BOOKKEEPING_PREFIX: &str = "tilo:";
 /// Longest checkpoint name.
 pub const MAX_CHECKPOINT_NAME: usize = 80;
-/// The group kind of an agent connection's invocations.
-pub const AGENT_RUN: &str = tilo_actions::context::AGENT_RUN_GROUP;
-/// The group kind of a workspace task's invocations: an agent working a
-/// native task stamps its steps with the task, so that is the run undo names.
-pub const TASK_RUN: &str = tilo_actions::context::TASK_RUN_GROUP;
+/// The group kind of an agent session's invocations.
+pub const AGENT_SESSION: &str = tilo_actions::context::AGENT_SESSION_GROUP;
 /// The group kind of one command line a shell ran: every file action it and
 /// the commands it dispatched carried out, undone as one.
-pub const COMMAND_RUN: &str = "command-run";
+pub const COMMAND_GROUP: &str = "command";
 
-/// Whether a group of this kind is a run that undo can name: an agent's
-/// connection, its run of a task, or one command line of a shell.
+/// Whether a group of this kind names a session that undo can name: an agent's
+/// connection, or one command line of a shell.
 #[must_use]
-pub fn names_a_run(kind: &str) -> bool {
-    kind == AGENT_RUN || kind == TASK_RUN || kind == COMMAND_RUN
+pub fn names_a_session(kind: &str) -> bool {
+    kind == AGENT_SESSION || kind == COMMAND_GROUP
 }
 
 /// Whose steps an undo or redo takes back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// One agent run, by its group id: every invocation of one connection.
-    Run(String),
+    /// One agent session, by its group id: every invocation of one connection.
+    Session(String),
     /// The principal who invoked, outside any agent run.
     Invoker(String),
     /// The actor that wrote, for an invocation that names nobody.
@@ -70,9 +67,9 @@ impl Scope {
     pub fn of(context: Option<&ActionContext>, actor_hex: &str) -> Self {
         if let Some(group) = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| names_a_run(&group.kind))
+            .filter(|group| names_a_session(&group.kind))
         {
-            return Self::Run(group.id.clone());
+            return Self::Session(group.id.clone());
         }
         if let Some(invoker) = context.and_then(|context| context.invoker.as_ref()) {
             return Self::Invoker(invoker.key());
@@ -93,12 +90,12 @@ impl Scope {
         let context = version.context.as_ref();
         let run = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| names_a_run(&group.kind));
+            .filter(|group| names_a_session(&group.kind));
         match self {
             // The person's own scopes below leave every agent run out.
-            Self::Run(id) => context
+            Self::Session(id) => context
                 .and_then(|context| context.group.as_ref())
-                .is_some_and(|group| names_a_run(&group.kind) && &group.id == id),
+                .is_some_and(|group| names_a_session(&group.kind) && &group.id == id),
             Self::Invoker(actor) => {
                 run.is_none()
                     && context
@@ -113,8 +110,8 @@ impl Scope {
     /// own scope, or the agent run it named.
     fn subject(&self, own: bool) -> String {
         match self {
-            Self::Run(id) if own => format!("This agent run ({id:?}) has"),
-            Self::Run(id) => format!("Agent run {id:?} has"),
+            Self::Session(id) if own => format!("This agent run ({id:?}) has"),
+            Self::Session(id) => format!("Agent run {id:?} has"),
             Self::Invoker(author) if !own => format!("Author {author:?} has"),
             Self::Invoker(_) | Self::Actor(_) => "You have".into(),
         }
@@ -146,11 +143,11 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
             .context
             .as_ref()
             .and_then(|context| context.group.as_ref())
-            .filter(|group| names_a_run(&group.kind))
+            .filter(|group| names_a_session(&group.kind))
         else {
             continue;
         };
-        if matches!(scope, Scope::Run(id) if id == &group.id)
+        if matches!(scope, Scope::Session(id) if id == &group.id)
             || candidates.iter().any(|(id, _)| id == &group.id)
         {
             continue;
@@ -160,7 +157,7 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
     candidates
         .into_iter()
         .filter_map(|(id, label)| {
-            let steps = undo_targets(doc, &Scope::Run(id.clone()), RUN_STEPS_COUNTED).len();
+            let steps = undo_targets(doc, &Scope::Session(id.clone()), RUN_STEPS_COUNTED).len();
             (steps > 0).then_some(RunInEffect { id, label, steps })
         })
         .take(RUNS_NAMED)
@@ -173,7 +170,7 @@ fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
 fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
     let own = *scope == Scope::invoking(doc);
     let mut message = format!("{} nothing in effect to undo.", scope.subject(own));
-    if own && matches!(scope, Scope::Run(_)) {
+    if own && matches!(scope, Scope::Session(_)) {
         message.push_str(
             " An agent's earlier connection is a run of its own, unless it connected again naming that run.",
         );
@@ -908,7 +905,7 @@ pub fn same_step(last: &Version, next: &Version) -> bool {
 
 /// What the change `version` records of the act it is one change of: the gesture it is one change
 /// of and the invocation that made it. A record's steps are the gestures and invocations that
-/// made its changes: a run is undone as a scope of its own ([`Scope::Run`]), and a person's
+/// made its changes: a run is undone as a scope of its own ([`Scope::Session`]), and a person's
 /// changes beside each other are steps of their own, so neither folds here.
 fn step_facts(version: &Version) -> StepFacts<'_> {
     let Some(context) = version.context.as_ref() else {

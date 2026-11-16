@@ -28,7 +28,7 @@ use ui::{RemoteActions, RemoteActionsGuard};
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
-const RUN: &str = "console.run:r1";
+const RUN: &str = "console.session:r1";
 
 fn english() {
     ui::i18n::I18nManager::init("en-US");
@@ -102,8 +102,8 @@ fn agent() -> wire::Author {
     }
 }
 
-fn run() -> wire::AgentRun {
-    wire::AgentRun {
+fn run() -> wire::AgentSession {
+    wire::AgentSession {
         id: "r1".into(),
         agent: agent(),
         workspace: Some("Launch".into()),
@@ -207,16 +207,20 @@ fn open() -> TestApp<App> {
     TestApp::<App>::for_person("ada").expect("open")
 }
 
-/// Answer `requests`' runs read with `runs` and its door read.
-fn answer_reads(app: &mut TestApp<App>, requests: &[InvokeRequest], runs: Vec<wire::AgentRun>) {
-    let runs_read = find(requests, &wire::target(wire::RUNS));
+/// Answer `requests`' sessions read with `sessions` and its door read.
+fn answer_reads(
+    app: &mut TestApp<App>,
+    requests: &[InvokeRequest],
+    sessions: Vec<wire::AgentSession>,
+) {
+    let sessions_read = find(requests, &wire::target(wire::SESSIONS));
     let door_read = find(requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         app,
-        runs_read.invocation,
-        serde_json::to_value(wire::Runs {
-            total: runs.len(),
-            runs,
+        sessions_read.invocation,
+        serde_json::to_value(wire::Sessions {
+            total: sessions.len(),
+            sessions,
             pending: false,
             mutations: true,
         })
@@ -230,9 +234,9 @@ fn answer_reads(app: &mut TestApp<App>, requests: &[InvokeRequest], runs: Vec<wi
 }
 
 /// Answer the reads the window asks for as it opens.
-fn answered_with(app: &mut TestApp<App>, runs: Vec<wire::AgentRun>) {
+fn answered_with(app: &mut TestApp<App>, sessions: Vec<wire::AgentSession>) {
     let requests = asked(app);
-    answer_reads(app, &requests, runs);
+    answer_reads(app, &requests, sessions);
 }
 
 /// Open the console with its reads answered with the run `r1`.
@@ -243,11 +247,11 @@ fn opened() -> TestApp<App> {
 }
 
 #[test]
-fn a_run_is_published_as_its_address_with_a_primary_view_and_a_link() {
+fn a_session_is_published_as_its_address_with_a_primary_view_and_a_link() {
     english();
     let mut app = opened();
     let resource = published(&mut app, RUN);
-    assert_eq!(resource.kind, "console.run");
+    assert_eq!(resource.kind, "console.session");
     assert_eq!(
         resource.label, "Tidy the plan",
         "the run's own words name its address"
@@ -255,14 +259,14 @@ fn a_run_is_published_as_its_address_with_a_primary_view_and_a_link() {
     let [view] = &resource.views[..] else {
         panic!("a run opens in one view, not {:?}", resource.views);
     };
-    assert_eq!(view.id, "run");
+    assert_eq!(view.id, "session");
     assert!(
         view.primary,
         "a run's page is the view its link opens by default"
     );
     assert_eq!(
         view.open_action,
-        ConsoleEffect::VIEW_RUN.id,
+        ConsoleEffect::VIEW_SESSION.id,
         "the view is opened by the effect that shows the run"
     );
     let resources = app.harness().resources();
@@ -274,7 +278,7 @@ fn a_run_is_published_as_its_address_with_a_primary_view_and_a_link() {
         .unwrap_or_else(|| panic!("{RUN} exports the view's open action"));
     assert_eq!(opened.kind, ui::tilo_actions::OperationKind::View);
     let descriptor = opened.view.expect("the open action carries its view");
-    assert_eq!(descriptor.id, "run");
+    assert_eq!(descriptor.id, "session");
     assert!(descriptor.primary);
     assert_eq!(descriptor.open_action, view.open_action);
     for action in ["share-link", "share-invite-link"] {
@@ -306,7 +310,7 @@ fn opening_a_runs_view_shows_that_runs_page() {
         "the run's page stands in place of every run"
     );
     assert!(
-        shows(&mut app, "console-run-copy-link"),
+        shows(&mut app, "console-session-copy-link"),
         "the page offers the run's link"
     );
     assert!(
@@ -316,7 +320,7 @@ fn opening_a_runs_view_shows_that_runs_page() {
 }
 
 #[test]
-fn a_runs_link_parses_back_to_that_run() {
+fn a_sessions_link_parses_back_to_that_run() {
     english();
     let (_host, _guard) = serve(Some(ENTRY));
     let mut app = open();
@@ -326,7 +330,7 @@ fn a_runs_link_parses_back_to_that_run() {
         .expect("the host answers with a link");
     let url = answer["url"].as_str().expect("a url");
     assert!(
-        url.contains("console.run:r1"),
+        url.contains("console.session:r1"),
         "the link names the run in one self-describing segment: {url}"
     );
 
@@ -341,7 +345,7 @@ fn a_runs_link_parses_back_to_that_run() {
         "{url}"
     );
     let resource = target.resource.as_ref().expect("the run's address");
-    assert_eq!(resource.kind, "console.run", "{url}");
+    assert_eq!(resource.kind, "console.session", "{url}");
     assert_eq!(resource.id, RUN, "{url}");
     assert_eq!(
         target.view, None,
@@ -354,7 +358,7 @@ fn a_runs_link_parses_back_to_that_run() {
 }
 
 #[test]
-fn a_runs_address_is_answered_before_the_history_read_lands() {
+fn a_sessions_address_is_answered_before_the_history_read_lands() {
     english();
     let mut app = open();
     let requests = asked(&mut app);
@@ -362,7 +366,7 @@ fn a_runs_address_is_answered_before_the_history_read_lands() {
         !requests.is_empty(),
         "a fresh window asks the history for its runs"
     );
-    app.call_on(RUN, ConsoleEffect::VIEW_RUN.id, json!({}))
+    app.call_on(RUN, ConsoleEffect::VIEW_SESSION.id, json!({}))
         .expect("open the run a link names");
     assert!(
         !shows(&mut app, "console-filter-agent"),
@@ -377,14 +381,14 @@ fn a_runs_address_is_answered_before_the_history_read_lands() {
 }
 
 #[test]
-fn a_run_the_history_does_not_list_says_so() {
+fn a_session_the_history_does_not_list_says_so() {
     english();
     let mut app = open();
     answered_with(&mut app, Vec::new());
-    app.call_on(RUN, ConsoleEffect::VIEW_RUN.id, json!({}))
+    app.call_on(RUN, ConsoleEffect::VIEW_SESSION.id, json!({}))
         .expect("open the run a link names");
     assert!(
-        shows(&mut app, "console-run-missing"),
+        shows(&mut app, "console-session-missing"),
         "a run that is not here says so rather than falling back to the list"
     );
     assert!(

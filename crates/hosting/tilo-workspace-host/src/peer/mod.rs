@@ -13,7 +13,7 @@ mod access_audit;
 mod actions;
 mod admin;
 mod admission;
-mod agent_run;
+mod agent_session;
 mod arriving;
 mod checkpoint;
 mod commit;
@@ -73,7 +73,7 @@ use access::{
 };
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
-use agent_run::handle_agent_run;
+use agent_session::handle_agent_session;
 use commit::{
     change_standing, commit_run_key, handle_commit, handle_commit_run, of_backend,
     over_change_limit, over_storage,
@@ -261,7 +261,7 @@ struct SessionCtx<'a> {
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so
-    /// ([`Envelope::AgentRun`]): every request the
+    /// ([`Envelope::AgentSession`]): every request the
     /// connection makes from then on is that agent's, acting for the device's
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
@@ -272,7 +272,7 @@ struct SessionCtx<'a> {
     channel_reader: &'a std::sync::atomic::AtomicBool,
     /// The execution the host minted for this connection: an agent's or a
     /// key's requests on it are one run, whatever the client says
-    /// ([`tilo_actions::remote::Caller::agent_run`]). Closed when the
+    /// ([`tilo_actions::remote::Caller::agent_session`]). Closed when the
     /// connection ends.
     execution: &'a tilo_actions::remote::ExecutionLease,
     /// Workspaces whose live deliveries this connection could not take.

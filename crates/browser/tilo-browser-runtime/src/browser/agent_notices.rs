@@ -26,8 +26,8 @@ impl Desktop {
             let invocation = tilo_actions::InvocationId::new();
             let request = InvokeRequest {
                 invocation,
-                target: wire::target(wire::RUNS),
-                argument: wire::argument(&wire::RunsQuery {
+                target: wire::target(wire::SESSIONS),
+                argument: wire::argument(&wire::SessionsQuery {
                     scope: wire::Scope::ThisWorkspace,
                     limit: 0,
                 }),
@@ -51,7 +51,7 @@ impl Desktop {
                     tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
                     _ => None,
                 })
-                .and_then(|value| serde_json::from_value::<wire::Runs>(value).ok());
+                .and_then(|value| serde_json::from_value::<wire::Sessions>(value).ok());
             let timed_out = now.saturating_sub(asked_ms) >= FINISHED_READ_MS;
             if answered.is_none() && !timed_out {
                 self.finishing

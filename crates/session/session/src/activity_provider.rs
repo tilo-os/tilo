@@ -92,7 +92,13 @@ fn caller_of(request: &HostStepRequest<'_>) -> Caller {
 /// back: the changes it drops are in everyone's documents and its own write is not a change the
 /// undo service reverts.
 fn rewrites_history(action: &str) -> bool {
-    [wire::UNDO, wire::RESTORE, wire::UNDO_RUN, wire::UNDO_RECORD].contains(&action)
+    [
+        wire::UNDO,
+        wire::RESTORE,
+        wire::UNDO_SESSION,
+        wire::UNDO_RECORD,
+    ]
+    .contains(&action)
 }
 
 fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescriptor {
@@ -169,7 +175,7 @@ impl HostStepServices for ActivityWire {
             ),
             (wire::UNDO, "activity-history-undo", Document),
             (wire::RESTORE, "activity-history-restore", Document),
-            (wire::UNDO_RUN, "activity-detail-undo-task", Document),
+            (wire::UNDO_SESSION, "activity-detail-undo-task", Document),
             (wire::UNDO_RECORD, "activity-action-undo-record", Document),
             (wire::OPEN, "activity-detail-open-app", View),
             (wire::CHOOSE_SOURCE, "activity-action-choose-source", View),

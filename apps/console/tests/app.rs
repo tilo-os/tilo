@@ -52,16 +52,16 @@ fn every_scenario_shows_its_place_built_from_components() {
             &[
                 "console-filter-agent",
                 "console-filter-workspace",
-                "console-run-run:fix-signup",
-                "console-run-run:budget",
+                "console-session-fix-signup",
+                "console-session-budget",
             ],
         ),
         (
-            "run",
+            "session",
             &[
-                "console-run-stop",
-                "console-run-take-over",
-                "console-run-undo",
+                "console-session-stop",
+                "console-session-take-over",
+                "console-session-undo",
                 "console-action-0",
                 "console-action-1-view",
                 "console-action-1-undo",
@@ -118,7 +118,7 @@ fn the_agent_picker_offers_each_client_over_all_of_its_runs() {
             .position(|seen| seen == label)
             .unwrap_or_else(|| panic!("{label} stands among {labels:?}"))
     };
-    let (claude, codex) = (at("Every Claude Code run"), at("Every Codex run"));
+    let (claude, codex) = (at("Every Claude Code session"), at("Every Codex session"));
     assert!(
         claude < at("Claude Code #3") && at("Claude Code #1") < codex,
         "each client's own runs stand under it, before the next client: {labels:?}"
@@ -130,7 +130,7 @@ fn the_agent_picker_offers_each_client_over_all_of_its_runs() {
 fn picking_a_client_shows_every_run_of_it() {
     english();
     let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
-    assert!(shows(&mut app, "console-run-run:release-notes"));
+    assert!(shows(&mut app, "console-session-release-notes"));
     app.harness()
         .perform_named(
             "console-filter-agent",
@@ -138,22 +138,25 @@ fn picking_a_client_shows_every_run_of_it() {
         )
         .unwrap();
     app.frame();
-    assert!(shows(&mut app, "console-run-run:fix-signup"));
-    assert!(shows(&mut app, "console-run-run:budget"));
+    assert!(shows(&mut app, "console-session-fix-signup"));
+    assert!(shows(&mut app, "console-session-budget"));
     assert!(
-        !shows(&mut app, "console-run-run:release-notes"),
+        !shows(&mut app, "console-session-release-notes"),
         "Codex's run is another client's"
     );
 }
 
 #[test]
-fn the_runs_back_shows_every_run_again() {
+fn the_sessions_back_shows_every_run_again() {
     english();
-    let mut app = TestApp::<App>::capture(Some("run")).expect("capture");
-    assert!(shows(&mut app, "console-run-undo"), "the run's own page");
+    let mut app = TestApp::<App>::capture(Some("session")).expect("capture");
+    assert!(
+        shows(&mut app, "console-session-undo"),
+        "the run's own page"
+    );
     back(&mut app);
-    assert!(shows(&mut app, "console-run-run:fix-signup"), "the runs");
-    assert!(!shows(&mut app, "console-run-undo"));
+    assert!(shows(&mut app, "console-session-fix-signup"), "the runs");
+    assert!(!shows(&mut app, "console-session-undo"));
 }
 
 #[test]
@@ -167,11 +170,11 @@ fn a_program_or_a_page_offers_no_undo_and_a_stopped_agent_no_stop() {
     assert!(!shows(&mut app, "console-action-3-undo"));
     let mut app = TestApp::<App>::capture(Some("agents")).expect("capture");
     app.harness()
-        .click_named("console-run-run:release-notes")
+        .click_named("console-session-release-notes")
         .unwrap();
     app.frame();
-    assert!(shows(&mut app, "console-run-undo"));
-    assert!(!shows(&mut app, "console-run-stop"));
+    assert!(shows(&mut app, "console-session-undo"));
+    assert!(!shows(&mut app, "console-session-stop"));
 }
 
 /// The reads and writes the window asked for since last asked.
@@ -235,14 +238,14 @@ fn agent() -> wire::Author {
     }
 }
 
-fn run() -> wire::AgentRun {
+fn run() -> wire::AgentSession {
     let target = wire::Target {
         app_id: Some("so.tilo.notes".into()),
         id: "plan".into(),
         label: "Plan".into(),
         ..wire::Target::default()
     };
-    wire::AgentRun {
+    wire::AgentSession {
         id: "r1".into(),
         agent: agent(),
         workspace: Some("Launch".into()),
@@ -254,7 +257,7 @@ fn run() -> wire::AgentRun {
             from: "aa".into(),
             to: "ab".into(),
         },
-        actions: vec![wire::RunAction {
+        actions: vec![wire::SessionAction {
             range: wire::Range::one("ab"),
             changes: 1,
             at_ms: 2,
@@ -301,8 +304,8 @@ fn the_door(open: bool) -> mcp_server::Server {
 fn opened(open: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
-    let runs = find(&requests, &wire::target(wire::RUNS));
-    let query: wire::RunsQuery = argument(&runs);
+    let runs = find(&requests, &wire::target(wire::SESSIONS));
+    let query: wire::SessionsQuery = argument(&runs);
     assert_eq!(
         query.scope,
         wire::Scope::AllWorkspaces,
@@ -312,8 +315,8 @@ fn opened(open: bool) -> TestApp<App> {
     answer(
         &mut app,
         runs.invocation,
-        serde_json::to_value(wire::Runs {
-            runs: vec![run()],
+        serde_json::to_value(wire::Sessions {
+            sessions: vec![run()],
             total: 1,
             pending: false,
             mutations: true,
@@ -332,9 +335,9 @@ fn opened(open: bool) -> TestApp<App> {
 fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
     english();
     let mut app = opened(true);
-    app.harness().click_named("console-run-r1").unwrap();
+    app.harness().click_named("console-session-r1").unwrap();
     asked(&mut app);
-    app.harness().click_named("console-run-stop").unwrap();
+    app.harness().click_named("console-session-stop").unwrap();
     let requests = asked(&mut app);
     let stop: mcp_server::AgentSessionRef =
         argument(&find(&requests, &mcp_server::target(mcp_server::STOP)));
@@ -351,16 +354,16 @@ fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
 fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
     english();
     let mut app = opened(false);
-    app.harness().click_named("console-run-r1").unwrap();
+    app.harness().click_named("console-session-r1").unwrap();
     asked(&mut app);
     assert!(
-        !shows(&mut app, "console-run-stop"),
+        !shows(&mut app, "console-session-stop"),
         "a run whose session ended has nothing to stop"
     );
 
-    app.harness().click_named("console-run-undo").unwrap();
+    app.harness().click_named("console-session-undo").unwrap();
     let requests = asked(&mut app);
-    let range: wire::Range = argument(&find(&requests, &wire::target(wire::UNDO_RUN)));
+    let range: wire::Range = argument(&find(&requests, &wire::target(wire::UNDO_SESSION)));
     assert_eq!(range, run().range);
 
     app.harness().click_named("console-action-0-undo").unwrap();
@@ -378,7 +381,7 @@ fn undoing_a_run_or_one_action_asks_the_history_by_what_it_changed() {
 fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     english();
     let mut app = opened(false);
-    app.harness().click_named("console-run-r1").unwrap();
+    app.harness().click_named("console-session-r1").unwrap();
     asked(&mut app);
     assert!(!shows(&mut app, "console-action-0-view"));
     app.harness().click_named("console-action-0").unwrap();
@@ -397,13 +400,13 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
 fn connect(browser_pages: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
-    let runs = find(&requests, &wire::target(wire::RUNS));
+    let runs = find(&requests, &wire::target(wire::SESSIONS));
     let door_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         runs.invocation,
-        serde_json::to_value(wire::Runs {
-            runs: vec![run()],
+        serde_json::to_value(wire::Sessions {
+            sessions: vec![run()],
             total: 1,
             pending: false,
             mutations: true,

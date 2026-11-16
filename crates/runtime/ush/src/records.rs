@@ -411,7 +411,7 @@ impl Records {
             Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
         };
         let mut replica = match run {
-            Some(run) => replica.within_group(&run.id, &run.label, crate::broker::COMMAND_RUN),
+            Some(run) => replica.within_group(&run.id, &run.label, crate::broker::COMMAND_GROUP),
             None => replica,
         };
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());

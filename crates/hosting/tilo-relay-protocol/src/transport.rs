@@ -634,24 +634,24 @@ pub enum Envelope {
     },
 
     /// A device says this session is one run of the agent `label` names (as
-    /// History names its runs), answered through [`Self::AgentRunAnswer`]
+    /// History names its runs), answered through [`Self::AgentSessionAnswer`]
     /// with the asker's `request_id`. Said before anything else: every
     /// request the session makes from then on is the agent's, for the person,
     /// within what bounds an agent, and the person's MCP server lists the run
     /// while the session lasts.
-    AgentRun { request_id: u64, label: String },
+    AgentSession { request_id: u64, label: String },
 
-    /// The host's answer to [`Self::AgentRun`] with the same `request_id`:
+    /// The host's answer to [`Self::AgentSession`] with the same `request_id`:
     /// `None` once the session is that agent's run, else why not.
-    AgentRunAnswer {
+    AgentSessionAnswer {
         request_id: u64,
         refusal: Option<String>,
     },
 
     /// The host's word that the person stopped the agent run this session is
-    /// ([`Self::AgentRun`]), said just before the host ends it: the device
+    /// ([`Self::AgentSession`]), said just before the host ends it: the device
     /// does not connect again, so the agent and its presence end here.
-    AgentRunStopped,
+    AgentSessionStopped,
 
     /// The host's answer to the entry the session's hello asked for
     /// ([`crate::entering`]): the first envelope of that session, before
@@ -736,9 +736,9 @@ impl Envelope {
             Self::RetiredHereRequest { .. } => "HereRequest",
             Self::RetiredHereReply { .. } => "HereReply",
             Self::FetchGrant { .. } => "FetchGrant",
-            Self::AgentRun { .. } => "AgentRun",
-            Self::AgentRunAnswer { .. } => "AgentRunAnswer",
-            Self::AgentRunStopped => "AgentRunStopped",
+            Self::AgentSession { .. } => "AgentSession",
+            Self::AgentSessionAnswer { .. } => "AgentSessionAnswer",
+            Self::AgentSessionStopped => "AgentSessionStopped",
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
             Self::KeyFollower => "KeyFollower",
@@ -798,9 +798,9 @@ impl Envelope {
             | Self::WorkspacesReply { .. }
             | Self::RetiredHereRequest { .. }
             | Self::RetiredHereReply { .. }
-            | Self::AgentRun { .. }
-            | Self::AgentRunAnswer { .. }
-            | Self::AgentRunStopped
+            | Self::AgentSession { .. }
+            | Self::AgentSessionAnswer { .. }
+            | Self::AgentSessionStopped
             | Self::Entered(_)
             | Self::KeyFollower
             | Self::FetchGrant { .. } => None,
@@ -808,7 +808,7 @@ impl Envelope {
     }
 }
 
-/// Bound, in characters, of the agent name an [`Envelope::AgentRun`] carries.
+/// Bound, in characters, of the agent name an [`Envelope::AgentSession`] carries.
 pub const MAX_AGENT_LABEL_CHARS: usize = 32;
 
 /// Largest [`Envelope::RecordContent`] frame a relay routes.

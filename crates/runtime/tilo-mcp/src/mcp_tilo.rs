@@ -1278,7 +1278,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "this door runs no programs: it is no desktop session's, which starts a task's host",
         )?;
         let task = self
-            .agent_run()
+            .agent_session()
             .map(|run| run.id)
             .ok_or("this door's agent works in no run, which a task's programs are")?;
         let workspace = self.workspace.clone();

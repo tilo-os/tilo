@@ -11,35 +11,35 @@ console-every-agent = Every agent
 console-every-workspace = Every workspace
 console-show-everything = Show everything
 
-console-runs-working = Working now
-console-runs-earlier = Earlier
-console-runs-pending = Reading your workspaces' history
-console-runs-empty = No agent has worked here yet
-console-runs-empty-message = Connect an agent and ask it for something: you can follow each of its runs while it works.
-console-runs-none-here = No runs match
-console-runs-none-here-message = No run of this agent in this workspace. Show everything to see the rest.
-console-run-actions = { $count ->
+console-sessions-working = Working now
+console-sessions-earlier = Earlier
+console-sessions-pending = Reading your workspaces' history
+console-sessions-empty = No agent has worked here yet
+console-sessions-empty-message = Connect an agent and ask it for something: you can follow each of its sessions while it works.
+console-sessions-none-here = No sessions match
+console-sessions-none-here-message = No session of this agent in this workspace. Show everything to see the rest.
+console-session-actions = { $count ->
     [one] 1 action
    *[other] { $count } actions
 }
-console-run-changes = { $count ->
+console-session-changes = { $count ->
     [one] 1 change
    *[other] { $count } changes
 }
-console-run-started-by-you = Started by you
-console-run-started-by = Started by { $name }
+console-session-started-by-you = Started by you
+console-session-started-by = Started by { $name }
 
-console-run = Agent run
-console-run-copy-link = Copy link
-console-run-pending = Reading this run
-console-run-missing = This run is not here
-console-run-missing-message = The history lists no such run, or it worked in a workspace you are not in.
+console-session = Agent session
+console-session-copy-link = Copy link
+console-session-pending = Reading this session
+console-session-missing = This session is not here
+console-session-missing-message = The history lists no such session, or it worked in a workspace you are not in.
 
-console-run-stop = Stop
-console-run-take-over = Take over
-console-run-undo = Undo run
-console-run-why = Why
-console-run-timeline = { $count ->
+console-session-stop = Stop
+console-session-take-over = Take over
+console-session-undo = Undo session
+console-session-why = Why
+console-session-timeline = { $count ->
     [one] 1 action
    *[other] { $count } actions
 }
@@ -68,7 +68,7 @@ console-connect-heading = Connect an agent
 console-client-claude-code = Claude Code
 console-client-codex = Codex
 console-client-other = Any MCP client
-console-client-every-run = Every { $client } run
+console-client-every-session = Every { $client } session
 console-grants-heading = Connected agents
 console-grants-empty = No agent connected yet
 console-reach-account = Every workspace, and may make new ones
@@ -76,7 +76,7 @@ console-reach-workspace = Only { $workspace }
 console-grant-browser-pages = Browser pages
 console-grant-running = { $count ->
     [one] Working now
-   *[other] { $count } runs working now
+   *[other] { $count } sessions working now
 }
 console-grant-last-active = Last active { $when }
 console-grant-granted = Let in { $when }
@@ -85,9 +85,9 @@ console-grant-revoke = Revoke
 console-usage-empty = No Linux machine time yet
 console-usage-empty-message = An agent that needs Linux runs it on a machine of its own, and that time is counted.
 
-console-agent-runs = Runs
+console-agent-sessions = Sessions
 console-agent-access = Access
-console-agent-no-runs = No runs yet
+console-agent-no-sessions = No sessions yet
 console-agent-last-worked = Last worked { $when }
 
 ## What the app is called in a window and in the launcher

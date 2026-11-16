@@ -4,7 +4,7 @@
 
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
-    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_run, handle_commit,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, handle_agent_session, handle_commit,
     handle_compaction, handle_content_want, handle_delta, handle_host_action, handle_host_hello,
     handle_host_said, handle_live_join, handle_open_record, handle_presence, handle_remote_action,
     handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, handle_workspaces,
@@ -152,8 +152,8 @@ pub(super) async fn handle_envelope(
         Envelope::WorkspacesRequest { request_id, frame } => {
             handle_workspaces(peer, session, request_id, &frame).await
         }
-        Envelope::AgentRun { request_id, label } => {
-            Ok(Some(handle_agent_run(
+        Envelope::AgentSession { request_id, label } => {
+            Ok(Some(handle_agent_session(
                 peer, session, subscribed, request_id, &label,
             )))
         }
@@ -184,8 +184,8 @@ pub(super) async fn handle_envelope(
         | Envelope::RecordOpened { .. }
         | Envelope::WorkspaceBootstrap { .. }
         | Envelope::WorkspacesReply { .. }
-        | Envelope::AgentRunAnswer { .. }
-        | Envelope::AgentRunStopped
+        | Envelope::AgentSessionAnswer { .. }
+        | Envelope::AgentSessionStopped
         // Only the host answers an entry, once, before the session.
         | Envelope::Entered(_)
         // Who is here is the live plane's alone: a device that still asks the host

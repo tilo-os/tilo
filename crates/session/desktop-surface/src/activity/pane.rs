@@ -40,7 +40,7 @@ use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
 use ui::{
-    ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest, ChangeRun,
+    ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRun,
     GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
     NamedRange, NarrativeRequest, RecordId, format_relative_time, participant_display_label,
 };
@@ -161,9 +161,9 @@ impl DetailAction {
 /// A durable agent-run marker and the record whose document carries it. `None` is reserved for a
 /// marker in the workspace tree itself.
 #[derive(Clone, Debug, PartialEq)]
-struct IndexedAgentRun {
+struct IndexedAgentSession {
     source_record: Option<RecordId>,
-    run: AgentRun,
+    session: AgentSession,
 }
 
 /// The local user's most recent change that names a resource, for the "you left off" card.
@@ -480,7 +480,7 @@ pub struct WorkspaceActivityPane {
     narrative_request: Option<NarrativeRequest>,
     /// Task receipts live beside the records they describe. They are indexed here so selecting any
     /// affected change can explain the whole task.
-    agent_runs: Vec<IndexedAgentRun>,
+    agent_sessions: Vec<IndexedAgentSession>,
     agent_undo_notice: Option<(String, String)>,
     /// Records the last task undo did not reach, as sentences naming each: reported beside the run,
     /// never left out of it.
@@ -634,7 +634,7 @@ impl WorkspaceActivityPane {
             replay_playing: false,
             narrative: None,
             narrative_request: None,
-            agent_runs: Vec::new(),
+            agent_sessions: Vec::new(),
             agent_undo_notice: None,
             unreverted: Vec::new(),
             open_agent_records: HashSet::new(),
@@ -923,10 +923,10 @@ impl WorkspaceActivityPane {
         Some(detail)
     }
 
-    fn selected_agent_run(&self) -> Option<&IndexedAgentRun> {
+    fn selected_agent_session(&self) -> Option<&IndexedAgentSession> {
         let selected = self.selected_ids();
-        self.agent_runs.iter().find(|indexed| {
-            indexed.run.steps.iter().any(|step| {
+        self.agent_sessions.iter().find(|indexed| {
+            indexed.session.steps.iter().any(|step| {
                 selected
                     .iter()
                     .any(|id| self.agent_step_contains(indexed, step, id))
@@ -936,7 +936,7 @@ impl WorkspaceActivityPane {
 
     fn agent_step_contains(
         &self,
-        indexed: &IndexedAgentRun,
+        indexed: &IndexedAgentSession,
         step: &ui::RunStep,
         selected: &HistoryEntryId,
     ) -> bool {
@@ -982,14 +982,14 @@ impl WorkspaceActivityPane {
         (start.min(end)..=start.max(end)).contains(&at)
     }
 
-    fn agent_name(&self, run: &AgentRun) -> String {
+    fn agent_name(&self, run: &AgentSession) -> String {
         run.by.as_deref().map_or_else(
             || t("activity-agent-fallback"),
             |actor| self.source.authors().resolve(actor).name,
         )
     }
 
-    fn issuer_name(&self, run: &AgentRun) -> String {
+    fn issuer_name(&self, run: &AgentSession) -> String {
         run.issued_by.as_deref().map_or_else(
             || t("activity-unknown-member"),
             |actor| self.source.authors().resolve(actor).name,
@@ -997,10 +997,10 @@ impl WorkspaceActivityPane {
     }
 
     /// The run recorded for the agent's work on task `task_id` , if it changed anything.
-    fn task_agent_run(&self, task_id: &str) -> Option<&IndexedAgentRun> {
-        self.agent_runs
+    fn task_agent_session(&self, task_id: &str) -> Option<&IndexedAgentSession> {
+        self.agent_sessions
             .iter()
-            .find(|indexed| indexed.run.task.as_deref() == Some(task_id))
+            .find(|indexed| indexed.session.task.as_deref() == Some(task_id))
     }
 
     /// Ask the host to undo the agent's whole run of `task_id` , through each changed document's
@@ -1013,14 +1013,14 @@ impl WorkspaceActivityPane {
     /// and record), or in every record the run changed when it names none. Returns whether it was
     /// asked.
     fn undo_task_run_of(&mut self, task_id: &str, only: Option<&(String, String)>) -> bool {
-        let Some(indexed) = self.task_agent_run(task_id) else {
+        let Some(indexed) = self.task_agent_session(task_id) else {
             return false;
         };
         let run = UndoRun {
             named: task_id.to_owned(),
-            shown: indexed.run.id.clone(),
+            shown: indexed.session.id.clone(),
             steps: indexed
-                .run
+                .session
                 .steps
                 .iter()
                 .map(|step| (step.app.clone(), step.record.clone()))
@@ -1144,20 +1144,20 @@ impl WorkspaceActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
-        if let Some(indexed) = self.selected_agent_run() {
+        if let Some(indexed) = self.selected_agent_session() {
             // A run is undone in the documents it changed, which the host does
             // for the task that recorded it; a run no task names has no one to
             // carry that out here.
-            return indexed.run.task.is_some()
+            return indexed.session.task.is_some()
                 && indexed
-                    .run
+                    .session
                     .steps
                     .iter()
                     .all(|step| self.record_is_open(step));
         }
         // An agent connection's run is undone by its group, which its documents' history takes
         // back the same way a task's.
-        self.selected_group_run()
+        self.selected_group_session()
             .is_some_and(|group| self.undo_blocked(&group.steps).is_none())
     }
 
@@ -1462,19 +1462,19 @@ impl WorkspaceActivityPane {
             LensSelection::AgentTasks => {
                 filter
                     .work_groups
-                    .extend(self.agent_runs.iter().map(|indexed| {
+                    .extend(self.agent_sessions.iter().map(|indexed| {
                         indexed
-                            .run
+                            .session
                             .instruction
                             .as_ref()
-                            .unwrap_or(&indexed.run.label)
+                            .unwrap_or(&indexed.session.label)
                             .clone()
                     }));
                 // A task's run groups its changes under the task itself.
                 filter.work_groups.extend(
-                    self.agent_runs
+                    self.agent_sessions
                         .iter()
-                        .filter_map(|indexed| indexed.run.task.clone()),
+                        .filter_map(|indexed| indexed.session.task.clone()),
                 );
             }
             LensSelection::App(app) => filter.apps.push(app.clone()),
@@ -1850,7 +1850,7 @@ impl WorkspaceActivityPane {
                 .refresh_detached(tree, query, &self.scoped_tree_rows, &mut records);
         self.detached_records = records;
         self.feed_coverage = self.history_index.coverage().clone();
-        self.refresh_detached_agent_runs(tree);
+        self.refresh_detached_agent_sessions(tree);
         if changed {
             self.projected_origins.clear();
             let rows = self
@@ -1924,7 +1924,7 @@ impl WorkspaceActivityPane {
     )]
     /// The agent runs of every detached record the host admitted, and of the workspace tree itself,
     /// each naming the record it came from.
-    fn refresh_detached_agent_runs(&mut self, tree: &impl ActivityTree) {
+    fn refresh_detached_agent_sessions(&mut self, tree: &impl ActivityTree) {
         let mut ordered = self.detached_records.iter().collect::<Vec<_>>();
         ordered.compact_sort_by_key(|record| record.origin());
         self.open_agent_records = ordered
@@ -1934,9 +1934,9 @@ impl WorkspaceActivityPane {
             .collect();
         let mut indexed = ui::read_runs(tree.document())
             .into_iter()
-            .map(|run| IndexedAgentRun {
+            .map(|run| IndexedAgentSession {
                 source_record: None,
-                run,
+                session: run,
             })
             .collect::<Vec<_>>();
         for record in ordered {
@@ -1947,20 +1947,20 @@ impl WorkspaceActivityPane {
             indexed.extend(
                 ui::read_runs(document)
                     .into_iter()
-                    .map(|run| IndexedAgentRun {
+                    .map(|run| IndexedAgentSession {
                         source_record: Some(id.clone()),
-                        run,
+                        session: run,
                     }),
             );
         }
         indexed.compact_sort_by(|a, b| {
-            b.run
+            b.session
                 .at
-                .cmp(&a.run.at)
-                .then_with(|| a.run.id.cmp(&b.run.id))
+                .cmp(&a.session.at)
+                .then_with(|| a.session.id.cmp(&b.session.id))
         });
-        indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
-        self.agent_runs = indexed;
+        indexed.dedup_by(|a, b| a.source_record == b.source_record && a.session.id == b.session.id);
+        self.agent_sessions = indexed;
     }
 
     /// A host bounded the retained desktop document's history projection. Call after refreshing
@@ -2097,12 +2097,12 @@ impl WorkspaceActivityPane {
 
     fn lens_candidates(&self) -> Vec<(LensSelection, String)> {
         let mut rows = vec![(LensSelection::All, t("activity-lens-everything"))];
-        if !self.agent_runs.is_empty() {
+        if !self.agent_sessions.is_empty() {
             rows.push((
                 LensSelection::AgentTasks,
                 t_args(
                     "activity-lens-agent-tasks",
-                    &[("count", self.agent_runs.len().into())],
+                    &[("count", self.agent_sessions.len().into())],
                 ),
             ));
         }
@@ -2199,7 +2199,7 @@ impl WorkspaceActivityPane {
                 }
             }
             DetailAction::UndoTask => {
-                let applied = self.undo_selected_agent_run();
+                let applied = self.undo_selected_agent_session();
                 outcome.reverted = applied.wrote;
                 outcome.undo_partial = applied.partial;
             }
@@ -2209,22 +2209,22 @@ impl WorkspaceActivityPane {
         outcome
     }
 
-    fn undo_selected_agent_run(&mut self) -> UndoApply {
+    fn undo_selected_agent_session(&mut self) -> UndoApply {
         if !self.host.mutations_available() {
             return UndoApply::default();
         }
-        if let Some(indexed) = self.selected_agent_run().cloned() {
+        if let Some(indexed) = self.selected_agent_session().cloned() {
             // An agent's run of a task is undone by each document's own history, which also takes
             // back what a change queued outside the document (a file renamed on disk); reverting
             // the document alone would leave that behind.
-            if let Some(task) = &indexed.run.task {
+            if let Some(task) = &indexed.session.task {
                 self.undo_task_run(task);
             }
             return UndoApply::default();
         }
         // An agent connection's run is undone by its group, which each document's history takes
         // back the same way.
-        if let Some(group) = self.selected_group_run() {
+        if let Some(group) = self.selected_group_session() {
             self.undo_group_run(&group);
         }
         UndoApply::default()

@@ -2488,7 +2488,7 @@ mod tests {
 
     /// One key runs one command: the first the menus offer it on holds it.
     #[test]
-    fn one_key_runs_one_command_of_the_row() {
+    fn one_key_sessions_one_command_of_the_row() {
         let queue = crate::Intents::<Fired>::default();
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![command("Reopen", "control+enter", &queue)];

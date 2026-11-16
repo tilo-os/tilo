@@ -373,7 +373,7 @@ impl AppBrokerState {
         .with_app(&surface.app_id, &surface.app_id)
         .with_purpose(request.title);
         let mut context = context;
-        context.group = caller.agent_run();
+        context.group = caller.agent_session();
         let owner = InvocationOwner::Local {
             actor: actor.id.clone(),
         };

@@ -13,7 +13,7 @@
 //! its own frontier, never a shared record.
 //!
 //! Changes are addressed by their history id ([`Entry::id`]), 32 lowercase
-//! hex digits, and a run of changes by its first and last ([`Range`]) in
+//! hex digits, and a range of changes by its first and last ([`Range`]) in
 //! the order [`Feed::entries`] lists them.
 
 use serde::{Deserialize, Serialize};
@@ -34,24 +34,24 @@ pub const FEED: &str = "feed";
 pub const SUMMARY: &str = "summary";
 /// Live: the workspace's layout at each recent change; answers [`Replay`].
 pub const REPLAY: &str = "replay";
-/// Live: what a run of changes did and what can be done with it, given a
+/// Live: what a range of changes did and what can be done with it, given a
 /// [`DetailQuery`]; answers [`Detail`].
 pub const DETAIL: &str = "detail";
 /// Live: what the person last asked to be shown from outside the app, until
 /// an app shows it; answers an optional [`Focus`].
 pub const FOCUS: &str = "focus";
-/// Live: every agent run the history holds, each as the timeline of the
-/// actions it took, given a [`RunsQuery`]; answers [`Runs`].
-pub const RUNS: &str = "runs";
-/// Every line a command an agent ran printed, given the [`CommandRun`] its
-/// [`ActionView::Command`] names; answers [`RunOutput`].
-pub const RUN_OUTPUT: &str = "run-output";
+/// Live: every agent session the history holds, each as the timeline of the
+/// actions it took, given a [`SessionsQuery`]; answers [`Sessions`].
+pub const SESSIONS: &str = "sessions";
+/// Every line a command an agent ran printed, given the [`CommandExecution`] its
+/// [`ActionView::Command`] names; answers [`SessionOutput`].
+pub const SESSION_OUTPUT: &str = "session-output";
 
 /// Mark the changes [`Viewed`] names as seen on this device.
 pub const MARK_VIEWED: &str = "mark-viewed";
 /// Say the [`Focus`] with the serial [`Focused`] names was shown.
 pub const FOCUSED: &str = "focused";
-/// Name, rename or un-name a run of changes ([`Name`]).
+/// Name, rename or un-name a range of changes ([`Name`]).
 pub const NAME: &str = "name";
 /// Split the named work group a [`Range`] sits in at its start.
 pub const SPLIT: &str = "split";
@@ -63,9 +63,9 @@ pub const MOVE_BOUNDARY: &str = "move-boundary";
 pub const UNDO: &str = "undo";
 /// Restore the workspace to before a [`Range`] of changes.
 pub const RESTORE: &str = "restore";
-/// Undo the agent's task run a [`Range`] belongs to.
-pub const UNDO_RUN: &str = "undo-run";
-/// Undo one record's share of that run ([`RecordQuery`]).
+/// Undo the agent session a [`Range`] belongs to.
+pub const UNDO_SESSION: &str = "undo-session";
+/// Undo one record's share of that session ([`RecordQuery`]).
 pub const UNDO_RECORD: &str = "undo-record";
 /// Open a [`Target`] in its app.
 pub const OPEN: &str = "open";
@@ -258,7 +258,7 @@ pub struct Entry {
     pub refused: Vec<Refusal>,
 }
 
-/// A named run of changes.
+/// A named range of changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Group {
@@ -348,7 +348,7 @@ pub struct BriefAction {
     pub at_ms: i64,
 }
 
-/// A work session: a run of related changes, told as an outcome.
+/// A work session: related changes told as an outcome.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Brief {
@@ -475,7 +475,7 @@ pub struct Replay {
     pub pending: bool,
 }
 
-/// A run of changes, by its first and last in feed order.
+/// A range of changes, by its first and last in feed order.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Range {
@@ -484,7 +484,7 @@ pub struct Range {
 }
 
 impl Range {
-    /// The run of the one change `id`.
+    /// The range of the one change `id`.
     #[must_use]
     pub fn one(id: &str) -> Self {
         Self {
@@ -499,11 +499,11 @@ impl Range {
 #[serde(default, deny_unknown_fields)]
 pub struct DetailQuery {
     pub range: Range,
-    /// Also compare the workspace before and after the run.
+    /// Also compare the workspace before and after the session.
     pub compare: bool,
 }
 
-/// What can be done with a run of changes, and which action does it.
+/// What can be done with a range of changes, and which action does it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DetailAction {
@@ -511,11 +511,16 @@ pub enum DetailAction {
     Compare,
     Restore,
     Undo,
-    UndoRun,
+    /// Retired: what a session's undo was called before it was a session's.
+    /// Reads as [`Self::UndoSession`].
+    #[serde(rename = "undo-run")]
+    RetiredUndoSession,
     Split,
     Merge,
     ChooseSource,
     UndoRecord,
+    /// Undo the whole agent session.
+    UndoSession,
 }
 
 impl DetailAction {
@@ -528,7 +533,7 @@ impl DetailAction {
             Self::Compare => DETAIL,
             Self::Restore => RESTORE,
             Self::Undo => UNDO,
-            Self::UndoRun => UNDO_RUN,
+            Self::UndoSession | Self::RetiredUndoSession => UNDO_SESSION,
             Self::UndoRecord => UNDO_RECORD,
             Self::Split => SPLIT,
             Self::Merge => MERGE,
@@ -537,17 +542,17 @@ impl DetailAction {
     }
 }
 
-/// An offered action, worded for the run it acts on.
+/// An offered action, worded for the session it acts on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
     pub action: DetailAction,
     pub label: String,
 }
 
-/// An agent's task run a change belongs to.
+/// The agent session a change belongs to.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Run {
+pub struct Session {
     /// The instruction, as the person phrased it.
     pub instruction: String,
     /// Who ran it and who asked, as a sentence.
@@ -556,7 +561,7 @@ pub struct Run {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
     /// The records it changed, each with what it did there.
-    pub records: Vec<RunRecord>,
+    pub records: Vec<SessionRecord>,
     /// Why it cannot be undone from here, when it cannot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo_blocked: Option<String>,
@@ -569,10 +574,10 @@ pub struct Run {
     pub unreverted: Vec<String>,
 }
 
-/// A record an agent's run changed.
+/// A record an agent session changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunRecord {
+pub struct SessionRecord {
     /// The record, as its title names it.
     pub record: String,
     /// The app it belongs to.
@@ -581,31 +586,31 @@ pub struct RunRecord {
     pub id: String,
     /// The app's id, which [`RecordQuery`] names to undo just it.
     pub app_id: String,
-    /// What the run did to it, as a sentence.
+    /// What the session did to it, as a sentence.
     pub change: String,
-    /// The action that undoes this record's share of the run, when the
+    /// The action that undoes this record's share of the session, when the
     /// document is open here; absent when it cannot be undone on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo: Option<Offer>,
 }
 
-/// One record of an agent's run, as [`UNDO_RECORD`] names it.
+/// One record of an agent session, as [`UNDO_RECORD`] names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RecordQuery {
-    /// The run, by its range in the history.
+    /// The session, by its range in the history.
     pub range: Range,
-    /// The run, by the task it worked (`task:<id>`, or a Tasks issue's address), in place
+    /// The session, by the task it worked (`task:<id>`, or a Tasks issue's address), in place
     /// of [`Self::range`]: what a view that follows the task rather than the history (the agent
     /// composer) names it by.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
-    /// The record inside that run.
+    /// The record inside that session.
     pub app_id: String,
     pub id: String,
 }
 
-/// What comparing the workspace before and after a run found.
+/// What comparing the workspace before and after a session found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum Comparison {
@@ -615,7 +620,7 @@ pub enum Comparison {
     Unavailable,
 }
 
-/// One field a run of changes changed, with what it held either side of it.
+/// One field a range of changes changed, with what it held either side of it.
 ///
 /// [`Comparison::Changes`] says a field changed; this says what it changed
 /// from and to, which is the question "compare before and after" is asked
@@ -631,7 +636,7 @@ pub struct FieldChange {
     pub after: String,
 }
 
-/// What a run of changes did.
+/// What a range of changes did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Detail {
@@ -646,41 +651,41 @@ pub struct Detail {
     pub group_label: Option<String>,
     pub offers: Vec<Offer>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub run: Option<Run>,
+    pub session: Option<Session>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
-    /// The fields the run changed, with what they held either side: empty
+    /// The fields the session changed, with what they held either side: empty
     /// when the host could not read both states.
     pub changes: Vec<FieldChange>,
-    /// The run is no longer in the history (an undo or a filter moved it).
+    /// The session is no longer in the history (an undo or a filter moved it).
     pub gone: bool,
 }
 
-/// What a [`RUNS`] reads.
+/// What a [`SESSIONS`] reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct RunsQuery {
+pub struct SessionsQuery {
     pub scope: Scope,
-    /// The newest this many runs; `0` for the first page.
+    /// The newest this many sessions; `0` for the first page.
     pub limit: usize,
 }
 
-/// How many runs a [`RUNS`] read answers when its query asks for no number.
-pub const RUNS_PAGE: usize = 50;
+/// How many sessions a [`SESSIONS`] read answers when its query asks for no number.
+pub const SESSIONS_PAGE: usize = 50;
 
-impl RunsQuery {
-    /// How many runs the read answers.
+impl SessionsQuery {
+    /// How many sessions the read answers.
     #[must_use]
     pub const fn page(&self) -> usize {
         if self.limit == 0 {
-            RUNS_PAGE
+            SESSIONS_PAGE
         } else {
             self.limit
         }
     }
 }
 
-/// What one action of a run shows when it is opened: every action an agent
+/// What one action of a session shows when it is opened: every action an agent
 /// takes has a view of its own, so none of them is opaque.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -695,7 +700,7 @@ pub enum ActionView {
         lines: Vec<DiffLine>,
     },
     /// A command line it ran in a shell, with what came of it: the shell
-    /// session's own record of the run ([`CommandRun`]), never a copy.
+    /// session's own record of the execution ([`CommandExecution`]), never a copy.
     Command {
         target: Target,
         /// The command line, as the shell ran it.
@@ -707,7 +712,7 @@ pub enum ActionView {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         output: Vec<String>,
         /// It printed more than `output` holds; the rest is
-        /// read with [`RUN_OUTPUT`].
+        /// read with [`SESSION_OUTPUT`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         more: bool,
         /// How the program ended; `None` while it runs or when unknown.
@@ -718,9 +723,9 @@ pub enum ActionView {
         /// When it ended; `None` while it runs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ended_ms: Option<i64>,
-        /// The run record, once the shell asked to run it.
+        /// The execution record, once the shell ran it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        run: Option<CommandRun>,
+        execution: Option<CommandExecution>,
     },
     /// A web page it opened or acted on.
     Page {
@@ -742,7 +747,7 @@ impl ActionView {
             self,
             Self::Command {
                 ended_ms: None,
-                run: Some(_),
+                execution: Some(_),
                 ..
             }
         )
@@ -777,10 +782,10 @@ pub enum DiffSide {
     Added,
 }
 
-/// One action of an agent's run: what it did in one record, and the view
+/// One action of an agent session: what it did in one record, and the view
 /// that shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunAction {
+pub struct SessionAction {
     /// Its changes, which [`UNDO`] takes back on their own.
     pub range: Range,
     /// How many changes `range` is: an action that wrote four paragraphs in one note is one
@@ -794,17 +799,17 @@ pub struct RunAction {
     /// just this action.
     pub app_id: String,
     pub record: String,
-    /// The action that undoes this record's share of the run alone, when
+    /// The action that undoes this record's share of the session alone, when
     /// it can be undone on its own here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<Offer>,
 }
 
-/// One agent's run: an instruction it worked, and the actions it took for
+/// One agent session: an instruction it worked, and the actions it took for
 /// it, oldest first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentRun {
-    /// The run's record, as the history keeps it.
+pub struct AgentSession {
+    /// The session's record, as the history keeps it.
     pub id: String,
     /// The agent, and who it acted for.
     pub agent: Author,
@@ -819,20 +824,20 @@ pub struct AgentRun {
     pub started_ms: i64,
     /// When it last acted.
     pub last_ms: i64,
-    /// Every change it made, which [`UNDO_RUN`] takes back.
+    /// Every change it made, which [`UNDO_SESSION`] takes back.
     pub range: Range,
-    pub actions: Vec<RunAction>,
+    pub actions: Vec<SessionAction>,
     /// Why it cannot be undone from here, when it cannot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_blocked: Option<String>,
     /// What it is doing now, or did last: a command still running, else its
-    /// newest action. A reader shows it only for a run that is working.
+    /// newest action. A reader shows it only for a session that is working.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub now: Option<Now>,
 }
 
-impl AgentRun {
-    /// How many changes the run made to records and files, as a person counts what it changed:
+impl AgentSession {
+    /// How many changes the session made to records and files, as a person counts what it changed:
     /// each of its edits, not the commands it ran or the pages it read. What its card and the
     /// notice that it finished both say.
     #[must_use]
@@ -850,7 +855,7 @@ impl AgentRun {
     }
 }
 
-/// What a run is doing at the moment it is read.
+/// What a session is doing at the moment it is read.
 ///
 /// Written as derived; read through one `serde_json::Value` ([`Now::read`]),
 /// which takes the same JSON. A derived reader of an internally tagged enum
@@ -933,12 +938,12 @@ impl Now {
     }
 }
 
-/// Where a command's run is recorded: the shell session's record and the run
-/// in it. Terminal keeps every run a session ran there, with its command,
-/// directory, exit status, times and output.
+/// Where a command's execution is recorded: the shell session's record and
+/// the execution in it. Terminal keeps every execution a session ran there,
+/// with its command, directory, exit status, times and output.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct CommandRun {
+pub struct CommandExecution {
     /// The workspace the session's record is in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
@@ -946,35 +951,35 @@ pub struct CommandRun {
     pub app_id: String,
     /// The session's record.
     pub record: String,
-    /// The run, an item of the session's runs.
-    pub run: String,
+    /// The execution, an item of the session's executions.
+    pub execution: String,
 }
 
-/// Everything a run printed, as [`RUN_OUTPUT`] reads it.
+/// Everything an execution printed, as [`SESSION_OUTPUT`] reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunOutput {
-    /// Its lines, without terminal escapes, at most [`RUN_OUTPUT_LINES`].
+pub struct SessionOutput {
+    /// Its lines, without terminal escapes, at most [`SESSION_OUTPUT_LINES`].
     pub lines: Vec<String>,
     /// It printed more than the lines hold, or more than its shell kept.
     pub truncated: bool,
-    /// The run is not known here, or its output has not reached this device.
+    /// The execution is not known here, or its output has not reached this device.
     pub unavailable: bool,
-    /// The run has not ended.
+    /// The execution has not ended.
     pub running: bool,
 }
 
-/// The most lines a [`RUN_OUTPUT`] read answers: its newest.
-pub const RUN_OUTPUT_LINES: usize = 10_000;
+/// The most lines a [`SESSION_OUTPUT`] read answers: its newest.
+pub const SESSION_OUTPUT_LINES: usize = 10_000;
 /// The most lines an [`ActionView::Command`] carries.
 pub const COMMAND_TAIL_LINES: usize = 12;
 
-/// Every agent run a [`RunsQuery`] reads, newest first.
+/// Every agent session a [`SessionsQuery`] reads, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Runs {
-    pub runs: Vec<AgentRun>,
-    /// Runs the query matches, of which [`Self::runs`] holds the newest.
+pub struct Sessions {
+    pub sessions: Vec<AgentSession>,
+    /// Sessions the query matches, of which [`Self::sessions`] holds the newest.
     pub total: usize,
     /// The history is still being read.
     pub pending: bool,

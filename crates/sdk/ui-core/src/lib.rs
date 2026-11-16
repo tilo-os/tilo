@@ -563,7 +563,8 @@ pub use history_source::run_undo::{
     RunUndoReport, StepOutcome, StepState, refuse_run, undo_run, undo_step, unreachable_steps,
 };
 pub use history_source::runs::{
-    AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
+    AgentSession, RunStep, forget_run, read_runs, record_run, record_run_with_details,
+    run_starting_at,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use save_status::{
