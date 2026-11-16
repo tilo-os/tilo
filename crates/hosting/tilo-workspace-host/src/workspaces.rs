@@ -2707,6 +2707,27 @@ impl Workspaces {
         });
     }
 
+    /// Write through what every workspace's governor took in of its members'
+    /// writes, for a host that is stopping: the write-through is deferred
+    /// ([`Self::keep_soon`]), so a host stopped inside that window would end
+    /// with its copies in memory alone. A start replays what the relay
+    /// retains, but that replay takes a write only into a record the
+    /// governor already holds: the record a member's write changed has to be
+    /// on disk for a restart to serve it.
+    pub(crate) async fn keep_what_was_followed(&self) {
+        let held = {
+            let workspaces = self.inner.workspaces.lock().await;
+            workspaces.values().cloned().collect::<Vec<_>>()
+        };
+        for workspace in held {
+            let mut workspace = workspace.lock().await;
+            if workspace.unkept {
+                workspace.keeping = false;
+                workspace.keep_followed();
+            }
+        }
+    }
+
     /// Bring the relay in line with the workspace's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
     /// published, then re-derive its calls' participants. Runs after each

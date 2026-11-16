@@ -2327,11 +2327,20 @@ async fn a_device_linking_later_holds_every_part_a_page_wrote_before_the_link_ke
         .await
         .unwrap();
     written.extend([host_part, RECORD.to_owned()]);
-    tilo_test_env::within("the relay retains the page's parts", async {
+    // The relay keeps a write before the governor takes it in, and a start
+    // replays what the relay keeps only into the records the governor holds:
+    // both have to be there before this host stops, or the restart races the
+    // write it replays.
+    tilo_test_env::within("the relay and the governor hold the page's parts", async {
         for record in written.iter().filter(|record| record.as_str() != RECORD) {
             while retained_writes(&relay, workspace_id, record)
                 .await
                 .is_empty()
+                || !workspaces.records(&workspace).await.is_some_and(|records| {
+                    records
+                        .iter()
+                        .any(|(app, held)| app.as_str() == APP && held.as_str() == record.as_str())
+                })
             {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }

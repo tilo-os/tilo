@@ -668,7 +668,15 @@ impl WorkspaceHost {
 
     /// End the in-process sessions and stop the host's work. The embedder
     /// closes its own router and endpoint.
+    ///
+    /// What the workspaces took in of their members' writes is written
+    /// through to their files first: that write-through is deferred, so a
+    /// host stopped without this would end with a record a member wrote only
+    /// in memory. A start replays what the relay retains, but it takes a
+    /// write only into a record its governor already holds
+    /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]).
     pub async fn shutdown(self) {
+        self.workspaces.keep_what_was_followed().await;
         self.sessions.shutdown().await;
     }
 }
