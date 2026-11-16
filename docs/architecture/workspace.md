@@ -251,7 +251,11 @@ to either record starts a pass.
   in Notes sends its file to the trash.
 
 What the host writes reads as agreed, so its own writes never come back to it
-as changes. If both the note and its file changed since they last agreed, the
+as changes. A pass that fails (the workspace not open yet as the host starts,
+a note's change refused) is tried again after a wait that doubles up to five
+minutes, and every workspace that holds a notebook gets a pass as the host
+starts, so a write that landed while the host was down still reaches its note
+or file. If both the note and its file changed since they last agreed, the
 note wins and the file is rewritten from it. Notes nested under other notes
 are flat files in `Notes/`, and the note's title names its file: a file
 renamed in the folder takes its note's title back.
