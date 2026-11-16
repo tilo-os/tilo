@@ -59,6 +59,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import struct
 import sys
 import tarfile
@@ -634,10 +635,13 @@ def engine_library(name: str) -> bool:
 def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[str]:
     problems = []
     reason, run = raised.get("reason"), raised.get("run")
-    if not (isinstance(reason, str) and len(reason.strip()) >= MIN_REASON
-            and isinstance(run, int) and not isinstance(run, bool) and run > 0):
+    # The run that measured the growth: a Release / apps run number, or the t run
+    # (`r` and its hex id, as `t test` prints it) of an app-sizes check.
+    measured = ((isinstance(run, int) and not isinstance(run, bool) and run > 0)
+                or (isinstance(run, str) and re.fullmatch(r"r[0-9a-f]{6,}", run) is not None))
+    if not (isinstance(reason, str) and len(reason.strip()) >= MIN_REASON and measured):
         problems.append(f"raise {name} needs a reason of at least {MIN_REASON} characters "
-                        "and the run number that measured the growth")
+                        "and the run that measured the growth")
     unknown = set(raised) - {"reason", "run", "runtime", "engines"}
     if unknown:
         problems.append(f"raise {name} has unknown keys {sorted(unknown)}")

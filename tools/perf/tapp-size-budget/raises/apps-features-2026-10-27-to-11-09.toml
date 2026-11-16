@@ -3,8 +3,6 @@ run = "ra2f0869c96"
 
 [apps."so.tilo.activity"]
 x86_64 = 65536
-[apps."so.tilo.agent"]
-x86_64 = 131072
 [apps."so.tilo.api-tester"]
 x86_64 = 196608
 [apps."so.tilo.backups"]

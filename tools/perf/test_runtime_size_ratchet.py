@@ -455,6 +455,12 @@ class Check(unittest.TestCase):
     def test_a_raise_needs_a_reason_and_a_run(self):
         problems = ratchet.check(budget(), budget(bad=runtime_raise(reason='reason = "short"\n')))
         self.assertTrue(any("needs a reason" in problem for problem in problems), problems)
+        problems = ratchet.check(budget(), budget(unrun=runtime_raise(reason='reason = "a real reason"\n')))
+        self.assertTrue(any("needs a reason" in problem for problem in problems), problems)
+
+    def test_a_raise_names_the_t_run_that_measured_it(self):
+        self.assertEqual(ratchet.check(budget(), budget(measured=runtime_raise(
+            reason='reason = "the toolkit gained a media engine"\nrun = "r38fd252f6a"\n'))), [])
 
     def test_a_raise_may_not_more_than_double_a_budget(self):
         problems = ratchet.check(budget(), budget(huge=runtime_raise(added=131073)))
