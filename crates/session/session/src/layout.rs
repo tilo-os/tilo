@@ -698,9 +698,7 @@ impl Layouts {
             // A write of this layout under way holds what the person just changed: the record has
             // not taken it yet, and folding the record over the shell would put it back. A write
             // that answered is taken first, so the next one never starts before the record is read.
-            // The look after it reads the record: what reached it meanwhile moves nothing else.
             if !self.settle_one(&key) {
-                self.seen.set(None);
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
@@ -817,10 +815,8 @@ impl Layouts {
             }
             let key = (workspace_id, route.clone());
             // A write of this view under way holds what the person just changed: the record has not
-            // taken it yet, and laying the record over the shell would put it back. The look after
-            // it reads the record.
+            // taken it yet, and laying the record over the shell would put it back.
             if self.held(&key, |held| held.writing.is_some()) {
-                self.seen.set(None);
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
@@ -1637,13 +1633,9 @@ impl Layouts {
         let Some(going) = self.held(key, |held| held.writing.take()) else {
             return true;
         };
-        // A look skips a record while its write is under way, though another device's write to it
-        // may have moved the engine's revision before that look: once the write is done, the next
-        // look reads the record whatever the revision says.
         let going = match going {
             Going::View(mut publishing) => match publishing.writing.done() {
                 Some(written) => {
-                    self.seen.set(None);
                     let publishing = *publishing;
                     self.published(
                         key,
@@ -1652,18 +1644,24 @@ impl Layouts {
                         publishing.replaced,
                         publishing.revision,
                     );
-                    return true;
+                    None
                 }
-                None => Going::View(publishing),
+                None => Some(Going::View(publishing)),
             },
             Going::Layout(mut laying) => match laying.writing.done() {
                 Some(laid) => {
-                    self.seen.set(None);
                     self.laid(key, laid, &laying);
-                    return true;
+                    None
                 }
-                None => Going::Layout(laying),
+                None => Some(Going::Layout(laying)),
             },
+        };
+        let Some(going) = going else {
+            // A look skips a record while its write is under way, and another device's write to it
+            // may have moved the engine's revision before that look: once the write is done, the
+            // next look reads the record whatever the revision says.
+            self.seen.set(None);
+            return true;
         };
         self.held(key, |held| held.writing = Some(going));
         false
