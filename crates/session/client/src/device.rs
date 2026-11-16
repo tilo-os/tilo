@@ -165,6 +165,10 @@ impl Device {
         });
         let door_entered = entering.is_some();
         let device = Self::entering(sign_in, signer, entering);
+        // An entry that fails, or that its caller gives up on, ends the session it started: the
+        // device's next try opens another under the same key, and a relay keeps one connection
+        // per key, so the two would cut each other off for as long as both dial.
+        let unentered = Unentered(Some(device.peer.clone()));
         if door_entered {
             entered(&device.peer).await?;
         } else {
@@ -174,6 +178,7 @@ impl Device {
             .enter_workspace(&workspace, &sign_in.label)
             .await
             .map_err(CertifyError::from)?;
+        unentered.entered();
         let device = Self {
             workspace_id: entered,
             ..device
@@ -547,6 +552,27 @@ impl Device {
     /// Close the session: it says this device left, and stops.
     pub fn close(&self) {
         self.peer.close();
+    }
+}
+
+/// The session of an entry still under way, closed when the entry ends without entering.
+#[cfg(not(target_arch = "wasm32"))]
+struct Unentered(Option<Link>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Unentered {
+    /// The entry entered: the session is the device's from here on.
+    fn entered(mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Unentered {
+    fn drop(&mut self) {
+        if let Some(session) = self.0.take() {
+            session.close();
+        }
     }
 }
 

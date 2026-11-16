@@ -137,13 +137,16 @@ impl<E: Enter> Shared<E> {
     /// The device's session, entering the workspace when it is not in it
     /// yet; why not, when it cannot. `fresh` enters again in place of a
     /// session the person stopped, for a connection that starts after they
-    /// did.
+    /// did. A session that ended otherwise (the host stopped admitting it,
+    /// and it waits to be asked again) is entered anew in its place.
     async fn session(&self, fresh: bool) -> Result<Arc<Session>, String> {
         let mut held = self.session.lock().await;
-        if let Some(session) = held.as_ref()
-            && !(fresh && session.stopped().is_some())
-        {
-            return Ok(Arc::clone(session));
+        if let Some(session) = held.as_ref() {
+            if kept(session.device.is_live(), session.stopped().is_some(), fresh) {
+                return Ok(Arc::clone(session));
+            }
+            // Its connection goes before another under the same key dials.
+            session.device.close();
         }
         let session = self.enter.enter().await?;
         *held = Some(Arc::clone(&session));
@@ -168,6 +171,15 @@ impl<E: Enter> Shared<E> {
         };
         let _ = tokio::time::timeout(CLOSING, closed).await;
     }
+}
+
+/// Whether a held session serves on rather than being entered anew: it is `live`, or the person
+/// `stopped` its agent, which only a `fresh` connection enters again after.
+fn kept(live: bool, stopped: bool, fresh: bool) -> bool {
+    if stopped {
+        return !fresh;
+    }
+    live
 }
 
 /// One agent connection: its own run over the device's session.
@@ -478,6 +490,21 @@ mod tests {
         answer(connection, line)
             .await
             .map(|answer| serde_json::from_str(&answer).unwrap())
+    }
+
+    #[test]
+    fn a_session_that_ended_is_entered_anew_and_a_stopped_one_only_for_a_new_connection() {
+        // Live: it serves every caller.
+        assert!(kept(true, false, false));
+        assert!(kept(true, false, true));
+        // Ended (the host did not admit it, and it waits to be asked again): the holder's
+        // next look enters the workspace anew rather than holding a dead session for good.
+        assert!(!kept(false, false, false));
+        assert!(!kept(false, false, true));
+        // The person stopped the agent: the holder keeps that, and a new conversation
+        // enters again.
+        assert!(kept(false, true, false));
+        assert!(!kept(false, true, true));
     }
 
     #[tokio::test]
