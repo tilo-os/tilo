@@ -68,8 +68,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .map(|(_, entry)| entry)
             })
             .and_then(|entry| {
-                entry["record_id"]
-                    .as_str()
+                entry
+                    .get("record_id")
+                    .and_then(Value::as_str)
                     .filter(|record| !record.is_empty())
                     .map(str::to_owned)
             });

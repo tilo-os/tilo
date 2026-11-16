@@ -40,7 +40,6 @@ impl AppBrokerState {
 mod window_provider_tests {
     use super::super::PublishedSurface;
     use super::super::{AppBrokerState, BrokerChannels, CrdtRoute, FanoutState, PeerPublisher};
-    use crate::collab_app_broker::AppBrokerState as _;
     use std::sync::{Arc, Mutex};
 
     const BROWSER: &str = "so.tilo.browser";
