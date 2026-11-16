@@ -318,7 +318,6 @@ mod durable_local_matrix {
                 invocation: id,
                 address: tilo_actions::ActionAddress {
                     resource: delivered.resource,
-                    item: None,
                     action: delivered.action,
                 },
                 argument: delivered.argument,

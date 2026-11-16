@@ -404,10 +404,9 @@ pub(crate) fn toggles(
     }
 }
 
-/// What the event `event` of the node `key` of `view` runs, when it runs an action on a
-/// resource as it is: the action its control is bound to, published under its name, and the id
-/// the app declares it under. An action that still asks for something (`Pick date…`) opens its
-/// form from the view's own event instead.
+/// What the event `event` of the node `key` of `view` runs, when it runs an action as it is: the
+/// address the app publishes the action at, the resource and the action's name there. An action
+/// that still asks for something (`Pick date…`) opens its form from the view's own event instead.
 pub(crate) fn invokes(
     host: &Host,
     view: &ViewInstance,
@@ -421,26 +420,43 @@ pub(crate) fn invokes(
         .iter()
         .position(|arg| *arg == Value::Missing)
         .unwrap_or(aref.args.len());
-    // As the app publishes it: by its name.
-    let (asks, published) = host.find_in_packages(|package| {
+    // As the app publishes it: by its name, on the records of its subject's type when its subject
+    // is one the app declares, and on the app's own resource when it takes a record of another
+    // (`publish_package`): the one address the window, the API and an agent name it by.
+    let (asks, published, on) = host.find_in_packages(|package| {
         package
             .meta
             .actions
             .iter()
             .find(|action| action.id == aref.action)
-            .map(|action| (action.unbound(given).next().is_some(), action.name.clone()))
+            .map(|action| {
+                // An action runs on a record it is given first; one that takes a record its app
+                // declares no subject of (Today's cleanup over Tasks' list) is published on the
+                // app's own resource. An action given no record is the view's, run in the window.
+                let on = match aref.args.first() {
+                    Some(Value::Ref(subject)) => {
+                        Some(if package.meta.subject_of(&action.params).is_some() {
+                            subject.target.id_string()
+                        } else {
+                            crate::publish::package_resource_id(&package.meta.app)
+                        })
+                    }
+                    _ => None,
+                };
+                (
+                    action.unbound(given).next().is_some(),
+                    action.name.clone(),
+                    on,
+                )
+            })
     })?;
     if asks {
         return None;
     }
-    match aref.args.first() {
-        Some(Value::Ref(subject)) => Some(wire::Invoked {
-            resource: ResourceRef::clone(&subject.target),
-            action: published,
-            declared: aref.action,
-        }),
-        _ => None,
-    }
+    Some(wire::Invoked {
+        resource: on?,
+        action: published,
+    })
 }
 
 /// The window's message of rows `requested` of the list `list` of the view `view` of `lane`.

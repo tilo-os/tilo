@@ -312,18 +312,19 @@ impl Session {
         arguments: &Json,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
         let bundle = super::package(super::package_of(APP));
-        let declared = bundle
+        if !bundle
             .meta
             .actions
             .iter()
-            .find(|declared| declared.name == name)
-            .ok_or_else(|| format!("Mail declares no action {name}"))?
-            .id
-            .clone();
+            .any(|declared| declared.name == name)
+        {
+            return Err(format!("Mail declares no action {name}"));
+        }
         let resource = tilolang_tilo::publish::resource_id(APP, &on.id_string());
         let arguments = arguments.as_object().cloned().unwrap_or_default();
         let asked_before = self.asked(on);
-        let answered = self.invoke(None, None, &resource, &declared, &arguments)?;
+        // The API runs an action by the name the app publishes it under.
+        let answered = self.invoke(None, None, &resource, name, &arguments)?;
         self.settle();
         // What the action asks first — a send its code makes — is allowed, as the person allows
         // what the app's sheet asks of them, through the door.

@@ -87,6 +87,9 @@ pub struct Published {
     /// Where each resource stands, by the id a control names it with (the last segment of its
     /// published id): the way to it from the window's first resource, by index.
     stands: HashMap<String, Vec<usize>>,
+    /// Where the first resource offering each action stands, by the action's id: what a control
+    /// running an action of the window's own app on another app's record names.
+    offering: HashMap<String, Vec<usize>>,
     /// The binding of the action a control's event runs, by the resource a control names and the
     /// action on it; `None` where the published actions offer none that binds. Kept until the
     /// window offers other actions.
@@ -97,10 +100,12 @@ impl Published {
     #[must_use]
     fn new(resources: Vec<tilo_actions::ResourceSpec>) -> Self {
         let mut stands = HashMap::new();
-        stand(&resources, &mut Vec::new(), &mut stands);
+        let mut offering = HashMap::new();
+        stand(&resources, &mut Vec::new(), &mut stands, &mut offering);
         Self {
             resources,
             stands,
+            offering,
             bindings: HashMap::new(),
         }
     }
@@ -122,7 +127,12 @@ impl Published {
     /// item is published under the record that holds it — the first one published. `None` when the
     /// window publishes no such resource.
     fn holding(&self, resource: &str) -> Option<&tilo_actions::ResourceSpec> {
-        let (first, below) = self.stands.get(resource)?.split_first()?;
+        self.at(self.stands.get(resource)?)
+    }
+
+    /// The resource standing at `path` ([`stand`]).
+    fn at(&self, path: &[usize]) -> Option<&tilo_actions::ResourceSpec> {
+        let (first, below) = path.split_first()?;
         below
             .iter()
             .try_fold(self.resources.get(*first)?, |held, at| {
@@ -161,39 +171,41 @@ impl Published {
         bound
     }
 
-    /// What a control that runs the action `action`, published as `declared` on the resource
-    /// `resource`, does, as the identity anyone looks it up by
-    /// ([`tilo_actions::ActionAddress::naming`]): the kind of record it acts on, the one resource it
-    /// acts on, and the id the app declares the action by.
+    /// What a control that runs the action `action` on the resource `resource` does, as the
+    /// address the API runs it by ([`tilo_actions::ActionAddress::naming`]).
     ///
     /// `resource` is the resource the control's event runs the action on, which is the record the
     /// control shows — a row's task, a window's notebook. Where this window publishes no such
     /// record (an action of its own app's on another app's reading, `morning_cleanup` over Tasks),
     /// the resource that publishes the action answers instead: the door that runs it holds that one.
-    fn naming(&self, resource: &str, action: &str, declared: &str) -> String {
-        if let Some(spec) = self.holding(resource)
-            && let Some(named) = named_by(spec, action, declared)
-        {
-            return named_address(spec, named, declared).encode();
+    fn naming(&self, resource: &str, action: &str) -> String {
+        let offers = |spec: &tilo_actions::ResourceSpec| {
+            spec.actions
+                .iter()
+                .find(|offered| offered.id == action)
+                .map(|offered| tilo_actions::ActionAddress::naming(spec, offered))
+        };
+        if let Some(named) = self.holding(resource).and_then(offers) {
+            return named.encode();
         }
-        if let Some((spec, named)) = self
-            .resources
-            .iter()
-            .find_map(|spec| named_by(spec, action, declared).map(|named| (spec, named)))
+        if let Some(named) = self
+            .offering
+            .get(action)
+            .and_then(|path| self.at(path))
+            .and_then(offers)
         {
-            return named_address(spec, named, declared).encode();
+            return named.encode();
         }
         // A reading of another app's record: the id the control names is the resource that app
         // publishes it under, and its own door resolves it there.
-        tilo_actions::ActionAddress::new(resource, declared).encode()
+        tilo_actions::ActionAddress::new(resource, action).encode()
     }
 
-    /// What the control `node` does, as the identity anyone looks it up by: the kind of record it
-    /// acts on, the one record of that kind it acts on, and the operation, named as the app
-    /// publishes it at its door. A control that runs an app action does that action; one that edits
-    /// a record's field edits that field. Where the composition moves the control, and what the
-    /// person's language renames it by, change none of them: the second task's Complete is not the
-    /// first's.
+    /// What the control `node` does, as the address anyone runs it by: the one record it acts on
+    /// and the action, as the app publishes them at its API. A control that runs an app action
+    /// does that action; one that edits a record's field runs the action that edits that field.
+    /// Where the composition moves the control, and what the person's language renames it by,
+    /// change neither: the second task's Complete is not the first's.
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
         // One event per control runs what the person presses it for. A node whose events run
         // several actions is none of them in particular, so the first the ordered map holds answers
@@ -203,49 +215,21 @@ impl Published {
             .values()
             .find_map(|event| event.invokes.as_ref())
         {
-            return Some(self.naming(&invoked.resource, &invoked.action, &invoked.declared));
+            return Some(self.naming(&invoked.resource, &invoked.action));
         }
         Self::field_of(node)
     }
 
-    /// What the field a bound control edits is, as the identity anyone looks it up by: the kind of
-    /// record it is of, the one record, and the declared id of the field. `None` for a control bound
-    /// to the view's own state. A control the view draws from the binding of a field (a list row's
-    /// box) says what it edits, where it runs no action of its own.
+    /// What the field a bound control edits is, as the address anyone runs its edit by: the record
+    /// it is of, by the id the app publishes it under, and the field's id, which the record's API
+    /// edits. `None` for a control bound to the view's own state. A control the view draws from the
+    /// binding of a field (a list row's box) says what it edits, where it runs no action of its
+    /// own.
     pub(crate) fn field_of(node: &UiNode) -> Option<String> {
         let binding = node.binding.as_ref()?;
         let (target, field) = binding.field()?;
-        let kind = binding.kind.as_deref()?;
-        Some(tilo_actions::ActionAddress::on(kind, target, field).encode())
+        tilo_actions::ActionAddress::checked(target, field).map(|address| address.encode())
     }
-}
-
-/// The address a control running `named` on `spec` publishes
-/// ([`tilo_actions::ActionAddress::naming`]), with `declared` — the id the control's event names —
-/// in place of the one the action carries here: a window holds the app's actions as their catalogue
-/// describes them, which says what an action is published as and not the id its declaration keeps.
-fn named_address(
-    spec: &tilo_actions::ResourceSpec,
-    named: &tilo_actions::ActionSpec,
-    declared: &str,
-) -> tilo_actions::ActionAddress {
-    let mut address = tilo_actions::ActionAddress::naming(spec, named);
-    if !declared.is_empty() {
-        declared.clone_into(&mut address.action);
-    }
-    address
-}
-
-/// The action of `spec` a control runs when it runs `action`, published as `declared`: the one it
-/// names, or the one the app declares under the id a control says it does.
-fn named_by<'a>(
-    spec: &'a tilo_actions::ResourceSpec,
-    action: &str,
-    declared: &str,
-) -> Option<&'a tilo_actions::ActionSpec> {
-    spec.actions
-        .iter()
-        .find(|candidate| candidate.declared == declared || candidate.id == action)
 }
 
 /// Note where each resource of `resources` stands at `path`, and where those it holds under it
@@ -255,13 +239,19 @@ fn stand(
     resources: &[tilo_actions::ResourceSpec],
     path: &mut Vec<usize>,
     stands: &mut HashMap<String, Vec<usize>>,
+    offering: &mut HashMap<String, Vec<usize>>,
 ) {
     for (at, resource) in resources.iter().enumerate() {
         path.push(at);
         if let Some((_, id)) = resource.id.as_str().rsplit_once(':') {
             stands.entry(id.to_owned()).or_insert_with(|| path.clone());
         }
-        stand(&resource.children, path, stands);
+        for action in &resource.actions {
+            offering
+                .entry(action.id.clone())
+                .or_insert_with(|| path.clone());
+        }
+        stand(&resource.children, path, stands, offering);
         path.pop();
     }
 }
@@ -1388,7 +1378,6 @@ mod tests {
                 invokes: Some(crate::Invocation {
                     resource: "rows/r1".to_owned(),
                     action: "open".to_owned(),
-                    declared: "open".to_owned(),
                 }),
                 ..Event::default()
             },

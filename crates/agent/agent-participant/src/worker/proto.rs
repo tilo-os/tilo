@@ -378,7 +378,6 @@ mod tests {
     fn api_errors_survive_the_boundary() {
         let at = tilo_actions::api::ActionAddress {
             resource: "r".into(),
-            item: None,
             action: "a".into(),
         };
         for error in [

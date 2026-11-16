@@ -207,19 +207,13 @@ impl<I> ActionBinding<I> {
         ))
     }
 
-    /// What a control bound to it does, as a window publishes it: the kind of
-    /// record it acts on, the one resource it acts on, and the id the app
-    /// declares the action by ([`ActionAddress::naming`]) — so the row's
-    /// Complete names that row, and what a person presses and what a caller
-    /// names at the API are one thing.
+    /// What a control bound to it does, as a window publishes it: the address
+    /// the API runs it by ([`ActionAddress::naming`]) — so the row's Complete
+    /// names that row, and what a person presses and what a caller names at
+    /// the API are one thing.
     #[must_use]
     pub fn identity(&self) -> ActionAddress {
-        let declared = if self.spec.declared.is_empty() {
-            self.address.action.as_str()
-        } else {
-            self.spec.declared.as_str()
-        };
-        ActionAddress::on(self.kind.as_str(), self.address.resource.as_str(), declared)
+        self.address.clone()
     }
 
     /// The same binding for a control whose value `J` maps to this one's

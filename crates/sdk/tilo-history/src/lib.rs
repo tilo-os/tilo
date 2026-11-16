@@ -88,7 +88,13 @@ impl ActionLabels {
     pub fn learn(&mut self, resources: &[tilo_actions::ResourceSpec]) {
         for resource in resources {
             for action in &resource.actions {
-                let by = tilo_actions::ActionAddress::naming(resource, action).action;
+                // A change says the id the app declares the action by, where it declares one
+                // apart from the name it publishes the action under.
+                let by = if action.declared.is_empty() {
+                    action.id.clone()
+                } else {
+                    action.declared.clone()
+                };
                 let known = self.0.entry(by).or_default();
                 match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
                     Some(entry) => entry.1.clone_from(&action.label),

@@ -29,12 +29,11 @@ pub struct Case {
 /// The resource and the field an action toggles.
 pub type Toggled = Option<(ResourceRef, String)>;
 
-/// What an event runs: the resource, the action as the app publishes it there (its name), and
-/// the id the app declares that action under.
+/// What an event runs: the resource the app publishes it on, and the action as the app publishes
+/// it there.
 pub struct Invoked {
-    pub resource: ResourceRef,
+    pub resource: String,
     pub action: String,
-    pub declared: String,
 }
 
 /// What a conversion reads beside the tree.
@@ -100,9 +99,8 @@ impl Convert<'_> {
                         .and_then(|(target, field)| Some(((self.published)(&target)?.1, field)));
                     let invokes =
                         (self.invokes)(&node.key, event).map(|invoked| wire::Invocation {
-                            resource: invoked.resource.id_string(),
+                            resource: invoked.resource,
                             action: invoked.action,
-                            declared: invoked.declared,
                         });
                     (event.clone(), wire::Event { toggles, invokes })
                 })

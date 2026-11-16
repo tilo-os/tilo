@@ -2346,15 +2346,14 @@ mod directory_query_input_tests {
     }
 }
 
-/// A directory target names a resource of the app, never one of its rows (only the app's own api
-/// resolves a row), and a revision.
+/// A directory target names a resource of the app and a revision.
 fn check_directory_target(
     target: &DirectoryActionTarget,
     argument: Option<&str>,
     confirmation: Option<&DirectoryActionConfirmation>,
 ) -> Result<(), ActionDirectoryBridgeError> {
     let address = &target.address;
-    if address.item.is_some() || target.revision.is_empty() {
+    if target.revision.is_empty() {
         return Err(ActionDirectoryBridgeError::InvalidRequest);
     }
     validate_directory_target_input(
@@ -4297,12 +4296,7 @@ impl AppBrokerState {
             cluster_id,
             peer_id,
             revision,
-            address:
-                tilo_actions::ActionAddress {
-                    resource,
-                    item: _,
-                    action,
-                },
+            address: tilo_actions::ActionAddress { resource, action },
         } = target;
         check_directory_target(target, argument, confirmation.as_ref())?;
         let peer_id = *peer_id;
@@ -5504,7 +5498,6 @@ impl AppBrokerState {
                     invocation,
                     address: tilo_actions::ActionAddress {
                         resource: offered.1.resource.clone(),
-                        item: None,
                         action: offered.1.action.clone(),
                     },
                     argument: argument.map(str::to_string),

@@ -79,15 +79,25 @@ impl super::Session {
     /// its columns' header once it does — and so is what the person's language calls it.
     pub(super) fn control(&mut self, identity: &(String, String)) -> (f64, f64) {
         let (kind, action) = identity;
+        // The addresses the instance publishes the action under on records of the kind: what an
+        // agent reads, and what the control says it does.
+        let published: Vec<String> = self
+            .instance()
+            .published()
+            .iter()
+            .filter(|descriptor| {
+                descriptor.resource_kind == *kind && descriptor.address.action == *action
+            })
+            .map(|descriptor| descriptor.address.encode())
+            .collect();
         let control = self
             .controls()
             .into_iter()
             .find(|control| {
                 control
                     .doing
-                    .as_deref()
-                    .and_then(ui::tilo_actions::ActionAddress::parse)
-                    .is_some_and(|doing| doing.resource == *kind && doing.action == *action)
+                    .as_ref()
+                    .is_some_and(|doing| published.contains(doing))
             })
             .unwrap_or_else(|| {
                 panic!(
@@ -109,19 +119,21 @@ impl super::Session {
         format!("tl.{}.{ty}", self.app)
     }
 
-    /// The identity of the app's action `action`, as it is declared (`new_note`), on records of
-    /// `ty`: the record kind and the id the app declares the action by.
+    /// The app's action `action`, as it publishes it (`new_note`), on records of `ty`: the record
+    /// kind and the action, which [`Self::control`] finds the control of by the address the
+    /// instance publishes for it.
     pub(super) fn doing(&self, ty: &str, action: &str) -> (String, String) {
         let bundle = package(package_of(&self.app));
-        let Some(declared) = bundle
-            .meta
-            .actions
-            .iter()
-            .find(|declared| declared.name == action)
-        else {
-            panic!("{} declares no action {action}", self.app);
-        };
-        (self.kind(ty), declared.id.clone())
+        assert!(
+            bundle
+                .meta
+                .actions
+                .iter()
+                .any(|declared| declared.name == action),
+            "{} declares no action {action}",
+            self.app
+        );
+        (self.kind(ty), action.to_owned())
     }
 
     /// The address the window's instance publishes for the app's action `action` on records of
@@ -212,8 +224,8 @@ pub(super) struct ShownControl {
 
 impl super::Session {
     /// Invoke what `identity` says a window's control does, at the door the broker delivers to:
-    /// the kind of resource the action acts on and the id the app declares it by, which is what
-    /// the window publishes of the control ([`super::Session::controls`]).
+    /// the resource and the action as the app publishes them, which is what the window publishes
+    /// of the control ([`super::Session::controls`]).
     pub(super) fn invoke_doing(
         &mut self,
         identity: &str,
@@ -456,7 +468,7 @@ fn card_record(session: &mut super::Session, title: &str) -> serde_json::Value {
 }
 
 /// A box bound only to a field runs no action of its own and still says what it edits, as the
-/// field's own entry does: the kind of record, the one record, and the declared id of the field,
+/// field's own entry does: the one record, by the id the app publishes it under, and the field,
 /// in a box a view places itself and in a list row's leading column. A caller that names it so
 /// marks the field, where a press and a screen reader's activation do.
 #[test]
@@ -484,17 +496,14 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     );
     let titled = editing(&session.field_id("title"));
     assert_eq!(
-        (done.resource.as_str(), done.item.as_deref()),
-        (titled.resource.as_str(), titled.item.as_deref()),
+        done.resource, titled.resource,
         "the box names the record the field's own entry names, the same way"
     );
     let published = format!("tl:{}:", session.app);
-    // Named as an action on the record is: by the kind and the id the app publishes.
-    let named = |address: &ui::tilo_actions::ActionAddress| {
-        let item = address.item.as_deref().unwrap_or_default();
-        (address.resource.clone(), item.starts_with(&published))
-    };
-    assert_eq!(named(&done), (session.kind("Page"), true), "{done:?}");
+    // Named as an action on the record is: by the id the app publishes the record under.
+    let named =
+        |address: &ui::tilo_actions::ActionAddress| address.resource.starts_with(&published);
+    assert!(named(&done), "{done:?}");
     assert!(
         session
             .window
@@ -543,7 +552,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let address = ui::tilo_actions::ActionAddress::parse(&boxed)
         .unwrap_or_else(|| panic!("{boxed} names a record and a field"));
     assert_eq!(address.action, session.field_id("checked"));
-    assert_eq!(named(&address), (session.kind("Task"), true), "{address:?}");
+    assert!(named(&address), "{address:?}");
     assert!(
         session
             .window

@@ -929,14 +929,13 @@ def app_action(session: Session, app: str, declared: str, kind: str | None = Non
 def doing(session: Session, name: str, declared: str) -> str:
     """The identity of the control in a window of the tilolang app `name` that runs its action
     `declared` (`morning_cleanup`), as an agent finds it: the app lists the action on the resource
-    that publishes it, and the control names that resource and the id the app keeps the action
-    under (`app.ids`), wherever the window's composition draws it and in whatever language."""
+    that publishes it, and the control names exactly that address, wherever the window's
+    composition draws it and in whatever language."""
     app = app_id(name)
     listed = until(f"{app}'s {declared}", lambda: app_action(session, app, declared))
-    wanted = [listed["resource"], app_id_of(name, declared)]
+    wanted = f"{listed['resource']}\x1f{declared}"
     target = until(f"a control doing {app}'s {declared} on {listed['resource']}", lambda: next(
-        (t for t in session.targets()
-         if (t.get("identity") or "").split("\x1f")[-2:] == wanted), None), 30)
+        (t for t in session.targets() if t.get("identity") == wanted), None), 30)
     return target["identity"]
 
 

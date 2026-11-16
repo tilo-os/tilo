@@ -500,7 +500,6 @@ impl<'a> Validator<'a> {
         if let Some(invoked) = &event.invokes {
             self.key(&invoked.resource)?;
             self.key(&invoked.action)?;
-            self.key(&invoked.declared)?;
         }
         Ok(())
     }

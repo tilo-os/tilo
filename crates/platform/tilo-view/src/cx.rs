@@ -204,7 +204,6 @@ impl ViewCx {
             Some(crate::node::patch::Invocation {
                 resource: resource.id_string(),
                 action: action.to_owned(),
-                declared: action.to_owned(),
             })
         };
         let wire = match &effect {
@@ -328,7 +327,6 @@ mod tests {
             Some(crate::node::patch::Invocation {
                 resource: "tube.channel:abc".to_owned(),
                 action: "subscribe".to_owned(),
-                declared: "subscribe".to_owned(),
             })
         );
     }
@@ -376,7 +374,6 @@ mod tests {
             Some(crate::node::patch::Invocation {
                 resource: "tube.channel:abc".to_owned(),
                 action: "post".to_owned(),
-                declared: "post".to_owned(),
             })
         );
         let effect = cx.effect(&node.key, "submit").expect("recorded");

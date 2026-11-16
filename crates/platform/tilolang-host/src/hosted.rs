@@ -276,60 +276,20 @@ impl Surface {
         resources
     }
 
-    /// What an invocation of `address` runs, and the resources it resolves against: the first
-    /// resource carrying it, in reading order, among `resources` ([`carried`]), or — where the
-    /// address names no resource there — among every resource the workspace holds, since what a
-    /// window's control says it does names a kind of resource rather than the record a window
-    /// shows. `address` itself answers when this app publishes nothing of it, so an action it does
-    /// not offer is refused as it was.
-    fn naming(
-        &self,
-        resources: Vec<ResourceSpec>,
-        address: &ActionAddress,
-    ) -> (Vec<ResourceSpec>, ActionAddress) {
-        let named = |resources: &[ResourceSpec]| {
-            resources
-                .iter()
-                .find_map(|resource| carried(resource, address))
-        };
-        if let Some(named) = named(&resources) {
-            return (resources, named);
+    /// The resources an invocation of `address` resolves against: `resources` when one of them
+    /// publishes it, or else every resource the workspace holds, since a caller names the record
+    /// an action acts on whatever a window shows. An address no resource publishes is refused by
+    /// the API as it is.
+    fn naming(&self, resources: Vec<ResourceSpec>, address: &ActionAddress) -> Vec<ResourceSpec> {
+        if tilo_actions::api::locate(&resources, address).is_some() {
+            return resources;
         }
         let every = self.resources(None);
-        if let Some(named) = named(&every) {
-            return (every, named);
+        if tilo_actions::api::locate(&every, address).is_some() {
+            return every;
         }
-        // A control of another app's record that runs an action of this one (Today's cleanup over
-        // the Tasks list it shows): the address names a record this app holds no resource for, and
-        // the operation by the id this app declares it by — the resource that publishes it runs it.
-        let other_app =
-            tilolang_tilo::publish::app_of(&address.resource).is_some_and(|app| app != self.app);
-        if other_app && let Some(named) = declared_in(&every, &address.action) {
-            return (every, named);
-        }
-        (resources, address.clone())
+        resources
     }
-}
-
-/// The action this app publishes by `declared` — the id its declaration keeps — on the first
-/// resource that offers it, in reading order.
-fn declared_in(resources: &[ResourceSpec], declared: &str) -> Option<ActionAddress> {
-    if declared.is_empty() {
-        return None;
-    }
-    for resource in resources {
-        if let Some(action) = resource
-            .actions
-            .iter()
-            .find(|action| action.declared == declared)
-        {
-            return Some(ActionAddress::new(resource.id.as_str(), action.id.clone()));
-        }
-        if let Some(named) = declared_in(&resource.children, declared) {
-            return Some(named);
-        }
-    }
-    None
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.
@@ -361,31 +321,6 @@ fn find(spec: &ResourceSpec, address: &str) -> Option<ResourceSpec> {
 /// Whether `spec` or a resource under it is `address`.
 fn holds(spec: &ResourceSpec, address: &str) -> bool {
     spec.id.as_str() == address || spec.children.iter().any(|child| holds(child, address))
-}
-
-/// What `spec` publishes of `address`: the action under the name it is published by, on the
-/// resource that carries it. `address` names that resource by its published id, or — as a
-/// window's control says what it does — by the kind of resource it acts on, with the one
-/// item of that kind it stands for when it stands for one row among many; and the action by
-/// the name it is published under or the id its declaration keeps
-/// ([`tilo_actions::ActionType::declared`]), which no rename of a view and no other language
-/// changes. `None` when `spec` and what it holds offer nothing of it.
-fn carried(spec: &ResourceSpec, address: &ActionAddress) -> Option<ActionAddress> {
-    let names_the_resource = match &address.item {
-        // The item pins the one resource: the kind it is and the id the app publishes it under.
-        Some(item) => spec.kind == address.resource && spec.id.as_str() == item,
-        None => spec.id.as_str() == address.resource || spec.kind == address.resource,
-    };
-    if names_the_resource {
-        for action in &spec.actions {
-            if action.id == address.action || action.declared == address.action {
-                return Some(ActionAddress::new(spec.id.as_str(), action.id.clone()));
-            }
-        }
-    }
-    spec.children
-        .iter()
-        .find_map(|child| carried(child, address))
 }
 
 /// The instance's hold on its surface: while the instance publishes, it is the instance's.
@@ -1857,9 +1792,9 @@ impl Hosted {
     }
 
     /// The action `address` runs, built through the specs the window publishes: the one it names,
-    /// whichever way a caller named it, or — where it names a field of a record instead (a box the
-    /// view binds to the field and gives no action of its own) — the record's own edit of that
-    /// field, found as any action on the record is, with the value a press of it gives.
+    /// or — where it names a field of a record instead (a box the view binds to the field and gives
+    /// no action of its own) — the record's own edit of that field, found as any action on the
+    /// record is, with the value a press of it gives.
     fn encode_named(
         &self,
         surface: &Surface,
@@ -1868,11 +1803,10 @@ impl Hosted {
         argument: Option<&str>,
     ) -> (ActionAddress, Result<EncodedAction, tilo_actions::ApiError>) {
         let named_of = |address: &ActionAddress| {
-            let named = address.item.as_deref().unwrap_or(&address.resource);
-            surface.naming(surface.addressed(shown, named), address)
+            surface.naming(surface.addressed(shown, &address.resource), address)
         };
-        let (resources, named) = named_of(address);
-        let encoded = encode(&resources, &named, argument);
+        let resources = named_of(address);
+        let encoded = encode(&resources, address, argument);
         if encoded
             .as_ref()
             .is_err_and(|error| matches!(error, tilo_actions::ApiError::Unknown(_)))
@@ -1881,14 +1815,14 @@ impl Hosted {
                 action: tilolang_tilo::action::EDIT_FLAG_ACTION.to_owned(),
                 ..address.clone()
             };
-            let (resources, edit) = named_of(&edit);
+            let resources = named_of(&edit);
             if let Some(arguments) = self.toggled(&edit, &address.action)
                 && let Ok(run) = encode(&resources, &edit, Some(&arguments))
             {
                 return (edit, Ok(run));
             }
         }
-        (named, encoded)
+        (address.clone(), encoded)
     }
 
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
@@ -2852,13 +2786,9 @@ impl Applier {
         };
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
-        // published for one change, and an applier shows nothing. What it names by what a control
-        // does — a kind of resource and the id the app declares the action by — is found the same
-        // way the window finds it.
-        let resources = self
-            .surface
-            .addressed(&[], address.item.as_deref().unwrap_or(&address.resource));
-        let (resources, address) = self.surface.naming(resources, &address);
+        // published for one change, and an applier shows nothing.
+        let resources = self.surface.addressed(&[], &address.resource);
+        let resources = self.surface.naming(resources, &address);
         let caller = Caller::from(&invoker);
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits, as the invoker's.

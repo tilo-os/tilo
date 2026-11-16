@@ -2157,7 +2157,6 @@ fn action_shell(listing: bool) -> Vec<ToUi> {
             invokes: Some(crate::Invocation {
                 resource: "1".to_owned(),
                 action: "new".to_owned(),
-                declared: "abc123".to_owned(),
             }),
             ..Event::default()
         },
@@ -2220,9 +2219,9 @@ fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
     let mut harness =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
     harness.relayout();
-    // The record kind it acts on, the one record, then the action as the app declares it: not the
-    // name the window publishes it under, which a rename changes.
-    let identity = "test.tasks\u{1f}tasks:1\u{1f}abc123";
+    // The one record it acts on and the action, as the app publishes them at its API: the
+    // address an agent reads and runs it by.
+    let identity = "tasks:1\u{1f}new";
     assert_eq!(
         identity_named(&harness, "New note").as_deref(),
         Some(identity),
