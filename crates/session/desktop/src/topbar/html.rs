@@ -174,11 +174,6 @@ impl TopBarChrome {
                 ui::composition::bar_chip_face(&self.invite_chip(&name), theme, ground),
             );
         }
-        if let Some((label, pill)) = self.placed.watching.as_ref() {
-            part(cx, "watching", *pill, None);
-            let chip = self.watching_chip(label, pill.x1);
-            face_of(cx, ui::composition::bar_chip_face(&chip, theme, ground));
-        }
         if !self.avatar_stack_rect.is_zero_area() {
             part(cx, "faces", self.avatar_stack_rect, None);
         }

@@ -2379,7 +2379,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase watching_pages_and_marked_agents_read_in_the_avatar_stack;
+    phase marked_agents_read_in_the_avatar_stack;
     {
         let mut tree = Layout {
             workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
@@ -2419,32 +2419,6 @@ tilo_test_env::scenario! {
                 &PresenceCtx::default(),
             );
         };
-
-        // Pages watching alone: the chip is the People control, not Invite.
-        let chrome = super::fixture::FixtureChrome::new(tree.clone());
-        chrome.borrow_mut().watching = 2;
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        paint(&mut bar);
-        assert!(bar.face_initials().is_empty());
-        assert!(bar.people_button_rect.height() >= BAR_CONTROL_PX);
-        let node = bar.accessibility().expect("topbar semantics");
-        assert!(
-            node.children
-                .iter()
-                .all(|child| child.name.as_deref() != Some("Invite")),
-            "an audience is not an empty workspace"
-        );
-        assert!(
-            node.children.iter().any(|child| child
-                .name
-                .as_deref()
-                .is_some_and(|name| name.contains("2 people watching"))),
-            "the bar says how many pages are watching"
-        );
-        bar.last_cursor = Some(bar.people_button_rect.center());
-        let mut handled = false;
-        bar.handle_left_click(&mut handled);
-        assert!(handled && chrome.borrow().overlays.people);
 
         // An agent's member key says it is software: it draws as an agent.
         tree.workspaces[0].members_here([

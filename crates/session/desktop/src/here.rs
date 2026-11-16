@@ -234,7 +234,6 @@ pub struct HereState {
     /// What this device read off its person's own recent steps: the line it publishes for them
     /// while they share an automatic status and said nothing themselves.
     own_reading: Option<String>,
-    watching: u32,
     /// Bumped on every change, for the bar's snapshot revision.
     revision: u64,
     /// The members last registered on window presence, to forget who left.
@@ -724,15 +723,6 @@ impl HereState {
         arrived
     }
 
-    pub fn set_watching(&mut self, watching: u32) -> bool {
-        if self.watching == watching {
-            return false;
-        }
-        self.watching = watching;
-        self.revision = self.revision.wrapping_add(1);
-        true
-    }
-
     pub fn sharing(&self) -> ui::StatusSharing {
         self.sharing
     }
@@ -811,10 +801,6 @@ impl HereState {
                     .filter(|_| self.sharing == ui::StatusSharing::Automatic)
                     .and_then(|text| line(text, crate::people::LineSource::Observed))
             })
-    }
-
-    pub fn watching(&self) -> u32 {
-        self.watching
     }
 
     pub fn revision(&self) -> u64 {

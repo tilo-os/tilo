@@ -179,7 +179,6 @@ struct CacheFingerprint {
     /// Each face's live look: dimmed, its call ring's level and its bounce, quantised, so presence
     /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
-    watching: u32,
     sharing: sharing::SharingSummary,
     activity_headline: Option<String>,
     activity_unread: usize,
@@ -658,7 +657,6 @@ impl TopBarChrome {
                     )
                 })
                 .collect(),
-            watching: self.watching(),
             sharing: self.sharing_summary(),
             activity_headline: self.activity_headline.clone(),
             activity_unread: self.activity_unread,

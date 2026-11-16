@@ -28,11 +28,6 @@ topbar-sharing-unknown-window = a window
 # Who views a shared window when nothing names them, after "Watching:" or "In control:".
 topbar-sharing-unnamed-viewer = another device
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
-topbar-watching-count = +{ $count } watching
-topbar-watching-description = { $count } { $count ->
-        [one] person
-       *[other] people
-    } watching without joining
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Running application
 topbar-app-tray-unread = { $count } unread

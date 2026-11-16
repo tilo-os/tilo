@@ -61,14 +61,6 @@ topbar-sharing-unknown-window = ein Fenster
 # Wer ein geteiltes Fenster sieht, wenn nichts ihn benennt, nach „Sieht zu:“ oder „Steuert:“.
 topbar-sharing-unnamed-viewer = ein anderes Gerät
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
-topbar-watching-count = +{ $count } { $count ->
-        [one] schaut zu
-       *[other] schauen zu
-    }
-topbar-watching-description = { $count } { $count ->
-        [one] Person schaut
-       *[other] Personen schauen
-    } zu, ohne teilzunehmen
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Laufende Anwendung
 topbar-app-tray-unread = { $count } ungelesen

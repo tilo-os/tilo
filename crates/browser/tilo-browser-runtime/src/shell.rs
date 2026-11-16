@@ -292,10 +292,6 @@ impl ChromeSource for PageChrome {
         self.here.borrow().wave_notice()
     }
 
-    fn watching(&self) -> u32 {
-        self.here.borrow().watching()
-    }
-
     fn facts(&self, facts: &mut Facts) {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());

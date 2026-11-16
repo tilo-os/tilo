@@ -1,16 +1,14 @@
 //! Who is here, in the bar: the others' faces (a "+N" badge when crowded),
-//! the people button, a quiet count of pages reading along, and the invite
-//! button.
+//! the people button, and the invite button.
 //!
 //! One who's-here bar. Each face is the person as everyone looking sees
 //! them (one initials rule, one colour source) and opens their card. The
 //! people button beside the faces opens everyone here (the panel, which
-//! can be kept on screen); so do the badge and the watching count. The
+//! can be kept on screen); so does the badge. The
 //! invite button stays beside them however many people are present, and
 //! invites in one step: the host's own invite flow, not the list.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, Theme, TopBarChrome, t,
-    t_args,
 };
 
 /// The people button's glyph: the cluster of who is here.
@@ -64,9 +62,9 @@ impl TopBarChrome {
         !self.is_compact() && crate::follow_banner::folds(self.rect.width())
     }
 
-    /// Whether anyone but this person is here or reading along: the people button then stands.
+    /// Whether anyone but this person is here: the people button then stands.
     fn anyone_else(&self) -> bool {
-        !self.face_initials.is_empty() || self.watching() > 0
+        !self.face_initials.is_empty()
     }
 
     /// The person whose face is under `point` , by roster id.
@@ -164,23 +162,12 @@ impl TopBarChrome {
         }
         let gap = f64::from(theme.tokens.spacing.s2);
         let inset = f64::from(theme.tokens.spacing.s1);
-        let watching = self.watching();
-        let watching_w = if watching == 0 {
-            0.0
-        } else {
-            let label = t_args("topbar-watching-count", &[("count", watching.into())]);
-            ui::widget::BarChipFace::new(&label, &[])
-                .label(&label)
-                .at_height(BAR_CONTROL_PX)
-                .width(text_renderer, theme)
-                + gap
-        };
         let invite_w = glyph_chip_width(&t("topbar-invite"), INVITE_GLYPH, text_renderer, theme);
         let people_w =
             glyph_chip_width(&t("topbar-show-people"), USERS_GLYPH, text_renderer, theme);
         // The people button ends where the invite leaves it, and its own gap on either side is
         // the bar's: what stands left of this cluster must still clear the lane by one gap.
-        right_x - invite_w - gap - watching_w - people_w - inset >= self.center_lane.x1 + gap
+        right_x - invite_w - gap - people_w - inset >= self.center_lane.x1 + gap
     }
 
     /// The invite button's chip: a person-plus glyph in the place the next person takes, lifting
@@ -448,52 +435,8 @@ impl TopBarChrome {
         self.placed.people_count = Some(label);
     }
 
-    /// The watching count's chip showing `label`: a bar chip with its words and no glyph, so it
-    /// stands and lifts like every other control while it opens who is here too.
-    pub(super) fn watching_chip<'a>(
-        &self,
-        label: &'a str,
-        right_x: f64,
-    ) -> ui::widget::BarChipFace<'a> {
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_PEOPLE)
-            && self.last_cursor.is_some_and(|point| point.x <= right_x);
-        ui::widget::BarChipFace::new(label, &[])
-            .label(label)
-            .at_height(BAR_CONTROL_PX)
-            .hovered(hovered)
-            .focused(
-                self.focus_ring_visible()
-                    && self.focused_control.as_deref() == Some(Self::CONTROL_PEOPLE),
-            )
-    }
-
-    /// Where a quiet "+N watching" label for pages reading this workspace stands, left of the
-    /// invite button, ending at `right_x`. Returns its pointer target (zero when nobody is
-    /// watching): the bar's control height, like the faces'. Pages are a count, not faces.
-    pub(super) fn place_watching_chip(
-        &mut self,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> Rect {
-        self.placed.watching = None;
-        let watching = self.watching();
-        if watching == 0 {
-            return Rect::ZERO;
-        }
-        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
-        let width = self
-            .watching_chip(&label, right_x)
-            .width(text_renderer, theme);
-        let pill =
-            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
-        self.placed.watching = Some((label, pill));
-        pill
-    }
-
-    /// Where the people cluster stands, right to left from `right_x`: the invite button, the
-    /// watching count, then the others' faces. The faces open who is here themselves, so the
+    /// Where the people cluster stands, right to left from `right_x`: the invite button, then the
+    /// others' faces. The faces open who is here themselves, so the
     /// people button stands only where someone is here and not even the "+N" badge has room.
     /// Returns its left edge, where the controls before it end.
     pub(super) fn place_people_cluster(
@@ -502,14 +445,7 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         (center_y, right_x): (f64, f64),
     ) -> f64 {
-        let gap = f64::from(theme.tokens.spacing.s2);
         let right_x = self.place_invite_button(theme, text_renderer, center_y, right_x);
-        let watching = self.place_watching_chip(theme, text_renderer, center_y, right_x);
-        let right_x = if watching.is_zero_area() {
-            right_x
-        } else {
-            watching.x0 - gap
-        };
         self.people_button_rect = Rect::ZERO;
         self.placed.people_button = None;
         self.placed.faces = None;
@@ -524,14 +460,6 @@ impl TopBarChrome {
             self.place_people_button(theme, text_renderer, center_y, right_x);
         }
         self.place_people_count(theme, text_renderer);
-        // The watching count opens who is here too.
-        if !watching.is_zero_area() {
-            self.people_button_rect = if self.people_button_rect.is_zero_area() {
-                watching
-            } else {
-                self.people_button_rect.union(watching)
-            };
-        }
         [
             self.avatar_stack_rect,
             self.people_button_rect,
@@ -560,33 +488,12 @@ impl TopBarChrome {
                 ground,
             );
         }
-        if let Some((label, pill)) = self.placed.watching.as_ref() {
-            let _ = self.watching_chip(label, pill.x1).paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                *pill,
-                ground,
-            );
-        }
         self.paint_avatar_chips(scene, transform, theme, text_renderer);
         if let Some(hovered) = self.placed.people_button {
-            // The button's own rect, before the watching count joined its target.
-            let width = self.people_button_rect.width();
             let name = t("topbar-show-people");
-            let chip = self.people_chip(&name, hovered);
-            let own = chip.width(text_renderer, theme);
-            let rect = if self.placed.watching.is_some() && own < width {
-                Rect::new(
-                    self.people_button_rect.x0,
-                    self.people_button_rect.y0,
-                    self.people_button_rect.x0 + own,
-                    self.people_button_rect.y1,
-                )
-            } else {
-                self.people_button_rect
-            };
-            let _ = chip.paint(
+            let _ = self.people_chip(&name, hovered).paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
+                self.people_button_rect,
                 ground,
             );
         }
@@ -602,6 +509,7 @@ impl TopBarChrome {
 mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
+    use crate::topbar::t_args;
     use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
     /// As a stored row spells them: `agent:cc` is an agent, a bare key a person.
@@ -677,23 +585,6 @@ mod tests {
                 bar.invite_rect().is_zero_area(),
                 "nobody is offered an invite the host would refuse"
             );
-        }
-
-        phase watching_never_replaces_the_invite;
-        // Pages reading along are counted beside the invite button, never instead of it.
-        {
-            let tree = shell(&[]);
-            let chrome = FixtureChrome::new(tree.clone());
-            chrome.borrow_mut().can_invite = true;
-            chrome.borrow_mut().watching = 1;
-            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-            super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-            assert!(!bar.invite_rect().is_zero_area());
-            assert!(
-                !bar.people_button_rect().is_zero_area(),
-                "the count opens who is here"
-            );
-            assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
         }
 
         phase the_faces_open_who_is_here_without_a_second_button;
