@@ -197,7 +197,6 @@ impl TerminalWidget {
 
     fn ensure_session(&mut self) {
         if self.sessions.state != OpenState::Unopened {
-            self.poll_allow();
             return;
         }
         if self.runs_elsewhere {
@@ -307,9 +306,10 @@ impl TerminalWidget {
         request_terminal_wake(&self.waker);
     }
 
-    fn poll_allow(&mut self) {
+    /// The person's answer arrives as a wake, not a document change: the pump takes it.
+    pub(crate) fn poll_allow(&mut self) -> bool {
         if self.sessions.state != OpenState::AwaitingAllow {
-            return;
+            return false;
         }
         match self.sessions.take_allow_answer() {
             Some(true) => {
@@ -330,8 +330,9 @@ impl TerminalWidget {
                     self.record_target(&back);
                 }
             }
-            None => {}
+            None => return false,
         }
+        true
     }
 
     pub(crate) fn request_device_shell(&mut self) -> bool {

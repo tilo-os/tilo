@@ -80,28 +80,6 @@ tilo_test_env::scenario! {
         assert_eq!(log.last(), Some(&(SessionTarget::Host, Requester::Person)));
     }
 
-    phase a_declined_allow_leaves_the_tab_saying_so;
-    {
-        let (mut widget, _) = tab(RecentTarget::none(), |target| {
-            if target.is_host() {
-                Err(OpenError::NeedsAllow("not allowed yet".into()))
-            } else {
-                Ok(())
-            }
-        });
-        let doc = AutoCommit::new();
-        widget.sync(&doc, &ROOT);
-        let _ = widget.switch_target(&SessionTarget::Host, Requester::Person);
-        let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) = widget.take_session_intent()
-        else {
-            panic!("expected an allow request");
-        };
-        reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-        widget.sync(&doc, &ROOT);
-        assert!(matches!(widget.session_state(), OpenState::Failed(_)));
-        assert!(widget.is_disconnected());
-    }
-
     phase an_agent_gets_one_sentence_and_never_the_device_shell;
     {
         let (mut widget, opened) = tab(RecentTarget::none(), |target| {
@@ -827,7 +805,7 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
     };
     let attempts = opened.borrow().len();
     reply.upgrade().unwrap().borrow_mut().answer = Some(false);
-    app.settle();
+    app.harness().woken();
     assert!(matches!(
         on_tab(&mut app, |widget| widget.session_state().clone()),
         OpenState::Failed(_)
@@ -939,7 +917,7 @@ fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused
     };
     allowed.set(true);
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
-    app.settle();
+    app.harness().woken();
     let state = app.harness().device_shell_operation(&O::Inspect).unwrap();
     assert_eq!(state["lifecycle"], "open");
     let select = app.harness().device_shell_operation(&O::Select).unwrap();

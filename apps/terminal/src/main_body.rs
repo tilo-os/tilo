@@ -1583,7 +1583,7 @@ impl TerminalWidget {
 
     /// Parse queued PTY bytes onto the screen; says whether anything arrived.
     fn pump(&mut self) -> bool {
-        let open_activity = self.poll_session_open();
+        let open_activity = self.poll_allow() | self.poll_session_open();
         let native_activity = self.poll_native_ime() || open_activity;
         // Drain every queued read into one buffer so a burst parses once: one performer, one cursor commit,
         // one query reply.
