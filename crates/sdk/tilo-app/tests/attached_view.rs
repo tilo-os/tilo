@@ -10,6 +10,7 @@ use tilo_app::framework::{AttachedView, definition};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
 use tilo_app::record::RecordCheckout;
+use tilo_app::tilo_resource::profiling::observe;
 
 use crate::kinds::{Tally, TallyApp};
 
@@ -464,6 +465,118 @@ tilo_test_env::scenario! {
             );
         }
     }
+}
+
+tilo_test_env::scenario! {
+    fn an_attached_host_does_the_work_a_read_needs_once;
+
+    phase merged_changes_are_laid_out_once_when_the_view_is_next_read;
+    // A host merges every change its record takes, a write's own echo among
+    // them, and reads the view far less often: the view lays them out once,
+    // when it is read, and a change it already held moves nothing.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        let mut peers = Vec::new();
+        for _ in 0..3 {
+            app.invoke(Tally::BUMP.invoke()).unwrap();
+            peers.push(DocumentMutation::Snapshot(
+                app.read_document(|doc| doc.clone().save()),
+            ));
+        }
+        let (merged, merging) = observe(|| {
+            peers
+                .iter()
+                .map(|peer| view.merge(peer).unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(merged, [true, true, true]);
+        assert_eq!(frames(&merging), 0, "merging lays nothing out");
+
+        let (_, reading) = observe(|| view.resources());
+        assert_eq!(frames(&reading), 1, "the read lays all three out at once");
+        assert_eq!(count(&view), 3, "the record holds every change");
+        let (_, again) = observe(|| view.resources());
+        assert_eq!(frames(&again), 0, "and only once");
+
+        let echo = peers.last().unwrap();
+        let (merged, merging) = observe(|| view.merge(echo).unwrap());
+        assert!(!merged, "a change the record holds moves nothing");
+        let (_, reading) = observe(|| view.resources());
+        assert_eq!(frames(&merging), 0, "nothing to lay out");
+        assert_eq!(frames(&reading), 0, "nor to read");
+    }
+
+    phase one_tree_answers_every_read_until_something_moves;
+    // A call resolves a path a level at a time, finds the chains the view
+    // keeps and checks what it offers: each reads the tree the view
+    // publishes, which is built once until the view or its record moves.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        let (first, building) = observe(|| {
+            (tree(&view), view.chains().len(), view.operations().len())
+        });
+        assert!(
+            publications(&building) <= 1,
+            "the tree is built once for all three: {building:?}"
+        );
+        let (again, reading) = observe(|| tree(&view));
+        assert_eq!(publications(&reading), 0, "and read again as it was");
+        assert_eq!(again, first.0);
+
+        view.invoke_typed(&Tally::RENAME.with("visitors"), false)
+            .unwrap();
+        let renamed = tree(&view);
+        assert_ne!(renamed, first.0, "what the view did is published");
+        merge(&mut app, &mut view);
+        app.invoke(Tally::RENAME.with("guests")).unwrap();
+        let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
+        view.merge(&theirs).unwrap();
+        assert_ne!(tree(&view), renamed, "a peer's change is published");
+    }
+}
+
+/// The tree `view` publishes, each resource by id, label and actions, to
+/// compare.
+fn tree(view: &AttachedView) -> Vec<String> {
+    fn walk(resource: &tilo_actions::ResourceSpec, into: &mut Vec<String>) {
+        let actions: Vec<&str> = resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        into.push(format!(
+            "{} {} {}",
+            resource.id.as_str(),
+            resource.label,
+            actions.join(",")
+        ));
+        for child in &resource.children {
+            walk(child, into);
+        }
+    }
+    let mut into = Vec::new();
+    for resource in view.resources() {
+        walk(&resource, &mut into);
+    }
+    into
+}
+
+fn frames(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> usize {
+    phases
+        .iter()
+        .filter(|phase| phase.phase == "ui.frame_sync")
+        .map(|phase| phase.calls)
+        .sum()
+}
+
+fn publications(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> usize {
+    phases
+        .iter()
+        .filter(|phase| phase.phase == "framework.publication")
+        .map(|phase| phase.calls)
+        .sum()
 }
 
 /// What the view did and has not sent yet, merged into the person's window.

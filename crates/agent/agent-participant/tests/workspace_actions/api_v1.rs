@@ -338,6 +338,14 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
     };
     let (status, listing) = agent.get(&format!("{base}/resources")).await;
     assert_eq!(status, 200, "{listing}");
+    // A listing is its rows once: the words a tool says as its typed answer
+    // are that answer again, and are no text of it.
+    assert!(
+        listing["text"]
+            .as_str()
+            .is_none_or(|text| serde_json::from_str::<serde_json::Value>(text).is_err()),
+        "the listing carries itself as its text: {listing}"
+    );
     let (status, others) = agent
         .get(&format!("/v1/workspaces/{}/resources", on_relay.lobby))
         .await;

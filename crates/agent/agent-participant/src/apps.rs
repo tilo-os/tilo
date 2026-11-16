@@ -560,7 +560,7 @@ impl Replica {
     /// without a [`PATH_PARAM`] to write to. An agent or a bot is offered only what reaches agents.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        let resources = self.view.resources();
+        let resources = self.view.published();
         let in_chains = chain_resources(&resources);
         tilo_actions::api::survey(&resources)
             .into_iter()
@@ -682,7 +682,7 @@ impl Replica {
         // The tree the view publishes, and only the items past its pages the
         // page reaches: a record holding thousands of notes costs a page its
         // rows, not its notes.
-        let resources = self.view.resources();
+        let resources = self.view.published();
         let mut in_chains = chain_resources(&resources);
         let mut walk = SurveyWalk {
             query,
@@ -962,7 +962,7 @@ impl Replica {
             return Ok(false);
         }
         if !descriptor.contract.reaches_agents()
-            || !self.offers(&descriptor, &chain_resources(&self.view.resources()))
+            || !self.offers(&descriptor, &chain_resources(&self.view.published()))
         {
             return Err(not_offered(&descriptor));
         }

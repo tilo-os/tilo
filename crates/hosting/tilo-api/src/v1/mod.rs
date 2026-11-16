@@ -1077,14 +1077,18 @@ async fn call_in(
             run,
         })
         .await?;
-    let said = answer
-        .pointer("/content/0/text")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     let typed = typed_answer(&answer)?;
     if typed.get("status").and_then(Value::as_str) == Some("failed") {
         return Err(ApiError::of_answer(typed.get("error"), typed.get("action")));
     }
+    // A tool that answers typed says that answer as its text too, as JSON:
+    // carried as the text it would be the whole answer a second time, which
+    // made a page of a tracker's issues twice its size. Only words are text.
+    let said = answer
+        .pointer("/content/0/text")
+        .and_then(Value::as_str)
+        .filter(|text| serde_json::from_str::<Value>(text).ok().as_ref() != Some(&typed))
+        .map(str::to_owned);
     Ok((typed, said))
 }
 
