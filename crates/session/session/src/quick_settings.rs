@@ -196,16 +196,7 @@ impl crate::Session {
             // Where the stack places it, and the most room it has there, resting against the edge
             // of that room the stack chose: below the caret's line, or above it. Down, it keeps
             // the last place, so it leaves from where it stood.
-            self.compositor.place_layer_in(
-                SURFACE_NAMESPACE,
-                Some((
-                    offset(standing.room.x0),
-                    offset(standing.room.y0),
-                    offset(standing.room.width()).max(1),
-                    offset(standing.room.height()).max(1),
-                )),
-                standing.rests_at_bottom,
-            );
+            self.stand_layer(SURFACE_NAMESPACE, &standing);
         }
         // Where it stands is as tall as its page: what a press outside it is judged by. A surface
         // still drawing the frame it fits takes no press until the person sees it.
@@ -453,6 +444,25 @@ impl crate::Session {
             // page it is asked for built afresh, its field taking the keys.
             let _ = self.ask_panel(&["show-controls"]);
         }
+    }
+
+    /// Stand the session's layer surface `namespace` where the overlay stack placed it.
+    pub(crate) fn stand_layer(
+        &mut self,
+        namespace: &str,
+        standing: &tilo_desktop::overlays::Standing,
+    ) {
+        let room = standing.room;
+        self.compositor.place_layer_in(
+            namespace,
+            Some((
+                offset(room.x0),
+                offset(room.y0),
+                offset(room.width()).max(1),
+                offset(room.height()).max(1),
+            )),
+            standing.rests_at_bottom,
+        );
     }
 }
 

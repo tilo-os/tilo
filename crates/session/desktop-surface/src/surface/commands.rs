@@ -302,6 +302,7 @@ impl DesktopSurface {
                     front,
                     background,
                 } => self.insert_tab(strip, group, index, &tab, front, background),
+                RowOp::Reveal(strip, group) => self.reveal = Some((strip, group)),
                 RowOp::ToggleMaximized(strip, group_id) => {
                     let restored = self.group_widget(strip, group_id).is_some_and(|group| {
                         group.toggle_maximized();

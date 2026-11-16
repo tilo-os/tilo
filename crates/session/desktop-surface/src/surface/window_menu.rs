@@ -879,8 +879,8 @@ pub(super) fn apply(
             ops.push(super::row_op::RowOp::WindowShare(ids.tab, *shared_now));
             true
         }
-        Admitted::SplitRight(ids) => detach(shared, *ids, false),
-        Admitted::MoveToNewGroup(ids) => detach(shared, *ids, true),
+        Admitted::SplitRight(ids) => detach(shared, *ids, false, ops),
+        Admitted::MoveToNewGroup(ids) => detach(shared, *ids, true, ops),
         Admitted::CloseWindow(ids) => close_window(shared, *ids, ops),
         Admitted::StopDesktopControl(ids) => stop_desktop_control(shared, *ids),
         _ => return false,
@@ -1096,8 +1096,14 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
 }
 
 /// Detach the tab at `ids` into a window of its own, at the strip's end (`at_end`) or right after
-/// the window it is in, and make it the one the strip shows. Whether it moved.
-fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
+/// the window it is in, and make it the one the strip shows: the strip scrolls to it. Whether it
+/// moved.
+fn detach(
+    shared: &mut super::Shared,
+    ids: RouteIds,
+    at_end: bool,
+    ops: &mut Vec<super::row_op::RowOp>,
+) -> bool {
     let Some(strip) = workspace_at(&shared.tree, &ids)
         .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == ids.strip))
     else {
@@ -1117,6 +1123,7 @@ fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
         return false;
     };
     tree.set_active_group(ids.strip, moved.new_group.id);
+    ops.push(super::row_op::RowOp::Reveal(ids.strip, moved.new_group.id));
     shared.replaced = true;
     true
 }

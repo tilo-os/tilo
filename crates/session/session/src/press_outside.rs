@@ -18,8 +18,8 @@ use tilo_desktop::overlays::Overlays;
 
 /// The session's reader of presses outside the overlays.
 /// It shows nothing and takes nothing: it exists so the compositor's press reaches the stack with
-/// the point it landed on. A surface the session cannot judge — one its own view places, like a
-/// window's menu — is left to that view, which closes it as it always has.
+/// the point it landed on. A press on the display a window's menu covers is that menu's view's to
+/// judge.
 pub(crate) struct SlotsHost {
     overlays: Overlays,
 }

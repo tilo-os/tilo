@@ -56,25 +56,34 @@ pub(super) fn shell_with(
 /// A shell whose one window holds `windows` windows' tabs on its bar, as a strip does once the
 /// windows have been gathered into one.
 pub(super) fn one_window_shell(windows: usize) -> (DesktopSurface, DesktopHandle) {
+    tabbed_shell(windows, 0)
+}
+
+/// A shell whose first window holds `tabbed` tabs on its bar, with `alone` windows of one tab
+/// after it.
+pub(super) fn tabbed_shell(tabbed: usize, alone: usize) -> (DesktopSurface, DesktopHandle) {
     let mut minter = IdMinter::new(7);
-    let tabs = windows_tabs(&mut minter, windows);
+    let tabs = windows_tabs(&mut minter, tabbed.saturating_add(alone));
     let mut tree = seed_tree(&mut minter, "Office", tabs);
     let strip = &mut tree.workspaces[0].strips[0];
     let id = strip.window_groups[0].id;
     let tabs: Vec<Tab> = strip
         .window_groups
-        .drain(..)
+        .drain(..tabbed)
         .flat_map(|group| group.tabs)
         .collect();
     let active_tab = tabs[0].id;
-    strip.window_groups = vec![tilo_desktop_model::WindowGroup {
-        id,
-        tabs,
-        active_tab,
-        width: WindowWidth::Normal,
-        maximized: false,
-        focus_history: Vec::new(),
-    }];
+    strip.window_groups.insert(
+        0,
+        tilo_desktop_model::WindowGroup {
+            id,
+            tabs,
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
     DesktopSurface::new(tree, 7, Box::new(Notices))
 }
 
@@ -1807,7 +1816,7 @@ fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
 }
 
 /// `count` frames of a 60 Hz display, each presented, on the clock motion runs by.
-fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
+pub(super) fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     for _ in 0..count {
         on_clock(Duration::from_millis(16), || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
@@ -2618,7 +2627,7 @@ fn agent_opens_notes_out_of_sight(
 }
 
 /// Whether the window showing `tab` stands wholly in the shell's view.
-fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
+pub(super) fn in_view(frame: &ui::headless::FrameHarness, tab: TabId) -> bool {
     let surface = frame.root::<DesktopSurface>();
     let viewport = surface.get_rect();
     surface.shown_row_ref().is_some_and(|row| {
