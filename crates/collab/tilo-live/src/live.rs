@@ -271,8 +271,6 @@ fn parse_layer(name: &str) -> Option<Layer> {
 pub enum Delivery {
     /// One object per datagram, redundant bundles, dropped when late.
     Datagram { retain: Duration, redundancy: bool },
-    /// Newest group wins: a subscriber keeps only the latest.
-    Latest { max_age: Duration },
     /// Groups of pictures, entered at a keyframe.
     Keyed { retain: Duration, max_objects: u64 },
     /// Ordered, reliable, small objects.

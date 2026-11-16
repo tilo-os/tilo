@@ -248,6 +248,7 @@ impl Native {
                 keys: keys.clone().into(),
                 roster: Roster::new([device, page]),
                 publish: true,
+                presence: true,
             },
         )
         .await

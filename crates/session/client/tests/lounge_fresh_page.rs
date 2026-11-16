@@ -777,39 +777,28 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     page.close();
 }
 
-/// The presence frames one sample drives: few enough that the lounge's relay, which carries a
-/// device about a hundred frames a second, delivers them inside the suite's bound, and enough
-/// that one frame's cost stands above an allocator's noise.
-const BRIDGE_SAMPLE_FRAMES: usize = 500;
-
-/// How long the page says presence before the sample is measured: a plane keeps what it publishes
-/// and what it hears for thirty seconds, for a reader that joins it late (`tilo_live`'s ingress
-/// and egress pools), so the sample starts once one of those windows has gone by and what the
-/// frames before it left has expired.
-const BRIDGE_WARM: Duration = Duration::from_secs(35);
-
-/// What one presence frame may cost the process it reaches, in kB: the plane charges a frame's
-/// payload and the group that carries it, about a kilobyte for a frame of tens of bytes, and this
-/// is that charge with room for an allocator's slack. A release that costs a device more per frame
-/// than the plane's own cache does fails it.
-const BRIDGE_FRAME_KB: usize = 3;
+/// The presence frames the person's page says while the bridge is in the workspace.
+const BRIDGE_FRAMES: usize = 200;
 
 /// An agent's bridge (`tilo mcp`) is a device of the person in their workspace, asking the host's
 /// actions through its session, while the person's page in the same workspace says where its
-/// pointer is many times a second. The bridge reads none of that presence, so it keeps none of
-/// it: the frames cost it what the plane keeps of what any device hears, and not a frame's worth
-/// of its own.
+/// pointer is many times a second and another member's page draws it. Nothing on the bridge shows
+/// people, so its plane subscribes to none of their presence: not one frame reaches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let lounge = Lounge::fresh();
     let person_tab = person("The person").await;
+    let member = person("Another member").await;
     let agent = person("The agent's computer").await;
     let tab_invitation = lounge.invite(&person_tab);
+    let member_invitation = lounge.invite(&member);
     let agent_invitation = lounge.invite(&agent);
     let tab = fresh_page(&lounge, &person_tab, &tab_invitation).await;
+    let other = fresh_page(&lounge, &member, &member_invitation).await;
     let bridge = fresh_page(&lounge, &agent, &agent_invitation).await;
     let workspace_id = workspace_id(&lounge);
     wait_for_plane(&tab).await;
+    wait_for_plane(&other).await;
     wait_for_plane(&bridge).await;
     // What `tilo mcp` holds once it entered: the device's session and the host's actions asked
     // through it, and nothing that reads the workspace's live frames.
@@ -820,8 +809,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
         "Claude Code",
     )
     .actions(workspace_id);
-    // Only to count that the frames reach the bridge: a reader that keeps nothing of them.
-    let arriving = bridge.events_where(|event| {
+    let drawn = other.events_where(|event| {
         matches!(
             event,
             Event::LivePlane {
@@ -830,82 +818,38 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
             }
         )
     });
+    // Each frame is said once the other member's page drew the one before it.
+    let deadline = tilo_test_env::hang_deadline();
     let mut heard = 0_usize;
-    let say = |n: u32| {
-        let at = f32::from(u16::try_from(n % 1000).unwrap_or(0));
+    for n in 0..BRIDGE_FRAMES {
+        let at = f32::from(u16::try_from(n).unwrap_or(0));
         tab.send(Cmd::Presence(
             workspace_id,
             vec![Presence::pointing(&lounge.workspace, 0x41, at, at / 2.0)],
         ))
         .unwrap();
-    };
-    // The page is busy for longer than a plane keeps what it hears, so what it holds of that
-    // window has expired and replaced what the frames before it left: the sample measures the
-    // steady state, where a bridge that kept every frame would still grow by one.
-    say_presence(&arriving, &say, &mut heard, usize::MAX, BRIDGE_WARM).await;
-    let before = tilo_test_env::held::bytes();
-    let heard_before = heard;
-    say_presence(
-        &arriving,
-        &say,
-        &mut heard,
-        BRIDGE_SAMPLE_FRAMES,
-        Duration::MAX,
-    )
-    .await;
-    let after = tilo_test_env::held::bytes();
-    let grown = after.saturating_sub(before);
-    let frames = heard.saturating_sub(heard_before);
-    println!(
-        "the bridge heard {frames} presence frame(s) and the process grew {grown} bytes over them"
-    );
-    // What the frames may cost it, at what one frame costs a device that reads none of them: the
-    // plane charges a frame's payload and the group that carries it (moq's pool, `tilo_live`'s
-    // egress), about a kilobyte for a frame of tens of bytes, and the bound is that charge with
-    // room for an allocator's slack. A release that costs a device more per frame than the plane's
-    // own cache does fails it.
-    let may = frames.saturating_mul(BRIDGE_FRAME_KB).saturating_mul(1024);
-    assert!(
-        usize::try_from(grown).unwrap_or(0) <= may,
-        "the bridge grew {grown} bytes over {frames} presence frames it never reads, past the \
-         {may} bytes they may cost it: it keeps what it heard"
-    );
-    drop(actions);
-    bridge.close();
-    tab.close();
-}
-
-/// Say presence frames at `say` until the bridge heard `frames` more than `heard` counted when it
-/// started, or until `spans` elapsed when that is sooner: `frames` is `usize::MAX` or `spans` is
-/// `Duration::MAX` for the bound that does not apply. Each one is said only once the one before it
-/// arrived, so the page builds no queue of its own, which is not what this test asks about; a
-/// bridge that hears none fails naming what it waited for at the suite's bound.
-async fn say_presence(
-    arriving: &Events,
-    say: &(impl Fn(u32) + Sync),
-    heard: &mut usize,
-    frames: usize,
-    spans: Duration,
-) {
-    let deadline = tilo_test_env::hang_deadline();
-    let started = std::time::Instant::now();
-    let before = *heard;
-    let mut n = 0_u32;
-    while heard.saturating_sub(before) < frames && started.elapsed() < spans {
-        say(n);
-        let want = heard.saturating_add(1);
-        while *heard < want {
-            *heard = heard.saturating_add(arriving.drain().len());
+        while heard <= n {
+            heard = heard.saturating_add(drawn.drain().len());
             assert!(
                 std::time::Instant::now() < deadline,
-                "the bridge heard {} of the presence frames it was sent and no more",
-                heard.saturating_sub(before)
+                "the other member's page drew {heard} of the person's presence frames and no more"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        n = n.saturating_add(1);
     }
-    *heard = heard.saturating_add(arriving.drain().len());
+    let channels = bridge.status().key_state;
+    println!("the other member drew {heard} presence frame(s); the bridge's channels:\n{channels}");
+    assert!(
+        channels
+            .lines()
+            .any(|line| line.starts_with("plane ") && line.ends_with(", heard 0 object(s)")),
+        "the bridge heard nothing on its workspace's plane while the person said {heard} presence \
+         frames: {channels}"
+    );
+    drop(actions);
+    bridge.close();
+    other.close();
+    tab.close();
 }
 
 /// Wait until `page` is in the workspace's live plane: the plane reports the

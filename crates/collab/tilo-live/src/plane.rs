@@ -84,7 +84,9 @@ struct Hearing {
     seated: BTreeMap<[u8; 32], usize>,
     /// The devices carried here that no seat is free for.
     beyond: BTreeSet<[u8; 32]>,
-    /// The readers waiting for a seat.
+    /// Whether the presence readers read ([`Plane::hear_presence`]).
+    presence: bool,
+    /// The readers waiting for a seat, or for presence to be read.
     waiting: Vec<Waker>,
 }
 
@@ -165,6 +167,9 @@ pub struct Join {
     pub roster: Roster,
     /// Whether this device publishes its own broadcast, or only listens.
     pub publish: bool,
+    /// Whether this plane reads its peers' presence from the start
+    /// ([`Plane::hear_presence`]).
+    pub presence: bool,
 }
 
 /// One object a plane heard, already opened.
@@ -352,7 +357,10 @@ impl Shared {
             keys: Mutex::new(join.keys.clone()),
             roster: Mutex::new(join.roster.clone()),
             reading: Mutex::new(BTreeSet::new()),
-            hearing: Mutex::new(Hearing::default()),
+            hearing: Mutex::new(Hearing {
+                presence: join.presence,
+                ..Hearing::default()
+            }),
             unheard_hook: Mutex::new(None),
             join: join.clone(),
             outgoing: outgoing.clone(),
@@ -458,6 +466,28 @@ impl Shared {
         } else {
             Poll::Pending
         }
+    }
+    fn hears_presence(&self) -> bool {
+        self.hearing.lock_recover().presence
+    }
+    /// Ready once the presence readers read as `on` says, or `device` has
+    /// nothing left to be read for.
+    fn poll_presence(&self, device: [u8; 32], on: bool, cx: &Context<'_>) -> Poll<()> {
+        if self.ended() || !self.admits(device) {
+            return Poll::Ready(());
+        }
+        let mut hearing = self.hearing.lock_recover();
+        if hearing.presence == on {
+            return Poll::Ready(());
+        }
+        if !hearing
+            .waiting
+            .iter()
+            .any(|waiting| waiting.will_wake(cx.waker()))
+        {
+            hearing.waiting.push(cx.waker().clone());
+        }
+        Poll::Pending
     }
     /// One reader let go of `device`'s seat: with the last of them the seat
     /// is free, and whoever waits for one is told.
@@ -1010,6 +1040,19 @@ impl Plane {
         *self.shared.unheard_hook.lock_recover() = Some(changed);
     }
 
+    /// Read the peers' presence from now on, or stop reading it: a device
+    /// where nothing shows people neither subscribes to their presence nor
+    /// keeps any of it.
+    pub fn hear_presence(&self, hear: bool) {
+        let moved = {
+            let mut hearing = self.shared.hearing.lock_recover();
+            std::mem::replace(&mut hearing.presence, hear) != hear
+        };
+        if moved {
+            self.shared.wake_waiting();
+        }
+    }
+
     /// Show `tracks` of `sender` here, and stop showing those left out: this
     /// plane asks the peer for exactly these picture layers, windows and
     /// window pages, and its session encodes a layer or a window, or captures
@@ -1379,7 +1422,7 @@ pub const fn stream(track: Track) -> Stream {
 fn retain(track: Track) -> Duration {
     match live::delivery(track) {
         Delivery::Datagram { retain, .. } | Delivery::Keyed { retain, .. } => retain,
-        Delivery::Stream { max_age } | Delivery::Latest { max_age } => max_age,
+        Delivery::Stream { max_age } => max_age,
     }
 }
 
@@ -1551,12 +1594,18 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 /// device is one of the [`MAX_HEARD`] this plane reads at once, or the
 /// reader waits for one of those to go and the device counts as not heard
 /// until then ([`Plane::unheard`]). A track asked for by what the device
-/// shows ([`Plane::show`]) takes none.
+/// shows ([`Plane::show`]) takes none. Presence is read only while the plane
+/// hears it ([`Plane::hear_presence`]): its subscription is dropped when that
+/// stops, and taken again at the newest group when it starts again.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
     let name = live::track(track);
     let seated = TRACKS.contains(&track);
+    let presence = track == Track::Presence;
     loop {
+        if presence {
+            std::future::poll_fn(|cx| shared.poll_presence(device, true, cx)).await;
+        }
         if shared.ended() || !shared.admits(device) {
             return;
         }
@@ -1581,7 +1630,7 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
         // A reader that attaches late starts at the newest group the track
         // holds: the presence a peer said before it joined is what it draws,
         // instead of waiting out the heartbeat.
-        let subscribed = match broadcast.track(name.as_str()) {
+        let subscription = match broadcast.track(name.as_str()) {
             Ok(producer) => {
                 let newest = producer.latest();
                 producer
@@ -1595,10 +1644,26 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             }
             Err(_) => None,
         };
-        if let Some(mut subscriber) = subscribed
-            && read(&shared, device, track, &mut subscriber).await
-            && !shared.ended()
-        {
+        let Some(mut subscriber) = subscription else {
+            let _ = broadcast.closed().await;
+            continue;
+        };
+        let reading = async { Some(read(&shared, device, track, &mut subscriber).await) };
+        let said = if presence {
+            let stopped = async {
+                std::future::poll_fn(|cx| shared.poll_presence(device, false, cx)).await;
+                None
+            };
+            n0_future::future::or(reading, stopped).await
+        } else {
+            reading.await
+        };
+        // Presence is no longer heard: the subscription goes, and the relay
+        // stops sending it here.
+        let Some(said) = said else {
+            continue;
+        };
+        if said && !shared.ended() {
             // The device's broadcast went away with its session after it said
             // itself: whoever drew it takes it down now, rather than once it
             // has been silent long enough. A device that comes back says itself
@@ -1704,6 +1769,10 @@ async fn read(
                                 body,
                             });
                         }
+                        continue;
+                    }
+                    if track == Track::Presence && !shared.hears_presence() {
+                        // Arrived as the subscription was let go.
                         continue;
                     }
                     match shared.open(device, track, &frame.payload) {

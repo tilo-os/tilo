@@ -751,6 +751,7 @@ mod tests {
                         keys: keys.clone().into(),
                         roster: tilo_live::roster::Roster::new(devices.iter().copied()),
                         publish: true,
+                        presence: true,
                     },
                 )
                 .expect("a local plane")

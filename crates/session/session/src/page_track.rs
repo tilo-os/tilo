@@ -733,6 +733,7 @@ mod over_the_plane {
                     keys: keys.clone().into(),
                     roster: LiveRoster::new(devices.iter().copied()),
                     publish: true,
+                    presence: true,
                 },
             )
             .expect("a local plane"),

@@ -161,6 +161,8 @@ enum Command {
     /// The plane of `workspace_id` ended: the relay closed it, or the plane
     /// no longer admits what it reads.
     PlaneEnded(WorkspaceId),
+    /// The first consumer that reads the members' presence came, or the last one went.
+    PresenceReaders,
 }
 
 /// What sealing a live frame came to.
@@ -267,6 +269,12 @@ fn session_task(
 ) -> (Task, Link, mpsc::UnboundedReceiver<Command>) {
     let (commands, receiver) = mpsc::unbounded_channel();
     let reports = Reports::connecting(config.cert.device_public_key);
+    let readers = commands.downgrade();
+    reports.on_presence_readers(Arc::new(move || {
+        if let Some(commands) = readers.upgrade() {
+            let _ = commands.send(Command::PresenceReaders);
+        }
+    }));
     let record = store.load().unwrap_or_default();
     let vault = store.channel_vault().unwrap_or_else(rand::random);
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
@@ -1523,6 +1531,10 @@ impl Task {
             }
             Command::PlaneEnded(workspace_id) => {
                 self.plane_ended(workspace_id);
+                true
+            }
+            Command::PresenceReaders => {
+                self.hear_presence();
                 true
             }
             Command::Client(command @ (Cmd::Live(..) | Cmd::SealLive(..))) => {

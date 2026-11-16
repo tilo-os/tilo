@@ -261,6 +261,7 @@ fn join(device: [u8; 32], roster: Roster, keys: impl Into<PlaneKeys>) -> Join {
         keys: keys.into(),
         roster,
         publish: true,
+        presence: true,
     }
 }
 
@@ -538,6 +539,77 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
                 .iter()
                 .any(|object| object.body == b"epoch=moved" && object.sender == a_key)
         },
+    );
+}
+
+/// A device where nothing shows people is sent none of their presence: its
+/// plane holds no subscription to it, while the activity note still arrives.
+/// Once something shows people it reads presence again, from the newest word,
+/// and stops when that goes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plane_that_hears_no_presence_is_sent_none() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
+        &grant_for(&b_cert),
+        Join {
+            presence: false,
+            ..join(b_key, roster, keys)
+        },
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    // Presence goes first, at the higher priority: a plane subscribed to it
+    // would have it by the time the note arrives.
+    let said = |sequence: u32, at: &[u8], note: &[u8]| {
+        a.publish(Track::Presence, sequence, at).unwrap();
+        a.publish(Track::Activity, sequence, note).unwrap();
+        let mut presence = Vec::new();
+        wait_until("the activity note arrives", || {
+            let mut noted = false;
+            while let Some(object) = b.try_recv() {
+                match object.track {
+                    Track::Presence => presence.push(object.body),
+                    Track::Activity => noted |= object.body == note,
+                    _ => {}
+                }
+            }
+            noted
+        });
+        presence
+    };
+    let presence = said(1, b"at=first", b"note=first");
+    assert!(presence.is_empty(), "no presence reaches b: {presence:?}");
+
+    b.hear_presence(true);
+    wait_until("b reads the newest presence once it hears it", || {
+        heard(&b, Track::Presence)
+            .iter()
+            .any(|object| object.body == b"at=first" && object.sender == a_key)
+    });
+
+    b.hear_presence(false);
+    let presence = said(2, b"at=second", b"note=second");
+    assert!(
+        presence.is_empty(),
+        "no presence reaches b once it stopped hearing it: {presence:?}"
     );
 }
 

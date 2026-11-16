@@ -390,6 +390,8 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
         keys: join.keys.clone().into(),
         roster: Roster::new(join.members.clone()),
         publish: true,
+        // Read once the joined plane is told whether anything here shows people.
+        presence: false,
     };
     let joined = match join.host.carrier() {
         Carrier::WebTransport => {
@@ -601,6 +603,15 @@ impl Task {
         }
     }
 
+    /// Have every plane read the members' presence exactly while something on this device reads
+    /// it.
+    pub(super) fn hear_presence(&self) {
+        let hear = self.reports.reads_presence();
+        for joined in self.planes.joined.values() {
+            joined.plane.hear_presence(hear);
+        }
+    }
+
     /// The answer to this page's ask for `workspace_id`'s plane.
     pub(super) fn plane_joined(
         &mut self,
@@ -619,6 +630,7 @@ impl Task {
         }
         match joined {
             Ok(plane) => {
+                plane.hear_presence(self.reports.reads_presence());
                 wake_and_ended(&plane, workspace_id, &self.commands);
                 self.planes.insert(
                     workspace_id,

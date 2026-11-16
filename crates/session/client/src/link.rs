@@ -252,6 +252,9 @@ struct Reported {
     /// What serves what another device asks this one through the host
     /// ([`InboundActions`]): a host's routes reach the session here.
     inbound: Option<Arc<dyn InboundActions>>,
+    /// Told when a queue that takes the members' presence comes or goes
+    /// ([`Reports::reads_presence`]).
+    presence_moved: Option<Wake>,
 }
 
 impl Reported {
@@ -290,6 +293,7 @@ impl Reports {
             fetch_proxy: None,
             live_note: None,
             inbound: None,
+            presence_moved: None,
         })))
     }
 
@@ -368,27 +372,74 @@ impl Reports {
     fn listen(&self, events: &Events, wake: Wake) {
         self.lock()
             .listeners
-            .push((Arc::downgrade(&events.0), wake));
+            .push((Arc::downgrade(&events.queue), wake));
     }
 
     /// A new, independent queue of the events `takes` takes.
     fn events(&self, takes: Takes) -> Events {
         let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
-        self.lock().queues.push((Arc::downgrade(&queue), takes));
-        Events(queue)
+        let moved = {
+            let mut reported = self.lock();
+            reported.queues.push((Arc::downgrade(&queue), takes));
+            let moved = reported.presence_moved.clone();
+            drop(reported);
+            moved.filter(|_| takes(&PRESENCE))
+        };
+        if let Some(moved) = &moved {
+            moved();
+        }
+        Events { queue, moved }
+    }
+
+    /// Whether a consumer's queue takes the members' presence now: while none does, the
+    /// session's planes read none of it.
+    #[must_use]
+    pub fn reads_presence(&self) -> bool {
+        self.lock()
+            .queues
+            .iter()
+            .any(|(queue, takes)| queue.strong_count() > 0 && takes(&PRESENCE))
+    }
+
+    /// Call `moved` when a queue that takes the members' presence comes or goes.
+    pub fn on_presence_readers(&self, moved: Wake) {
+        self.lock().presence_moved = Some(moved);
     }
 }
+
+/// What a queue that takes the members' presence takes.
+const PRESENCE: Event = Event::LivePlane {
+    ws: crate::Topic::nil(),
+    from: [0; 32],
+    track: tilo_live::live::Track::Presence,
+    sequence: 0,
+    body: Vec::new(),
+};
 
 /// One consumer's view of the session's events: every event it takes produced after it was
 /// created, independent of other consumers. It holds what it took until drained, so a consumer
 /// drains it as long as it holds it, and drops it once it stops reading.
-pub struct Events(Queue);
+pub struct Events {
+    queue: Queue,
+    /// Told when this queue, which takes the members' presence, goes.
+    moved: Option<Wake>,
+}
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        if let Some(moved) = self.moved.take() {
+            // Gone before the session counts the queues again.
+            drop(std::mem::take(&mut self.queue));
+            moved();
+        }
+    }
+}
 
 impl Events {
     /// Take every event produced since the last call.
     #[must_use]
     pub fn drain(&self) -> Vec<Event> {
-        self.0.lock_recover().drain(..).collect()
+        self.queue.lock_recover().drain(..).collect()
     }
 }
 

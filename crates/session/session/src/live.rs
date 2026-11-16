@@ -730,6 +730,7 @@ impl Shared {
             keys,
             roster,
             publish: true,
+            presence: true,
         };
         let opened = if serving == self.device {
             Plane::local(relay, &join)

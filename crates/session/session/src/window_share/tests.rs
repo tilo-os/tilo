@@ -145,6 +145,7 @@ fn live_plane(device: EndpointId) -> BTreeMap<String, Arc<Plane>> {
                 keys: live.keys.clone().into(),
                 roster: LiveRoster::new(devices.iter().copied()),
                 publish: true,
+                presence: true,
             },
         )
         .expect("a local plane"),
