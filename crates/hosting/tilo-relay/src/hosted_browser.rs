@@ -2521,7 +2521,8 @@ mod tests {
         phase a_host_that_places_nothing_says_why_instead_of_naming_an_unknown_app;
         {
             let words = unplaced();
-            assert!(words.contains("browser session"), "{words}");
+            assert!(words.contains("Browser doesn't open here"), "{words}");
+            assert!(words.contains("your own device"), "{words}");
             assert!(!words.contains("no app"), "{words}");
         }
     }
