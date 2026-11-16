@@ -1,11 +1,11 @@
 //! The one menu behind the top bar's workspace name, and the menu a secondary press on the shell
-//! opens where the pointer is: everything about the workspace the person is in, in one place. Where
-//! it is hosted, joining or leaving one, renaming it, the overview and a new strip — and, opened on
-//! the shell, what the shell itself offers ([`WorkspaceMenuModel::shell`]). Going to another
-//! workspace is the overview's, which the Tilo mark zooms out to.
+//! opens where the pointer is: everything about the workspace the person is in, in one place. The
+//! workspaces they can go to, where it is hosted, joining or leaving one, renaming it, the overview
+//! and a new strip — and, opened on the shell, what the shell itself offers
+//! ([`WorkspaceMenuModel::shell`]).
 //! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the menu is a [`ContextMenu`]
 //! of it, and what the person chose comes back as a [`WorkspaceMenuChoice`] for the host to carry
-//! out. Joining and leaving are the host's own flows: it lists them as
+//! out. Going to a workspace, joining one and leaving are the host's own flows: it lists them as
 //! [`WorkspaceMenuModel::actions`] and receives [`WorkspaceMenuChoice::Action`] by id.
 
 use std::collections::HashMap;
@@ -19,8 +19,8 @@ use winit::event::WindowEvent;
 
 use crate::i18n::{t, t_args};
 
-/// A command the host offers about workspaces (join one, leave this one, a new one), carried out by
-/// the host when chosen.
+/// A command the host offers about workspaces (going to one, joining one, leaving this one, a new
+/// one), carried out by the host when chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceAction {
     pub id: String,
@@ -489,6 +489,12 @@ mod tests {
             host: Some("tilo.sh".into()),
             actions: vec![
                 WorkspaceAction {
+                    id: "open-workspace:tilo".into(),
+                    title: "Open Tilo".into(),
+                    icon: Some(Icon::LayoutGrid),
+                    destructive: false,
+                },
+                WorkspaceAction {
                     id: "join-workspace".into(),
                     title: "Join a workspace".into(),
                     icon: Some(Icon::Link),
@@ -525,7 +531,7 @@ mod tests {
         )]
         fn the_workspace_menu_and_the_shells_menu_list_what_may_be_done;
 
-        phase the_menu_lists_the_host_its_actions_overview_a_new_strip_and_leaving_last;
+        phase the_menu_lists_the_workspaces_to_go_to_the_host_its_actions_overview_a_new_strip_and_leaving_last;
         {
             let menu = opened(&model());
             assert!(menu.is_open());
@@ -534,6 +540,7 @@ mod tests {
                 labels,
                 [
                     "Hosted by tilo.sh",
+                    "Open Tilo",
                     "Join a workspace",
                     "Overview",
                     "New strip",
@@ -554,12 +561,6 @@ mod tests {
                 !labels.iter().any(|label| label == "Rename workspace"),
                 "no Rename for someone who may not"
             );
-            // Going to another workspace is the overview's: the Tilo mark zooms out to all of them.
-            assert!(
-                !labels
-                    .iter()
-                    .any(|label| label == "Lounge" || label == "Home")
-            );
         }
 
         phase rename_is_offered_to_whoever_may_rename;
@@ -574,6 +575,10 @@ mod tests {
         phase choosing_a_row_says_what_it_means_once_and_closes_the_menu;
         {
             for (label, choice) in [
+                (
+                    "Open Tilo",
+                    Some(WorkspaceMenuChoice::Action("open-workspace:tilo".into())),
+                ),
                 ("Overview", Some(WorkspaceMenuChoice::Overview)),
                 ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
                 (
@@ -683,6 +688,7 @@ mod tests {
                     .collect::<Vec<_>>(),
                 [
                     "Hosted by tilo.sh",
+                    "Open Tilo",
                     "Join a workspace",
                     "Rename workspace",
                     "Leave workspace",

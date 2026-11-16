@@ -985,7 +985,14 @@ impl DesktopChrome {
             host: self.rules.workspace_host(),
             actions: actions
                 .iter()
-                .filter(|action| action.source == Some(HostActionSource::Workspace))
+                // The workspaces to go to, then the workspace's own commands: one switcher, in the
+                // order the host offers them.
+                .filter(|action| {
+                    matches!(
+                        action.source,
+                        Some(HostActionSource::Workspaces | HostActionSource::Workspace)
+                    )
+                })
                 .map(|action| WorkspaceAction {
                     id: action.id.clone(),
                     title: action.title.clone(),

@@ -18,7 +18,7 @@ use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::ChromeEffect;
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostAction, HostActionSource};
 
 fn en() {
     ui::i18n::I18nManager::init("en-US");
@@ -414,4 +414,74 @@ fn the_about_sheets_updates_link_opens_settings() {
         [DesktopAsk::OpenSettings("settings://updates".into())]
     );
     assert!(!chrome.about.is_about_open());
+}
+
+/// The menu behind the bar's workspace name is the switcher: it offers going
+/// to the person's other workspaces, which the host publishes as `Workspaces`
+/// actions, beside the workspace's own commands and the host's own.
+#[test]
+fn the_workspace_menu_offers_the_persons_other_workspaces() {
+    en();
+    let (mut chrome, handle) = chrome_over_a_shell();
+    let action = |id: &str, title: &str, source: HostActionSource| HostAction {
+        id: id.into(),
+        title: title.into(),
+        subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
+        source: Some(source),
+    };
+    handle.set_host_actions(vec![
+        action(
+            "open-workspace:https://tilo.sh/abc",
+            "Open Tilo",
+            HostActionSource::Workspaces,
+        ),
+        action(
+            "new-workspace",
+            "New workspace",
+            HostActionSource::Workspace,
+        ),
+        action(
+            "save-recovery-key",
+            "Save your recovery key",
+            HostActionSource::Identity,
+        ),
+    ]);
+    let model = chrome.workspace_menu_model(false);
+    let ids: Vec<&str> = model
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["open-workspace:https://tilo.sh/abc", "new-workspace"],
+        "another workspace is a row of the switcher, beside the workspace's own commands"
+    );
+    // Choosing it is the host's action, as joining or leaving is.
+    let mut menu = crate::workspace_menu::WorkspaceMenu::new();
+    menu.open_at(
+        &model,
+        ui::kurbo::Point::new(0.0, 0.0),
+        ui::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0),
+    );
+    assert!(menu.choose("Open Tilo"));
+    assert_eq!(
+        menu.take_choice(),
+        Some(crate::workspace_menu::WorkspaceMenuChoice::Action(
+            "open-workspace:https://tilo.sh/abc".into()
+        ))
+    );
+    // The overview lists the same workspaces, from the same actions.
+    chrome.toggle_overview();
+    let elsewhere = chrome.overview().tilo.elsewhere;
+    assert_eq!(
+        elsewhere,
+        [(
+            "open-workspace:https://tilo.sh/abc".to_owned(),
+            "Open Tilo".to_owned()
+        )]
+    );
 }
