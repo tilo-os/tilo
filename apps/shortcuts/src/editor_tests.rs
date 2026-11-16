@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
         let unanswered = ui::tilo_actions::remote::ActionHostError::Unavailable {
             reason: ui::remote_actions::CATALOGUE_UNANSWERED.into(),
         };
-        let message = crate::door::catalogue_refusal(&unanswered);
+        let message = crate::effects::catalogue_refusal(&unanswered);
         assert!(
             message.starts_with("Nothing in this workspace answered"),
             "{message}"

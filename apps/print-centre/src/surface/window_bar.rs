@@ -97,7 +97,7 @@ impl PrintCentre {
                 continue;
             }
             if event == ToolbarEvent::Back {
-                let _ = self.door().send(UiCommand::Dashboard);
+                let _ = self.dispatch().send(UiCommand::Dashboard);
             }
         }
         asked

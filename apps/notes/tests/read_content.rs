@@ -177,7 +177,7 @@ fn editor_inspection_reuses_the_native_observer_and_writes_nothing() {
         .native_input_snapshot()
         .expect("native Notes observation");
     let observed = inspect_editor(&mut app);
-    assert_eq!(observed, native, "one observer serves both existing doors");
+    assert_eq!(observed, native, "one observer serves both existing paths");
     assert_eq!(observed["selected_page"], observed["main_page"]);
     assert_eq!(observed["main_page"], observed["editor_binding_page"]);
     assert_eq!(observed["body_hash"], observed["rendered_body_hash"]);
@@ -295,7 +295,7 @@ fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
     );
 }
 
-/// A past version reads through the `read` door and draws in the app's own
+/// A past version reads through the `read` actions and draws in the app's own
 /// view with the note as it stood then.
 #[test]
 fn a_past_version_reads_and_shows_its_note() {

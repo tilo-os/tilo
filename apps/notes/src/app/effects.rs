@@ -349,7 +349,7 @@ impl NotesApp {
 
     /// Open what a link in a note names, through the address it carries: the
     /// app that keeps that resource shows it, started first when no window
-    /// does. The same door a chip uses, so a link written by hand and one an
+    /// does. The same path a chip uses, so a link written by hand and one an
     /// app put in a note land in the same place.
     fn open_resource(href: &str, cx: &Cx) -> EffectAnswer {
         if actions::resource_address_in(href).is_none() {

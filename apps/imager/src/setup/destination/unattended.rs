@@ -125,7 +125,7 @@ impl Invocation {
     }
 
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        let door = start_console(
+        let console = start_console(
             crate::setup::destination::effects::PROVIDER,
             imager_backend::destination::console::Endpoint::discover(
                 crate::setup::destination::effects::PROVIDER,
@@ -135,16 +135,16 @@ impl Invocation {
         )
         .map_err(io::Error::other)?;
 
-        let mut app = InstallerApp::for_unattended().with_console(door.console.clone());
+        let mut app = InstallerApp::for_unattended().with_console(console.console.clone());
         app.enable_unattended_mode();
 
         let recipe = match self.recipe.read() {
             Ok(recipe) => recipe,
-            Err(error) => return stay_with_error(&mut app, &door, &error),
+            Err(error) => return stay_with_error(&mut app, &console, &error),
         };
         let mut sink = match self.recovery.open() {
             Ok(sink) => sink,
-            Err(error) => return stay_with_error(&mut app, &door, &error),
+            Err(error) => return stay_with_error(&mut app, &console, &error),
         };
         let mut probe = SystemProtection;
         match execute(&mut app, &recipe, &mut probe, &mut sink) {
@@ -157,7 +157,7 @@ impl Invocation {
             }
             Err(error) => {
                 let reason = recipe.redact(&error);
-                stay_with_error(&mut app, &door, &reason)
+                stay_with_error(&mut app, &console, &reason)
             }
         }
     }
@@ -194,14 +194,14 @@ fn private_fd(value: &OsString, what: &str) -> Result<i32, String> {
     Ok(fd)
 }
 
-struct ConsoleDoor {
-    console: imager_backend::destination::console::ConsoleServer,
+struct Console {
+    server: imager_backend::destination::console::ConsoleServer,
     endpoints: Vec<imager_backend::destination::console::Endpoint>,
     wake: mpsc::Receiver<()>,
     _fallback: Option<tempfile::TempDir>,
 }
 
-impl ConsoleDoor {
+impl Console {
     #[cfg(test)]
     fn socket_path(&self) -> Option<&Path> {
         self.endpoints.iter().find_map(|endpoint| match endpoint {
@@ -237,7 +237,7 @@ fn start_console(
     discovered: Vec<imager_backend::destination::console::Endpoint>,
     terminal_available: bool,
     fallback_root: Option<PathBuf>,
-) -> Result<ConsoleDoor, String> {
+) -> Result<Console, String> {
     let console = imager_backend::destination::console::ConsoleServer::new();
     let (wake_tx, wake) = mpsc::channel();
     let waker: imager_backend::destination::console::server::Waker = Arc::new(move || {
@@ -298,8 +298,8 @@ fn start_console(
         endpoints.push(endpoint);
         fallback = Some(directory);
     }
-    Ok(ConsoleDoor {
-        console,
+    Ok(Console {
+        server: console,
         endpoints,
         wake,
         _fallback: fallback,
@@ -321,23 +321,23 @@ fn drain_console(
 
 fn stay_with_error(
     app: &mut InstallerApp,
-    door: &ConsoleDoor,
+    console: &Console,
     error: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     app.note_unattended_error(error.to_owned());
     eprintln!("Unattended installation stopped: {error}");
     eprintln!("The installer is still available through its console:");
-    for instruction in door.instructions() {
+    for instruction in console.instructions() {
         eprintln!("  {instruction}");
     }
     eprintln!("Invoke the action for the step this report names.");
-    serve_forever(app, door);
+    serve_forever(app, console);
 }
 
-fn serve_forever(app: &mut InstallerApp, door: &ConsoleDoor) -> ! {
+fn serve_forever(app: &mut InstallerApp, console: &Console) -> ! {
     loop {
-        drain_console(app, &door.console);
-        let _ = door.wake.recv_timeout(Duration::from_secs(1));
+        drain_console(app, &console.server);
+        let _ = console.wake.recv_timeout(Duration::from_secs(1));
     }
 }
 
@@ -1735,21 +1735,25 @@ mod tests {
             },
         );
         let directory = tempfile::tempdir().unwrap();
-        let door = start_console(
+        let console = start_console(
             crate::setup::destination::effects::PROVIDER,
             Vec::new(),
             true,
             Some(directory.path().to_path_buf()),
         )
         .unwrap();
-        let socket = door.socket_path().expect("fallback socket").to_path_buf();
+        let socket = console
+            .socket_path()
+            .expect("fallback socket")
+            .to_path_buf();
         assert!(socket.exists(), "the reported socket must be the bound one");
         assert!(
-            door.instructions()
+            console
+                .instructions()
                 .iter()
                 .any(|line| line.contains(socket.to_string_lossy().as_ref())),
             "the continuation names the actual socket: {:?}",
-            door.instructions()
+            console.instructions()
         );
 
         let invalid = Recipe::parse(br#"{"schema":1,"account":{}}"#)
@@ -1760,9 +1764,9 @@ mod tests {
         writeln!(client, r#"{{"op":"state_dump"}}"#).unwrap();
         tilo_test_env::recv(
             "the wake a queued request gives the owner instead of leaving it to a poll",
-            &door.wake,
+            &console.wake,
         );
-        assert_eq!(drain_console(&mut app, &door.console), 1);
+        assert_eq!(drain_console(&mut app, &console.server), 1);
         client
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();

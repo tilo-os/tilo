@@ -3,7 +3,7 @@
 //! A draft holds one shortcut program while the person shapes it. Every edit
 //! is an action, so the palette, an agent or a script builds a draft exactly
 //! as the editor does. A draft becomes a saved shortcut only through the
-//! door's `shortcuts#create` / `shortcuts#update`, which the save effect
+//! library's `shortcuts#create` / `shortcuts#update`, which the save effect
 //! calls after the person has reviewed what the shortcut may do.
 
 use std::collections::BTreeMap;

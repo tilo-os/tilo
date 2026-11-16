@@ -523,12 +523,12 @@ impl ui::widget::Decorator for SetupSheet {
 /// The window's content with the setup's action client: its requests leave
 /// through the app's collaboration connection and the host's answers come
 /// back to it.
-pub struct SetupDoor {
+pub struct SetupClient {
     content: Stack,
     remote: ui::RemoteActions,
 }
 
-impl SetupDoor {
+impl SetupClient {
     #[must_use]
     pub fn new(page: Element, sheet: Element, setup: &Setup) -> Self {
         Self {
@@ -538,7 +538,7 @@ impl SetupDoor {
     }
 }
 
-impl ui::widget::Decorator for SetupDoor {
+impl ui::widget::Decorator for SetupClient {
     ui::provides!(dyn ui::widget::Collaborative; inner = content);
 
     type Inner = Stack;
@@ -552,11 +552,11 @@ impl ui::widget::Decorator for SetupDoor {
     }
 
     fn concrete_type_name(&self) -> &'static str {
-        "DiscordSetupDoor"
+        "DiscordSetupClient"
     }
 }
 
-impl ui::widget::Collaborative for SetupDoor {
+impl ui::widget::Collaborative for SetupClient {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         ui::widget::Collaborative::take_collab_requests(&mut self.remote)
     }

@@ -1,4 +1,4 @@
-//! The app's half of the action door: the saved library, the catalogue
+//! What the app publishes for every caller: the saved library, the catalogue
 //! steps are chosen from, saving, running and deleting.
 //!
 //! Everything here goes through the session broker as the Shortcuts app
@@ -9,9 +9,9 @@
 //! through `shortcuts.shortcut:<id>#run`, so the session executes the steps
 //! as that person within the shortcut's grant — never this app.
 //!
-//! Each operation is also an effect the app publishes on its drafts
-//! ([`DoorEffect`]), so the palette, an agent or a script saves or runs a
-//! shortcut through the same code the buttons use.
+//! Each is an effect the app publishes on its drafts ([`ShortcutEffects`]), so
+//! the palette, an agent or a script saves or runs a shortcut through the same
+//! code the buttons use.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,10 +34,10 @@ use crate::editor;
 use crate::model::Workbench;
 use crate::proposal::Proposal;
 
-/// What the door does, published on the drafts for every caller.
+/// What the effects does, published on the drafts for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "shortcuts.door")]
-pub enum DoorEffect {
+#[effect(operation = "shortcuts.effects")]
+pub enum ShortcutEffects {
     /// Reload shortcuts.
     #[effect(job)]
     Refresh,
@@ -113,7 +113,7 @@ impl RunStatus {
     }
 }
 
-/// One run started from this app, newest first in [`DoorState::runs`].
+/// One run started from this app, newest first in [`EffectsState::runs`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunRecord {
     pub serial: u64,
@@ -174,9 +174,9 @@ pub struct Refined {
     pub changes: Vec<String>,
 }
 
-/// Everything the door knows, shown by the views.
+/// Everything the effects knows, shown by the views.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct DoorState {
+pub struct EffectsState {
     pub catalogue: Arrival<ActionCatalog>,
     pub library: Arrival<Vec<Shortcut>>,
     pub runs: Vec<RunRecord>,
@@ -197,7 +197,7 @@ pub(crate) fn not_finished(reason: &str) -> BannerNotice {
     BannerNotice::error(crate::locales::CATALOG.t("shortcuts-not-finished")).message(reason)
 }
 
-impl DoorState {
+impl EffectsState {
     /// The saved shortcut `id`, when the library holds it.
     #[must_use]
     pub fn saved(&self, id: &str) -> Option<&Shortcut> {
@@ -250,11 +250,11 @@ struct Call {
     reply: Option<Reply>,
 }
 
-/// The door's working state, shared by the effect handler and the widget
+/// The effects's working state, shared by the effect handler and the widget
 /// that pumps it.
-pub struct DoorCore {
+pub struct EffectsCore {
     remote: RemoteActions,
-    state: LocalState<DoorState>,
+    state: LocalState<EffectsState>,
     live: Live<Workbench>,
     calls: Vec<Call>,
     next_run: u64,
@@ -264,9 +264,13 @@ pub struct DoorCore {
     observed: crate::Observed,
 }
 
-impl DoorCore {
+impl EffectsCore {
     #[must_use]
-    pub fn new(remote: RemoteActions, state: LocalState<DoorState>, live: Live<Workbench>) -> Self {
+    pub fn new(
+        remote: RemoteActions,
+        state: LocalState<EffectsState>,
+        live: Live<Workbench>,
+    ) -> Self {
         Self {
             remote,
             state,
@@ -289,7 +293,7 @@ impl DoorCore {
     /// proposal the person is already looking at and never offering work
     /// they turned down.
     fn notice_proposal(&self) -> bool {
-        let catalog = self.state.with(DoorState::catalog);
+        let catalog = self.state.with(EffectsState::catalog);
         let ignored = self.live.with(|workbench| workbench.ignored.clone());
         let saved = self
             .state
@@ -558,7 +562,7 @@ impl DoorCore {
         let saved = self
             .state
             .with(|state| state.library.ready().cloned().unwrap_or_default());
-        let catalog = self.state.with(DoorState::catalog);
+        let catalog = self.state.with(EffectsState::catalog);
         let outcome: Result<Option<ActionOutput>, String> = match &call.answer {
             Answer::Catalogue(answer) => match answer.get() {
                 Arrival::Ready(page) => {
@@ -709,22 +713,22 @@ impl DoorCore {
         }
     }
 
-    /// Carry out one door effect, answering `reply` once it settled.
+    /// Carry out one effects effect, answering `reply` once it settled.
     ///
     /// # Errors
     ///
     /// Why the effect was refused before anything was sent.
-    pub fn perform(&mut self, effect: DoorEffect, reply: Reply) -> Result<(), String> {
+    pub fn perform(&mut self, effect: ShortcutEffects, reply: Reply) -> Result<(), String> {
         let reply = Some(reply);
         match effect {
-            DoorEffect::Refresh => self.refresh(reply),
-            DoorEffect::Save { draft } => self.save(&draft, reply)?,
-            DoorEffect::Run { shortcut, inputs } => {
+            ShortcutEffects::Refresh => self.refresh(reply),
+            ShortcutEffects::Save { draft } => self.save(&draft, reply)?,
+            ShortcutEffects::Run { shortcut, inputs } => {
                 self.run(&shortcut, inputs.unwrap_or_default(), reply)?;
             }
-            DoorEffect::Delete { shortcut } => self.delete(&shortcut, reply)?,
-            DoorEffect::Describe { description } => self.describe(&description, reply)?,
-            DoorEffect::Refine { program, comment } => {
+            ShortcutEffects::Delete { shortcut } => self.delete(&shortcut, reply)?,
+            ShortcutEffects::Describe { description } => self.describe(&description, reply)?,
+            ShortcutEffects::Refine { program, comment } => {
                 let program: tilo_automation::Shortcut =
                     serde_json::from_str(&program).map_err(|error| {
                         format!("These are not the steps of a saved shortcut: {error}")
@@ -740,18 +744,18 @@ impl DoorCore {
     }
 }
 
-/// Hosts the view, feeds the door's requests to the session and settles its
+/// Hosts the view, feeds the effects's requests to the session and settles its
 /// answers every frame.
-pub struct Door {
+pub struct Effects {
     content: Element,
-    core: Rc<RefCell<DoorCore>>,
+    core: Rc<RefCell<EffectsCore>>,
     remote: RemoteActions,
     follow: Option<Box<dyn FnMut()>>,
 }
 
-impl Door {
+impl Effects {
     #[must_use]
-    pub fn new(content: Element, core: Rc<RefCell<DoorCore>>) -> Self {
+    pub fn new(content: Element, core: Rc<RefCell<EffectsCore>>) -> Self {
         let remote = core.borrow().remote.clone();
         Self {
             content,
@@ -761,7 +765,7 @@ impl Door {
         }
     }
 
-    /// Run `follow` every frame once the door's answers are settled, to
+    /// Run `follow` every frame once the effects's answers are settled, to
     /// derive view state from them.
     #[must_use]
     pub fn following(mut self, follow: Box<dyn FnMut()>) -> Self {
@@ -770,7 +774,7 @@ impl Door {
     }
 }
 
-impl Decorator for Door {
+impl Decorator for Effects {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -792,7 +796,7 @@ impl Decorator for Door {
         self.content.update(state, path)
     }
 
-    /// The door is the session's collaborative endpoint; every other request
+    /// The effects is the session's collaborative endpoint; every other request
     /// (the shell's header row, which hosts the window's History control)
     /// passes to the hosted view.
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
@@ -804,7 +808,7 @@ impl Decorator for Door {
     }
 
     fn name(&self) -> &'static str {
-        "ShortcutsDoor"
+        "ShortcutsEffects"
     }
 }
 

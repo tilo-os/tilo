@@ -33,8 +33,8 @@ agent-match-needs-text = „{ $label }“ braucht die Wörter, mit denen es arbe
 
 ## Der Fortschritt eines Laufs
 
-agent-run-reading-actions = Liest die Aktionen, die die Apps dieses Arbeitsbereichs veröffentlichen
-agent-run-step = { $index } von { $total }: { $action }
+agent-session-reading-actions = Liest die Aktionen, die die Apps dieses Arbeitsbereichs veröffentlichen
+agent-session-step = { $index } von { $total }: { $action }
 agent-model-turn-completed = Modellzug abgeschlossen
 agent-step-searching = Sucht im Web nach „{ $what }“…
 agent-step-reading = Liest { $what }…
@@ -49,11 +49,11 @@ agent-step-read = { $what } gelesen
 
 ## Ein Lauf, der angehalten wurde
 
-agent-run-needs-decision = Braucht deine Entscheidung, um weiterzumachen
-agent-run-cancelled-before-planning = Vor der Planung abgebrochen
-agent-run-cancelled-before-action = Vor der nächsten Aktion abgebrochen
-agent-run-cancelled-before-step = Vor dem nächsten Schritt abgebrochen
-agent-run-cancelled-in-action = Während einer laufenden Aktion abgebrochen
+agent-session-needs-decision = Braucht deine Entscheidung, um weiterzumachen
+agent-session-cancelled-before-planning = Vor der Planung abgebrochen
+agent-session-cancelled-before-action = Vor der nächsten Aktion abgebrochen
+agent-session-cancelled-before-step = Vor dem nächsten Schritt abgebrochen
+agent-session-cancelled-in-action = Während einer laufenden Aktion abgebrochen
 agent-cancel-task-center = Im Task-Center abgebrochen
 agent-cancel-thinking = Während des Nachdenkens abgebrochen
 

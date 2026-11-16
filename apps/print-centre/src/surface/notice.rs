@@ -197,10 +197,10 @@ impl PrintCentre {
 
     /// Ask again for the work that failed as `retry` says.
     pub(super) fn retry(&mut self, retry: Retry) -> bool {
-        let door = self.door();
+        let dispatch = self.dispatch();
         let command = match retry {
             Retry::Effect(effect) => {
-                door.effect(&effect);
+                dispatch.effect(&effect);
                 return true;
             }
             Retry::Print {
@@ -248,7 +248,7 @@ impl PrintCentre {
                 }
             }
         };
-        let _ = door.send(command);
+        let _ = dispatch.send(command);
         true
     }
 
@@ -275,7 +275,7 @@ impl PrintCentre {
     }
 }
 
-impl super::Door {
+impl super::Dispatch {
     /// Ask for `effect` as the page's own control would.
     fn effect(&self, effect: &PrintCentreEffect) {
         if let Some(dispatcher) = self.0.as_ref() {

@@ -243,7 +243,7 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
                 &ui::a11y::Action::Activate,
             )
             .is_err(),
-        "IME owns structural commands from the accessibility door too"
+        "IME owns structural commands from the accessibility actions too"
     );
     app.harness().send(&ui::winit::event::WindowEvent::Ime(
         ui::winit::event::Ime::Preedit(String::new(), None),

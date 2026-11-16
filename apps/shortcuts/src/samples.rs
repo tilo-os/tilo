@@ -14,8 +14,8 @@ use ui::tilo_actions::{
     InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
-use crate::door::{DoorState, Drafting, Refined, RunRecord, RunStatus};
 use crate::drafting::Drafted;
+use crate::effects::{Drafting, EffectsState, Refined, RunRecord, RunStatus};
 use crate::model::Workbench;
 use crate::view;
 use ui::Arrival;
@@ -316,13 +316,13 @@ pub fn drafts(name: Option<&str>) -> Vec<Invoke<Workbench>> {
 /// workspace would have them, and the page the scenario shows open.
 pub fn stage(
     cx: &ViewCx<Workbench>,
-    door: &LocalState<DoorState>,
+    effects: &LocalState<EffectsState>,
     selected: &LocalState<Option<String>>,
     pane: &LocalState<NavPane>,
     sheet: &LocalState<bool>,
     picker: &LocalState<Option<String>>,
 ) {
-    let door = door.clone();
+    let effects = effects.clone();
     let selected = selected.clone();
     let pane = pane.clone();
     let sheet = sheet.clone();
@@ -341,7 +341,7 @@ pub fn stage(
             status,
             started: started.into(),
         };
-        door.set(DoorState {
+        effects.set(EffectsState {
             catalogue: Arrival::Ready(staged_catalog()),
             library: Arrival::Ready(if first_run { Vec::new() } else { saved }),
             runs: if first_run {

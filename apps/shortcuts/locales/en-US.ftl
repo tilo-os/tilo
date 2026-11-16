@@ -147,12 +147,12 @@ shortcuts-not-finished = Could not finish
 
 ## Actions
 
-shortcuts-door-refresh = Reload shortcuts
-shortcuts-door-save = Save shortcut
-shortcuts-door-run = Run shortcut
-shortcuts-door-delete = Delete shortcut
-shortcuts-door-describe = Draft with the agent
-shortcuts-door-refine = Refine with the agent
+shortcuts-effects-refresh = Reload shortcuts
+shortcuts-effects-save = Save shortcut
+shortcuts-effects-run = Run shortcut
+shortcuts-effects-delete = Delete shortcut
+shortcuts-effects-describe = Draft with the agent
+shortcuts-effects-refine = Refine with the agent
 shortcuts-workbench = Shortcuts
 shortcuts-workbench-draft-proposal = Open proposed shortcut
 shortcuts-workbench-ignore-proposal = Ignore the proposal

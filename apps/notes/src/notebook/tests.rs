@@ -1,4 +1,4 @@
-//! The notebook on its own: its verbs and field edits through the same door
+//! The notebook on its own: its verbs and field edits through the same actions
 //! the host uses, merging, and what it publishes.
 
 use super::*;

@@ -14,7 +14,7 @@ use discord_wire::op::ChannelKind;
 use crate::effects::{self, DiscordEffect};
 use crate::locales::CATALOG;
 use crate::record::{Guild, Link, Ownership};
-use crate::setup::{self, Setup, SetupDoor};
+use crate::setup::{self, Setup, SetupClient};
 
 /// A channel of the server, as the page lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,9 +49,9 @@ enum Stage {
     Bridged,
 }
 
-/// How the person reading can link their own account here: one door, chosen
-/// by what the workspace's host and the bridge actually offer, so the page never
-/// draws a control that cannot work.
+/// How the person reading can link their own account here: chosen by what the
+/// workspace's host and the bridge actually offer, so the page never draws a
+/// control that cannot work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Linking {
     /// The workspace's host offers signing in with Discord.
@@ -344,7 +344,7 @@ fn accounts(cx: &ViewCx<Guild>, shown: &Shown) -> Element {
             .subtitle(format!("@{}", link.user_name)),
         ));
     }
-    // A workspace with no button to offer says where the door is instead: the
+    // A workspace with no button to offer says where to go instead: the
     // server's own `/link`, or that this workspace has none yet.
     if shown.mine.is_none() {
         match shown.linking {
@@ -448,7 +448,7 @@ impl ResourceApp for Discord {
             page(parts)
         });
         let sheet = setup::sheet(cx, &bridging);
-        Box::new(SetupDoor::new(page, sheet, &bridging))
+        Box::new(SetupClient::new(page, sheet, &bridging))
     }
 }
 

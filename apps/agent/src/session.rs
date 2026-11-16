@@ -596,7 +596,7 @@ impl Session {
         self.report_task(
             run,
             TurnUpdate::Progress {
-                message: crate::i18n::t("agent-run-reading-actions"),
+                message: crate::i18n::t("agent-session-reading-actions"),
             },
         )?;
         // Which planner decides this run's steps, said before it decides:
@@ -622,7 +622,7 @@ impl Session {
                                 finish
                                     .reply
                                     .as_deref()
-                                    .unwrap_or(&crate::i18n::t("agent-run-needs-decision")),
+                                    .unwrap_or(&crate::i18n::t("agent-session-needs-decision")),
                             ),
                         );
                     }
@@ -638,7 +638,10 @@ impl Session {
             };
         }
         if self.task_cancelled(run) {
-            return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-planning"));
+            return self.cancel_task(
+                run,
+                &crate::i18n::t("agent-session-cancelled-before-planning"),
+            );
         }
         let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
@@ -654,7 +657,10 @@ impl Session {
         let mut previous: Option<StepOutcome> = None;
         for (index, action) in actions.iter().enumerate() {
             if self.task_cancelled(run) {
-                return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-before-action"));
+                return self.cancel_task(
+                    run,
+                    &crate::i18n::t("agent-session-cancelled-before-action"),
+                );
             }
             let arguments = match arguments_for_step(
                 action.carries.as_deref(),
@@ -668,7 +674,7 @@ impl Session {
                 run,
                 TurnUpdate::Progress {
                     message: crate::i18n::t_args(
-                        "agent-run-step",
+                        "agent-session-step",
                         &[
                             ("index", (index + 1).into()),
                             ("total", actions.len().into()),
@@ -686,7 +692,8 @@ impl Session {
                     previous = Some(outcome);
                 }
                 Err(TaskActionStop::Cancelled(_)) => {
-                    return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-in-action"));
+                    return self
+                        .cancel_task(run, &crate::i18n::t("agent-session-cancelled-in-action"));
                 }
                 Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
             }

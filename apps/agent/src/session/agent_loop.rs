@@ -1151,7 +1151,7 @@ impl Session {
     ) -> Result<Option<LoopEnd>> {
         if self.task_cancelled(run) {
             return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
-                "agent-run-cancelled-before-planning",
+                "agent-session-cancelled-before-planning",
             ))));
         }
         if let Some(message) = self.spend_exhausted() {
@@ -1167,7 +1167,7 @@ impl Session {
         if self.task_cancelled(run) {
             self.turn = None;
             return Ok(Some(LoopEnd::Cancelled(crate::i18n::t(
-                "agent-run-cancelled-before-step",
+                "agent-session-cancelled-before-step",
             ))));
         }
         let mut results: HashMap<String, String> = HashMap::new();
@@ -2143,7 +2143,9 @@ impl Session {
             Err(TaskActionStop::Failed(message)) => Ok((refused_report(message), None)),
             Err(TaskActionStop::Cancelled(message)) => Ok((
                 InvokeReport::default(),
-                Some(message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))),
+                Some(
+                    message.unwrap_or_else(|| crate::i18n::t("agent-session-cancelled-in-action")),
+                ),
             )),
         }
     }
@@ -2255,7 +2257,7 @@ impl Session {
         }
         if self.task_cancelled(run) {
             return Ok(Started::Cancelled(crate::i18n::t(
-                "agent-run-cancelled-before-step",
+                "agent-session-cancelled-before-step",
             )));
         }
         let index = state.completed + state.in_flight.len();
@@ -2281,7 +2283,8 @@ impl Session {
                         Started::Refused(Box::new(refused_report(message)))
                     }
                     TaskActionStop::Cancelled(message) => Started::Cancelled(
-                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action")),
+                        message
+                            .unwrap_or_else(|| crate::i18n::t("agent-session-cancelled-in-action")),
                     ),
                 })
             }
@@ -2330,7 +2333,8 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => refused_report(message),
                 Err(TaskActionStop::Cancelled(message)) => {
                     cancelled.get_or_insert_with(|| {
-                        message.unwrap_or_else(|| crate::i18n::t("agent-run-cancelled-in-action"))
+                        message
+                            .unwrap_or_else(|| crate::i18n::t("agent-session-cancelled-in-action"))
                     });
                     continue;
                 }

@@ -1592,8 +1592,8 @@ impl NotesApp {
 
     // --- action dispatch -------------------------------------------------
 
-    /// Apply one notebook action through the framework's dispatcher, the one
-    /// door every affordance, the palette and agents share: checked against
+    /// Apply one notebook action through the framework's dispatcher, which
+    /// every affordance, the palette and agents share: checked against
     /// the participant's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
     fn dispatch(

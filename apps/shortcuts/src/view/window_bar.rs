@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
 use super::{DRAFT, OVERVIEW, SAVED, Ui, draft_label, save_blocker};
-use crate::door::DoorEffect;
+use crate::effects::ShortcutEffects;
 use crate::model::Workbench;
 
 /// What the open page is, for the bar.
@@ -64,8 +64,9 @@ impl ShortcutsWindow {
 
     /// The saved shortcut `id` as the workbench's verbs take it.
     fn saved_json(&self, id: &str) -> Option<serde_json::Value> {
-        let shortcut = self.ui.door.with(|door| {
-            door.library
+        let shortcut = self.ui.effects.with(|effects| {
+            effects
+                .library
                 .ready()
                 .and_then(|library| library.iter().find(|s| s.id == id).cloned())
         });
@@ -102,8 +103,8 @@ impl ShortcutsWindow {
                     .get(id)
                     .map(|draft| draft_label(&draft.name))
             }),
-            Open::Saved(id) => self.ui.door.with(|door| {
-                door.library.ready().and_then(|library| {
+            Open::Saved(id) => self.ui.effects.with(|effects| {
+                effects.library.ready().and_then(|library| {
                     library
                         .iter()
                         .find(|shortcut| &shortcut.id == id)
@@ -131,7 +132,7 @@ impl ShortcutsWindow {
             named(
                 "refresh",
                 "Reload shortcuts".into(),
-                bar.effect(&DoorEffect::Refresh),
+                bar.effect(&ShortcutEffects::Refresh),
             ),
         ];
         match open {
@@ -152,7 +153,7 @@ impl ShortcutsWindow {
                     named(
                         "trash-2",
                         lookup("shortcuts-delete"),
-                        bar.effect(&DoorEffect::Delete { shortcut: id }),
+                        bar.effect(&ShortcutEffects::Delete { shortcut: id }),
                     )
                     .in_menu(),
                 );

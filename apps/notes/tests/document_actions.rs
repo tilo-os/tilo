@@ -1,7 +1,7 @@
 //! An agent collaborates in Notes through its actions alone: it creates a
 //! page, finds it by title, reads it as Markdown with block ids, turns the
 //! list into a checklist, ticks items, rewords one and re-reads the page. No
-//! click, no focus and no window: the same door accessibility and automation
+//! click, no focus and no window: the same actions accessibility and automation
 //! use.
 
 use notes::NotesShell;

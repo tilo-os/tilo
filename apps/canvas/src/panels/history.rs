@@ -1,5 +1,5 @@
 //! The history panel: how the artwork got here, newest first, and who did
-//! each step — a person, or an agent's run, whose steps read as one entry
+//! each step — a person, or an agent session, whose steps read as one entry
 //! that can be taken back whole. Choosing a version shows it in place of
 //! the artwork until it is restored or now is chosen again. Undo, redo,
 //! restore and checkpoints are the history actions every app answers.
@@ -20,20 +20,20 @@ use crate::tools::Tools;
 /// How many recent versions the panel lists.
 const LISTED: usize = 200;
 
-/// One row: a person's step, or an agent run's consecutive steps.
+/// One row: a person's step, or an agent session's consecutive steps.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
     change: String,
     action: String,
     author: String,
-    run: Option<String>,
+    session: Option<String>,
     steps: usize,
     time_ms: i64,
     undone: bool,
     checkpoints: Vec<String>,
 }
 
-/// The rows, newest first, an agent run's consecutive steps folded into
+/// The rows, newest first, an agent session's consecutive steps folded into
 /// one. Naming a checkpoint is shown on the version it names, not as a
 /// step of its own.
 fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
@@ -44,7 +44,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
         }
         if let Some(last) = entries.last_mut()
             && version.run.is_some()
-            && last.run == version.run
+            && last.session == version.run
             && last.author == version.author
         {
             last.steps = last.steps.saturating_add(1);
@@ -56,7 +56,7 @@ fn entries(versions: &[HistoryVersion]) -> Vec<Entry> {
             change: version.change.clone(),
             action: version.action.clone(),
             author: version.author.clone(),
-            run: version.run.clone(),
+            session: version.run.clone(),
             steps: 1,
             time_ms: version.time_ms,
             undone: version.undone,
@@ -111,7 +111,7 @@ pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
         // agent's run or one run and the next, so each reads as its own.
         let mut hand: Option<(Option<&str>, &str)> = None;
         for entry in &entries {
-            let this = (entry.run.as_deref(), entry.author.as_str());
+            let this = (entry.session.as_deref(), entry.author.as_str());
             if hand.is_some_and(|before| before != this) {
                 list = list.push(Box::new(ui::widget::Divider::horizontal()));
             }
@@ -233,7 +233,7 @@ fn now_row(tools: &Tools) -> Element {
 }
 
 fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
-    let by_agent = entry.run.is_some();
+    let by_agent = entry.session.is_some();
     let action = if entry.action.is_empty() {
         crate::locales::CATALOG.t("canvas-history-created")
     } else {
@@ -292,15 +292,17 @@ fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
                 .with_min_width(0.0)
                 .with_child(Box::new(text)),
         ));
-    if let Some(run) = &entry.run
+    if let Some(session) = &entry.session
         && !entry.undone
     {
         content = content.push(Box::new(icon_button(
             cx,
             Icon::Undo2,
-            &crate::locales::CATALOG
-                .t_args("canvas-undo-run", &[("run", entry.author.clone().into())]),
-            Artwork::UNDO_RUN.with(run.clone()),
+            &crate::locales::CATALOG.t_args(
+                "canvas-undo-session",
+                &[("session", entry.author.clone().into())],
+            ),
+            Artwork::UNDO_AGENT_SESSION.with(session.clone()),
         )));
     }
     Box::new(
@@ -326,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_runs_steps_read_as_one_entry_and_a_persons_each_their_own() {
+    fn an_agent_sessions_steps_read_as_one_entry_and_a_persons_each_their_own() {
         let versions = [
             version("a", "Paint strokes", None),
             version("b", "Draw shapes", Some("run-1")),
@@ -344,6 +346,6 @@ mod tests {
             .map(|entry| (entry.change.as_str(), entry.steps))
             .collect();
         assert_eq!(summary, [("f", 1), ("e", 1), ("c", 2), ("a", 1)]);
-        assert_eq!(entries[2].run.as_deref(), Some("run-1"));
+        assert_eq!(entries[2].session.as_deref(), Some("run-1"));
     }
 }

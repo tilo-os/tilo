@@ -289,13 +289,13 @@ tilo_test_env::scenario! {
             scanners: Ok(Vec::new()),
         };
         assert!(failed_areas(&empty, true, true, true).is_empty());
-        let door = Door::default();
+        let dispatch = Dispatch::default();
         assert!(
-            views::unavailable_notice(&failed_areas(&unavailable, true, true, true), &door)
+            views::unavailable_notice(&failed_areas(&unavailable, true, true, true), &dispatch)
                 .is_some()
         );
         assert!(
-            views::unavailable_notice(&failed_areas(&empty, true, true, true), &door).is_none()
+            views::unavailable_notice(&failed_areas(&empty, true, true, true), &dispatch).is_none()
         );
     }
 }

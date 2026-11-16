@@ -12,7 +12,7 @@ pub fn notes() -> TestApp<NotesShell> {
     TestApp::<NotesShell>::new().unwrap()
 }
 
-/// Apply `action` through the notebook's door, as a control does.
+/// Apply `action` through the notebook's actions, as a control does.
 pub fn apply(app: &mut TestApp<NotesShell>, action: &Action) {
     app.invoke(Invoke::apply(action).unwrap()).unwrap();
 }

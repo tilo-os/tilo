@@ -144,12 +144,12 @@ shortcuts-not-finished = Konnte nicht abgeschlossen werden
 
 ## Actions
 
-shortcuts-door-refresh = Kurzbefehle neu laden
-shortcuts-door-save = Kurzbefehl speichern
-shortcuts-door-run = Kurzbefehl ausführen
-shortcuts-door-delete = Kurzbefehl löschen
-shortcuts-door-describe = Mit dem Agenten entwerfen
-shortcuts-door-refine = Mit dem Agenten nachschärfen
+shortcuts-effects-refresh = Kurzbefehle neu laden
+shortcuts-effects-save = Kurzbefehl speichern
+shortcuts-effects-run = Kurzbefehl ausführen
+shortcuts-effects-delete = Kurzbefehl löschen
+shortcuts-effects-describe = Mit dem Agenten entwerfen
+shortcuts-effects-refine = Mit dem Agenten nachschärfen
 shortcuts-workbench = Kurzbefehle
 shortcuts-workbench-draft-proposal = Vorgeschlagenen Kurzbefehl öffnen
 shortcuts-workbench-ignore-proposal = Vorschlag nicht mehr anbieten

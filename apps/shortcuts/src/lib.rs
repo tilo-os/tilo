@@ -9,8 +9,8 @@
 //! permissions the shortcut will use before it is stored.
 //!
 //! Drafts are this app's resource ([`model::Workbench`]); saving, running and
-//! reloading are its published effects ([`door`]); both reach every caller
-//! of the action door, not only the buttons.
+//! reloading are its published effects ([`effects`]); both reach every caller
+//! of the action effects, not only the buttons.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 #![allow(
@@ -18,9 +18,9 @@
     reason = "app-local counters and indices; see the note above"
 )]
 
-pub mod door;
 pub mod drafting;
 pub mod editor;
+pub mod effects;
 pub mod locales;
 pub mod model;
 pub mod proposal;

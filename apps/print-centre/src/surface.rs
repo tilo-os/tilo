@@ -257,10 +257,10 @@ pub(crate) struct Snapshot {
     scanners: Result<Vec<tilo_capture::scanner::Scanner>, String>,
 }
 
-/// Where the page's controls send what they do: the surface's effects and the person's
-/// defaults go through the same door as the palette's and an agent's.
+/// Where the page's controls send what they do: the surface's effects and the
+/// person's defaults take the same path as the palette's and an agent's.
 #[derive(Clone, Default)]
-struct Door(
+struct Dispatch(
     Option<Dispatcher<PrintDefaults>>,
     Option<ui::framework::Actions<PrintDefaults>>,
 );
@@ -303,7 +303,7 @@ enum UiCommand {
     RecognizeCurrentPage,
 }
 
-impl Door {
+impl Dispatch {
     fn send(&self, request: UiCommand) -> Result<(), String> {
         use PrintCentreEffect as E;
         let dispatcher = self.0.as_ref().ok_or("Print Centre is not open")?;
@@ -839,7 +839,7 @@ fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
         .map(|_| rx)
 }
 
-fn empty_view(tx: &Door) -> El {
+fn empty_view(tx: &Dispatch) -> El {
     let tx = tx.clone();
     Box::new(
         ui::widget::EmptyState::new("Set up your first printer")
@@ -886,8 +886,8 @@ impl PrintCentre {
     }
 
     /// Where the controls send their effects and the defaults' changes.
-    fn door(&self) -> Door {
-        Door(self.dispatcher.clone(), self.controls.clone())
+    fn dispatch(&self) -> Dispatch {
+        Dispatch(self.dispatcher.clone(), self.controls.clone())
     }
 
     /// Ask CUPS and SANE what this machine has.
@@ -1489,7 +1489,7 @@ impl PrintCentre {
                     choice: &self.print_choice,
                     pages: self.preview_pages,
                 },
-                &Door(self.dispatcher.clone(), self.controls.clone()),
+                &Dispatch(self.dispatcher.clone(), self.controls.clone()),
             ));
         }
     }
@@ -1501,19 +1501,18 @@ impl PrintCentre {
                 snapshot,
                 self.selected_scanner.as_deref(),
                 &self.scan,
-                &Door(self.dispatcher.clone(), self.controls.clone()),
+                &Dispatch(self.dispatcher.clone(), self.controls.clone()),
             ));
         }
     }
 
     fn rebuild_dashboard(&mut self) {
         self.page = Page::Dashboard;
-        let door = self.door();
-        self.shown = Some(
-            self.snapshot
-                .as_ref()
-                .map_or_else(|| empty_view(&door), |snapshot| live_view(snapshot, &door)),
-        );
+        let dispatch = self.dispatch();
+        self.shown = Some(self.snapshot.as_ref().map_or_else(
+            || empty_view(&dispatch),
+            |snapshot| live_view(snapshot, &dispatch),
+        ));
     }
 
     fn open_dashboard(&mut self) {
@@ -1521,18 +1520,22 @@ impl PrintCentre {
     }
 
     fn open_queue(&mut self) {
-        let door = self.door();
+        let dispatch = self.dispatch();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::Queue;
-            self.shown = Some(queue_view(snapshot, &door, self.pending_cancel.as_deref()));
+            self.shown = Some(queue_view(
+                snapshot,
+                &dispatch,
+                self.pending_cancel.as_deref(),
+            ));
         }
     }
 
     fn open_history(&mut self) {
-        let door = self.door();
+        let dispatch = self.dispatch();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::History;
-            self.shown = Some(history_view(snapshot, &door));
+            self.shown = Some(history_view(snapshot, &dispatch));
         }
     }
 
@@ -1551,15 +1554,15 @@ impl PrintCentre {
     }
 
     fn open_diagnostics(&mut self) {
-        let door = self.door();
+        let dispatch = self.dispatch();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::Diagnostics;
-            self.shown = Some(diagnostics_view(snapshot, &door));
+            self.shown = Some(diagnostics_view(snapshot, &dispatch));
         }
     }
 
     fn open_device(&mut self, name: &str) {
-        let door = self.door();
+        let dispatch = self.dispatch();
         if let Some(queue) = self
             .snapshot
             .as_ref()
@@ -1567,14 +1570,14 @@ impl PrintCentre {
             .and_then(|queues| queues.iter().find(|q| q.name == name))
         {
             self.page = Page::Device(name.to_owned());
-            self.shown = Some(device_view(queue, &door));
+            self.shown = Some(device_view(queue, &dispatch));
         }
     }
 
     fn open_discovery(&mut self) {
         self.page = Page::Discovery;
         let nearby = self.nearby();
-        self.shown = Some(discovery_view(nearby.as_ref(), &self.door()));
+        self.shown = Some(discovery_view(nearby.as_ref(), &self.dispatch()));
     }
 
     /// Search the network for printers, showing the search while it runs.

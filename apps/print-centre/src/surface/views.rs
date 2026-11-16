@@ -14,7 +14,7 @@ use ui::widget::{
 };
 
 use super::{
-    Door, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
+    Dispatch, El, PrintChoice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
     failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
 };
 use crate::locales::CATALOG;
@@ -36,7 +36,7 @@ fn muted(s: impl AsRef<str>) -> El {
 }
 
 /// A button that sends `command` to the page controller.
-fn command_button(id: &str, label: impl AsRef<str>, tx: &Door, command: UiCommand) -> Button {
+fn command_button(id: &str, label: impl AsRef<str>, tx: &Dispatch, command: UiCommand) -> Button {
     let tx = tx.clone();
     Button::new(id, label.as_ref())
         .with_enabled(tx.0.is_some())
@@ -181,7 +181,7 @@ fn unavailable_copy(areas: &[&str]) -> (&'static str, &'static str) {
 }
 
 /// What the person sees when a part of the system could not be read.
-pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
+pub(super) fn unavailable_notice(areas: &[&str], tx: &Dispatch) -> Option<El> {
     if areas.is_empty() {
         return None;
     }
@@ -277,7 +277,7 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
     )
 }
 
-fn live_job_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
+fn live_job_card(job: &os_actions::printing::PrintJob, tx: &Dispatch) -> El {
     let status = match job.state {
         Some(os_actions::printing::JobState::Held) => CATALOG.t("print-centre-job-waiting"),
         Some(os_actions::printing::JobState::Stopped) => CATALOG.t("print-centre-job-attention"),
@@ -327,7 +327,7 @@ fn status_badge(queue: &os_actions::printing::PrinterQueue) -> El {
 }
 
 /// A printer on the dashboard: the whole card opens its page.
-fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
+fn printer_card(queue: &os_actions::printing::PrinterQueue, tx: &Dispatch) -> El {
     let supplies = if let Some((level, _)) = supply_level(queue) {
         supply_meter(CATALOG.t("print-centre-lowest-supply"), level)
     } else {
@@ -366,7 +366,7 @@ fn tool_row(
     icon: Icon,
     title: impl Into<String>,
     detail: impl Into<String>,
-    tx: &Door,
+    tx: &Dispatch,
     command: UiCommand,
 ) -> El {
     let tx = tx.clone();
@@ -393,7 +393,7 @@ fn is_active(job: &os_actions::printing::PrintJob) -> bool {
     )
 }
 
-pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
+pub(super) fn live_view(snapshot: &Snapshot, tx: &Dispatch) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
@@ -443,7 +443,7 @@ fn live_tools(
     scanners: &[tilo_capture::scanner::Scanner],
     jobs: &[os_actions::printing::PrintJob],
     jobs_available: bool,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> El {
     let mut tools: Vec<El> = Vec::new();
     if let Some(scanner) = scanners.first() {
@@ -504,7 +504,7 @@ fn history_status(job: &os_actions::printing::PrintJob) -> String {
 
 /// A finished document: what became of it and where, with the way to print it again always
 /// in view.
-fn history_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
+fn history_card(job: &os_actions::printing::PrintJob, tx: &Dispatch) -> El {
     let again = command_button(
         &format!("print-centre.history.repeat.{}", job.id),
         CATALOG.t("print-centre-print-again"),
@@ -528,7 +528,7 @@ fn history_card(job: &os_actions::printing::PrintJob, tx: &Door) -> El {
     })
 }
 
-pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
+pub(super) fn history_view(snapshot: &Snapshot, tx: &Dispatch) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let terminal: Vec<_> = jobs
         .iter()
@@ -577,7 +577,7 @@ fn device_summary(supplies_known: bool, queue: &os_actions::printing::PrinterQue
     })
 }
 
-pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
+pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Dispatch) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let responding = queues
@@ -633,7 +633,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
 }
 
 /// What one printer answered to the status check, in plain words.
-fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
+fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Dispatch) -> El {
     let supplies_known = queue.telemetry.available
         && queue
             .telemetry
@@ -663,7 +663,7 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
     titled_section(display_name(&queue.name), items)
 }
 
-fn scanner_check(none_found: bool, tx: &Door) -> El {
+fn scanner_check(none_found: bool, tx: &Dispatch) -> El {
     let items: Vec<El> = if none_found {
         vec![copy(CATALOG.t("print-centre-no-scanner"))]
     } else {
@@ -705,7 +705,11 @@ fn queue_summary(job: &os_actions::printing::PrintJob) -> Column {
     }
 }
 
-fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>, tx: &Door) -> El {
+fn queue_card(
+    job: &os_actions::printing::PrintJob,
+    pending_cancel: Option<&str>,
+    tx: &Dispatch,
+) -> El {
     let mut buttons: Vec<Button> = Vec::new();
     if matches!(
         job.state,
@@ -749,7 +753,7 @@ fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>
     })
 }
 
-pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<&str>) -> El {
+pub(super) fn queue_view(snapshot: &Snapshot, tx: &Dispatch, pending_cancel: Option<&str>) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
@@ -780,7 +784,7 @@ pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<
     page(groups(items))
 }
 
-pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
+pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Dispatch) -> El {
     let enabled =
         queue.accepting_jobs && !matches!(queue.state, os_actions::printing::QueueState::Paused);
     let mut buttons = vec![command_button(
@@ -847,7 +851,7 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
 
 pub(super) fn discovery_view(
     result: Option<&Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> El {
     let body: El = match result {
         None => section(vec![
@@ -913,7 +917,7 @@ pub(super) fn discovery_view(
     page(groups(vec![body]))
 }
 
-fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dropdown {
+fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Dispatch) -> Dropdown {
     let options = snapshot
         .queues
         .as_deref()
@@ -954,7 +958,7 @@ pub(super) struct PrintForm<'a> {
 
 /// The document being printed: its preview, which the person can check before anything is
 /// sent, page by page for a document of more than one.
-fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
+fn document_card(filename: &str, preview: &PrintPreview, tx: &Dispatch) -> El {
     let (page, pages) = match preview {
         PrintPreview::Ready { page, pages, .. } => (*page, *pages),
         _ => (0, 0),
@@ -1031,7 +1035,7 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
     Box::new(Card::new(body).with_title(filename))
 }
 
-fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
+fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Dispatch) -> Form {
     let mut options = FormSection::new("Options").grouped().field(
         Field::new(
             "Copies",
@@ -1120,7 +1124,7 @@ pub(super) fn print_setup_view(
     copies: &ui::LocalState<f64>,
     two_sided: &ui::LocalState<bool>,
     form: &PrintForm<'_>,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> El {
     let filename = path
         .file_name()
@@ -1181,7 +1185,7 @@ fn driver_choice(
     key: &str,
     choices: &[os_actions::printing::OptionChoice],
     chosen: Option<&str>,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> ToggleGroup {
     let default = os_actions::printing::PrinterOptions::default_key(choices).unwrap_or_default();
     let selected = choices
@@ -1227,7 +1231,7 @@ fn page_details(
     page_data: &super::ScannedPage,
     selected_page: usize,
     page_count: usize,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> Column {
     let orientation = if page_data.height >= page_data.width {
         CATALOG.t("print-centre-portrait")
@@ -1311,7 +1315,7 @@ fn page_details(
 }
 
 /// Moving between, reordering and removing the pages of the document.
-fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Button> {
+fn page_navigation(selected_page: usize, page_count: usize, tx: &Dispatch) -> Vec<Button> {
     let has_previous = selected_page > 0;
     let has_next = selected_page.saturating_add(1) < page_count;
     let mut buttons: Vec<Button> = Vec::new();
@@ -1356,7 +1360,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     buttons
 }
 
-fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door) -> El {
+fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Dispatch) -> El {
     let selected_page = scan.selected;
     let page_count = scan.pages.len();
     let editor = ImageCropEditor::new(
@@ -1437,7 +1441,7 @@ fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door)
 }
 
 /// The scanners the person can choose from.
-fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Vec<El> {
+fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Dispatch) -> Vec<El> {
     let mut devices: Vec<El> = Vec::new();
     if let Ok(scanners) = &snapshot.scanners {
         for scanner in scanners {
@@ -1469,7 +1473,7 @@ fn scanner_choices(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Ve
 fn scan_choice<V: 'static>(
     (id, labels): (&str, &[&str]),
     state: &ui::LocalState<usize>,
-    tx: &Door,
+    tx: &Dispatch,
     path: ui::tilo_resource::Path<PrintDefaults, V>,
     edit: impl Fn(
         &ui::tilo_resource::Path<PrintDefaults, V>,
@@ -1490,7 +1494,7 @@ fn scan_choice<V: 'static>(
     }
 }
 
-fn scan_settings(scan: &ScanState, tx: &Door) -> Vec<El> {
+fn scan_settings(scan: &ScanState, tx: &Dispatch) -> Vec<El> {
     let paths = PrintDefaults::paths();
     let atom = |values: &'static [&'static str]| {
         move |path: &ui::tilo_resource::Path<PrintDefaults, Atom>, index: usize| {
@@ -1560,7 +1564,7 @@ pub(super) fn scan_setup_view(
     snapshot: &Snapshot,
     selected: Option<&str>,
     scan: &ScanState,
-    tx: &Door,
+    tx: &Dispatch,
 ) -> El {
     if let Some(page_data) = scan.result.as_ref() {
         return scan_review_view(page_data, scan, tx);

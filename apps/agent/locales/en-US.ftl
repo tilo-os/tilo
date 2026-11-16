@@ -31,8 +31,8 @@ agent-match-needs-text = “{ $label }” needs the words to work with, in quote
 
 ## A run's progress
 
-agent-run-reading-actions = Reading the actions this workspace's apps publish
-agent-run-step = Running { $index } of { $total }: { $action }
+agent-session-reading-actions = Reading the actions this workspace's apps publish
+agent-session-step = Running { $index } of { $total }: { $action }
 agent-model-turn-completed = Model turn completed
 agent-step-searching = Searching the web for “{ $what }”…
 agent-step-reading = Reading { $what }…
@@ -47,11 +47,11 @@ agent-step-read = Read { $what }
 
 ## A run that stopped
 
-agent-run-needs-decision = Needs your decision before continuing
-agent-run-cancelled-before-planning = Cancelled before planning
-agent-run-cancelled-before-action = Cancelled before the next action
-agent-run-cancelled-before-step = Cancelled before the next step
-agent-run-cancelled-in-action = Cancelled while an action was running
+agent-session-needs-decision = Needs your decision before continuing
+agent-session-cancelled-before-planning = Cancelled before planning
+agent-session-cancelled-before-action = Cancelled before the next action
+agent-session-cancelled-before-step = Cancelled before the next step
+agent-session-cancelled-in-action = Cancelled while an action was running
 agent-cancel-task-center = Cancelled from Task Center
 agent-cancel-thinking = Cancelled while thinking
 

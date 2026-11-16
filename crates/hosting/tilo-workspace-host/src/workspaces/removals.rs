@@ -1,17 +1,15 @@
-//! Who a workspace's public door keeps out: a person moderation removed stays
-//! out for a day, however often they ask again. An idle member the host prunes
-//! is not kept out ([`Door::clear`]): they come back through the door as the
-//! person they are.
+//! Who a workspace keeps out: a person moderation removed stays out for a day,
+//! however often they ask again. An idle member the host prunes is not kept out
+//! ([`Removals::clear`]): they come back as the person they are.
 //!
-//! The day is the workspace service's own: a person removed from a community
-//! workspace is also turned away by the address they joined from, and the two
-//! doors agree on how long. Kept beside the workspace's record, in
-//! `<workspace>.door`, so a restart lets nobody back early.
+//! The day is the workspace's own: a person removed from a community workspace
+//! is also turned away by the address they joined from, and the two agree on
+//! how long. Kept beside the workspace's record, in `<workspace>.removals`, so
+//! a restart lets nobody back early.
 //!
-//! Before the door, the persistent workspace kept the same removals in its own
-//! `removals.json`. A workspace takes them over once
-//! ([`Workspaces::adopt_legacy_removals`]) and deletes the old file: the door
-//! is from then on the one record of whom moderation removed.
+//! A workspace takes over the removals an older persistent workspace kept in
+//! its `removals.json` once ([`Workspaces::adopt_legacy_removals`]) and deletes
+//! the old file.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,12 +17,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tilo_files::native::migration::Format;
 
-/// How long a person moderation removed is refused at the door.
+/// How long a person moderation removed is refused.
 pub(super) const REMOVED_FOR_NS: u64 = 24 * 3600 * 1_000_000_000;
 
-/// The door's on-disk format: a `u32` version, then when each removed person
-/// was removed. The removals a workspace kept before the door are written in this
-/// same version 1 by [`Door::adopt`].
+/// The removals' on-disk format: a `u32` version, then when each removed person
+/// was removed. The older file is written in this same version 1 by
+/// [`Removals::adopt`].
 pub(super) const FORMAT: Format = Format {
     name: "workspace removals",
     version: 1,
@@ -39,7 +37,7 @@ struct Stored {
     removed: BTreeMap<[u8; 32], u64>,
 }
 
-/// One workspace's door state.
+/// One workspace's removals.
 #[derive(Debug, Default)]
 pub(super) struct Removals {
     removed: BTreeMap<[u8; 32], u64>,
@@ -47,8 +45,8 @@ pub(super) struct Removals {
 }
 
 impl Removals {
-    /// The door state of the workspace recorded at `workspace_path` (its `.workspace`
-    /// file).
+    /// The removals of the workspace recorded at `workspace_path` (its
+    /// `.workspace` file).
     pub(super) fn open(workspace_path: &Path) -> Result<Self, String> {
         let path = workspace_path.with_extension("removals");
         let stored = match std::fs::read(&path) {
@@ -96,9 +94,9 @@ impl Removals {
         self.save()
     }
 
-    /// Take over the removals a workspace kept before the door: each `person` at
-    /// the time moderation removed them. Written in the door's own version,
-    /// once, and the workspace's old file goes.
+    /// Take over the removals a workspace kept before: each `person` at the
+    /// time moderation removed them. Written in this version, once, and the
+    /// workspace's old file goes.
     pub(super) fn adopt(&mut self, removed: BTreeMap<[u8; 32], u64>) -> Result<(), String> {
         for (person, at) in removed {
             self.removed
@@ -120,15 +118,14 @@ impl Removals {
 }
 
 impl super::Workspaces {
-    /// Take over the removals a persistent workspace kept in `file` before the
-    /// door (`removals.json`: hex person to Unix milliseconds) and delete it:
-    /// each person the day has not passed for stays out until it does.
-    /// Returns how many the door keeps. A file that is not there is nothing
-    /// to take over.
+    /// Take over the removals a persistent workspace kept in `file`
+    /// (`removals.json`: hex person to Unix milliseconds) and delete it: each
+    /// person the day has not passed for stays out until it does. Returns how
+    /// many are kept. A file that is not there is nothing to take over.
     ///
     /// # Errors
     ///
-    /// The file cannot be read or parsed, or the door cannot be written.
+    /// The file cannot be read or parsed, or the removals cannot be written.
     pub async fn adopt_legacy_removals(
         &self,
         workspace: &str,
@@ -178,9 +175,9 @@ mod tests {
     use super::*;
     use tilo_files::native::migration::assert_golden_bytes;
 
-    /// The door file this build writes: one person kept out, when they were
-    /// removed. Kept so a workspace's door goes on reading the same way; a
-    /// field added, removed or reordered changes these bytes.
+    /// The removals file this build writes: one person kept out, when they were
+    /// removed. Kept so a workspace goes on reading the same way; a field
+    /// added, removed or reordered changes these bytes.
     const GOLDEN: &str = include_str!("../../golden/workspace-removals/v1.hex");
 
     fn golden() -> Vec<u8> {

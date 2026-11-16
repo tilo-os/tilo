@@ -38,7 +38,7 @@ fn click_into_body(app: &mut TestApp<NotesShell>) {
     let _ = app.harness().poll_frame();
 }
 
-/// A note an agent made through the notebook's door, with `markdown` as its body.
+/// A note an agent made through the notebook's actions, with `markdown` as its body.
 fn agents_note(title: &str, markdown: Option<&str>) -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();

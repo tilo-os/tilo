@@ -296,7 +296,7 @@ fn body(note: usize, blocks: usize) -> String {
     markdown
 }
 
-/// Apply `action` through the window's local action door, as the palette or
+/// Apply `action` through the window's local action actions, as the palette or
 /// an agent does.
 fn apply(app: &mut App, action: &notes::actions::Action) -> Result<(), Failure> {
     let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(action)?;

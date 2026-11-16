@@ -1083,7 +1083,7 @@ fn assert_open_tag_view(
         .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
         .unwrap();
     let history = revision(f, checkout);
-    // Invoke directly before relayout; the public bound front door must resolve current data.
+    // Invoke directly before relayout; the public bound front actions must resolve current data.
     a.invoke_bound_action(
         &ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
