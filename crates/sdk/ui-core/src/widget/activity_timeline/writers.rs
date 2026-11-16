@@ -20,6 +20,19 @@ impl ActivityTimeline {
         true
     }
 
+    /// Where row `i` put each of its parts, as it last painted them: the
+    /// author's chip, the change's own mark, the body's room and the time's
+    /// slot. `None` before the row has been drawn, or once it is off screen.
+    pub fn row_parts(&self, i: usize) -> Option<RowParts> {
+        let id = self.row_entry(i)?.id;
+        let row = self.row_rect(i)?;
+        self.row_parts
+            .borrow()
+            .get(&id)
+            .copied()
+            .filter(|parts| parts.row == row)
+    }
+
     /// Where row `i`'s target link stands, when the row shows one.
     pub fn target_link_rect(&self, i: usize) -> Option<Rect> {
         let id = self.row_entry(i)?.id;
@@ -121,7 +134,9 @@ impl ActivityTimeline {
 
     /// A band's one author on its second line, from `at` (its left edge, at the line's
     /// centre) up to `end`: their face, their name, and the agent that wrote for them as a
-    /// chip, as rows draw theirs. Answers where the line's facts start after it.
+    /// chip, as rows draw theirs. The name and the chip keep a bounded share of the line,
+    /// so the facts after them still read and neither reaches the time; a chip whose name
+    /// does not fit keeps the writer's mark alone. Answers where the facts start.
     pub(super) fn draw_band_lead(
         ctx: &mut PaintCtx<'_>,
         lead: &HistoryAuthor,
@@ -129,6 +144,9 @@ impl ActivityTimeline {
         end: f64,
     ) -> f64 {
         let parts = crate::history_source::sentence::author_parts(lead);
+        // The lead names who ran the band; the facts after it keep the rest of
+        // the line, and the time its own gutter past that.
+        let lead_end = (at.x + (end - at.x).max(0.0) * LEAD_MAX_SHARE).min(end);
         let face_d = AVATAR_DIAM;
         let (r, g, b) = lead.rgb();
         let face = Rect::new(
@@ -146,7 +164,7 @@ impl ActivityTimeline {
             theme,
         } = ctx.reborrow();
         let style = theme.text(TextRole::Caption);
-        let name = fit_text(tr, &parts.person, &style, (end - x).max(0.0));
+        let name = fit_text(tr, &parts.person, &style, (lead_end - x).max(0.0));
         let (name_w, name_h) = tr.measure_style(&name, None, &style);
         tr.draw_style(
             scene,
@@ -159,9 +177,13 @@ impl ActivityTimeline {
         x += f64::from(name_w) + 6.0;
         if let Some(writer) = &parts.writer {
             let lead_mark = author_writer_lead(lead, writer, theme);
-            let width =
+            let named =
                 crate::widget::ChipFace::intrinsic_width(writer, lead_mark, false, tr, theme);
-            if x + width <= end {
+            let mark = crate::widget::ChipFace::intrinsic_width("", lead_mark, false, tr, theme);
+            let room = (lead_end - x).max(0.0);
+            if room >= mark {
+                // The chip elides its own name inside the room it is given.
+                let width = named.min(room);
                 let height = crate::widget::ChipFace::height(theme);
                 let chip = Rect::new(x, at.y - height / 2.0, x + width, at.y + height / 2.0);
                 crate::widget::ChipFace::new(chip, writer)
@@ -170,6 +192,98 @@ impl ActivityTimeline {
                 x += width + 6.0;
             }
         }
-        x
+        x.min(end)
     }
 }
+
+/// The chip naming what wrote a change, as a row draws it: beside the
+/// author's face, inside the bounded share of the row it may take.
+pub(super) struct AuthorCluster {
+    pub(super) label: String,
+    pub(super) lead: ChipLead,
+    pub(super) chip: Rect,
+    /// Where the change's own mark and sentence start past the cluster.
+    pub(super) body_left: f64,
+}
+
+/// Where a change row put each of its parts, for a press or a test that
+/// reads the row's geometry. Recorded as it paints, so what this says is what
+/// the row drew.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowParts {
+    /// The row's indented rect.
+    pub row: Rect,
+    /// The author cluster's chip naming what wrote the change, when it holds
+    /// one: its mark alone where its name does not fit.
+    pub chip: Option<Rect>,
+    /// The change's own kind mark, when the row draws one (a change the app
+    /// presents itself draws its own body instead).
+    pub mark: Option<Rect>,
+    /// The room the change's mark and sentence take.
+    pub body: Rect,
+    /// The trailing time's slot.
+    pub time: Rect,
+}
+
+impl ActivityTimeline {
+    /// The chip a row draws for what wrote the change, and where the change's
+    /// own mark starts after it: the author cluster keeps at most
+    /// [`AUTHOR_MAX_SHARE`] of the room past the face, so a long writer name
+    /// elides in its chip rather than taking the row; one too narrow even for
+    /// the writer's mark is dropped. Answers [`None`] when nothing wrote.
+    pub(super) fn row_author_cluster(
+        &self,
+        entry: &HistoryEntry,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        cy: f64,
+        body_end: f64,
+    ) -> Option<AuthorCluster> {
+        let (label, width, lead) = Self::bot_chip(entry, text, theme)
+            .or_else(|| self.row_writer_chip(entry, text, theme))?;
+        let available = (body_end - row.x0).max(0.0);
+        let cap = (available * AUTHOR_MAX_SHARE)
+            .max(AUTHOR_SLOT_W)
+            .min(available.max(AUTHOR_SLOT_W));
+        let cluster_end = row.x0 + (AUTHOR_SLOT_W + width + 6.0).min(cap);
+        let chip_x = row.x0 + 8.0 + AVATAR_DIAM + 6.0;
+        let room = (cluster_end - 6.0 - chip_x).max(0.0);
+        let mark = crate::widget::ChipFace::intrinsic_width("", lead, false, text, theme);
+        if room < mark {
+            return None;
+        }
+        let width = width.min(room);
+        let height = crate::widget::ChipFace::height(theme).min(row.height());
+        let chip = Rect::new(chip_x, cy - height / 2.0, chip_x + width, cy + height / 2.0);
+        let body_left = (chip.x1 + 6.0).max(row.x0 + AUTHOR_SLOT_W).min(body_end);
+        Some(AuthorCluster {
+            label,
+            lead,
+            chip,
+            body_left,
+        })
+    }
+
+    pub(super) fn draw_row_author(ctx: &mut PaintCtx<'_>, cluster: Option<&AuthorCluster>) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let Some(cluster) = cluster else {
+            return;
+        };
+        // The chip's rect was capped where the row laid out its columns, so
+        // its own name elides inside it and it never reaches the change's
+        // mark or the time.
+        crate::widget::ChipFace::new(cluster.chip, &cluster.label)
+            .lead(cluster.lead)
+            .paint(scene, transform, text_renderer, theme);
+    }
+}
+
+/// The most of a band's second line its one author's name and chip may take:
+/// the facts after them keep the rest.
+const LEAD_MAX_SHARE: f64 = 0.55;

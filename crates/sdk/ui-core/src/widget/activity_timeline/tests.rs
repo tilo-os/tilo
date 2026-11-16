@@ -1181,7 +1181,7 @@ tilo_test_env::scenario! {
             );
             let narrow_row = narrow.row_rect(0).unwrap();
             assert!(
-                narrow_chip.x0 > narrow_row.x0 + narrow.author_slot_w(),
+                narrow_chip.x0 > narrow_row.x0 + AUTHOR_SLOT_W,
                 "the chip must not overlap the author cluster"
             );
             assert!(
@@ -1196,4 +1196,102 @@ tilo_test_env::scenario! {
         row_at_agrees_with_row_rect_at_the_boundaries();
         narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them();
     }
+}
+
+/// A writer's name as long as a session title never pushes a row's own mark,
+/// sentence or writer chip under the trailing time: at a narrow pane the
+/// author cluster keeps a bounded share, its chip elides there, and the
+/// change's mark and sentence take the rest and truncate.
+#[test]
+fn a_long_writer_name_never_reaches_a_rows_time() {
+    let long = "Workspace folder pass, sixth round, agent run, second pass, renamed";
+    let theme = Theme::dark();
+    // A pane narrow enough that the chip keeps its mark alone, and one wide
+    // enough for its name: neither may put anything under the time.
+    let panes = [
+        Rect::new(8.0, 8.0, 328.0, 408.0),
+        Rect::new(8.0, 8.0, 528.0, 408.0),
+    ]
+    .into_iter()
+    .map(|pane| {
+        let mut entry = entry(EntryKind::Text, long, 1_000, 1);
+        entry.author = HistoryAuthor::new(long, 120.0, "deadbeef")
+            .with_relation(crate::widget::history::AuthorRelation::Software);
+        let mut t = timeline_at(pane, vec![entry]);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        t.place_controls(&theme);
+        t.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        (pane, t)
+    })
+    .collect::<Vec<_>>();
+    for (pane, t) in panes {
+        let parts = t.row_parts(0).expect("the row painted");
+        let chip = parts.chip.expect("the writer's chip");
+        let mark = parts.mark.expect("the change's own mark");
+        assert!(
+            parts.body.x1 <= parts.time.x0,
+            "in {pane:?} the change's column ends before the time: {parts:?}"
+        );
+        assert!(
+            chip.x1 <= parts.body.x0,
+            "in {pane:?} the writer's chip ends before the change's mark: {parts:?}"
+        );
+        assert!(
+            mark.x1 <= parts.time.x0,
+            "in {pane:?} the mark never reaches the time: {parts:?}"
+        );
+        assert!(parts.time.x1 <= parts.row.x1, "the time stays in the row");
+        for (name, rect) in [
+            ("chip", chip),
+            ("mark", mark),
+            ("body", parts.body),
+            ("time", parts.time),
+        ] {
+            assert!(
+                parts.row.contains_rect(rect),
+                "the {name} {rect:?} stays inside the row {:?}",
+                parts.row
+            );
+        }
+    }
+}
+
+/// A band's one author is cut to a bounded share of its second line: a run
+/// named after a long session leaves the facts beside it room to read, and
+/// neither the lead nor its chip reaches the band's time.
+#[test]
+fn a_long_band_lead_leaves_room_for_the_facts_beside_it() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut scene = Scene::new();
+    let lead = HistoryAuthor::new(
+        "Workspace folder pass, sixth round, agent run",
+        120.0,
+        "deadbeef",
+    )
+    .with_relation(crate::widget::history::AuthorRelation::Software);
+    let at = Point::new(48.0, 400.0);
+    let end = 360.0;
+    let facts = ActivityTimeline::draw_band_lead(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        &lead,
+        at,
+        end,
+    );
+    // The lead — the name and its chip — ends inside its share of the line,
+    // and the facts it answers start one gap past it, never past the line.
+    let bounded = at.x + (end - at.x) * 0.55 + 6.0 + 0.01;
+    assert!(
+        facts <= bounded,
+        "the lead ends inside its share of the line: {facts} past {bounded}"
+    );
+    assert!(facts <= end + 0.01, "the lead never reaches the time");
+    assert!(facts >= at.x, "the lead never starts left of its face");
 }

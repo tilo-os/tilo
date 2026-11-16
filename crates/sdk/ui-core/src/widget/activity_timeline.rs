@@ -45,6 +45,10 @@ const TIME_SLOT_W: f64 = 80.0;
 /// name is the face's tooltip and the row's accessible name, never a
 /// column of names cut to fit.
 const AUTHOR_SLOT_W: f64 = 8.0 + AVATAR_DIAM + 10.0;
+/// The most of a row's room that the author cluster — the face and the chip
+/// naming what wrote the change — may take. A longer name elides in its chip,
+/// so the change's own mark and sentence always keep a column.
+const AUTHOR_MAX_SHARE: f64 = 0.45;
 const INDENT: f64 = 20.0;
 /// Right-hand gutter shared by every trailing element — a row's relative
 /// time and a band header's — so the time column lines up down the pane.
@@ -366,6 +370,10 @@ pub struct ActivityTimeline {
     /// Where each row's target link was last drawn ([`HistoryEntry::target`]): what a press
     /// on it opens. Kept by painting, which is where the link's width is measured.
     target_links: std::cell::RefCell<HashMap<HistoryEntryId, Rect>>,
+    /// Where each row's parts were last painted ([`RowParts`]), by the change
+    /// it shows: what a test or a press reads about a row's geometry, recorded
+    /// by painting, which is where its widths are measured.
+    row_parts: std::cell::RefCell<HashMap<HistoryEntryId, RowParts>>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
@@ -446,6 +454,7 @@ impl ActivityTimeline {
             on_activate_entry: None,
             on_open_entry: None,
             target_links: std::cell::RefCell::default(),
+            row_parts: std::cell::RefCell::default(),
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
@@ -1163,10 +1172,6 @@ impl ActivityTimeline {
         self.selection = None;
         self.selection_anchor = None;
         true
-    }
-
-    fn author_slot_w(&self) -> f64 {
-        AUTHOR_SLOT_W
     }
 
     fn author_label(&self, entry: &HistoryEntry) -> String {
@@ -2083,12 +2088,13 @@ struct EntryRowLayout {
     row: Rect,
     cy: f64,
     text_style: TextStyle,
-    author_slot_w: f64,
+    /// Where the change's own mark and sentence may stand: past the author
+    /// cluster, and never into the trailing time's slot.
+    body: Rect,
+    /// The trailing time's slot: fixed, and never overlapped.
+    time: Rect,
     offers_revert: bool,
     offers_copy: bool,
-    /// Summary width given up to the revert or copy chip; zero unless one
-    /// is offered.
-    chip_reserve: f64,
 }
 
 struct BandHeader<'a> {
@@ -2272,11 +2278,9 @@ impl ActivityTimeline {
 
         let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        let dot_x = if entry.is_genesis() {
-            row.x0 + 8.0 + AVATAR_DIAM / 2.0
-        } else {
-            Self::draw_row_avatar(ctx, row, cy, entry)
-        };
+        if !entry.is_genesis() {
+            Self::draw_row_avatar(ctx, row, cy, entry);
+        }
 
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
@@ -2286,35 +2290,61 @@ impl ActivityTimeline {
                 .faces
                 .get(&entry.id)
                 .is_some_and(|face| face.copy.is_some());
-        let bot_w = if entry.is_genesis() {
-            0.0
+        let chip_reserve = (self.revert_chip_w() + 6.0)
+            * f64::from(u8::from(offers_revert) + u8::from(offers_copy));
+        // The time is fixed at the row's trailing edge; the author cluster
+        // may take a bounded share of what is left, and the change's own mark
+        // and sentence take the rest — never under the time, whatever the
+        // writer's name is and however narrow the pane.
+        let trailing = self.time_slot_w() + chip_reserve + TRAILING_INSET;
+        let body_end = (row.x1 - trailing).max(row.x0);
+        let cluster = if entry.is_genesis() {
+            None
         } else {
-            Self::bot_chip(entry, ctx.text, ctx.theme)
-                .or_else(|| self.row_writer_chip(entry, ctx.text, ctx.theme))
-                .map_or(0.0, |(_, width, _)| width + 6.0)
+            self.row_author_cluster(entry, ctx.text, ctx.theme, row, cy, body_end)
         };
+        let body_left = cluster
+            .as_ref()
+            .map_or(body_end.min(row.x0 + AUTHOR_SLOT_W), |cluster| {
+                cluster.body_left
+            });
+        let body = Rect::new(body_left, row.y0, body_end.max(body_left), row.y1);
+        let time = Rect::new(
+            body_end,
+            row.y0,
+            (row.x1 - chip_reserve - TRAILING_INSET).max(body_end),
+            row.y1,
+        );
         let layout = EntryRowLayout {
             row,
             cy,
             text_style: ctx.theme.text(TextRole::Caption),
-            author_slot_w: self.author_slot_w() + bot_w,
+            body,
+            time,
             offers_revert,
             offers_copy,
-            chip_reserve: (self.revert_chip_w() + 6.0)
-                * f64::from(u8::from(offers_revert) + u8::from(offers_copy)),
+        };
+        // Where this row put each part, for a press or a test that reads its
+        // geometry: recorded as it paints, so it cannot disagree with the paint.
+        let mut parts = RowParts {
+            row,
+            chip: cluster.as_ref().map(|cluster| cluster.chip),
+            mark: None,
+            body,
+            time,
         };
         if !entry.is_genesis() {
-            self.draw_row_author(ctx, &layout, entry, dot_x);
+            Self::draw_row_author(ctx, cluster.as_ref());
         }
-        self.draw_row_body(ctx, &layout, entry, now);
+        parts.mark = self.draw_row_body(ctx, &layout, entry, now);
         self.draw_row_trailing(ctx, &layout, entry, now);
+        self.row_parts.borrow_mut().insert(entry.id, parts);
     }
 
-    /// The author's face; returns its center x so the author cluster can
-    /// start just past it. A person is their round face in their colour;
-    /// software acting for someone (an agent, a Shortcut, an app) is the
+    /// The author's face: a person as their round face in their colour;
+    /// software acting for someone (an agent, a Shortcut, an app) as the
     /// agent mark on a square, as it shows everywhere else.
-    fn draw_row_avatar(ctx: &mut PaintCtx<'_>, row: Rect, cy: f64, entry: &HistoryEntry) -> f64 {
+    fn draw_row_avatar(ctx: &mut PaintCtx<'_>, row: Rect, cy: f64, entry: &HistoryEntry) {
         let (r, g, b) = entry.author.rgb();
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
         let face = Rect::new(
@@ -2324,7 +2354,6 @@ impl ActivityTimeline {
             cy + AVATAR_DIAM / 2.0,
         );
         author_face(&entry.author, Color::from_rgb8(r, g, b)).paint(ctx, face);
-        dot_x
     }
 
     fn draw_row_chrome(ctx: &mut PaintCtx<'_>, slot: RowSlot, emphasis: RowEmphasis) {
@@ -2417,54 +2446,15 @@ impl ActivityTimeline {
         }
     }
 
-    fn draw_row_author(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        layout: &EntryRowLayout,
-        entry: &HistoryEntry,
-        dot_x: f64,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let &EntryRowLayout {
-            row,
-            cy,
-            author_slot_w,
-            ..
-        } = layout;
-        let Some((label, width, lead)) = Self::bot_chip(entry, text_renderer, theme)
-            .or_else(|| self.row_writer_chip(entry, text_renderer, theme))
-        else {
-            return;
-        };
-        let slot_end = row.x0 + author_slot_w - 6.0;
-        let chip_x = dot_x + AVATAR_DIAM / 2.0 + 6.0;
-        let height = crate::widget::ChipFace::height(theme).min(row.height());
-        let chip = Rect::new(
-            chip_x,
-            cy - height / 2.0,
-            (chip_x + width).min(slot_end),
-            cy + height / 2.0,
-        );
-        crate::widget::ChipFace::new(chip, &label).lead(lead).paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-        );
-    }
-
+    /// The change's own mark and sentence, in the row's body slot; answers
+    /// where the mark was drawn, when it was drawn at all.
     fn draw_row_body(
         &self,
         ctx: &mut PaintCtx<'_>,
         layout: &EntryRowLayout,
         entry: &HistoryEntry,
         now: SystemTime,
-    ) {
+    ) -> Option<Rect> {
         let PaintCtx {
             scene,
             transform,
@@ -2475,55 +2465,54 @@ impl ActivityTimeline {
             row,
             cy,
             ref text_style,
-            author_slot_w,
-            chip_reserve,
+            body,
             ..
         } = layout;
-        let glyph_x = row.x0 + author_slot_w;
+        let glyph_x = body.x0;
         // A change the app presents itself draws as the app draws it, in the
         // slot the kind icon and the sentence share. A redacted one never
         // does: its strike-through says it was taken back.
         if entry.redaction.is_none()
-            && let Some(body) = self.faces.get(&entry.id).and_then(|face| face.body.clone())
+            && let Some(painted) = self.faces.get(&entry.id).and_then(|face| face.body.clone())
         {
-            let slot = Rect::new(
-                glyph_x,
-                row.y0,
-                (row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET).max(glyph_x),
-                row.y1,
-            );
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 1.0,
                 transform,
-                &slot,
+                &body,
             );
-            body.paint(
+            painted.paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                slot,
+                body,
             );
             scene.pop_layer();
-            return;
+            return None;
         }
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                glyph_x,
-                cy - icon_side / 2.0,
-                glyph_x + icon_side,
-                cy + icon_side / 2.0,
-            ),
-            entry.entry_kind.icon(),
-            theme.tokens.colors.text_dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        // A row narrower than its own mark keeps the mark off rather than
+        // under the time beside it.
+        let mark = Rect::new(
+            glyph_x,
+            cy - icon_side / 2.0,
+            glyph_x + icon_side,
+            cy + icon_side / 2.0,
         );
+        let mark = (mark.x1 <= body.x1).then_some(mark);
+        if let Some(mark) = mark {
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                mark,
+                entry.entry_kind.icon(),
+                theme.tokens.colors.text_dim,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
 
         let line_top = text_top(text_renderer, text_style, cy);
         let summary_x = glyph_x + 24.0;
-        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET;
+        let summary_x_end = body.x1;
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
@@ -2620,7 +2609,7 @@ impl ActivityTimeline {
                     .borrow_mut()
                     .insert(entry.id, Rect::new(link.x0, row.y0, link.x1, row.y1));
             }
-            return;
+            return mark;
         }
         let summary = summary_owned.as_str();
         let drawn_summary = fit_text(
@@ -2658,6 +2647,7 @@ impl ActivityTimeline {
                 &strike,
             );
         }
+        mark
     }
 
     fn draw_row_trailing(
@@ -2677,9 +2667,9 @@ impl ActivityTimeline {
             row,
             cy,
             ref text_style,
+            time,
             offers_revert,
             offers_copy,
-            chip_reserve,
             ..
         } = layout;
         if offers_copy {
@@ -2697,10 +2687,10 @@ impl ActivityTimeline {
             text_renderer,
             &row_time(entry, now),
             text_style,
-            self.time_slot_w(),
+            time.width(),
         );
         let (tw, th) = text_renderer.measure_style(&rel, None, text_style);
-        let time_x = row.x1 - chip_reserve - TRAILING_INSET - f64::from(tw);
+        let time_x = time.x1 - f64::from(tw);
         text_renderer.draw_style(
             scene,
             &rel,
@@ -3034,7 +3024,14 @@ impl ActivityTimeline {
         } = band;
         let colors = &theme.tokens.colors;
         let meta_style = theme.text(TextRole::Caption);
-        let rel = format_relative_time(rg.last_time, now);
+        // The time keeps the same slot the rows' times do, and is measured after it is
+        // cut to it, so the facts beside it end short of the time, never over it.
+        let rel = fit_text(
+            tr,
+            &format_relative_time(rg.last_time, now),
+            &meta_style,
+            TIME_SLOT_W,
+        );
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
         let faces = if rg.lead.is_some() {
             0
@@ -3058,7 +3055,8 @@ impl ActivityTimeline {
                 meta_end,
             ),
             None => title_x,
-        };
+        }
+        .min(meta_end);
         let sub_budget = (meta_end - facts_x).max(0.0);
         let facts = rg.meta_facts();
         let facts_rect = Rect::new(
@@ -4449,6 +4447,7 @@ fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
 }
 
 mod writers;
+pub use writers::RowParts;
 
 #[cfg(test)]
 mod tests;

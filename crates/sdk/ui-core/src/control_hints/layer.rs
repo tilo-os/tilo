@@ -51,10 +51,14 @@ pub struct HintPlace {
     /// clear of them, the hint is in [`Self::bar`], or has nowhere to
     /// stand and does not show.
     pub clear: Vec<Rect>,
+    /// The control itself, for a hint whose anchor has no side clear of content (a window's bar over
+    /// its body): the card stands on the handle it teaches, a coach mark where the gesture is done,
+    /// while [`Self::edge`] lights it. A hint with nowhere to stand does not show.
+    pub at: Option<Rect>,
     /// The width the top bar keeps beside its clock, for a hint beside a control whose sides are all
-    /// content (a window's bar over its body, a window's edge between two windows, or at the screen's):
-    /// the hint is there instead, as one for a gesture with no control on screen does, while
-    /// [`Self::edge`] lights where the gesture is done.
+    /// content (a window's edge between two windows, or at the screen's): the hint is there instead,
+    /// as one for a gesture with no control on screen does, while [`Self::edge`] lights where the
+    /// gesture is done.
     pub bar: Option<Rect>,
 }
 
@@ -272,7 +276,18 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             let in_bar = matches!(&spot.stand, Stand::InBar { .. });
             let size = card::size(&contents, text, theme, in_bar);
             let beside = place(&spot, size, look.area).map(|(rect, notch)| (rect, notch, in_bar));
-            let placement = beside.or_else(|| {
+            let on_the_handle = || {
+                // The control itself, when every side of it is content: a window's
+                // drag bar has the window under it, so the card stands on the bar
+                // it teaches rather than somewhere else on screen.
+                let at = spot.at?;
+                let (w, h) = size;
+                let spare = look.area.inset(-AREA_MARGIN);
+                let x = (at.center().x - w / 2.0).clamp(spare.x0, (spare.x1 - w).max(spare.x0));
+                let y = (at.center().y - h / 2.0).clamp(spare.y0, (spare.y1 - h).max(spare.y0));
+                Some((Rect::new(x, y, x + w, y + h), None, in_bar))
+            };
+            let placement = beside.or_else(on_the_handle).or_else(|| {
                 let band = spot.bar?;
                 let inside = HintPlace {
                     stand: Stand::InBar { band },
@@ -596,6 +611,7 @@ mod place_tests {
             keys: Vec::new(),
             touch: false,
             clear,
+            at: None,
             bar: None,
         }
     }
@@ -608,6 +624,7 @@ mod place_tests {
             keys: vec!["Ctrl".into(), "K".into()],
             touch: false,
             clear,
+            at: None,
             bar: None,
         }
     }
@@ -811,5 +828,66 @@ mod place_tests {
                 "the edge lights where the gesture is done"
             );
         }
+    }
+
+    /// A control with content on every side — a window's drag bar over its own
+    /// body — has no clear side to stand beside: its card stands on the handle
+    /// itself, where the gesture is done, never elsewhere on screen.
+    #[test]
+    fn a_hint_with_no_clear_side_stands_on_the_control_it_teaches() {
+        static MOVE: &[HintSpec<()>] = &[HintSpec {
+            id: "move",
+            when: &[Cue::Holds(())],
+            only_while: &[],
+            learned_by: &[],
+            gesture: Gesture::MoveWindow,
+            words: "Drag to move",
+            touch_words: None,
+        }];
+        let area = Rect::new(0.0, 40.0, 1280.0, 800.0);
+        let bar = Rect::new(100.0, 48.0, 700.0, 84.0);
+        let body = Rect::new(100.0, 84.0, 700.0, 788.0);
+        let spot = HintPlace {
+            stand: Stand::Beside {
+                anchor: bar,
+                side: PopoverSide::Below,
+                points: true,
+            },
+            at: Some(bar),
+            edge: None,
+            words: "Drag to move".into(),
+            keys: Vec::new(),
+            touch: false,
+            clear: vec![body],
+            bar: None,
+        };
+        let placed = |_spec: &HintSpec<()>| Some(spot.clone());
+        let mut hints = HintLayer::new(MOVE, Learned::default());
+        let at = crate::time::now();
+        hints.update(at, &|()| true, None, &placed, EffectiveMotion::default());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        hints.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            at,
+            &HintLook {
+                colour: None,
+                keep_at: None,
+                area,
+            },
+        );
+        let card = hints.card_rect().expect("it stands on its handle");
+        assert!(
+            bar.contains(card.center()),
+            "{card:?} is not on the handle {bar:?}"
+        );
+        assert!(spare_holds(area, card), "{card:?} inside the desk {area:?}");
+    }
+
+    fn spare_holds(area: Rect, card: Rect) -> bool {
+        area.inset(-AREA_MARGIN).contains_rect(card)
     }
 }

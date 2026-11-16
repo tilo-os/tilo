@@ -409,8 +409,30 @@ impl ListRowFace<'_> {
             right -= width + m.column_gap;
         }
         if self.value.is_some() {
+            // The value keeps the row's trailing edge, and the title keeps a
+            // column: a value wider than what is left of the row elides in
+            // place instead of running under the name or out of the row. What
+            // stands between the value and the name — the marks, the count and
+            // the author's face, each with its gap — is part of what it leaves.
             geo.value_right = right;
-            right -= self.value_width(m, text) + m.column_gap;
+            let mut facts = 0.0;
+            let actions = self.shows_actions();
+            let marks = self.marks_width(m);
+            if !actions && marks > 0.0 {
+                facts += marks + m.column_gap;
+            }
+            if !actions && let Some(label) = self.count_label() {
+                facts += BadgeFace::intrinsic_width(&label, text, theme) + m.column_gap;
+            }
+            if !actions && self.author.is_some() {
+                facts += RowMetrics::avatar(theme, false) + m.column_gap;
+            }
+            let room = (right - geo.text_x - super::MIN_TEXT_W - facts).max(0.0);
+            let width = self.value_width(m, text).min(room);
+            geo.value_left = right - width;
+            if width > 0.0 {
+                right -= width + m.column_gap;
+            }
         }
         let facts_right = right;
         let actions = self.shows_actions().then(|| {
@@ -632,6 +654,7 @@ impl ListRowFace<'_> {
         }
         if self.value.is_some() {
             geo.value_right = right;
+            geo.value_left = right - self.value_width(m, text);
         }
         geo
     }

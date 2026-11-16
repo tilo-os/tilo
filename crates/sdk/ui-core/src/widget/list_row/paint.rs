@@ -255,14 +255,23 @@ impl ListRowFace<'_> {
                     RowValue::Body => &m.value_body,
                     RowValue::Title => &m.value_title,
                 };
-                let (w, h) = ctx.text.measure_style(value, None, style);
-                ctx.text(
-                    value,
-                    style,
-                    theme.text_primary,
-                    Point::new(right - f64::from(w), facts_cy - f64::from(h) / 2.0),
-                    None,
-                );
+                // The value's room was reserved where the row laid out its
+                // columns: one that does not fit elides there, never widening
+                // past the row's trailing edge or under the name.
+                let cap = (right - geo.value_left).max(0.0);
+                if cap > 0.5 {
+                    let shown =
+                        ctx.text
+                            .elide_to_width_style(value, crate::num::f32_of_f64(cap), style);
+                    let (w, h) = ctx.text.measure_style(&shown, None, style);
+                    ctx.text(
+                        &shown,
+                        style,
+                        theme.text_primary,
+                        Point::new(right - f64::from(w), facts_cy - f64::from(h) / 2.0),
+                        None,
+                    );
+                }
             }
             self.paint_meta(ctx, &m, &geo, facts_cy, &[ground, under]);
             self.paint_marks(ctx, &m, &geo, facts_cy);

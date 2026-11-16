@@ -6,6 +6,8 @@ use crate::widget::{MediaAspect, MediaSource};
 use vello::peniko::{Color, ImageData};
 
 impl ListRow {
+    /// See [`RowLeading::Icon`](super::RowLeading::Icon): a glyph in the leading column,
+    /// where no face leads, as a file's or a folder's kind leads its entry.
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.leading = Some(Leading::Icon(icon));

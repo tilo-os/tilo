@@ -2091,3 +2091,112 @@ fn an_author_cell_holds_the_person_and_the_writer_beside_them() {
         "the writer's chip adds width: {mine:?} against {slot:?}"
     );
 }
+
+/// A narrow row holds every trailing cell inside it, under its own padding,
+/// and none of them runs under the name: a name that no longer fits elides,
+/// and a value too wide for the rest of the row elides in its own room. The
+/// file (or folder) it is leads the row with its mark.
+#[test]
+fn a_rows_trailing_cells_stay_inside_it_and_clear_of_the_name() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    let outer = Rect::new(0.0, 0.0, 300.0, 60.0);
+    let value = "1 234 567 890 123 456 789 bytes of a long name";
+    let face = ListRowFace::new("A file name long enough to be cut before its facts")
+        .leading(RowLeading::Icon(Icon::FileText))
+        .secondary("Nov 15, 2026, 14:58")
+        .value(value)
+        .mark(Icon::Star)
+        .author(RowAuthor {
+            person: "Claude",
+            identity: "claude",
+            image: None,
+            writer: Some(RowWriter {
+                label: "Workspace folder, sixth round, agent run",
+                hue: crate::tokens::PresenceHue::of_agent("agent"),
+            }),
+        });
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    let content = Rect::new(outer.x0 + m.bleed, outer.y0, outer.x1 - m.bleed, outer.y1);
+    let author = geo.author.expect("who made it, as its own cell");
+    let value_rect = Rect::new(geo.value_left, outer.y0, geo.value_right, outer.y1);
+    let marks_right = geo.marks_right.expect("the row's mark");
+    let marks = Rect::new(
+        marks_right - face.marks_width(&m),
+        outer.y0,
+        marks_right,
+        outer.y1,
+    );
+    assert!(
+        face.shape().leading == RowLeadingShape::Mark,
+        "what the row is leads it"
+    );
+    assert_eq!(
+        ListRow::new("a-file", "A file")
+            .icon(Icon::FileText)
+            .shape()
+            .leading,
+        RowLeadingShape::Mark,
+        "a row built with an icon leads with it, as a file list does"
+    );
+    assert!(
+        geo.leading.width() > 0.0 && content.contains_rect(geo.leading),
+        "the leading mark is inside the row: {:?}",
+        geo.leading
+    );
+    for (name, rect) in [("author", author), ("value", value_rect), ("mark", marks)] {
+        assert!(
+            content.contains_rect(rect),
+            "the {name} {rect:?} stays inside the row's padding {content:?}"
+        );
+    }
+    assert!(
+        author.x1 <= marks.x0,
+        "the author cell ends before the row's mark: {geo:?}"
+    );
+    assert!(
+        marks.x1 <= value_rect.x0,
+        "the row's mark ends before the value: {geo:?}"
+    );
+    assert!(
+        geo.text_right <= author.x0,
+        "the name's column ends before the author cell: {geo:?}"
+    );
+    assert!(
+        geo.title_right >= geo.text_x,
+        "the name keeps a column: {geo:?}"
+    );
+    let cap = crate::num::f32_of_f64(value_rect.width());
+    let shown = text.elide_to_width_style(value, cap, &m.value_body);
+    assert_ne!(shown, value, "a value too wide for its room elides");
+    assert!(
+        face.title_elided(outer, &mut text, &theme),
+        "the name truncates instead of running under the cells"
+    );
+
+    // The leading mark paints where the geometry put it, not only in the
+    // declaration: the row renders and its column carries ink.
+    let mut scene = Scene::new();
+    face.paint(
+        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+        outer,
+    );
+    let pixels = crate::offscreen::OffscreenRenderer::new(300, 60)
+        .render(&scene, theme.tokens.colors.surfaces.content);
+    let ground = crate::offscreen::OffscreenRenderer::sample(&pixels, 300, 4, 4);
+    let mut inked = false;
+    let lead = geo.leading;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the test's own small surface and non-negative positions inside it"
+    )]
+    for x in (lead.x0.ceil() as u32)..(lead.x1.floor() as u32) {
+        for y in (lead.y0.ceil() as u32)..(lead.y1.floor() as u32) {
+            let pixel = crate::offscreen::OffscreenRenderer::sample(&pixels, 300, x, y);
+            inked |= (pixel.0, pixel.1, pixel.2) != (ground.0, ground.1, ground.2);
+        }
+    }
+    assert!(inked, "the leading mark draws in its column");
+}

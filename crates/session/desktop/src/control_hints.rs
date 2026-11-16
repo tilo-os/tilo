@@ -459,11 +459,25 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     {
         return None;
     }
-    // A hint anchored to a window stands beside its bar or its edge, which have that window's
-    // content on one side and another's (or the screen's) on the other: the card covers neither of
-    // them, and stands in the bar's room when no side of the spot is clear, the spot itself lit
+    // Moving a window is taught where the person holds it, never by a pill in the
+    // bar: a window whose drag spot leaves no room beside the card is taught on
+    // the handle itself, or not at all. A resize edge between two windows has no
+    // clear side at all, so its hint keeps the bar's room with the edge itself lit
     // where the person drags it.
-    let at_a_window = matches!(spec.gesture, Gesture::MoveWindow | Gesture::ResizeEdge);
+    let bar = frame
+        .hint_room
+        .filter(|_| matches!(spec.gesture, Gesture::ResizeEdge));
+    // A window's drag bar has its own body under it and another window beside
+    // it, so it has no clear side at all: its hint stands on the handle it
+    // teaches. A drag spot that is not on screen has nothing to point at.
+    let at = match spec.gesture {
+        Gesture::MoveWindow => {
+            let bar = row.hovered_bar.or(row.focused_bar)?;
+            let shown = bar.intersect(frame.area);
+            (!shown.is_zero_area()).then_some(shown)
+        }
+        _ => None,
+    };
     let clear = clear_of(frame, &over);
     Some(HintPlace {
         stand,
@@ -472,7 +486,8 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         keys,
         touch: frame.touch,
         clear,
-        bar: frame.hint_room.filter(|_| at_a_window),
+        at,
+        bar,
     })
 }
 
@@ -724,8 +739,9 @@ mod tests {
         phase a_hint_at_a_window_covers_no_windows_content_its_own_included;
         // The move and resize hints cover no window's content, the one whose bar or edge they teach
         // included (the resize hint hid the label of the theme Settings showed chosen, and the move
-        // hint hung into the window it held): both keep clear of every window's body, and where the
-        // spot leaves no side of it clear they stand in the bar's room with the spot lit.
+        // hint hung into the window it held): both keep clear of every window's body. Moving a window
+        // is taught at its handle or not at all, never from the bar; a resize edge between two windows
+        // has no clear side, so it stands in the bar's room with the edge lit.
         {
             let mut frame = frame();
             let left = (
@@ -745,15 +761,27 @@ mod tests {
                     "{gesture:?} keeps clear of both windows: {:?}",
                     hint.clear
                 );
-                assert_eq!(
-                    hint.bar, frame.hint_room,
-                    "{gesture:?} stands in the bar's room where no side is clear"
-                );
                 assert!(
                     hint.edge.is_some(),
                     "{gesture:?} lights the spot where the gesture is done"
                 );
             }
+            let resize = place(spec(Gesture::ResizeEdge), &frame).unwrap();
+            assert_eq!(
+                resize.bar, frame.hint_room,
+                "a resize edge stands in the bar's room where no side of it is clear"
+            );
+            assert_eq!(resize.at, None, "a resize edge points from beside its line");
+            let moving = place(spec(Gesture::MoveWindow), &frame).unwrap();
+            assert_eq!(
+                moving.bar, None,
+                "moving a window is never taught from the bar"
+            );
+            assert_eq!(
+                moving.at,
+                Some(Rect::new(100.0, 48.0, 700.0, 84.0)),
+                "it stands on the drag handle it teaches"
+            );
         }
 
         phase the_wait_for_search_counts_from_when_the_desktop_is_seen;

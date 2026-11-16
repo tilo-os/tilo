@@ -2754,7 +2754,7 @@ pub mod history;
 pub mod history_face;
 pub mod history_group;
 pub mod name_field;
-pub use activity_timeline::ActivityTimeline;
+pub use activity_timeline::{ActivityTimeline, RowParts};
 pub use activity_timeline_component::{
     ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
 };

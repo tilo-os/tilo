@@ -286,7 +286,13 @@ impl TreeBrowser {
         let is_folder = node.kind == FileNodeKind::Directory;
         // How large it is, when it changed and who changed it are each their
         // own part of the row, not one line joined by a separator.
-        let mut row = ListRow::new(id.to_owned(), name.clone());
+        let mut row = ListRow::new(id.to_owned(), name.clone())
+            // What it is leads the row: a folder, or the kind of file its name
+            // says, so a list reads at a glance without opening anything.
+            .icon(ui::icons::icon_for_path(
+                std::path::Path::new(&name),
+                is_folder,
+            ));
         if let Some(changed) = Self::changed_of(node) {
             row = row.secondary(changed);
         }
@@ -308,9 +314,6 @@ impl TreeBrowser {
             row = row.action(Icon::Download, label, move || {
                 ui::carry_out::save(carried.clone());
             });
-        }
-        if is_folder {
-            row = row.mark(Icon::Folder);
         }
         if let Some(author) = self.author_of(node) {
             // Who made it as its own cell: the person's face and name, and what wrote

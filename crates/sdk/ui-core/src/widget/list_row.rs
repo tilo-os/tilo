@@ -176,6 +176,9 @@ struct RowGeometry {
     trailing: Option<Rect>,
     avatar: Option<Rect>,
     value_right: f64,
+    /// The left edge of the room the value keeps: its own width, capped so
+    /// the title always keeps a column ([`MIN_TEXT_W`]).
+    value_left: f64,
     dot_x: Option<f64>,
     change: Option<Rect>,
     check: Option<Rect>,
@@ -190,6 +193,10 @@ struct RowGeometry {
 }
 
 pub const MAX_MARKS: usize = 3;
+
+/// The room the title keeps before a trailing value gives way: a value wide
+/// enough to take it elides instead, so the name it belongs to still reads.
+pub const MIN_TEXT_W: f64 = 72.0;
 
 /// How many lines a card's title may take before it is cut with an ellipsis: a card is a small
 /// document, and its title says what it is without being opened.
