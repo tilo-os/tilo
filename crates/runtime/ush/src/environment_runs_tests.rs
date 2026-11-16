@@ -544,3 +544,47 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
         "the caller's workspace's VM, paid for by the account the run named, at its size"
     );
 }
+
+#[test]
+fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
+    use legacy_vm::hosted::control::{Reply, Request};
+    use tilo_actions::remote::host_account::{Reason, Refusal};
+    let dir = tempfile::tempdir().unwrap();
+    // The hosted-VM service reads its plans file for the account the request
+    // names, and finds no card for it.
+    let (socket, asked) = fake_hosted(
+        dir.path(),
+        vec![Reply::Refused(Refusal {
+            reason: Reason::NoPaymentMethod,
+            message: "Running this needs a Linux machine, and acct-1 has no card on file.".into(),
+            next: Vec::new(),
+        })],
+    );
+    let files = dir.path().join("replicas");
+    let runs = EnvironmentRuns::new(
+        WorkspaceShells::new(dir.path().join("shells"), None)
+            .with_files(move |workspace| files.join(workspace))
+            .with_browsers_on(Some(socket)),
+        OPERATOR,
+    );
+    let request = asking("uname -srm");
+    let id = request.invocation;
+    answered(runs.invoke(&host(), request)).unwrap();
+    let (ran, _) = followed(&runs, &host(), id);
+    assert_eq!(
+        ran.refusal.as_ref().map(|refusal| refusal.reason.clone()),
+        Some(Reason::NoPaymentMethod),
+        "the agent's run is refused, typed, at once: {ran:?}"
+    );
+    assert_eq!(ran.exit, 126, "{}", ran.output);
+    assert!(ran.output.contains("no card on file"), "{}", ran.output);
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "asked once, and nothing more: {asked:?}");
+    let Request::Ensure { vm, .. } = &asked[0] else {
+        panic!("the VM was asked for: {asked:?}");
+    };
+    assert_eq!(
+        vm.account, "acct-1",
+        "the plans are read for the account the run named"
+    );
+}
