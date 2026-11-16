@@ -739,6 +739,23 @@ impl NumberInput {
 }
 
 impl Widget for NumberInput {
+    /// A number as a page's own entry: the value in the app's terms (its unit
+    /// and all) between the two steppers.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        use crate::composition::{Control, InputKind};
+        cx.control(Control::Entry {
+            input: InputKind::Number,
+            text: self.format_value(),
+            placeholder: String::new(),
+            min: Some(self.min),
+            max: Some(self.max),
+            step: Some(self.step),
+            steppers: true,
+            increase: Some(widget_text("widget-number-increase")),
+            decrease: Some(widget_text("widget-number-decrease")),
+        });
+    }
+
     crate::described!();
 
     crate::provides!(dyn crate::widget::controls::ActionControls);

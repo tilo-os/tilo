@@ -54,13 +54,15 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
     if (copy.defaultPrevented && event.type === 'contextmenu') event.preventDefault();
   }
 
-  // A field the page shows as its own input (`data-tilo-field`) is the
-  // browser's: a press there focuses it and places its caret natively.
-  const field = event => Boolean(event.target?.dataset?.tiloField);
+  // A field the page shows as its own input (`data-tilo-field`), and a control
+  // it shows as its own element (`data-tilo-act`: a box, a range, an entry, a
+  // chooser, a choice), is the browser's: what a press there does is the
+  // element's, and it comes back as the widget's semantic action.
+  const pageOwned = event => Boolean(event.target?.closest?.('[data-tilo-field],[data-tilo-act]'));
 
   for (const type of FORWARDED) {
     on(layer, type, event => {
-      if (native() || field(event)) return;
+      if (native() || pageOwned(event)) return;
       // Crossing from one of the layer's elements to another is no entry or
       // exit of the surface. Nor is a pointerout whose target the frame
       // replaced under a still pointer (its relatedTarget is null): the
@@ -86,8 +88,10 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
   // own, as on the canvas (winit keeps the focus there): the press's default
   // would take the focus from the runtime's editor to the page.
   on(layer, 'mousedown', event => {
-    if (field(event)) return;
-    if (native()) selecting = event.button === 0; else event.preventDefault();
+    // A page control takes its own press, without the page's focus or
+    // selection walking away from the runtime's editor.
+    if (pageOwned(event) || !native()) event.preventDefault();
+    if (native() && !pageOwned(event)) selecting = event.button === 0;
   }, {capture: true});
   on(view, 'mouseup', () => { selecting = false; }, {capture: true});
   // A wheel a scroll container can take moves it in this very event, so the

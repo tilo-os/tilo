@@ -98,6 +98,49 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 
   layer.classList.add('tilo-view');
 
+  // What the person does on a control is the widget's own semantic action: a
+  // box is toggled, a range takes its value, a choice is activated by the
+  // target the widget names it with. The press moves the widget's focus first,
+  // as a press on the canvas does.
+  function act(element, action, value) {
+    const host = element.closest?.('[data-path]');
+    const path = host?.dataset.path?.split('#')[0];
+    if (!path) return;
+    const target = element.dataset.tiloTarget;
+    semantic?.(path, undefined, 'focus', '', 0, 0);
+    semantic?.(path, target, action, value ?? '', 0, 0);
+  }
+  // A stepper button's step: the field's value moved by it, kept within bounds.
+  function step(element) {
+    const by = Number(element.dataset.tiloStepBy ?? 1);
+    const number = parseFloat(element.dataset.tiloText ?? '');
+    if (!Number.isFinite(number)) return undefined;
+    const input = element.parentElement?.querySelector('input');
+    const min = input?.min === '' ? undefined : Number(input?.min);
+    const max = input?.max === '' ? undefined : Number(input?.max);
+    let moved = number + by;
+    if (Number.isFinite(min)) moved = Math.max(min, moved);
+    if (Number.isFinite(max)) moved = Math.min(max, moved);
+    return String(Math.round(moved * 1e6) / 1e6);
+  }
+  layer.addEventListener('click', event => {
+    const element = event.target.closest?.('[data-tilo-act]');
+    if (!element || element.disabled || element.getAttribute('aria-disabled') === 'true') return;
+    // A link is followed by its widget (an app's own address bar), never by
+    // the page leaving.
+    if (element.localName === 'a') event.preventDefault();
+    event.stopPropagation();
+    const action = element.dataset.tiloAct;
+    if (action === 'step') act(element, 'value', step(element));
+    else act(element, action, element.dataset.tiloValue);
+  });
+  // A field the page types into: a range dragged, a number or date held.
+  layer.addEventListener('input', event => {
+    const element = event.target.closest?.('[data-tilo-act]');
+    if (!element || element.dataset.tiloAct !== 'value') return;
+    act(element, 'value', element.value);
+  });
+
   function write(element, key, value) {
     let props = written.get(element);
     if (!props) written.set(element, props = {});
@@ -173,6 +216,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     else if (node.clip) css += 'overflow:clip;';
     if (node.own?.kind === 'text') css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own);
     else if (node.own?.kind === 'face') css += faceCss(node.own);
+    else if (node.own?.kind === 'control') css += 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
     else if (node.own?.kind === 'field') css += textStyle(node.own.look) + 'margin:0;padding:0;border:0;outline:none;background:transparent;font-family:inherit;';
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
@@ -201,6 +245,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(element, '@aria-live', semantics?.live ? String(semantics.live).toLowerCase() : null);
     if (element.localName === 'button') write(element, '@type', 'button');
     if (element.localName === 'button') write(element, '@tabindex', '-1');
+    // A control's own element carries its role (a box, a range, a chooser's
+    // list): the wrapper around it is no control of its own.
+    if (node.own?.kind === 'control') write(element, '@role', null);
 
     const own = node.own;
     const children = [];
@@ -216,6 +263,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     else if (own?.kind === 'blocks') children.push(showBlocks(element, node, own, next));
     else if (own?.kind === 'painted') children.push(showPicture(element, node, own.version, next));
     else if (own?.kind === 'face') children.push(...showFace(node, own, next));
+    else if (own?.kind === 'control') children.push(...showControls(element, node, own.controls, next));
 
     const scrollTop = scroller ? node.scroll[0] : 0;
     const context = {flows, scroller, rect: node.rect};
@@ -423,6 +471,188 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     }
     if (face.trailing) out.push(glyph(`${node.path}#trailing`, face.trailing, next));
     return out;
+  }
+
+  // A control is the page's own element: a box, a range, an entry, a chooser
+  // with its options, a row of choices or a link, holding what the widget says
+  // it holds. What the person does on it goes back as the semantic action the
+  // widget performs (a toggle, a value, an activation of a named choice), so
+  // there is one input path for the canvas and the page alike.
+  function mark(element, action, target, value) {
+    element.dataset.tiloAct = action;
+    if (target === undefined || target === null) delete element.dataset.tiloTarget;
+    else element.dataset.tiloTarget = target;
+    if (value === undefined || value === null) delete element.dataset.tiloValue;
+    else element.dataset.tiloValue = value;
+  }
+
+  // A run of a control's words, set as the widget sets them.
+  function wordsFor(path, look, next) {
+    const span = elementFor(path, 'span', next);
+    write(span, 'css', textStyle(look) + (look.max_lines > 1
+      ? `min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${look.max_lines};overflow:hidden;white-space:pre-wrap;`
+      : 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;'));
+    write(span, 'text', look.text);
+    return span;
+  }
+
+  function showControls(element, node, controls, next) {
+    const out = [];
+    const target = node.semantics?.action_target;
+    const disabled = Boolean(node.semantics?.state?.disabled);
+    (controls ?? []).forEach((control, index) => {
+      const key = `${node.path}#control:${index}`;
+      if (control.kind === 'link') {
+        write(element, '@href', control.href ?? null);
+        write(element, 'css', 'display:inline-flex;align-items:center;cursor:pointer;');
+        out.push(wordsFor(`${key}:label`, control.label, next));
+        mark(element, 'activate', target);
+        return;
+      }
+      if (control.kind === 'check') {
+        const input = elementFor(`${key}:input`, 'input', next);
+        write(input, '@type', control.style === 'radio' ? 'radio' : 'checkbox');
+        write(input, '@role', control.style === 'switch' ? 'switch' : null);
+        if (input.checked !== control.checked) input.checked = control.checked;
+        input.indeterminate = Boolean(control.mixed);
+        input.disabled = disabled;
+        write(input, '@aria-label', control.label ? null : (node.semantics?.name ?? null));
+        mark(input, 'toggle', target);
+        out.push(input);
+        if (control.label) out.push(wordsFor(`${key}:label`, control.label, next));
+        return;
+      }
+      if (control.kind === 'range') {
+        const input = elementFor(`${key}:input`, 'input', next);
+        write(input, '@type', 'range');
+        write(input, '@aria-label', node.semantics?.name ?? null);
+        write(input, '@aria-valuetext', control.text ?? null);
+        input.min = String(control.min);
+        input.max = String(control.max);
+        input.step = control.step === undefined || control.step === null ? 'any' : String(control.step);
+        if (document.activeElement !== input && Number(input.value) !== control.value) input.value = String(control.value);
+        input.disabled = disabled;
+        mark(input, 'value', target);
+        out.push(input);
+        return;
+      }
+      if (control.kind === 'entry') {
+        const box = elementFor(key, 'span', next);
+        write(box, 'css', 'display:flex;align-items:center;gap:2px;min-width:0;height:100%;flex:1;');
+        const input = elementFor(`${key}:input`, 'input', next);
+        const kinds = {number: 'text', date: 'date', time: 'time', colour: 'color', search: 'search'};
+        write(input, '@type', kinds[control.input] ?? 'text');
+        write(input, '@role', control.input === 'number' ? 'spinbutton' : null);
+        write(input, '@placeholder', control.placeholder || null);
+        write(input, '@aria-label', node.semantics?.name ?? null);
+        if (control.min !== undefined) input.min = String(control.min);
+        if (control.max !== undefined) input.max = String(control.max);
+        if (control.step !== undefined) input.step = String(control.step);
+        if (document.activeElement !== input && input.value !== control.text) input.value = control.text;
+        input.disabled = disabled;
+        mark(input, 'value', target);
+        write(input, 'css', control.input === 'colour'
+          ? 'width:30px;height:30px;padding:0;border:0;background:transparent;cursor:pointer;'
+          : 'flex:1;min-width:0;background:transparent;border:0;outline:none;color:inherit;font:inherit;padding:0;');
+        const parts = [];
+        if (control.steppers) {
+          const minus = elementFor(`${key}:down`, 'button', next);
+          const plus = elementFor(`${key}:up`, 'button', next);
+          for (const [button, sign, name] of [[minus, -1, control.decrease], [plus, 1, control.increase]]) {
+            write(button, '@aria-label', name ?? null);
+            write(button, 'css', 'all:unset;box-sizing:border-box;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
+            write(button, 'text', sign < 0 ? '−' : '+');
+            button.disabled = disabled;
+            button.dataset.tiloStepBy = String(sign * (control.step ?? 1));
+            button.dataset.tiloText = control.text;
+            mark(button, 'step', target);
+          }
+          parts.push(minus, input, plus);
+        } else {
+          parts.push(input);
+        }
+        place(box, parts);
+        out.push(box);
+        return;
+      }
+      if (control.kind === 'select') {
+        const box = elementFor(key, 'div', next);
+        write(box, 'css', 'position:relative;min-width:0;width:100%;height:100%;display:flex;align-items:center;');
+        const button = elementFor(`${key}:current`, 'button', next);
+        write(button, '@role', 'combobox');
+        write(button, '@aria-haspopup', 'listbox');
+        write(button, '@aria-expanded', String(Boolean(control.open)));
+        write(button, 'css', 'display:flex;align-items:center;gap:6px;width:100%;height:100%;padding:0 10px;border-radius:var(--tilo-radius,8px);box-sizing:border-box;cursor:pointer;');
+        button.disabled = disabled;
+        mark(button, 'activate', target);
+        const runs = [];
+        if (control.icon) runs.push(glyph(`${key}:icon`, control.icon, next));
+        if (control.current) runs.push(wordsFor(`${key}:value`, control.current, next));
+        else {
+          const quiet = elementFor(`${key}:placeholder`, 'span', next);
+          write(quiet, 'css', 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;color:var(--tilo-text-dim,#6e6e73);');
+          write(quiet, 'text', control.placeholder);
+          runs.push(quiet);
+        }
+        const chevron = elementFor(`${key}:chevron`, 'span', next);
+        write(chevron, 'css', 'flex:none;margin-left:auto;color:var(--tilo-text-dim,#6e6e73);');
+        write(chevron, 'text', '▾');
+        runs.push(chevron);
+        place(button, runs);
+        const parts = [button];
+        if (control.open && control.options.length) {
+          const list = elementFor(`${key}:list`, 'ul', next);
+          write(list, '@role', 'listbox');
+          write(list, 'css', 'position:absolute;left:0;top:calc(100% + 4px);margin:0;padding:4px;min-width:100%;max-height:280px;overflow-y:auto;box-sizing:border-box;border-radius:var(--tilo-radius,8px);background:var(--tilo-surface,Canvas);box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));z-index:3;');
+          place(list, control.options.map((option, row) => optionRow(`${key}:option:${row}`, option, target, next, 'option')));
+          parts.push(list);
+        }
+        place(box, parts);
+        out.push(box);
+        return;
+      }
+      if (control.kind === 'choices') {
+        const box = elementFor(key, 'div', next);
+        write(box, '@role', control.list);
+        write(box, 'css', 'display:flex;align-items:center;gap:2px;flex-wrap:wrap;min-width:0;');
+        place(box, control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item)));
+        out.push(box);
+        return;
+      }
+    });
+    return out;
+  }
+
+  // One choice of a control: an option of a chooser's list, a tab, a menu row.
+  function optionRow(path, option, fallback, next, role) {
+    const item = elementFor(path, role === 'option' ? 'li' : 'button', next);
+    write(item, '@role', role);
+    write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
+    if (role === 'radio' || role === 'option') write(item, '@aria-checked', role === 'radio' ? String(Boolean(option.selected)) : null);
+    write(item, '@aria-disabled', option.disabled ? 'true' : null);
+    write(item, 'css', 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''));
+    item.disabled = Boolean(option.disabled);
+    const runs = [];
+    if (option.colour) {
+      const dot = elementFor(`${path}:colour`, 'span', next);
+      write(dot, 'css', `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
+      runs.push(dot);
+    }
+    if (option.icon) runs.push(glyph(`${path}:icon`, option.icon, next));
+    const label = elementFor(`${path}:label`, 'span', next);
+    write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
+    write(label, 'text', option.label);
+    runs.push(label);
+    if (option.detail) {
+      const detail = elementFor(`${path}:detail`, 'span', next);
+      write(detail, 'css', 'flex:none;color:var(--tilo-text-dim,#6e6e73);white-space:pre;');
+      write(detail, 'text', option.detail);
+      runs.push(detail);
+    }
+    place(item, runs);
+    if (option.value !== undefined && option.value !== null) mark(item, 'value', fallback, option.value);
+    else mark(item, 'activate', option.target ?? fallback);
+    return item;
   }
 
   // An icon: its outlines as an inline SVG in its colour.

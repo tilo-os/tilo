@@ -29,6 +29,10 @@ pub use crate::widget::floating_surface::PanelAlign;
 pub struct NoContent;
 
 impl Widget for NoContent {
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("div");
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
