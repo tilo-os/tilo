@@ -91,7 +91,6 @@ hand-text 2 crates/session/desktop-surface/src/surface/hung.rs
 hand-text 13 crates/session/desktop/src/widgets/paint.rs
 hand-text 2 crates/session/desktop/src/display_identify.rs
 hand-text 2 crates/session/desktop/src/feedback_picker.rs
-hand-text 1 crates/session/desktop/src/fullscreen_hint.rs
 hand-text 5 crates/session/desktop/src/launchpad.rs
 hand-text 3 crates/session/desktop/src/osd.rs
 hand-text 10 crates/session/desktop/src/overview_panel/paint.rs
