@@ -835,6 +835,7 @@ impl Mount {
         let desktop = self.desktop.as_ref();
         value["searchOpen"] = desktop.is_some_and(|d| d.handle.search_open()).into();
         value["searchCard"] = self.search_card().into();
+        value["searchPending"] = desktop.and_then(|d| d.handle.search_pending()).into();
         // Whether the open search still owes rows. A settled shell presents no
         // frame until something changes, so a page that waits for the palette's
         // answer reads this rather than counting presented frames: the answer

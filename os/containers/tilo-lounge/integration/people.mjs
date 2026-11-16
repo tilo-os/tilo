@@ -219,7 +219,7 @@ const dump = async (tab, name) => {
 // costs the page's main thread — the same thread that is drawing its frames —
 // a turn between frames, so a wait of forty polls was adding forty turns of
 // work to the very page it waited for.
-const until = async (tab, expression, what, timeout = stepLimit(3)) => {
+const until = async (tab, expression, what, timeout = stepLimit(3), more = null) => {
   // The frames the shell had presented as the wait began, kept in the page,
   // so a wait that runs out says whether the shell drew at all meanwhile.
   const value = await tab.evaluate(`(globalThis.__tiloWaitFrames = globalThis.tiloMount?.state()?.frames ?? 0,
@@ -240,8 +240,11 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
     framesWhenTheWaitBegan: globalThis.__tiloWaitFrames ?? null,
     framesNow: globalThis.tiloMount?.state()?.frames ?? null,
   })`).catch(() => 'unreadable');
+  // What the step itself knows of why, in the failure line: the lines after it
+  // can be pushed out of the log's tail by the page's console.
+  const extra = more ? await more().catch(error => `unreadable: ${error}`) : '';
   await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-  await failed(`${what} never appeared${timeout >= 1000 ? ` in ${timeout / 1000} s` : ''}: ${shown}; the machine: ${waits.machine().text}`, tab);
+  await failed(`${what} never appeared${timeout >= 1000 ? ` in ${timeout / 1000} s` : ''}: ${shown}${extra ? `; ${extra}` : ''}; the machine: ${waits.machine().text}`, tab);
 };
 // The page's own wait, in every page this file opens: `ask` until it answers
 // something true, or `ms` has passed, resolved as it answers.
@@ -370,7 +373,8 @@ const search = async (tab, command, query, row, opens = null) => {
       if (globalThis.__pressTrail.length < 200) globalThis.__pressTrail.push([Math.round(performance.now() - began), s.phase ?? null,
         !!s.searchOpen, s.frames ?? null, s.desktopRevision ?? null,
         s.searchCard?.scope ?? null,
-        (document.activeElement?.nodeName ?? '') + (document.hasFocus() ? '+' : '-')]);
+        (document.activeElement?.nodeName ?? '') + (document.hasFocus() ? '+' : '-'),
+        s.searchPending ?? null]);
       if (performance.now() - began < 75000) requestAnimationFrame(tick);
     };
     tick();
@@ -405,13 +409,13 @@ const search = async (tab, command, query, row, opens = null) => {
     const card = await tab.evaluate('JSON.stringify(globalThis.tiloMount?.state()?.searchCard ?? null)').catch(() => 'null');
     console.error(`the search chord opened nothing after ${Date.now() - chorded} ms (scope=${await openScope()}, card=${card})`);
   }
-  try {
-    await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3));
-  } catch (error) {
-    const trail = await tab.evaluate('JSON.stringify(globalThis.__pressTrail ?? [])').catch(() => '[]');
-    const chords = await tab.evaluate('JSON.stringify(globalThis.__chordStates ?? [])').catch(() => '[]');
-    await failed(`${error.message}; the chord and every frame after it: ${chords}; ${trail}`, tab);
-  }
+  // A wait that runs out exits the flow from inside `until`: the chord and the
+  // frames after it are read into its failure line there.
+  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, stepLimit(3), async () => {
+    const trail = await tab.evaluate('JSON.stringify((globalThis.__pressTrail ?? []).slice(0, 40))').catch(() => '[]');
+    const chords = await tab.evaluate('JSON.stringify((globalThis.__chordStates ?? []).slice(-6))').catch(() => '[]');
+    return `the chord opened nothing after ${Date.now() - chorded} ms: the chord as it arrived and after: ${chords}; frames after it [ms, phase, open, frames, revision, scope, focus, pending]: ${trail}`;
+  });
   const scope = await openScope();
   if (scope !== 'workspace') failed(`the search for "${query}" is not the shell's (${scope})`);
   await type(tab, query);
@@ -782,6 +786,7 @@ const mounted = async (tab, name) => {
       const at = Math.round(performance.now());
       globalThis.__chordStates.push({key: event.key, ctrl: !!event.ctrlKey, meta: !!event.metaKey,
         phase: state.phase ?? null, searchOpen: !!state.searchOpen, scope: state.searchCard?.scope ?? null,
+        pending: state.searchPending ?? null, frames: state.frames ?? null,
         focus: document.activeElement?.nodeName ?? null, hasFocus: document.hasFocus(),
         at});
       // What the press left behind once the page's own handler ran: a chord
@@ -791,6 +796,7 @@ const mounted = async (tab, name) => {
         const after = globalThis.tiloMount?.state?.() ?? {};
         globalThis.__chordStates.push({after: true, key: event.key, prevented: event.defaultPrevented,
           phase: after.phase ?? null, searchOpen: !!after.searchOpen, frames: after.frames ?? null,
+          pending: after.searchPending ?? null,
           scope: after.searchCard?.scope ?? null, focus: document.activeElement?.nodeName ?? null,
           hasFocus: document.hasFocus(), at: Math.round(performance.now()) - at});
       }, 300);

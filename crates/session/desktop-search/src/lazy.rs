@@ -194,6 +194,11 @@ impl LazyDesktopSearch {
         self.search.as_ref().is_some_and(|search| search.is_open())
     }
 
+    /// Whether search was asked to open and waits for its code to arrive.
+    pub fn awaits_code(&self) -> bool {
+        self.opening.is_some()
+    }
+
     /// Whether an application's answer to the query is still coming.
     pub fn waiting(&self) -> bool {
         self.search.as_ref().is_some_and(|search| search.waiting())

@@ -113,6 +113,10 @@ const until = async (expression, what, timeout = stepLimit(4)) => {
         frames: globalThis.tiloMount?.state()?.frames ?? null,
         gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
         phase: globalThis.tiloMount?.state()?.phase ?? null,
+        searchPending: globalThis.tiloMount?.state()?.searchPending ?? null,
+        // Each search chord the page saw, as it arrived and 300 ms after:
+        // whether the page took it, and what the shell said of it then.
+        chords: globalThis.__chordStates ?? null,
       })`).catch(() => 'unreadable');
       await fail(`${what} never happened: ${shown}`);
     }
@@ -174,6 +178,26 @@ console.log(`ok: the page joined the workspace ${report.membership.workspace}`);
 mark('the page joined the workspace');
 
 // 3. Notes opens from the search, and its window shows.
+// What became of each search chord: whether the page took it (the press's
+// default prevented), and the shell's account as it arrived and after.
+await tab.evaluate(`(() => {
+  globalThis.__chordStates = [];
+  globalThis.addEventListener('keydown', event => {
+    if (event.key !== 'k' && event.code !== 'KeyK') return;
+    const state = globalThis.tiloMount?.state?.() ?? {};
+    const at = Math.round(performance.now());
+    const seen = {ctrl: event.ctrlKey, meta: event.metaKey, phase: state.phase ?? null, open: !!state.searchOpen,
+      pending: state.searchPending ?? null, frames: state.frames ?? null, focus: document.activeElement?.nodeName ?? null};
+    globalThis.__chordStates.push(seen);
+    setTimeout(() => {
+      const after = globalThis.tiloMount?.state?.() ?? {};
+      seen.taken = event.defaultPrevented;
+      seen.after = {ms: Math.round(performance.now()) - at, open: !!after.searchOpen,
+        pending: after.searchPending ?? null, frames: after.frames ?? null};
+    }, 300);
+  }, {capture: true});
+  return true;
+})()`);
 const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
 const box = JSON.parse(await tab.evaluate(`JSON.stringify((() => {
   const r = globalThis.tiloMount?.canvas?.getBoundingClientRect();

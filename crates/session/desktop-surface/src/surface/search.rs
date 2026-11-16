@@ -462,6 +462,20 @@ impl DesktopHandle {
         self.shared.borrow().search_open
     }
 
+    /// Where a search asked for stands before it shows: `"asked"` while the request waits for the
+    /// next update pass, `"code"` while it waits for search's code to arrive. `None` when nothing
+    /// is asked of it.
+    pub fn search_pending(&self) -> Option<&'static str> {
+        let shared = self.shared.borrow();
+        if shared.search_request.is_some() {
+            Some("asked")
+        } else if shared.search.borrow().awaits_code() {
+            Some("code")
+        } else {
+            None
+        }
+    }
+
     /// Who holds the keyboard: `"system-search"` while the search palette is up (it takes the
     /// keyboard, the pointer and Escape), else the application of the active workspace's focused
     /// window. `None` while no window does — an empty shell, or one whose windows are all gone.

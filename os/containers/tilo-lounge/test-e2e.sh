@@ -321,8 +321,11 @@ await_flow() {
     # reason itself out of the last lines.
     echo "--- $1 failed on:"
     grep -E '^FAIL' "$work/$1.log" | sed "s/^/  [$1] /" || true
-    echo "--- $1 said (its last 60 lines):"
-    tail -60 "$work/$1.log" | sed "s/^/  [$1] /"
+    # The pages' connection warnings (a closed transport, said once a track)
+    # are left out: dozens of them pushed the flow's own account of the page
+    # out of these lines.
+    echo "--- $1 said (its last 80 lines but connection warnings):"
+    grep -v 'moq_net::' "$work/$1.log" | tail -80 | sed "s/^/  [$1] /" || true
     failed+=("$1")
   fi
 }
