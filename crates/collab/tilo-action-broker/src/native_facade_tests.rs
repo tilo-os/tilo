@@ -173,9 +173,9 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
             ));
             assert!(
                 !is_local_host_caller(&projected, Some(&origin(original.clone(), false))),
-                "keyless Certified is not itself evidence of native seat custody"
+                "keyless Certified is not itself evidence of native device custody"
             );
-            // Isolate the matcher after the protected-seat verification bit:
+            // Isolate the matcher after the protected-device verification bit:
             // it must still reject mismatched or restricted projections.
             let mut checked = original;
             checked.native_projection_verified = true;
@@ -340,7 +340,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
             assert_eq!(
                 governance.0.lock().unwrap().len(),
                 2,
-                "a refused native seat never falls back"
+                "a refused native device never falls back"
             );
             rig.stop().await;
         })

@@ -1304,7 +1304,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
-"tilo-seat-peer" = { path = "../../../crates/system/seat-peer", default-features = false, features = [] }
+"tilo-peer-facts" = { path = "../../../crates/system/peer-facts", default-features = false, features = [] }
 "tilo-secret-service" = { path = "../../../crates/system/secret-service", default-features = false, features = [] }
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }
@@ -3908,7 +3908,7 @@ doc = false
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../../crates/sdk/search", default-features = false, features = ["disk"] }
-"tilo-seat-peer" = { path = "../../../crates/system/seat-peer", default-features = false, features = [] }
+"tilo-peer-facts" = { path = "../../../crates/system/peer-facts", default-features = false, features = [] }
 "tilo-secret-service" = { path = "../../../crates/system/secret-service", default-features = false, features = [] }
 "tilo-secret-vault" = { path = "../../../crates/system/secret-vault", default-features = false, features = [] }
 "tilo-secrets" = { path = "../../../crates/platform/tilo-secrets", default-features = false, features = [] }

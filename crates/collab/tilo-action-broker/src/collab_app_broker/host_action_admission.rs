@@ -120,7 +120,7 @@ impl AppBrokerState {
                 })?;
                 if caller.device_public_key().is_none() {
                     // Only the native facade combines a physical projection
-                    // with retained signed admission. Recheck its protected seat
+                    // with retained signed admission. Recheck its protected device
                     // at the effect barrier, not only when it queued the request.
                     self.current_native_person(workspace, certificate)
                         .map_err(unavailable)?;
@@ -148,7 +148,7 @@ impl AppBrokerState {
                         ));
                     }
                     // Only an explicitly identity-free host retains connection
-                    // compatibility. A missing seat service is not bootstrap.
+                    // compatibility. A missing device service is not bootstrap.
                     // Retain pre-identity connection compatibility without
                     // upgrading its displayed actor into signed user evidence.
                     let expected = current.broker_actor();
@@ -204,7 +204,7 @@ impl AppBrokerState {
                         %workspace,
                         original_workspace,
                         caller = %actor.member(),
-                        "an action of the person's own was refused: its admission names another seat"
+                        "an action of the person's own was refused: its admission names another device"
                     );
                     return Err(ActionHostError::NotPermitted);
                 }
@@ -217,7 +217,7 @@ impl AppBrokerState {
             None => {
                 // A transport key is not retained certificate custody. Do not
                 // silently downgrade a certified caller to actor-only ownership.
-                // A host with a seat or native certificates serves everyone
+                // A host with a device or native certificates serves everyone
                 // through retained custody, so a caller that arrives with no
                 // original admission is refused rather than downgraded.
                 if self.services.local_person.is_some()

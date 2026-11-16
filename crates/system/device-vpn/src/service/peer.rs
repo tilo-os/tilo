@@ -1,11 +1,11 @@
-//! Who may ask: the compositor of the person at the seat, and nobody else.
+//! Who may ask: the compositor of the person logged in, and nobody else.
 
-pub use seat_peer::{PeerFacts, Seat};
+pub use peer_facts::{LogindSeat, PeerFacts};
 
 use super::Caller;
 
-pub fn decide(seat: &Seat, peer: &PeerFacts) -> Result<Caller, String> {
-    if seat.is_seat_shell(peer) {
+pub fn decide(seat: &LogindSeat, peer: &PeerFacts) -> Result<Caller, String> {
+    if seat.is_active_session_shell(peer) {
         Ok(Caller { uid: peer.uid })
     } else {
         Err("only the desktop of the person at this computer may change its routes".into())
@@ -19,10 +19,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_seats_shell_is_answered() {
+    fn only_the_active_sessions_shell_is_answered() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("seat0"), "ACTIVE_UID=1000\n").unwrap();
-        let seat = Seat {
+        let seat = LogindSeat {
             trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: dir.path().join("seat0"),
             users: dir.path().join("users"),

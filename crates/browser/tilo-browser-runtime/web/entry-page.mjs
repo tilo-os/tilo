@@ -13,7 +13,7 @@
  * (`entry.json` `embedder`), hears `{type: 'tilo-embed', state}`: `idle`
  * until the page joined (`joined`), and again after a failure, when the site
  * shows its static fallback. A full workspace answers the entry with
- * `503 Retry-After`, and the page waits on the reconnect screen for a seat
+ * `503 Retry-After`, and the page waits on the reconnect screen until it is admitted
  * like anyone else.
  */
 import {AdmissionError} from './admission.mjs';
@@ -1115,7 +1115,7 @@ export async function startEntryPage({mode}) {
       workspaceName = workspace.name || workspaceName;
       visitedAt = workspace;
       // An embed joins nothing before the visitor does something: it takes no
-      // seat and makes no person, and its site shows its static fallback
+      // admission and makes no person, and its site shows its static fallback
       // until the first click, tap or key press (`{idle: true}`: nothing
       // mounts). A browser that already joined this host comes in at once.
       if (embed && !joinNow && !keptMembership(workspace)) {
@@ -1139,7 +1139,7 @@ export async function startEntryPage({mode}) {
       // A page that came back here by itself because the host turned it
       // away (session-refusal.mjs) joins under the name it went by.
       displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
-      // A workspace with no seat right now (full, or this address asking too
+      // A workspace with no capacity right now (full, or this address asking too
       // often) is waited out on the reconnect screen, as long as its entry
       // asked: the page joins as the same person once there is workspace.
       const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
@@ -1320,7 +1320,7 @@ export async function startEntryPage({mode}) {
     if (page.rendererUnavailable) {
       // A browser that cannot draw: it got in beside the answer, and stops
       // here with what to change, having opened no window and shown nothing
-      // of the workspace. Its seat goes with the page.
+      // of the workspace. Its admission goes with the page.
       tell('unsupported');
       arrive('stopped');
       document.documentElement.dataset.entry = 'unsupported';

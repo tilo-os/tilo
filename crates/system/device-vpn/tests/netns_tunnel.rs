@@ -51,7 +51,7 @@ fn service(state: &Path, role: &str) -> Service<LinuxBackend> {
     let config = Config {
         record: state.join(format!("{role}-record.json")),
         dns_marker: state.join(format!("{role}-dns")),
-        seat: seat_peer::Seat {
+        seat: peer_facts::LogindSeat {
             trusted_ui: PathBuf::from("/nonexistent"),
             seat: state.join("seat0"),
             users: state.join("users"),

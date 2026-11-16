@@ -22,7 +22,7 @@ use super::{
 };
 
 impl Editor {
-    // A dropped file carries no coordinates: seat the caret under the last pointer, so the
+    // A dropped file carries no coordinates: place the caret under the last pointer, so the
     // image lands where it was released.
     fn handle_dropped_file(
         &mut self,

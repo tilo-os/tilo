@@ -23,7 +23,7 @@ pub struct Config {
     pub dns_marker: PathBuf,
     pub forwarding: PathBuf,
     pub sys_class_net: PathBuf,
-    pub seat: seat_peer::Seat,
+    pub seat: peer_facts::LogindSeat,
 }
 
 impl Default for Config {
@@ -36,7 +36,7 @@ impl Default for Config {
             dns_marker: PathBuf::from("/var/lib/tilo/device-vpn/global-dns"),
             forwarding: PathBuf::from("/proc/sys/net/ipv4/ip_forward"),
             sys_class_net: PathBuf::from("/sys/class/net"),
-            seat: seat_peer::Seat::default(),
+            seat: peer_facts::LogindSeat::default(),
         }
     }
 }

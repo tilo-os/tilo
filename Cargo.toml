@@ -531,7 +531,7 @@ members = [
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-service",
-    "crates/system/seat-peer",
+    "crates/system/peer-facts",
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/settings-sections",

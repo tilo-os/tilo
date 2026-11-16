@@ -17,7 +17,7 @@ pub struct PeerFacts {
 }
 
 #[derive(Clone, Debug)]
-pub struct Seat {
+pub struct LogindSeat {
     /// The compositor's executable.
     pub trusted_ui: PathBuf,
     /// logind's record of the seat (`ACTIVE_UID=`).
@@ -26,7 +26,7 @@ pub struct Seat {
     pub users: PathBuf,
 }
 
-impl Default for Seat {
+impl Default for LogindSeat {
     fn default() -> Self {
         Self {
             trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
@@ -36,7 +36,7 @@ impl Default for Seat {
     }
 }
 
-impl Seat {
+impl LogindSeat {
     pub fn active_uid(&self) -> Option<u32> {
         active_uid(&self.seat)
     }
@@ -45,7 +45,7 @@ impl Seat {
         has_session(&self.users, uid)
     }
 
-    pub fn is_seat_shell(&self, peer: &PeerFacts) -> bool {
+    pub fn is_active_session_shell(&self, peer: &PeerFacts) -> bool {
         self.active_uid() == Some(peer.uid) && self.is_trusted_ui(peer)
     }
 
@@ -145,12 +145,12 @@ pub fn facts(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PeerFac
 mod tests {
     use super::*;
 
-    fn seat(dir: &Path, active: Option<u32>) -> Seat {
+    fn seat(dir: &Path, active: Option<u32>) -> LogindSeat {
         let seat = dir.join("seat0");
         if let Some(uid) = active {
             fs::write(&seat, format!("IS_SEAT0=1\nACTIVE=c2\nACTIVE_UID={uid}\n")).unwrap();
         }
-        Seat {
+        LogindSeat {
             trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat,
             users: dir.join("users"),
@@ -169,8 +169,8 @@ mod tests {
     fn only_the_compositor_of_the_person_at_the_seat_is_the_seat_shell() {
         let dir = tempfile::tempdir().unwrap();
         let seat = seat(dir.path(), Some(1000));
-        assert!(seat.is_seat_shell(&shell(1000)));
-        assert!(!seat.is_seat_shell(&shell(1001)), "another person's shell");
+        assert!(seat.is_active_session_shell(&shell(1000)));
+        assert!(!seat.is_active_session_shell(&shell(1001)), "another person's shell");
         for other in [
             PeerFacts {
                 host_namespaces: false,
@@ -185,10 +185,10 @@ mod tests {
                 ..shell(1000)
             },
         ] {
-            assert!(!seat.is_seat_shell(&other), "{other:?}");
+            assert!(!seat.is_active_session_shell(&other), "{other:?}");
         }
         let empty = tempfile::tempdir().unwrap();
-        assert!(!self::seat(empty.path(), None).is_seat_shell(&shell(1000)));
+        assert!(!self::seat(empty.path(), None).is_active_session_shell(&shell(1000)));
     }
 
     #[test]

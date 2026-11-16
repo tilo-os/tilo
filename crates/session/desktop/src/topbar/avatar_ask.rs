@@ -90,7 +90,7 @@ impl TopBarChrome {
             return;
         }
         let gap = f64::from(theme.tokens.spacing.s4);
-        let seat = f64::from(theme.tokens.spacing.s3);
+        let inset = f64::from(theme.tokens.spacing.s3);
         // The band's rooms for it, right to left. First the ones that keep the bar's own glance
         // values — beside the clock's lane, the lane's free room up to the clock, the clock's lane —
         // then the strip past the workspace's own chip, then the band itself: a bar too narrow to
@@ -117,8 +117,8 @@ impl TopBarChrome {
                 .into_iter()
                 .filter(|rect| !rect.is_zero_area())
                 .map(|rect| rect.x0 - edge)
-                .fold(self.rect.x1 - seat, f64::min);
-            rooms.push(Room::band(self.rect.x0 + seat, band_right));
+                .fold(self.rect.x1 - inset, f64::min);
+            rooms.push(Room::band(self.rect.x0 + inset, band_right));
         }
         // The question stands whole wherever a room holds it. Its decline gives way first — a press
         // anywhere else folds the ask — so the question is never dropped where its own words fit

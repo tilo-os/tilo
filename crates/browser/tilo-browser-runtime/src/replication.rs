@@ -146,7 +146,7 @@ pub(crate) struct Joined {
     /// opens it. The workspace has everything up to them, so what the mount sends
     /// first is what it changed after them, not the whole document: a
     /// checkpoint reaches only devices that lack the record, and the changes
-    /// a window makes as it opens (taking a seat) would never reach the
+    /// a window makes as it opens (taking an admission) would never reach the
     /// others.
     delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
     /// The heads each record stood at when the workspace last delivered it, as the page read it:

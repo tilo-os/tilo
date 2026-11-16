@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
             &mut placed,
             Given {
                 scale: 2.0,
-                seated: "Quinten".into(),
+                device_person: "Quinten".into(),
                 notes: Rc::new(Vec::new),
                 apps: None,
                 handle,
@@ -336,7 +336,7 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
         &mut placed,
         Given {
             scale: 1.0,
-            seated: "Quinten".into(),
+            device_person: "Quinten".into(),
             notes: Rc::new(Vec::new),
             apps: None,
             handle,

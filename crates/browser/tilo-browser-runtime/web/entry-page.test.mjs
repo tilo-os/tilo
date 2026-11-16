@@ -458,7 +458,7 @@ test('an embed shows its site’s fallback until the visitor’s first gesture, 
   const {calls, failure, listeners, session} = await fixture({search: '?embed=1', boot: async (options, booted) => {
     const {deps} = options;
     deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', embedder: 'https://site.example'}});
-    // Nothing mounts. The page takes no seat and makes no person of its own.
+    // Nothing mounts. The page takes no admission and makes no person of its own.
     assert.deepEqual(await deps.enterViaHost({workspace: LOUNGE}), {idle: true});
     assert.equal(document.documentElement.dataset.entry, 'idle');
     assert.equal(document.getElementById('status').textContent, 'Click or type to join');

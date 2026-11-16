@@ -45,7 +45,7 @@ fn options(state: Option<std::path::PathBuf>) -> Options {
 
 /// The person at this device, as the session's own seat reads it.
 fn person() -> String {
-    tilo_session::identity::seated_person(&options(None))
+    tilo_session::identity::own_person(&options(None))
 }
 
 /// A session of `person` 's: the device's layout is a workspace's layout, so it is one that holds

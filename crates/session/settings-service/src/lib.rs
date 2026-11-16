@@ -124,8 +124,8 @@ fn shown(value: &Value) -> String {
 /// The settings service.
 pub struct SettingsService {
     records: SettingsRecords,
-    /// The person at this seat, whose changes they are: the session hands
-    /// the service who sits here as it starts it ([`Service::seated`]).
+    /// The person at this device, whose changes they are: the session hands
+    /// the service the person at this device as it starts it ([`Service::own_person`]).
     invoker: Option<ActionInvoker>,
     /// The settings document's version when it was last read.
     seen: Option<SettingsRevision>,
@@ -142,7 +142,7 @@ impl Default for SettingsService {
 impl SettingsService {
     /// The person's settings, as the session's settings document stores
     /// them. Who the person is is the session's to say, as it starts the
-    /// service ([`SettingsService::seated`]), so what is changed here is
+    /// service ([`SettingsService::own_person`]), so what is changed here is
     /// authored by the same person as everything else they do.
     #[must_use]
     pub fn new() -> Self {
@@ -160,7 +160,7 @@ impl SettingsService {
     /// names them by, with `earlier` the ids they went by before this
     /// device had an identity: what they change is theirs, and what was
     /// changed under one of those ids is theirs to take back.
-    pub fn seated(&mut self, person: &str, earlier: &[String]) {
+    pub fn own_person(&mut self, person: &str, earlier: &[String]) {
         self.records = SettingsRecords::of_person_named(
             settings_sections::APP_ID,
             settings_sections::APP_TITLE,
@@ -449,8 +449,8 @@ fn field_param(section: &ResourceSpec, field: &str) -> Option<ActionParam> {
 }
 
 impl Service for SettingsService {
-    fn seated(&mut self, person: &str, earlier: &[String]) {
-        Self::seated(self, person, earlier);
+    fn own_person(&mut self, person: &str, earlier: &[String]) {
+        Self::own_person(self, person, earlier);
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {

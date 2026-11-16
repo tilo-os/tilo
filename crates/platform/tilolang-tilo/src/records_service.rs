@@ -580,7 +580,7 @@ impl RecordService {
         )
     }
 
-    /// Commit `action` to the record as a step of `invoker`: the person seated here, or an
+    /// Commit `action` to the record as a step of `invoker`: the person at this device, or an
     /// agent acting for them.
     fn commit(
         &self,
@@ -1050,7 +1050,7 @@ impl RecordService {
 }
 
 impl Service for RecordService {
-    fn seated(&mut self, person: &str, _earlier: &[String]) {
+    fn own_person(&mut self, person: &str, _earlier: &[String]) {
         person.clone_into(&mut self.person);
     }
 

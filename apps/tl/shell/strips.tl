@@ -80,7 +80,7 @@ fn style_listed(style: device.Style) -> Bool {
 
 /// The style the shell shows, named in the bar's menu by the same name it is listed under
 /// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
-/// seat from the one in the list.
+/// bar than in the one in the list.
 fn style_title(v: Viewing) -> Text {
     if let chosen = device.styles.offered.find(s -> s.style == style_of(v)) {
         return style_label(chosen)

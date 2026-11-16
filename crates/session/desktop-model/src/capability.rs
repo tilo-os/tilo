@@ -45,7 +45,7 @@ pub enum Capability {
     Microphone { scope: GrantScope },
     /// Screen capture via portal `ScreenCast`.
     Screencast { scope: GrantScope },
-    /// Remote control of the seat (pointer + keyboard injection) via
+    /// Remote control of the device (pointer + keyboard injection) via
     /// portal `RemoteDesktop`. Separate from [`Capability::Screencast`]
     /// because it is strictly more invasive: "let them watch" and "let
     /// them type" stay separate grants.

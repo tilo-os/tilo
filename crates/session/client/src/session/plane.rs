@@ -654,11 +654,11 @@ impl Task {
                 // plane does not admit the page to the plane's channel; one
                 // that does not admit the page at all is asked again as soon
                 // as its admission may have moved.
-                let seated = self
+                let admitted = self
                     .reports
                     .read(|status| status.workspaces.get(&workspace_id).copied())
                     == Some(true);
-                let wait = if seated { REFUSED_MS } else { RETRY_MS };
+                let wait = if admitted { REFUSED_MS } else { RETRY_MS };
                 self.planes
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));
             }

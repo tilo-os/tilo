@@ -96,8 +96,8 @@ impl ResourceApp for CaptureStudioApp {
     const ATTACHES_RUNTIME: bool = false;
 
     fn view(cx: &mut ViewCx<Capture>) -> Element {
-        let seat = cx.take_lent::<Studio>();
-        let surface = StudioSurface::new(seat);
+        let lent = cx.take_lent::<Studio>();
+        let surface = StudioSurface::new(lent);
         surface.studio().link().wake_with(cx.waker());
         cx.surface(surface)
     }

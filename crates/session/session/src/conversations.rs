@@ -88,7 +88,7 @@ impl Conversations {
         }
     }
 
-    /// The person seated here: whose changes what the service records are theirs, and the author
+    /// The person at this device: whose changes what the service records are theirs, and the author
     /// a message or a record of work is written by when the caller names nobody else.
     #[must_use]
     pub fn person(&self) -> String {

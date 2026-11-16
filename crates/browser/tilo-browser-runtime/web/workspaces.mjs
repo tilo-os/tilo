@@ -18,8 +18,8 @@
  * reconnects; otherwise the person goes through the entry, by the entry every
  * device takes, on the session itself (`entryRequest` in wasm, `device::entry_request`),
  * with no pairing code. An entry that says no says why in its own code: a
- * workspace that is full is waited out as long as it asked, until there is
- * a seat.
+ * workspace that is full is waited out as long as it asked, until it has
+ * capacity.
  *
  * A host set up again (a new device key behind the same origin) is not the
  * one this browser kept the person's state for. Nothing kept is reused or
@@ -731,7 +731,7 @@ export async function joinViaHost({
   if (!forThisWorkspace || known?.userPublicKey !== identity.userPublicKey) return admitAnew();
   // Other tabs of this browser may hold every device key it has for this
   // host (`custody-busy`): nothing the host refused, so the membership stays
-  // and the entry is not asked, which would spend a seat to fail the same way.
+  // and the entry is not asked, which would spend an admission to fail the same way.
   const custody = await openCustody(identityProfile(identity, known.origin));
   return withCustody(custody, async () => {
     // A key no host has seen yet is a new device of the person: the workspace
@@ -749,7 +749,7 @@ export async function joinViaHost({
       await peer?.dispose?.().catch(() => {});
       // The host has not answered yet, or is not answering at all (it is
       // restarting): nothing the host refused, so the membership stays, and
-      // joining again would spend a seat and a join to fail the same way.
+      // joining again would spend an admission and a join to fail the same way.
       if (error?.name === 'CustodyError' || error?.name === 'TimeoutError' || hostUnreachable(error)) throw error;
       if (error?.code === 'host-changed') {
         // Another host answers at this origin now: join it as the same

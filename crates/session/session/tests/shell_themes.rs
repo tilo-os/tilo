@@ -292,7 +292,7 @@ fn names(nodes: &[Node]) -> Vec<(String, &str)> {
 
 /// The shell at rest with a note and the inbox on the canvas: the seeded apps published, both
 /// places drawing their app, and the shell's views settled.
-fn seated_session() -> Session {
+fn own_session() -> Session {
     let mut session = session();
     step(&mut session, 200);
 
@@ -487,7 +487,7 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
         ))
         .expect("the minute the test runs in");
     ui::time::testing::with_wall(at, || {
-        let mut session = seated_session();
+        let mut session = own_session();
         let read: Vec<(Theme, Vec<Node>, Screenshot)> = Theme::ALL
             .into_iter()
             .map(|theme| {

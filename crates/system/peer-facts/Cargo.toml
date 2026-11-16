@@ -1,13 +1,13 @@
 [package]
-name = "tilo-seat-peer"
+name = "tilo-peer-facts"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Who is on the other end of a root service's local socket: the kernel's account of the caller, and whether it is the seat's compositor"
+description = "Who is on the other end of a root service's local socket: the kernel's account of the caller, and whether it is the active session's compositor"
 
 [lib]
-name = "seat_peer"
+name = "peer_facts"
 path = "src/lib.rs"
 
 [dependencies]

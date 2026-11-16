@@ -15,7 +15,7 @@ use super::{
 
 /// The people button's glyph: the cluster of who is here.
 static USERS_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Users];
-/// The invite seat's glyph: a person-plus in the empty seat.
+/// The invite chip's glyph: a person-plus in the empty place.
 static INVITE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::UserPlus];
 
 /// The width a bar chip carrying one glyph takes, measured as the people and invite buttons are
@@ -102,7 +102,7 @@ impl TopBarChrome {
         self.people_button_rect
     }
 
-    /// The people button's chip: the people glyph in a round seat, plain at rest and lifting
+    /// The people button's chip: the people glyph in a round chip, plain at rest and lifting
     /// under the pointer like the bar's other controls.
     pub(super) fn people_chip<'a>(
         &self,
@@ -129,14 +129,14 @@ impl TopBarChrome {
         right_x: f64,
     ) -> f64 {
         use ui::widget::BarChipFace;
-        let seat = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
+        let inset = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_PEOPLE)
             && self.last_cursor.is_some_and(|point| {
                 Rect::new(
-                    right_x - seat,
-                    center_y - seat / 2.0,
+                    right_x - inset,
+                    center_y - inset / 2.0,
                     right_x,
-                    center_y + seat / 2.0,
+                    center_y + inset / 2.0,
                 )
                 .contains(point)
             });
@@ -163,7 +163,7 @@ impl TopBarChrome {
             return true;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
-        let seat = f64::from(theme.tokens.spacing.s1);
+        let inset = f64::from(theme.tokens.spacing.s1);
         let watching = self.watching();
         let watching_w = if watching == 0 {
             0.0
@@ -180,10 +180,10 @@ impl TopBarChrome {
             glyph_chip_width(&t("topbar-show-people"), USERS_GLYPH, text_renderer, theme);
         // The people button ends where the invite leaves it, and its own gap on either side is
         // the bar's: what stands left of this cluster must still clear the lane by one gap.
-        right_x - invite_w - gap - watching_w - people_w - seat >= self.center_lane.x1 + gap
+        right_x - invite_w - gap - watching_w - people_w - inset >= self.center_lane.x1 + gap
     }
 
-    /// The invite button's chip: a person-plus glyph in the seat the next person takes, lifting
+    /// The invite button's chip: a person-plus glyph in the place the next person takes, lifting
     /// under the pointer like every other bar control. Its words are its accessible name.
     pub(super) fn invite_chip<'a>(&self, name: &'a str) -> ui::widget::BarChipFace<'a> {
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
@@ -246,10 +246,10 @@ impl TopBarChrome {
         // right of the clock and the gap before it where they fit: they stand there rather than
         // folding everyone out of the bar, so the agent this person follows is still on it.
         // What the middle of the bar keeps for itself: the banner's lane while this view follows
-        // someone, else the clock's own drawing. The lane is the clock's seat with the room its
+        // someone, else the clock's own drawing. The lane is the clock's place, with the room its
         // hands may sweep through; a phone's bar is a couple of pixels short of a face beside
-        // that seat, and the clock's ink is not, so the faces stand clear of the drawing rather
-        // than of the seat.
+        // that place, and the clock's ink is not, so the faces stand clear of the drawing rather
+        // than of the place.
         let middle = if self.center_rect.is_zero_area() {
             self.center_lane
         } else {
@@ -661,7 +661,7 @@ mod tests {
                 if !people.is_empty() {
                     assert!(
                         bar.avatar_stack_rect.x1 <= invite.x0,
-                        "the faces, then the seat the next person takes"
+                        "the faces, then the inset the next person takes"
                     );
                 }
                 assert!(press(&mut bar, invite.center()));
@@ -708,7 +708,7 @@ mod tests {
             let face = bar.face_rect("ada").expect("Ada's face");
             assert!(
                 face.x1 <= bar.invite_rect().x0,
-                "the faces, then the seat the next person takes"
+                "the faces, then the inset the next person takes"
             );
             assert!(press(&mut bar, face.center()));
             assert_eq!(
@@ -1022,7 +1022,7 @@ mod tests {
                 if !bar.invite_rect.is_zero_area() {
                     assert!(
                         apart(bar.invite_rect, people) >= gap,
-                        "the invite keeps its seat at {width}: {:?} beside {people:?}",
+                        "the invite keeps its place at {width}: {:?} beside {people:?}",
                         bar.invite_rect
                     );
                 }

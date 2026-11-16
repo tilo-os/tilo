@@ -347,7 +347,7 @@
   "tilo-sandbox-core": {"libraries": 2616572, "tests": 9718144},
   "tilo-seal": {"libraries": 3592831, "tests": 7408416},
   "tilo-search": {"libraries": 14905504, "tests": 75047848},
-  "tilo-seat-peer": {"libraries": 559757, "tests": 3281496},
+  "tilo-peer-facts": {"libraries": 559757, "tests": 3281496},
   "tilo-secret-service": {"libraries": 13311458, "tests": 164450272},
   "tilo-secret-vault": {"libraries": 564654, "tests": 26681512},
   "tilo-secrets": {"libraries": 15449057, "tests": 89002064},

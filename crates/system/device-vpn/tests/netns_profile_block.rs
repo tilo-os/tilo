@@ -58,7 +58,7 @@ fn config(state: &Path) -> Config {
     Config {
         record: state.join("record.json"),
         dns_marker: state.join("dns"),
-        seat: seat_peer::Seat {
+        seat: peer_facts::LogindSeat {
             trusted_ui: PathBuf::from("/usr/bin/tilo-session"),
             seat: state.join("seat0"),
             users: state.join("users"),
@@ -197,7 +197,7 @@ fn serve(
                 &listener,
                 &mut service,
                 |stream| {
-                    seat_peer::facts(stream)
+                    peer_facts::facts(stream)
                         .map_err(|error| format!("unidentified caller: {error}"))
                         .and_then(|facts| peer::decide(&seat, &facts))
                 },

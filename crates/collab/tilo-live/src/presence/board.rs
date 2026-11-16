@@ -516,7 +516,7 @@ impl Board {
         self.revision
     }
 
-    /// What this device last said here: what a surface draws for the seat
+    /// What this device last said here: what a surface draws for the device
     /// the board is driven at, which never comes back from the wire.
     #[must_use]
     pub const fn own(&self) -> &Own {

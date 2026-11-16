@@ -2682,7 +2682,7 @@ fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
 /// The people control says who is here and nothing else: unread workspace
 /// activity is told by the activity pill in the centre (and History),
 /// never by a badge on the people. The badge it had sat half above the
-/// bar, white on white, on the empty workspace's Invite seat.
+/// bar, white on white, on the empty workspace's Invite button.
 #[test]
 fn unread_activity_paints_nothing_on_the_people_control() {
     let mut tree = Layout {
@@ -2741,10 +2741,7 @@ fn unread_activity_paints_nothing_on_the_people_control() {
         (rgba, bar.invite_rect())
     };
     let (quiet, people) = paint(0);
-    assert!(
-        people.area() > 0.0,
-        "the empty workspace shows its Invite seat"
-    );
+    assert!(people.area() > 0.0, "the empty workspace shows Invite");
     let around = people.inflate(12.0, 12.0);
     let px = ui::num::u32_of_f64;
     // The first unread thing, a few, and a count too wide for a badge to hold.

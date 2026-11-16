@@ -25,7 +25,7 @@
 //! using the app, when their own press reached one of its windows
 //! ([`crate::services::LauncherServices::person_initiated`]: a click, a key
 //! or a tap the compositor delivered, never input an agent or a remote
-//! participant sends through the shared seat), which this open uses up;
+//! participant sends through the shared device), which this open uses up;
 //! else it is refused.
 
 use tilo_actions::remote::{

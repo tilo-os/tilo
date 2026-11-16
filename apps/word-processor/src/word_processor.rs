@@ -356,7 +356,7 @@ impl WordProcessor {
             .ok()
     }
 
-    pub fn seat_after_replacement(&mut self, state: &AutoCommit) {
+    pub fn place_after_replacement(&mut self, state: &AutoCommit) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -677,11 +677,11 @@ impl WordProcessor {
         let Some(c) = self.containers.as_ref() else {
             return;
         };
-        let seated = matches!(
+        let placed = matches!(
             state.get(&c.blocks, &self.caret.block),
             Ok(Some((automerge::Value::Object(automerge::ObjType::Map), _)))
         );
-        if !seated {
+        if !placed {
             self.region = Region::Body;
             self.caret = tilo_doc::model::blocks_in_order(state, c)
                 .into_iter()

@@ -12,13 +12,13 @@ struct CertifiedLocalActionHost {
     caller: Caller,
     effective: Caller,
     admission: VerifiedActionCaller,
-    /// Only the protected native-seat entrypoint supplies physical intent.
+    /// Only the protected native-device entrypoint supplies physical intent.
     native_projection: Option<Caller>,
 }
 
 impl AppBrokerState {
-    /// Resolve a native seat's projected Person through protected host custody.
-    /// `None` means this broker has no native seat (and grants no certificate
+    /// Resolve a native device's projected Person through protected host custody.
+    /// `None` means this broker has no native device (and grants no certificate
     /// custody); a configured service's refusal is never a compatibility fallback.
     pub fn native_local_person_certificate(
         &self,
@@ -52,14 +52,14 @@ impl AppBrokerState {
         Ok(Some(certificate))
     }
 
-    /// Invoke through the native seat's existing palette/control provider.
+    /// Invoke through the native device's existing palette/control provider.
     ///
-    /// Its callers are the seat's own control apis — the owner's control socket, whose peer is
+    /// Its callers are the device's own control apis — the owner's control socket, whose peer is
     /// the account whose desktop this is, and the development test-control socket that drives
-    /// the seat as the person — and the palette itself. Network, MCP and app transports never
+    /// the device as the person — and the palette itself. Network, MCP and app transports never
     /// reach it: an agent, or a person acting over one of them, invokes through
     /// [`Self::action_invoke`] as itself, so the broker's per-action and per-role permissions
-    /// decide, and custody is refused to anything but a person at the native seat.
+    /// decide, and custody is refused to anything but a person at the native device.
     pub fn action_invoke_local_person(
         self: &Arc<Self>,
         caller: &Caller,
@@ -74,7 +74,7 @@ impl AppBrokerState {
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
-        // Hosts without a native-seat service retain the pre-existing ordinary
+        // Hosts without a native-device service retain the pre-existing ordinary
         // action api. It supplies no original certificate custody, so no
         // privileged continuation can mistake it for native-person evidence.
         // An installed service that refuses NEVER takes this compatibility path.
@@ -82,7 +82,7 @@ impl AppBrokerState {
             return self.action_invoke(caller, None, None, request);
         }
         let origin = (|| {
-            // Every way the seat's own action is refused says which one it was: the person is
+            // Every way the device's own action is refused says which one it was: the person is
             // shown a refusal, and what the session logged is what anyone can look at afterwards.
             let refused = |why: &str| {
                 tracing::warn!(why, "a person's action at their shell was refused");
@@ -241,21 +241,21 @@ impl AppBrokerState {
         }
         let certificate = self
             .native_local_person_certificate(&projection)?
-            .ok_or("native seat custody unavailable")?;
+            .ok_or("native device custody unavailable")?;
         if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
             let admitted = checked.admission.admitted.certificate.as_ref();
             tracing::debug!(
                 same_device = admitted.map(|cert| cert.device_public_key) == Some(certificate.device_public_key),
                 same_person = admitted.map(|cert| cert.user_public_key) == Some(certificate.user_public_key),
                 admitted_issued_ns = admitted.map(|cert| cert.issued_at_ns),
-                seat_issued_ns = certificate.issued_at_ns,
+                device_issued_ns = certificate.issued_at_ns,
                 admitted_expires_ns = ?admitted.and_then(|cert| cert.expires_at_ns),
-                seat_expires_ns = ?certificate.expires_at_ns,
+                device_expires_ns = ?certificate.expires_at_ns,
                 admitted_label = admitted.map(|cert| cert.device_label.as_str()),
-                seat_label = %certificate.device_label,
-                "native seat certificate differs from the session's admission"
+                device_label = %certificate.device_label,
+                "native device certificate differs from the session's admission"
             );
-            return Err("native seat differs from original certified admission".into());
+            return Err("native device differs from original certified admission".into());
         }
         checked.admission.native_projection_verified = true;
         checked.effective = projection.clone();
@@ -508,7 +508,7 @@ impl CertifiedLocalActionHost {
             return Err(ActionHostError::NotPermitted);
         }
         // Native custody was acquired at admission. Lifecycle reads must not
-        // resolve the seat's identity files again; `check` below validates the
+        // resolve the device's identity files again; `check` below validates the
         // retained admission against current revocation and membership state.
         if self.native_projection.as_ref().is_some_and(|projection| {
             projection.execution_id().is_some() && !projection.execution_is_live()

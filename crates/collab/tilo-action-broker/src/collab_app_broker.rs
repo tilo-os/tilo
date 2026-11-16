@@ -824,7 +824,7 @@ pub(crate) struct VerifiedActionCaller {
     /// The agent this person's own device handed the session to, kept
     /// across every re-verification of the person's admission.
     delegated: Option<String>,
-    /// A keyless native projection verified against protected seat custody.
+    /// A keyless native projection verified against protected device custody.
     /// Only `certified_native_action_host` sets this; signed/network evidence
     /// alone never establishes physical intent.
     native_projection_verified: bool,

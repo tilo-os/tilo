@@ -437,7 +437,7 @@ impl AppBrokerState {
         admission: Option<ShortcutAdmission<'_>>,
     ) -> Result<(AdmittedHostAction, Option<InvocationCaller>), ActionHostError> {
         // Palette and trigger entry points do not carry a wire request. Resolve
-        // their custody from the installed native seat, never from actor text.
+        // their custody from the installed native device, never from actor text.
         // Keep the run's trigger unchanged: a scheduled run is still unattended
         // and history attributes it to the system rather than a manual gesture.
         let request;

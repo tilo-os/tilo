@@ -97,9 +97,9 @@ fn mpris_runtime() -> Option<tokio::runtime::Runtime> {
 struct SharedSound(Arc<Mutex<SoundService>>);
 
 impl Service for SharedSound {
-    fn seated(&mut self, person: &str, earlier: &[String]) {
+    fn own_person(&mut self, person: &str, earlier: &[String]) {
         if let Ok(mut sound) = self.0.lock() {
-            sound.seated(person, earlier);
+            sound.own_person(person, earlier);
         }
     }
 

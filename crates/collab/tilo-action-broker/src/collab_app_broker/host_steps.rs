@@ -30,7 +30,7 @@ pub(super) fn for_provider(
 
 /// Transport keys alone never grant access to a service on this device.
 /// The certified local socket retains its original admission, even when the
-/// protected native seat projects a keyless person. Network admissions,
+/// protected native device projects a keyless person. Network admissions,
 /// including same-person devices, are not that socket.
 pub(super) fn is_local_host_caller(
     caller: &Caller,
@@ -817,16 +817,16 @@ mod identity_admin_tests {
         (state, owner, workspace_id)
     }
 
-    /// A native host's seat, which never certifies anyone here.
-    struct NoSeat;
+    /// A native host's device, which never certifies anyone here.
+    struct NoDevice;
 
-    impl crate::services::LocalPersonServices for NoSeat {
+    impl crate::services::LocalPersonServices for NoDevice {
         fn certificate(
             &self,
             _workspace: &str,
             _person: &str,
         ) -> Result<tilo_user_identity::DeviceCert, String> {
-            Err("no seat in this test".into())
+            Err("no device in this test".into())
         }
     }
 
@@ -838,10 +838,10 @@ mod identity_admin_tests {
         fn host_steps_admit_only_certified_local_custody;
 
         phase a_keyless_agent_or_person_takes_no_host_step_on_a_native_host;
-        // On a native host (one with the person's seat), neither an agent nor a
+        // On a native host (one with the person's device), neither an agent nor a
         // person that carries no retained custody takes a host step: an agent
         // takes one only inside an agent session, a person only through the
-        // seat. Neither is taken as an actor-only caller.
+        // device. Neither is taken as an actor-only caller.
         {
             let host = Arc::new(Host::default());
             let owner = hex::encode([41; 32]);
@@ -855,7 +855,7 @@ mod identity_admin_tests {
                 Some(tree.shared().authority()),
                 crate::services::HostServices {
                     host_steps: vec![host.clone()],
-                    local_person: Some(Arc::new(NoSeat)),
+                    local_person: Some(Arc::new(NoDevice)),
                     ..Default::default()
                 },
             );
@@ -867,7 +867,7 @@ mod identity_admin_tests {
             let person = Caller::local_person(owner).in_workspace(workspace_id);
             assert!(
                 invoked(&state, &person, &request(identity_admin::LIST, None)).is_err(),
-                "a person reaches a native host's steps only with the seat's custody"
+                "a person reaches a native host's steps only with the device's custody"
             );
             assert!(host.started.lock().unwrap().is_empty());
         }

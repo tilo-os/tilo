@@ -136,7 +136,7 @@ async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
  * across their devices lives in workspaces, as everything shared does.
  * Where the home lets only some in (`deps.ownDesktopOpen`), a browser no
  * host let in is sent to the home's entry instead, which says how to get
- * in; a seat in the workspace is not a desktop of their own. */
+ * in; an admission to the workspace is not a desktop of their own. */
 async function ownDesktop({home, runtime, deps, onProgress}) {
   const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
   if (gated) {

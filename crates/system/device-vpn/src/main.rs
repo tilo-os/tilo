@@ -85,7 +85,7 @@ mod linux {
             &listener,
             &mut service,
             |stream| {
-                seat_peer::facts(stream)
+                peer_facts::facts(stream)
                     .map_err(|error| format!("unidentified caller: {error}"))
                     .and_then(|facts| peer::decide(&seat, &facts))
             },

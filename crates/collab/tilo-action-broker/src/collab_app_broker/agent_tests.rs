@@ -845,7 +845,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             );
 
             // A turn's step is listed to the agent working the turn, and to the person at this
-            // seat as their other steps are: the REPL types what the agent would.
+            // device as their other steps are: the REPL types what the agent would.
             let listed = |caller: &Caller| {
                 let actor = BrokerActor::for_caller(caller);
                 f.state
@@ -861,11 +861,11 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 listed(&agent),
                 "the agent working the turn is offered the session's step"
             );
-            let seated =
+            let local =
                 Caller::local_person(person.clone()).in_workspace(workspace_id().to_string());
             assert!(
-                listed(&seated),
-                "the person at this seat is offered the session's step too"
+                listed(&local),
+                "the person at this device is offered the session's step too"
             );
 
             // An agent whose session is over takes no step.

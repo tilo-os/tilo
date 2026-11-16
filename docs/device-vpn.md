@@ -179,7 +179,7 @@ blocking). A tunnel that drops, or never comes up, keeps blocking.
 
 The same root helper holds the block, rather than a sibling, so one root
 service owns what the person's session adds to the firewall, behind the one
-seat-peer check, record, housekeeping and reset:
+peer-facts check, record, housekeeping and reset:
 
 - `hold_profile_block { servers, allow_local }` names at most 16 server
   addresses (no loopback, multicast or unspecified ones) and one switch; the

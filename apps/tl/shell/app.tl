@@ -81,7 +81,7 @@ view clock() {
 /// part dragged onto it from the settings lands where it is dropped; letting go runs one action,
 /// `place_part`. A compact bar keeps the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face; who is here and the sound give way there, and a
-/// question put to the person always keeps its seat.
+/// question put to the person always keeps its place.
 ///
 /// On the canvas the canvas is the whole screen (`canvas.md` §7): the bar keeps only what a
 /// person needs on any screen — the time, the notices and the person — and a question put to
@@ -162,7 +162,7 @@ view bar_part(part: BarPart) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.overview()
             }
-            // The switch between the styles, in the bar's own seat rather than in a row of
+            // The switch between the styles, in the bar itself rather than in a row of
             // its own, so nothing stands between a window and the bar. A bar too narrow for it
             // beside the clock and the status gives it up, as it gives up the strip and the
             // focused window's menu; the same switch is a page of Settings, so the style a

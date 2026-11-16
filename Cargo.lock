@@ -18948,7 +18948,7 @@ dependencies = [
  "tempfile",
  "tilo-files",
  "tilo-nm",
- "tilo-seat-peer",
+ "tilo-peer-facts",
  "tilo-test-env",
  "tokio",
  "tracing",
@@ -20515,8 +20515,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-files",
+ "tilo-peer-facts",
  "tilo-sandbox-core",
- "tilo-seat-peer",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -20763,6 +20763,15 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-pdf",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-peer-facts"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
  "workspace-hack",
 ]
 
@@ -21589,15 +21598,6 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-seat-peer"
-version = "0.1.0"
-dependencies = [
- "libc",
- "tempfile",
  "workspace-hack",
 ]
 
@@ -28962,6 +28962,7 @@ dependencies = [
  "tilo-paths",
  "tilo-pc-keyboard-geometry",
  "tilo-pdf",
+ "tilo-peer-facts",
  "tilo-peer-state",
  "tilo-platform-caps",
  "tilo-polkit-agent",
@@ -28992,7 +28993,6 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-seal",
  "tilo-search",
- "tilo-seat-peer",
  "tilo-secret-service",
  "tilo-secret-vault",
  "tilo-secrets",

@@ -124,7 +124,7 @@ fn session() -> Session {
 
 /// The person at this device, as the session's own seat reads it: the identity it holds names them.
 fn person() -> String {
-    tilo_session::identity::seated_person(&options())
+    tilo_session::identity::own_person(&options())
 }
 
 fn step(session: &mut Session) {

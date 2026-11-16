@@ -328,10 +328,10 @@ impl SiblingDials {
     }
 }
 
-/// Everything this desktop keeps of the plane beside the client's boards: who is here as the bar
+/// Everything this device keeps of the plane beside the client's boards: who is here as the bar
 /// lists them, the workspaces' state and channels, the live plane, the fabric and the transfers.
 #[cfg(target_os = "linux")]
-pub(crate) struct Seat {
+pub(crate) struct Local {
     /// The session this session shows, whose workspaces' policies every message from another member is
     /// held to.
     session: RefCell<Option<DesktopHandle>>,
@@ -399,14 +399,14 @@ pub(crate) struct Seat {
 }
 
 #[cfg(target_os = "linux")]
-impl std::fmt::Debug for Seat {
+impl std::fmt::Debug for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Seat").finish_non_exhaustive()
+        f.debug_struct("Local").finish_non_exhaustive()
     }
 }
 
 #[cfg(target_os = "linux")]
-impl Seat {
+impl Local {
     /// What this desktop's plane does with one message of the client's own.
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
         // What a workspace says of its channels' governance is the session's channels' to take in,
@@ -1009,7 +1009,7 @@ pub(crate) struct Roster {
 pub(crate) struct Hosting {
     roster: Rc<Roster>,
     #[cfg(target_os = "linux")]
-    seat: Rc<Seat>,
+    local: Rc<Local>,
 }
 
 impl Roster {
@@ -1186,8 +1186,8 @@ impl Roster {
 #[cfg(target_os = "linux")]
 impl Host for Hosting {
     fn governed_person(&self, workspace: &str, device: EndpointId) -> Option<String> {
-        let seat = &self.seat;
-        let engine = seat.engine.as_ref()?;
+        let local = &self.local;
+        let engine = local.engine.as_ref()?;
         let identity = tilo_desktop_model::WorkspaceId::parse(workspace)?;
         let now = tilo_clock::wall();
         engine
@@ -1205,51 +1205,51 @@ impl Host for Hosting {
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
         // An agent's narrated action is the roster's to take: it moves nothing inside a window here,
         // and says where the person's own agent works.
-        self.roster.hear_narrated(event, client) || self.seat.heard(event, client)
+        self.roster.hear_narrated(event, client) || self.local.heard(event, client)
     }
 
     fn touched(&self, client: &SessionClient) {
-        self.seat.note_reachability(client);
+        self.local.note_reachability(client);
         self.roster.show_here(client);
         self.roster.show_waves();
     }
 
     fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
-        let engine = self.seat.engine.as_ref()?;
+        let engine = self.local.engine.as_ref()?;
         engine.host_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
     }
 
     fn joined(&self, workspace: &str) {
-        let seat = &self.seat;
-        let Some(engine) = seat.engine.as_ref() else {
+        let local = &self.local;
+        let Some(engine) = local.engine.as_ref() else {
             return;
         };
         if let Some(connect) = tilo_desktop_model::WorkspaceId::parse(workspace)
             .and_then(|session| native_ingress::Connect::new(engine.owner().clone(), session).ok())
         {
-            let _ = seat.commands.send(HostCmd::TakePart(connect));
+            let _ = local.commands.send(HostCmd::TakePart(connect));
         }
     }
 
     fn pass(&self, client: &SessionClient) {
-        let seat = &self.seat;
-        seat.keep_host_events(client);
-        let moved = seat.hear_live(client);
+        let local = &self.local;
+        local.keep_host_events(client);
+        let moved = local.hear_live(client);
         // What arrived moved this device's fabric — a copy from another device, a device that is
         // gone: the person's other devices hear so on the same pass.
-        seat.announce_fabric();
+        local.announce_fabric();
         // The clock of every peer something holds in sync: its probes leave here, so the audio
         // timed against them can play in time.
-        if let Some(fabric) = &seat.fabric {
+        if let Some(fabric) = &local.fabric {
             fabric.pump_clock();
         }
         // What no device acknowledged of a send this device made is offered again, and what the
         // person's devices offered here waits for their answer.
-        if let Some(nearby) = seat.nearby() {
+        if let Some(nearby) = local.nearby() {
             nearby.pump();
         }
         if moved {
-            seat.note_reachability(client);
+            local.note_reachability(client);
         }
     }
 }
@@ -1322,7 +1322,7 @@ impl Drop for Client {
             if let Some(following) = self.own_address.take() {
                 following.abort();
             }
-            self.hosting.seat.live.borrow_mut().take();
+            self.hosting.local.live.borrow_mut().take();
             let _ = self.outgoing.send(Cmd::Stop);
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
@@ -1457,7 +1457,7 @@ impl Client {
         )
         .serving(served)
         .bound_to(endpoint_handle);
-        let hosting = Seat::hosting(Hosted {
+        let hosting = Local::hosting(Hosted {
             commands,
             host_events: host_arrived,
             engine,
@@ -1497,7 +1497,7 @@ impl Client {
         let host = {
             let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
             let (_host_events, host_arrived) = std::sync::mpsc::channel();
-            Rc::new(Seat::bare(commands, host_arrived))
+            Rc::new(Local::bare(commands, host_arrived))
         };
         #[cfg(target_os = "linux")]
         let outgoing = std::sync::Arc::clone(&plane.outgoing);
@@ -1505,7 +1505,7 @@ impl Client {
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
             #[cfg(target_os = "linux")]
-            seat: host,
+            local: host,
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
         Self {
@@ -1572,7 +1572,7 @@ impl Client {
         );
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
-            seat: Rc::new(Seat::bare(commands, host_arrived)),
+            local: Rc::new(Local::bare(commands, host_arrived)),
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
         let client = Self {
@@ -1603,21 +1603,21 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_surfaces(&self) -> Vec<ReceivedSurface> {
-        self.hosting.seat.take_surfaces()
+        self.hosting.local.take_surfaces()
     }
 
     /// Take the workspaces whose host said their owner deleted them since the last call.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
-        self.hosting.seat.take_deleted()
+        self.hosting.local.take_deleted()
     }
 
     /// Take the call audio the workspaces' live planes heard since the last call, already opened.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_call_audio(&self) -> Vec<(String, Heard)> {
-        self.hosting.seat.take_call_audio()
+        self.hosting.local.take_call_audio()
     }
 
     /// Take the call pictures the workspaces' live planes heard since the last call, already
@@ -1625,7 +1625,7 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_call_pictures(&self) -> Vec<(String, Heard)> {
-        self.hosting.seat.take_call_pictures()
+        self.hosting.local.take_call_pictures()
     }
 
     /// Take the shared windows' pictures and pages the workspaces' live planes heard since the last
@@ -1633,7 +1633,7 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn take_window_objects(&self) -> Vec<(String, Heard)> {
-        self.hosting.seat.take_window_objects()
+        self.hosting.local.take_window_objects()
     }
 
     /// The workspaces' live planes this session is in now, by workspace: what a call's voice and
@@ -1643,7 +1643,7 @@ impl Client {
     pub(crate) fn planes(
         &self,
     ) -> std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>> {
-        self.hosting.seat.planes()
+        self.hosting.local.planes()
     }
 
     /// Moves whenever a workspace's live plane stands otherwise or opened again: what
@@ -1651,7 +1651,7 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn live_revision(&self) -> u64 {
-        self.hosting.seat.live_revision()
+        self.hosting.local.live_revision()
     }
 
     /// How far each workspace's live plane came on this device, by workspace: open, or what it
@@ -1661,7 +1661,7 @@ impl Client {
     pub(crate) fn live_standings(
         &self,
     ) -> std::collections::BTreeMap<String, crate::live::Standing> {
-        self.hosting.seat.live_standings()
+        self.hosting.local.live_standings()
     }
 
     /// The endpoints this device's relay turned away from each workspace's live plane and has not
@@ -1671,7 +1671,7 @@ impl Client {
     pub(crate) fn live_turned_away(
         &self,
     ) -> std::collections::BTreeMap<String, Vec<crate::live::TurnedAway>> {
-        self.hosting.seat.live_turned_away()
+        self.hosting.local.live_turned_away()
     }
 
     /// Join this session to `planes`, by workspace, running on `runtime`, in place of a live plane
@@ -1683,12 +1683,12 @@ impl Client {
         planes: std::collections::BTreeMap<String, Arc<tilo_live::plane::Plane>>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        *self.hosting.seat.test_planes.borrow_mut() = planes;
-        *self.hosting.seat.test_runtime.borrow_mut() = Some(runtime);
+        *self.hosting.local.test_planes.borrow_mut() = planes;
+        *self.hosting.local.test_runtime.borrow_mut() = Some(runtime);
         self
     }
 
-    /// Show `tracks` of `sender` on `plane`, and no other of its tracks ([`Seat::show_tracks`]).
+    /// Show `tracks` of `sender` on `plane`, and no other of its tracks ([`Local::show_tracks`]).
     #[cfg(target_os = "linux")]
     pub(crate) fn show_tracks(
         &self,
@@ -1696,7 +1696,7 @@ impl Client {
         sender: [u8; 32],
         tracks: &[Track],
     ) {
-        self.hosting.seat.show_tracks(plane, sender, tracks);
+        self.hosting.local.show_tracks(plane, sender, tracks);
     }
 
     /// Say `msg` to `target` alone, as a workspace-control message on `ws`'s topic: a shared
@@ -1714,7 +1714,7 @@ impl Client {
     /// now ([`crate::live::Live::workspace_arrived`]). Nothing to tell on a session with no plane.
     #[cfg(target_os = "linux")]
     pub(crate) fn workspace_arrived(&self) {
-        if let Some(live) = self.hosting.seat.live() {
+        if let Some(live) = self.hosting.local.live() {
             live.workspace_arrived();
         }
     }
@@ -1724,7 +1724,7 @@ impl Client {
     /// it has no plane yet, and nothing was handed over.
     #[cfg(target_os = "linux")]
     pub(crate) fn lend_media_keys(&self, lender: Arc<dyn crate::live::MediaKeysLender>) -> bool {
-        let Some(live) = self.hosting.seat.live() else {
+        let Some(live) = self.hosting.local.live() else {
             return false;
         };
         live.lend_media_keys(lender);
@@ -1734,14 +1734,14 @@ impl Client {
     /// Give this session's Nearby Send the fabric it runs on.
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
-        self.hosting.seat.attach_nearby(nearby);
+        self.hosting.local.attach_nearby(nearby);
     }
 
     /// The person's own store this session keeps, once it has one.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
-        self.hosting.seat.personal()
+        self.hosting.local.personal()
     }
 
     /// The person's presence as the surfaces here read it.
@@ -1752,22 +1752,22 @@ impl Client {
     /// Tell the person's other devices what this device says of itself, when that moved.
     #[cfg(target_os = "linux")]
     pub fn announce_fabric(&self) {
-        self.hosting.seat.announce_fabric();
+        self.hosting.local.announce_fabric();
     }
 
     /// This device's fabric, when the person certified it.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn fabric(&self) -> Option<crate::platform::fabric::SharedLink> {
-        self.hosting.seat.fabric()
+        self.hosting.local.fabric()
     }
 
     /// The actions one of the person's devices sent this one since the last call.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        self.hosting.seat.keep_host_events(&self.inner);
-        self.hosting.seat.fabric_actions()
+        self.hosting.local.keep_host_events(&self.inner);
+        self.hosting.local.fabric_actions()
     }
 
     /// Hand `take` each action one of the person's devices sent this one since the last look, the
@@ -1777,27 +1777,27 @@ impl Client {
         &self,
         take: impl Fn(&crate::platform::fabric::PersonalFabricActionEnvelope) -> bool,
     ) {
-        let seat = &self.hosting.seat;
-        seat.keep_host_events(&self.inner);
-        let left: Vec<_> = seat
+        let local = &self.hosting.local;
+        local.keep_host_events(&self.inner);
+        let left: Vec<_> = local
             .fabric_actions()
             .into_iter()
             .filter(|envelope| !take(envelope))
             .collect();
-        seat.fabric_waiting.borrow_mut().extend(left);
+        local.fabric_waiting.borrow_mut().extend(left);
     }
 
     /// Where this device's actions are served.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn device_actions(&self) -> Option<DeviceActions> {
-        self.hosting.seat.device_actions()
+        self.hosting.local.device_actions()
     }
 
     /// The member's devices the plane heard at another peer protocol version.
     #[cfg(target_os = "linux")]
     pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
-        self.hosting.seat.take_version_mismatches()
+        self.hosting.local.take_version_mismatches()
     }
 
     /// Hold this device's relays back behind `reachability`: what a test asks of what this desktop
@@ -1805,7 +1805,7 @@ impl Client {
     #[cfg(test)]
     #[cfg(target_os = "linux")]
     pub(crate) fn hold_relays_with(&self, reachability: Reachability) {
-        *self.hosting.seat.reachability.borrow_mut() = reachability;
+        *self.hosting.local.reachability.borrow_mut() = reachability;
     }
 
     /// Where this device notes the hosts it was given an address for and reached there: its
@@ -1830,7 +1830,7 @@ impl Client {
     /// one arrived names only this device's own network, and reaches nobody there.
     #[cfg(target_os = "linux")]
     pub(crate) fn invitation_addr(&self) -> EndpointAddr {
-        let reachability = self.hosting.seat.reachability.borrow().clone();
+        let reachability = self.hosting.local.reachability.borrow().clone();
         reachability.wake("an invitation is this device's to hand out");
         reachability
             .relay_addr_within(INVITE_RELAY_WAIT)
@@ -1844,27 +1844,27 @@ impl Client {
         self.inner.attach_shell(Rc::new(Gate {
             session: session.clone(),
         }));
-        *self.hosting.seat.session.borrow_mut() = Some(session);
+        *self.hosting.local.session.borrow_mut() = Some(session);
     }
 
     /// Hand the records' content plane its place on this client.
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<content::Plane>) {
-        self.hosting.seat.attach_content(content, self.publisher());
+        self.hosting.local.attach_content(content, self.publisher());
     }
 
     /// Hand the person's own store, opened where this session keeps its state, to their other
     /// devices.
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_personal(&self, personal: crate::personal::Personal) {
-        self.hosting.seat.attach_personal(personal);
+        self.hosting.local.attach_personal(personal);
     }
 
     /// This device's workspaces, when this session holds any.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn engine(&self) -> Option<&Arc<Engine>> {
-        self.hosting.seat.engine()
+        self.hosting.local.engine()
     }
 
     /// Redeem `request`'s invitation off the loop: this device joins the workspace and takes in
@@ -1874,11 +1874,11 @@ impl Client {
     /// The plane takes no enrollment: this session holds no workspaces, or it has stopped.
     #[cfg(target_os = "linux")]
     pub fn enroll(&self, request: Enrolling) -> Result<(), String> {
-        if self.hosting.seat.engine.is_none() {
+        if self.hosting.local.engine.is_none() {
             return Err("this session keeps no workspaces to enroll into".into());
         }
         self.hosting
-            .seat
+            .local
             .commands
             .send(HostCmd::Enroll(request))
             .map_err(|_| "the collaboration plane is gone".to_owned())
@@ -1892,11 +1892,11 @@ impl Client {
     /// The plane takes no entry: this session holds no workspaces, or it has stopped.
     #[cfg(target_os = "linux")]
     pub fn enter(&self, request: Entering) -> Result<(), String> {
-        if self.hosting.seat.engine.is_none() {
+        if self.hosting.local.engine.is_none() {
             return Err("this session keeps no workspaces to take in".into());
         }
         self.hosting
-            .seat
+            .local
             .commands
             .send(HostCmd::Enter(Box::new(request)))
             .map_err(|_| "the collaboration plane is gone".to_owned())
@@ -1908,7 +1908,7 @@ impl Client {
     pub fn tell_personal(&self, update: &tilo_user_identity::DirectoryUpdate) {
         let hosts = self
             .hosting
-            .seat
+            .local
             .engine
             .as_ref()
             .map(|engine| engine.host_hints())
@@ -1922,7 +1922,7 @@ impl Client {
     pub fn connect(&self, addr: EndpointAddr) {
         // An action for this device is sent to where it was told to be,
         // without waiting for the two sessions to meet first.
-        if let Some(actions) = self.hosting.seat.device_actions.get() {
+        if let Some(actions) = self.hosting.local.device_actions.get() {
             actions.learn(addr.clone());
         }
         let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
@@ -1938,7 +1938,7 @@ impl Client {
         // device is at, so nothing is guessed there.
         let urls = self
             .hosting
-            .seat
+            .local
             .reachability
             .try_borrow()
             .map(|reachability| reachability.relay_urls())
@@ -1950,7 +1950,7 @@ impl Client {
         Some(SiblingDials::new(
             *self.inner.endpoint()?.id().as_bytes(),
             HostOutbox {
-                commands: self.hosting.seat.commands.clone(),
+                commands: self.hosting.local.commands.clone(),
             },
             relay,
         ))
@@ -2025,7 +2025,7 @@ struct Hosted {
 }
 
 #[cfg(target_os = "linux")]
-impl Seat {
+impl Local {
     /// The host this client runs with, and the roster beside it.
     fn hosting(
         Hosted {
@@ -2042,7 +2042,7 @@ impl Seat {
     ) -> Rc<Hosting> {
         Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
-            seat: Rc::new(Self {
+            local: Rc::new(Self {
                 session: RefCell::new(None),
                 commands,
                 host_events,
@@ -2071,7 +2071,7 @@ impl Seat {
         })
     }
 
-    /// A seat with no plane of its own: what a client takes part in over a transport another host
+    /// A local with no plane of its own: what a client takes part in over a transport another host
     /// brings.
     fn bare(
         commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,

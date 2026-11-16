@@ -437,7 +437,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_profile_block_outlasts_its_owners_session_until_the_seat_lifts_it;
+    phase a_profile_block_outlasts_its_owners_session_until_it_is_lifted;
     {
         let mut service = service();
         hold(&mut service, PERSON, false);

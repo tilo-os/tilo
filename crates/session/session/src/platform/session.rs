@@ -121,13 +121,13 @@ impl Session {
         // workspaces' governance names, which this device's certificate
         // carries. Everything the person does here — the workspaces they
         // own, what the shell records, what the sheets change — is theirs.
-        let seat = crate::identity::seat(&options);
-        options.earlier.clone_from(&seat.earlier);
-        options.person = seat.person;
+        let own = crate::identity::own(&options);
+        options.earlier.clone_from(&own.earlier);
+        options.person = own.person;
         // The ids this device mints are its own, as every workspace derives
         // them from its key: a computer with an identity mints under that
         // rather than the seed the caller passed.
-        if let Some(salt) = seat.salt {
+        if let Some(salt) = own.salt {
             options.salt = salt;
         }
         let sources = crate::config::Sources::from_config(&options.config);
@@ -988,7 +988,7 @@ impl Session {
             ),
             crate::people::Given {
                 scale: options.scale,
-                seated: options.person.clone(),
+                device_person: options.person.clone(),
                 notes: {
                     let notes = std::sync::Arc::clone(&notes);
                     Rc::new(move || notes.windows())
@@ -1391,7 +1391,7 @@ impl Session {
         // the id its caller made it with: the session knows who sits here
         // before it starts them.
         for service in &mut started {
-            service.seated(&options.person, &seat.earlier);
+            service.own_person(&options.person, &own.earlier);
         }
         let services = mount_services(&mut published, started);
         // The records the services keep themselves: the activity lists an agent's run in one and
@@ -1568,7 +1568,7 @@ impl Session {
             desktop,
             activity,
             person: options.person.clone(),
-            earlier: seat.earlier,
+            earlier: own.earlier,
             search,
             launch: options.launch,
             #[cfg(target_os = "linux")]

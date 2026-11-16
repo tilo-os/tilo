@@ -19,7 +19,7 @@ required-features = ["service"]
 default = ["service"]
 # The root service. The shell and Settings only speak the protocol and
 # depend on this crate without it.
-service = ["dep:bounded-command", "dep:tilo-sandbox-core", "dep:tilo-seat-peer"]
+service = ["dep:bounded-command", "dep:tilo-sandbox-core", "dep:tilo-peer-facts"]
 
 [dependencies]
 # Waits on the driver and checker with a deadline, without polling.
@@ -28,7 +28,7 @@ libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-seat-peer = { path = "../seat-peer", optional = true }
+tilo-peer-facts = { path = "../peer-facts", optional = true }
 tilo-sandbox-core = { path = "../sandbox-core", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

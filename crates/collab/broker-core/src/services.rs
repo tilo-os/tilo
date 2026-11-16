@@ -20,7 +20,7 @@ pub use agent_sessions::{
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 
-/// Current native seat identity, installed only by the authenticated host.
+/// Current native device identity, installed only by the authenticated host.
 /// This Rust capability is never exposed through a wire request.
 pub trait LocalPersonServices: Send + Sync {
     /// Derive the real local certificate for this person and current workspace.
@@ -30,7 +30,7 @@ pub trait LocalPersonServices: Send + Sync {
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String>;
 
-    /// [`Self::certificate`] for an action the person at this seat starts, which the host answers
+    /// [`Self::certificate`] for an action the person at this device starts, which the host answers
     /// once its identity names them: a login reads the identity directory as its files land, and an
     /// action asked in that moment waits here for it, woken by the identity store's own
     /// announcement, instead of being refused for an identity that is on its way. A host whose

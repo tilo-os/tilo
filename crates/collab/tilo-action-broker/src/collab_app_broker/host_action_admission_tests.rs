@@ -56,10 +56,10 @@ fn request(descriptor: &ActionDescriptor) -> InvokeRequest {
     }
 }
 
-struct ClosedSeat;
-impl crate::services::LocalPersonServices for ClosedSeat {
+struct ClosedDevice;
+impl crate::services::LocalPersonServices for ClosedDevice {
     fn certificate(&self, _: &str, _: &str) -> Result<tilo_user_identity::DeviceCert, String> {
-        Err("native seat unavailable".into())
+        Err("native device unavailable".into())
     }
 }
 
@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
         let (state, _) = AppBrokerState::test_state(
             None,
             crate::services::HostServices {
-                local_person: Some(Arc::new(ClosedSeat)),
+                local_person: Some(Arc::new(ClosedDevice)),
                 ..Default::default()
             },
         );

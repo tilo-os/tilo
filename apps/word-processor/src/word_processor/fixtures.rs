@@ -19,7 +19,7 @@ impl WordProcessor {
         if !self.apply_rich(state, action) {
             return false;
         }
-        self.seat_after_replacement(state);
+        self.place_after_replacement(state);
         true
     }
 

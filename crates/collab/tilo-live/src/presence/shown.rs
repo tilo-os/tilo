@@ -73,7 +73,7 @@ pub fn shown(member: &Present, now_ms: f64) -> Shown {
 }
 
 /// This device's own word as a surface here draws it: the roster's row for
-/// the person at this seat, which the board never carries (a reader hears
+/// the person at this device, which the board never carries (a reader hears
 /// everyone but itself).
 #[must_use]
 pub fn own_shown(own: &Own, publisher: Device) -> Shown {
