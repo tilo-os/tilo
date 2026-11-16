@@ -277,7 +277,14 @@ export function createMediaPump({runtime, id, voice, workspace, active, report =
       const route = `${request.app}:${request.record}:${request.owner ?? request.instance}`;
       if (request.retired) {controls.release(request); routes.delete(route); continue;}
       routes.set(route, request);
-      void controls.execute(request).then(snapshot => ({Ok: snapshot}), error => ({Err: String(error.message ?? error)})).then(result => {
+      const op = request.command?.command?.op;
+      void controls.execute(request).then(snapshot => ({Ok: snapshot}), error => {
+        // A control the page refused is said where the page's own log keeps
+        // it: the app shows the refusal, and this says which control it was.
+        const why = String(error.message ?? error);
+        if (!['status', 'watch', 'pictures'].includes(op)) console.warn(`call control ${op ?? '?'} refused: ${why}`);
+        return {Err: why};
+      }).then(result => {
         if (!closed && active()) runtime.complete_media_request(id, BigInt(request.ticket), JSON.stringify(result));
       }).catch(error => report({mediaError: String(error)}));
     }
