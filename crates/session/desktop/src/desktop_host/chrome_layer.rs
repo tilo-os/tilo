@@ -873,6 +873,12 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
+            // The window covering the display shows no bar of its own: a secondary press on the
+            // desktop's bar over it opens that window's menu where the person pressed.
+            ChromeIntent::CoveringWindowMenu { at: (x, y) } => {
+                self.handle
+                    .ask_covering_window_menu(Point::new(f64::from(x), f64::from(y)));
+            }
             ChromeIntent::ToggleWorkspaceMenu { at } => {
                 // The press that took it down is still being delivered, and the bar answers it: the
                 // same press does not raise it again. A secondary press elsewhere asks for the menu
