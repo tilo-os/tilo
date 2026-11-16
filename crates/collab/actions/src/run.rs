@@ -12,8 +12,10 @@
 //! Only a call that sets a different value continues: calling a verb again
 //! with the same arguments (adding another note under the same one, a toggle
 //! pressed twice) is a new act each time, never folded into the one before.
-//! Any change in between, by anyone, ends the run: a later call no longer
-//! starts from what the run set.
+//! A call that names no value writes a field's text ([`EDITED_FIELD`]): its
+//! keystrokes are the typing burst's to group, so it neither continues a run
+//! nor starts one. Any change in between, by anyone, ends the run: a later
+//! call no longer starts from what the run set.
 //!
 //! Typing into a field is the other run History reads: it lists a person's
 //! words in one field as one row, while undo keeps a step per word
@@ -62,6 +64,17 @@ pub fn setting(context: &ActionContext) -> Option<(&VerbCall, &str)> {
     }
 }
 
+/// The argument a change that writes a field's text names the field it wrote with. Such a
+/// change names no value: what the person typed is the change itself, so its keystrokes are
+/// the typing burst's to group ([`TYPING_PAUSE_MS`]), never a run of setting one value.
+pub const EDITED_FIELD: &str = "field";
+
+/// Whether `call` names the value it sets: a call of a verb on an item whose arguments say
+/// which value it is, rather than just the field it wrote.
+fn names_value(call: &VerbCall) -> bool {
+    call.args.keys().any(|name| name != EDITED_FIELD)
+}
+
 /// Whether `next`, made at `next_ms` right after `previous` (made at
 /// `previous_ms`) by the same writer with nothing in between, continues its
 /// run: the same verb on the same item, setting a different value, within
@@ -76,7 +89,9 @@ pub fn continues_setting(
     let (Some((before, item)), Some((after, on))) = (setting(previous), setting(next)) else {
         return false;
     };
-    before.action == after.action
+    names_value(before)
+        && names_value(after)
+        && before.action == after.action
         && item == on
         && before.args != after.args
         && within_pause(previous_ms, next_ms)
@@ -166,6 +181,34 @@ mod tests {
         assert!(
             !continues_setting(&first, 1_000, &agents, 2_000),
             "a step of its own runs on with nothing"
+        );
+    }
+
+    /// A keystroke of a bound field names the field it wrote and no value: two fields of one
+    /// note typed one after the other are two typing bursts, not a run of setting one value.
+    fn typed(field: &str) -> ActionContext {
+        ActionContext {
+            item: Some(ActionItem {
+                id: "note".into(),
+                label: String::new(),
+            }),
+            what: Some(Did::verb(
+                ActionKey::new("notes", "notebook", "edit-text"),
+                [(EDITED_FIELD.to_owned(), Scalar::text(field))],
+            )),
+            gesture: Some(ActionId::new()),
+            ..ActionContext::default()
+        }
+    }
+
+    #[test]
+    fn typing_another_field_does_not_continue_the_run_of_the_one_before() {
+        let keystroke = typed("title");
+        let (call, _) = setting(&keystroke).expect("a keystroke is a person's setting");
+        assert!(!names_value(call), "a keystroke names no value");
+        assert!(
+            !continues_setting(&typed("title"), 1_000, &typed("body"), 2_000),
+            "another field is another burst"
         );
     }
 }
