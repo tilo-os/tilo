@@ -131,8 +131,9 @@ A workspace also branches itself: `workspace.branch("Onboarding: Acme")`. A key 
 as for any workspace ([keys](identities.md)); it reaches the branch and not the workspace it came from.
 Only a key that reaches all your workspaces branches, and only workspaces of your own: a key for one
 workspace is refused with `not_permitted`, and one you were invited into answers `not_found`. A branch
-that could not take everything is removed again, and the error names what did not come. As with
-making one, the same idempotency key answers the same branch.
+that could not take everything is removed again, and the error (`branch_incomplete`) names what did not
+come; the same call under the same idempotency key makes the branch once that is there. As with making
+one, the same idempotency key answers the same branch.
 
 ## People in a workspace
 

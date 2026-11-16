@@ -232,7 +232,9 @@ async fn answer(
         Begun::Fresh => {
             let answered = caller.with_idempotency(key).handle(operation).await;
             // A pending answer is asked about again by a retry, and a refusal
-            // the host may not repeat (busy, unreachable) is not kept.
+            // the host may not repeat (busy, unreachable) is not kept. Nor is
+            // a branch that did not take everything: the same call makes it
+            // once what it lacked is there.
             let kept = match &answered {
                 Ok(Answer::Json {
                     status,
@@ -247,7 +249,7 @@ async fn answer(
                     if !matches!(
                         refused.status,
                         StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
-                    ) =>
+                    ) && refused.body.code != crate::account::BRANCH_INCOMPLETE =>
                 {
                     Some(Stored {
                         status: refused.status.as_u16(),

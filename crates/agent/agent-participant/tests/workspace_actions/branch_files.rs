@@ -235,6 +235,28 @@ async fn branch_of(key: &Key<'_>, source: &str, name: &str) -> (u16, serde_json:
     .await
 }
 
+/// What a branch of `source` answers, asked by `key` under `name` with the
+/// Idempotency-Key `retry`: the status, whether it is an answer replayed, and
+/// its body.
+async fn branch_retried(
+    key: &Key<'_>,
+    source: &str,
+    name: &str,
+    retry: &str,
+) -> (u16, bool, serde_json::Value) {
+    let reply = key
+        .send(
+            hyper::Method::POST,
+            &format!("/v1/workspaces/{source}/branches"),
+            json!({"name": name}).to_string().as_bytes(),
+            &[("idempotency-key", retry)],
+        )
+        .await;
+    let replayed = reply.headers().contains_key("idempotent-replayed");
+    let (status, body) = json_of(reply).await;
+    (status, replayed, body)
+}
+
 /// The ids of the workspaces named `name` `key` lists.
 async fn listed_as(key: &Key<'_>, name: &str) -> Vec<String> {
     let (status, listed) = key.get("/v1/workspaces").await;
@@ -277,7 +299,9 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     store.release(&chunk).unwrap();
     assert!(!store.has(&chunk));
 
-    let (status, refused) = branch_of(&backend, &source, "Scans: Acme").await;
+    // Asked under a key the caller keeps for the customer, as the SDKs suggest.
+    let retry = "branch-scans-acme";
+    let (status, _, refused) = branch_retried(&backend, &source, "Scans: Acme", retry).await;
     assert_eq!(
         (status, &refused["error"]["code"]),
         (422, &json!("branch_incomplete")),
@@ -295,16 +319,23 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
         "the relay governs nothing of it"
     );
 
-    // The chunk arrives: the same call makes the branch, which holds the file
-    // whole.
+    // The chunk arrives: the same call, under the same key, makes the branch,
+    // which holds the file whole.
     store.put(&held).unwrap();
-    let (status, branched) = branch_of(&backend, &source, "Scans: Acme").await;
+    let (status, replayed, branched) =
+        branch_retried(&backend, &source, "Scans: Acme", retry).await;
     assert_eq!(status, 201, "{branched}");
+    assert!(!replayed, "the refusal was not kept: the call ran again");
     let branch = branched["id"].as_str().unwrap().to_owned();
     assert_eq!(
         kept_bytes(&on_relay, &branch, &manifest_of(&scan)).as_deref(),
         Some(scan.as_slice())
     );
+    // Asked once more under that key, it answers the same branch and makes
+    // no second one.
+    let (status, replayed, again) = branch_retried(&backend, &source, "Scans: Acme", retry).await;
+    assert_eq!((status, replayed), (201, true), "{again}");
+    assert_eq!(again["id"], branched["id"]);
     assert_eq!(listed_as(&backend, "Scans: Acme").await, [branch]);
 }
 
