@@ -472,6 +472,13 @@ pub fn person_menu(session: &Session) -> Option<String> {
 /// What the canvas is called in the language the session speaks: [`CANVAS`] in English, the
 /// shell's own catalogue's word for it in any other.
 pub fn canvas_word() -> String {
+    shell_word("canvas", CANVAS)
+}
+
+/// The shell's own word for the name `declared` its views pass to a map (`canvas`, `spaces`,
+/// `desktop`), in the language the session speaks, read from the shell's catalogue; `otherwise`
+/// where the shell names none.
+fn shell_word(declared: &str, otherwise: &str) -> String {
     use tilolang_tilo::tilolang::messages;
     let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
     let locale = ui::i18n::I18nManager::current_locale();
@@ -481,12 +488,25 @@ pub fn canvas_word() -> String {
             .join(format!("{locale}.ftl")),
     )
     .unwrap_or_default();
+    let entry = format!("{declared} = ");
     std::fs::read_to_string(shell.join("app.ids"))
         .unwrap_or_default()
         .lines()
-        .find_map(|line| line.strip_prefix("canvas = "))
+        .find_map(|line| line.strip_prefix(entry.as_str()))
         .and_then(|id| messages::word(&catalogue, &messages::key_of(id.trim())))
-        .unwrap_or_else(|| CANVAS.to_owned())
+        .unwrap_or_else(|| otherwise.to_owned())
+}
+
+/// The map the style `style` (`so.tilo.shell:spaces`) draws its places in: the name its view passes
+/// (`canvas`, `spaces`, `desktop`) and the word an English shell names it by. `None` for a style
+/// that draws no map of its own (the strips), whose bar's switch says which style it shows instead.
+fn style_map(style: &str) -> Option<(&'static str, &'static str)> {
+    match style {
+        "so.tilo.shell:frames" => Some(("canvas", CANVAS)),
+        "so.tilo.shell:spaces" => Some(("spaces", "Spaces")),
+        "so.tilo.shell:desktop" => Some(("desktop", "Desktop")),
+        _ => None,
+    }
 }
 
 /// Whether the shell shows the Frames canvas: its canvas stands, and its bar carries no preset
@@ -535,11 +555,14 @@ pub fn show_preset(session: &mut Session, style: &str) {
         (!session.shell_parts().is_empty()).then_some(())
     });
     // A shell already showing it says so, and refuses to show it again in the person's language:
-    // what the switch names decides it.
-    // The canvas keeps no switch on its bar (`canvas.md` §7): it says it shows the canvas by the
-    // canvas standing under a bar that names no style.
+    // what the switch names decides it. A style whose bar carries no switch — the canvas's, which
+    // keeps only the clock and the status (`canvas.md` §7), and the desktop's, which carries the
+    // window in front's commands — says it is shown by the map it draws.
     let shows = |session: &Session| {
-        switch_says(session, &label) || (style == FRAMES && canvas_shown(session))
+        switch_says(session, &label)
+            || style_map(style).is_some_and(|(declared, english)| {
+                on_screen(session, &shell_word(declared, english)).is_some()
+            })
     };
     if !shows(session) {
         session

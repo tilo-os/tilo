@@ -26,16 +26,10 @@ use tilo_compositor::InputEvent;
 use tilo_session::Session;
 use tilo_session_core::surface::Scroll;
 
-use crate::common::{CANVAS, on_screen, until};
+use crate::common::{on_screen, until};
 
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
-/// The Spaces style's map, as assistive technology names it: its places stand as their own views
-/// there, so its map is the style's own and not the framed style's canvas ([`CANVAS`]).
-const SPACES: &str = "Spaces";
-/// The desktop style's map, as assistive technology names it: its frames float over the shell,
-/// so its map is neither style's canvas.
-const DESKTOP: &str = "Desktop";
 /// What the notification centre draws when nothing waits in it: its own empty state, which no
 /// other surface of the shell shows.
 const NOTHING_TO_CATCH_UP_ON: &str = "Nothing to catch up on";
@@ -67,47 +61,30 @@ fn note_ids(session: &Session) -> Vec<String> {
     out
 }
 
-/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does. The traditional
-/// desktop is the shell's own layout, which the bar's preset switch and the settings page's card
-/// both reach: `apply(windows_desktop)` is the whole preset at once (`chrome.tl`), and the shell
-/// draws it as such (`shell.tl`'s `screen`). The three canvas presets are the switch's own rows.
+/// Show the style `preset` ("Strips", "Frames", "Spaces", "Desktop") the way a person does: the
+/// shell's own `show_style`, which every row of the style switch and the canvas's person menu runs
+/// (`show_preset`). It waits for the map the style draws, so the style is read by what the shell
+/// shows, never by pixels.
 #[track_caller]
-fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
-    if preset == "Desktop" {
-        session
-            .run_shell_action("apply", vec![Value::from("windows_desktop")])
-            .unwrap_or_else(|why| panic!("the shell shows {preset}: {why}"));
-    } else {
-        let mut repl = crate::common::Repl::connect(&root.join("agent.sock"));
-        repl.opened(session);
-        let (answer, failed) = repl.run(
-            session,
-            &format!(
-                "shell.show_style(shell.viewing, style: \"so.tilo.shell:{}\")",
-                preset.to_lowercase()
-            ),
-        );
-        assert!(
-            !failed || answer.contains("shown that way already"),
-            "the shell shows {preset}: {answer}"
-        );
-    }
-    match preset {
-        "Frames" => until(session, "the canvas", |session| {
-            on_screen(session, CANVAS).is_some()
-        }),
-        "Spaces" => until(session, "the spaces", |session| {
-            on_screen(session, SPACES).is_some()
-        }),
-        "Desktop" => until(session, "the desktop", |session| preset_menu_gone(session)),
-        _ => until(session, "the strips", |session| {
-            on_screen(session, CANVAS).is_none() && on_screen(session, SPACES).is_none()
-        }),
-    }
+fn show_style(session: &mut Session, preset: &str) {
+    crate::common::show_preset(session, &format!("so.tilo.shell:{}", preset.to_lowercase()));
 }
 
-/// Whether the shell shows the traditional desktop: its bar drops the preset switch (its own bar
-/// carries the focused window's commands instead), and the dock rides its foot.
+/// Show the traditional desktop's chrome the way the settings page's card does: the preset
+/// `windows_desktop` applied (`chrome.tl`), which lists the window in front's commands on the bar
+/// and rides the dock on its foot.
+#[track_caller]
+fn show_traditional_chrome(session: &mut Session) {
+    session
+        .run_shell_action("apply", vec![Value::from("windows_desktop")])
+        .unwrap_or_else(|why| panic!("the shell shows the traditional desktop: {why}"));
+    until(session, "the traditional desktop", |session| {
+        preset_menu_gone(session)
+    });
+}
+
+/// Whether the shell shows the traditional desktop's chrome: its bar drops the preset switch (its
+/// own bar carries the focused window's commands instead), and the dock rides its foot.
 fn preset_menu_gone(session: &Session) -> bool {
     crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
 }
@@ -184,7 +161,7 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     });
     place(&mut session, &notes[0], 100, 120, 480, 360);
     place(&mut session, &notes[1], 700, 120, 480, 360);
-    show(&mut session, root.path(), "Desktop");
+    show_traditional_chrome(&mut session);
 
     for note in &notes {
         let name = crate::common::drawn_name(&session, note);
@@ -218,7 +195,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     place(&mut session, &notes[0], 100, 120, 480, 360);
     let mail = root_of(&session, ".Mail");
     place(&mut session, &mail, 700, 120, 480, 360);
-    show(&mut session, root.path(), "Desktop");
+    show_traditional_chrome(&mut session);
 
     // The dock shows the apps the placed windows belong to, running: Notes and Mail.
     until(&mut session, "the dock's items", |session| {
@@ -282,7 +259,7 @@ fn every_pan_gesture_pans_every_time() {
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
     });
-    show(&mut session, root.path(), "Frames");
+    show_style(&mut session, "Frames");
     place(&mut session, &notes[0], 40, 40, 480, 360);
     let titled = crate::common::drawn_name(&session, &notes[0]);
     until(&mut session, "the frame", |session| {
@@ -525,7 +502,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
         on_screen(session, BELL).is_some()
     });
     place(&mut session, &notes[0], 100, 120, 480, 360);
-    show(&mut session, root.path(), "Desktop");
+    show_traditional_chrome(&mut session);
 
     let place = crate::common::places(&session)
         .into_iter()
@@ -575,7 +552,7 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
     });
-    show(&mut session, root.path(), "Frames");
+    show_style(&mut session, "Frames");
 
     // Two places at two points, each the size a place takes by default, 600 apart: less than a
     // frame's 720 width, so the second would lie over the first.
@@ -595,8 +572,8 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
     assert_eq!((stands[0].0, stands[0].1), (100, 120), "the first stays");
 }
 
-/// The bar's bell opens the notification centre in every preset: a press on it shows the centre,
-/// not the quick settings, and the next press closes it again.
+/// The bar's bell opens the notification centre in every preset: each row of the style switch shows
+/// the centre on a press, not the quick settings, and the next press closes it again.
 #[test]
 fn the_bells_press_opens_the_notification_centre_in_every_preset() {
     let _settled = ui::motion::testing::settled();
@@ -607,7 +584,7 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
     });
     place(&mut session, &notes[0], 100, 120, 480, 360);
     for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
-        show(&mut session, root.path(), preset);
+        show_style(&mut session, preset);
         until(
             &mut session,
             &format!("the bar's bell in the {preset} preset"),
@@ -632,35 +609,4 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
             |session| crate::common::shell_here(session) == "none",
         );
     }
-
-    // The desktop style, the switch's fourth row: its own bar is the traditional one, and its
-    // bell opens the same centre over the frames.
-    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
-    repl.opened(&mut session);
-    let (answer, failed) = repl.run(
-        &mut session,
-        "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
-    );
-    assert!(!failed, "the shell shows the desktop style: {answer}");
-    until(&mut session, "the desktop style", |session| {
-        preset_menu_gone(session) && on_screen(session, DESKTOP).is_some()
-    });
-    crate::common::press(&mut session, BELL);
-    until(
-        &mut session,
-        "the notification centre in the desktop style",
-        |session| on_screen(session, NOTHING_TO_CATCH_UP_ON).is_some(),
-    );
-    assert_eq!(
-        crate::common::shell_here(&session),
-        "centre",
-        "the bell opens the notifications on the desktop style"
-    );
-    // And the one surface at a time rule holds there too.
-    crate::common::press(&mut session, BELL);
-    until(
-        &mut session,
-        "the shell at rest on the desktop style",
-        |session| crate::common::shell_here(session) == "none",
-    );
 }
