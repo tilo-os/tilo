@@ -249,11 +249,14 @@ pub(crate) fn arrived() {
 }
 
 /// Why the relay refuses the change the delta `delta` carries by its author's
-/// role: a Viewer's role grants nothing to write, so no document change it
-/// sends is one the workspace takes, and the relay says so of a change of an
-/// encrypted record too, which it cannot read. `None` for any other role, for
-/// a workspace whose governor projected no standings (`standings`), and for a
-/// delta that carries no document change at all.
+/// role: a Viewer's role grants nothing to write in the workspace, so no
+/// document change it sends is one the workspace takes, and the relay says so
+/// of a change of an encrypted record too, which it cannot read. Their own
+/// record is no part of what the workspace grants ([`tilo_action_policy::member_record`]):
+/// it is theirs to write whatever their role. `None` for any other role, for
+/// a change of the author's own record, for a workspace whose governor
+/// projected no standings (`standings`), and for a delta that carries no
+/// document change at all.
 pub(crate) fn role_refusal(
     delta: &[u8],
     standings: Option<&crate::workspace::Standings>,
@@ -263,18 +266,18 @@ pub(crate) fn role_refusal(
     // workspace's own. A plane's key material and presence frames are no
     // document change and pass.
     let (_, _, body) = crate::coedit::retention_view(delta)?;
+    let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body).ok()?;
     if !matches!(
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
-        Ok(neighbour_wire::NeighbourMsg::AppDocument { .. }
-            | neighbour_wire::NeighbourMsg::SyncResp { .. })
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { .. }
+            | neighbour_wire::NeighbourMsg::SyncResp { .. }
     ) {
         return None;
     }
     let standing = standings?.get(&author_device)?;
-    if standing
-        .policy
-        .active_role(standing.person_id().unwrap_or_default())
-        != Some(tilo_action_policy::Role::Viewer)
+    let person = standing.person_id().unwrap_or_default();
+    if standing.policy.active_role(person) != Some(tilo_action_policy::Role::Viewer)
+        || writes_own_record(&message, person)
     {
         return None;
     }
@@ -284,6 +287,18 @@ pub(crate) fn role_refusal(
             kind: tilo_action_policy::ActionKind::Undoable,
         }
         .to_string(),
+    )
+}
+
+/// Whether `message` is a change of `person`'s own record, which only they
+/// read and write whatever their role in the workspace.
+fn writes_own_record(message: &neighbour_wire::NeighbourMsg, person: &str) -> bool {
+    matches!(
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { record_id, .. }
+            if !person.is_empty()
+                && tilo_action_policy::member_record(record_id)
+                    .is_some_and(|(owner, _)| owner == person)
     )
 }
 

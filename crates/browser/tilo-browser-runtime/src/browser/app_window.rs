@@ -86,6 +86,7 @@ impl AppPage {
                 self.config.record.as_deref(),
                 self.config.new_document,
                 self.config.instance,
+                &MemberId::person(self.config.author()),
             ),
             Ok(crate::app_page::Opening::Arriving)
         )
@@ -103,6 +104,7 @@ impl AppPage {
             config.record.as_deref(),
             config.new_document,
             config.instance,
+            &MemberId::person(config.author()),
         )
         .map_err(|unopened| match unopened {
             crate::app_page::Unopened::InvalidRecord => error("invalid record id"),

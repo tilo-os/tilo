@@ -8,6 +8,7 @@ use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use ui::application::{AppComponent, HostContext, RestoreInput};
 use ui::automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ui::launch::LaunchError;
+use ui::permissions::MemberId;
 use ui::record::{RecordKind, RecordOwners};
 use ui::widget::IconDescriptor;
 
@@ -40,6 +41,12 @@ fn definition(workspace_record: bool) -> ApplicationDefinition {
         opens_before_record: false,
         create: no_component,
     }
+}
+
+/// The person the page opens as: their user root key, which names their own
+/// records.
+fn author() -> MemberId {
+    MemberId::person("ad".repeat(32))
 }
 
 /// The record a page naming none opens, as [`opening`] names it.
@@ -117,7 +124,7 @@ tilo_test_env::scenario! {
         let want = default_record(&definition);
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Arriving
         ));
         assert_eq!(
@@ -130,7 +137,7 @@ tilo_test_env::scenario! {
         let theirs = written_elsewhere(&want, "the workspace's");
         arrives(&memory, &store, &want.id, theirs);
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-            opening(&definition, &store, None, false, INSTANCE).unwrap()
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
         else {
             panic!("the record the workspace sent is what opens");
         };
@@ -152,11 +159,11 @@ tilo_test_env::scenario! {
         let want = default_record(&definition);
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Arriving
         ));
         store.note_workspace_answered(want.id.clone());
-        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap() else {
             panic!("a record the workspace does not hold is a new one");
         };
         assert_eq!(id, want.id, "the new record is the one the page named");
@@ -173,13 +180,13 @@ tilo_test_env::scenario! {
         let want = RecordCheckout::package_primary(definition.record_kind.clone());
 
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Arriving
         ));
         let theirs = written_elsewhere(&want, "the workspace's own");
         arrives(&memory, &store, &want.id, theirs);
         let Opening::Target(LaunchTarget::Record { checkout, .. }) =
-            opening(&definition, &store, None, false, INSTANCE).unwrap()
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
         else {
             panic!("the workspace's own document is what opens");
         };
@@ -188,12 +195,12 @@ tilo_test_env::scenario! {
         // A workspace that holds none of it: the app starts it.
         let (_memory, store) = page(&definition);
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Arriving
         ));
         store.note_workspace_answered(want.id);
         assert!(matches!(
-            opening(&definition, &store, None, false, INSTANCE).unwrap(),
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
             Opening::Target(LaunchTarget::PrimaryNew)
         ));
     }
@@ -206,11 +213,49 @@ tilo_test_env::scenario! {
         let store = owners.open(PACKAGE, WORKSPACE).unwrap();
         let definition = definition(false);
         let want = default_record(&definition);
-        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE).unwrap() else {
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap() else {
             panic!("a record of the page's own is new");
         };
         assert_eq!(id, want.id);
         assert!(store.wanted_records().is_empty());
+    }
+
+    phase an_app_each_member_keeps_opens_the_persons_own_record;
+    // An app whose record is each member's own (Settings: the person's appearance, accounts and
+    // devices) opens the person's own record, never the workspace's: it waits for the workspace
+    // to send the one another device of theirs wrote, then starts it as theirs.
+    {
+        let mut definition = definition(true);
+        definition.member_record = true;
+        let own = RecordId::of_member(&author().key(), definition.record_kind.as_str())
+            .expect("a root key names an own record");
+        let (_memory, store) = page(&definition);
+        assert!(matches!(
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap(),
+            Opening::Arriving
+        ));
+        assert_eq!(
+            store.wanted_records(),
+            std::slice::from_ref(&own),
+            "the person's own record is asked for, not the workspace's"
+        );
+        store.note_workspace_answered(own.clone());
+        let Opening::New(id) = opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
+        else {
+            panic!("the person starts their own record");
+        };
+        assert_eq!(id, own);
+
+        // Theirs, once a device of theirs wrote it: that is what opens.
+        let (memory, store) = page(&definition);
+        let checkout = RecordCheckout::new(own.clone(), definition.record_kind.clone());
+        arrives(&memory, &store, &own, written_elsewhere(&checkout, "mine"));
+        let Opening::Target(LaunchTarget::Record { checkout, .. }) =
+            opening(&definition, &store, None, false, INSTANCE, &author()).unwrap()
+        else {
+            panic!("the person's own record opens");
+        };
+        assert_eq!(checkout.id, own);
     }
 
     phase a_window_on_a_record_still_on_its_way_waits_for_it;

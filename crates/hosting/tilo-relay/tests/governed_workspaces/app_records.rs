@@ -273,3 +273,109 @@ async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     assert!(!store.has(&dropped), "content nothing names is let go of");
     relay.shutdown().await;
 }
+
+/// A Viewer writes nothing of the workspace's, but their own record of an app
+/// (`member:<root>:<kind>`, their settings) is theirs whatever their role: the
+/// relay keeps their change of it and their other device takes it in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_viewer_writes_their_own_record() {
+    const OWN_APP: &str = "so.tilo.settings";
+    let alice = TestUser::fresh("Fixture governor");
+    let carol = TestUser::fresh("Fixture viewer");
+    let host = alice.enrol("own-host", DeviceCapabilities::member());
+    let laptop = alice.enrol("own-laptop", DeviceCapabilities::primary());
+    let viewer = carol.enrol("own-viewer", DeviceCapabilities::member());
+    let phone = carol.enrol("own-viewer-phone", DeviceCapabilities::member());
+    let scratch = tempfile::tempdir().unwrap();
+    let relay = start(scratch.path(), &alice, &host).await;
+    let hosted = create_and_enter(&relay, &laptop, "A viewer's own record").await;
+    let workspace = hosted.workspace_id;
+    admit_viewer(&relay, &host, &viewer, &hosted.workspace).await;
+    let roster = vec![
+        host.cert.clone(),
+        laptop.cert.clone(),
+        viewer.cert.clone(),
+        phone.cert.clone(),
+    ];
+    let replica = || {
+        let mut peer = StatePeer::new(
+            &hosted.workspace,
+            host.cert.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            SystemTime::now(),
+        )
+        .unwrap();
+        peer.select_exact_admissions().unwrap();
+        peer
+    };
+    let own = tilo_action_policy::member_record_id(&hex::encode(carol.user_pk), "settings.root");
+    let viewer_session = session(&relay, &viewer, workspace).await;
+    let phone_session = session(&relay, &phone, workspace).await;
+    let mut viewer_peer = replica();
+    let mut phone_peer = replica();
+    for (session, peer) in [
+        (&viewer_session, &mut viewer_peer),
+        (&phone_session, &mut phone_peer),
+    ] {
+        receive_until(
+            "the viewer's device holds the workspace",
+            session,
+            peer,
+            &mut Vec::new(),
+            |peer, _| peer.admitted_workspace().is_some(),
+        )
+        .await;
+    }
+    crate::common::wait_until_subscribed(&relay, workspace, &phone.device_pubkey()).await;
+
+    let created = viewer_peer
+        .publication_mut()
+        .publish_document(
+            OWN_APP,
+            &own,
+            AutoCommit::new().save(),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&viewer_session, &created);
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "theme", "dark").unwrap();
+    doc.commit_edit("fixture", "theme");
+    let chosen = viewer_peer
+        .publication_mut()
+        .publish_incremental(
+            OWN_APP,
+            &own,
+            doc.save_after(&[]),
+            &viewer.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    publish(&viewer_session, &chosen);
+    receive_until(
+        "the viewer's other device takes in their own record",
+        &phone_session,
+        &mut phone_peer,
+        &mut Vec::new(),
+        |peer, _| {
+            let Some(doc) = peer
+                .document(OWN_APP, &own)
+                .and_then(|bytes| AutoCommit::load(&bytes).ok())
+            else {
+                return false;
+            };
+            doc.get(ROOT, "theme")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_string().ok())
+                .as_deref()
+                == Some("dark")
+        },
+    )
+    .await;
+    phone_session.close().await;
+    viewer_session.close().await;
+    relay.shutdown().await;
+}

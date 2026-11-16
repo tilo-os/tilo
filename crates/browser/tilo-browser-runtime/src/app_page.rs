@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::application::{ApplicationDefinition, LaunchTarget};
+use ui::permissions::MemberId;
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners, RecordStore};
 
 /// What a page showing one app opens now.
@@ -93,15 +94,22 @@ pub(crate) fn store(
 }
 
 /// What a page showing `definition` opens in `records`: `record` is the id its
-/// link names, else the instance's default record or the app's own document of
-/// the workspace.
+/// link names, else `author`'s own record of an app each member keeps their
+/// own of, the instance's default record or the app's own document of the
+/// workspace.
 pub(crate) fn opening(
     definition: &ApplicationDefinition,
     records: &RecordStore,
     record: Option<&str>,
     new_document: bool,
     instance: u64,
+    author: &MemberId,
 ) -> Result<Opening, Unopened> {
+    if record.is_none()
+        && let Some(own) = own_opening(definition, records, author)
+    {
+        return own;
+    }
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
     let default = RecordCheckout::new(
@@ -136,6 +144,29 @@ pub(crate) fn opening(
             Err(error) => Err(Unopened::Records(error)),
         },
     }
+}
+
+/// `author`'s own record of `definition`, when the app keeps one per member
+/// ([`ApplicationDefinition::member_record`]): theirs alone, which they start
+/// and change whatever their role in the workspace, so a window of it never
+/// waits for someone who writes there. It is still the workspace's to send
+/// when another device of theirs wrote it. `None` for an app whose records
+/// are the workspace's.
+pub(crate) fn own_opening(
+    definition: &ApplicationDefinition,
+    records: &RecordStore,
+    author: &MemberId,
+) -> Option<Result<Opening, Unopened>> {
+    let own = definition.member_record_of(author)?;
+    Some(match records.try_open_record(&own) {
+        Ok(_) => Ok(Opening::Target(LaunchTarget::Record {
+            checkout: own,
+            reveal: None,
+        })),
+        Err(RecordOpenError::MissingRecord) => Ok(Opening::New(own.id)),
+        Err(RecordOpenError::Arriving) => Ok(Opening::Arriving),
+        Err(error) => Err(Unopened::Records(error)),
+    })
 }
 
 /// What a page naming no record opens where the application decides: the

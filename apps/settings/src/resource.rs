@@ -162,6 +162,14 @@ impl ResourceApp for SettingsShell {
         }
     }
 
+    /// What Settings shows is the person's own (their appearance, accounts,
+    /// devices, agent models), not the workspace's: each member keeps their
+    /// own record of it, which they change whatever their role in the
+    /// workspace.
+    fn member_record() -> bool {
+        true
+    }
+
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::names()
     }
@@ -457,5 +465,25 @@ mod web_tests {
                 page.slug
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod own_record_tests {
+    /// What Settings changes is the person's: a window naming no record opens
+    /// their own record of the workspace, never the workspace's, so a reader
+    /// of the workspace changes their own settings like anyone else.
+    #[test]
+    fn settings_opens_the_persons_own_record() {
+        let definition = ui::framework::definition::<super::SettingsShell>();
+        let person = ui::permissions::MemberId::person("ad".repeat(32));
+        let own = definition
+            .member_record_of(&person)
+            .expect("each member keeps their own Settings record");
+        assert!(
+            own.id.as_str().starts_with("member:"),
+            "{}",
+            own.id.as_str()
+        );
     }
 }

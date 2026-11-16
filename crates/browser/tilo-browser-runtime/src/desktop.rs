@@ -479,13 +479,20 @@ impl Shared {
         })
     }
 
-    /// The tab showing `app`'s record `record`, by route.
+    /// The tab showing `app`'s record `record`, by route. The empty route is
+    /// the app's own record here: the workspace's, or the person's own of an
+    /// app each member keeps their own of (the only member record this page
+    /// opens is its person's).
     pub fn tab_on(&self, app: &str, record: &str) -> Option<TabId> {
         let kind = application(app)?.record_kind.clone();
+        let shows = |route: &str| {
+            route == record
+                || (record.is_empty() && tilo_action_policy::member_record(route).is_some())
+        };
         self.records
             .borrow()
             .iter()
-            .find(|(_, checkout)| checkout.id.route() == record && checkout.kind == kind)
+            .find(|(_, checkout)| shows(checkout.id.route()) && checkout.kind == kind)
             .map(|(tab, _)| *tab)
     }
 
@@ -923,7 +930,12 @@ impl Tiles {
         }
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
-        if named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew) {
+        // A member's own record is theirs to start whatever their role; the
+        // workspace's record waits for someone who writes there.
+        let own = named_new
+            .as_ref()
+            .is_some_and(|id| tilo_action_policy::member_record(id.as_str()).is_some());
+        if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
         let restore = self
@@ -1177,7 +1189,8 @@ impl Tiles {
         Err(Unready::Notice(notice))
     }
 
-    /// The record `tab` opens: its saved one, the workspace's own record, or a
+    /// The record `tab` opens: its saved one, the person's own record of an
+    /// app each member keeps their own of, the workspace's own record, or a
     /// new one.
     fn launch_target(
         &self,
@@ -1194,14 +1207,50 @@ impl Tiles {
                 },
                 None,
             )),
-            None if definition.keeps_workspace_record() => Ok((
-                definition
-                    .unsaved_target(store)
-                    .map_err(|error| self.unopened(tab, &error))?,
-                None,
-            )),
-            None => self.unbound_target(definition, store, tab),
+            None => self
+                .own_target(definition, store, tab)
+                .unwrap_or_else(|| self.workspace_target(definition, store, tab)),
         }
+    }
+
+    /// The person's own record of an app that keeps one per member
+    /// ([`crate::app_page::own_opening`]), made on first use.
+    fn own_target(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: &RecordStore,
+        tab: TabId,
+    ) -> Option<Result<(LaunchTarget, Option<RecordId>), Unready>> {
+        let author = MemberId::person(self.inputs.author.clone());
+        let opening = crate::app_page::own_opening(definition, store, &author)?;
+        Some(match opening {
+            Ok(crate::app_page::Opening::Target(target)) => Ok((target, None)),
+            Ok(crate::app_page::Opening::New(id)) => Ok((LaunchTarget::New, Some(id))),
+            Ok(crate::app_page::Opening::Arriving) => {
+                Err(self.unopened(tab, &ui::record::RecordOpenError::Arriving))
+            }
+            Err(crate::app_page::Unopened::Records(error)) => Err(self.unopened(tab, &error)),
+            Err(crate::app_page::Unopened::InvalidRecord) => {
+                Err(Unready::Notice("invalid record id".into()))
+            }
+        })
+    }
+
+    /// The record a window that names none opens in the workspace: the
+    /// workspace's own record of an app that keeps one, else its default.
+    fn workspace_target(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: &RecordStore,
+        tab: TabId,
+    ) -> Result<(LaunchTarget, Option<RecordId>), Unready> {
+        if !definition.keeps_workspace_record() {
+            return self.unbound_target(definition, store, tab);
+        }
+        let target = definition
+            .unsaved_target(store)
+            .map_err(|error| self.unopened(tab, &error))?;
+        Ok((target, None))
     }
 
     /// Why `tab`'s record did not open: one the workspace still sends (or
