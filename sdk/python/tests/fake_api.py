@@ -143,6 +143,8 @@ class FakeApi:
         self.append_pending = False
         self.cancelled: list[str] = []
         self.undone: list[str] = []
+        # Every run the workspace lists, oldest first, as its host keeps them.
+        self.runs: list[dict[str, Any]] = []
         # Files: the uploads received, and the bytes content names.
         self.uploads: list[bytes] = []
         self.contents: dict[str, bytes] = {}
@@ -320,6 +322,8 @@ class FakeApi:
             return httpx.Response(200, content=data, headers=self.headers())
         if after == "events":
             return self.stream(self.events, call)
+        if after == "runs" and request.method == "GET":
+            return self.list_runs(call)
         if after.startswith("runs/"):
             return self.run_route(request, after.removeprefix("runs/"))
         return self.refuse(404, "not_found", "the API has no such route")
@@ -584,6 +588,49 @@ class FakeApi:
             [f"GET /v1/workspaces/{WORKSPACE_ID}/resources?path={path} lists its actions"],
         )
 
+    def note_run(self, run: str, path: str, status: str, changes: int) -> None:
+        """Keep `run` as the workspace's host lists it."""
+        self.runs.append(
+            {
+                "id": run,
+                "calls": [run],
+                "by": {"name": "Visa backend", "kind": "agent"},
+                "status": status,
+                "started_ms": len(self.runs) + 1,
+                "action": path,
+                "changes": changes,
+                "undone": 0,
+                "undoable": changes > 0,
+                "recorded": changes > 0,
+                "remembered": True,
+            }
+        )
+
+    def listed_as(self, run: str, status: str) -> None:
+        for listed in self.runs:
+            if listed["id"] == run:
+                listed["status"] = status
+                if status == "undone":
+                    listed["undone"] = listed["changes"]
+                    listed["undoable"] = False
+
+    def list_runs(self, call: dict[str, Any]) -> httpx.Response:
+        """A page of the runs, newest first; the cursor is where it ends."""
+        newest = list(reversed(self.runs))
+        limit = min(int(call["query"].get("limit") or 50), 200)
+        start = int(call["query"].get("cursor") or 0)
+        page = newest[start : start + limit]
+        answer: dict[str, Any] = {
+            "runs": page,
+            "total": len(newest),
+            "waiting": sum(1 for run in newest if run["status"] == "waiting"),
+            "pending": False,
+            "text": "\n".join(f"{run['id']} {run['status']}" for run in page),
+        }
+        if start + limit < len(newest):
+            answer["next_cursor"] = str(start + limit)
+        return self.answer(200, answer)
+
     def apply_edit(self, resource: str, edit: dict[str, Any]) -> None:
         steps = list(edit.get("path") or [])
         if not steps or not isinstance(steps[0], dict):
@@ -622,11 +669,13 @@ class FakeApi:
             answer["result"] = result
         if link is not None:
             answer["link"] = link
+        self.note_run(answer["run"], path, "ended", len(resources or []))
         return self.answer(200, answer)
 
     def pending(self, path: str) -> httpx.Response:
         run = f"run-{len(self.requests)}"
         self.polls[run] = 0
+        self.note_run(run, path, "running", 0)
         return httpx.Response(
             202,
             json={"status": "pending", "run": run},
@@ -637,10 +686,12 @@ class FakeApi:
         run, _, after = rest.partition("/")
         if after == "cancel":
             self.cancelled.append(run)
+            self.listed_as(run, "cancelled")
             self.finished[run] = {"status": "cancelled", "run": run, "path": f"{TODO}#append-paragraph"}
             return self.answer(200, self.finished[run])
         if after == "undo":
             self.undone.append(run)
+            self.listed_as(run, "undone")
             return self.answer(200, {"status": "ok", "undone": [TODO]})
         if after == "output":
             return self.stream(self.output_for(run), None)

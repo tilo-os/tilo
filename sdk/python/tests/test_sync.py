@@ -93,6 +93,16 @@ def test_a_sync_key_is_minted_and_listed(api):
         assert key.grant == "g-root"
 
 
+def test_a_sync_listing_of_runs_is_walked_to_the_oldest(api):
+    with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
+        workspace = tilo.workspace("jane-doe")
+        workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+        workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
+        runs = workspace.runs(limit=1)
+        assert runs.total == 2
+        assert [run.id for run in runs] == [listed["id"] for listed in reversed(api.runs)]
+
+
 def test_a_sync_branch_answers_the_new_workspace(api):
     with Tilo(key=api.key, url=URL, http=api.client(URL)) as tilo:
         created = tilo.workspaces.create("Template")

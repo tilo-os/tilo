@@ -10,6 +10,8 @@ from tilo import (
     Refused,
     Resource,
     Run,
+    RunInfo,
+    RunList,
 )
 
 from fake_api import PDF, TODO, WORKSPACE_ID, FakeApi, link_to
@@ -151,6 +153,34 @@ async def test_a_run_is_cancelled_and_undone(workspace, api):
     undone = await run.undo()
     assert undone == {"status": "ok", "undone": [TODO]}
     assert api.undone == [run.run_id]
+
+
+async def test_the_workspaces_runs_list_newest_first_and_read_on_page_by_page(workspace, api):
+    await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")
+    api.append_pending = True
+    run = await workspace.do(f"{TODO}#append-paragraph", text="Buy bread")
+    await run.undo()
+
+    first = await workspace.runs(limit=1)
+
+    assert isinstance(first, RunList)
+    assert (first.total, first.waiting, first.next_cursor) == (2, 0, "1")
+    newest = first.runs[0]
+    assert isinstance(newest, RunInfo)
+    assert (newest.id, newest.status, newest.by, newest.by_kind) == (
+        run.run_id,
+        "undone",
+        "Visa backend",
+        "agent",
+    )
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs")[-1]["query"] == {"limit": "1"}
+    every = [listed async for listed in first]
+    assert [listed.status for listed in every] == ["undone", "ended"]
+    assert every[1].changes == 1 and every[1].undoable
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/runs")[-1]["query"] == {
+        "limit": "1",
+        "cursor": "1",
+    }
 
 
 async def test_a_run_output_follows_its_events(workspace, api):

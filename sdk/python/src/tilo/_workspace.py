@@ -19,6 +19,7 @@ from ._models import (
     MintedKey,
     ProgramAnswer,
     Row,
+    RunList,
     WorkspaceExport,
     WorkspaceInfo,
 )
@@ -278,6 +279,28 @@ class Workspace:
 
     async def _status(self, run: str, cancel: bool) -> Mapping[str, Any]:
         return await (await self._endpoint()).status(run, cancel)
+
+    def runs(self, limit: int | None = None) -> Any:
+        """Every run in the workspace, newest first, whoever ran it: a
+        `RunList` of `RunInfo`s, `limit` to a page (50 unless said, at most
+        200); iterating it reads on to the oldest.
+
+        Each says who ran it, how it stands (`waiting` for the person,
+        `running`, `ended`, `failed`, `cancelled`, `undone`), when, what it
+        changed and whether it can still be taken back. Its `id` is what
+        `status` reads and stops; a run the host no longer remembers, after
+        it restarted, is listed from the workspace's records without one.
+        """
+        return self.client.handoff(self._runs(limit))
+
+    async def _runs(self, limit: int | None, cursor: str | None = None) -> RunList:
+        endpoint = await self._endpoint()
+        answer = await endpoint.json(
+            "GET", endpoint.path("runs"), query={"limit": limit, "cursor": cursor}
+        )
+        return RunList.of(
+            answer, self.client, lambda next_cursor: self._runs(limit, next_cursor)
+        )
 
     def program(self, source: str, confirm: bool | None = None) -> Any:
         """Run a tilolang program as this run's task."""

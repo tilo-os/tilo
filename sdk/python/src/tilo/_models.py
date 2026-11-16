@@ -388,6 +388,129 @@ class Listing:
 
 
 @dataclass(frozen=True)
+class RunInfo:
+    """One run of a workspace, as its listing names it: who ran it, how it
+    stands, when, and what it changed.
+
+    `id` is what `ws.status(id)` reads and the run's `undo` takes back,
+    while the host remembers the run's calls; a run known only from the
+    workspace's records (the host restarted since) has none, and is told
+    apart by `step`, the undo step its changes keep in each record's history.
+    """
+
+    status: str
+    """`waiting` (for the person), `running`, `ended`, `failed`,
+    `cancelled` or `undone`."""
+    by: str
+    """Who ran it: the key's name, an agent's or a person's."""
+    by_kind: str = ""
+    """`agent` (every key is one), `person`, `bot` or `automation`."""
+    id: str | None = None
+    calls: Sequence[str] = ()
+    step: str | None = None
+    title: str | None = None
+    failure: str | None = None
+    started_ms: int = 0
+    ended_ms: int | None = None
+    action: str | None = None
+    summary: str | None = None
+    changes: int = 0
+    undone: int = 0
+    records: Sequence[Mapping[str, Any]] = ()
+    undoable: bool = False
+    undo_blocked: str | None = None
+    recorded: bool = False
+    remembered: bool = False
+    raw: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, raw: Mapping[str, Any]) -> RunInfo:
+        by = raw.get("by") if isinstance(raw.get("by"), Mapping) else {}
+        return cls(
+            status=str(raw.get("status") or ""),
+            by=str(by.get("name") or ""),
+            by_kind=str(by.get("kind") or ""),
+            id=_text(raw.get("id")),
+            calls=tuple(call for call in raw.get("calls") or () if isinstance(call, str)),
+            step=_text(raw.get("step")),
+            title=_text(raw.get("title")),
+            failure=_text(raw.get("failure")),
+            started_ms=_int(raw.get("started_ms")) or 0,
+            ended_ms=_int(raw.get("ended_ms")),
+            action=_text(raw.get("action")),
+            summary=_text(raw.get("summary")),
+            changes=_int(raw.get("changes")) or 0,
+            undone=_int(raw.get("undone")) or 0,
+            records=tuple(
+                record for record in raw.get("records") or () if isinstance(record, Mapping)
+            ),
+            undoable=bool(raw.get("undoable")),
+            undo_blocked=_text(raw.get("undo_blocked")),
+            recorded=bool(raw.get("recorded")),
+            remembered=bool(raw.get("remembered")),
+            raw=raw,
+        )
+
+
+@dataclass
+class RunList:
+    """A page of a workspace's runs, newest first, with the totals: iterate it
+    (`for` on `Tilo`, `async for` on `AsyncTilo`) to read on to the oldest."""
+
+    runs: Sequence[RunInfo] = ()
+    total: int = 0
+    """Runs the workspace holds, of which `runs` is a page."""
+    waiting: int = 0
+    """Of those, the runs waiting for the person."""
+    pending: bool = False
+    """A record could not be read yet: runs that changed only it are missing."""
+    next_cursor: str | None = None
+    text: str = ""
+    """The page as a person reads it, one line per run."""
+    _client: Any = None
+    _more: Callable[[str], Awaitable[RunList]] | None = None
+
+    @classmethod
+    def of(
+        cls,
+        raw: Mapping[str, Any],
+        client: Any = None,
+        more: Callable[[str], Awaitable[RunList]] | None = None,
+    ) -> RunList:
+        return cls(
+            runs=[RunInfo.of(run) for run in raw.get("runs") or [] if isinstance(run, Mapping)],
+            total=_int(raw.get("total")) or 0,
+            waiting=_int(raw.get("waiting")) or 0,
+            pending=bool(raw.get("pending")),
+            next_cursor=_text(raw.get("next_cursor")),
+            text=_text(raw.get("text")) or "",
+            _client=client,
+            _more=more,
+        )
+
+    def more(self) -> Any:
+        """The next page, older, or `None` on the last."""
+        if self._more is None or self.next_cursor is None:
+            return None
+        return self._client.handoff(self._more(self.next_cursor))
+
+    async def __aiter__(self) -> AsyncIterator[RunInfo]:
+        page: RunList | None = self
+        while page is not None:
+            for run in page.runs:
+                yield run
+            page = await page.more() if page.next_cursor else None
+
+    def __iter__(self) -> Iterator[RunInfo]:
+        if not getattr(self._client, "sync", False):
+            raise ProtocolError("the async client walks a listing of runs with `async for`")
+        page: RunList | None = self
+        while page is not None:
+            yield from page.runs
+            page = page.more()
+
+
+@dataclass(frozen=True)
 class Hit:
     """One search hit: a path the other calls take, and what it offers."""
 
