@@ -22,14 +22,18 @@ pub(crate) struct Chrome {
     pub(super) nav: NavShell,
     pub(super) context_menu: ContextMenu,
     pub(super) menu_commands: Vec<Option<FileCommand>>,
-    pub(super) submenu: ContextMenu,
-    pub(super) submenu_commands: Vec<Option<FileCommand>>,
+    pub(super) nested_commands: Nested,
 }
 
-pub(super) enum MenuChange {
-    Main(ContextMenu, Vec<Option<FileCommand>>),
-    Sub(ContextMenu, Vec<Option<FileCommand>>),
-    CloseSub,
+/// What the rows of the menus some rows open beside themselves do, by the
+/// row that opens each.
+pub(super) type Nested = Vec<(usize, Vec<Option<FileCommand>>)>;
+
+/// A menu Files opened, with what each of its rows does.
+pub(super) struct OpenedMenu {
+    pub(super) menu: ContextMenu,
+    pub(super) rows: Vec<Option<FileCommand>>,
+    pub(super) nested: Nested,
 }
 
 impl Chrome {
@@ -38,8 +42,7 @@ impl Chrome {
             nav,
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
-            submenu: ContextMenu::new(),
-            submenu_commands: Vec::new(),
+            nested_commands: Vec::new(),
         }
     }
 
@@ -80,23 +83,23 @@ impl Chrome {
         }
     }
 
-    pub(super) fn adopt(&mut self, changes: Vec<MenuChange>) {
-        for change in changes {
-            match change {
-                MenuChange::Main(menu, commands) => {
-                    self.context_menu = menu;
-                    self.menu_commands = commands;
-                }
-                MenuChange::Sub(menu, commands) => {
-                    self.submenu = menu;
-                    self.submenu_commands = commands;
-                }
-                MenuChange::CloseSub => {
-                    self.submenu.close();
-                    self.submenu_commands.clear();
-                }
-            }
+    pub(super) fn adopt(&mut self, opened: OpenedMenu) {
+        self.context_menu = opened.menu;
+        self.menu_commands = opened.rows;
+        self.nested_commands = opened.nested;
+    }
+
+    /// What the row a person chose in the open menu does: one of its own
+    /// rows, or a row of the menu one of them opened beside itself.
+    pub(super) fn take_chosen(&mut self) -> Option<FileCommand> {
+        if let Some(index) = self.context_menu.take_selection() {
+            return self.menu_commands.get(index).cloned().flatten();
         }
+        let (row, nested) = self.context_menu.take_submenu_selection()?;
+        self.nested_commands
+            .iter()
+            .find(|(opener, _)| *opener == row)
+            .and_then(|(_, rows)| rows.get(nested).cloned().flatten())
     }
 }
 
@@ -121,9 +124,11 @@ impl FileExplorerWidget {
     pub(super) fn with_state<T>(&mut self, f: impl FnOnce(&mut FilesState, &mut Chrome) -> T) -> T {
         let mut state = self.state.borrow_mut();
         let answer = f(&mut state, &mut self.chrome);
-        let menus = std::mem::take(&mut state.menus);
+        let opened = state.shown_menu.take();
         drop(state);
-        self.chrome.adopt(menus);
+        if let Some(opened) = opened {
+            self.chrome.adopt(opened);
+        }
         answer
     }
 
@@ -404,11 +409,7 @@ impl Widget for FileExplorerWidget {
         if self.state.borrow().collab_panel.is_some() {
             return Vec::new();
         }
-        let v: Vec<&dyn Widget> = vec![
-            &self.chrome.nav,
-            &self.chrome.context_menu,
-            &self.chrome.submenu,
-        ];
+        let v: Vec<&dyn Widget> = vec![&self.chrome.nav, &self.chrome.context_menu];
         v
     }
 
@@ -422,11 +423,7 @@ impl Widget for FileExplorerWidget {
             return Vec::new();
         }
         let chrome = &mut self.chrome;
-        let v: Vec<&mut (dyn Widget + '_)> = vec![
-            &mut chrome.nav,
-            &mut chrome.context_menu,
-            &mut chrome.submenu,
-        ];
+        let v: Vec<&mut (dyn Widget + '_)> = vec![&mut chrome.nav, &mut chrome.context_menu];
         v
     }
 

@@ -236,15 +236,44 @@ mod open_with_tests {
         phase open_with_lists_the_default_first_and_opens_exactly_the_chosen_app;
         {
             let mut w = pdf_widget();
+            w.state().rect = vello::kurbo::Rect::new(0.0, 0.0, 1200.0, 800.0);
             w.state().open_context_menu(Point::new(40.0, 40.0));
             assert!(menu_labels(&w.chrome().context_menu).contains(&"Open with".to_string()));
 
-            w.state().open_open_with_submenu(Point::new(200.0, 40.0));
+            // Choosing "Open with" keeps its menu open and lists the apps
+            // beside its own row.
+            let chrome = w.chrome();
+            let menu = &mut chrome.context_menu;
+            let row = menu
+                .items()
+                .iter()
+                .position(|item| item.label() == Some("Open with"))
+                .expect("an Open with row");
+            menu.click_item(row);
+            assert!(menu.is_open(), "the row menu stays open");
+            assert!(menu.is_submenu_open(), "the row opens its apps");
+            let row_rect = menu.item_rect(row).expect("the row is shown");
+            let nested = *menu
+                .painted_bounds(&ui::Theme::dark())
+                .last()
+                .expect("the apps are painted");
+            assert!(
+                nested.center().x > menu.get_rect().x1,
+                "beside the menu, not over it: {nested:?}"
+            );
+            assert!(
+                nested.y0 < row_rect.y1 && nested.y1 > row_rect.y0,
+                "level with its row {row_rect:?}: {nested:?}"
+            );
+            let apps = menu.items()[row].submenu_items().expect("the apps").to_vec();
             assert_eq!(
-                menu_labels(&w.chrome().submenu),
+                apps.iter()
+                    .filter_map(|item| item.label().map(str::to_string))
+                    .collect::<Vec<_>>(),
                 vec!["Evince (default)", "PDF Viewer", "Other application…"]
             );
-            let viewer = w.chrome().submenu_commands[1].clone().expect("an app row");
+            assert!(menu.choose_submenu_item(row, 1));
+            let viewer = chrome.take_chosen().expect("an app row");
             assert_eq!(
                 viewer,
                 FileCommand::OpenWith {
@@ -255,10 +284,7 @@ mod open_with_tests {
             // Each row wears the app's own glyph, and a row two apps share a name with says where the
             // machine got it.
             // An app the session handed artwork for wears it, its glyph standing by.
-            let rows: Vec<(Option<ui::icons::Icon>, Option<String>, Option<String>)> = w
-                .chrome()
-                .submenu
-                .items()
+            let rows: Vec<(Option<ui::icons::Icon>, Option<String>, Option<String>)> = apps
                 .iter()
                 .map(|item| match item {
                     ui::widget::context_menu::MenuItem::Action {
@@ -305,14 +331,11 @@ mod open_with_tests {
 
         phase a_type_no_app_opens_says_so_and_opens_nothing;
         {
-            let mut w = pdf_widget();
+            let w = pdf_widget();
             session_api::listing(Vec::new());
             w.state().invalidate_open_with();
-            w.state().open_open_with_submenu(Point::new(10.0, 10.0));
-            assert_eq!(
-                menu_labels(&w.chrome().submenu),
-                vec!["No application opens this file"]
-            );
+            let (rows, _) = w.state().open_with_rows();
+            assert_eq!(labels(&rows), vec!["No application opens this file"]);
             w.state().open_app_chooser();
             assert_eq!(w.state().status, Some(t("files-open-with-none")));
             assert!(session_api::opened().is_empty(), "nothing was launched");
@@ -320,14 +343,11 @@ mod open_with_tests {
 
         phase a_listing_the_session_cannot_answer_offers_no_apps;
         {
-            let mut w = pdf_widget();
+            let w = pdf_widget();
             session_api::refuse_listing("the session did not answer");
             w.state().invalidate_open_with();
-            w.state().open_open_with_submenu(Point::new(10.0, 10.0));
-            assert_eq!(
-                menu_labels(&w.chrome().submenu),
-                vec!["No application opens this file"]
-            );
+            let (rows, _) = w.state().open_with_rows();
+            assert_eq!(labels(&rows), vec!["No application opens this file"]);
         }
 
         phase open_with_is_a_typed_action_on_file_resources;
@@ -598,7 +618,11 @@ mod open_with_tests {
     }
 
     fn menu_labels(menu: &ContextMenu) -> Vec<String> {
-        menu.items()
+        labels(menu.items())
+    }
+
+    fn labels(items: &[MenuItem]) -> Vec<String> {
+        items
             .iter()
             .filter_map(|item| item.label().map(str::to_string))
             .collect()
@@ -846,7 +870,6 @@ mod command_path_tests {
             context_select_targets_the_clicked_row_not_a_stale_selection();
             a_screen_reader_opens_a_rows_menu_on_the_row_it_names();
             context_menu_gates_new_file_on_templates_existing();
-            disappearing_templates_do_not_leave_an_empty_flyout();
             large_text_view_menu_clamps_inside_the_live_window();
         }
 
@@ -3604,13 +3627,6 @@ mod command_path_tests {
             "templates present → New File entry shown"
         );
         assert!(has_new_folder(&two));
-    }
-
-    fn disappearing_templates_do_not_leave_an_empty_flyout() {
-        let (mut w, _cfg) = hermetic();
-        w.state().open_templates_submenu(Point::new(80.0, 80.0));
-        assert!(!w.chrome().submenu.is_open());
-        assert!(w.chrome().submenu_commands.is_empty());
     }
 
     #[cfg(unix)]

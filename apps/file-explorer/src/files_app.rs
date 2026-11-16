@@ -47,7 +47,7 @@ mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
 pub use window::FileExplorerWidget;
-use window::{Chrome, MenuChange};
+use window::{Chrome, Nested, OpenedMenu};
 mod archives;
 #[cfg(test)]
 use archives::archive_member_copy;
@@ -113,6 +113,9 @@ fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
     }
     name.rfind('.').filter(|&dot| dot > 0)
 }
+
+/// A menu row: its label, what it does, and whether it is checked.
+type MenuRow = (String, Option<FileCommand>, Option<bool>);
 
 /// A separator divides two groups only; a group of one joins its neighbour.
 fn tidy_menu(spec: Vec<(String, Option<FileCommand>)>) -> Vec<(String, Option<FileCommand>)> {
@@ -509,7 +512,7 @@ pub struct FilesState {
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::FileExplorer>>,
     preferences: Option<ui::framework::Setting<crate::resource::FilesPreferences>>,
     shown_preferences: Option<crate::resource::FilesPreferences>,
-    menus: Vec<MenuChange>,
+    shown_menu: Option<OpenedMenu>,
     staged: Option<StagedScenario>,
     last_cursor: Point,
     favs: FavStore,
@@ -855,7 +858,7 @@ impl FileExplorerWidget {
             dispatcher: None,
             preferences: None,
             shown_preferences: None,
-            menus: Vec::new(),
+            shown_menu: None,
             staged: None,
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
@@ -4135,21 +4138,16 @@ impl FilesState {
                 self.status = Some(t("files-nearby-cancelled"));
                 true
             }
-            FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
-            FileCommand::OpenShortcutsMenu => {
-                self.open_shortcuts_submenu(self.last_cursor);
-                true
-            }
+            // These rows open their own rows beside themselves in the menu.
+            FileCommand::OpenTemplatesMenu
+            | FileCommand::OpenShortcutsMenu
+            | FileCommand::OpenWithMenu => false,
             FileCommand::RunShortcut { shortcut } => {
                 let identities = self.selected_entry_identities();
                 self.status = Some(match self.shortcut_menu.run(&shortcut, &identities) {
                     Ok(label) => t_args("files-shortcut-running", &[arg("shortcut", label)]),
                     Err(reason) => reason,
                 });
-                true
-            }
-            FileCommand::OpenWithMenu => {
-                self.open_open_with_submenu(self.last_cursor);
                 true
             }
             FileCommand::OpenWith { path, app_id } => self.apply_open_with(&path, &app_id),
@@ -4574,11 +4572,6 @@ impl FilesState {
         true
     }
 
-    fn apply_open_templates_menu(&mut self) -> bool {
-        self.open_templates_submenu(self.last_cursor);
-        true
-    }
-
     fn apply_arm_drag(&mut self, path: PathBuf, is_dir: bool, at: Point) -> bool {
         tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
         self.armed_drag = Some((at, path, is_dir));
@@ -4670,20 +4663,15 @@ impl FilesState {
     pub fn debug_show_templates_menu(&mut self, at: Point) {
         self.last_cursor = at;
         self.open_context_menu(at);
-        let anchor = Point::new(self.opened_menu_rect().x1 - 6.0, at.y + 66.0);
-        self.open_templates_submenu(anchor);
+        if let Some(shown) = self.shown_menu.as_mut()
+            && let Some(&(row, _)) = shown.nested.first()
+        {
+            shown.menu.open_submenu(row, true);
+        }
     }
 
     fn opened_menu(&mut self) -> Option<&mut ContextMenu> {
-        self.menus.iter_mut().rev().find_map(|change| match change {
-            MenuChange::Main(menu, _) => Some(menu),
-            _ => None,
-        })
-    }
-
-    fn opened_menu_rect(&mut self) -> vello::kurbo::Rect {
-        self.opened_menu()
-            .map_or(vello::kurbo::Rect::ZERO, |menu| menu.get_rect())
+        self.shown_menu.as_mut().map(|shown| &mut shown.menu)
     }
 
     #[doc(hidden)]
@@ -4910,9 +4898,6 @@ impl FilesState {
                     rect.y0 + rect.height() * 0.34,
                 );
                 self.debug_show_templates_menu(at);
-                if let Some(menu) = self.opened_menu() {
-                    menu.focus_first_action();
-                }
             }
             Some("reorder") => {
                 self.debug_begin_favorite_drag(chrome, 4, 1);
@@ -5269,9 +5254,7 @@ impl FilesState {
             menu.push(MenuItem::action(label, || {}));
             commands.push(Some(FileCommand::Navigate(path)));
         }
-        menu.open_at([at.x as f32, at.y as f32]);
-        layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Main(menu, commands));
+        self.show_menu_at(menu, commands, at);
         self.structure_dirty = true;
     }
 
@@ -6275,78 +6258,113 @@ impl FilesState {
     }
 
     fn open_context_menu(&mut self, at: Point) {
-        self.menus.push(MenuChange::CloseSub);
         // The menu says what opens the kind of file it was opened on now: a default the person
         // changed since this folder was read is asked for again here.
         self.invalidate_open_with();
-        let spec = self.context_menu_spec(&self.available_templates());
+        let spec = self
+            .context_menu_spec(&self.available_templates())
+            .into_iter()
+            .map(|(label, cmd)| {
+                let checked = self.command_checked(cmd.as_ref());
+                (label, cmd, checked)
+            })
+            .collect();
+        let (items, rows, nested) = self.menu_rows(spec);
         let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(spec.len());
-        for (label, cmd) in spec {
-            if cmd.is_none() && label.is_empty() {
-                menu.push(MenuItem::separator());
-                cmds.push(None);
-            } else {
-                // No-op action — the app maps the clicked index to a command
-                // itself (the sink is !Send, so it can't live in the action).
-                let mut item = MenuItem::action(label, || {});
-                if let Some(keys) = cmd.as_ref().and_then(command_shortcut) {
-                    item = item.with_shortcut(keys);
-                }
-                menu.push(match self.command_checked(cmd.as_ref()) {
-                    Some(checked) => item.with_checked(checked),
-                    None => item,
-                });
-                cmds.push(cmd);
-            }
+        for item in items {
+            menu.push(item);
         }
         menu.set_about(self.shared_selection());
         menu.open_at([at.x as f32, at.y as f32]);
         layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Main(menu, cmds));
+        self.shown_menu = Some(OpenedMenu { menu, rows, nested });
     }
 
-    fn open_templates_submenu(&mut self, at: Point) {
-        let tpls = self.available_templates();
-        // The catalogue can change after its parent menu was opened.  Do not
-        // leave a focusable, visually empty flyout behind when its last
-        // template vanishes (and keep headless action-state shots truthful).
-        if tpls.is_empty() {
-            self.menus.push(MenuChange::CloseSub);
-            return;
+    /// `spec`'s rows and what each does. A row with neither label nor
+    /// command is a separator; the rows of templates, shortcuts and "Open
+    /// with" open their own rows beside themselves.
+    fn menu_rows(&self, spec: Vec<MenuRow>) -> (Vec<MenuItem>, Vec<Option<FileCommand>>, Nested) {
+        let mut items = Vec::with_capacity(spec.len());
+        let mut rows = Vec::with_capacity(spec.len());
+        let mut nested = Nested::new();
+        for (label, cmd, checked) in spec {
+            if cmd.is_none() && label.is_empty() {
+                items.push(MenuItem::separator());
+                rows.push(None);
+                continue;
+            }
+            if let Some((beside, commands)) = cmd.as_ref().and_then(|cmd| self.nested_rows(cmd)) {
+                nested.push((items.len(), commands));
+                items.push(MenuItem::submenu(label, beside));
+                rows.push(None);
+                continue;
+            }
+            // No-op action — the app maps the clicked index to a command
+            // itself (the sink is !Send, so it can't live in the action).
+            let mut item = MenuItem::action(label, || {});
+            if let Some(keys) = cmd.as_ref().and_then(command_shortcut) {
+                item = item.with_shortcut(keys);
+            }
+            items.push(match checked {
+                Some(checked) => item.with_checked(checked),
+                None => item,
+            });
+            rows.push(cmd);
         }
-        let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(tpls.len());
-        for t in tpls {
-            menu.push(MenuItem::action(templates::menu_label(&t), || {}));
-            cmds.push(Some(FileCommand::NewFromTemplate(t)));
-        }
-        menu.open_at([at.x as f32, at.y as f32]);
-        layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Sub(menu, cmds));
+        (items, rows, nested)
     }
 
-    fn open_shortcuts_submenu(&mut self, at: Point) {
-        let identities = self.selected_entry_identities();
-        let offered: Vec<(String, String)> = self
-            .shortcut_menu
-            .offered_on(&identities)
+    /// The rows the row of `command` opens beside itself, if it opens any.
+    fn nested_rows(
+        &self,
+        command: &FileCommand,
+    ) -> Option<(Vec<MenuItem>, Vec<Option<FileCommand>>)> {
+        let spec = match command {
+            FileCommand::OpenWithMenu => return Some(self.open_with_rows()),
+            FileCommand::OpenTemplatesMenu => self.template_rows(),
+            FileCommand::OpenShortcutsMenu => self.shortcut_rows(),
+            _ => return None,
+        };
+        let (items, rows, _) = self.menu_rows(spec);
+        Some((items, rows))
+    }
+
+    fn template_rows(&self) -> Vec<MenuRow> {
+        self.available_templates()
             .into_iter()
-            .map(|offer| (offer.label().to_string(), offer.id().to_string()))
-            .collect();
-        if offered.is_empty() {
-            self.menus.push(MenuChange::CloseSub);
-            return;
-        }
-        let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(offered.len());
-        for (label, shortcut) in offered {
-            menu.push(MenuItem::action(label, || {}));
-            cmds.push(Some(FileCommand::RunShortcut { shortcut }));
-        }
+            .map(|t| {
+                (
+                    templates::menu_label(&t),
+                    Some(FileCommand::NewFromTemplate(t)),
+                    None,
+                )
+            })
+            .collect()
+    }
+
+    fn shortcut_rows(&self) -> Vec<MenuRow> {
+        self.shortcut_menu
+            .offered_on(&self.selected_entry_identities())
+            .into_iter()
+            .map(|offer| {
+                let shortcut = offer.id().to_string();
+                (
+                    offer.label().to_string(),
+                    Some(FileCommand::RunShortcut { shortcut }),
+                    None,
+                )
+            })
+            .collect()
+    }
+
+    fn show_menu_at(&mut self, mut menu: ContextMenu, rows: Vec<Option<FileCommand>>, at: Point) {
         menu.open_at([at.x as f32, at.y as f32]);
         layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Sub(menu, cmds));
+        self.shown_menu = Some(OpenedMenu {
+            menu,
+            rows,
+            nested: Nested::new(),
+        });
     }
 
     fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
@@ -6406,7 +6424,6 @@ impl FilesState {
             self.status = Some(t("files-nearby-no-devices"));
             return;
         }
-        self.menus.push(MenuChange::CloseSub);
         let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(online.len());
         for target in online {
@@ -6421,9 +6438,7 @@ impl FilesState {
                 target: target.handle,
             }));
         }
-        menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
-        layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Main(menu, commands));
+        self.show_menu_at(menu, commands, self.last_cursor);
         self.status = Some(t("files-nearby-choose-device"));
     }
 
@@ -6436,7 +6451,6 @@ impl FilesState {
             self.status = Some(t("files-nearby-no-destinations"));
             return;
         }
-        self.menus.push(MenuChange::CloseSub);
         let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(destinations.len().saturating_mul(2));
         for destination in destinations {
@@ -6467,41 +6481,20 @@ impl FilesState {
                 }));
             }
         }
-        menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
-        layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Main(menu, commands));
+        self.show_menu_at(menu, commands, self.last_cursor);
         self.status = Some(t("files-nearby-choose-destination"));
     }
 
-    fn open_menu_right_aligned(
-        &mut self,
-        spec: Vec<(String, Option<FileCommand>, Option<bool>)>,
-        anchor: Point,
-        flip_y: f64,
-    ) {
-        self.menus.push(MenuChange::CloseSub);
+    fn open_menu_right_aligned(&mut self, spec: Vec<MenuRow>, anchor: Point, flip_y: f64) {
         let spec = tidy_groups(
             spec,
             |item| item.0.is_empty() && item.1.is_none(),
             || (String::new(), None, None),
         );
+        let (items, rows, nested) = self.menu_rows(spec);
         let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(spec.len());
-        for (label, cmd, checked) in spec {
-            if cmd.is_none() && label.is_empty() {
-                menu.push(MenuItem::separator());
-                cmds.push(None);
-            } else {
-                let mut item = MenuItem::action(label, || {});
-                if let Some(keys) = cmd.as_ref().and_then(command_shortcut) {
-                    item = item.with_shortcut(keys);
-                }
-                menu.push(match checked {
-                    Some(checked) => item.with_checked(checked),
-                    None => item,
-                });
-                cmds.push(cmd);
-            }
+        for item in items {
+            menu.push(item);
         }
         menu.open_at([anchor.x as f32, anchor.y as f32]);
         layout_menu_widget(&mut menu);
@@ -6517,7 +6510,7 @@ impl FilesState {
         };
         menu.open_at([x as f32, y as f32]);
         layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Main(menu, cmds));
+        self.shown_menu = Some(OpenedMenu { menu, rows, nested });
     }
 
     fn new_overlay_menu(&self) -> ContextMenu {
@@ -6526,13 +6519,26 @@ impl FilesState {
         menu
     }
 
-    fn open_view_menu(&mut self) {
+    /// Where the toolbar's menus open: below its menu button, or above it
+    /// when the window has no room below.
+    fn view_menu_place(&self) -> (Point, f64) {
         let anchor = self.toolbar.view_menu_anchor();
         let flip_y = self
             .toolbar
             .view_menu_rect()
             .map_or(anchor.y, |rect| rect.y0 - 2.0);
-        let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
+        (anchor, flip_y)
+    }
+
+    /// The templates a new file starts from, as the toolbar's "New file" offers them.
+    fn open_templates_menu(&mut self) {
+        let (anchor, flip_y) = self.view_menu_place();
+        self.open_menu_right_aligned(self.template_rows(), anchor, flip_y);
+    }
+
+    fn open_view_menu(&mut self) {
+        let (anchor, flip_y) = self.view_menu_place();
+        let mut spec: Vec<MenuRow> = Vec::new();
         if self.toolbar.is_compact() {
             if self.toolbar.can_go_forward() {
                 spec.push((t("files-forward"), Some(FileCommand::Forward), None));
@@ -6618,8 +6624,8 @@ impl FilesState {
         self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
-    fn sort_menu_spec(&self, inline: bool) -> Vec<(String, Option<FileCommand>, Option<bool>)> {
-        let mut spec: Vec<(String, Option<FileCommand>, Option<bool>)> = Vec::new();
+    fn sort_menu_spec(&self, inline: bool) -> Vec<MenuRow> {
+        let mut spec: Vec<MenuRow> = Vec::new();
         let key = |bare: &str, inline_label: &str| t(if inline { inline_label } else { bare });
         for (label, by) in [
             (key("files-sort-name", "files-menu-sort-name"), SortBy::Name),
@@ -6657,68 +6663,20 @@ impl FilesState {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let submenu = chrome.submenu.is_open();
-        if submenu
-            && matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                }
-            )
-            && !chrome
-                .submenu
-                .contains([self.last_cursor.x, self.last_cursor.y])
-        {
-            chrome.submenu.close();
-            chrome.context_menu.close();
-            return true;
-        }
         let mut menu_handled = false;
-        let selected = {
-            let menu = if submenu {
-                &mut chrome.submenu
-            } else {
-                &mut chrome.context_menu
-            };
-            menu.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut menu_handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            menu.take_selection()
-        };
+        chrome.context_menu.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut menu_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
+        );
         if !menu_handled {
             return false;
         }
-        let Some(index) = selected else {
-            return true;
-        };
-        let command = if submenu {
-            chrome.submenu_commands.get(index).cloned().flatten()
-        } else {
-            chrome.menu_commands.get(index).cloned().flatten()
-        };
-        let rect = chrome.context_menu.get_rect();
-        let row = chrome
-            .context_menu
-            .item_rect(index)
-            .map_or(rect.y0 + 28.0, |row| row.y0);
-        let beside = Point::new(rect.x1 - 6.0, row);
-        match command {
-            Some(FileCommand::OpenTemplatesMenu) => self.open_templates_submenu(beside),
-            Some(FileCommand::OpenShortcutsMenu) => self.open_shortcuts_submenu(beside),
-            Some(FileCommand::OpenWithMenu) => self.open_open_with_submenu(beside),
-            command => {
-                chrome.submenu.close();
-                chrome.context_menu.close();
-                if let Some(command) = command {
-                    self.apply_command(command);
-                }
-            }
+        if let Some(command) = chrome.take_chosen() {
+            chrome.context_menu.close();
+            self.apply_command(command);
         }
         true
     }
@@ -7113,7 +7071,7 @@ impl FilesState {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::{MouseButton, WindowEvent};
-        if !(chrome.context_menu.is_open() || chrome.submenu.is_open())
+        if !chrome.context_menu.is_open()
             || !matches!(
                 event,
                 WindowEvent::KeyboardInput { .. }
@@ -7917,12 +7875,6 @@ impl FilesState {
             layout_menu_widget(&mut chrome.context_menu);
             chrome
                 .context_menu
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        if chrome.submenu.is_open() {
-            layout_menu_widget(&mut chrome.submenu);
-            chrome
-                .submenu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.resolve_staged_move_drag();

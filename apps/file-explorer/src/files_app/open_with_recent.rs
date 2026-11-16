@@ -1,6 +1,6 @@
 //! "Open with" and the Recent place on the Files window.
 
-use super::{FilesState, MenuChange, layout_menu_widget};
+use super::FilesState;
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
 use ui::tilo_resource::{AbsolutePath, Effect as _, Invoke};
 use ui::widget::context_menu::MenuItem;
-use vello::kurbo::Point;
 
 pub(super) const OPEN_WITH_ACTION: &str = "open-with";
 const OPEN_ONCE_PREFIX: &str = "open-with-app:";
@@ -71,16 +70,17 @@ impl FilesState {
         true
     }
 
-    pub(super) fn open_open_with_submenu(&mut self, at: Point) {
+    /// The apps that open the selected file, as "Open with" lists them
+    /// beside itself, with what each row does.
+    pub(super) fn open_with_rows(&self) -> (Vec<MenuItem>, Vec<Option<FileCommand>>) {
+        let mut items = Vec::new();
+        let mut commands = Vec::new();
         let Some(path) = self.open_with_subject() else {
-            self.menus.push(MenuChange::CloseSub);
-            return;
+            return (items, commands);
         };
         let candidates = self.open_with_candidates(&path);
-        let mut menu = self.new_overlay_menu();
-        let mut commands = Vec::new();
         if candidates.is_empty() {
-            menu.push(MenuItem::action(t("files-open-with-none"), || {}).with_enabled(false));
+            items.push(MenuItem::action(t("files-open-with-none"), || {}).with_enabled(false));
             commands.push(None);
         }
         for app in candidates.iter().take(SUBMENU_APPS) {
@@ -104,21 +104,19 @@ impl FilesState {
             if let Some(source) = app.source {
                 item = item.with_detail(crate::applications::kind_label(source));
             }
-            menu.push(item);
+            items.push(item);
             commands.push(Some(FileCommand::OpenWith {
                 path: path.clone(),
                 app_id: app.id.clone(),
             }));
         }
         if !candidates.is_empty() {
-            menu.push(MenuItem::separator());
+            items.push(MenuItem::separator());
             commands.push(None);
-            menu.push(MenuItem::action(t("files-open-with-other"), || {}));
+            items.push(MenuItem::action(t("files-open-with-other"), || {}));
             commands.push(Some(FileCommand::OpenWithOther));
         }
-        menu.open_at([at.x as f32, at.y as f32]);
-        layout_menu_widget(&mut menu);
-        self.menus.push(MenuChange::Sub(menu, commands));
+        (items, commands)
     }
 
     pub(super) fn open_app_chooser(&mut self) {

@@ -323,8 +323,7 @@ impl FilesState {
             event @ ToolbarEvent::Action { .. } => match self.bar_entries.pressed(&event) {
                 Some(BarCommand::Run(command)) => Some(command),
                 Some(BarCommand::NewFile) => {
-                    let at = self.toolbar.view_menu_anchor();
-                    self.open_templates_submenu(at);
+                    self.open_templates_menu();
                     None
                 }
                 None => None,
