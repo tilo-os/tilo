@@ -141,7 +141,8 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
         "the computer's session made a copy of its workspaces no later session reads"
     );
 
-    // A page's profile keeps them, for the session a reload starts.
+    // A page's profile keeps them, for the session a reload starts: the
+    // record as the index and parts a later session reads it from.
     let mut note = AutoCommit::new();
     note.put(automerge::ROOT, "kind", "tree").unwrap();
     note.commit();
@@ -149,10 +150,27 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
         .unwrap();
     durable(&page).await;
     assert!(
-        profile.load_workspaces().is_some(),
+        tilo_peer_state::owner::Journaled::open(&Parts(Arc::clone(&profile)))
+            .expect("the record a page keeps reads back")
+            .is_some(),
         "a page's profile keeps its workspaces for its next session"
     );
     for device in [computer, page] {
         device.close();
+    }
+}
+
+/// The record a page's store keeps as parts, as a later session reads it.
+struct Parts(Arc<MemoryPeerStore>);
+
+impl tilo_peer_state::owner::JournalParts for Parts {
+    fn read_part(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.load_workspaces_part(name))
+    }
+    fn write_part(&self, _: &str, _: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn append_part(&self, _: &str, _: &[u8]) -> Result<(), String> {
+        Ok(())
     }
 }
