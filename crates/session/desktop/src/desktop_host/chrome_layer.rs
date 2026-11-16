@@ -2314,7 +2314,18 @@ impl Widget for DesktopChrome {
         let about = self.about.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let search = self.search.build_layout(taffy, theme, map);
-        let mut kids = vec![bar, content, overview, about, workspace_menu, search];
+        // Laid out as the other layers are, so assistive technology and the session's controls
+        // reach its button.
+        let notice = self.notice.build_layout(taffy, theme, map);
+        let mut kids = vec![
+            bar,
+            content,
+            overview,
+            about,
+            workspace_menu,
+            search,
+            notice,
+        ];
         if let Some(notices) = self.notices.as_mut() {
             kids.push(notices.build_layout(taffy, theme, map));
         }
@@ -2350,6 +2361,7 @@ impl Widget for DesktopChrome {
             about,
             workspace_menu,
             search,
+            notice,
             compact @ ..,
         ] = &kids[..]
         else {
@@ -2360,6 +2372,7 @@ impl Widget for DesktopChrome {
         let under_bar = ui::widget::layout_rect(taffy, *overview, inner);
         let area = self.overview_area().unwrap_or(under_bar);
         self.overview.stand_in(area);
+        self.notice.apply_layout(taffy, *notice, inner);
         self.notice
             .place(self.working_display().unwrap_or(self.rect));
         self.about.apply_layout(taffy, *about, inner);
@@ -2460,6 +2473,7 @@ impl Widget for DesktopChrome {
             about,
             workspace_menu,
             search,
+            _notice,
             compact @ ..,
         ] = &kids[..]
         else {
