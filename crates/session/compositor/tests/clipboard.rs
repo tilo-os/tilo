@@ -13,6 +13,8 @@
 )]
 
 use std::cell::RefCell;
+use std::io::Read as _;
+use std::os::fd::AsFd as _;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -22,7 +24,7 @@ use tilo_compositor::clipboard_history::{
 use tilo_compositor::{Compositor, Selection, StackPolicy};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
-use crate::harness::{TestClient, headless, mapped_client, pump_one as pump};
+use crate::harness::{TestClient, headless, mapped_client, pump_one as pump, settle};
 
 /// Offer `formats` as the clipboard, serving `payload` for each.
 fn copy(client: &mut TestClient, formats: &[&str], payload: &[u8]) {
@@ -43,6 +45,42 @@ fn setup() -> (Compositor, TestClient) {
     let mut client = mapped_client(&mut compositor, "editor", (200, 100), [0, 255, 0, 255]);
     client.own_data_device(&mut compositor);
     (compositor, client)
+}
+
+/// A client that binds its data device while it already holds the keyboard is offered the
+/// selection waiting on the seat: a toolkit that binds the seat late still pastes.
+#[test]
+fn a_data_device_bound_after_the_focus_is_offered_the_selection() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "editor", (200, 100), [0, 255, 0, 255]);
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.keyboard_focused
+    });
+    compositor
+        .set_selection(
+            Selection::Clipboard,
+            vec![(TEXT_MIME.to_owned(), b"copied before the bind".to_vec())],
+        )
+        .expect("the selection");
+    assert!(
+        client.seen.data_device.is_none(),
+        "the client has the focus before it binds its device"
+    );
+    assert!(client.seen.offered.is_empty(), "nothing listens yet");
+
+    client.own_data_device(&mut compositor);
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.offered.iter().any(|mime| mime == TEXT_MIME)
+    });
+
+    let offer = client.seen.selection.clone().expect("an offer");
+    let (mut reader, writer) = std::io::pipe().expect("pipe");
+    offer.receive(TEXT_MIME.into(), writer.as_fd());
+    drop(writer);
+    settle(&mut compositor, &mut client);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).expect("read");
+    assert_eq!(bytes, b"copied before the bind");
 }
 
 /// A surface of the session's own that holds the keyboard, as the shell's search does.

@@ -217,6 +217,8 @@ pub struct Seen {
     pub touched: Option<u32>,
     /// The formats of the latest offer.
     pub offered: Vec<String>,
+    /// The latest offer the data device made, whose formats are `offered`.
+    pub selection: Option<WlDataOffer>,
     /// A drag entered the window with this offer.
     pub entered: Option<WlDataOffer>,
     pub dropped: bool,
@@ -1636,7 +1638,10 @@ impl Dispatch<WlDataDevice, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_data_device::Event::DataOffer { .. } => seen.offered.clear(),
+            wl_data_device::Event::DataOffer { id } => {
+                seen.selection = Some(id);
+                seen.offered.clear();
+            }
             wl_data_device::Event::Enter {
                 serial,
                 id: Some(offer),

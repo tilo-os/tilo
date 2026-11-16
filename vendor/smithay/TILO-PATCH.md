@@ -108,6 +108,22 @@ under the pointer, are ordinary cases.
 Remove this once smithay offers a drag to devices a client binds while it
 runs.
 
+## A data device a client binds while focused is offered the selection
+
+smithay offers a client the current selection only when the focus reaches
+it. A client that binds its `wl_data_device` while it already holds the
+keyboard hears of no selection, so paste is empty until the focus moves.
+Toolkits that bind the seat late are an ordinary case. A primary selection
+device has the same gap.
+
+- `src/wayland/selection/data_device/mod.rs` and `primary_selection/mod.rs`:
+  `GetDataDevice` and `GetDevice` send the selection waiting on the seat to
+  the device they just added (`send_selection`, restricted to that device).
+  The data-control globals already do this when a device binds.
+
+Remove this once smithay offers a selection to devices a client binds while
+it runs.
+
 ## What the focused field committed (`text-input-v3`)
 
 smithay's text-input handle keeps a client's pending state but takes the

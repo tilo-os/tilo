@@ -440,7 +440,7 @@ mod handlers {
 
     use crate::{
         input::Seat,
-        wayland::selection::{device::SelectionDevice, seat_data::SeatData},
+        wayland::selection::{device::SelectionDevice, seat_data::SeatData, SelectionTarget},
     };
 
     use super::{device::DataDeviceUserData, source::DataSourceUserData};
@@ -481,7 +481,7 @@ mod handlers {
             _resource: &WlDataDeviceManager,
             request: wl_data_device_manager::Request,
             _data: &(),
-            _dhandle: &DisplayHandle,
+            dhandle: &DisplayHandle,
             data_init: &mut wayland_server::DataInit<'_, D>,
         ) {
             match request {
@@ -502,7 +502,17 @@ mod handlers {
                                 .user_data()
                                 .get::<RefCell<SeatData<D::SelectionUserData>>>()
                                 .unwrap();
-                            seat_data.borrow_mut().add_device(device);
+
+                            let mut seat_data = seat_data.borrow_mut();
+                            seat_data.add_device(device.clone());
+
+                            // NOTE: broadcast selection only to the newly created device.
+                            seat_data.send_selection::<D>(
+                                dhandle,
+                                SelectionTarget::Clipboard,
+                                Some(&device),
+                                false,
+                            );
                         }
                         None => {
                             error!(client = ?client, data_device = ?id, "Unmanaged seat given to a data device.");
