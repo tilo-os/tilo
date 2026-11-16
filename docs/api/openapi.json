@@ -19418,10 +19418,7 @@
         "type": "object",
         "properties": {
           "signer": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "page": {
             "minimum": 0,
@@ -19431,7 +19428,9 @@
             ]
           }
         },
-        "required": [],
+        "required": [
+          "signer"
+        ],
         "description": ""
       },
       "pdf.document.delete-signature.Arguments": {
@@ -24045,103 +24044,6 @@
         },
         "required": [
           "issue"
-        ],
-        "description": ""
-      },
-      "tasks.tracker.import.Arguments": {
-        "type": "object",
-        "properties": {
-          "tasks": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "assignee": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "author": {
-                  "type": "string"
-                },
-                "created_ms": {
-                  "type": "integer"
-                },
-                "instruction": {
-                  "type": "string"
-                },
-                "messages": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "at_ms": {
-                        "type": "integer"
-                      },
-                      "author": {
-                        "type": "string"
-                      },
-                      "by_agent": {
-                        "type": "boolean"
-                      },
-                      "text": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "author",
-                      "text"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "status": {
-                  "oneOf": [
-                    {
-                      "const": "backlog",
-                      "type": "string"
-                    },
-                    {
-                      "const": "todo",
-                      "type": "string"
-                    },
-                    {
-                      "const": "in-progress",
-                      "type": "string"
-                    },
-                    {
-                      "const": "in-review",
-                      "type": "string"
-                    },
-                    {
-                      "const": "done",
-                      "type": "string"
-                    },
-                    {
-                      "const": "cancelled",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "task": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "task",
-                "title",
-                "status"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "tasks"
         ],
         "description": ""
       },
@@ -31086,12 +30988,6 @@
       "resource": "tasks.tracker",
       "action": "plan",
       "arguments": "#/components/schemas/tasks.tracker.plan.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "import",
-      "arguments": "#/components/schemas/tasks.tracker.import.Arguments"
     },
     {
       "app": "so.tilo.tasks",

@@ -122,7 +122,7 @@ fn invoke(app: &mut App, invoker: Option<&ActionInvoker>, effect: &BrowserEffect
 }
 
 fn agent(name: &str) -> ActionInvoker {
-    ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(name))
+    ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(name))
 }
 
 /// One question of the page's form: its name, its kind, what its field
@@ -273,7 +273,7 @@ fn the_review_opens_for_a_person_and_for_an_agent_and_closes_to_the_page() {
             .any(|text| text == "No forms on this page")
     );
 
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     invoke(&mut app, Some(&ada), &BrowserEffect::ReviewPage);
     eventually(
         &mut app,
@@ -292,7 +292,7 @@ fn the_review_opens_for_a_person_and_for_an_agent_and_closes_to_the_page() {
 #[test]
 fn each_answer_shows_under_the_agent_that_set_it_as_the_agents_work() {
     let (engine, mut app) = window();
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     page_holds(
         &engine,
         &[
@@ -398,9 +398,9 @@ fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
     let (engine, mut app) = window();
     let laptop = InvokerDevice::certified([0x5c; 32], "Studio laptop");
     let unnamed = InvokerDevice::certified([0x40; 32], "");
-    let ada = agent("agent:ada").from_device(Some(laptop));
-    let ben = agent("agent:ben").from_device(Some(unnamed));
-    let cy = agent("agent:cy");
+    let ada = agent("ada").from_device(Some(laptop));
+    let ben = agent("ben").from_device(Some(unnamed));
+    let cy = agent("cy");
     invoke(&mut app, None, &BrowserEffect::ReviewPage);
 
     // Each answers one question. The engine names each by its name alone.
@@ -470,7 +470,7 @@ fn an_agent_from_another_device_shows_with_the_device_it_works_from() {
 #[test]
 fn a_field_changed_after_it_was_set_is_marked_and_the_review_follows_the_page() {
     let (engine, mut app) = window();
-    let (ada, ben) = (agent("agent:ada"), agent("agent:ben"));
+    let (ada, ben) = (agent("ada"), agent("ben"));
     let filled = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"});
     page_holds(
@@ -787,7 +787,7 @@ fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
     use ui::webview::{PageChange, PageFieldChange};
     let (engine, mut app) = window();
     engine.set_page_events(true);
-    let ada = agent("agent:ada");
+    let ada = agent("ada");
     let filled = json!({"seq": 1, "actor": "agent:ada", "action": "fill", "ok": true,
         "target": {"role": "textbox", "name": "Arrival"}, "text": "2027-02-03"});
     page_holds(

@@ -11,6 +11,8 @@ const OWNER: &str = "owner";
 const MALLORY: &str = "mallory";
 const ADA: &str = "ada";
 const HELPER: &str = "helper-mod";
+/// The moderation agent, as the workspace policy names its members.
+const AGENT_PARTY: &str = "agent:moderation";
 
 /// A board people add cards to and delete them from: enough history to
 /// moderate.
@@ -96,7 +98,7 @@ impl FakeWorkspace {
     fn new() -> Self {
         let mut policy = WorkspacePolicy::new("r", OWNER);
         for (person, role) in [
-            (crate::AGENT, Role::Moderator),
+            (AGENT_PARTY, Role::Moderator),
             (MALLORY, Role::Editor),
             (ADA, Role::Editor),
             (HELPER, Role::Moderator),
@@ -151,10 +153,10 @@ impl WorkspaceApi for FakeWorkspace {
 
     fn govern(&mut self, change: Change) -> Result<(), String> {
         let policy = self.policy.clone();
-        let agent = Authority::person(policy.party(crate::AGENT));
+        let agent = Authority::person(policy.party(AGENT_PARTY));
         let now = u64::try_from(self.now).unwrap();
         self.policy
-            .apply(crate::AGENT, &agent, change, &Context::at(now), false)
+            .apply(AGENT_PARTY, &agent, change, &Context::at(now), false)
             .map_err(|refusal| refusal.to_string())
     }
 
@@ -177,7 +179,10 @@ impl WorkspaceApi for FakeWorkspace {
     }
 
     fn decide(&mut self, decision: moderation::Decide) -> Result<(), String> {
-        let mut agent = self.moderation.fork().as_agent_for(crate::AGENT, OWNER);
+        let mut agent = self
+            .moderation
+            .fork()
+            .as_agent_for(crate::agent().id(), OWNER);
         agent.set_now_ms(self.now);
         agent
             .apply(Moderation::DECIDE.with(decision))
@@ -279,7 +284,10 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
         (app.as_str(), record.as_str(), action.as_str()),
         ("test.app", "b1", "undo")
     );
-    assert_eq!(args["by"], seen[0].activity[0].actor);
+    assert_eq!(
+        args["by"],
+        serde_json::to_value(&seen[0].activity[0].actor).unwrap()
+    );
     assert_eq!(args["to"], seen[0].activity[0].before.clone().unwrap());
     assert_eq!(*run_id, format!("moderation:{}", enforced.decision.id));
 
@@ -290,7 +298,7 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(decision.until_ms, Some(until));
     assert_eq!(decision.model, "fake-model");
-    assert_eq!(decision.by, crate::AGENT);
+    assert_eq!(decision.by, crate::agent());
     assert!(decision.reasoning.contains("deleted everyone's cards"));
     assert_eq!(decision.reverted[0].changes, 3);
 }

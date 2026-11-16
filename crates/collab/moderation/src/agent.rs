@@ -27,7 +27,7 @@ pub const BURST_COUNT: usize = 8;
 pub const BURST_WINDOW_MS: i64 = 60 * 1000;
 
 /// The workspace as the moderation agent reaches it. The host implements it over
-/// the workspace it governs; every call acts as [`crate::AGENT`].
+/// the workspace it governs; every call acts as [`crate::agent`].
 pub trait WorkspaceApi {
     /// Unix milliseconds now.
     fn now_ms(&self) -> i64;
@@ -302,7 +302,8 @@ fn revert(
     run: &str,
     failures: &mut Vec<String>,
 ) -> Vec<Reverted> {
-    let mut by_record: BTreeMap<(&str, &str, &str), Vec<&Activity>> = BTreeMap::new();
+    let mut by_record: BTreeMap<(&str, &str, &tilo_actions::Actor), Vec<&Activity>> =
+        BTreeMap::new();
     for item in activity {
         by_record
             .entry((&item.app, &item.record, &item.actor))

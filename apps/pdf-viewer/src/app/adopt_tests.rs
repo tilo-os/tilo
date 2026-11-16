@@ -343,7 +343,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
                 1,
                 AnnoKind::Note { x: 1.0, y: 2.0 },
                 HighlightColor::Yellow,
-                "Ada",
+                crate::model::Author::named("Ada"),
             )
         });
         let bytes = PdfMarkup::planned(2);

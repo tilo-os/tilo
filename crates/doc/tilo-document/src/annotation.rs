@@ -33,6 +33,12 @@ impl Author {
         Self::Named(name.into())
     }
 
+    /// Whoever invokes the action.
+    #[must_use]
+    pub fn of(cx: &ActionCx) -> Self {
+        cx.author().cloned().map(Self::Member).unwrap_or_default()
+    }
+
     #[must_use]
     pub fn member(&self) -> Option<&MemberId> {
         match self {
@@ -93,7 +99,7 @@ impl<Anchor: Model> Comment<Anchor> {
     /// action and dated now.
     #[must_use]
     pub fn written(cx: &ActionCx, anchor: Anchor, text: String) -> Self {
-        Self::new(anchor, signer(cx), iso_time(cx.now_ms()), text)
+        Self::new(anchor, Author::of(cx), iso_time(cx.now_ms()), text)
     }
 }
 
@@ -129,7 +135,7 @@ impl Reply {
     /// A plain-text answer by whoever invokes the action, dated now.
     #[must_use]
     pub fn written(cx: &ActionCx, text: String) -> Self {
-        Self::new(signer(cx), iso_time(cx.now_ms()), text)
+        Self::new(Author::of(cx), iso_time(cx.now_ms()), text)
     }
 }
 
@@ -151,11 +157,6 @@ pub fn store_bodies_by_variant(
         }
     }
     Ok(())
-}
-
-/// Who writes in an action: whoever invokes it.
-fn signer(cx: &ActionCx) -> Author {
-    cx.author().cloned().map(Author::Member).unwrap_or_default()
 }
 
 /// `ms` after the Unix epoch as the ISO-8601 UTC time a comment is dated

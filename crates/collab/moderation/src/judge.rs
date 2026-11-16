@@ -34,7 +34,7 @@ Explain your reasoning in two or three plain sentences a human moderator can che
 /// One report as the model sees it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Reported {
-    pub reporter: String,
+    pub reporter: tilo_actions::MemberId,
     pub reason: String,
     /// The reported item, `app/record/item`, if the report names one.
     pub item: Option<String>,

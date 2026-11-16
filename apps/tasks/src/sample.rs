@@ -213,7 +213,13 @@ pub(crate) fn migrated(person: &str) -> Tracker {
     ];
     let mut replica = Replica::<Tracker>::new();
     let mut doc = replica.doc_mut().clone();
-    if crate::import_inbox::apply(&mut doc, &entries, person).is_err() {
+    if crate::import_inbox::apply(
+        &mut doc,
+        &entries,
+        &ui::tilo_resource::MemberId::person(person),
+    )
+    .is_err()
+    {
         return Tracker::default();
     }
     <Tracker as ui::tilo_resource::Resource>::read(&doc).unwrap_or_default()

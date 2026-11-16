@@ -131,7 +131,7 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             page_id: "source-1".into(),
             kind: mark,
             color,
-            author: author.into(),
+            author: crate::model::Author::named(author),
             ..Annotation::default()
         })
     };

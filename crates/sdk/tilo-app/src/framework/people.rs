@@ -176,12 +176,19 @@ impl People {
         self.actor_of(&member)
     }
 
-    /// [`Self::actor`], named by `kept` (the name the record kept beside
-    /// the id: what an agent acted under) where the workspace names them
-    /// not, so an agent that left the roster reads by its name, never its
-    /// id.
-    pub fn actor_kept(&self, id: &str, kept: &str) -> Actor {
-        let mut actor = self.actor(id);
+    /// `member` as a view shows them, named by `kept` (the name the record
+    /// kept beside them: what an agent acted under) where the workspace names
+    /// them not, so an agent that left the roster reads by its name, never
+    /// its id.
+    pub fn actor_kept(&self, member: Option<&MemberId>, kept: &str) -> Actor {
+        let mut actor = member.map_or_else(
+            || Actor {
+                member: None,
+                name: String::new(),
+                hue: PresenceHue::of_identity(kept),
+            },
+            |member| self.actor_of(member),
+        );
         let named = actor.member.as_ref().is_some_and(|member| {
             self.roster.borrow().names.contains_key(member) || self.is_me(member)
         });

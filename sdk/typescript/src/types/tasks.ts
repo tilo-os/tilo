@@ -22,31 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@08d0fa20785e982a";
+export const SURFACE = "so.tilo.tasks@7e65343905e59068";
 
 export interface Area {
   resource: string;
   app: string;
   kind: string;
   label: string;
-}
-
-export interface Imported {
-  task: string;
-  title: string;
-  instruction: string;
-  status: Status;
-  assignee: string | null;
-  author: string;
-  created_ms: number;
-  messages: ImportedMessage[];
-}
-
-export interface ImportedMessage {
-  author: string;
-  by_agent: boolean;
-  at_ms: number;
-  text: string;
 }
 
 export interface Issue {
@@ -62,7 +44,7 @@ export interface Issue {
   due_ms: number | null;
   priority: number | null;
   comments: Message[];
-  author: string;
+  author: string | null;
   created_ms: number;
   url: string | null;
 }
@@ -79,7 +61,7 @@ export interface Link {
 }
 
 export interface Message {
-  author: string;
+  author: string | null;
   by_agent: boolean;
   at_ms: number;
   text: string;
@@ -215,17 +197,11 @@ export interface PlanArgs {
   due_ms?: number;
 }
 
-/** The arguments of `import`. */
-export interface ImportArgs {
-  tasks: Imported[];
-}
-
 /** Tasks — `tasks.tracker`. */
 export interface Tracker extends tilo.Resource {
   issues: Issue[];
   areas: TrackerArea[];
   readonly numbers: number;
-  readonly imported: string[];
   create(args: {
     title: string;
     parent?: string;
@@ -333,11 +309,6 @@ export interface Tracker extends tilo.Resource {
   }): Promise<tilo.Run | void>;
   /** Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   planMany(items: PlanArgs[]): Promise<tilo.ActionAnswer[]>;
-  import(args: {
-    tasks: Imported[];
-  }): Promise<tilo.Run | void>;
-  /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
-  importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   newProject(): Promise<void>;
 }
 

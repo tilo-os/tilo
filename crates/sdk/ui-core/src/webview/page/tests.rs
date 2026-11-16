@@ -919,6 +919,19 @@ tilo_test_env::scenario! {
     {
         assert_eq!(PageActor::named(""), None, "nobody is the unnamed actor");
         assert_eq!(PageActor::named("agent:ada").unwrap().as_str(), "agent:ada");
+        for actor in [
+            tilo_actions::Actor::from(tilo_actions::MemberId::person("ad".repeat(32))),
+            tilo_actions::MemberId::agent("ada").into(),
+            tilo_actions::MemberId::bot("relay").into(),
+            tilo_actions::Actor::automation("nightly"),
+            tilo_actions::Actor::App("so.tilo.notes".into()),
+        ] {
+            let name = PageActor::of(&actor).unwrap();
+            assert_eq!(PageActor::actor_of(name.as_str()), Some(actor));
+        }
+        let long = tilo_actions::Actor::from(tilo_actions::MemberId::agent("x".repeat(120)));
+        let short = PageActor::of(&long).unwrap();
+        assert_eq!(PageActor::actor_of(short.as_str()), None, "{short}");
         let longest = "p".repeat(MAX_ACTOR_UNITS);
         assert_eq!(PageActor::named(&longest).unwrap().as_str(), longest);
         // A longer principal is shortened the same way every time, and

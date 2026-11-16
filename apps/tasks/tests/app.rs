@@ -150,7 +150,10 @@ tilo_test_env::scenario! {
         .expect("comment");
         let state: Tracker = app.state();
         let thread = &state.issues.get(&issue).unwrap().comments;
-        assert_eq!(thread.values().next().unwrap().author, "ada");
+        assert_eq!(
+            thread.values().next().unwrap().author,
+            Some(ui::tilo_resource::MemberId::person("ada"))
+        );
     }
 
     phase a_viewer_reads_the_tracker_but_cannot_change_it;
@@ -509,7 +512,7 @@ tilo_test_env::scenario! {
             app.harness().a11y_node_named("Assignee: Bob").is_some(),
             "the chip says the person's name, never the record's spelling"
         );
-        pick(&mut app, "tasks-issue-assignee-agent:scribe");
+        pick(&mut app, "tasks-issue-assignee-scribe");
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
@@ -1130,7 +1133,10 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .and_then(|version| version.context.as_ref())
         .and_then(|context| context.invoker.as_ref())
         .expect("the step names who made it");
-    assert_eq!(by.acting.by.key(), "agent:scribe");
+    assert_eq!(
+        by.acting.member_id(),
+        Some(&ui::tilo_resource::MemberId::agent("scribe"))
+    );
 
     app.call_by(scribe, "tasks.tracker", "undo", json!({}))
         .expect("the agent undoes its step");

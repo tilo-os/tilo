@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
                             "reasoning": "spam",
                             "model": "",
                             "reverted": "[]",
-                            "by": "mod",
+                            "by": r#"{"person":"mod"}"#,
                             "at_ms": 3,
                         },
                     },

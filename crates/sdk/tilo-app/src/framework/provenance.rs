@@ -6,7 +6,7 @@
 
 use ui_core::peniko::Color;
 
-use tilo_resource::Origin;
+use tilo_resource::{MemberId, Origin};
 use ui_core::i18n::ArgValue;
 use ui_core::tokens::{PresenceHue, Rhythm, TextRole};
 use ui_core::widget::{Chip, ChipLead, Container, Element, Link, Row, Text};
@@ -182,7 +182,7 @@ impl People {
     #[must_use]
     pub fn provenance(
         &self,
-        author: &str,
+        author: Option<&MemberId>,
         kept: &str,
         at_ms: i64,
         origin: Option<&Origin>,
@@ -223,7 +223,8 @@ mod tests {
             created_ms: Some(1_763_164_800_000),
             updated_ms: None,
         };
-        let moved = people.provenance("agent:grant-a8a42b74", "", 1_900_000_000_000, Some(&origin));
+        let grant = tilo_resource::MemberId::agent("grant-a8a42b74");
+        let moved = people.provenance(Some(&grant), "", 1_900_000_000_000, Some(&origin));
         assert_eq!(moved.name, "xemmerling", "the author is its own field");
         assert!(moved.actor.is_none(), "a moved author is not a participant");
         let source = moved.source.as_ref().expect("the tool it came from");
@@ -248,7 +249,7 @@ mod tests {
             "the name it had there reads as its own field: {spoken}"
         );
 
-        let here = people.provenance("ada", "", 1_763_164_800_000, None);
+        let here = people.provenance(Some(&ada), "", 1_763_164_800_000, None);
         assert_eq!(here.name, "Ada");
         assert!(here.actor.is_some(), "written here, it is by a participant");
         assert!(here.source.is_none(), "written here, it came from nowhere");
@@ -278,7 +279,8 @@ mod tests {
             created_ms: Some(1_763_164_800_000),
             updated_ms: None,
         };
-        let provenance = people.provenance("agent:grant-a8a42b74", "", 0, Some(&origin));
+        let grant = tilo_resource::MemberId::agent("grant-a8a42b74");
+        let provenance = people.provenance(Some(&grant), "", 0, Some(&origin));
         let mut row = provenance.row("tasks-issue-written");
         let nodes = nodes(&mut *row);
         let found = |role: AkRole, label: Option<&str>| {

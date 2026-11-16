@@ -209,7 +209,7 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let people = cx.people();
     cx.switch(&planned, move |_cx, planned| {
         let written = people.provenance(
-            &planned.author,
+            planned.author.as_ref(),
             &planned.author_name,
             planned.created_ms,
             planned.origin.as_ref(),
@@ -262,7 +262,7 @@ struct Plan {
     /// When it is wanted, as a person reads a date.
     due: Option<String>,
     /// Who wrote it and when, and where it came from.
-    author: String,
+    author: Option<ui::tilo_resource::MemberId>,
     author_name: String,
     created_ms: i64,
     origin: Option<ui::tilo_resource::Origin>,
@@ -614,7 +614,7 @@ fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &M
     // under where the workspace names them not. Who, where and when are the
     // shared provenance row's own fields.
     let written = people.provenance(
-        &message.author,
+        message.author.as_ref(),
         &message.author_name,
         message.at_ms,
         message.origin.as_ref(),

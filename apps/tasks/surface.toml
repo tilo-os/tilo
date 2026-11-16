@@ -29,7 +29,7 @@ fields = [
   { path = "issues.*.due_ms", type = { option = "int" } },
   { path = "issues.*.priority", type = { option = "int" } },
   { path = "issues.*.comments", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
-  { path = "issues.*.comments.*.author", type = "text", readonly = true },
+  { path = "issues.*.comments.*.author", type = { option = "principal" }, readonly = true },
   { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
   { path = "issues.*.comments.*.at_ms", type = "int", readonly = true },
   { path = "issues.*.comments.*.text", type = "text", readonly = true },
@@ -38,7 +38,7 @@ fields = [
   { path = "issues.*.comments.*.lookup", type = "text", readonly = true },
   { path = "issues.*.comments.*.step", type = "text", readonly = true },
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
-  { path = "issues.*.author", type = "text", readonly = true },
+  { path = "issues.*.author", type = { option = "principal" }, readonly = true },
   { path = "issues.*.created_ms", type = "int", readonly = true },
   { path = "issues.*.url", type = { option = "text" } },
   { path = "areas", type = { collection = { named = "TrackerArea" } }, stored = "collection", unit = true },
@@ -49,7 +49,6 @@ fields = [
   { path = "areas.*.people.*.name", type = "text", label = true, readonly = true },
   { path = "areas.*.people.*.role", type = "text", readonly = true },
   { path = "numbers", type = "int", readonly = true },
-  { path = "imported", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -212,14 +211,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "import"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "tasks", type = { list = { named = "Imported" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, author = { type = "string" }, created_ms = { type = "integer" }, instruction = { type = "string" }, messages = { type = "array", items = { type = "object", additionalProperties = false, properties = { at_ms = { type = "integer" }, author = { type = "string" }, by_agent = { type = "boolean" }, text = { type = "string" } }, required = ["author", "text"] } }, status = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }, task = { type = "string" }, title = { type = "string" } }, required = ["task", "title", "status"] } } },
-]
-
-[[resources.verbs]]
 id = "new-project"
 kind = "read"
 
@@ -230,28 +221,6 @@ fields = [
   { name = "app", type = "text" },
   { name = "kind", type = "text" },
   { name = "label", type = "text" },
-]
-
-[[resources.types]]
-name = "Imported"
-fields = [
-  { name = "task", type = "text" },
-  { name = "title", type = "text" },
-  { name = "instruction", type = "text" },
-  { name = "status", type = { named = "Status" } },
-  { name = "assignee", type = { option = "text" } },
-  { name = "author", type = "text" },
-  { name = "created_ms", type = "int" },
-  { name = "messages", type = { list = { named = "ImportedMessage" } } },
-]
-
-[[resources.types]]
-name = "ImportedMessage"
-fields = [
-  { name = "author", type = "text" },
-  { name = "by_agent", type = "bool" },
-  { name = "at_ms", type = "int" },
-  { name = "text", type = "text" },
 ]
 
 [[resources.types]]
@@ -269,7 +238,7 @@ fields = [
   { name = "due_ms", type = { option = "int" } },
   { name = "priority", type = { option = "int" } },
   { name = "comments", type = { collection = { named = "Message" } } },
-  { name = "author", type = "text" },
+  { name = "author", type = { option = "principal" } },
   { name = "created_ms", type = "int" },
   { name = "url", type = { option = "text" } },
 ]
@@ -294,7 +263,7 @@ fields = [
 [[resources.types]]
 name = "Message"
 fields = [
-  { name = "author", type = "text" },
+  { name = "author", type = { option = "principal" } },
   { name = "by_agent", type = "bool" },
   { name = "at_ms", type = "int" },
   { name = "text", type = "text" },

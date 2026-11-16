@@ -372,7 +372,7 @@ AddSignatureArgs = TypedDict("AddSignatureArgs", {
 """The arguments of `add-signature`."""
 
 AddTypedSignatureArgs = TypedDict("AddTypedSignatureArgs", {
-    "signer": NotRequired["str | None"],
+    "signer": "str",
     "page": NotRequired["int | None"],
 })
 """The arguments of `add-typed-signature`."""
@@ -394,7 +394,7 @@ SetStrokesArgs = TypedDict("SetStrokesArgs", {
 
 class Document(Resource):
     """PDF — `pdf.document`."""
-    __surface__ = "so.tilo.pdf-viewer@df5c8c476ed389e7"
+    __surface__ = "so.tilo.pdf-viewer@ff95f35fbe75b49f"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -620,13 +620,12 @@ class Document(Resource):
 
     def add_typed_signature(self,
         *,
-        signer: str | None = None,
+        signer: str,
         page: int | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
-        if signer is not None:
-            args["signer"] = signer
+        args["signer"] = signer
         if page is not None:
             args["page"] = page
         return self.action("add-typed-signature", **args)
@@ -675,7 +674,7 @@ class Document(Resource):
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
-    __surface__ = "so.tilo.pdf-viewer@df5c8c476ed389e7"
+    __surface__ = "so.tilo.pdf-viewer@ff95f35fbe75b49f"
     signer: str
     strokes: list[Stroke]
 

@@ -69,7 +69,7 @@ pub(super) fn ended(app: &mut App, invocation: InvocationId) -> Result<(), Strin
 
 /// The `n`th of a crowd of agents on the device that runs the page.
 fn crowd(n: usize) -> ActionInvoker {
-    agent(&format!("agent:crowd-{n}"))
+    agent(&format!("crowd-{n}"))
 }
 
 /// What `tab`'s record holds, as a reader of it is answered.
@@ -117,8 +117,8 @@ fn an_actor_whose_action_waits_its_turn_is_not_forgotten_for_a_crowd() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     let laptop = laptop();
-    let far = agent_on("agent:task-x", &laptop);
-    let near = agent("agent:task-0");
+    let far = agent_on("task-x", &laptop);
+    let near = agent("task-0");
     engine_sets_down(&engine, &field_filled(1, "agent:task-x", "Given names"));
     act(&mut app, Some(&far), &fill("d1e2", "Maria Elena")).expect("the first fill answers");
     app.settle();
@@ -218,7 +218,7 @@ fn an_actor_is_not_forgotten_before_its_answered_action_is_set_down() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     let laptop = laptop();
-    let far = agent_on("agent:task-x", &laptop);
+    let far = agent_on("task-x", &laptop);
     let filled = field_filled(1, "agent:task-x", "Given names");
     // The fill's answer names its place in the engine's record. What the
     // engine lists there is read a moment later.
@@ -277,7 +277,7 @@ fn an_actor_is_forgotten_before_its_answer_is_set_down(
     engine: &TestEngine,
 ) -> (InvokerDevice, ActionInvoker) {
     let laptop = laptop();
-    let far = agent_for_ada("agent:task-x").from_device(Some(laptop.clone()));
+    let far = agent_for_ada("task-x").from_device(Some(laptop.clone()));
     engine_sets_down(engine, &field_filled(1, "agent:task-x", "Given names"));
     act(app, Some(&far), &fill("d1e2", "Maria Elena")).expect("the fill answers");
     app.settle();

@@ -69,7 +69,7 @@ fn append_to_note_refuses_a_title_no_note_carries() {
 
 /// An agent of the workspace, as the host admits one.
 fn agent(name: &str) -> ui::tilo_actions::ActionInvoker {
-    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(name))
+    ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::agent(name))
 }
 
 /// `who` calls the notebook's `action` with `arguments`: its answer.
@@ -288,10 +288,10 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 #[test]
 fn an_agents_append_is_marked_as_the_agents() {
     let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
-    let page = made_by(&mut app, "agent:helper", "Plan");
+    let page = made_by(&mut app, "helper", "Plan");
     call_by(
         &mut app,
-        "agent:helper",
+        "helper",
         "append-to-note",
         serde_json::json!({ "title": "Plan", "markdown": "The agent added this." }),
     )
@@ -304,9 +304,11 @@ fn an_agents_append_is_marked_as_the_agents() {
     });
     let (text, runs) = authors.last().expect("the appended block");
     assert_eq!(text, "The agent added this.");
+    let helper =
+        ui::tilo_resource::text::author_mark(&ui::tilo_resource::MemberId::agent("helper"));
     assert!(
         runs.iter()
-            .any(|(range, author)| author == "agent:helper" && range.len() == text.len()),
+            .any(|(range, author)| *author == helper && range.len() == text.len()),
         "the appended text is the agent's: {authors:?}"
     );
 }

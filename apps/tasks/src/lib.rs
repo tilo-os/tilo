@@ -241,7 +241,10 @@ fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, addresses: &LocalState<Tracke
 }
 
 /// The sidebar's rows: what narrows the tracker, and the labels it carries.
-fn sidebar_sections(tracker: &Tracker, me: Option<&str>) -> Vec<NavSection> {
+fn sidebar_sections(
+    tracker: &Tracker,
+    me: Option<&ui::tilo_resource::MemberId>,
+) -> Vec<NavSection> {
     let filters = Filter::ALL
         .into_iter()
         .map(|filter| {
@@ -441,14 +444,11 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
 fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tracker: &LocalState<Tracker>) -> Element {
     let chosen = nav.clone();
     let selection = nav.filter.clone();
-    let me = cx
-        .me()
-        .and_then(ui::tilo_resource::MemberId::person_id)
-        .map(str::to_owned);
+    let me = cx.me().cloned();
     cx.switch(tracker, move |_cx, tracker| {
         let chosen = chosen.clone();
         Box::new(
-            ui::widget::NavList::new(sidebar_sections(tracker, me.as_deref()))
+            ui::widget::NavList::new(sidebar_sections(tracker, me.as_ref()))
                 // Named for what it narrows, not the app: the sidebar's
                 // heading and the window's tab already say "Tasks".
                 .with_accessible_name(tr("tasks-filters"))

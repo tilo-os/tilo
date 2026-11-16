@@ -91,10 +91,10 @@ impl Filter {
     }
 
     /// Whether this issue itself matches, read as `me`'s window.
-    pub(crate) fn matches(&self, issue: &Issue, me: Option<&str>) -> bool {
+    pub(crate) fn matches(&self, issue: &Issue, me: Option<&ui::tilo_resource::MemberId>) -> bool {
         match self {
             Self::All => true,
-            Self::Mine => me.is_some_and(|me| issue.assigned_person() == Some(me)),
+            Self::Mine => me.is_some_and(|me| issue.assigned_member().as_ref() == Some(me)),
             // A todo is a task nobody has started: it has not been moved out
             // of where it waits. "Started" is the work beginning, not the
             // assignment.
@@ -111,12 +111,17 @@ impl Filter {
         tracker: &Tracker,
         id: &Id,
         issue: &Issue,
-        me: Option<&str>,
+        me: Option<&ui::tilo_resource::MemberId>,
     ) -> bool {
         self.matches(issue, me) || self.shows_below(tracker, id, me)
     }
 
-    fn shows_below(&self, tracker: &Tracker, id: &Id, me: Option<&str>) -> bool {
+    fn shows_below(
+        &self,
+        tracker: &Tracker,
+        id: &Id,
+        me: Option<&ui::tilo_resource::MemberId>,
+    ) -> bool {
         tracker
             .children(Some(id))
             .any(|(child, issue)| self.shows(tracker, child, issue, me))

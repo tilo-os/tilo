@@ -20,8 +20,8 @@ pub struct Activity {
     /// undo of everything the person did from here on goes back to.
     pub before: Option<String>,
     pub time_ms: i64,
-    /// The exact invoker history names, which `undo { by }` takes.
-    pub actor: String,
+    /// Who made the change as history names them, which `undo { by }` takes.
+    pub actor: tilo_actions::Actor,
     /// What the change did: the verb or field edit, with its arguments.
     pub what: String,
     /// Marked destructive by the action that made it (a deletion, a
@@ -92,11 +92,11 @@ pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Acti
             before = Some(hash);
             continue;
         };
-        let invoker = context.invoker.as_ref();
-        let by_person = invoker.is_some_and(|invoker| {
-            invoker.acting.by.key() == person || invoker.acting.acted_for_person() == Some(person)
+        let by_person = context.invoker.as_ref().filter(|invoker| {
+            invoker.acting.person_id() == Some(person)
+                || invoker.acting.acted_for_person() == Some(person)
         });
-        if by_person && version.time_ms >= since_ms {
+        if let Some(invoker) = by_person.filter(|_| version.time_ms >= since_ms) {
             let what = context
                 .what
                 .as_ref()
@@ -108,9 +108,7 @@ pub fn activity_of(source: &Source<'_>, person: &str, since_ms: i64) -> Vec<Acti
                 change: hash.clone(),
                 before: before.clone(),
                 time_ms: version.time_ms,
-                actor: invoker
-                    .map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key())
-                    .unwrap_or_default(),
+                actor: invoker.acting.by.clone(),
                 what: clip(&what, MAX_ARGS_CHARS),
                 destructive: is_destructive(context, destructive),
                 content: !context.is_housekeeping(),

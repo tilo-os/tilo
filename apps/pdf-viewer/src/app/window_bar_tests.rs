@@ -235,7 +235,7 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
             quads: vec![PtRect::new(56.0, 40.0, 200.0, 14.0)],
         },
         HighlightColor::Yellow,
-        "me",
+        crate::model::Author::named("me"),
     );
     app.invoke(crate::actions::add_annotation_on(&mark, "source-1"))
         .expect("the mark is added");

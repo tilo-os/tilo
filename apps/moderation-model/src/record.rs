@@ -7,8 +7,8 @@
 use serde::{Deserialize, Serialize};
 use ui::automerge::ObjId;
 use ui::tilo_resource::{
-    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, ModelError, NonBlank, Refusal,
-    resource,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError, NonBlank,
+    Refusal, resource,
 };
 
 pub const MAX_REASON_CHARS: usize = 500;
@@ -26,12 +26,12 @@ pub struct Moderation {
 }
 
 /// One report of a person, optionally pointing at what they did.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Report {
     #[model(readonly)]
     pub id: String,
-    /// Who reported, by person id; the moderation agent for its own heuristics.
-    pub reporter: String,
+    /// Who reported; the moderation agent for its own heuristics.
+    pub reporter: MemberId,
     /// Whom the report is about, by person id.
     pub person: String,
     /// The app, record and item reported, when the report is about content.
@@ -89,7 +89,7 @@ pub struct Ruling {
 }
 
 /// One decision, with the reasoning that led to it.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Decision {
     #[model(readonly)]
     pub id: String,
@@ -105,10 +105,10 @@ pub struct Decision {
     pub model: String,
     /// What it took back.
     pub reverted: Vec<Reverted>,
-    /// Who decided: the agent's or the Moderator's actor id.
-    pub by: String,
+    /// Who decided: the agent or the Moderator.
+    pub by: MemberId,
     pub at_ms: i64,
-    pub overturned_by: Option<String>,
+    pub overturned_by: Option<MemberId>,
     pub overturn_note: Option<String>,
     pub overturned_at_ms: Option<i64>,
 }
@@ -142,22 +142,22 @@ impl Moderation {
     }
 }
 
-fn reporter(cx: &ActionCx) -> Result<String, Refusal> {
+fn reporter(cx: &ActionCx) -> Result<MemberId, Refusal> {
     let invoked_by = cx.invoked_by();
     let by_person = invoked_by
         .as_ref()
         .is_none_or(ui::tilo_actions::Acting::is_person);
     let by_software = invoked_by.is_some_and(|by| by.is_agent() || by.is_bot());
     match cx.author() {
-        Some(author) if by_person => Ok(author.key()),
-        Some(author) if by_software && author.key() == crate::AGENT => Ok(author.key()),
+        Some(author) if by_person => Ok(author.clone()),
+        Some(author) if by_software && *author == crate::agent() => Ok(author.clone()),
         _ => Err(Refusal::new("only a person reports, for themselves")),
     }
 }
 
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
+fn author(cx: &ActionCx) -> Result<MemberId, Refusal> {
     cx.author()
-        .map(ui::tilo_resource::MemberId::key)
+        .cloned()
         .ok_or_else(|| Refusal::new("a decision names who took it"))
 }
 
@@ -239,7 +239,7 @@ impl Moderation {
         optional_id(app.as_ref(), "the app")?;
         optional_id(record.as_ref(), "the record")?;
         optional_id(item.as_ref(), "the item")?;
-        if person == reporter {
+        if reporter.person_id() == Some(person.as_str()) {
             return Err(Refusal::new("you cannot report yourself"));
         }
         if reason.chars().count() > MAX_REASON_CHARS {

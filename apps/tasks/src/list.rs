@@ -33,10 +33,7 @@ struct Row {
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
     let chosen = nav.filter.clone();
-    let me = cx
-        .me()
-        .and_then(ui::tilo_resource::MemberId::person_id)
-        .map(str::to_owned);
+    let me = cx.me().cloned();
     let nav = nav.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
@@ -44,7 +41,7 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
         let nav = nav.clone();
         let me = me.clone();
         cx.switch(&tracker, move |cx, tracker| {
-            tree(cx, tracker, &nav, &filter, me.as_deref())
+            tree(cx, tracker, &nav, &filter, me.as_ref())
         })
     });
     // The list's name is the window's location: the bar says where the
@@ -71,7 +68,7 @@ fn collect(
     ids: &mut Vec<Id>,
     out: &mut Vec<Row>,
     filter: &Filter,
-    me: Option<&str>,
+    me: Option<&ui::tilo_resource::MemberId>,
 ) {
     for (id, issue) in tracker
         .children(parent)
@@ -97,7 +94,7 @@ fn tree(
     tracker: &Tracker,
     nav: &Nav,
     filter: &Filter,
-    me: Option<&str>,
+    me: Option<&ui::tilo_resource::MemberId>,
 ) -> Element {
     if tracker.issues.is_empty() {
         return Box::new(

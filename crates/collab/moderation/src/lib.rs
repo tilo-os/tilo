@@ -23,7 +23,7 @@ pub mod agent;
 pub mod anthropic;
 #[cfg(feature = "host")]
 pub mod judge;
-pub use moderation_model::{AGENT, KIND, record};
+pub use moderation_model::{KIND, agent, record};
 
 pub use activity::{Activity, Source, activity_of, burst, destructive_verbs};
 #[cfg(feature = "host")]

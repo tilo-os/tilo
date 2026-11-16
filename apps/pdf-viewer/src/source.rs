@@ -991,7 +991,7 @@ impl RasterBackend {
                     page: idx,
                     kind,
                     color: tilo_pdf::Rgba::new(r, g, b, 255),
-                    author: a.author.clone(),
+                    author: a.author.file_name().to_owned(),
                     contents: contents
                         .or_else(|| first.map(|t| t.comment.text.clone()))
                         .unwrap_or_default(),

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@55275652853310a0";
+export const SURFACE = "so.tilo.notes@4372df3ebdeb4ab0";
 
 export interface MarkdownFile {
   path: string;

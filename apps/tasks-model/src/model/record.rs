@@ -8,8 +8,8 @@ use tilo_resource::{
 
 use crate::model::goal::Area;
 use crate::model::issue::{
-    Attachment, Imported, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE, MAX_MESSAGE_CHARS,
-    Message, NewIssue, Priority, Status, checked_assignee,
+    Attachment, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message,
+    NewIssue, Priority, Status, checked_assignee,
 };
 use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
@@ -35,11 +35,6 @@ pub struct Tracker {
     /// after a merge is past every issue either side made.
     #[model(readonly)]
     pub numbers: Counter,
-    /// Tasks of the workspace already imported, by their id: an
-    /// imported task is never imported again, even after its issue is
-    /// deleted.
-    #[model(readonly)]
-    pub imported: Set<String>,
 }
 
 fn no_issue() -> Refusal {
@@ -145,9 +140,9 @@ impl Tracker {
     }
 }
 
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
+fn author(cx: &ActionCx) -> Result<tilo_resource::MemberId, Refusal> {
     cx.author()
-        .map(tilo_resource::MemberId::key)
+        .cloned()
         .ok_or_else(|| Refusal::new("Sign in to do this"))
 }
 
@@ -231,10 +226,10 @@ impl Tracker {
         check_estimate(estimate)?;
         let origin = Origin::checked_option(origin)?;
         let assignee = checked_assignee(assignee)?;
-        let author = author(cx)?;
+        let author = Some(author(cx)?);
         let author_name = cx.acting_name();
         let number = self.next_number();
-        let mut kept_labels = tilo_resource::Set::new();
+        let mut kept_labels = Set::new();
         for label in labels.unwrap_or_default() {
             let label = label.trim();
             if !label.is_empty() {
@@ -447,7 +442,7 @@ impl Tracker {
         if name.chars().count() > MAX_ATTACHMENT_NAME_CHARS {
             return Err(Refusal::new("An attachment's name fits on a line"));
         }
-        let author = author(cx)?;
+        let author = Some(author(cx)?);
         let author_name = cx.acting_name();
         let at_ms = cx.now_ms();
         let id = cx.id();
@@ -526,7 +521,7 @@ impl Tracker {
     ) -> Result<(), Refusal> {
         let text = message_text(text)?;
         let origin = Origin::checked_option(origin)?;
-        let author = author(cx)?;
+        let author = Some(author(cx)?);
         let author_name = cx.acting_name();
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
@@ -653,22 +648,5 @@ impl Tracker {
             target.due_ms = Some(due_ms);
         }
         Ok(())
-    }
-
-    /// Import tasks the workspace kept before the tracker. A task
-    /// already imported is left alone.
-    #[action(step = "create", housekeeping, writes = issues)]
-    pub fn import(&mut self, tasks: Vec<Imported>) {
-        for task in tasks {
-            if self.imported.contains(&task.task) {
-                continue;
-            }
-            let id = task.issue_id();
-            if !self.issues.contains(&id) {
-                let number = self.next_number();
-                self.issues.push(id, task.issue(number));
-            }
-            self.imported.insert(task.task.clone());
-        }
     }
 }

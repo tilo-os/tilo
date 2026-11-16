@@ -36,7 +36,7 @@ fn highlight(id: &str, page_id: &str, y: f64) -> Invoke<PdfMarkup> {
                 quads: vec![PtRect::new(72.0, y, 200.0, 12.0)],
             },
             HighlightColor::Yellow,
-            "Ada",
+            crate::model::Author::named("Ada"),
         )
     };
     add_annotation_on(&a, page_id)
@@ -528,7 +528,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
                     quads,
                 },
                 HighlightColor::Yellow,
-                "Ada",
+                crate::model::Author::named("Ada"),
             )
         };
         app.author_annotation(&mut Edits::lend(&mut state.doc), &a);
