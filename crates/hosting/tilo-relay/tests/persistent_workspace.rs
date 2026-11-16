@@ -327,7 +327,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     };
     assert_eq!(members, 1, "the owner is the workspace's only member");
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    join_through_door(
+    join_through_entry(
         &runtime,
         started.plain,
         &started.workspace,
@@ -535,14 +535,19 @@ fn page(
 
 /// A person comes in through the workspace's entry on their session, as their computer does: their
 /// device and certificate, a member now.
-fn join_through_door(
+fn join_through_entry(
     runtime: &tokio::runtime::Runtime,
     plain: std::net::SocketAddr,
     workspace: &str,
     (device, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     name: &str,
 ) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    match runtime.block_on(enter_through_door(plain, workspace, (&device, &cert), name)) {
+    match runtime.block_on(enter_through_entry(
+        plain,
+        workspace,
+        (&device, &cert),
+        name,
+    )) {
         Ok(_) => (device, cert),
         Err(refused) => panic!("{name} was not admitted: {refused:?}"),
     }
@@ -550,18 +555,18 @@ fn join_through_door(
 
 /// A session of `cert`'s device whose first message enters `workspace` through its entry, as a
 /// person's page or computer opens one: what the workspace answered it.
-async fn enter_through_door(
+async fn enter_through_entry(
     plain: std::net::SocketAddr,
     workspace: &str,
     device: (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
     name: &str,
 ) -> Result<tilo_relay_client::login::Admission, tilo_session_client::device::HostRefusal> {
-    enter_through_door_as(plain, workspace, device, name, device.1.device_public_key).await
+    enter_through_entry_as(plain, workspace, device, name, device.1.device_public_key).await
 }
 
-/// [`enter_through_door`] as the entry `request_id` names it: `tilo mcp` asks
+/// [`enter_through_entry`] as the entry `request_id` names it: `tilo mcp` asks
 /// with a fresh one on every run.
-async fn enter_through_door_as(
+async fn enter_through_entry_as(
     plain: std::net::SocketAddr,
     workspace: &str,
     (device, cert): (&ed25519_dalek::SigningKey, &tilo_user_identity::DeviceCert),
@@ -829,7 +834,7 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
     for (index, (seed, name)) in [(0x41, "Ana"), (0x51, "Ben")].into_iter().enumerate() {
         let (device, cert) = own_device(seed, name);
         let admitted = runtime
-            .block_on(enter_through_door(
+            .block_on(enter_through_entry(
                 started.plain,
                 &started.workspace,
                 (&device, &cert),
@@ -886,7 +891,7 @@ fn the_workspace_keeps_out_a_person_it_removed_before_the_door() {
     let started = announced(&workspace);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let refused = runtime
-        .block_on(enter_through_door(
+        .block_on(enter_through_entry(
             started.plain,
             &started.workspace,
             (&device, &cert),
@@ -931,8 +936,8 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     let started = announced(&workspace);
     let workspace_id = tilo_relay::WorkspaceId::parse(&started.workspace).unwrap();
     let (id, plain) = (started.workspace, started.plain);
-    let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
-    let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
+    let visiting = join_through_entry(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
+    let writer = join_through_entry(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
     let sibling = unenrolled_stranger_device();
     runtime.block_on(persons_read_the_workspace_and_are_refused(
         plain,
@@ -964,7 +969,7 @@ fn a_persistent_workspaces_pages_read_the_workspace_and_write_what_their_role_le
     .unwrap();
     let started = announced(&workspace);
     assert_eq!(started.workspace, id, "the same workspace opens");
-    let editor = join_through_door(
+    let editor = join_through_entry(
         &runtime,
         started.plain,
         &started.workspace,
@@ -1146,7 +1151,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
     let workspace = start_with(&state, &root_file, &secrets, &extra).unwrap();
     let first = announced(&workspace);
     let id = first.workspace.clone();
-    join_through_door(&runtime, first.plain, &id, own_device(0x74, "Ana"), "Ana");
+    join_through_entry(&runtime, first.plain, &id, own_device(0x74, "Ana"), "Ana");
     workspace.kill();
 
     // Killed again before it says it started.
@@ -1158,7 +1163,8 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
     let again = announced(&workspace);
     assert_eq!(again.workspace, id, "the same workspace opens");
     let workspace_id = tilo_relay::WorkspaceId::parse(&again.workspace).unwrap();
-    let (key, cert) = join_through_door(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
+    let (key, cert) =
+        join_through_entry(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
         let info = tilo_relay_client::https::host_info(&Plain(again.plain))
             .await
@@ -1493,7 +1499,7 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     let (id, plain) = (started.workspace, started.plain);
     // A computer `tilo login` made a device of the person's, in through the
     // listed workspace's entry.
-    let (key, cert) = join_through_door(
+    let (key, cert) = join_through_entry(
         &runtime,
         plain,
         &id,
@@ -1504,7 +1510,7 @@ fn a_device_that_came_in_before_enters_again_without_the_door() {
     let before = settled_admissions(&entry);
     // The same computer's next `tilo mcp`: its session enters the workspace
     // again, under an entry of its own as every run makes one.
-    let answered = runtime.block_on(enter_through_door_as(
+    let answered = runtime.block_on(enter_through_entry_as(
         plain,
         &id,
         (&key, &cert),

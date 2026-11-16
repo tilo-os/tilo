@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_relay_protocol::directory::{DoorJoin, Listing, door_path};
+use tilo_relay_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_relay_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -252,7 +252,7 @@ impl Site {
             .runtime
             .block_on(self.workspaces.admit_listed(
                 &self.workspace,
-                &DoorJoin {
+                &EntryJoin {
                     user_public_key: hex::encode(person),
                     display_name: "Someone".to_owned(),
                 },
@@ -752,7 +752,7 @@ fn door_responder(workspace: &str, name: &str) -> Responder {
                         "name": page_name,
                         "description": "",
                         "defaultRole": "editor",
-                        "door": door_path(&workspace_answered),
+                        "door": entry_path(&workspace_answered),
                         "here": [],
                         "hereCount": 0,
                         "members": 1,

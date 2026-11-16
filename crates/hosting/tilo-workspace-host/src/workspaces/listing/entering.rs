@@ -530,7 +530,7 @@ mod tests {
     /// Moderator stays a Moderator, never the listing's default. A stranger
     /// is still turned away from both.
     #[tokio::test]
-    async fn a_members_further_device_enters_through_the_door_at_their_part() {
+    async fn a_members_further_device_enters_through_the_entry_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;

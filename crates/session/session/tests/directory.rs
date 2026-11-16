@@ -45,7 +45,7 @@ use tilo_desktop_model::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::workspaces::RemoveMemberRequest;
 use tilo_relay_client::Host;
-use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
+use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
 use tilo_relay_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
@@ -170,7 +170,7 @@ fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
         name: "Tilers".to_owned(),
         description: "Anyone who lays tiles".to_owned(),
         default_role: Role::Editor,
-        door: door_path(COMMUNITY_WORKSPACE),
+        entry: entry_path(COMMUNITY_WORKSPACE),
         here: vec![face("Ada", "a1b2"), face("Bo", "c3d4")],
         here_count: 2,
         members,
@@ -188,7 +188,7 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
         name: "Book club".to_owned(),
         description: String::new(),
         default_role: Role::Viewer,
-        door: door_path(CLUB_WORKSPACE),
+        entry: entry_path(CLUB_WORKSPACE),
         here: Vec::new(),
         here_count: 0,
         members: 5,
@@ -362,7 +362,7 @@ fn page_listing_the_workspace_on_this_shell(held_name: &str, held_workspace: &st
         name: held_name.to_owned(),
         description: "The one on this session".to_owned(),
         default_role: Role::Commenter,
-        door: door_path(held_workspace),
+        entry: entry_path(held_workspace),
         here: Vec::new(),
         here_count: 0,
         members: 3,
@@ -1144,7 +1144,7 @@ impl LoungeHost {
                     plain_listen: Some("127.0.0.1:0".parse().expect("an address")),
                     public_origin: None,
                     fetch_proxy: None,
-                    door: None,
+                    wait_list: None,
                     link: None,
                     site: None,
                 })
@@ -1157,7 +1157,7 @@ impl LoungeHost {
                 .as_deref()
                 .expect("the host's loopback listener"),
             tilo_relay_protocol::web::API_PREFIX,
-            door_path(&self.workspace)
+            entry_path(&self.workspace)
         );
         let origin = Arc::new(Mutex::new(String::new()));
         let served_origin = Arc::clone(&origin);
@@ -1166,7 +1166,7 @@ impl LoungeHost {
             name: "Lounge".to_owned(),
             description: "Where the site's people talk".to_owned(),
             default_role: Role::Editor,
-            door: host_door.clone(),
+            entry: host_door.clone(),
             here: Vec::new(),
             here_count: 0,
             members: 2,

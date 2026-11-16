@@ -25,7 +25,7 @@ use tilo_relay_client::CertifyError;
 use tilo_relay_client::HttpClient;
 use tilo_relay_client::LinkError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::{PairingLink, SignIn, door_at, sign_in};
+use tilo_relay_client::login::{PairingLink, SignIn, entry_at, sign_in};
 use tilo_relay_client::login_code;
 use tilo_relay_protocol::certify::DEVICE_LABEL_TAKEN;
 use tilo_relay_protocol::login_code::{self as protocol, Claimed, Report, Resolved, Step};
@@ -513,8 +513,8 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         cert,
         host_cert,
     };
-    let door = door_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
-    Ok(Entered::enter(door.as_ref(), &signed, Arc::new(key.clone())).await?)
+    let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
+    Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
 }
 
 /// The site `--site` or [`SITE_ENV`] names, else [`DEFAULT_SITE`], as an
@@ -1350,7 +1350,7 @@ mod tests {
             (
                 200,
                 json!({"workspaces": [{"workspace": "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "name": "Lounge",
-                    "defaultRole": "editor", "door": "lounge/"}]}),
+                    "defaultRole": "editor", "entry": "lounge/"}]}),
             )
         });
         assert_eq!(

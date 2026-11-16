@@ -20,7 +20,7 @@ use tilo_workspace_directory::{
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// A workspace this person chose to join: the name it was listed under, and
-/// the workspace itself with the way this device comes into it — its door,
+/// the workspace itself with the way this device comes into it — its entry,
 /// or an invitation it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
@@ -42,11 +42,11 @@ enum Ask {
         community: Option<url::Url>,
         site: Option<String>,
     },
-    /// Enter the workspace `door` lets people into.
+    /// Enter the workspace `entry` lets people into.
     Join {
         key: String,
         name: String,
-        door: url::Url,
+        entry: url::Url,
     },
     /// Join the home workspace of the community `site`, with nobody at the
     /// directory asking for it.
@@ -154,7 +154,7 @@ pub struct Store {
     names: std::cell::RefCell<BTreeMap<String, String>>,
     /// The community site each workspace was joined as its home through, by
     /// the workspace granted: the person's community is theirs once a host
-    /// admits them to it, which is after the door grants ([`Store::community_of`]).
+    /// admits them to it, which is after the entry grants ([`Store::community_of`]).
     communities: std::cell::RefCell<BTreeMap<String, String>>,
     asks: std::cell::RefCell<Option<mpsc::UnboundedSender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::UnboundedReceiver<Answer>>>,
@@ -170,7 +170,7 @@ impl Store {
     }
 
     /// The task, started the first time anything is asked of it: one app task
-    /// reads the sites and asks their doors, in turn.
+    /// reads the sites and asks their entries, in turn.
     fn worker(&self) -> Option<mpsc::UnboundedSender<Ask>> {
         let asking = self.asks.borrow().clone();
         if let Some(asks) = asking {
@@ -206,14 +206,14 @@ impl Store {
     }
 
     /// Join `listing`, which the sheet knows as `key`, as `person`: the
-    /// caller enters it through its door on the session it opens with the
-    /// door's host. One join at a time.
+    /// caller enters it through its entry on the session it opens with the
+    /// entry's host. One join at a time.
     ///
     /// # Errors
-    /// Why no door was asked: the listing lets people in by invitation only,
+    /// Why no entry was asked: the listing lets people in by invitation only,
     /// or the caller has no person to join as.
     pub fn join(&self, key: &str, listing: &Listed, person: &Person) -> Result<(), String> {
-        let door = listing.door.clone().ok_or_else(|| {
+        let entry = listing.entry_url.clone().ok_or_else(|| {
             let reason = format!("{} needs an invitation", listing.entry.name.trim());
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
@@ -222,8 +222,8 @@ impl Store {
                 site = %listing.host,
                 name = %listing.entry.name.trim(),
                 %reason,
-                outcome = "no door asked",
-                "join: the listing names no door"
+                outcome = "no entry asked",
+                "join: the listing names no entry"
             );
             reason
         })?;
@@ -232,7 +232,7 @@ impl Store {
                 target: JOIN_FLOW_TARGET,
                 workspace = %listing.entry.workspace,
                 key = %key,
-                outcome = "no door asked",
+                outcome = "no entry asked",
                 "join: the directory has no task to ask"
             );
             return Err("the directory has nowhere to ask".to_owned());
@@ -246,14 +246,14 @@ impl Store {
             key = %key,
             site = %listing.host,
             name = %listing.entry.name.trim(),
-            door = %door,
+            entry = %entry,
             person = %hex::encode(person.user),
-            "join: entering through the door"
+            "join: entering through the entry"
         );
         if let Err(error) = asks.send(Ask::Join {
             key: key.to_owned(),
             name: listing.entry.name.clone(),
-            door,
+            entry,
         }) {
             *self.joining.borrow_mut() = None;
             tracing::info!(
@@ -261,16 +261,16 @@ impl Store {
                 workspace = %listing.entry.workspace,
                 key = %key,
                 %error,
-                outcome = "no door asked",
+                outcome = "no entry asked",
                 "join: the directory task is gone"
             );
-            return Err(format!("the join was not asked of its door: {error}"));
+            return Err(format!("the join was not asked of its entry: {error}"));
         }
         Ok(())
     }
 
     /// Join the home workspace of the community `site`, as `person`: what the
-    /// site's own `entry.json` names as its home, through the same door a
+    /// site's own `entry.json` names as its home, through the same entry a
     /// listing's Join asks. Nobody at the directory chose this: its failure
     /// is the log's, not a note where a person would look for one they asked
     /// for.
@@ -285,7 +285,7 @@ impl Store {
             target: JOIN_FLOW_TARGET,
             site = %site,
             person = %hex::encode(person.user),
-            "join: asking the community site's home door"
+            "join: asking the community site's home entry"
         );
         asks.send(Ask::Community { site: site.clone() })
             .map_err(|error| format!("the community site was not asked: {error}"))
@@ -698,7 +698,7 @@ impl Store {
 
     /// The community site `workspace` was joined as its home through, while
     /// the person's membership of it is not settled: the host admits this
-    /// device after the door grants, and only then is the community theirs.
+    /// device after the entry grants, and only then is the community theirs.
     pub fn community_of(&self, workspace: &str) -> Option<String> {
         self.communities.borrow().get(workspace).cloned()
     }
@@ -741,10 +741,10 @@ async fn work(
     while let Some(ask) = asks.recv().await {
         let answer = match ask {
             Ask::Read { community, site } => Answer::Read(read(&client, community, site).await),
-            Ask::Join { key, name, door } => Answer::Joined {
+            Ask::Join { key, name, entry } => Answer::Joined {
                 key,
                 name,
-                granted: client::through_door(&door).map_err(|error| said(&error)),
+                granted: client::through_entry(&entry).map_err(|error| said(&error)),
             },
             Ask::Community { site } => Answer::Community {
                 joined: match &client {
@@ -871,13 +871,13 @@ async fn read(
                     listed.insert(0, home_listing(site, home));
                 }
                 // A site's own workspace is joined at its home, even when
-                // its directory lists it without a door of its own.
+                // its directory lists it without an entry of its own.
                 if let Some(home) = &read.home {
                     for listing in listed
                         .iter_mut()
-                        .filter(|listing| listing.entry.community && listing.door.is_none())
+                        .filter(|listing| listing.entry.community && listing.entry_url.is_none())
                     {
-                        listing.door.clone_from(&home.admission);
+                        listing.entry_url.clone_from(&home.admission);
                     }
                 }
                 listings.extend(listed);
@@ -901,7 +901,7 @@ async fn read(
 }
 
 /// A store with no task behind it still says what a join the caller settles
-/// became: those words are the sheet's, whether they come from a door or from
+/// became: those words are the sheet's, whether they come from a entry or from
 /// the caller's own enrollment.
 #[cfg(test)]
 mod tests {

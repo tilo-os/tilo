@@ -165,7 +165,7 @@ pub struct ClientCredentials<'a> {
 /// ([`tilo_relay_protocol::entering`]).
 #[derive(Clone, Debug)]
 pub struct Entry {
-    /// The workspace whose door it enters by, as its hello names it.
+    /// The workspace whose entry it enters by, as its hello names it.
     pub entering: tilo_relay_protocol::entering::Entering,
     /// Its signed request for the keys of the workspace's channel group,
     /// which its hello carries ([`tilo_relay_protocol::entering::Entry`]).
@@ -721,7 +721,7 @@ impl RelayClient {
     /// valid host certificate behind the pinned endpoint);
     /// `expected_server_device` additionally pins its device key. With
     /// `credentials.entering`, a device the host has not admitted yet enters a workspace
-    /// through its door on this session: the hello carries it with its proof,
+    /// through its entry on this session: the hello carries it with its proof,
     /// the client returns as soon as it is written, so requests follow right
     /// behind; the host reads them once the workspace admitted the device.
     /// The host's answer is the session's first envelope

@@ -157,7 +157,7 @@ mod tests {
     fn listed(entry: DirectoryEntry) -> Listed {
         Listed {
             entry,
-            door: None,
+            entry_url: None,
             site: None,
             host: "eu1.tilo.sh".into(),
         }

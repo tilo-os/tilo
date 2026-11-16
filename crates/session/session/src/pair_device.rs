@@ -230,7 +230,7 @@ impl crate::Shared {
         let keeper = self
             .directory_store
             .listing(&workspace)
-            .and_then(|listed| listed.door)
+            .and_then(|listed| listed.entry_url)
             .map(|door| door.origin().ascii_serialization());
         let (site, origin) =
             place_of(crate::platform::directory::community_site(), keeper).ok_or(NoLink::Nearby)?;

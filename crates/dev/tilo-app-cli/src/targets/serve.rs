@@ -292,8 +292,8 @@ fn refresh_surface(project: &Project) -> Result<()> {
     Ok(())
 }
 
-/// The shared workspace's page and door: `GET /` (what the page opens), `GET
-/// /play` (the join page), `POST /join` (name a person and answer the door
+/// The shared workspace's page and entry: `GET /` (what the page opens), `GET
+/// /play` (the join page), `POST /join` (name a person and answer the entry
 /// they enter through), `GET /people`
 /// (everyone admitted, by name) and `/record` (which record of the app
 /// everyone opens).
@@ -343,7 +343,7 @@ fn shared_route(
                     json(
                         "200 OK",
                         serde_json::json!({
-                            "door": admission.door,
+                            "entry": admission.entry,
                             "origin": workspace.origin,
                         }),
                     )

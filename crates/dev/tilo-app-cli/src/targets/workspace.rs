@@ -4,10 +4,10 @@
 //! The workspace's host is the SDK's own, `tilo-relay workspace --persistent`, on
 //! this machine: it governs the workspace, so it keys every record's channel
 //! and what one person does reaches everyone else. The workspace is listed in
-//! the host's directory at its default role, so its door admits each person
+//! the host's directory at its default role, so its entry admits each person
 //! on their own: every browser that opens the served join page creates a
 //! person of its own, tells the page server's `/join` the name it goes by,
-//! and enters through the host's door on its session with the host. The app
+//! and enters through the host's entry on its session with the host. The app
 //! acts as the person whose page runs it and reaches its own records, so a
 //! member at the workspace's default role writes through it.
 //!
@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::directory::door_path;
+use tilo_relay_protocol::directory::entry_path;
 use tilo_relay_protocol::web::API_PREFIX;
 use tilo_workspace_directory::web_origin;
 
@@ -93,10 +93,10 @@ pub struct RecordClaim {
     pub open: bool,
 }
 
-/// What a page needs to join: the workspace's door, which it enters through
-/// on its session with the host, whose origin is the door's own.
+/// What a page needs to join: the workspace's entry, which it enters through
+/// on its session with the host, whose origin is the entry's own.
 pub struct Admission {
-    pub door: String,
+    pub entry: String,
 }
 
 impl SharedWorkspace {
@@ -130,7 +130,7 @@ impl SharedWorkspace {
             .arg(state.join("relay"))
             .args(["--persistent", &project.package])
             .args(["--workspace-name", &name])
-            // Listed, so its door admits whoever asks, at the app's default
+            // Listed, so its entry admits whoever asks, at the app's default
             // role: the page server asks it for each person.
             .args(["--listing-description", &format!("{name} in a browser")])
             .args(["--default-role", "editor"])
@@ -231,16 +231,16 @@ impl SharedWorkspace {
     }
 
     /// Note the person `user_public_key` (hex), named `label`, and answer the
-    /// door they enter through: the door itself admits them, at the
+    /// entry they enter through: the entry itself admits them, at the
     /// workspace's default role, on their page's session with the host.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
         let mut user = [0_u8; 32];
         hex::decode_to_slice(user_public_key, &mut user)
             .map_err(|_| anyhow!("no person to admit"))?;
-        let door = web_origin(&format!(
+        let entry = web_origin(&format!(
             "{}{API_PREFIX}/{}",
             self.origin,
-            door_path(&self.relay_workspace)
+            entry_path(&self.relay_workspace)
         ))
         .map_err(anyhow::Error::msg)?;
         let people = {
@@ -250,7 +250,7 @@ impl SharedWorkspace {
         };
         let _ = people.map(|json| std::fs::write(&self.people_file, json));
         Ok(Admission {
-            door: door.to_string(),
+            entry: entry.to_string(),
         })
     }
 }

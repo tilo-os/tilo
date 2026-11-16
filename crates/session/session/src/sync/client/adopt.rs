@@ -1,4 +1,4 @@
-//! A workspace taken in: entered through its door or redeemed from an invitation the shell made for
+//! A workspace taken in: entered through its entry or redeemed from an invitation the shell made for
 //! it, or entered as a further device of the person at the device hosting it.
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
 
-/// Come into the workspace the shell made for the join, through its door or with an invitation: this
+/// Come into the workspace the shell made for the join, through its entry or with an invitation: this
 /// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
 /// in it from then on.
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
@@ -45,13 +45,13 @@ pub(super) async fn redeem(
     let owner = engine.owner().clone();
     let invitation = match request.way {
         tilo_workspace_directory::Way::Invitation(invitation) => invitation,
-        tilo_workspace_directory::Way::Door(door) => {
+        tilo_workspace_directory::Way::Entry(entry) => {
             let hint = tokio::time::timeout(
                 REDEEM_WITHIN,
-                through_door(
+                through_entry(
                     endpoint.clone(),
                     &identity,
-                    &door,
+                    &entry,
                     request.workspace_id,
                     &request.name,
                 ),
@@ -111,21 +111,21 @@ pub(super) async fn redeem(
     Ok(())
 }
 
-/// How long the door's host may take to answer the entry, beyond the bound it holds an entry to
+/// How long the entry's host may take to answer the entry, beyond the bound it holds an entry to
 /// itself: the connection takes some.
 const ENTRY_ANSWER_SLACK: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Enter `workspace` through `door`, as this computer's person named `name`: the door's host (at
-/// the door's own origin) says who it is, and this device's session with it asks to enter in its
-/// first message, as every device enters a workspace through its door
-/// ([`tilo_relay_protocol::entering`]). The door decides there by the workspace's own rules, and the
+/// Enter `workspace` through `entry`, as this computer's person named `name`: the entry's host (at
+/// the entry's own origin) says who it is, and this device's session with it asks to enter in its
+/// first message, as every device enters a workspace through its entry
+/// ([`tilo_relay_protocol::entering`]). The entry decides there by the workspace's own rules, and the
 /// workspace admits this device's own certificate. Answers the host's signed address for the
 /// workspace, where this device then takes its state as a member's device does; the session itself
 /// ends with the answer, since this device takes part over its own plane.
-async fn through_door(
+async fn through_entry(
     endpoint: iroh::Endpoint,
     identity: &HostIdentity,
-    door: &url::Url,
+    entry: &url::Url,
     workspace: InviteWorkspaceId,
     name: &str,
 ) -> Result<tilo_peer_state::join::TransportHint, String> {
@@ -133,7 +133,7 @@ async fn through_door(
     let topic = workspace;
     let client =
         tilo_workspace_directory::client().map_err(|error| tilo_sheets::directory::said(&error))?;
-    let origin = door.origin().ascii_serialization();
+    let origin = entry.origin().ascii_serialization();
     let host = tilo_relay_client::https::Origin::new(&client, &origin);
     let info = tilo_relay_client::https::host_info(&host)
         .await
@@ -151,7 +151,7 @@ async fn through_door(
             tilo_relay_protocol::web::MAX_DISPLAY_NAME_CHARS,
         ),
         request_id,
-        through: Through::Door,
+        through: Through::Entry,
     };
     let session = tilo_relay_session::RelayClient::connect_with_signer(
         endpoint,

@@ -421,7 +421,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn a_door_names_its_steps_and_reads_its_pages_error_reports;
 
-        phase a_door_route_names_its_workspace_and_step;
+        phase an_entry_route_names_its_workspace_and_step;
         {
             let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
             assert_eq!(

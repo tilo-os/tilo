@@ -28,7 +28,7 @@ use crate::login;
 /// Names the directory the identity is kept in, instead of
 /// `$XDG_STATE_HOME/tilo/identity`.
 pub const DIR_ENV: &str = "TILO_IDENTITY_DIR";
-/// How long approving waits for the site's door to let the person in: the
+/// How long approving waits for the site's entry to let the person in: the
 /// operator's declaration reaches the host within seconds.
 const DOOR_WAIT: Duration = Duration::from_secs(60);
 
@@ -243,10 +243,10 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     ])
 }
 
-/// The person in the site's home workspace, through its door, as their
+/// The person in the site's home workspace, through its entry, as their
 /// page comes in: the host knows them from then on. Waits for the operator's
 /// declaration to reach the host.
-async fn through_door(person: &Person, site: &str) -> Result<()> {
+async fn through_entry(person: &Person, site: &str) -> Result<()> {
     let http = login::http();
     let (status, body) = Origin::new(&http, site)
         .get("/entry.json")
@@ -260,8 +260,8 @@ async fn through_door(person: &Person, site: &str) -> Result<()> {
         .pointer("/home/host/origin")
         .and_then(Value::as_str)
         .with_context(|| format!("{site} names no Tilo host"))?;
-    let Some(workspace) = tilo_relay_client::login::site_door(&entry, host)
-        .and_then(|(_, path)| tilo_relay_client::login::Door { path }.workspace())
+    let Some(workspace) = tilo_relay_client::login::site_entry(&entry, host)
+        .and_then(|(_, path)| tilo_relay_client::login::Entry { path }.workspace())
     else {
         return Ok(());
     };
@@ -339,7 +339,7 @@ pub async fn approve(person: &Person, approve_url: &str) -> Result<()> {
         .with_context(|| format!("{approve_url} leads to no sign-in (HTTP {})", led.status()))?
         .to_owned();
     let asked = asked(&location)?;
-    through_door(person, &asked.site).await?;
+    through_entry(person, &asked.site).await?;
     let form = answer(person, &asked)?;
     let answered = http
         .post(&asked.return_to)

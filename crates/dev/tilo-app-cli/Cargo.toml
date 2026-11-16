@@ -62,8 +62,8 @@ wasmparser = { version = "=0.239.0", default-features = false, features = ["feat
 # `tilo-app push`: a device of the developer's dials the workspace's host
 # and invokes the workspace's governance.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-# The shared workspace's door: a person is admitted through the directory's
-# door, as any public workspace admits them.
+# The shared workspace's entry: a person is admitted through the directory's
+# entry, as any public workspace admits them.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
