@@ -168,6 +168,7 @@ pub struct CommentCells {
 }
 
 pub type Comment = tilo_rich_text::annotation::Comment<CommentCells>;
+pub use tilo_rich_text::annotation::Author;
 
 #[derive(Model, Clone, Debug, PartialEq)]
 #[model(check = Sheet::valid, check_reads = "name color charts")]
@@ -688,7 +689,7 @@ pub struct ChartSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentReply {
     pub id: String,
-    pub author: String,
+    pub author: Author,
     pub body: String,
 }
 
@@ -697,7 +698,7 @@ pub struct CommentThread {
     pub id: String,
     pub start: Addr,
     pub end: Addr,
-    pub author: String,
+    pub author: Author,
     pub body: String,
     pub resolved: bool,
     pub replies: Vec<CommentReply>,

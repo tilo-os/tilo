@@ -42,13 +42,14 @@ pub fn mark_authored(
     let Some(author) = crate::action::writing_author() else {
         return Ok(());
     };
-    tilo_automerge::mark_text_author(
-        doc,
-        obj,
-        at,
-        inserted,
-        &automerge::ActorId::from(author.actor_bytes()).to_hex_string(),
-    )
+    tilo_automerge::mark_text_author(doc, obj, at, inserted, &author_mark(&author))
+}
+
+/// The value a text's author mark holds for `author`: the hex of the actor
+/// bytes their changes carry.
+#[must_use]
+pub fn author_mark(author: &tilo_action_policy::MemberId) -> String {
+    automerge::ActorId::from(author.actor_bytes()).to_hex_string()
 }
 
 /// The registry type id [`TextEdit`]s replay under.

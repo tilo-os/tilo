@@ -198,12 +198,16 @@ tilo_test_env::scenario! {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].pinned(), Some(a.id.as_str()));
         assert_eq!(
-            got[0].comment.author, "Alice",
+            got[0].comment.author,
+            crate::model::Author::Member(ui::tilo_resource::MemberId::person("Alice")),
             "a comment is signed by whoever wrote it"
         );
         assert_eq!(got[0].page, 1, "a comment on an annotation is on its page");
         assert_eq!(got[0].comment.replies.len(), 1);
-        assert_eq!(got[0].comment.replies.at(0).unwrap().1.author, "Bob");
+        assert_eq!(
+            got[0].comment.replies.at(0).unwrap().1.author,
+            crate::model::Author::Member(ui::tilo_resource::MemberId::person("Bob"))
+        );
         assert_eq!(
             got[0].comment.replies.at(0).unwrap().0.as_str(),
             first_reply
@@ -917,7 +921,11 @@ fn markup_actions_apply_through_the_api_and_undo_as_their_author() {
         .expect("the note's comment");
     assert_eq!(note.page, 3);
     assert_eq!(
-        note.comment.author, own.signer,
+        note.comment
+            .author
+            .member()
+            .and_then(ui::tilo_resource::MemberId::person_id),
+        Some(own.signer.as_str()),
         "both are signed by the invoker"
     );
     assert!(

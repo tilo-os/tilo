@@ -79,8 +79,15 @@ fn a_capture_stages_the_sample_workbook() {
     let comments = Sheet::comment_snapshots(&budget(), &state.comments, &sheet.layout());
     assert_eq!(comments.len(), 1);
     assert!(comments[0].resolved);
-    assert_eq!(comments[0].author, "Alex", "signed by who wrote it");
-    assert_eq!(comments[0].replies[0].author, "Sam");
+    assert_eq!(
+        comments[0].author,
+        crate::workbook::Author::named("Alex"),
+        "signed by who wrote it"
+    );
+    assert_eq!(
+        comments[0].replies[0].author,
+        crate::workbook::Author::Member(tilo_resource::MemberId::person("Sam"))
+    );
     assert_eq!(
         (comments[0].start, comments[0].end),
         ((1, 1), (4, 1)),
@@ -102,7 +109,10 @@ fn a_comment_is_signed_by_its_invoker() {
     let state = app.state();
     let comments: Vec<_> = state.comments.values().collect();
     assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].author, "test-author");
+    assert_eq!(
+        comments[0].author,
+        crate::workbook::Author::Member(tilo_resource::MemberId::person("test-author"))
+    );
 
     let item = tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
     app.call_on(

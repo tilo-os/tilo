@@ -18,8 +18,8 @@ use crate::markup::{
     ImportedPage, MAX_IMPORTED_PAGES, PageOccurrence, PagePlanEntry, PdfMarkup, StoredSignature,
 };
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W,
-    PdfAnchor, PtRect, Reply, SignatureInk, annotation_label,
+    AnnoKind, Annotation, Author, Comment, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H,
+    PAGE_W, PdfAnchor, PtRect, Reply, SignatureInk, annotation_label,
 };
 
 const MAX_COMMENT_CHARS: usize = 100_000;
@@ -258,11 +258,16 @@ impl PdfMarkup {
                 page_id: thread.page_id,
                 annotation: thread.anno.unwrap_or_default(),
             };
-            let mut comment = Comment::new(anchor, thread.author, thread.date, thread.text);
+            let mut comment = Comment::new(
+                anchor,
+                Author::Named(thread.author),
+                thread.date,
+                thread.text,
+            );
             for reply in thread.replies {
                 comment.replies.push(
                     Id::from_raw(reply.id),
-                    Reply::new(reply.author, String::new(), reply.text),
+                    Reply::new(Author::Named(reply.author), String::new(), reply.text),
                 );
             }
             self.comments.push(id, comment);
@@ -468,7 +473,10 @@ impl PdfMarkup {
                 y: note.y,
             },
             color: note.color,
-            author: comment.author.clone(),
+            author: cx
+                .author()
+                .map(ui::tilo_resource::MemberId::key)
+                .unwrap_or_default(),
             chars: None,
             created_ms: cx.now_ms(),
             space: note.space,
@@ -714,12 +722,13 @@ impl PdfMarkup {
                 .chain(comment.replies.values().map(|reply| reply.text.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n");
+            let author = match comment.author.file_name() {
+                "" => crate::t("pdf-author-someone"),
+                name => name.to_owned(),
+            };
             entries.push(
                 SearchEntry::new(
-                    crate::t_args(
-                        "pdf-search-comment",
-                        &[("author", comment.author.clone().into())],
-                    ),
+                    crate::t_args("pdf-search-comment", &[("author", author.into())]),
                     text,
                 )
                 .anchored(anchor("comments", &thread.id)),

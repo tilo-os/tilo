@@ -8,18 +8,57 @@
 //! palette, so a highlight made in one reader reads the same in another, or
 //! an exact colour a file brought along.
 
-use tilo_resource::{ActionCx, Collection, Model};
+use tilo_resource::{ActionCx, Collection, MemberId, Model};
 
 use crate::ClipBlock;
+
+/// Who wrote a comment or an answer: a member, or the name a file gave its
+/// writer.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Model)]
+#[serde(rename_all = "snake_case")]
+pub enum Author {
+    Member(MemberId),
+    Named(String),
+}
+
+impl Default for Author {
+    fn default() -> Self {
+        Self::Named(String::new())
+    }
+}
+
+impl Author {
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        Self::Named(name.into())
+    }
+
+    #[must_use]
+    pub fn member(&self) -> Option<&MemberId> {
+        match self {
+            Self::Member(member) => Some(member),
+            Self::Named(_) => None,
+        }
+    }
+
+    /// The name a file keeps for this writer: the name it came with. A
+    /// member's name is the workspace's to give, so a file keeps none.
+    #[must_use]
+    pub fn file_name(&self) -> &str {
+        match self {
+            Self::Named(name) => name,
+            Self::Member(_) => "",
+        }
+    }
+}
 
 /// A comment thread about `anchor`.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Comment<Anchor: Model> {
     /// What the comment is about.
     pub anchor: Anchor,
-    /// Who wrote it.
     #[model(readonly)]
-    pub author: String,
+    pub author: Author,
     /// When it was written, as an ISO-8601 time; empty when unknown.
     #[model(readonly)]
     pub date: String,
@@ -38,7 +77,7 @@ pub struct Comment<Anchor: Model> {
 impl<Anchor: Model> Comment<Anchor> {
     /// A new thread by `author` about `anchor`, saying `text`.
     #[must_use]
-    pub fn new(anchor: Anchor, author: String, date: String, text: String) -> Self {
+    pub fn new(anchor: Anchor, author: Author, date: String, text: String) -> Self {
         Self {
             anchor,
             author,
@@ -61,9 +100,8 @@ impl<Anchor: Model> Comment<Anchor> {
 /// An answer in a comment thread.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Reply {
-    /// Who wrote it.
     #[model(readonly)]
-    pub author: String,
+    pub author: Author,
     /// When it was written, as an ISO-8601 time; empty when unknown.
     #[model(readonly)]
     pub date: String,
@@ -79,7 +117,7 @@ pub struct Reply {
 impl Reply {
     /// A plain-text answer by `author`.
     #[must_use]
-    pub fn new(author: String, date: String, text: String) -> Self {
+    pub fn new(author: Author, date: String, text: String) -> Self {
         Self {
             author,
             date,
@@ -116,10 +154,8 @@ pub fn store_bodies_by_variant(
 }
 
 /// Who writes in an action: whoever invokes it.
-fn signer(cx: &ActionCx) -> String {
-    cx.author()
-        .map(tilo_resource::MemberId::key)
-        .unwrap_or_default()
+fn signer(cx: &ActionCx) -> Author {
+    cx.author().cloned().map(Author::Member).unwrap_or_default()
 }
 
 /// `ms` after the Unix epoch as the ISO-8601 UTC time a comment is dated

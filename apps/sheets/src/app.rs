@@ -272,10 +272,6 @@ fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
     ChartPalette::from_theme(theme).categorical(idx as usize)
 }
 
-fn opaque_participant_id(id: &str) -> bool {
-    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 fn span(lo: u32, hi: u32) -> u32 {
     hi.saturating_sub(lo).saturating_add(1)
 }

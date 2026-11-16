@@ -1083,7 +1083,7 @@ impl Activity {
             .collect();
         let mut authors = ui::AuthorDirectory::new();
         (self.0.writers.register)(&mut authors);
-        authors.set_reader(author);
+        authors.set_reader(ui::permissions::MemberId::person(author));
         let mut actions = Vec::new();
         let records = self.records_held(workspace_id);
         let mut reads = self.0.own_reads.borrow_mut();

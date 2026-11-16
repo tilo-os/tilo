@@ -546,6 +546,13 @@ struct CopiedParts {
     content: Copied<std::collections::BTreeSet<String>>,
 }
 
+/// The comments, who wrote each, and the tracked changes the margin shows.
+type Review = (
+    Vec<tilo_doc::CommentView>,
+    std::collections::HashMap<String, crate::model::Author>,
+    Vec<tilo_doc::ChangeView>,
+);
+
 /// The parts of the document state one refresh found changed.
 #[derive(Default)]
 struct PartsUpdate {
@@ -553,7 +560,7 @@ struct PartsUpdate {
     footer: Option<Vec<BlockView>>,
     notes: Option<Vec<NoteView>>,
     content: bool,
-    review: Option<(Vec<tilo_doc::CommentView>, Vec<tilo_doc::ChangeView>)>,
+    review: Option<Review>,
 }
 
 /// The presence key of a paragraph: its stable CRDT block id, not its index, so a peer's
@@ -1665,6 +1672,7 @@ impl Editor {
                     copied.comments.clone_from(&comments);
                     parts.review = Some((
                         comments,
+                        document.comment_authors(),
                         changes.unwrap_or_else(|| doc.changes().as_ref().clone()),
                     ));
                 }
@@ -1690,8 +1698,8 @@ impl Editor {
                 c,
             );
         }
-        if let Some((comments, changes)) = parts.review {
-            self.review.replace(comments, changes);
+        if let Some((comments, authors, changes)) = parts.review {
+            self.review.replace(comments, authors, changes);
         }
         self.materialized.heads = state.base_heads();
         self.materialized.pending_ops = state.pending_ops();

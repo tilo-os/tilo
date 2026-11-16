@@ -704,7 +704,7 @@ impl CollaborationRuntime {
         manager: CollaborationManager,
         local_author: crate::permissions::MemberId,
     ) -> Self {
-        crate::history_source::authors::read_as(&local_author.key());
+        crate::history_source::authors::read_as(&local_author);
         Self {
             manager,
             workspace_manager: None,

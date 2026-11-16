@@ -1,7 +1,10 @@
 //! Margin cards for comments and tracked changes: the items, their visibility, their
 //! drawing and their hit targets. The editor applies the typed [`ReviewAction`].
 
+use std::collections::HashMap;
+
 use tilo_doc::snapshot::{ChangeKind, ChangeView, CommentView};
+use tilo_document::annotation::Author;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
@@ -9,8 +12,8 @@ use ui::icons::Icon;
 use ui::paint::{PaintCtx, with_alpha};
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
+use ui::tokens::{PresenceHue, TextRole};
 use ui::widget::{Button, ButtonFace, ButtonRole, CardFace, ControlSize, Tone};
 
 use crate::i18n::t;
@@ -66,6 +69,8 @@ pub(super) type Markers<'a> = &'a [(String, f64, f64)];
 
 pub(super) struct ReviewOverlay {
     comments: Vec<CommentView>,
+    /// Who wrote each comment and answer, by its id.
+    authors: HashMap<String, Author>,
     changes: Vec<ChangeView>,
     visible: bool,
     hits: Vec<(Rect, ReviewAction)>,
@@ -77,6 +82,7 @@ impl Default for ReviewOverlay {
     fn default() -> Self {
         Self {
             comments: Vec::new(),
+            authors: HashMap::new(),
             changes: Vec::new(),
             visible: true,
             hits: Vec::new(),
@@ -100,12 +106,48 @@ impl MarginCard {
 }
 
 impl ReviewOverlay {
-    pub(super) fn replace(&mut self, mut comments: Vec<CommentView>, changes: Vec<ChangeView>) {
+    pub(super) fn replace(
+        &mut self,
+        mut comments: Vec<CommentView>,
+        authors: HashMap<String, Author>,
+        changes: Vec<ChangeView>,
+    ) {
         for comment in &mut comments {
             sort_replies(comment);
         }
         self.comments = comments;
+        self.authors = authors;
         self.changes = changes;
+    }
+
+    /// Name each member who wrote a comment or an answer as presence names
+    /// them.
+    pub(super) fn name_authors(&mut self, presence: &PresenceCtx) {
+        let name = |authors: &HashMap<String, Author>, id: &str, shown: &mut String| {
+            if let Some(Author::Member(member)) = authors.get(id) {
+                *shown = presence.display_name(member);
+            }
+        };
+        for comment in &mut self.comments {
+            name(&self.authors, &comment.id, &mut comment.author);
+            for reply in &mut comment.replies {
+                name(&self.authors, &reply.id, &mut reply.author);
+            }
+        }
+    }
+
+    /// The colour of the comment `id`: its member's, or the one the name a
+    /// file gave its writer derives.
+    pub(super) fn comment_tone(&self, id: &str, presence: &PresenceCtx) -> Option<Tone> {
+        let comment = self.comments.iter().find(|comment| comment.id == id)?;
+        Some(self.tone(&comment.id, &comment.author, presence))
+    }
+
+    fn tone(&self, id: &str, name: &str, presence: &PresenceCtx) -> Tone {
+        Tone::Presence(match self.authors.get(id).and_then(Author::member) {
+            Some(member) => presence.hue_for(member),
+            None => PresenceHue::of_identity(name),
+        })
     }
 
     pub(super) fn shows_cards(&self) -> bool {
@@ -148,13 +190,6 @@ impl ReviewOverlay {
 
     pub(super) fn changes(&self) -> &[ChangeView] {
         &self.changes
-    }
-
-    pub(super) fn comment_author(&self, id: &str) -> Option<&str> {
-        self.comments
-            .iter()
-            .find(|comment| comment.id == id)
-            .map(|comment| comment.author.as_str())
     }
 
     pub(super) fn is_visible(&self) -> bool {
@@ -200,8 +235,8 @@ impl ReviewOverlay {
             return;
         }
         for (id, y, right) in comment_markers {
-            if let Some(author) = self.comment_author(id) {
-                let mark = ReviewColors::author_mark(ctx.theme, paper, tone_of(presence, author));
+            if let Some(tone) = self.comment_tone(id, presence) {
+                let mark = ReviewColors::author_mark(ctx.theme, paper, tone);
                 draw_pip(ctx, mark, Point::new(*right, *y));
             }
         }
@@ -259,7 +294,7 @@ impl ReviewOverlay {
                 (MarginCard::Comment(comment, _), _) => {
                     self.draw_comment(ctx, slot, comment, presence)
                 }
-                (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change, presence),
+                (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change),
             };
             next_y = top + height + seam;
         }
@@ -300,9 +335,11 @@ impl ReviewOverlay {
                 (reply.author.clone(), text)
             })
             .collect();
-        let face = CardFace::new()
-            .title(author)
-            .leading_stripe(tone_of(presence, &comment.author));
+        let face = CardFace::new().title(author).leading_stripe(self.tone(
+            &comment.id,
+            &comment.author,
+            presence,
+        ));
         let probe = face.body_rect(ctx.text, theme, Rect::new(slot.x0, 0.0, slot.x1, 1.0e4));
         let wrap = num::f32_of_f64(probe.width().max(1.0));
         let related = f64::from(theme.tokens.spacing.rhythm.related);
@@ -381,13 +418,7 @@ impl ReviewOverlay {
         }
     }
 
-    fn draw_change(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        slot: Rect,
-        change: &ChangeView,
-        presence: &PresenceCtx,
-    ) -> f64 {
+    fn draw_change(&mut self, ctx: &mut PaintCtx<'_>, slot: Rect, change: &ChangeView) -> f64 {
         let theme = ctx.theme;
         let (label, accept, reject) = match change.kind {
             ChangeKind::Ins => (
@@ -403,7 +434,7 @@ impl ReviewOverlay {
         };
         let face = CardFace::new()
             .title(&label)
-            .leading_stripe(tone_of(presence, &change.author));
+            .leading_stripe(Tone::Presence(PresenceHue::of_identity(&change.author)));
         let probe = face.body_rect(ctx.text, theme, Rect::new(slot.x0, 0.0, slot.x1, 1.0e4));
         let wrap = num::f32_of_f64(probe.width().max(1.0));
         let caption = theme.text(TextRole::Caption);
@@ -456,10 +487,6 @@ impl ReviewOverlay {
         }
         height
     }
-}
-
-fn tone_of(presence: &PresenceCtx, author: &str) -> Tone {
-    Tone::Presence(presence.hue_of(author))
 }
 
 fn draw_pip(ctx: &mut PaintCtx<'_>, mark: Color, at: Point) {

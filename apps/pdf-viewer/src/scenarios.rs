@@ -16,7 +16,7 @@ use ui::tilo_resource::{Edit, Id, Invoke};
 
 use crate::markup::{PdfMarkup, StoredSignature};
 use crate::model::{
-    AnnoKind, Annotation, Comment, GeomSpace, HighlightColor, PdfAnchor, PtRect, Reply,
+    AnnoKind, Annotation, Author, Comment, GeomSpace, HighlightColor, PdfAnchor, PtRect, Reply,
     SignatureInk,
 };
 
@@ -147,12 +147,12 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
         };
         let mut thread = Comment {
             resolved,
-            ..Comment::new(anchor, author.into(), String::new(), body.into())
+            ..Comment::new(anchor, Author::named(author), String::new(), body.into())
         };
         for (id, author, body) in replies {
             thread.replies.push(
                 Id::from_raw(*id),
-                Reply::new((*author).into(), String::new(), (*body).into()),
+                Reply::new(Author::named(*author), String::new(), (*body).into()),
             );
         }
         paths

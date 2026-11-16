@@ -148,8 +148,6 @@ fn the_apply_descriptor_names_every_edit_with_its_fields() {
         "AcceptChanges",
         "RejectChanges",
         "ResolveComment",
-        "AddComment",
-        "ReplyToComment",
     ] {
         assert!(described.contains_key(name), "{name} is not described");
     }

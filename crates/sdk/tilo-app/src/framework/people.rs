@@ -117,6 +117,17 @@ impl People {
         self.roster.borrow().members.clone()
     }
 
+    /// The workspace's `member`, when it names them: their name, their hue
+    /// and whether they are this window's own.
+    pub fn member(&self, member: &tilo_resource::MemberId) -> Option<MentionCandidate> {
+        self.roster
+            .borrow()
+            .members
+            .iter()
+            .find(|candidate| candidate.id == *member)
+            .cloned()
+    }
+
     /// The participants as a history directory reads them: what a file
     /// version's person and device keys resolve through, and the hover that
     /// names the computer whose session vouched for the writer.
@@ -227,9 +238,9 @@ impl People {
                         me,
                         ui_core::history_source::author_for_identity(name.to_owned(), me),
                     );
-                    registry.set_reader(me.to_string());
+                    registry.set_reader(tilo_resource::MemberId::person(me.as_ref()));
                 }
-                if let Some(ui_core::permissions::MemberId::Person(me)) = presence.self_id() {
+                if let Some(me) = presence.self_id().filter(|me| me.is_person()) {
                     registry.set_reader(me.clone());
                 }
                 registry
@@ -249,10 +260,21 @@ impl People {
     #[must_use]
     pub fn named(me: Option<&str>, names: &[(&str, &str)]) -> Self {
         let people = Self::new(me);
-        people.roster.borrow_mut().names = names
+        let mut roster = people.roster.borrow_mut();
+        roster.names = names
             .iter()
             .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
             .collect();
+        roster.members = names
+            .iter()
+            .map(|(id, name)| MentionCandidate {
+                id: tilo_resource::MemberId::person(*id),
+                name: (*name).to_owned(),
+                hue: PresenceHue::of_identity(id),
+                is_self: me == Some(*id),
+            })
+            .collect();
+        drop(roster);
         people
     }
 }

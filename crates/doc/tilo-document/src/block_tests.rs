@@ -341,11 +341,13 @@ fn block_text_changes_only_the_characters_that_differ_and_is_attributed() {
     assert_eq!(page(&bob), ["buy **oat** milk today"]);
     let runs = tilo_doc::author_runs(&blocks(&bob)[0].marks);
     assert!(
-        runs.iter().any(|(_, _, who)| who == "bob"),
+        runs.iter()
+            .any(|(_, _, who)| crate::tests::writer(who) == "bob"),
         "the words bob typed are his: {runs:?}"
     );
     assert!(
-        runs.iter().any(|(_, _, who)| who == "ada"),
+        runs.iter()
+            .any(|(_, _, who)| crate::tests::writer(who) == "ada"),
         "the words he left are still ada's: {runs:?}"
     );
 
@@ -418,7 +420,8 @@ fn a_range_of_a_block_is_replaced_and_the_rest_of_the_page_stays() {
     assert_eq!(blocks(&bob).len(), before, "the page keeps its blocks");
     let runs = tilo_doc::author_runs(&blocks(&bob)[1].marks);
     assert!(
-        runs.iter().any(|(_, _, who)| who == "bob"),
+        runs.iter()
+            .any(|(_, _, who)| crate::tests::writer(who) == "bob"),
         "the words bob wrote are his: {runs:?}"
     );
 

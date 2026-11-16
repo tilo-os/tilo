@@ -1010,19 +1010,48 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    pub(crate) fn author_name(&self, id: &str) -> String {
-        if let Some(name) = self.known_name(id) {
-            return name;
-        }
-        if self
+    /// How the writer of a comment or an answer is named to the person
+    /// reading: a member by the workspace's name for them, their own
+    /// included; a writer a file named by that name.
+    pub(crate) fn comment_author_name(&self, author: &crate::model::Author) -> String {
+        let member = match author {
+            crate::model::Author::Named(name) if name.trim().is_empty() => {
+                return crate::t("pdf-author-someone");
+            }
+            crate::model::Author::Named(name) => return name.clone(),
+            crate::model::Author::Member(member) => member,
+        };
+        match self
             .people
             .as_ref()
-            .map_or(self.author == id, |people| people.is_me(id))
+            .and_then(|people| people.member(member))
         {
-            crate::t("pdf-author-you")
-        } else {
-            crate::t("pdf-author-someone")
+            Some(candidate) if !candidate.name.trim().is_empty() => candidate.name,
+            Some(candidate) if candidate.is_self => crate::t("pdf-author-you"),
+            _ => crate::t("pdf-author-someone"),
         }
+    }
+
+    /// `thread` as a file keeps it: each member who wrote in it by the name
+    /// the workspace gives them, never by their id.
+    fn named_for_file(&self, thread: &Thread) -> Thread {
+        let name = |author: &mut crate::model::Author| {
+            if let crate::model::Author::Member(member) = author {
+                let name = self
+                    .people
+                    .as_ref()
+                    .and_then(|people| people.member(member))
+                    .map(|candidate| candidate.name)
+                    .unwrap_or_default();
+                *author = crate::model::Author::Named(name);
+            }
+        };
+        let mut thread = thread.clone();
+        name(&mut thread.comment.author);
+        for (_, reply) in thread.comment.replies.iter_mut() {
+            name(&mut reply.author);
+        }
+        thread
     }
 
     fn known_name(&self, id: &str) -> Option<String> {
@@ -1328,7 +1357,11 @@ impl PdfApp {
                 .iter()
                 .map(|a| self.page_map(a.page).annotation_to_user(a))
                 .collect(),
-            comments: self.comments.clone(),
+            comments: self
+                .comments
+                .iter()
+                .map(|t| self.named_for_file(t))
+                .collect(),
             signatures: self
                 .signatures
                 .iter()
@@ -4307,7 +4340,10 @@ impl Widget for PdfApp {
                             .with_description(crate::t_args(
                                 "pdf-a11y-comment",
                                 &[
-                                    ("author", self.author_name(&comment.comment.author).into()),
+                                    (
+                                        "author",
+                                        self.comment_author_name(&comment.comment.author).into(),
+                                    ),
                                     ("page", comment.page.into()),
                                     ("replies", comment.comment.replies.len().into()),
                                 ],

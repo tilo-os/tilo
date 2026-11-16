@@ -1353,7 +1353,13 @@ mod tests {
             );
             let comments = threads(&a.doc);
             assert_eq!(comments[0].replies.len(), 1);
-            assert_eq!(comments[0].replies[0].author, "Jonas");
+            let authors = <crate::model::Document as ui::tilo_resource::Resource>::read(&a.doc)
+                .unwrap()
+                .comment_authors();
+            assert_eq!(
+                authors[&comments[0].replies[0].id],
+                crate::model::Author::Member(ui::tilo_resource::MemberId::person("Jonas"))
+            );
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
 
             let resolve = verb(crate::model::DocumentAction::ResolveComment(

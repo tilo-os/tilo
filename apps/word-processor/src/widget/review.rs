@@ -62,6 +62,7 @@ impl Editor {
         presence: &PresenceCtx,
         markers: &Pass2Markers,
     ) {
+        self.review.name_authors(presence);
         let to_window = self.zoom.transform(Affine::IDENTITY);
         let placement = ReviewPlacement {
             canvas: fg.canvas,
@@ -103,12 +104,17 @@ impl Editor {
     }
 
     fn thread_face<'a>(
+        &self,
         comment: &'a tilo_doc::snapshot::CommentView,
         presence: &PresenceCtx,
     ) -> CardFace<'a> {
-        CardFace::new()
-            .title(&comment.author)
-            .leading_stripe(Tone::Presence(presence.hue_of(&comment.author)))
+        let tone = self
+            .review
+            .comment_tone(&comment.id, presence)
+            .unwrap_or_else(|| {
+                Tone::Presence(ui::tokens::PresenceHue::of_identity(&comment.author))
+            });
+        CardFace::new().title(&comment.author).leading_stripe(tone)
     }
 
     fn lay_out_thread_body(
@@ -152,7 +158,7 @@ impl Editor {
         presence: &PresenceCtx,
     ) -> Option<f64> {
         let comment = self.open_thread()?;
-        let face = Self::thread_face(&comment, presence);
+        let face = self.thread_face(&comment, presence);
         let body = face.body_rect(tr, theme, Rect::new(0.0, 0.0, width, 1.0e4));
         let content = self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
         Some(face.height_for_body(tr, theme, width, content))
@@ -172,7 +178,7 @@ impl Editor {
             return;
         };
         self.thread_panel = slot;
-        let face = Self::thread_face(&comment, presence);
+        let face = self.thread_face(&comment, presence);
         face.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
             slot,

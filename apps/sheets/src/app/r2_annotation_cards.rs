@@ -272,7 +272,7 @@ fn seed_annotations(app: &mut SheetsApp) {
         id: "t1".into(),
         start: (1, 1),
         end: (4, 1),
-        author: "Alex".into(),
+        author: crate::workbook::Author::named("Alex"),
         body: "Check the rent increase before sending this budget.".into(),
         resolved: true,
         replies: Vec::new(),

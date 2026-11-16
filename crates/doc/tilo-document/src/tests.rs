@@ -710,83 +710,6 @@ fn a_field_paragraph_forgotten_leaves_no_objects_behind() {
     assert!(state.objects.is_empty(), "{:?}", state.objects);
 }
 
-#[test]
-fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
-    use crate::{ClipAttr, ClipBlock};
-    let mut replica = document(1);
-    let block = body_ids(&replica.state().unwrap()).pop().unwrap();
-    replica
-        .apply_action(&RichTextAction::AddComment {
-            block,
-            start: 0,
-            end: 4,
-            author: "Ada".into(),
-            date: String::new(),
-            text: "Why?".into(),
-        })
-        .unwrap();
-    let comment = replica.state().unwrap().comments()[0].id.clone();
-    let body = vec![
-        ClipBlock {
-            kind: "paragraph".into(),
-            text: "plain bold".into(),
-            marks: vec![tilo_doc::document::MarkSpan {
-                start: 6,
-                end: 10,
-                name: "strong".into(),
-                value: tilo_doc::document::MarkValue::Bool(true),
-            }],
-            level: None,
-            ordered: None,
-            align: None,
-            attrs: std::collections::BTreeMap::new(),
-        },
-        ClipBlock {
-            kind: "list_item".into(),
-            text: "done".into(),
-            marks: Vec::new(),
-            level: Some(0),
-            ordered: Some(false),
-            align: None,
-            attrs: [("checked".to_owned(), ClipAttr::Bool(true))].into(),
-        },
-    ];
-    replica
-        .apply_action(&RichTextAction::ReplyToComment {
-            comment: comment.clone(),
-            author: "Grace".into(),
-            date: String::new(),
-            text: "plain bold\ndone".into(),
-            body,
-        })
-        .unwrap();
-    let state = replica.state().unwrap();
-    let thread = state
-        .comments()
-        .iter()
-        .find(|entry| entry.id == comment)
-        .unwrap();
-    let reply = &thread.replies[0];
-    assert_eq!(reply.author, "Grace");
-    let texts: Vec<&str> = reply
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect();
-    assert_eq!(texts, ["plain bold", "done"]);
-    assert!(
-        reply.blocks[0]
-            .marks
-            .iter()
-            .any(|mark| mark.name == "strong" && (mark.start, mark.end) == (6, 10))
-    );
-    assert_eq!(reply.blocks[1].kind, "list_item");
-    assert_eq!(
-        reply.blocks[1].attrs.get("checked"),
-        Some(&tilo_doc::AttrVal::Bool(true))
-    );
-}
-
 /// Apply `action` as a window does for `writer`: the envelope pins who
 /// invoked it.
 fn apply_as(
@@ -819,9 +742,15 @@ fn author_runs(replica: &Replica<RichText>) -> Vec<(usize, usize, usize, String)
         .flat_map(|(index, block)| {
             tilo_doc::author_runs(&block.marks)
                 .into_iter()
-                .map(move |(start, end, author)| (index, start, end, author))
+                .map(move |(start, end, author)| (index, start, end, writer(&author)))
         })
         .collect()
+}
+
+/// The person whose author mark `mark` is.
+pub(crate) fn writer(mark: &str) -> String {
+    let actor = automerge::ActorId::try_from(mark).expect("an author mark is an actor id");
+    String::from_utf8(actor.to_bytes().to_vec()).expect("a person's id")
 }
 
 #[test]

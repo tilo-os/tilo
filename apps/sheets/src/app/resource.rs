@@ -4,7 +4,7 @@ use super::{
     Addr, Atom, Cell, CellFormat, ChromeMetrics, ColorSwatchPicker, CommandSlot, ContextMenu,
     Currency, DocSettings, Edits, EffectiveLocale, Grid, Id, Invoke, Locale, PathBuf, Pending,
     PendingReveal, Point, Popover, PopoverSide, Rc, Rect, SettingsPanel, SheetsApp, Theme,
-    Workbook, opaque_participant_id,
+    Workbook,
 };
 
 impl SheetsApp {
@@ -128,34 +128,24 @@ impl SheetsApp {
 
     /// How a comment's `author` is named to the person reading it: by the
     /// name the workspace knows them by, their own included; never by a raw
-    /// participant id. Before anyone has named them, the reader is "You"
-    /// and anyone else "Someone"; a record from before ids, whose author
-    /// field holds a name, reads as that name.
-    pub(crate) fn author_name(&self, author: &str) -> String {
-        if author.is_empty() {
-            return crate::resource::CATALOG.t("sheets-comment-someone");
-        }
-        if let Some(name) = self
+    /// member id. A member the workspace has not named yet is "Someone"; a
+    /// writer a file named reads as that name.
+    pub(crate) fn author_name(&self, author: &crate::workbook::Author) -> String {
+        let someone = || crate::resource::CATALOG.t("sheets-comment-someone");
+        let member = match author {
+            crate::workbook::Author::Named(name) if name.is_empty() => return someone(),
+            crate::workbook::Author::Named(name) => return name.clone(),
+            crate::workbook::Author::Member(member) => member,
+        };
+        match self
             .people
             .as_ref()
-            .map(|people| people.name(author))
-            .filter(|name| name != author)
+            .and_then(|people| people.member(member))
         {
-            return name;
-        }
-        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me()) == Some(author)
-            || self
-                .people
-                .as_ref()
-                .is_some_and(|people| people.is_me(author));
-        if me {
-            return ui::local_identity::own_name()
-                .unwrap_or_else(|| crate::resource::CATALOG.t("sheets-comment-you"));
-        }
-        if opaque_participant_id(author) {
-            crate::resource::CATALOG.t("sheets-comment-someone")
-        } else {
-            author.to_owned()
+            Some(candidate) if !candidate.name.trim().is_empty() => candidate.name,
+            Some(candidate) if candidate.is_self => ui::local_identity::own_name()
+                .unwrap_or_else(|| crate::resource::CATALOG.t("sheets-comment-you")),
+            _ => someone(),
         }
     }
 

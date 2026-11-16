@@ -837,7 +837,7 @@ tilo_test_env::scenario! {
                 .acting_for("kai"),
         );
         let mut authors = AuthorDirectory::new();
-        authors.set_reader("kai");
+        authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let rows: Vec<(String, AuthorRelation)> = entries
             .iter()
@@ -877,7 +877,7 @@ tilo_test_env::scenario! {
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
-        authors.set_reader("kai");
+        authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         // The person it acted for, with the agent beside them as its own field.
         let author = &entries.last().unwrap().author;
@@ -911,7 +911,7 @@ tilo_test_env::scenario! {
         doc.put(ROOT, "title", "y").unwrap();
         doc.commit();
         let mut authors = AuthorDirectory::new();
-        authors.set_reader("kai");
+        authors.set_reader(crate::permissions::MemberId::person("kai"));
         authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
         authors.register_agent(
             &hex::encode(device),
@@ -947,7 +947,7 @@ tilo_test_env::scenario! {
             })
         );
         // The person reading it sees it was done for them.
-        authors.set_reader(person);
+        authors.set_reader(crate::permissions::MemberId::person(person));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         assert_eq!(
             crate::author_line(&entries.last().unwrap().author),
@@ -972,7 +972,7 @@ tilo_test_env::scenario! {
             .with_invoker(ActionInvoker::agent("claude").acting_for("ada"));
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
-        authors.set_reader("kai");
+        authors.set_reader(crate::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
         assert_eq!(entry.author.name, "ada");

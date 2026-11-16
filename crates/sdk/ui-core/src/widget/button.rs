@@ -389,7 +389,7 @@ impl Button {
 
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
     /// what it is called, in the presence `hue` the workspace gives them
-    /// ([`People::hue`](crate::presence::PresenceCtx::hue_of)): the one they chose, never one
+    /// ([`PresenceCtx::hue_for`](crate::presence::PresenceCtx::hue_for)): the one they chose, never one
     /// derived here.
     #[must_use]
     pub fn with_avatar(

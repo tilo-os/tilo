@@ -51,6 +51,7 @@ use automerge::{AutoCommit, ChangeHash};
 use crate::history_source::{
     CompareError, HistorySource, compare_entries, groups::read_named_ranges,
 };
+use crate::permissions::MemberId;
 use crate::{HistoryEntry, HistoryEntryId, NamedRange, RecordId};
 
 /// Full authority namespace for one historical resource.
@@ -208,7 +209,7 @@ pub struct HistoryController {
     workspace_agents: Option<u64>,
     /// The workspace's participants by id and name, as presence last named them: the authors the source
     /// resolves besides registered identities.
-    roster: Vec<(String, String)>,
+    roster: Vec<(MemberId, String)>,
 }
 
 /// How many of the newest changes a history view describes when it opens, and how many more each
@@ -314,10 +315,10 @@ impl HistoryController {
     /// Reproject factual activity from committed graph state. An existing preview stays pinned to its
     /// exact bytes and heads.
     pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
-        let mut roster: Vec<(String, String)> = presence
+        let mut roster: Vec<(MemberId, String)> = presence
             .names
             .iter()
-            .map(|(id, name)| (id.key(), name.clone()))
+            .map(|(id, name)| (id.clone(), name.clone()))
             .collect();
         roster.compact_sort();
         if roster == self.roster {
@@ -325,7 +326,7 @@ impl HistoryController {
         }
         self.source
             .authors_mut()
-            .register_roster(roster.iter().map(|(id, name)| (id.as_str(), name.as_str())));
+            .register_roster(roster.iter().map(|(id, name)| (id, name.as_str())));
         self.roster = roster;
         self.projected_heads = None;
         true
@@ -344,11 +345,7 @@ impl HistoryController {
             let current = crate::history_source::workspace_agents_revision();
             if current != named {
                 let mut authors = crate::history_source::AuthorDirectory::with_workspace_agents();
-                authors.register_roster(
-                    self.roster
-                        .iter()
-                        .map(|(id, name)| (id.as_str(), name.as_str())),
-                );
+                authors.register_roster(self.roster.iter().map(|(id, name)| (id, name.as_str())));
                 *self.source.authors_mut() = authors;
                 self.workspace_agents = Some(current);
                 self.projected_heads = None;

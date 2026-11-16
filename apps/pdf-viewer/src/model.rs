@@ -397,7 +397,7 @@ impl Annotation {
 }
 
 pub type Comment = tilo_document::annotation::Comment<PdfAnchor>;
-pub use tilo_document::annotation::Reply;
+pub use tilo_document::annotation::{Author, Reply};
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct PdfAnchor {

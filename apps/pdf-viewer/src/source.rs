@@ -1005,16 +1005,16 @@ impl RasterBackend {
                     replies.extend(
                         first
                             .replies()
-                            .map(|(id, r)| (id, r.author.as_str(), r.text.as_str())),
+                            .map(|(id, r)| (id, r.author.file_name(), r.text.as_str())),
                     );
                 }
                 for later in later_comments {
                     let comment = &later.comment;
-                    replies.push((&later.id, comment.author.as_str(), comment.text.as_str()));
+                    replies.push((&later.id, comment.author.file_name(), comment.text.as_str()));
                     replies.extend(
                         later
                             .replies()
-                            .map(|(id, r)| (id, r.author.as_str(), r.text.as_str())),
+                            .map(|(id, r)| (id, r.author.file_name(), r.text.as_str())),
                     );
                 }
                 for (id, author, body) in replies {

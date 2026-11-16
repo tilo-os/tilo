@@ -739,24 +739,6 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
-    fn least_need() -> tilo_actions::ActionNeed {
-        tilo_actions::ActionNeed {
-            kind: tilo_resource::ActionKind::Undoable,
-            field: Some(tilo_actions::COMMENTS_FIELD.to_owned()),
-            privileged: false,
-        }
-    }
-
-    /// A comment or a reply writes only the comments.
-    fn field_of(action: &RichTextAction) -> Option<&'static str> {
-        match action {
-            RichTextAction::AddComment { .. } | RichTextAction::ReplyToComment { .. } => {
-                Some(tilo_actions::COMMENTS_FIELD)
-            }
-            _ => None,
-        }
-    }
-
     fn read(doc: &Doc) -> Result<RichTextState, ModelError> {
         Self::read_under(doc, &automerge::ROOT)
     }

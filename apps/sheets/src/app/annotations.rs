@@ -766,7 +766,7 @@ impl SheetsApp {
                 let tone = if thread.resolved {
                     Tone::Neutral
                 } else {
-                    Tone::Presence(presence.hue_of(&thread.author))
+                    Tone::Presence(author_hue(&thread.author, presence))
                 };
                 Some((corner, tone))
             })
@@ -837,7 +837,7 @@ impl SheetsApp {
         let author = self.author_name(&thread.author);
         let face = CardFace::new()
             .title(&author)
-            .leading_stripe(Tone::Presence(presence.hue_of(&thread.author)))
+            .leading_stripe(Tone::Presence(author_hue(&thread.author, presence)))
             .pressable();
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, theme, card);
@@ -1038,6 +1038,15 @@ fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotD
         })
         .collect();
     PlotData { categories, series }
+}
+
+/// The hue `author` wears: a member's, as presence paints them, or the one
+/// the name a file gave its writer derives.
+fn author_hue(author: &crate::workbook::Author, presence: &PresenceCtx) -> ui::tokens::PresenceHue {
+    match author {
+        crate::workbook::Author::Member(member) => presence.hue_for(member),
+        crate::workbook::Author::Named(name) => ui::tokens::PresenceHue::of_identity(name),
+    }
 }
 
 #[cfg(test)]

@@ -155,6 +155,10 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             break 'phase;
         };
         let doc = &mut state.doc;
+        app.attach_people(ui::framework::People::named(
+            Some("test-author"),
+            &[("test-author", "Tess Author")],
+        ));
 
         let annotations = PdfMarkup::of(doc).list_annotations();
         assert_eq!(annotations.len(), 4, "{annotations:#?}");
@@ -199,7 +203,10 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             "the reply joined the thread"
         );
         assert_eq!(thread.comment.replies.at(0).unwrap().1.text, "Agreed");
-        assert_eq!(thread.comment.replies.at(0).unwrap().1.author, "Bo");
+        assert_eq!(
+            thread.comment.replies.at(0).unwrap().1.author,
+            crate::model::Author::named("Bo")
+        );
         assert!(
             comments
                 .iter()
@@ -260,8 +267,8 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         assert!(
             replies
                 .iter()
-                .any(|r| r.author == "test-author" && r.contents == "Done"),
-            "a reply is signed by whoever wrote it"
+                .any(|r| r.author == "Tess Author" && r.contents == "Done"),
+            "a reply is signed by the name of whoever wrote it"
         );
         let original = engine.open_bytes(&std::fs::read(&path).unwrap()).unwrap();
         let before = original.annotations(PAGE).unwrap();

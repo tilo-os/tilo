@@ -603,14 +603,18 @@ fn scenarios_stage_the_document_through_actions() {
         let document = snapshot(&app);
         match *scenario {
             "comments" | "threaded-comments" => {
-                let threads = app.read_document(|doc| {
-                    <Document as ui::tilo_resource::Resource>::read(doc)
-                        .unwrap()
-                        .comment_views(doc)
+                let (threads, authors) = app.read_document(|doc| {
+                    let document = <Document as ui::tilo_resource::Resource>::read(doc).unwrap();
+                    (document.comment_views(doc), document.comment_authors())
                 });
                 let comment = threads.first().expect("a staged comment");
                 assert!(comment.range.is_some(), "it is about some text");
-                assert_eq!(comment.author, "Maya Chen");
+                assert_eq!(
+                    authors[&comment.id],
+                    word_processor::model::Author::Member(ui::tilo_resource::MemberId::person(
+                        "Maya Chen"
+                    ))
+                );
                 let replies = if *scenario == "comments" { 0 } else { 2 };
                 assert_eq!(comment.replies.len(), replies, "{scenario}");
                 assert!(

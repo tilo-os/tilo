@@ -312,14 +312,14 @@ pub fn import_existing_action(
                 id: t.id.clone(),
                 anno: t.pinned().map(str::to_owned),
                 page_id: t.comment.anchor.page_id.clone(),
-                author: t.comment.author.clone(),
+                author: t.comment.author.file_name().to_owned(),
                 text: t.comment.text.clone(),
                 date: t.comment.date.clone(),
                 replies: t
                     .replies()
                     .map(|(id, r)| AdoptedReply {
                         id: id.to_owned(),
-                        author: r.author.clone(),
+                        author: r.author.file_name().to_owned(),
                         text: r.text.clone(),
                     })
                     .collect(),

@@ -796,8 +796,10 @@ impl Editor {
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
             for (bs, be, cid) in block_comment_ranges(b) {
-                let author = self.review.comment_author(&cid).unwrap_or("");
-                let tone = Tone::Presence(presence.hue_of(author));
+                let tone = self
+                    .review
+                    .comment_tone(&cid, presence)
+                    .unwrap_or_else(|| Tone::Presence(ui::tokens::PresenceHue::of_identity("")));
                 let wash =
                     ReviewColors::comment_highlight(&self.paper_theme, self.chrome.paper, tone);
                 let rects = layout.selection_rects(l.shown(bs), l.shown(be));

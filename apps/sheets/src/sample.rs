@@ -181,7 +181,7 @@ pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
         };
         Comment::new(
             cells,
-            "Alex".into(),
+            crate::workbook::Author::named("Alex"),
             String::new(),
             "Check the rent increase before sending this budget.".into(),
         )

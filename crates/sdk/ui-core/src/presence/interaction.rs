@@ -406,8 +406,8 @@ impl PresenceCtx {
             left.interaction
                 .actor
                 .by
-                .key()
-                .cmp(&right.interaction.actor.by.key())
+                .actor_bytes()
+                .cmp(&right.interaction.actor.by.actor_bytes())
         });
         entries
             .into_iter()

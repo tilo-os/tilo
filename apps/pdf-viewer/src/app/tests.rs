@@ -2425,7 +2425,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         app.commit_edit(&mut Edits::lend(&mut st.doc));
         assert_eq!(
             app.signer(),
-            app.author_name(&app.author),
+            app.known_name(&app.author).unwrap_or_default(),
             "an empty signer name falls back to the author"
         );
     }
@@ -2437,9 +2437,11 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         let peer = "0badc0de0badc0de0badc0de0badc0de";
         app.author = me.into();
         app.signer_name.clear();
-        app.attach_people(ui::framework::People::named(Some(me), &[]));
-        assert_eq!(app.author_name(me), "You");
-        assert_eq!(app.author_name(peer), "Someone");
+        let member =
+            |id: &str| crate::model::Author::Member(ui::tilo_resource::MemberId::person(id));
+        app.attach_people(ui::framework::People::named(Some(me), &[(me, "")]));
+        assert_eq!(app.comment_author_name(&member(me)), "You");
+        assert_eq!(app.comment_author_name(&member(peer)), "Someone");
         assert_eq!(app.signer(), "");
         let signed = app.signatures.len();
         app.sig_mode = SigMode::Type;
@@ -2450,7 +2452,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
             Some(me),
             &[(me, "Ada Lovelace")],
         ));
-        assert_eq!(app.author_name(me), "Ada Lovelace");
+        assert_eq!(app.comment_author_name(&member(me)), "Ada Lovelace");
         assert_eq!(app.signer(), "Ada Lovelace");
     }
 
@@ -2468,20 +2470,23 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
             .into_iter()
             .find(|comment| comment.page == 2)
             .expect("the new note's thread");
+        let member =
+            |id: &str| crate::model::Author::Member(ui::tilo_resource::MemberId::person(id));
         assert_eq!(
-            thread.comment.author, "test-author",
-            "the record keeps the id"
+            thread.comment.author,
+            member("test-author"),
+            "the record keeps the member"
         );
         assert_eq!(
-            app.author_name(&thread.comment.author),
+            app.comment_author_name(&thread.comment.author),
             "Tess Author",
             "your own note is signed with your name, not \"You\""
         );
-        assert_eq!(app.author_name("peer-id"), "Bob Builder");
+        assert_eq!(app.comment_author_name(&member("peer-id")), "Bob Builder");
         assert_eq!(
-            app.author_name("Carol"),
+            app.comment_author_name(&crate::model::Author::named("Carol")),
             "Carol",
-            "an unknown id reads as itself"
+            "a name a file gave reads as itself"
         );
         let described = format!("{:?}", Widget::accessibility(&app));
         assert!(
@@ -3501,14 +3506,14 @@ fn comment_cards_centre_wrap_and_never_overlap_at_any_scale() {
         let mut tr = ui::text_render::TextRenderer::new();
         let mut comment = crate::model::Comment::new(
             crate::model::PdfAnchor::default(),
-            "An exceptionally long review author name".into(),
+            crate::model::Author::named("An exceptionally long review author name"),
             String::new(),
             "A deliberately long comment body that wraps across the narrow review panel at two-times text size.".into(),
         );
         comment.replies.push(
             ui::tilo_resource::Id::from_raw("high-text-reply-one"),
             Reply::new(
-                "Bob".into(),
+                crate::model::Author::named("Bob"),
                 String::new(),
                 "A long reply that also wraps, proving the thread is allotted its own measured space.".into(),
             ),

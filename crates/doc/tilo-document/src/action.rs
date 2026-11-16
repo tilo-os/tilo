@@ -513,36 +513,14 @@ pub enum RichTextAction {
     RejectChanges { id: Option<String> },
     /// Resolve a comment by removing both its anchor mark and record.
     ResolveComment { id: String },
-    /// Insert `text` at `at` and mark it as a tracked insertion by `author`.
+    /// Insert `text` at `at` and mark it as a tracked insertion by the
+    /// writer a file names `author`.
     TrackInsert {
         block: String,
         at: usize,
         text: String,
         author: String,
         date: String,
-    },
-    /// Add a durable root comment anchored to one exact body range. The comment
-    /// and its first body block are minted inside `apply`, so replay gets the
-    /// same stable CRDT ids as the originating action.
-    AddComment {
-        block: String,
-        start: usize,
-        end: usize,
-        author: String,
-        date: String,
-        text: String,
-    },
-    /// Append a durable reply below an existing comment thread. Parent ids are
-    /// stable resources; stale/deleted parents refuse atomically. `body`, when
-    /// given, is the reply as written (paragraphs, their kinds and marks);
-    /// `text` is its plain text, and the whole reply when `body` is empty.
-    ReplyToComment {
-        comment: String,
-        author: String,
-        date: String,
-        text: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        body: Vec<ClipBlock>,
     },
     /// Replace characters `start..end` of `block` with `text` (insert when
     /// they are equal), leaving the rest of the block, its kind and its
@@ -627,8 +605,6 @@ impl RichTextAction {
             Self::AcceptChanges { .. }
             | Self::RejectChanges { .. }
             | Self::ResolveComment { .. }
-            | Self::AddComment { .. }
-            | Self::ReplyToComment { .. }
             | Self::TrackInsert { .. } => ActionDomain::Review,
             Self::InsertBlocks { .. }
             | Self::InsertMarkdown { .. }
@@ -1741,22 +1717,6 @@ fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
     let _ = dm.doc.delete(comments, id);
 }
 
-fn apply_add_comment(
-    dm: &mut DocMut,
-    block: &str,
-    start: usize,
-    end: usize,
-    author: &str,
-    date: &str,
-    text: &str,
-) {
-    let id = dm.insert_comment(author, date);
-    if let Some(body) = dm.insert_comment_block(&id, None, "paragraph") {
-        dm.splice_comment_text(&id, &body, 0, 0, text);
-        dm.add_comment_mark(block, start, end, &id);
-    }
-}
-
 /// The text an action typed in: `len` characters of `block` from `start`.
 pub(crate) struct Written {
     region: Region,
@@ -1791,8 +1751,8 @@ impl Written {
     /// lose the key to a collaborator typing at the same place at the same
     /// time: their key's mark, anchored where this key lands, would cover it
     /// and win.
-    fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
-        if self.len == 0 || author.is_empty() {
+    fn attribute(&self, dm: &mut DocMut<'_>, author: &tilo_resource::MemberId) {
+        if self.len == 0 {
             return;
         }
         dm.mark_author_in(
@@ -1800,7 +1760,7 @@ impl Written {
             &self.block,
             self.start,
             self.start.saturating_add(self.len),
-            author,
+            &tilo_resource::text::author_mark(author),
         );
     }
 }
@@ -2140,27 +2100,6 @@ fn apply_review_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         } => {
             let _ = dm.track_insert(block, *at, text, author, date);
         }
-        RichTextAction::AddComment {
-            block,
-            start,
-            end,
-            author,
-            date,
-            text,
-        } => apply_add_comment(dm, block, *start, *end, author, date, text),
-        RichTextAction::ReplyToComment {
-            comment,
-            author,
-            date,
-            text,
-            body,
-        } => {
-            if body.is_empty() {
-                let _ = dm.add_comment_reply(comment, author, date, text);
-            } else {
-                apply_reply_body(dm, comment, author, date, body);
-            }
-        }
         _ => {}
     }
 }
@@ -2204,7 +2143,7 @@ impl RichTextAction {
         let cx = tilo_resource::ActionCx::for_apply(doc, &payload, 0);
         // Who typed the text in: the invoker the envelope pins, so a replay
         // marks exactly what the origin marked.
-        let author = cx.author().map(tilo_resource::MemberId::key);
+        let author = cx.author().cloned();
         let mut ids = tilo_doc::model::IdGen::for_action(cx);
         let mut dm = DocMut {
             doc,
@@ -2215,7 +2154,7 @@ impl RichTextAction {
         match self.domain() {
             ActionDomain::Text => {
                 if let (Some(written), Some(author)) =
-                    (apply_text_action(&mut dm, self), author.as_deref())
+                    (apply_text_action(&mut dm, self), author.as_ref())
                 {
                     written.attribute(&mut dm, author);
                 }
@@ -2227,7 +2166,7 @@ impl RichTextAction {
             ActionDomain::Review => apply_review_action(&mut dm, self),
             ActionDomain::Blocks => {
                 for written in crate::block_edit::apply(&mut dm, self) {
-                    if let Some(author) = author.as_deref() {
+                    if let Some(author) = author.as_ref() {
                         written.attribute(&mut dm, author);
                     }
                 }
@@ -2647,92 +2586,11 @@ pub fn replace_selection_action(
     }
 }
 
-/// Add a root comment over one resolved selection range.
-pub fn add_comment_action(
-    block: &str,
-    start: usize,
-    end: usize,
-    author: &str,
-    date: &str,
-    text: &str,
-) -> RichTextAction {
-    RichTextAction::AddComment {
-        block: block.to_string(),
-        start,
-        end,
-        author: author.to_string(),
-        date: date.to_string(),
-        text: text.to_string(),
-    }
-}
-
 /// A clipped block attribute as the action vocabulary writes it.
 pub(crate) fn clip_attr(value: &crate::ClipAttr) -> AttrVal {
     match value {
         crate::ClipAttr::Bool(value) => AttrVal::Bool(*value),
         crate::ClipAttr::Int(value) => AttrVal::Int(*value),
         crate::ClipAttr::Str(value) => AttrVal::Str(value.clone()),
-    }
-}
-
-/// Write a reply as its paragraphs: each block's kind, text, attributes and
-/// marks, in order.
-fn apply_reply_body(
-    dm: &mut DocMut<'_>,
-    comment: &str,
-    author: &str,
-    date: &str,
-    body: &[ClipBlock],
-) {
-    let Some(reply) = dm.insert_comment_reply(comment, author, date) else {
-        return;
-    };
-    let mut previous: Option<String> = None;
-    for block in body {
-        let Some(id) =
-            dm.insert_comment_reply_block(comment, &reply, previous.as_deref(), &block.kind)
-        else {
-            return;
-        };
-        if let Some(level) = block.level {
-            dm.set_comment_reply_block_attr(comment, &reply, &id, "level", level);
-        }
-        if let Some(ordered) = block.ordered {
-            dm.set_comment_reply_block_attr(comment, &reply, &id, "ordered", ordered);
-        }
-        if let Some(align) = &block.align {
-            dm.set_comment_reply_block_attr(comment, &reply, &id, "align", align.as_str());
-        }
-        for (key, value) in &block.attrs {
-            let value = match value {
-                crate::ClipAttr::Bool(value) => automerge::ScalarValue::Boolean(*value),
-                crate::ClipAttr::Int(value) => automerge::ScalarValue::Int(*value),
-                crate::ClipAttr::Str(value) => automerge::ScalarValue::Str(value.as_str().into()),
-            };
-            dm.set_comment_reply_block_attr(comment, &reply, &id, key, value);
-        }
-        dm.splice_comment_reply_text(comment, &reply, &id, 0, 0, &block.text);
-        for mark in &block.marks {
-            dm.add_comment_reply_mark(
-                comment,
-                &reply,
-                &id,
-                mark.start,
-                mark.end,
-                &mark.name,
-                match &mark.value {
-                    tilo_doc::document::MarkValue::Bool(value) => {
-                        automerge::ScalarValue::Boolean(*value)
-                    }
-                    tilo_doc::document::MarkValue::Int(value) => {
-                        automerge::ScalarValue::Int(*value)
-                    }
-                    tilo_doc::document::MarkValue::Str(value) => {
-                        automerge::ScalarValue::Str(value.as_str().into())
-                    }
-                },
-            );
-        }
-        previous = Some(id);
     }
 }

@@ -783,49 +783,6 @@ impl<'a> ActionValidator<'a> {
                     && author.chars().count() <= 256
                     && date.chars().count() <= 128
             }
-            RichTextAction::AddComment {
-                block,
-                start,
-                end,
-                author,
-                date,
-                text,
-            } => {
-                self.block_len(RegionKind::Body, block)
-                    .is_some_and(|len| *start < *end && *end <= len)
-                    && !author.trim().is_empty()
-                    && author.chars().count() <= 256
-                    && date.chars().count() <= 128
-                    && self.safe_text(text)
-            }
-            RichTextAction::ReplyToComment {
-                comment,
-                author,
-                date,
-                text,
-                body,
-            } => {
-                self.snapshot()
-                    .comments
-                    .iter()
-                    .any(|entry| entry.id == *comment)
-                    && !author.trim().is_empty()
-                    && author.chars().count() <= 256
-                    && date.chars().count() <= 128
-                    && self.safe_text(text)
-                    && body.len() <= 1_000
-                    && body.iter().all(|block| {
-                        Self::safe_name(&block.kind)
-                            && self.safe_text(&block.text)
-                            && block.level.is_none_or(|level| (0..=9).contains(&level))
-                            && Self::valid_clip_attrs(block)
-                            && block.marks.iter().all(|mark| {
-                                Self::safe_name(&mark.name)
-                                    && mark.start < mark.end
-                                    && mark.end <= block.text.chars().count()
-                            })
-                    })
-            }
             _ => false,
         }
     }

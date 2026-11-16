@@ -51,9 +51,8 @@ pub struct AuthorDirectory {
     /// `avatar_color`). Wins over [`crate::presence::user_color`] for
     /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
     color_overrides: HashMap<String, (u8, u8, u8)>,
-    /// The principal of whoever reads the history, whose own changes read
-    /// as theirs.
-    reader: Option<String>,
+    /// Who reads the history: their own changes read as theirs.
+    reader: Option<tilo_actions::MemberId>,
     /// Delegated agents by the actor id they write as (their own device
     /// key): their changes read as theirs, on behalf of their person.
     agents: HashMap<String, HistoryAgent>,
@@ -144,7 +143,7 @@ impl AuthorDirectory {
                 }
             }
         }
-        if let Some(MemberId::Person(me)) = presence.self_id() {
+        if let Some(me) = presence.self_id().filter(|me| me.is_person()) {
             directory.set_reader(me.clone());
         }
         directory
@@ -177,15 +176,24 @@ impl AuthorDirectory {
     /// Name the workspace's participants as its roster names them (participant
     /// id, name): a change written under a participant's key, or under their
     /// handle, reads as theirs instead of as an unknown participant.
-    pub fn register_roster<'a>(&mut self, people: impl IntoIterator<Item = (&'a str, &'a str)>) {
-        for (id, name) in people {
+    pub fn register_roster<'a>(
+        &mut self,
+        people: impl IntoIterator<Item = (&'a tilo_actions::MemberId, &'a str)>,
+    ) {
+        for (member, name) in people {
             let name = name.trim();
             if name.is_empty() {
                 continue;
             }
-            let author = author_coloured(name, short_id(id), self.colour_for(id));
-            self.register(id, author.clone());
-            self.register_person(id, author);
+            let rgb = match member.person_id() {
+                Some(person) => self.colour_for(person),
+                None => crate::presence::member_color(member, None),
+            };
+            let author = author_coloured(name, short_id(member.id()), rgb);
+            if let Some(person) = member.person_id() {
+                self.register(person, author.clone());
+            }
+            self.register(&hex::encode(member.actor_bytes()), author);
         }
     }
 
@@ -383,7 +391,7 @@ impl AuthorDirectory {
                     .in_folder(place.folder.map(str::to_owned)),
             );
         let mut author = author;
-        author.for_reader = self.reader().as_deref() == Some(person_key.as_str());
+        author.for_reader = self.reader_person().as_deref() == Some(person_key.as_str());
         Some(author)
     }
 
@@ -399,7 +407,7 @@ impl AuthorDirectory {
     /// in the agent's own colour.
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
         let person = self.resolve_identity(&principal_key(&agent.person)).name;
-        let reader = self.reader();
+        let reader = self.reader_person();
         let mut author = author_coloured(agent.label.clone(), short_id(actor_hex), agent.rgb)
             .with_relation(AuthorRelation::Software)
             .with_attribution(
@@ -439,17 +447,22 @@ impl AuthorDirectory {
         }
     }
 
-    /// Name the principal reading the history: their own changes read as
-    /// "You". Without one, the person this thread's app runs for
-    /// ([`read_as`]).
-    pub fn set_reader(&mut self, principal: impl Into<String>) {
-        self.reader = Some(principal.into());
+    /// Name who reads the history: their own changes read as "You".
+    /// Without one, the member this thread's app runs for ([`read_as`]).
+    pub fn set_reader(&mut self, reader: tilo_actions::MemberId) {
+        self.reader = Some(reader);
     }
 
-    fn reader(&self) -> Option<String> {
+    fn reader(&self) -> Option<tilo_actions::MemberId> {
         self.reader
             .clone()
             .or_else(|| THREAD_READER.with(|reader| reader.borrow().clone()))
+    }
+
+    /// The person who reads the history, when a person does.
+    fn reader_person(&self) -> Option<String> {
+        self.reader()
+            .and_then(|reader| reader.person_id().map(str::to_owned))
     }
 
     /// Who wrote a change, by the authenticated invoker its entry records
@@ -463,15 +476,18 @@ impl AuthorDirectory {
         let reader = self.reader();
         let Some(invoker) = entry.and_then(|entry| entry.invoker.as_ref()) else {
             let author = self.resolve(actor_hex);
-            let reads = actor_handle(actor_hex)
-                .is_some_and(|handle| reader.as_deref() == Some(handle.as_str()));
+            let reads = actor_handle(actor_hex).is_some_and(|handle| {
+                reader
+                    .as_ref()
+                    .is_some_and(|reader| reader.actor_bytes() == handle.as_bytes())
+            });
             return if reads {
                 author.with_relation(AuthorRelation::Reader)
             } else {
                 author
             };
         };
-        let actor = invoker.acting.by.key();
+        let actor = &invoker.acting.by;
         let software = !invoker.acting.is_person();
         let on_behalf_of = invoker.acting.acted_for_person().map(str::to_owned);
         // An agent session that acted for a person (a coding agent on the person's computer,
@@ -497,23 +513,22 @@ impl AuthorDirectory {
             return self.agent_session_author(invoker, (agent, None), person);
         }
         // The person's own writer names them as the directory knows them;
-        // anyone else by their principal, without its namespace.
+        // anyone else by their id.
         let author = if self.is_registered(actor_hex)
-            && actor_handle(actor_hex).as_deref() == Some(actor.as_str())
+            && actor_handle(actor_hex)
+                .is_some_and(|handle| handle.as_bytes() == actor.actor_bytes())
         {
             self.resolve(actor_hex)
         } else {
-            let principal = hex::encode(actor.as_bytes());
-            let author = self.resolve(&principal);
+            let written_as = hex::encode(actor.actor_bytes());
+            let author = self.resolve(&written_as);
             // Software is painted as presence paints it: by the one rule, from its identity, and
             // clear of the colour of the person it acted for.
-            let agent = actor.as_str();
             let author = if software {
-                let painted = self.color_overrides.get(agent).copied();
-                author.with_rgb(painted.unwrap_or_else(|| match invoker.acting.member_id() {
+                author.with_rgb(match invoker.acting.member_id() {
                     Some(member) => crate::presence::member_color(member, on_behalf_of.as_deref()),
-                    None => crate::presence::user_color(agent),
-                }))
+                    None => crate::presence::user_color(actor.id()),
+                })
             } else {
                 author
             };
@@ -524,15 +539,20 @@ impl AuthorDirectory {
                     named.name.clone_from(name);
                     named
                 }
-                None if !self.is_registered(&principal) => {
+                None if !self.is_registered(&written_as) => {
                     let mut author = author;
-                    author.name = principal_name(&actor);
+                    author.name = match actor.id().trim() {
+                        "" => UNKNOWN_AUTHOR_NAME.to_owned(),
+                        id => id.to_owned(),
+                    };
                     author
                 }
                 None => author,
             }
         };
-        let reads = reader.as_deref() == Some(actor.as_str());
+        let reads = reader
+            .as_ref()
+            .is_some_and(|reader| actor.member_id() == Some(reader));
         let relation = if reads {
             AuthorRelation::Reader
         } else if software {
@@ -543,7 +563,9 @@ impl AuthorDirectory {
         let for_person = on_behalf_of
             .as_deref()
             .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
-        let for_reader = reader.is_some() && reader == on_behalf_of;
+        let for_reader = on_behalf_of.is_some()
+            && reader.as_ref().and_then(tilo_actions::MemberId::person_id)
+                == on_behalf_of.as_deref();
         // The task the change was taken in names who did it: there are no
         // separate agents, only tasks, so a person whose window ran a task
         // reads as themselves through it, and an agent that ran one reads
@@ -585,8 +607,7 @@ impl AuthorDirectory {
             .clone()
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| agent.to_owned());
-        let reader = self.reader();
-        let reads = reader.as_deref() == Some(person);
+        let reads = self.reader_person().as_deref() == Some(person);
         let mut author = self
             .resolve(&principal)
             .with_relation(if reads {
@@ -652,7 +673,7 @@ impl ResolveAuthor for AuthorDirectory {
 }
 
 thread_local! {
-    static THREAD_READER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static THREAD_READER: std::cell::RefCell<Option<tilo_actions::MemberId>> = const { std::cell::RefCell::new(None) };
     /// The verified agents of each workspace this thread's app is in, as the
     /// session last sent them.
     static WORKSPACE_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
@@ -733,24 +754,10 @@ pub fn set_workspace_agents(workspace: &str, agents: Vec<RosterAgent>) {
     WORKSPACE_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
-/// The principal of the person this thread's app runs for: whose changes
-/// every history read on this thread shows as theirs.
-pub fn read_as(principal: &str) {
-    THREAD_READER.with(|reader| *reader.borrow_mut() = Some(principal.to_owned()));
-}
-
-/// A principal's name without its namespace (`agent:claude` → `claude`).
-fn principal_name(principal: &str) -> String {
-    let name = ["agent:", "shortcut:", "app:"]
-        .iter()
-        .find_map(|prefix| principal.trim().strip_prefix(prefix))
-        .unwrap_or(principal)
-        .trim();
-    if name.is_empty() {
-        UNKNOWN_AUTHOR_NAME.to_owned()
-    } else {
-        name.to_owned()
-    }
+/// The member this thread's app runs for: whose changes every history read
+/// on this thread shows as theirs.
+pub fn read_as(member: &tilo_actions::MemberId) {
+    THREAD_READER.with(|reader| *reader.borrow_mut() = Some(member.clone()));
 }
 
 /// Turn a durable collaboration principal into copy suitable for people-facing
@@ -984,8 +991,8 @@ mod tests {
         // called it.
         {
             let of = |name: &str| {
-                let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(
-                    "agent:claude-code",
+                let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::agent(
+                    "claude-code",
                 ))
                 .acting_for("ada")
                 .named(Some(name.into()));

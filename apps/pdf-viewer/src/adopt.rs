@@ -15,8 +15,8 @@ use ui::tilo_resource;
 use tilo_pdf::{AnnotationInfo, AnnotationKind, FieldKind, FormField, PageGeometry};
 
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MarkupStyle, PdfAnchor,
-    PtRect, Reply, Thread,
+    AnnoKind, Annotation, Author, Comment, FormEntry, GeomSpace, HighlightColor, MarkupStyle,
+    PdfAnchor, PtRect, Reply, Thread,
 };
 
 pub const MAX_IMPORTED_ANNOTATIONS: usize = 5_000;
@@ -285,7 +285,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                             page_id: page_id.clone(),
                             annotation: id.clone(),
                         },
-                        info.author.clone(),
+                        Author::named(info.author.clone()),
                         date,
                         info.contents.clone(),
                     ),
@@ -332,10 +332,12 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                             page_id: page_id.clone(),
                             annotation: parent_id.clone(),
                         },
-                        by_index
-                            .get(&root)
-                            .map(|a| a.author.clone())
-                            .unwrap_or_default(),
+                        Author::named(
+                            by_index
+                                .get(&root)
+                                .map(|a| a.author.clone())
+                                .unwrap_or_default(),
+                        ),
                         String::new(),
                         String::new(),
                     ),
@@ -346,7 +348,11 @@ pub fn plan_import<S: std::hash::BuildHasher>(
             if let Some(thread) = plan.comments.get_mut(comment) {
                 thread.comment.replies.push(
                     tilo_resource::Id::from_raw(reply_id.clone()),
-                    Reply::new(info.author.clone(), String::new(), info.contents.clone()),
+                    Reply::new(
+                        Author::named(info.author.clone()),
+                        String::new(),
+                        info.contents.clone(),
+                    ),
                 );
             }
             plan.adopted.push(AdoptedEntry {
@@ -461,7 +467,7 @@ pub fn thread_print(a: &Annotation, thread: Option<&Comment>) -> String {
             s.push('|');
             s.push_str(id.as_str());
             s.push('\u{1f}');
-            s.push_str(&r.author);
+            s.push_str(r.author.file_name());
             s.push('\u{1f}');
             s.push_str(&r.text);
         }

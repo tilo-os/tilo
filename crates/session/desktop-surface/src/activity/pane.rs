@@ -1597,7 +1597,9 @@ impl WorkspaceActivityPane {
         let local = self.local_user();
         if !local.is_empty() {
             // The reader's own changes read as theirs.
-            self.source.authors_mut().set_reader(local.clone());
+            self.source
+                .authors_mut()
+                .set_reader(ui::permissions::MemberId::person(local.clone()));
         }
         if !local.is_empty() && self.explicit_local_user.is_none() {
             let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();

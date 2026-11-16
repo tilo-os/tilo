@@ -104,12 +104,10 @@ fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
     click(&mut app, &mut doc, c3);
     paint_frame(&mut app, &mut tr, &theme);
     let author = app.open_thread().expect("the open thread").author.clone();
+    let member = author.member().expect("a member wrote it").clone();
 
     let mut presence = ui::presence::PresenceCtx::default();
-    presence.set_presence_hue(
-        ui::permissions::MemberId::person(author.clone()),
-        ui::tokens::PresenceHue::Violet,
-    );
+    presence.set_presence_hue(member.clone(), ui::tokens::PresenceHue::Violet);
     let markers = app.comment_markers(&presence);
     assert_eq!(
         markers[0].1,
@@ -118,7 +116,7 @@ fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
     );
     assert_eq!(
         app.comment_markers(&ui::presence::PresenceCtx::default())[0].1,
-        Tone::of_identity(&author),
+        Tone::Presence(ui::presence::PresenceCtx::default().hue_for(&member)),
         "someone who announced no colour keeps the one their identity derives"
     );
 }
@@ -365,14 +363,22 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
         Some("me"),
         &[(author, "Amira Haddad")],
     ));
-    assert_eq!(app.author_name(author), "Amira Haddad");
+    let member =
+        |id: &str| crate::workbook::Author::Member(ui::tilo_resource::MemberId::person(id));
+    assert_eq!(app.author_name(&member(author)), "Amira Haddad");
     assert_eq!(
-        app.author_name(stranger),
+        app.author_name(&member(stranger)),
         "Someone",
         "someone the workspace has not named yet is never shown by id"
     );
-    assert_ne!(app.author_name("me"), "me", "the reader is not shown by id");
-    assert_eq!(app.author_name(""), "Someone");
+    assert_eq!(
+        app.author_name(&crate::workbook::Author::named("Ada")),
+        "Ada"
+    );
+    assert_eq!(
+        app.author_name(&crate::workbook::Author::named("")),
+        "Someone"
+    );
 }
 
 #[test]

@@ -1457,15 +1457,6 @@ impl PresenceCtx {
             .unwrap_or_else(|| Self::identity_hue(user))
     }
 
-    /// [`Self::hue_for`] by the id a document spells, for a view that paints an author, an
-    /// assignee or a seat.
-    pub fn hue_of(&self, id: &str) -> crate::tokens::PresenceHue {
-        MemberId::parse(id).map_or_else(
-            || crate::tokens::PresenceHue::of_identity(id),
-            |member| self.hue_for(&member),
-        )
-    }
-
     /// When the workspace admitted `user`, as its roster records it; `None` when
     /// it has no time for them. People who share a name are numbered by it,
     /// so a newcomer never takes an earlier member's number.
@@ -2355,7 +2346,7 @@ mod remote_cursor_tests {
             assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
             assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
             let packed = collab_types::Member::of_person(
-                &collab_types::Person::new(peer.key().as_str(), "Ada")
+                &collab_types::Person::new(peer.id(), "Ada")
                     .wearing(crate::tokens::PresenceHue::Violet),
                 None,
             )

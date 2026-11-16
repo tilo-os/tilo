@@ -1545,11 +1545,12 @@ impl PdfApp {
         out: &mut SidebarHits,
     ) {
         let theme = ctx.theme;
-        AvatarFace::new(&cm.comment.author, &cm.comment.author).paint(ctx, hdr.avatar);
+        let author = self.comment_author_name(&cm.comment.author);
+        AvatarFace::new(&author, &author).paint(ctx, hdr.avatar);
         let style = theme.text(TextRole::Label).strong();
-        let name =
-            ctx.text
-                .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
+        let name = ctx
+            .text
+            .elide_to_width_style(&author, hdr.name.width() as f32, &style);
         let (_, h) = ctx.text.measure_style(&name, None, &style);
         ctx.text(
             &name,
@@ -1673,7 +1674,7 @@ impl PdfApp {
             yy += f64::from(rhythm.sibling);
             tr.draw_style(
                 scene,
-                &r.author,
+                &self.comment_author_name(&r.author),
                 theme.text_primary,
                 base * Affine::translate((x0, yy)),
                 Some(text_w as f32),

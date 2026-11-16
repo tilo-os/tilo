@@ -34,7 +34,7 @@ pub struct Document {
 }
 
 pub type Comment = tilo_document::annotation::Comment<TextAnchor>;
-pub use tilo_document::annotation::Reply;
+pub use tilo_document::annotation::{Author, Reply};
 
 /// Bring a document of an older version up to this one.
 fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
@@ -302,7 +302,7 @@ impl Document {
             };
             let mut thread = Comment::new(
                 anchor,
-                comment.author,
+                Author::Named(comment.author),
                 comment.date,
                 joined(&comment.blocks),
             );
@@ -310,7 +310,7 @@ impl Document {
                 thread.replies.push(
                     cx.id(),
                     Reply {
-                        author: reply.author.clone(),
+                        author: Author::named(reply.author.clone()),
                         date: reply.date.clone(),
                         text: joined(&reply.blocks),
                         body: reply.blocks.iter().map(clip_block).collect(),
@@ -837,7 +837,7 @@ impl Document {
             .iter()
             .map(|(id, comment)| tilo_doc::snapshot::CommentView {
                 id: id.to_string(),
-                author: comment.author.clone(),
+                author: comment.author.file_name().to_owned(),
                 date: comment.date.clone(),
                 blocks: vec![paragraph(format!("{id}.0"), &comment.text)],
                 replies: comment
@@ -845,7 +845,7 @@ impl Document {
                     .iter()
                     .map(|(reply_id, reply)| tilo_doc::snapshot::CommentReplyView {
                         id: reply_id.to_string(),
-                        author: reply.author.clone(),
+                        author: reply.author.file_name().to_owned(),
                         date: reply.date.clone(),
                         blocks: reply_blocks(reply_id, reply),
                     })
@@ -853,6 +853,19 @@ impl Document {
                 range: comment.anchor.range(doc),
             })
             .collect()
+    }
+
+    /// Who wrote each comment and answer, by its id.
+    #[must_use]
+    pub fn comment_authors(&self) -> std::collections::HashMap<String, Author> {
+        let mut authors = std::collections::HashMap::new();
+        for (id, comment) in self.comments.iter() {
+            authors.insert(id.to_string(), comment.author.clone());
+            for (reply_id, reply) in comment.replies.iter() {
+                authors.insert(reply_id.to_string(), reply.author.clone());
+            }
+        }
+        authors
     }
 
     #[must_use]
@@ -874,7 +887,12 @@ pub(crate) fn comment_by(
     let anchor = TextAnchor::new(&document.body, block, start, end).expect("text to anchor to");
     document.comments.push(
         id.clone(),
-        Comment::new(anchor, author.to_owned(), String::new(), text.to_owned()),
+        Comment::new(
+            anchor,
+            Author::named(author),
+            String::new(),
+            text.to_owned(),
+        ),
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the comment is written");
     id.to_string()
@@ -890,7 +908,7 @@ pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: 
     let id = Id::from_raw(format!("{comment}-reply-{}", thread.replies.len()));
     thread.replies.push(
         id,
-        Reply::new(author.to_owned(), date.to_owned(), text.to_owned()),
+        Reply::new(Author::named(author), date.to_owned(), text.to_owned()),
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the reply is written");
 }
