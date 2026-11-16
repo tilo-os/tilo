@@ -157,3 +157,108 @@ fn a_rebuilt_pane_keeps_its_scroll_position() {
         "the rebuilt pane returns where it was scrolled ({back} vs {scrolled})"
     );
 }
+
+/// The categories the sidebar shows, with where each stands in the window.
+fn sidebar_rows(h: &mut Harness) -> Vec<crate::support::NavRow> {
+    crate::support::nav_rows(h.app.harness().root_widget())
+}
+
+#[test]
+fn a_sidebar_taller_than_the_window_scrolls_by_the_wheel_to_its_last_row() {
+    // Settings opens at the launcher's size, where it shows one screen at a
+    // time, and the person maximizes it: the sidebar docks, its categories run
+    // past the window's foot, and the wheel over the list brings the last of
+    // them into view.
+    let mut h = Harness::new(Category::opening(), 604.0, 708.0);
+    h.app
+        .harness()
+        .resize((1280, 724))
+        .expect("the window maximizes");
+    h.relayout();
+    let list = h
+        .app
+        .with_widget::<ui::widget::NavList, _>(|list: &mut ui::widget::NavList| list.get_rect())
+        .expect("the sidebar's list");
+    assert!(
+        list.y1 <= 724.0,
+        "the sidebar's list ends inside the window: {list:?}"
+    );
+    let before = sidebar_rows(&mut h);
+    let about = before
+        .iter()
+        .find(|row| row.label == "About")
+        .expect("the sidebar lists About");
+    assert!(
+        about.rect.y0 >= 724.0,
+        "the last category waits past the window's foot: {:?}",
+        about.rect
+    );
+
+    let point = Point::new(140.0, 400.0);
+    h.dispatch(&ui::synthetic_input::cursor_moved(point.x, point.y));
+    for _ in 0..12 {
+        h.wheel(4.0);
+        h.relayout();
+    }
+    let after = sidebar_rows(&mut h);
+    let about = after
+        .iter()
+        .find(|row| row.label == "About")
+        .expect("the sidebar still lists About");
+    assert!(
+        about.rect.y0 >= 0.0 && about.rect.y1 <= 724.0,
+        "the wheel brought the last category into the window: {:?}",
+        about.rect
+    );
+    let storage = after
+        .iter()
+        .find(|row| row.label == "Storage")
+        .expect("the sidebar still lists Storage");
+    assert!(
+        storage.rect.y0 >= 0.0 && storage.rect.y1 <= 724.0,
+        "Storage is in the window too: {:?}",
+        storage.rect
+    );
+}
+
+/// The wheel as a host sends it to an app window: pixel deltas, positive up.
+fn pixel_wheel(dy: f64) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+            0.0, dy,
+        )),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
+#[test]
+fn the_sidebar_scrolls_by_the_pixel_wheel_a_window_sends_it() {
+    let mut h = Harness::new(Category::opening(), 1280.0, 724.0);
+    let before = sidebar_rows(&mut h);
+    let about = before
+        .iter()
+        .find(|row| row.label == "About")
+        .expect("the sidebar lists About");
+    assert!(
+        about.rect.y0 >= 724.0,
+        "the last category waits past the window's foot: {:?}",
+        about.rect
+    );
+
+    h.dispatch(&ui::synthetic_input::cursor_moved(140.0, 400.0));
+    for _ in 0..12 {
+        h.dispatch(&pixel_wheel(-60.0));
+        h.relayout();
+    }
+    let after = sidebar_rows(&mut h);
+    let about = after
+        .iter()
+        .find(|row| row.label == "About")
+        .expect("the sidebar still lists About");
+    assert!(
+        about.rect.y0 >= 0.0 && about.rect.y1 <= 724.0,
+        "the pixel wheel brought the last category into the window: {:?}",
+        about.rect
+    );
+}

@@ -18,6 +18,7 @@ mod page_title;
 mod places;
 mod replan;
 mod sidebar_button;
+mod sidebar_scroll;
 mod touch;
 
 struct Probe {
