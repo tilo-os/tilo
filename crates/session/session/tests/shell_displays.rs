@@ -205,7 +205,7 @@ fn a_display_turned_off_takes_its_part_and_brings_it_back() {
     );
     assert!(
         session.resources().len() < offered,
-        "the gone display's part offers nothing on the door"
+        "the gone display's part offers nothing on the action API"
     );
     session
         .compositor()

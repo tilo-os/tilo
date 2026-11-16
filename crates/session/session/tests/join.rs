@@ -135,7 +135,7 @@ fn session_of(socket: &Path, person: &Keys, apps: &[&str], state: Option<&Path>)
     serving(socket, person, apps, state, Lists::default())
 }
 
-/// [`session_of`] for a device whose app lists are `lists` : what the action door lists as each
+/// [`session_of`] for a device whose app lists are `lists` : what the action API lists as each
 /// app's offers and declared capabilities.
 fn serving(
     socket: &Path,
@@ -367,7 +367,7 @@ fn settings_lists_shortcuts(
     })
 }
 
-/// The settings `app` reads over the session's door, as the JSON document the session answered:
+/// The settings `app` reads over the session's API, as the JSON document the session answered:
 /// joined as the launch the session recorded for it.
 fn settings_read(socket: &PathBuf, person: &Keys, app: &str) -> serde_json::Value {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -541,7 +541,7 @@ fn an_app_of_one_of_the_persons_devices_joins_the_channel_and_the_others_answer(
 /// its launcher started: Settings joins its workspace's channel, and the shortcuts it lists are the
 /// settings this device holds.
 #[test]
-fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
+fn settings_lists_the_desktop_shortcuts_over_the_sessions_api() {
     use tilo_actions::remote::ReceiptStatus;
     let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
@@ -576,7 +576,7 @@ fn settings_lists_the_desktop_shortcuts_over_the_sessions_door() {
 }
 
 /// The device's settings app reaches every section of the settings document over the session's
-/// door, because the app lists say its manifest declares the system reach; an app that declares
+/// API, because the app lists say its manifest declares the system reach; an app that declares
 /// none reads the shared sections only.
 #[test]
 fn the_settings_app_the_app_lists_allow_reaches_every_section() {
@@ -600,7 +600,7 @@ fn the_settings_app_the_app_lists_allow_reaches_every_section() {
     );
 }
 
-/// What `app` reads of the settings over the session's door, in a session whose app lists say of
+/// What `app` reads of the settings over the session's API, in a session whose app lists say of
 /// each of `declared` whether its manifest asks for the device's system settings reach.
 fn settings_of(person: &Keys, app: &str, declared: &[(&str, bool)]) -> serde_json::Value {
     use tilo_action_broker::services::LaunchableApplication;

@@ -512,7 +512,7 @@ impl Harness {
     }
 
     /// Press a row of the person's devices, as the panel does: the session's published verb,
-    /// through the door every caller uses.
+    /// through the API every caller uses.
     fn press(&mut self, row: &str, part: RowPart) {
         self.session
             .invoke(

@@ -1,6 +1,6 @@
 //! Chat's direct conversations between two people in one workspace, each on two real devices: the
 //! app's acceptance (`crates/sdk/tilo-app/src/direct/acceptance.rs`) driven through the sessions'
-//! doors.
+//! action APIs.
 //! Each device is a `tilo-session` of its own on one workspace a site hosts ([`common::people`]),
 //! with the Chat package this run built installed in its store: opening Chat starts the app, and
 //! every step below reads what the app shows through the actions it publishes to its session — the

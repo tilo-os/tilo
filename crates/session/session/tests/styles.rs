@@ -562,7 +562,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
         crate::common::preset_menu(session).is_some()
     });
     // The layouttop, by the style switch's own action: `show_style` names the view the layout draws
-    // (`Viewing.style`), through the shell's door as the switch's row runs. The desktop's own
+    // (`Viewing.style`), through the shell's API as the switch's row runs. The desktop's own
     // bar drops the style menu, so a press on the bar cannot pick it back.
     let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -603,7 +603,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
 /// to the leading edge with the calls a Settings control runs, and the layout draws it there.
 ///
 /// This fails without the change: the settings were reached only through the shell's own
-/// `run_shell_action` (a test's back door, not a broker action every caller has), so the REPL
+/// `run_shell_action` (a test's own hook, not a broker action every caller has), so the REPL
 /// could switch the style but not change what the style shows.
 #[test]
 fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
@@ -616,7 +616,7 @@ fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
     });
     let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
-    // The desktop, through the REPL's own door: the style is a view of the layout and the
+    // The desktop, through the REPL's own API: the style is a view of the layout and the
     // switch is `show_style`, an action of the person's viewing record.
     let (answer, failed) = repl.run(
         &mut session,

@@ -1,5 +1,5 @@
 //! The tilolang shell on the native session (headless backend), its whole screen under the windows:
-//! its bar shows the shell the session publishes on its door (the time, the workspace and strip in
+//! its bar shows the shell the session publishes on its API (the time, the workspace and strip in
 //! front, the person, the unread notifications), switching workspace from it brings that workspace
 //! to the front, and with nothing changing it does no work.
 
@@ -907,7 +907,7 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
     until(&mut session, |session| {
         crate::common::windows(session).len() == 1
     });
-    // The shell's actions reach the shell's surface through its door.
+    // The shell's actions reach the shell's surface through the action API.
     session
         .invoke(
             "desktop:overlays",
@@ -919,9 +919,9 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
         )
         .unwrap();
     until(&mut session, |session| here(session) == "launcher");
-    // The launcher's doors are what it draws: the surface being up says where the shell is, and its
-    // labels are the doors a person sees.
-    crate::common::wait_for(&mut session, "the launcher's doors", |session| {
+    // The launcher's rows are what it draws: the surface being up says where the shell is, and its
+    // labels are the rows a person sees.
+    crate::common::wait_for(&mut session, "the launcher's rows", |session| {
         (says(session, "Overview") && says(session, "Notifications")).then_some(())
     });
     keep(&mut session, "shell-launcher");
@@ -1138,7 +1138,7 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     );
 }
 
-/// Alt+Tab's press on the shell's door: the walk `steps` windows on, in `scope` .
+/// Alt+Tab's press on the shell's API: the walk `steps` windows on, in `scope` .
 fn walk(session: &mut Session, steps: i64, scope: &str) {
     session
         .invoke(
@@ -1341,8 +1341,8 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
-    // Nobody here: the people door alone.
-    let door = crate::common::wait_for(&mut session, "the people door", |session| {
+    // Nobody here: the people button alone.
+    let people = crate::common::wait_for(&mut session, "the people button", |session| {
         bar_control(session, "People")
     });
     assert!(
@@ -1388,9 +1388,9 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         "a crowd is counted, not drawn: {widths:?}"
     );
     assert!(
-        door.2 < 40.0,
+        people.2 < 40.0,
         "nobody here: the glyph alone, {} wide",
-        door.2
+        people.2
     );
     // The button opens who is here, where each person has their own name.
     assert!(
@@ -1672,7 +1672,7 @@ fn dark_mode_from_quick_settings_at(width: i32, height: i32) {
     let mut session = device_session_over(width, height, Device { charging: false });
     until_settled(&mut session, |session| says(session, &time(session).clock));
     // The status opens the settings: the sound's control on a shell, the charge's on a phone,
-    // where the sound gives way and the bell is the notification centre's door.
+    // where the sound gives way and the bell opens the notification centre.
     let opener = if width < 480 { "61%" } else { "Volume, 40%" };
     press_at_rest(&mut session, opener);
     until_settled(&mut session, |session| here(session) == "quick-settings");
@@ -1954,8 +1954,8 @@ fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
 // ---- each press of the shell's reaches the session ------------------------------------------
 //
 // Every call of the session's actions the shell makes (`session.focus(window(w))`) is an
-// invocation on the session's door: each test below presses the shell's own view and reads the
-// session's state, so a call the door cannot run fails here.
+// invocation on the session's API: each test below presses the shell's own view and reads the
+// session's state, so a call the API cannot run fails here.
 
 /// Bring the shell's surface `surface` up, as the bar's own buttons do.
 fn show(session: &mut Session, surface: &str) {
@@ -2073,9 +2073,9 @@ fn a_press_on_a_launcher_row_brings_its_window_front() {
     );
 }
 
-/// The launcher's door to the overview shows it: `show-surface` on the shell.
+/// The launcher's row to the overview shows it: `show-surface` on the shell.
 #[test]
-fn a_press_on_a_launcher_door_shows_that_surface() {
+fn a_press_on_a_launcher_row_shows_that_surface() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));

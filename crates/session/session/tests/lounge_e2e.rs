@@ -5,16 +5,16 @@
 //! it: a governed workspace on a temporary state volume, a generated owner
 //! root, the members' desktop shared, people taken by invitation. It names its
 //! site in an `entry.json` written as the web entry image writes one — the home
-//! workspace, its admission door, and the site's directory — and every route
+//! workspace, its admission entry, and the site's directory — and every route
 //! the session reads is the service's own: the entry, the directory's listing,
-//! the door's invitation and the host's answer to the enrollment.
+//! the entry's invitation and the host's answer to the enrollment.
 //!
 //! What a person's *page* does in the Lounge is the publish gate's
 //! (`os/containers/tilo-lounge/integration/people.mjs`, two real browsers);
 //! this binary is the same join from the desktop session itself, which no page
 //! test can reach: the session opens "Join a workspace", reads the site, joins
-//! through its door, and shows what the member laid out and where their
-//! pointer is. A person nobody invited is refused in the door's own words, and
+//! through its entry, and shows what the member laid out and where their
+//! pointer is. A person nobody invited is refused in the entry's own words, and
 //! the shell is unchanged. An app the person opens in the joined workspace is
 //! launched there and shows its window.
 
@@ -107,7 +107,7 @@ impl WorkspaceService {
     }
 
     /// The service as tip's own Lounge runs it: the same entrypoint and the same environment, with
-    /// `admission` open or by invitation. The Lounge's door is open — its directory lists it and
+    /// `admission` open or by invitation. The Lounge's entry is open — its directory lists it and
     /// anyone who asks is admitted as its default role, an editor — so a person joins it with no
     /// invitation of their own.
     fn open() -> Self {
@@ -166,8 +166,8 @@ impl WorkspaceService {
             .stderr(Stdio::inherit())
             // The room service a test hosts ends with the test, however the test ends.
             .dies_with_the_test();
-        // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
-        // offers those it turns away: the image refuses to start an open door with one.
+        // eu1 keeps a wait list at its entry. The list is what an entry taking people by invitation
+        // offers those it turns away: the image refuses to start an open entry with one.
         if admission == "invite" {
             command.env("TILO_WORKSPACES_WAIT_LIST_MAX", "16");
         }
@@ -421,7 +421,7 @@ fn collaborative_session(state: &std::path::Path) -> Session {
 
 /// The site's `entry.json` , as the web entry image writes it from its `TILO_WEB_HOME_*` : the home
 /// workspace, and the site's directory of public ones.
-/// The deployment sets no home door: the Lounge is joined through the door its listing names, below
+/// The deployment sets no home entry: the Lounge is joined through the entry its listing names, below
 /// the directory's address (`directory/<workspace>/`).
 fn entry_json(service: &WorkspaceService) -> String {
     serde_json::json!({
@@ -436,7 +436,7 @@ fn entry_json(service: &WorkspaceService) -> String {
 }
 
 /// The site the person types into the sheet: the web entry's pages, whose `entry.json` names the
-/// workspace service's own directory and door.
+/// workspace service's own directory and entry.
 fn site(service: &WorkspaceService) -> Responder {
     let entry = entry_json(service);
     Responder::handle(move |request: &test_http::Request| {
@@ -612,7 +612,7 @@ fn invite(service: &WorkspaceService, member_page: &Link, person: [u8; 32]) -> S
             inviter_name: Some("The Lounge".to_owned()),
             wait_list_entry: None,
             // The invitation names the person it is for: a workspace taking people by
-            // invitation answers its door with it when they ask.
+            // invitation answers its entry with it when they ask.
             recipient: Some(person),
             administrator: false,
         })
@@ -630,14 +630,14 @@ fn invite(service: &WorkspaceService, member_page: &Link, person: [u8; 32]) -> S
     tilo_workspace_join::encode_invitation_text(&signed_invitation)
 }
 
-/// A computer joins a real workspace service through its own door and shows the members' desktop, with
+/// A computer joins a real workspace service through its own entry and shows the members' desktop, with
 /// nothing of the join path stood in for.
 /// The site's `entry.json` is written as the web entry image writes one; the directory listing, the
-/// door's invitation and the host's answer to the enrollment are the service's. The member laid the
+/// entry's invitation and the host's answer to the enrollment are the service's. The member laid the
 /// workspace out through the same shared-desktop write a page makes, and the joining session shows
 /// what they laid out and draws their pointer where they put it.
 #[test]
-fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
+fn a_computer_joins_the_lounge_through_its_workspace_services_own_entry() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
@@ -675,13 +675,13 @@ fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
         .expect("the service keeps the desktop");
 
     // The site the person types: the web entry's `entry.json` naming the workspace service's own
-    // directory and door.
+    // directory and entry.
     let site = site(&service);
     let site_url = format!("{}/", site.url());
     let _config = community_site(home.env(), "");
 
     // The person opens "Join a workspace" before anyone invited them: the
-    // Lounge is listed, and pressing Join is refused in the door's own words,
+    // Lounge is listed, and pressing Join is refused in the entry's own words,
     // leaving the shell as it was.
     let state = tempfile::tempdir().expect("a directory for this computer's shell");
     let mut session = collaborative_session(state.path());
@@ -704,7 +704,7 @@ fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
     );
     assert!(
         refused.is_some(),
-        "the door refused the uninvited person: {:?}",
+        "the entry refused the uninvited person: {:?}",
         session
             .workspace_directory()
             .map(tilo_sheets::directory::DirectoryState::directory)
@@ -735,7 +735,7 @@ fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
     assert!(!invitation.is_empty());
 
     // They open "Join a workspace" again, as the person the banner told to ask for an invitation
-    // does, and press Join: the door hands them their invitation, the host admits their device, and
+    // does, and press Join: the entry hands them their invitation, the host admits their device, and
     // the workspace is held and shown here.
     open_directory(&mut session);
     look_up_site(&mut session, &site_url);
@@ -889,7 +889,7 @@ fn session_opening(
 }
 
 /// An app opened in a workspace joined from a real workspace service shows its window there.
-/// The service's door admits this person by itself — the Lounge's open door, a person joining it with
+/// The service's entry admits this person by itself — the Lounge's open entry, a person joining it with
 /// no invitation of their own — so the join is the one the live Lounge makes (`member=false`). The
 /// app is opened the way the launchpad and the applications list open one: through the session's
 /// own launch path, into the workspace in front.
@@ -911,7 +911,7 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
     let (mut session, apps) = session_opening(state.path(), &home, &launcher);
     session.step(Duration::from_millis(1)).unwrap();
 
-    // The person joins the Lounge through its open door: no invitation, and the door admits them as
+    // The person joins the Lounge through its open entry: no invitation, and the entry admits them as
     // an editor of a workspace that is not theirs.
     open_directory(&mut session);
     look_up_site(&mut session, &site_url);

@@ -883,7 +883,7 @@ fn swipe_frame(session: &mut Session, socket: &Path, title: &str, png: &Path) ->
 
 /// Three fingers through the socket carry a strip wider than the screen while they are down, each
 /// held swipe going on with the same gesture, and lifted while moving the strip coasts on: the
-/// control door drives the shell's gestures the way a touchpad does.
+/// test control drives the shell's gestures the way a touchpad does.
 #[test]
 fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
     let _settled = ui::motion::testing::settled();

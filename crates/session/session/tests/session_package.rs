@@ -1,4 +1,4 @@
-//! The session's description (`apps/tl/session/surface.toml`) is what its door publishes, and
+//! The session's description (`apps/tl/session/surface.toml`) is what its API publishes, and
 //! it reads as the package a shell uses.
 
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ fn repo() -> PathBuf {
 }
 
 #[test]
-fn the_committed_description_is_what_the_door_publishes() {
+fn the_committed_description_is_what_the_api_publishes() {
     let path = repo().join(session_package::PATH);
     let expected = session_package::description();
     let committed = std::fs::read_to_string(&path).unwrap_or_default();
@@ -28,7 +28,7 @@ fn the_committed_description_is_what_the_door_publishes() {
 }
 
 tilo_test_env::scenario! {
-    fn the_session_package_is_the_description_the_door_publishes;
+    fn the_session_package_is_the_description_the_api_publishes;
 
     phase the_description_reads_as_the_session_package;
     {
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
     phase a_record_parameter_is_declared_as_its_fields_and_nested_back_on_the_wire;
     // The chrome's `move-tab` takes its destination as a plain record of named fields, which
     // tilolang has no value of: the package declares the record's fields as parameters of their
-    // own, each optional as its field is, and a call's arguments for them reach the door nested
+    // own, each optional as its field is, and a call's arguments for them reach the API nested
     // under the destination's name again.
     {
         let text =

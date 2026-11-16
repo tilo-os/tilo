@@ -240,7 +240,7 @@ pub(super) fn until_drawn(
 /// the session's own view of the lock, not the lock screen's app.
 const DREW_THE_LOCK_ITSELF: &str = "Lock screen did not start";
 
-/// The notices the centre holds, as its reading names them on the session's door: each one's id
+/// The notices the centre holds, as its reading names them on the session's API: each one's id
 /// and its title.
 fn told(session: &Session, centre: &str) -> Vec<(u64, String)> {
     let reading = session
@@ -472,14 +472,19 @@ fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
     frame.pixels().map(|pixel| pixel.0).collect()
 }
 
-/// The displays as the door's snapshot draws them: the PNG the session writes under `home` for
+/// The displays as the test control's snapshot draws them: the PNG the session writes under `home` for
 /// `name` , read back.
 #[track_caller]
-fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> image::RgbaImage {
+fn control_picture(
+    session: &mut Session,
+    control: &Path,
+    home: &Path,
+    name: &str,
+) -> image::RgbaImage {
     let path = home.join(format!("{name}.png"));
     let asked = crate::common::control(
         session,
-        door,
+        control,
         &serde_json::json!({
             "op": "snapshot",
             "path": path.to_str().expect("a path the socket carries"),
@@ -487,14 +492,17 @@ fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> 
     );
     // The answer also says whether the picture is of the lock screen, which is what the lock's own
     // tests read of it.
-    assert_eq!(asked["ok"]["frame"], 0, "the door draws {name}: {asked}");
+    assert_eq!(
+        asked["ok"]["frame"], 0,
+        "the test control draws {name}: {asked}"
+    );
     image::open(&path)
         .unwrap_or_else(|error| panic!("{name}: {error}"))
         .to_rgba8()
 }
 
 /// The lock the session holds is what the displays show, and a check reads it
-/// there: the door's snapshot draws the lock screen the app put on the display,
+/// there: the test control's snapshot draws the lock screen the app put on the display,
 /// while a copy of the display that leaves the session is the one placeholder.
 /// Unlocking puts the shell back in both.
 #[test]
@@ -502,11 +510,11 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
     let home = private_home();
-    let door = home.path().join("test-control.sock");
+    let control = home.path().join("test-control.sock");
     let mut session = Session::headless(
         Options {
             action_plane: ActionPlane::At(home.path().join("collab.sock")),
-            test_control: Some(door.clone()),
+            test_control: Some(control.clone()),
             ..locking_options(std::sync::Arc::new(Sesame))
         },
         &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
@@ -514,8 +522,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
     .expect("session");
     session.step(Duration::from_millis(1)).expect("a turn");
 
-    // The shell, as the door draws it before anything locks.
-    let shots = door_picture(&mut session, &door, home.path(), "shots");
+    // The shell, as the test control draws it before anything locks.
+    let shots = control_picture(&mut session, &control, home.path(), "shots");
     assert!(colours(&shots).len() > 8, "the shots, not a flat frame");
 
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
@@ -533,7 +541,7 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
 
     // The lock screen is on the display, drawn by the app: more than a placeholder's one colour,
     // and not the placeholder a copy gets.
-    let locked = door_picture(&mut session, &door, home.path(), "lock-screen");
+    let locked = control_picture(&mut session, &control, home.path(), "lock-screen");
     assert!(
         colours(&locked).len() > 8,
         "the lock screen is on the display: {} colours in it",
@@ -556,16 +564,16 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_shell_
     assert_ne!(
         colours(&locked),
         copy,
-        "the door draws the display, not the copy's placeholder"
+        "the test control draws the display, not the copy's placeholder"
     );
 
-    // The right password unlocks it, and the shell comes back to the door and to a copy of the
+    // The right password unlocks it, and the shell comes back to the test control and to a copy of the
     // display alike.
     type_and_enter(&mut session, "sesame");
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
     });
-    let back = door_picture(&mut session, &door, home.path(), "shots-again");
+    let back = control_picture(&mut session, &control, home.path(), "shots-again");
     assert!(
         colours(&back).len() > 8,
         "the shots is back on the display, not the lock screen"

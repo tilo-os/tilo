@@ -1604,7 +1604,7 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     );
 }
 
-/// Answer `effect` on the portal sheet's door for `handle` .
+/// Answer `effect` on the portal sheet's API for `handle` .
 fn answer_on_the_sheet(session: &mut Session, handle: &str, effect: &str) {
     let sheet = publisher(session, effect).expect("the sheet publishes that");
     let arguments = serde_json::json!({ "handle": handle })

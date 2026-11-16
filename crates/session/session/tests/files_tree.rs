@@ -11,7 +11,7 @@
 //! A session admits a change it journals as a local publication only from the
 //! device it runs on ("native local publication signer differs from selected
 //! device"): what another of the person's devices writes reaches it over the
-//! person's store link (`Session`'s `PersonalSync` door), which a test cannot
+//! person's store link (`Session`'s `PersonalSync` API), which a test cannot
 //! reach from outside. So the mounts here are one device's, writing and
 //! reading the one record: what the holder changes reaches a mount given the
 //! tree, which is the same `receive` a change that arrived from the link takes.

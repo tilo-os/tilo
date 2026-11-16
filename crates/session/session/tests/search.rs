@@ -35,7 +35,7 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
 
-/// The host search door every window and the shell publish: what a window's search control, its
+/// The platform search action every window and the shell publish: what a window's search control, its
 /// toolbar's magnifier and Ctrl+K run (`tilo_ui::search::SearchRequest`).
 const HOST_SEARCH: &str = "tilo.host:search";
 
@@ -636,7 +636,7 @@ fn a_welcome_card_does_what_its_published_action_does() {
     );
 
     // The card on the shell, pressed, asks Chat for the same thing. The empty shell and its cards are
-    // the desktop surface's own: the session's door names them as the controls an assistive
+    // the desktop surface's own: the session's API names them as the controls an assistive
     // technology presses.
     let card = session
         .controls()
@@ -1642,7 +1642,7 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
         rate: 0,
     });
     session.step(Duration::from_millis(1)).expect("step");
-    // The host search door, as `so.tilo.session` publishes it: what a window's search control, its
+    // The platform search action, as `so.tilo.session` publishes it: what a window's search control, its
     // toolbar's magnifier and Ctrl+K run.
     invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
     until(&mut session, |session| {
@@ -1686,9 +1686,9 @@ fn labels(session: &Session) -> Vec<String> {
 /// The ways a person reaches search, each of which searches the session's one list of apps.
 #[derive(Clone, Copy, Debug)]
 enum Opening {
-    /// The platform search door (`tilo.host:search`): what a window's search control, its toolbar's
+    /// The platform search action (`tilo.host:search`): what a window's search control, its toolbar's
     /// magnifier and Ctrl+K run, and what an agent asks.
-    HostDoor,
+    Host,
     /// The shell's own `search` verb, in the workspace scope its chip names.
     Shell,
     /// The applications alone, as the launchpad's "Open an app" lists them.
@@ -1699,7 +1699,7 @@ impl Opening {
     /// Open search this way, already asking `query` .
     fn open(self, session: &mut Session, query: &str) {
         match self {
-            Self::HostDoor => {
+            Self::Host => {
                 invoke(
                     session,
                     HOST_SEARCH,
@@ -1732,10 +1732,10 @@ fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
     let _settled = ui::motion::testing::settled();
     for (query, title) in [("alacritty", "Alacritty"), ("notes", "Notes")] {
         let mut session = host_session(Rc::new(Host::default()));
-        Opening::HostDoor.open(&mut session, query);
+        Opening::Host.open(&mut session, query);
         assert!(
             titled(&session, title).is_some(),
-            "{title} is found by name from the platform search door: {:?}",
+            "{title} is found by name from the platform search action: {:?}",
             labels(&session)
         );
     }
@@ -1755,7 +1755,7 @@ fn the_searches_find_the_persons_apps_by_name_however_it_opens() {
 #[test]
 fn choosing_the_row_any_search_found_starts_the_app() {
     let _settled = ui::motion::testing::settled();
-    for opening in [Opening::HostDoor, Opening::Shell, Opening::Applications] {
+    for opening in [Opening::Host, Opening::Shell, Opening::Applications] {
         let host = Rc::new(Host::default());
         let mut session = host_session(Rc::clone(&host));
         opening.open(&mut session, "alacritty");

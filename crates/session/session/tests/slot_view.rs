@@ -5,7 +5,7 @@
 //! reads `desktop:window-menu` through the connection the session's broker admits it for, and
 //! reports what it saw.
 //! A view written in tilolang is not a program the session starts: the session runs it itself, over
-//! the same reading, and its presses reach the menu's own verbs through the session's door. The
+//! the same reading, and its presses reach the menu's own verbs through the session's API. The
 //! view here is compiled against the surface the session publishes for the slot, as a person
 //! writing one does.
 
@@ -132,7 +132,7 @@ fn row_label(offered: &Value, id: &str) -> String {
 }
 
 /// Bind the window-menu slot to the view `view` of `app` , as a person or an agent does through the
-/// settings door.
+/// settings API.
 fn bind(session: &mut Session, app: &str, view: &str) {
     let mut arguments = Map::new();
     arguments.insert("slot".into(), json!("window-menu"));
@@ -376,7 +376,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
 
     // The person presses what the view drew: the menu moves where the view's own argument says,
     // which no press of the session's own could do, so what ran is the verb the view asked for,
-    // through the session's door.
+    // through the session's API.
     press(&mut session, "Move the menu");
     until(
         &mut session,
@@ -516,7 +516,7 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     );
 
     // The person presses the row that maximizes the window: the view's own `choose` , through the
-    // session's door, runs the command the row means and the menu closes.
+    // session's API, runs the command the row means and the menu closes.
     press(&mut session, &row_label(&offered, "window-maximize"));
     until(
         &mut session,

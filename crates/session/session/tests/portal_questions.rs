@@ -1,4 +1,4 @@
-//! The questions the services ask on the portal sheet, answered through its door: every answer
+//! The questions the services ask on the portal sheet, answered through its API: every answer
 //! names the question it was given for, so one that arrives after the next question opened leaves
 //! that one alone.
 
@@ -46,7 +46,7 @@ fn showing(session: &Session) -> String {
         .handle
 }
 
-/// Answer `effect` on the portal sheet's door for `handle` .
+/// Answer `effect` on the portal sheet's API for `handle` .
 #[track_caller]
 fn answer(session: &mut Session, handle: &str, effect: &str) -> Result<(), tilo_actions::ApiError> {
     let sheet = publisher(session, effect).expect("the sheet publishes that");

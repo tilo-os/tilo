@@ -1,6 +1,6 @@
 //! The person's account custody, as the session serves it to the apps that ask: Browser lists,
 //! resolves and forgets the website sessions the person selected, Settings seals an account's
-//! secret, and Mail is released the one it keeps. Every call goes through the action door the
+//! secret, and Mail is released the one it keeps. Every call goes through the action API the
 //! shipped app already speaks, on a connection admitted as that app in its workspace, and nothing
 //! of it enters a workspace's records: the vault stays on the device.
 

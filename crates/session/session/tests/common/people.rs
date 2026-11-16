@@ -10,8 +10,8 @@
 //! device on someone's shell does.
 //!
 //! A workspace lives at a site ([`Site`]): a relay of this machine that
-//! governs it, hosts it for the people in it, admits people at the door it
-//! serves the way a site's door admits them, and keeps what its people record
+//! governs it, hosts it for the people in it, admits people at the entry it
+//! serves the way a site's entry admits them, and keeps what its people record
 //! while they are away. The site is one person's own, as a home peer is: its
 //! device is a device of theirs, the workspace's owner, and the invitations
 //! it issues for someone are theirs to issue. A device joins by redeeming an
@@ -77,7 +77,7 @@ pub fn joined_within() -> Duration {
 }
 
 /// A site: a relay of this machine that governs one workspace, hosts it for the people in it and
-/// admits people to it at its door.
+/// admits people to it at its entry.
 pub struct Site {
     runtime: tokio::runtime::Runtime,
     relay: Option<tilo_relay::daemon::Relay>,
@@ -94,8 +94,8 @@ pub struct Site {
     pub name: String,
     /// Where the site is reached: its entry, as a link names it.
     pub entry: String,
-    /// The door the site serves, kept up until the site is dropped.
-    _door: Responder,
+    /// The entry the site serves, kept up until the site is dropped.
+    _entry: Responder,
     state: tempfile::TempDir,
 }
 
@@ -115,7 +115,7 @@ impl Site {
     }
 
     /// `owner`'s site: a relay of this machine governing the workspace `name`,
-    /// listening on loopback with its directory and door served over HTTP.
+    /// listening on loopback with its directory and entry served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
         // The site runs in this process: its log is this test's stderr.
         install_log();
@@ -173,8 +173,8 @@ impl Site {
                 .expect("the site's device is in its workspace");
             (relay, workspaces, workspace)
         });
-        let door = door_responder(&workspace, name);
-        let entry = format!("{}/", door.url());
+        let responder = entry_responder(&workspace, name);
+        let entry = format!("{}/", responder.url());
         Self {
             runtime,
             relay: Some(relay),
@@ -184,7 +184,7 @@ impl Site {
             workspace,
             name: name.to_owned(),
             entry,
-            _door: door,
+            _entry: responder,
             state,
         }
     }
@@ -213,8 +213,8 @@ impl Site {
             .map(|summary| summary.workspace_id)
     }
 
-    /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
-    /// from now on the door admits people.
+    /// Make the workspace public with `role` for everyone who joins at the entry, as its owner does:
+    /// from now on the entry admits people.
     pub fn publish(&self, role: Role) {
         self.runtime
             .block_on(self.workspaces.publish(
@@ -228,25 +228,25 @@ impl Site {
             .expect("the workspace is published");
     }
 
-    /// Admit `person` at the site's door, as their own entry through it asks
-    /// it, and answer the invitation the door lets them in with: one only
+    /// Admit `person` at the site's entry, as their own entry through it asks
+    /// it, and answer the invitation the entry lets them in with: one only
     /// they can redeem.
     ///
     /// # Panics
     ///
-    /// The door refuses them: a workspace that is not public admits nobody, as
+    /// The entry refuses them: a workspace that is not public admits nobody, as
     /// does one that banned them.
     pub fn admit(&self, person: [u8; 32]) -> Invitation {
         self.try_admit(person)
-            .unwrap_or_else(|refusal| panic!("the site's door refuses them: {refusal}"))
+            .unwrap_or_else(|refusal| panic!("the site's entry refuses them: {refusal}"))
     }
 
-    /// [`Self::admit`], with the door's refusal given back rather than
+    /// [`Self::admit`], with the entry's refusal given back rather than
     /// asserted on.
     ///
     /// # Errors
     ///
-    /// What the door said, when it says no.
+    /// What the entry said, when it says no.
     pub fn try_admit(&self, person: [u8; 32]) -> Result<Invitation, String> {
         let (issued, _token) = self
             .runtime
@@ -715,10 +715,10 @@ pub fn share_the_fleet(person: &Person, devices: &[&Device]) {
     }
 }
 
-/// What a site serves: its entry and the directory of what it lists. The door itself is the
+/// What a site serves: its entry and the directory of what it lists. The entry itself is the
 /// workspace's host's, which a device enters through on its session with the host
 /// ([`Site::admit`] asks it as that entry does).
-fn door_responder(workspace: &str, name: &str) -> Responder {
+fn entry_responder(workspace: &str, name: &str) -> Responder {
     let origin = Arc::new(Mutex::new(String::new()));
     let served_origin = Arc::clone(&origin);
     let workspace_answered = workspace.to_owned();
@@ -739,7 +739,7 @@ fn door_responder(workspace: &str, name: &str) -> Responder {
                     "home": {
                         "name": page_name,
                         "host": { "origin": served_origin.lock().expect("the site's origin").clone() },
-                        "admission": format!("door/directory/{workspace_answered}/"),
+                        "admission": format!("entry/directory/{workspace_answered}/"),
                     },
                 })
                 .to_string(),
@@ -752,7 +752,7 @@ fn door_responder(workspace: &str, name: &str) -> Responder {
                         "name": page_name,
                         "description": "",
                         "defaultRole": "editor",
-                        "door": entry_path(&workspace_answered),
+                        "entry": entry_path(&workspace_answered),
                         "here": [],
                         "hereCount": 0,
                         "members": 1,
@@ -1464,7 +1464,7 @@ impl Device {
         }
     }
 
-    /// The workspace in front on this device, by id: what the door opens an app into.
+    /// The workspace in front on this device, by id: what the API opens an app into.
     pub fn showing(&self) -> Option<String> {
         let tree = &self.state()["state"]["workspace_tree"];
         let active = tree["active"].as_str()?;
@@ -1566,7 +1566,7 @@ impl Device {
     }
 
     /// Wait until the shell shows the workspace `workspace` in front: a person who joins a workspace
-    /// lands in it, so the door opens apps into it rather than into the shell they were on.
+    /// lands in it, so the API opens apps into it rather than into the shell they were on.
     pub fn wait_showing(&self, workspace: &str) {
         let deadline = Instant::now()
             .checked_add(joined_within())
@@ -1778,7 +1778,7 @@ impl Device {
         }
     }
 
-    /// Chat as this device runs it: the actions the app publishes to its session's door, and the
+    /// Chat as this device runs it: the actions the app publishes to its session's API, and the
     /// answers they give.
     pub fn chat(&self) -> Chat<'_> {
         Chat { device: self }
@@ -1993,7 +1993,7 @@ impl Chat<'_> {
     }
 
     /// Chat's record and the first part of its messages (all a conversation here writes), as this
-    /// device holds them, once they differ from the revision `after`: read through the record door
+    /// device holds them, once they differ from the revision `after`: read through the record API
     /// as plain JSON, which wakes the read on the next write to any of them.
     fn held(&self, after: Option<&str>) -> HeldChat {
         let wait = tilo_test_env::hang_bound();

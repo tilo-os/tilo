@@ -38,7 +38,7 @@ fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questi
     (session, questions)
 }
 
-/// An agent's own program at the door: it introduces itself, reads its answer, and stays connected
+/// An agent's own program at the session's socket: it introduces itself, reads its answer, and stays connected
 /// — its presence is what an agent's state is served for.
 struct Program {
     served: mpsc::Receiver<Value>,
@@ -57,7 +57,7 @@ impl Program {
             stream
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("the program waits for the person");
-            let mut writer = stream.try_clone().expect("a second handle on the door");
+            let mut writer = stream.try_clone().expect("a second handle on the socket");
             let mut reader = BufReader::new(stream);
             let introduced = json!({
                 "jsonrpc": "2.0",
@@ -71,7 +71,7 @@ impl Program {
             });
             writer
                 .write_all(format!("{introduced}\n").as_bytes())
-                .expect("the door reads");
+                .expect("the socket reads");
             let mut line = String::new();
             reader.read_line(&mut line).expect("an answer");
             let answer: Value = serde_json::from_str(&line).expect("a JSON-RPC answer");
@@ -127,7 +127,7 @@ fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Val
     pump(session, |_| questions.pending().len() == 1);
     press(session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(session, PortalEffect::CONFIRM.id, json!({}));
-    crate::common::wait_for(session, "the program at the door to be served", |_| {
+    crate::common::wait_for(session, "the program at the socket to be served", |_| {
         program.served.try_recv().ok()
     })
 }
@@ -314,7 +314,7 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
                 .to_owned()
         )]
     );
-    // Told once, though the session's loop looks at the door every pass.
+    // Told once, though the session's loop looks at the API every pass.
     for _ in 0..50 {
         session.step(Duration::from_millis(2)).expect("step");
     }

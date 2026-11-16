@@ -6,7 +6,7 @@
 //!
 //! These fail without the change:
 //!
-//! - the launcher listed only the layout's doors, never the installed apps, so a person could type
+//! - the launcher listed only the layout's own rows, never the installed apps, so a person could type
 //!   "no" and Enter found nothing to open;
 //! - there was no way to post a notice as a script or an agent (only an app's `notify`, or a
 //!   service's own notice), so `session.notify` — and the banner and centre count it feeds — could
@@ -62,7 +62,7 @@ fn session() -> Session {
     session
 }
 
-/// The layout as the session publishes it on its door: what an agent reads.
+/// The layout as the session publishes it on its API: what an agent reads.
 fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
     serde_json::from_value(
         session
@@ -352,11 +352,11 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         show_style(&mut session, key);
         show(&mut session, "launcher");
         // The launcher lists Notes before anything is typed: the installed apps are the list,
-        // not only the layout's own doors.
+        // not only the layout's own rows.
         until(&mut session, |session| {
             session.shell_control("Notes").is_some()
         });
-        // Typing narrows to Notes: the only app row left named before the layout's own doors.
+        // Typing narrows to Notes: the only app row left named before the layout's own rows.
         // The launcher keeps the person's last query in its field (`launcher.tl`): a style shown
         // after another opens it on the "no" typed there, which the person clears first.
         let field = crate::common::LAUNCHER_SEARCH;

@@ -24,7 +24,7 @@ use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_relay_protocol::workspaces::Role;
 
 /// The Devices step of the person's identity administration, as Settings asks
-/// it: `resource␟action`, as the action door spells an address.
+/// it: `resource␟action`, as the action API spells an address.
 const DEVICES: &str = "identity\u{1f}devices";
 
 /// The devices Settings lists on `device`.

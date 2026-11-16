@@ -215,7 +215,7 @@ pub fn this_computer_with_an_identity(
         .next()
         .expect("an identity")
         .public_key;
-    // The name they go by, which the site's door learns of them: never their device's.
+    // The name they go by, which the site's entry learns of them: never their device's.
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: person,

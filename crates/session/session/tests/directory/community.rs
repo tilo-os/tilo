@@ -1,5 +1,5 @@
 //! The community a computer is set up for (`community.toml`), joined as its session starts: nobody
-//! opens a directory, and the site is asked once for its home's door, which the computer enters
+//! opens a directory, and the site is asked once for its home's entry, which the computer enters
 //! through as the sheet's Join does.
 //! What the person decided is theirs, and is kept with their workspaces: a later session here, and
 //! every other computer of theirs, joins nothing on its own once they joined the community — or
@@ -53,10 +53,10 @@ fn written() {
     tilo_durable_writer::global().flush();
 }
 
-/// A community site: its entry names the home workspace `name` and the door into
+/// A community site: its entry names the home workspace `name` and the entry into
 /// [`COMMUNITY_WORKSPACE`], answering while `admits` says so (a site that cannot be reached
-/// otherwise), and counting every time it was asked. The door itself is never asked here: a
-/// computer enters through it on its session with the door's host.
+/// otherwise), and counting every time it was asked. The entry itself is never asked here: a
+/// computer enters through it on its session with the entry's host.
 fn community_lounge(
     name: &'static str,
     admits: Arc<AtomicBool>,
@@ -172,7 +172,7 @@ fn their_other_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir
 }
 
 /// A computer set up for a community joins it as its session starts, with nobody opening a
-/// directory: through the same door the sheet's Join enters by.
+/// directory: through the same entry the sheet's Join enters by.
 #[test]
 fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     let _settled = ui::motion::testing::settled();
@@ -210,7 +210,7 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     assert_eq!(
         asked_of_the_site,
         [("GET".to_owned(), "/entry.json".to_owned())],
-        "the door is entered on the session with its host, never asked over HTTP"
+        "the entry is entered on the session with its host, never asked over HTTP"
     );
 }
 
@@ -270,7 +270,7 @@ fn a_community_that_was_left_is_not_joined_again() {
 }
 
 /// A person's other computer holds what they decided, as their devices hold their workspaces: it
-/// does not ask the community's door for them again.
+/// does not ask the community's entry for them again.
 #[test]
 fn a_persons_other_computer_does_not_join_their_community_again() {
     let _settled = ui::motion::testing::settled();

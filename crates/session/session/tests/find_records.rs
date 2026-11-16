@@ -1,7 +1,7 @@
 //! A program's `find` over an app's records, from the person's REPL and from an agent of theirs,
 //! both admitted at the session's MCP server.
 //!
-//! A task's programs read each app's record as the door hands it over
+//! A task's programs read each app's record as the API hands it over
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app"): every tilolang
 //! app this session runs keeps its record in the session's own record, so a task reads all of
 //! them by their apps, and starts no app to read one. A `find` that hands a record over as
@@ -55,7 +55,7 @@ fn the_persons_repl_finds_the_workspaces_tasks() {
 }
 
 #[test]
-fn an_agents_run_at_the_door_finds_the_workspaces_tasks() {
+fn an_agents_run_at_the_api_finds_the_workspaces_tasks() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
@@ -63,7 +63,7 @@ fn an_agents_run_at_the_door_finds_the_workspaces_tasks() {
         on_screen(session, "Notifications").is_some()
     });
     let mut agent = Repl::asking(&root.path().join("agent.sock"), false);
-    until(&mut session, "the door's question", |session| {
+    until(&mut session, "the API's question", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalState::dialog)

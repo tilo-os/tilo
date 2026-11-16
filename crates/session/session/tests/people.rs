@@ -4,9 +4,9 @@
 //! A person is their root; their devices are keys their root certified, each
 //! running a session of its own with its own home, identity and state
 //! ([`common::people`]). The workspace is a site's: a relay of this machine
-//! governs it, hosts it and admits people to it at a door a site serves.
+//! governs it, hosts it and admits people to it at an entry a site serves.
 //!
-//! What this proves: a person joins a workspace at its site's door and lands
+//! What this proves: a person joins a workspace at its site's entry and lands
 //! in it; each further device of theirs, and of someone they invite, joins by
 //! an invitation the workspace's host issues and only that person can redeem,
 //! over the collaboration endpoint; and a person the workspace never admitted
@@ -34,7 +34,7 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let bob = Person::new("Bob");
     // Ada's site: her home peer, which governs her workspace and hosts it.
     let site = Site::start(&ada, "Studio");
-    // The workspace is public to its door, where anyone the site's own door admits joins as an
+    // The workspace is public to its entry, where anyone the site's own entry admits joins as an
     // editor.
     site.publish(Role::Editor);
     let mut ada_laptop = ada.device("Ada's laptop");
@@ -42,7 +42,7 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     let mut bob_laptop = bob.device("Bob's laptop");
     let mut bob_phone = bob.device("Bob's phone");
 
-    // Ada joins her workspace at the site's door, as a person joining a workspace a site lists
+    // Ada joins her workspace at the site's entry, as a person joining a workspace a site lists
     // does, and lands in it.
     let invitation = site.admit(ada.public);
     ada_laptop.join(&invitation);
@@ -187,13 +187,13 @@ fn a_person_the_workspace_never_admitted_is_refused_and_keeps_nothing() {
     let mut ada_laptop = ada.device("Ada's laptop");
     let mut carol_laptop = carol.device("Carol's laptop");
 
-    // The workspace is not public: its door admits nobody.
+    // The workspace is not public: its entry admits nobody.
     let refusal = site
         .try_admit(carol.public)
-        .expect_err("the door of a workspace nobody published admits no one");
+        .expect_err("the entry of a workspace nobody published admits no one");
     assert!(
         refusal.contains("not public"),
-        "the door says why it refuses: {refusal}"
+        "the entry says why it refuses: {refusal}"
     );
 
     // Ada, whose site the workspace is, invites Carol, and Carol's device joins.

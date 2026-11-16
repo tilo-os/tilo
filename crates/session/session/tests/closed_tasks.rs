@@ -177,7 +177,7 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
         device.install_tasks();
         device.join(&site.admit(ada.public));
         device.wait_holding(&site.workspace);
-        // The shell shows the workspace: what the door acts in.
+        // The shell shows the workspace: what the API acts in.
         device.wait_showing(&site.workspace);
     }
 

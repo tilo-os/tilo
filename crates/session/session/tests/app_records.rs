@@ -3,7 +3,7 @@
 //! A development session seeds its apps (`--seed-apps`): each app's first scenario fills its
 //! record, and the session keeps that record in the workspace the person is in once it holds it.
 //! So the record the Tasks window opens holds the seeded tasks, and a task made through the app's
-//! own action — at the session's door, as the canvas, the REPL and an agent make one — is in that
+//! own action — at the session's API, as the canvas, the REPL and an agent make one — is in that
 //! record, where the REPL's `find`, an agent's programs (which read the workspace's copy through
 //! the broker) and the app's own window read it.
 //!
@@ -182,7 +182,7 @@ fn the_seeded_tasks_are_in_the_record_the_tasks_window_opens() {
     );
 }
 
-/// A task made through the Tasks app's own action, at the session's door, is a change of the
+/// A task made through the Tasks app's own action, at the session's API, is a change of the
 /// workspace's record of the app: the app's window shows it, the person's REPL finds it, and an
 /// agent's program, which reads the workspace's copy, finds it too.
 #[test]
@@ -215,7 +215,7 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
         "the seeded tasks are still beside it"
     );
 
-    // The person's REPL, at the session's door.
+    // The person's REPL, at the session's API.
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     until(&mut session, "the REPL's find", |session| {
@@ -226,7 +226,7 @@ fn a_task_made_by_the_apps_action_is_found_by_the_repl_and_a_program() {
 }
 
 /// What a program's find of `words` answers over the Tasks record `bytes`, as an agent's program
-/// reads it: the record the door hands the task's host, read with the app's own package
+/// reads it: the record the API hands the task's host, read with the app's own package
 /// ([`tilolang_tilo::task_records::RecordReads`]).
 fn program_find(bytes: &[u8], words: &str) -> String {
     struct Held(Vec<u8>);
@@ -327,9 +327,9 @@ fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
 
 /// A task checked off in the Tasks app's window is the workspace's change: the window's write, on
 /// its route through the session's plane, reaches the workspace's record of the app, and the
-/// person's REPL at the session's door reads it there.
+/// person's REPL at the session's API reads it there.
 #[test]
-fn a_task_checked_in_the_apps_window_is_read_at_the_door() {
+fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     let _settled = ui::motion::testing::settled();
     let root = crate::common::private_home();
     let mut home = tilo_test_env::TestHome::new().expect("a home");

@@ -102,7 +102,7 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
     let tools = repl.opened(&mut session);
     assert!(
         tools.iter().any(|tool| tool == "tilo") && tools.iter().any(|tool| tool == "tilo_ls"),
-        "the REPL reaches the door's programs and its listing: {tools:?}"
+        "the REPL reaches the API's programs and its listing: {tools:?}"
     );
 
     // The apps, the session's own among them.
@@ -301,9 +301,9 @@ fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
 
-    // An agent of theirs, admitted on the sheet the door opens.
+    // An agent of theirs, admitted on the sheet the API opens.
     let mut agent = Repl::asking(&root.path().join("agent.sock"), false);
-    until(&mut session, "the door's question", |session| {
+    until(&mut session, "the API's question", |session| {
         session
             .portal()
             .and_then(tilo_sheets::portal::PortalState::dialog)

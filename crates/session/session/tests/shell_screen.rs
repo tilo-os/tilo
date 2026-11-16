@@ -149,10 +149,10 @@ fn the_shell_is_the_screen_and_its_layout_follows_the_published_actions() {
 }
 
 /// The overview, run as the touchpad's pinch, the overview's key and an agent run it (the chrome's
-/// published `overview` , through the door), is the shell's own on the shell's screen: its view
+/// published `overview` , through the API), is the shell's own on the shell's screen: its view
 /// stands in what the shell lays out, and the same action closes it again.
 #[test]
-fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
+fn the_overview_through_the_api_is_the_shells_own_on_its_screen() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
@@ -252,9 +252,9 @@ fn the_chromes_actions_show_the_shells_surfaces() {
 }
 
 /// The chrome's `switch-workspace` shows another workspace on the shell's screen: the one made,
-/// through the door, and back by a step; the windows' workspace changes under it.
+/// through the API, and back by a step; the windows' workspace changes under it.
 #[test]
-fn switching_workspace_through_the_door_shows_it_on_the_shell() {
+fn switching_workspace_through_the_api_shows_it_on_the_shell() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _) = session();
     until(&mut session, "the strips", |session| {
@@ -985,7 +985,7 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
 }
 
 /// The shell draws the workspace in front and no other. A shell holds every workspace the person is
-/// in — the one it starts from, and one joined through a door (the dev shell joins the community's
+/// in — the one it starts from, and one joined through an entry (the dev shell joins the community's
 /// Lounge), or one made here — and it shows one. Before this, the strips drew each workspace's rows
 /// one under the other, so a shell of two cut every window's room in half: the joined workspace's
 /// window stood in the lower half, and the empty workspace above it took the upper half for an
@@ -1014,7 +1014,7 @@ fn the_shell_draws_the_workspace_in_front_and_no_other_and_carries_no_strip_labe
         on_screen(session, &shown).is_some()
     });
 
-    // A second workspace, as joining one through a door leaves it: the shell holds two, and the one
+    // A second workspace, as joining one through an entry leaves it: the shell holds two, and the one
     // made stands in front, holding nothing.
     session
         .invoke(CHROME, "new-workspace", &Map::new())

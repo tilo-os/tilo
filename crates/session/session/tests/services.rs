@@ -1,5 +1,5 @@
 //! The headless session hosting its system services: their resources are published beside the
-//! desktop's, and their actions are invoked through the session's door by address, as quick
+//! desktop's, and their actions are invoked through the session's API by address, as quick
 //! settings, Settings, a script or an agent invokes them. The audio service is reached over the
 //! lines a `tilo-audio --serve` speaks.
 

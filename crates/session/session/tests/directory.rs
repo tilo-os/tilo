@@ -2,15 +2,15 @@
 //! reads that site's directory and lists the public workspaces it serves, who is in each one now
 //! and how many belong. The workspaces this computer holds open instead of joining, and a site that
 //! cannot be read says so without hiding them.
-//! Joining one enters through the door its listing names, as the person at this computer and by
-//! their own name, on the session this computer opens with the door's host: the workspace admitting
+//! Joining one enters through the entry its listing names, as the person at this computer and by
+//! their own name, on the session this computer opens with the entry's host: the workspace admitting
 //! it is what puts the workspace on the shell, one it holds from then on, open rather than to join,
-//! with everything the workspace held before this computer arrived. A door that refuses says why,
+//! with everything the workspace held before this computer arrived. An entry that refuses says why,
 //! where the person pressed, and leaves the workspace one to try again.
 //! A link or a code pasted into the sheet joins the same way: an invitation's text is redeemed
 //! where it names, and a workspace's link joins the workspace on the site it points at.
 //! A computer set up for a community (`community.toml`) is in it already: its session enters the
-//! community's own door as it starts, through the same join, and asks once more when the machine's
+//! community's own entry as it starts, through the same join, and asks once more when the machine's
 //! network comes back while the join is still waiting. What the person decided — joined, or joined
 //! and left — is theirs, and keeps every computer of theirs from joining it again on its own.
 
@@ -226,7 +226,7 @@ fn site() -> (Responder, Arc<Mutex<String>>) {
     (responder, page)
 }
 
-/// A site that lists `entries` and answers nothing else: a door is entered on a session with its
+/// A site that lists `entries` and answers nothing else: an entry is entered on a session with its
 /// host, never asked here.
 fn joining_site(entries: Vec<DirectoryEntry>) -> Responder {
     let page = page_of(entries);
@@ -245,7 +245,7 @@ fn joining_site(entries: Vec<DirectoryEntry>) -> Responder {
 }
 
 /// This computer's person: a device of theirs, certified for their own root key, kept in an
-/// identity root of the test's own. Returns the root's directory, and the key a door's invitation
+/// identity root of the test's own. Returns the root's directory, and the key an entry's invitation
 /// for them is bound to.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> (tempfile::TempDir, [u8; 32]) {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
@@ -528,7 +528,7 @@ fn a_computer_with_no_community_site_has_nothing_to_join() {
 }
 
 #[test]
-fn joining_a_listed_workspace_enters_through_its_door_and_lands_in_it() {
+fn joining_a_listed_workspace_enters_through_its_entry_and_lands_in_it() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let (_identity, _person) = this_computer(&mut env);
@@ -561,7 +561,7 @@ fn joining_a_listed_workspace_enters_through_its_door_and_lands_in_it() {
         joined.0,
         "and the person lands in it"
     );
-    // The door is entered on the session this computer opens with its host, never asked over HTTP:
+    // The entry is entered on the session this computer opens with its host, never asked over HTTP:
     // the site was asked for its entry and its directory, and nothing else.
     let asked: Vec<(String, String)> = responder
         .drain_requests()
@@ -584,13 +584,13 @@ fn joining_a_listed_workspace_enters_through_its_door_and_lands_in_it() {
 }
 
 #[test]
-fn a_door_that_refuses_says_why_where_the_person_now_is() {
+fn an_entry_that_refuses_says_why_where_the_person_now_is() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
-    // The site lists the lounge, but its host never made it public: its door lets nobody in.
-    let lounge = Lounge::start_with(person, "Coffee's on", LoungeDoor::Private);
+    // The site lists the lounge, but its host never made it public: its entry lets nobody in.
+    let lounge = Lounge::start_with(person, "Coffee's on", LoungeAdmission::Private);
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
@@ -598,9 +598,9 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
     open_directory(&mut session);
     look_up_site(&mut session, &lounge.entry);
     ask_to_join(&mut session, &lounge.workspace);
-    // The sheet leaves as soon as the join starts; the door's refusal, on this computer's session
+    // The sheet leaves as soon as the join starts; the entry's refusal, on this computer's session
     // with its host, reaches the person as a banner where they are now.
-    wait_until(&mut session, "the door answered", |session| {
+    wait_until(&mut session, "the entry answered", |session| {
         listing(session, "Lounge").action == ListingAction::TryAgain
     });
     let sheet = session
@@ -610,7 +610,7 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
     assert_eq!(
         shown.note.as_deref(),
         Some("Couldn't join Lounge: that workspace is not public"),
-        "the sheet's note says why it is not joined, in the door's own words"
+        "the sheet's note says why it is not joined, in the entry's own words"
     );
     let row = listing(&session, "Lounge");
     assert_eq!(
@@ -640,7 +640,7 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
-    let lounge = Lounge::start_with(person, "Coffee's on", LoungeDoor::InvitationOnly);
+    let lounge = Lounge::start_with(person, "Coffee's on", LoungeAdmission::InvitationOnly);
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's session");
     let mut session = collaborative_session(state.path());
@@ -653,11 +653,11 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
             .map(tilo_desktop_model::Workspace::id)
     });
     ask_to_join(&mut session, &lounge.workspace);
-    wait_until(&mut session, "the door answered", |session| {
+    wait_until(&mut session, "the entry answered", |session| {
         listing(session, "Lounge").action == ListingAction::TryAgain
     });
     // Choosing Join closed the sheet when the join started: the refusal reaches the person as a
-    // banner, in the door's own words.
+    // banner, in the entry's own words.
     wait_until(&mut session, "the refusal is said as a banner", |session| {
         said(session)
             .iter()
@@ -826,15 +826,15 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 }
 
 /// A site's workspace as a site runs it: a host on this machine governs the workspace, a page of
-/// the site's person recorded there before anyone joined this computer, and the site's entry and
-/// door stand in front of it.
+/// the site's person recorded there before anyone joined this computer, and the site's entry in
+/// front of it.
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<Link>,
     relay: Option<tilo_relay::daemon::Relay>,
-    _door: Responder,
-    /// The host's web listener, which serves the door's host (`/host`) a device asks before its
-    /// session enters through the door.
+    _entry: Responder,
+    /// The host's web listener, which serves the entry's host (`/host`) a device asks before its
+    /// session enters through the entry.
     _web: tilo_relay::web::WebHandle,
     runtime: tokio::runtime::Runtime,
     workspaces: tilo_relay::workspaces::Workspaces,
@@ -913,25 +913,25 @@ impl Drop for Lounge {
     }
 }
 
-/// Who the lounge's door lets in.
+/// Who the lounge admits.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LoungeDoor {
+enum LoungeAdmission {
     /// Anyone who asks, as an editor: the workspace is public.
     Public,
-    /// Only people invited: the workspace is listed, and its door takes people by invitation.
+    /// Only people invited: the workspace is listed, and takes people by invitation.
     InvitationOnly,
     /// Nobody: the site lists the workspace, but its host never made it public.
     Private,
 }
 
 impl Lounge {
-    /// The lounge's workspace, whose chat already holds `written` , and whose door lets anyone in.
+    /// The lounge's workspace, whose chat already holds `written` , and which admits anyone.
     fn start(person: [u8; 32], written: &str) -> Self {
-        Self::start_with(person, written, LoungeDoor::Public)
+        Self::start_with(person, written, LoungeAdmission::Public)
     }
 
-    /// [`Self::start`], with a door that lets in whom `door` says.
-    fn start_with(person: [u8; 32], written: &str, door: LoungeDoor) -> Self {
+    /// [`Self::start`], admitting whom `admission` says.
+    fn start_with(person: [u8; 32], written: &str, admission: LoungeAdmission) -> Self {
         // The lounge's host and page run in this test's process: what they did with a join is only
         // said in its log.
         crate::common::people::install_log();
@@ -943,11 +943,11 @@ impl Lounge {
             .expect("a runtime for the lounge's host");
         let host = LoungeHost::start(&runtime, state.path());
         let page = host.page(&runtime, written);
-        let (site, web, entry) = host.door(&runtime, state.path(), door);
+        let (site, web, entry) = host.serve_site(&runtime, state.path(), admission);
         Self {
             page: Some(page),
             relay: Some(host.relay),
-            _door: site,
+            _entry: site,
             _web: web,
             runtime,
             workspaces: host.workspaces,
@@ -1104,17 +1104,17 @@ impl LoungeHost {
     }
 
     /// The site as the world meets it: its entry and the directory of the workspaces it serves,
-    /// whose door is the host's own, served by its web listener (kept under `state` ), which a
-    /// device enters through on its session with the host. The door lets in whom `door` says.
+    /// whose entry is the host's own, served by its web listener (kept under `state` ), which a
+    /// device enters through on its session with the host. It admits whom `admission` says.
     /// Returns the site, the host's web listener, and the site's entry.
-    fn door(
+    fn serve_site(
         &self,
         runtime: &tokio::runtime::Runtime,
         state: &std::path::Path,
-        door: LoungeDoor,
+        admission: LoungeAdmission,
     ) -> (Responder, tilo_relay::web::WebHandle, String) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
-            if door != LoungeDoor::Private {
+            if admission != LoungeAdmission::Private {
                 self.workspaces
                     .publish(
                         &self.workspace,
@@ -1127,7 +1127,7 @@ impl LoungeHost {
                     .await
                     .expect("the lounge is public");
             }
-            if door == LoungeDoor::InvitationOnly {
+            if admission == LoungeAdmission::InvitationOnly {
                 self.workspaces
                     .list_invitation_only(&self.workspace, &self.host_cert, true)
                     .await
@@ -1151,7 +1151,7 @@ impl LoungeHost {
                 .await
                 .expect("the lounge's host serves its web")
         });
-        let host_door = format!(
+        let host_entry = format!(
             "{}{}/{}",
             web.plain_origin
                 .as_deref()
@@ -1166,7 +1166,7 @@ impl LoungeHost {
             name: "Lounge".to_owned(),
             description: "Where the site's people talk".to_owned(),
             default_role: Role::Editor,
-            entry: host_door.clone(),
+            entry: host_entry.clone(),
             here: Vec::new(),
             here_count: 0,
             members: 2,
@@ -1190,7 +1190,7 @@ impl LoungeHost {
                             "host": {
                                 "origin": served_origin.lock().expect("the site's origin").clone()
                             },
-                            "admission": host_door,
+                            "admission": host_entry,
                         },
                     })
                     .to_string(),
@@ -1803,7 +1803,7 @@ fn wait_until_their_pointer(
 /// Wait until the lounge's workspace and its people reached this computer,
 /// saying which of the two is still missing when they do not.
 fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
-    // The join is the site's door, the workspace's keys and its roster arriving from other
+    // The join is the site's entry, the workspace's keys and its roster arriving from other
     // runtimes, and the session gives a host its own patience to answer them: the wait spans that
     // patience and the suite's hang bound after it, so a host answering slowly is waited for rather
     // than called hung, and the session's note on a join that did not happen is what the test
@@ -1877,7 +1877,7 @@ fn the_lounge_writes_past_the_removal(session: &mut Session, lounge: &Lounge) {
     .expect("the chat's document");
     let before = after.get_heads();
     after
-        .put(automerge::ROOT, "text", "The door's shut")
+        .put(automerge::ROOT, "text", "The shop's shut")
         .expect("a chat line after the removal");
     after.commit();
     page.write(

@@ -1,5 +1,5 @@
 //! Settings shares the Wi-Fi passphrase this device learned with the person's other devices, and
-//! answers for a network they shared, over the action door a shipped app already speaks: the
+//! answers for a network they shared, over the action API a shipped app already speaks: the
 //! session answers it from its own device fabric, sealed to each of the person's devices.
 
 #![cfg(target_os = "linux")]

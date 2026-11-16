@@ -1,6 +1,6 @@
 //! The desktop services a headless session starts on a session bus of its
 //! own: an app's file chooser request, forwarded by the portal frontend,
-//! is published as the session's question and answered through its door.
+//! is published as the session's question and answered through its API.
 
 #![cfg(target_os = "linux")]
 #![allow(

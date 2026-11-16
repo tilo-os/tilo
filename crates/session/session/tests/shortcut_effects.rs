@@ -237,7 +237,7 @@ fn searching(session: &Session) -> bool {
     published(session, HOST_SEARCH)
 }
 
-/// Whether the shell's own search is open: it publishes it while it is, and the host search door
+/// Whether the shell's own search is open: it publishes it while it is, and the host search API
 /// (`tilo.host:search`) is published whenever the search app is there at all.
 fn search_open(session: &Session) -> bool {
     published(session, SEARCH_RESOURCE)

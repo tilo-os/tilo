@@ -30,7 +30,7 @@ fn ask_studio(session: &mut Session, action: &str, arguments: &serde_json::Value
         .unwrap_or_else(|error| panic!("{STUDIO} {action}: {error:?}"));
 }
 
-/// The studio's resource, as the session publishes it behind its door.
+/// The studio's resource, as the session publishes it behind its API.
 fn studio_resource(session: &Session) -> Option<ResourceSpec> {
     fn find(resources: &[ResourceSpec]) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {

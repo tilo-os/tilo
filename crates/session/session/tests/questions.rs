@@ -1027,10 +1027,10 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
     )
 }
 
-/// A program of this login at the door: it says who it is, and asks what the session has for it.
-/// What it read comes back, however far it got; `hold` keeps its state at the door until the test
+/// A program of this login at the session's socket: it says who it is, and asks what the session has for it.
+/// What it read comes back, however far it got; `hold` keeps the socket until the test
 /// lets it go.
-fn door_client(
+fn socket_client(
     socket: &std::path::Path,
     answers: &std::sync::mpsc::Sender<Vec<Value>>,
     hold: Option<std::sync::mpsc::Receiver<()>>,
@@ -1039,7 +1039,7 @@ fn door_client(
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("the client waits for the person");
-    let mut writer = stream.try_clone().expect("a second handle on the door");
+    let mut writer = stream.try_clone().expect("a second handle on the socket");
     let mut reader = BufReader::new(stream);
     let mut read = Vec::new();
     for ask in [
@@ -1078,8 +1078,8 @@ fn door_client(
     }
 }
 
-/// The answers the program at the door read, once the session let it through.
-fn door_answers(
+/// The answers the program at the socket read, once the session let it through.
+fn socket_answers(
     session: &mut Session,
     questions: &Questions,
     answers: &std::sync::mpsc::Receiver<Vec<Value>>,
@@ -1087,7 +1087,7 @@ fn door_answers(
     pump(session, |_| questions.pending().is_empty());
     answers
         .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the program at the door is served")
+        .expect("the program at the socket is served")
 }
 
 /// The agents the shell shows at the person's MCP server: the ones whose work the bar carries as a
@@ -1122,7 +1122,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
 
     let (answers, received) = std::sync::mpsc::channel();
     let (release, hold) = std::sync::mpsc::channel();
-    let client = std::thread::spawn(move || door_client(&socket, &answers, Some(hold)));
+    let client = std::thread::spawn(move || socket_client(&socket, &answers, Some(hold)));
 
     // Nothing the program sent past its introduction is read before the person says so: the
     // question stands on the portal's sheet.
@@ -1154,7 +1154,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
 
     press(&mut session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
-    let read = door_answers(&mut session, &questions, &received);
+    let read = socket_answers(&mut session, &questions, &received);
 
     assert!(
         read[0].pointer("/result/serverInfo").is_some(),
@@ -1202,11 +1202,11 @@ fn a_program_the_person_refuses_works_nowhere() {
     });
 
     let (answers, received) = std::sync::mpsc::channel();
-    let client = std::thread::spawn(move || door_client(&socket, &answers, None));
+    let client = std::thread::spawn(move || socket_client(&socket, &answers, None));
 
     pump(&mut session, |_| questions.pending().len() == 1);
     press(&mut session, PortalEffect::CANCEL.id, json!({}));
-    let read = door_answers(&mut session, &questions, &received);
+    let read = socket_answers(&mut session, &questions, &received);
     client.join().expect("the program's thread");
 
     assert_eq!(

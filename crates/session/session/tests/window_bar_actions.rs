@@ -120,7 +120,7 @@ fn place(session: &mut Session, resource: &str) -> String {
     place.to_string()
 }
 
-/// Whether the note `record` is pinned in its own app's record, read through the session's door
+/// Whether the note `record` is pinned in its own app's record, read through the session's API
 /// as the record service publishes it: the note's one flag field, whichever key the app keeps it
 /// under (the ids lock keeps that key stable across builds).
 fn note_pinned(session: &Session, record: &str) -> Option<bool> {
@@ -340,7 +340,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
     let drawn = crate::common::drawn_name(&session, &note);
 
     for preset in ["Frames", "Strips", "Desktop"] {
-        // The note's own flag, read before the menu opens: running anything through the door may
+        // The note's own flag, read before the menu opens: running anything through the API may
         // dismiss an open menu, so the record is read while the shell is at rest.
         let before = note_pinned(&session, &note).unwrap_or_else(|| {
             panic!(

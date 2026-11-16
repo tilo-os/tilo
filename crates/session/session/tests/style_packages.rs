@@ -85,7 +85,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
-    // A session whose MCP server a REPL reaches: the door is how the switch runs its own action
+    // A session whose MCP server a REPL reaches: the API is how the switch runs its own action
     // (`shell.show_style`), as a press in the bar's menu does.
     let root = crate::common::private_home();
     let program = std::env::current_exe().expect("this test's program");
@@ -105,7 +105,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
             .iter()
             .any(|label| label == "Showing Strips")
     });
-    // The door, connected before the build runs, so its state is up: the copy is switched to by
+    // The API, connected before the build runs, so its state is up: the copy is switched to by
     // the shell's own action, as a press in the bar's menu runs it.
     let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
@@ -251,7 +251,7 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
     );
 }
 
-/// The same commands through the REPL's door: a person (or their agent) typing at the
+/// The same commands through the REPL's API: a person (or their agent) typing at the
 /// session's MCP server runs "make it mine" and gets a style the switch offers, the very call
 /// the canvas chat's agent makes (`shell.md` §6, "Every step is an action in the broker's
 /// catalogue, so the REPL does the same").
@@ -260,7 +260,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
-    // The session whose door this REPL reaches, admitting it to act as the person.
+    // The session whose API this REPL reaches, admitting it to act as the person.
     let root = crate::common::private_home();
     let questions = tilo_service::Questions::new();
     let apps = crate::common::seeded_apps();
@@ -302,7 +302,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
             .iter()
             .any(|style| style.style == copy)
     });
-    // The REPL switches to it by the same door, and the shell draws the copy.
+    // The REPL switches to it by the same API, and the shell draws the copy.
     let (answer, failed) = repl.run(
         &mut session,
         &format!("shell.show_style(shell.viewing, style: \"{copy}\")"),
