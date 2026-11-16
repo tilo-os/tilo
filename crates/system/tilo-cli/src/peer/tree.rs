@@ -498,10 +498,10 @@ impl Sync {
     }
 }
 
-/// Whether the host's `answer` about the tree (the frames it sent of it, `None` while it owes
-/// one) says the workspace has none of it.
-fn holds_none(answer: Option<u32>) -> bool {
-    answer == Some(0)
+/// Whether the host's `answer` about the tree (`None` while it owes one) says the workspace has
+/// none of it.
+fn holds_none(answer: Option<tilo_relay_protocol::RecordAnswer>) -> bool {
+    answer == Some(tilo_relay_protocol::RecordAnswer::Sent { frames: 0 })
 }
 
 /// What a namespace has to send after `sent`.
@@ -578,9 +578,13 @@ mod tests {
         assert!(!super::holds_none(None));
         // It sent frames of the tree: the workspace holds one, though it may not read here
         // yet (a write still on its way), and a tree founded now would go out whole beside it.
-        assert!(!super::holds_none(Some(3)));
+        assert!(!super::holds_none(Some(
+            tilo_relay_protocol::RecordAnswer::Sent { frames: 3 }
+        )));
         // It sent none: the workspace has no tree, and this device's first change founds it.
-        assert!(super::holds_none(Some(0)));
+        assert!(super::holds_none(Some(
+            tilo_relay_protocol::RecordAnswer::Sent { frames: 0 }
+        )));
     }
 
     #[test]
