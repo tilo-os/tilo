@@ -11,7 +11,7 @@ pub const MAX_REMEMBERED: usize = 10_000;
 pub struct CommandHistory {
     /// Runs, oldest first. Only the sessions that ran them add them.
     #[model(readonly)]
-    pub runs: Collection<Remembered>,
+    pub remembered: Collection<Remembered>,
 }
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
@@ -76,7 +76,7 @@ impl CommandHistory {
     }
 
     pub fn matching<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a Remembered> {
-        self.runs
+        self.remembered
             .values()
             .rev()
             .filter(move |run| run.command.0.contains(text))
@@ -84,19 +84,19 @@ impl CommandHistory {
 
     fn keep(&mut self, cx: &mut ActionCx, ran: Ran) {
         if self
-            .runs
+            .remembered
             .values()
             .any(|remembered| remembered.run == ran.run)
         {
             return;
         }
-        while self.runs.len() >= MAX_REMEMBERED {
-            let Some(oldest) = self.runs.ids().next().cloned() else {
+        while self.remembered.len() >= MAX_REMEMBERED {
+            let Some(oldest) = self.remembered.ids().next().cloned() else {
                 break;
             };
-            self.runs.remove(&oldest);
+            self.remembered.remove(&oldest);
         }
-        self.runs.push(
+        self.remembered.push(
             cx.id(),
             Remembered {
                 command: Atom(ran.command),

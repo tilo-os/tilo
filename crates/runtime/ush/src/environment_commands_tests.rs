@@ -7,18 +7,18 @@
 
 use std::time::{Duration, Instant};
 
-use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
+use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::{ActionHost, ActionHostError, Caller, InvokeArgument, InvokeRequest};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
-use super::EnvironmentRuns;
+use super::EnvironmentCommands;
 use crate::workspace_shell::WorkspaceShells;
 
 const OPERATOR: [u8; 32] = [7; 32];
 
-fn member(dir: &std::path::Path) -> EnvironmentRuns {
+fn member(dir: &std::path::Path) -> EnvironmentCommands {
     let files = dir.join("replicas");
-    EnvironmentRuns::new(
+    EnvironmentCommands::new(
         WorkspaceShells::new(dir.join("shells"), None)
             .with_files(move |workspace| files.join(workspace)),
         OPERATOR,
@@ -37,7 +37,7 @@ fn host() -> Caller {
 }
 
 fn asking(command: &str) -> InvokeRequest {
-    let asked = RunCommand {
+    let asked = CommandRequest {
         session: "run:7".into(),
         command: command.into(),
         agent: true,
@@ -49,7 +49,7 @@ fn asking(command: &str) -> InvokeRequest {
     };
     InvokeRequest {
         invocation: InvocationId::new(),
-        target: environment_runs::target(),
+        target: environment_commands::target(),
         argument: InvokeArgument::Json(map),
         context: None,
         confirmation: None,
@@ -62,10 +62,10 @@ fn asking(command: &str) -> InvokeRequest {
 
 /// Follow `id` until it ends, keeping each live update's output.
 fn followed(
-    runs: &EnvironmentRuns,
+    runs: &EnvironmentCommands,
     caller: &Caller,
     id: InvocationId,
-) -> (CommandRan, Vec<RunOutput>) {
+) -> (CommandRan, Vec<CommandOutput>) {
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut live = Vec::new();
     loop {
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
             if let Some(state) = runs.observe(&host(), &id)
                 && let InvocationUpdate::Item { value, .. } = state.update
             {
-                let printed: RunOutput = serde_json::from_value(value).unwrap();
+                let printed: CommandOutput = serde_json::from_value(value).unwrap();
                 if printed.tail.contains("started") {
                     break;
                 }
@@ -208,9 +208,9 @@ fn what_a_command_prints_is_shown_while_it_runs() {
     );
 }
 
-fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> EnvironmentRuns {
+fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> EnvironmentCommands {
     let files = dir.join("replicas");
-    EnvironmentRuns::new(
+    EnvironmentCommands::new(
         WorkspaceShells::new(
             dir.join("shells"),
             Some(crate::hosted_vm::HostedTarget {
@@ -279,7 +279,7 @@ fn opening(material: &str) -> InvokeRequest {
 /// Follow an invocation of the member's browser work until it ends, and what
 /// it answered.
 fn opened(
-    runs: &EnvironmentRuns,
+    runs: &EnvironmentCommands,
     caller: &Caller,
     id: InvocationId,
 ) -> Option<tilo_actions::remote::browser::OpenedBrowser> {
@@ -396,7 +396,7 @@ fn deleting() -> InvokeRequest {
 
 /// Follow an invocation until it ends: what it answered, or the words it failed with.
 fn ended(
-    runs: &EnvironmentRuns,
+    runs: &EnvironmentCommands,
     caller: &Caller,
     id: InvocationId,
 ) -> Result<Option<serde_json::Value>, String> {
@@ -520,7 +520,7 @@ fn a_member_whose_environment_names_no_account_runs_programs_for_the_account_ask
     let files = dir.path().join("replicas");
     // As a VM host's member is started: its environment names the hosted-VM
     // service and no account, since the relay names one with each run.
-    let runs = EnvironmentRuns::new(
+    let runs = EnvironmentCommands::new(
         WorkspaceShells::new(dir.path().join("shells"), None)
             .with_files(move |workspace| files.join(workspace))
             .with_browsers_on(Some(socket)),
@@ -561,7 +561,7 @@ fn an_account_without_a_card_is_refused_before_anything_runs_in_its_vm() {
         })],
     );
     let files = dir.path().join("replicas");
-    let runs = EnvironmentRuns::new(
+    let runs = EnvironmentCommands::new(
         WorkspaceShells::new(dir.path().join("shells"), None)
             .with_files(move |workspace| files.join(workspace))
             .with_browsers_on(Some(socket)),

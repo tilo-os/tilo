@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
         let output = ui::tilo_resource::Bytes::kept_as(printed, &reference);
         let stored = output.to_json();
         session
-            .apply(Terminal::RECORD_RUN.with(Finished {
+            .apply(Terminal::RECORD_COMMAND.with(FinishedCommand {
                 command: "cargo test -p signup".to_owned(),
                 cwd: "/home/ada/signup".to_owned(),
                 started_ms: 1_000,
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
         session
             .apply(Terminal::paths().requests.settle(
                 &request,
-                &Settled::Done(RunAnswer {
+                &Settled::Done(CommandAnswer {
                     run: Some(request.clone()),
                     exit: Some(101),
                     refusal: None,

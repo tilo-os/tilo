@@ -51,8 +51,8 @@ mod content_link;
 mod content_put;
 pub mod crash_records;
 pub mod downloaded_apps;
+pub mod environment_commands;
 pub mod environment_machines;
-pub mod environment_runs;
 pub mod feedback;
 pub mod host_account;
 mod nodes;
@@ -74,7 +74,7 @@ mod wait;
 mod window_actions;
 mod within;
 pub mod workspace_activity;
-pub mod workspace_runs;
+pub mod workspace_invocations;
 
 pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
@@ -1021,7 +1021,7 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<CataloguePage, ActionHostError>,
     },
-    /// Run one action.
+    /// Invocation one action.
     Invoke(InvokeRequest),
     /// Answer to [`Self::Invoke`]; a refusal is [`ReceiptStatus::Rejected`].
     Receipt(InvocationReceipt),
@@ -2392,7 +2392,7 @@ mod tests {
         phase the_remote_wire_is_versioned_and_explicit;
         // Every message round-trips through a frame, frames from another version are refused not
         // misread, and the wire names versions and messages explicitly.
-        // Runs each phase below in order; every phase builds its own fixture.
+        // Invocations each phase below in order; every phase builds its own fixture.
         {
             every_message_round_trips_through_a_frame();
             frames_from_another_version_are_refused_not_misread();
@@ -2790,7 +2790,7 @@ mod tests {
         // A retried invocation reports the original and runs once; ids cannot be reused or borrowed;
         // refusals are not remembered; the ledger forgets the oldest past capacity; a reservation holds
         // the id until the start completes.
-        // Runs each phase below in order; every phase builds its own fixture.
+        // Invocations each phase below in order; every phase builds its own fixture.
         {
             a_retried_invocation_reports_the_original_and_runs_once();
             an_invocation_id_cannot_be_reused_or_borrowed();
@@ -2848,7 +2848,7 @@ mod tests {
         // Serve answers requests and ignores responses, typed arguments use the local invocation slot,
         // a remote device is the person its root names, and a refusal answers every request and nothing
         // else.
-        // Runs each phase below in order; every phase builds its own fixture.
+        // Invocations each phase below in order; every phase builds its own fixture.
         {
             serve_answers_requests_and_ignores_responses();
             typed_arguments_use_the_local_invocation_slot();

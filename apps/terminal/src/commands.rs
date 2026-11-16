@@ -1,4 +1,4 @@
-//! The command runs of a session, as its shell marks them (docs/app-model/ush.md, "Command runs").
+//! The commands a session ran, as its shell marks them (docs/app-model/ush.md, "Commands").
 
 use base64::Engine as _;
 
@@ -7,12 +7,12 @@ pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MARK_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Default)]
-pub struct RunQueue {
-    inner: std::rc::Rc<std::cell::RefCell<RunQueueState>>,
+pub struct CommandQueue {
+    inner: std::rc::Rc<std::cell::RefCell<CommandQueueState>>,
 }
 
 #[derive(Default)]
-struct RunQueueState {
+struct CommandQueueState {
     waiting: Vec<Asked>,
     pane: String,
 }
@@ -25,7 +25,7 @@ pub struct Asked {
     pub reply: ui::framework::EffectReply,
 }
 
-impl RunQueue {
+impl CommandQueue {
     pub fn ask(&self, asked: Asked) {
         self.inner.borrow_mut().waiting.push(asked);
     }
@@ -39,7 +39,7 @@ impl RunQueue {
     }
 
     #[must_use]
-    pub fn runs(&self, pane: &str) -> bool {
+    pub fn owns(&self, pane: &str) -> bool {
         let own = &self.inner.borrow().pane;
         !own.is_empty() && own == pane
     }
@@ -279,7 +279,7 @@ fn decode(value: &str) -> Option<String> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FinishedRun {
+pub struct FinishedCommand {
     pub command: String,
     pub cwd: String,
     pub number: Option<u64>,
@@ -292,7 +292,7 @@ pub struct FinishedRun {
     pub refusal: Option<Box<ui::tilo_actions::remote::host_account::Refusal>>,
 }
 
-impl FinishedRun {
+impl FinishedCommand {
     /// Keep `bytes` of its output, up to [`MAX_OUTPUT_BYTES`].
     fn keep(&mut self, bytes: &[u8]) {
         let room = MAX_OUTPUT_BYTES.saturating_sub(self.output.len());
@@ -305,14 +305,14 @@ impl FinishedRun {
 }
 
 #[derive(Debug, Default)]
-pub struct Runs {
-    open: Option<FinishedRun>,
-    jobs: std::collections::BTreeMap<u64, FinishedRun>,
+pub struct Commands {
+    open: Option<FinishedCommand>,
+    jobs: std::collections::BTreeMap<u64, FinishedCommand>,
     job_output: Option<u64>,
 }
 
-impl Runs {
-    pub fn follow(&mut self, piece: &Piece, now_ms: i64) -> Option<FinishedRun> {
+impl Commands {
+    pub fn follow(&mut self, piece: &Piece, now_ms: i64) -> Option<FinishedCommand> {
         match piece {
             Piece::Output(bytes) => {
                 let run = match self.job_output {
@@ -332,7 +332,7 @@ impl Runs {
             }) => {
                 self.jobs.insert(
                     *number,
-                    FinishedRun {
+                    FinishedCommand {
                         command: command.clone(),
                         cwd: cwd.clone(),
                         number: Some(*number),
@@ -365,7 +365,7 @@ impl Runs {
                 None
             }
             Piece::Mark(Mark::Started { command, cwd, .. }) => {
-                self.open = Some(FinishedRun {
+                self.open = Some(FinishedCommand {
                     command: command.clone(),
                     cwd: cwd.clone(),
                     number: None,
@@ -416,7 +416,7 @@ mod tests {
             );
             for split in [1, 2, 7, stream.len()] {
                 let mut marks = Marks::new(key);
-                let mut runs = Runs::default();
+                let mut commands = Commands::default();
                 let mut finished = Vec::new();
                 let mut shown = Vec::new();
                 for chunk in stream.as_bytes().chunks(split) {
@@ -424,7 +424,7 @@ mod tests {
                         if let Piece::Output(bytes) = &piece {
                             shown.extend_from_slice(bytes);
                         }
-                        finished.extend(runs.follow(&piece, 7));
+                        finished.extend(commands.follow(&piece, 7));
                     }
                 }
                 let [run] = finished.as_slice() else {
@@ -450,8 +450,8 @@ mod tests {
 
         phase output_past_the_limit_is_cut_and_says_so;
         {
-            let mut runs = Runs::default();
-            runs.follow(
+            let mut commands = Commands::default();
+            commands.follow(
                 &Piece::Mark(Mark::Started {
                     command: "yes".into(),
                     cwd: String::new(),
@@ -459,8 +459,8 @@ mod tests {
                 }),
                 1,
             );
-            runs.follow(&Piece::Output(vec![b'y'; MAX_OUTPUT_BYTES + 10]), 2);
-            let run = runs
+            commands.follow(&Piece::Output(vec![b'y'; MAX_OUTPUT_BYTES + 10]), 2);
+            let run = commands
                 .follow(
                     &Piece::Mark(Mark::Ended {
                         status: 130,

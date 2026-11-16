@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
-use tilo_actions::remote::environment_runs::RunOutput;
+use tilo_actions::remote::environment_commands::CommandOutput;
 use tilo_actions::remote::host_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
@@ -72,7 +72,7 @@ pub struct Payer {
 
 /// What a caller is shown of a command while it runs: everything it printed
 /// so far, each time that grew.
-pub type Seen<'a> = &'a (dyn Fn(&RunOutput) + Sync);
+pub type Seen<'a> = &'a (dyn Fn(&CommandOutput) + Sync);
 
 /// Whether the caller asked the command to stop: a person's Ctrl+C, or an
 /// agent's cancel. Looked at between the command's own steps, so a loop, a
@@ -385,7 +385,7 @@ impl Session {
                         if now.len() != shown {
                             shown = now.len();
                             shown_at = std::time::Instant::now();
-                            seen(&RunOutput::of(&now));
+                            seen(&CommandOutput::of(&now));
                         }
                     }
                 }

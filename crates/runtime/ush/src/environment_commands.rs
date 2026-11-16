@@ -1,8 +1,8 @@
 //! A member device that takes its workspaces' work: their shell commands
-//! ([`tilo_actions::remote::environment_runs`]) and their Browser
+//! ([`tilo_actions::remote::environment_commands`]) and their Browser
 //! ([`tilo_actions::remote::browser`]), in their VMs on the hosted-VM service.
 //!
-//! [`EnvironmentRuns`] admits a [`RUN`](environment_runs::RUN) from the workspace's
+//! [`EnvironmentCommands`] admits a [`RUN`](environment_commands::RUN) from the workspace's
 //! host, runs the command line in the session's shell over the member's own copy of the
 //! workspace's files ([`WorkspaceShells`]), streams what it prints, and answers how it
 //! went. The host can stop a run it started, which ends the command as Ctrl+C does
@@ -15,8 +15,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use tilo_actions::remote::browser::{self, OpenBrowser};
+use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
-use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
@@ -40,7 +40,7 @@ const MACHINE_PATIENCE: Duration = Duration::from_secs(300);
 /// How often a branch waiting for room to wake its source asks again.
 const MACHINE_RETRY: Duration = Duration::from_secs(2);
 
-pub struct EnvironmentRuns(Arc<Inner>);
+pub struct EnvironmentCommands(Arc<Inner>);
 
 struct Inner {
     shells: WorkspaceShells,
@@ -67,7 +67,7 @@ impl Run {
     }
 }
 
-impl EnvironmentRuns {
+impl EnvironmentCommands {
     #[must_use]
     pub fn new(shells: WorkspaceShells, operator: [u8; 32]) -> Self {
         let size = shells.hosted_size();
@@ -91,7 +91,7 @@ fn not_served() -> ActionHostError {
     }
 }
 
-fn argument(request: &InvokeRequest) -> Result<RunCommand, ActionHostError> {
+fn argument(request: &InvokeRequest) -> Result<CommandRequest, ActionHostError> {
     let InvokeArgument::Json(map) = &request.argument else {
         return Err(ActionHostError::InvalidRequest {
             reason: "a run takes its command as JSON".into(),
@@ -232,12 +232,12 @@ impl Inner {
         });
     }
 
-    fn start(self: &Arc<Self>, run: Run, workspace: String, asked: RunCommand) {
+    fn start(self: &Arc<Self>, run: Run, workspace: String, asked: CommandRequest) {
         let inner = Arc::clone(self);
         let invocation = run.state().invocation();
         std::thread::spawn(move || {
             let sequence = std::sync::atomic::AtomicU64::new(0);
-            let seen = |printed: &RunOutput| {
+            let seen = |printed: &CommandOutput| {
                 let value = serde_json::to_value(printed).unwrap_or_default();
                 let sequence = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 inner.set(
@@ -400,7 +400,7 @@ fn ran_of(ran: ShellRun) -> CommandRan {
     }
 }
 
-impl ActionHost for EnvironmentRuns {
+impl ActionHost for EnvironmentCommands {
     fn query(
         &self,
         _caller: &Caller,
@@ -456,15 +456,15 @@ impl ActionHost for EnvironmentRuns {
     }
 }
 
-impl EnvironmentRuns {
+impl EnvironmentCommands {
     fn admit(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let target = &request.target;
-        if target.provider != environment_runs::PROVIDER
-            || target.address.resource != environment_runs::RESOURCE
+        if target.provider != environment_commands::PROVIDER
+            || target.address.resource != environment_commands::RESOURCE
         {
             return Err(not_served());
         }
@@ -494,7 +494,7 @@ impl EnvironmentRuns {
             .ok_or(ActionHostError::NotPermitted)?
             .to_owned();
         let asked = match action {
-            environment_runs::RUN => Asked::Run(argument(request)?),
+            environment_commands::RUN => Asked::Command(argument(request)?),
             browser::OPEN => Asked::Browser(Some(open_argument(request, "Browser")?)),
             browser::STOP => Asked::Browser(None),
             linux_apps::OPEN => Asked::App(Some(open_argument(request, "a Linux app")?)),
@@ -522,7 +522,7 @@ impl EnvironmentRuns {
                 drop(ledger);
                 let receipt = run.state().receipt();
                 match asked {
-                    Asked::Run(asked) => self.0.start(run, workspace, asked),
+                    Asked::Command(asked) => self.0.start(run, workspace, asked),
                     Asked::Browser(asked) => {
                         let browsers = browsers.cloned();
                         self.0.start_browser(run, workspace, asked, browsers);
@@ -540,7 +540,7 @@ impl EnvironmentRuns {
 }
 
 enum Asked {
-    Run(RunCommand),
+    Command(CommandRequest),
     Browser(Option<OpenBrowser>),
     App(Option<OpenApp>),
     /// A branch of the workspace's machine from another's, or its deletion.
@@ -577,5 +577,5 @@ fn open_argument<T: serde::de::DeserializeOwned>(
 }
 
 #[cfg(test)]
-#[path = "environment_runs_tests.rs"]
+#[path = "environment_commands_tests.rs"]
 mod tests;

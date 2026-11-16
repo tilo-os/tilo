@@ -20,8 +20,8 @@
 //!   changed no record (one refused, one still waiting) is known from them
 //!   alone, and only until the host restarts or lets go of it.
 //!
-//! [`target`] asks for one page ([`RunsQuery`]); the host answers it at once,
-//! running nothing, with [`Runs`].
+//! [`target`] asks for one page ([`InvocationsQuery`]); the host answers it at once,
+//! running nothing, with [`Invocations`].
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +29,7 @@ use super::RemoteActionTarget;
 use crate::api::ActionAddress;
 
 /// The provider a host answers its workspace's runs under.
-pub const PROVIDER: &str = "tilo.runs";
+pub const PROVIDER: &str = "tilo.invocations";
 /// The resource the listing is an action of: the workspace.
 pub const RESOURCE: &str = "workspace";
 /// List the workspace's runs, newest first.
@@ -60,17 +60,17 @@ pub fn is_listing(target: &RemoteActionTarget) -> bool {
 /// One page of a workspace's runs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct RunsQuery {
+pub struct InvocationsQuery {
     /// The newest this many after `cursor`; `0` for [`PAGE`], never more
     /// than [`MOST`].
     pub limit: usize,
-    /// Where the page before ended ([`Runs::next_cursor`]); none for the
+    /// Where the page before ended ([`Invocations::next_cursor`]); none for the
     /// newest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
 
-impl RunsQuery {
+impl InvocationsQuery {
     /// How many runs the page holds.
     #[must_use]
     pub fn page(&self) -> usize {
@@ -85,7 +85,7 @@ impl RunsQuery {
 /// Who ran a run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunBy {
+pub struct InvocationBy {
     /// The name it goes by: a key's, as the person named it, an agent's, or
     /// a person's.
     pub name: String,
@@ -97,7 +97,7 @@ pub struct RunBy {
 /// How a run stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunStatus {
+pub enum InvocationStatus {
     /// It asked the person, and waits for their answer.
     Waiting,
     /// Admitted, and not ended yet.
@@ -116,7 +116,7 @@ pub enum RunStatus {
 /// A record a run changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunRecord {
+pub struct InvocationChange {
     /// The app, as a path names it (`word-processor`).
     pub app: String,
     /// The app's id (`so.tilo.word-processor`).
@@ -129,7 +129,7 @@ pub struct RunRecord {
 /// One run of a workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Run {
+pub struct Invocation {
     /// What reading, stopping and taking it back name it by: the invocation
     /// id of its newest call (taking back one call of a run takes back the
     /// whole run). `None` for a run known only from the records, whose calls
@@ -143,11 +143,11 @@ pub struct Run {
     /// what tells it apart there, and here across the host's restarts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
-    pub by: RunBy,
+    pub by: InvocationBy,
     /// What its client called it, when it named it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    pub status: RunStatus,
+    pub status: InvocationStatus,
     /// Why it failed, typed (`confirmation_required`, ...), never the
     /// failure's words, which may hold what it was given.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,7 +173,7 @@ pub struct Run {
     pub undone: usize,
     /// The records it changed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub records: Vec<RunRecord>,
+    pub records: Vec<InvocationChange>,
     /// Its edits still stand and nobody's edit stands on them: taking it back
     /// would take back exactly its own.
     pub undoable: bool,
@@ -189,16 +189,16 @@ pub struct Run {
 /// A page of a workspace's runs, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Runs {
-    pub runs: Vec<Run>,
-    /// Runs the workspace holds, of which [`Self::runs`] is a page.
+pub struct Invocations {
+    pub items: Vec<Invocation>,
+    /// Invocations the workspace holds, of which [`Self::runs`] is a page.
     pub total: usize,
     /// Of those, the runs waiting for the person.
     pub waiting: usize,
     /// Some record could not be read yet: runs that changed only it are
     /// missing until it can.
     pub pending: bool,
-    /// Passed back as [`RunsQuery::cursor`] for the next page; `None` on the
+    /// Passed back as [`InvocationsQuery::cursor`] for the next page; `None` on the
     /// last.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -210,9 +210,9 @@ mod tests {
 
     #[test]
     fn a_page_is_bounded_and_the_listing_named_by_its_target() {
-        assert_eq!(RunsQuery::default().page(), PAGE);
+        assert_eq!(InvocationsQuery::default().page(), PAGE);
         assert_eq!(
-            RunsQuery {
+            InvocationsQuery {
                 limit: 3,
                 cursor: None
             }
@@ -220,7 +220,7 @@ mod tests {
             3
         );
         assert_eq!(
-            RunsQuery {
+            InvocationsQuery {
                 limit: 10_000,
                 cursor: None
             }
@@ -231,9 +231,9 @@ mod tests {
         let mut other = target();
         other.address.action = "undo".into();
         assert!(!is_listing(&other));
-        let answer = serde_json::to_value(Run {
-            status: RunStatus::Waiting,
-            ..Run::default()
+        let answer = serde_json::to_value(Invocation {
+            status: InvocationStatus::Waiting,
+            ..Invocation::default()
         })
         .unwrap();
         assert_eq!(answer["status"], "waiting");

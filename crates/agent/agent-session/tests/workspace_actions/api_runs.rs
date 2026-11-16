@@ -1,6 +1,6 @@
 //! A workspace's runs, listed through the API on the relay as tilo.sh
 //! hosts it (`GET /v1/workspaces/{workspace}/runs`, `tilo_read
-//! workspace/runs` over MCP): two keys made for the workspace and the
+//! workspace/invocations` over MCP): two keys made for the workspace and the
 //! person's own key each run something there, and each of those keys, which
 //! all may read every record there, reads all three, newest first, each with who ran it and how it
 //! ended. A command waiting for the person reads as waiting until they allow
@@ -75,7 +75,7 @@ async fn write_letter(key: &Key<'_>, workspace: &str, text: &str, title: &str) -
 }
 
 /// The page of `workspace`'s runs `query` asks for, as `key` reads it.
-async fn runs(key: &Key<'_>, workspace: &str, query: &str) -> Value {
+async fn invocations(key: &Key<'_>, workspace: &str, query: &str) -> Value {
     let (status, listed) = key
         .get(&format!("/v1/workspaces/{workspace}/runs{query}"))
         .await;
@@ -85,7 +85,7 @@ async fn runs(key: &Key<'_>, workspace: &str, query: &str) -> Value {
 
 /// The run titled `title` in `listed`.
 fn titled<'a>(listed: &'a Value, title: &str) -> &'a Value {
-    listed["runs"]
+    listed["items"]
         .as_array()
         .into_iter()
         .flatten()
@@ -95,7 +95,7 @@ fn titled<'a>(listed: &'a Value, title: &str) -> &'a Value {
 
 /// The run named `id` in `listed`.
 fn with_id<'a>(listed: &'a Value, id: &str) -> &'a Value {
-    listed["runs"]
+    listed["items"]
         .as_array()
         .into_iter()
         .flatten()
@@ -149,8 +149,8 @@ async fn every_run_listed() {
     // Each key, reading every record there, lists all three, newest first,
     // each with who ran it and how it ended.
     for reader in [&agent, &reviewer, &person] {
-        let listed = runs(reader, &ws, "").await;
-        let order: Vec<&str> = listed["runs"]
+        let listed = invocations(reader, &ws, "").await;
+        let order: Vec<&str> = listed["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -187,13 +187,13 @@ async fn every_run_listed() {
         }
         assert_eq!(
             listed["total"].as_u64().unwrap() as usize,
-            listed["runs"].as_array().unwrap().len(),
+            listed["items"].as_array().unwrap().len(),
             "the first page holds every run: {listed}"
         );
         assert!(listed["text"].as_str().unwrap().contains("Agent's letter"));
     }
     // The agent's letter stands under the others' lines: it says so.
-    let listed = runs(&agent, &ws, "").await;
+    let listed = invocations(&agent, &ws, "").await;
     let first = titled(&listed, "Agent's letter");
     assert_eq!(first["undoable"], false, "{first}");
     assert!(
@@ -227,7 +227,7 @@ async fn every_run_listed() {
     let (status, ran) = beside(&mut page, agent.run(&ws, "echo listed-while-waiting")).await;
     let command = waiting(status, &ran).unwrap_or_else(|| panic!("asked: {status} {ran}"));
     asked(&mut page, &ada_at_page, 1).await;
-    let listed = beside(&mut page, runs(&reviewer, &ws, "")).await;
+    let listed = beside(&mut page, invocations(&reviewer, &ws, "")).await;
     let waits = with_id(&listed, &command);
     assert_eq!(waits["status"], "waiting", "{waits}");
     assert!(
@@ -242,7 +242,7 @@ async fn every_run_listed() {
     ada_at_page.answer(ConfirmationAnswer::AllowOnce);
     let (status, followed) = beside(&mut page, agent.follow(&ws, &command)).await;
     assert_eq!(status, 200, "{followed}");
-    let listed = beside(&mut page, runs(&reviewer, &ws, "")).await;
+    let listed = beside(&mut page, invocations(&reviewer, &ws, "")).await;
     let ended = with_id(&listed, &command);
     assert_eq!(ended["status"], "ended", "{ended}");
     assert!(ended["ended_ms"].is_i64(), "{ended}");
@@ -269,7 +269,7 @@ async fn every_run_listed() {
         )
         .await;
     assert_eq!(status, 200, "{undone}");
-    let listed = runs(&agent, &ws, "").await;
+    let listed = invocations(&agent, &ws, "").await;
     let taken = titled(&listed, "Backend's postscript");
     assert_eq!(taken["status"], "undone", "{taken}");
     assert_eq!(taken["undone"], taken["changes"], "{taken}");
@@ -282,14 +282,14 @@ async fn every_run_listed() {
         total >= 5,
         "three letters, the command and the undo: {listed}"
     );
-    let first = runs(&agent, &ws, "?limit=2").await;
-    assert_eq!(first["runs"].as_array().unwrap().len(), 2, "{first}");
+    let first = invocations(&agent, &ws, "?limit=2").await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 2, "{first}");
     assert_eq!(first["total"], total, "{first}");
     let cursor = first["next_cursor"].as_str().unwrap();
-    let second = runs(&agent, &ws, &format!("?limit=2&cursor={cursor}")).await;
-    assert_eq!(second["runs"].as_array().unwrap().len(), 2, "{second}");
+    let second = invocations(&agent, &ws, &format!("?limit=2&cursor={cursor}")).await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 2, "{second}");
     let seen = |page: &Value| -> Vec<Value> {
-        page["runs"]
+        page["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -301,7 +301,7 @@ async fn every_run_listed() {
         first_seen.last().unwrap().as_i64() >= second_seen.first().unwrap().as_i64(),
         "the second page reads on, older: {first} {second}"
     );
-    assert_eq!(listed["runs"][2], second["runs"][0], "{listed} {second}");
+    assert_eq!(listed["items"][2], second["items"][0], "{listed} {second}");
     let (status, refused) = agent
         .get(&format!("/v1/workspaces/{ws}/runs?limit=many"))
         .await;
@@ -351,12 +351,12 @@ async fn every_run_listed() {
         initialized["result"]["instructions"]
             .as_str()
             .unwrap()
-            .contains("tilo_read workspace/runs"),
+            .contains("tilo_read workspace/invocations"),
         "{initialized}"
     );
     let (status, read) = mcp
         .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                     "params": {"name": "tilo_read", "arguments": {"path": "workspace/runs"},
+                     "params": {"name": "tilo_read", "arguments": {"path": "workspace/invocations"},
                                 "_meta": {"so.tilo.mcp": {"structured": true}}}}))
         .await;
     assert_eq!(status, 200, "{read}");
@@ -379,7 +379,7 @@ async fn every_run_listed() {
         api: &on_relay.api,
         token: Box::pin(approved_key(&on_relay, &ada, &page, "Visa backend")).await,
     };
-    let listed = runs(&person, &ws, "").await;
+    let listed = invocations(&person, &ws, "").await;
     for (title, step) in &steps {
         let run = titled(&listed, title);
         assert!(step.is_string(), "{title} had a step");
@@ -394,7 +394,7 @@ async fn every_run_listed() {
     assert_eq!(titled(&listed, "Backend's postscript")["status"], "undone");
     assert_eq!(titled(&listed, "Agent's letter")["status"], "ended");
     assert!(
-        listed["runs"]
+        listed["items"]
             .as_array()
             .unwrap()
             .iter()

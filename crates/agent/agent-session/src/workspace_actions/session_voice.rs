@@ -13,7 +13,7 @@
 //! agents its person admitted at its own API ([`Board::speak_for`]): one
 //! member per run, its face said when it changes and again at the keep-alive,
 //! taken down when the run's session ends. The host says it outside the live
-//! plane ([`Cmd::SayForRun`](tilo_session_client::Cmd::SayForRun)), signed with
+//! plane ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
 //! its own device key: it is no member of the plane, holds none of its keys,
 //! and needs none to speak for its runs. Only the runs' words leave.
 
@@ -53,23 +53,23 @@ struct Voice {
 
 /// The runs the host speaks for in one workspace, and the board that holds
 /// them: one member per run, as a device's agents at its own API are.
-pub(super) struct Runs {
+pub(super) struct Sessions {
     /// The workspace and the device speaking for its runs.
     id: WorkspaceId,
     publisher: Device,
     /// The workspace's presence, while this host has a run to speak for there.
     board: Option<Board>,
-    by_run: HashMap<String, Voice>,
+    by_session: HashMap<String, Voice>,
 }
 
-impl Runs {
+impl Sessions {
     /// The runs of the host whose device is `publisher`, in `workspace`.
     pub(super) fn new(workspace: WorkspaceId, publisher: Device) -> Self {
         Self {
             id: workspace,
             publisher,
             board: None,
-            by_run: HashMap::new(),
+            by_session: HashMap::new(),
         }
     }
 
@@ -131,7 +131,7 @@ impl Runs {
             on_behalf: Some(&run.id),
         };
         if let Some(frame) = narration::frame(&event, narrated, tilo_clock::unix_now_ms()) {
-            let _ = peer.send(Cmd::SayForRun(
+            let _ = peer.send(Cmd::SayForSession(
                 self.id,
                 HostWords::Narration {
                     record,
@@ -184,7 +184,7 @@ impl Runs {
         // A run is its session's: every run has the execution its session was
         // minted, which closes with it.
         let lease = caller.execution_lease()?;
-        let voice = self.by_run.entry(run.id).or_insert_with(|| Voice {
+        let voice = self.by_session.entry(run.id).or_insert_with(|| Voice {
             label: run.label,
             activity: None,
             focus: None,
@@ -206,7 +206,7 @@ impl Runs {
     /// ended.
     pub(super) fn tick(&mut self, peer: &Link, now_ms: f64) {
         // A run whose session ended leaves with it.
-        self.by_run.retain(|_, voice| voice.lease.is_live());
+        self.by_session.retain(|_, voice| voice.lease.is_live());
         let faces = self.faces();
         let Some(mut board) = self.board.take() else {
             return;
@@ -224,7 +224,7 @@ impl Runs {
             // A board says its device's own word too, and this host is no
             // member here: only the runs' words leave.
             if frame.on_behalf.is_some() {
-                let _ = peer.send(Cmd::SayForRun(self.id, HostWords::Presence(frame)));
+                let _ = peer.send(Cmd::SayForSession(self.id, HostWords::Presence(frame)));
             }
         }
         if !left {
@@ -236,7 +236,7 @@ impl Runs {
     /// where, in its own colour. When a face is said, and its sequence, are the
     /// board's.
     fn faces(&self) -> Vec<(String, ShellPresence)> {
-        self.by_run
+        self.by_session
             .iter()
             .map(|(run, voice)| {
                 // The colour the run is known by, never its display name's: one agent is one colour
@@ -273,7 +273,7 @@ pub(super) fn next_due(workspaces: &HashMap<WorkspaceId, super::Workspace>) -> O
     let now = now_ms();
     let said = workspaces
         .values()
-        .filter_map(|workspace| workspace.runs.board.as_ref()?.next_due(now))
+        .filter_map(|workspace| workspace.sessions.board.as_ref()?.next_due(now))
         .reduce(f64::min)
         .and_then(|due| {
             let wait = Duration::from_secs_f64((due - now).max(0.0) / 1_000.0);
@@ -281,7 +281,7 @@ pub(super) fn next_due(workspaces: &HashMap<WorkspaceId, super::Workspace>) -> O
         });
     let ending = workspaces
         .values()
-        .any(|workspace| !workspace.runs.by_run.is_empty())
+        .any(|workspace| !workspace.sessions.by_session.is_empty())
         .then(|| Instant::now().checked_add(ENDED_WITHIN))
         .flatten();
     said.into_iter().chain(ending).min()
@@ -309,7 +309,7 @@ impl super::Worker {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
         };
-        workspace.runs.acting(
+        workspace.sessions.acting(
             (&workspace.peer, &cluster),
             caller,
             (request.invocation, &request.target, Some(&args)),
@@ -323,7 +323,9 @@ impl super::Worker {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
         };
-        workspace.runs.arrived((&workspace.peer, &cluster), caller);
+        workspace
+            .sessions
+            .arrived((&workspace.peer, &cluster), caller);
     }
 
     /// Say `caller`'s run reading the catalogue `query` asks ([`run_voice`]).
@@ -349,7 +351,7 @@ impl super::Worker {
         } else {
             ui::step::lines::looking(app)
         };
-        workspace.runs.saying(
+        workspace.sessions.saying(
             (&workspace.peer, &cluster),
             caller,
             line,

@@ -14,7 +14,8 @@ use super::*;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tilo_actions::remote::{
-    Caller, Completer, ConfirmationQuestion, ConfirmationReply, Pending, pending, workspace_runs,
+    Caller, Completer, ConfirmationQuestion, ConfirmationReply, Pending, pending,
+    workspace_invocations,
 };
 use tilo_agent_session::workspace_actions::{HostDevice, ViewReadPolicy, WorkspaceRecordsLink};
 use tilo_relay_protocol::WorkspaceId;
@@ -167,12 +168,17 @@ fn receipt(
 }
 
 /// Every run of the workspace `caller` is listed.
+<<<<<<<< HEAD:crates/agent/agent-session/tests/workspace_actions/runs_read.rs
 fn runs(
     actions: &tilo_agent_session::WorkspaceActions,
+========
+fn invocations(
+    actions: &tilo_agent_participant::WorkspaceActions,
+>>>>>>>> 125c08298a6 (refactor(collab): call one shortcut execution an invocation and a terminal run a command):crates/agent/agent-session/tests/workspace_actions/invocations_read.rs
     workspace: WorkspaceId,
     caller: &Caller,
 ) -> serde_json::Value {
-    let listing = workspace_runs::target();
+    let listing = workspace_invocations::target();
     let status = receipt(
         actions,
         workspace,
@@ -180,7 +186,7 @@ fn runs(
         &request(
             &listing.provider,
             listing.address,
-            json(serde_json::json!({"limit": workspace_runs::MOST})),
+            json(serde_json::json!({"limit": workspace_invocations::MOST})),
         ),
     );
     let ReceiptStatus::Completed { output } = status else {
@@ -193,7 +199,7 @@ fn runs(
 /// one of it.
 fn in_app<'a>(listed: &'a serde_json::Value, app: &str) -> Vec<&'a serde_json::Value> {
     let asked = format!("{}#", app.rsplit('.').next().unwrap());
-    listed["runs"]
+    listed["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -221,7 +227,7 @@ fn names(listed: &serde_json::Value, app: &str, words: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
+async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -308,7 +314,7 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
     // Reading every record, they list both runs, whole.
     let deadline = tilo_test_env::hang_deadline();
     let whole = loop {
-        let listed = runs(&actions, workspace, &member);
+        let listed = invocations(&actions, workspace, &member);
         let text = listed.to_string();
         if [TASKS, NOTES]
             .iter()
@@ -327,7 +333,7 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
     // Their Read on the tasks is gone: the next listing says nothing of the
     // runs there, and counts only what is left.
     reading.unreadable.lock().unwrap().insert(TASKS.to_owned());
-    let without = runs(&actions, workspace, &member);
+    let without = invocations(&actions, workspace, &member);
     assert!(
         !names(&without, TASKS, "secret plan"),
         "nothing of the tasks is said: {without}"
@@ -343,11 +349,11 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         "the total counts only what they may read: {whole} {without}"
     );
     assert_eq!(
-        without["runs"].as_array().unwrap().len() as u64,
+        without["items"].as_array().unwrap().len() as u64,
         without["total"].as_u64().unwrap()
     );
     // The host's own person lists them whole.
-    let by_owner = runs(&actions, workspace, &owner);
+    let by_owner = invocations(&actions, workspace, &owner);
     assert_eq!(
         in_app(&by_owner, TASKS).len() as u64,
         in_tasks,
@@ -367,10 +373,10 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         ),
     );
     assert_eq!(removal, ReceiptStatus::Accepted, "it waits for the person");
-    let asking = runs(&actions, workspace, &member);
+    let asking = invocations(&actions, workspace, &member);
     assert_eq!(asking["waiting"], 1, "{asking}");
     reading.unreadable.lock().unwrap().insert(EBOOK.to_owned());
-    let hidden = runs(&actions, workspace, &member);
+    let hidden = invocations(&actions, workspace, &member);
     assert_eq!(hidden["waiting"], 0, "{hidden}");
     assert!(
         !names(&hidden, EBOOK, "remove-from-library"),
@@ -381,15 +387,15 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         asking["total"].as_u64().unwrap().saturating_sub(1),
         "{asking} {hidden}"
     );
-    assert_eq!(runs(&actions, workspace, &owner)["waiting"], 1);
+    assert_eq!(invocations(&actions, workspace, &owner)["waiting"], 1);
 
     // The record's policy admits them to the notes, while a grant of their
     // own takes Read there: what a read decides, the listing decides too.
-    let before = runs(&actions, workspace, &member);
+    let before = invocations(&actions, workspace, &member);
     let in_notes = in_app(&before, NOTES).len() as u64;
     assert!(in_notes > 0, "{before}");
     reading.bound.lock().unwrap().insert(NOTES.to_owned());
-    let bound = runs(&actions, workspace, &member);
+    let bound = invocations(&actions, workspace, &member);
     assert!(in_app(&bound, NOTES).is_empty(), "{bound}");
     assert_eq!(
         bound["total"].as_u64().unwrap(),
@@ -397,7 +403,7 @@ async fn a_member_lists_only_the_runs_in_records_they_may_read_now() {
         "{before} {bound}"
     );
     assert_eq!(
-        in_app(&runs(&actions, workspace, &owner), NOTES).len() as u64,
+        in_app(&invocations(&actions, workspace, &owner), NOTES).len() as u64,
         in_notes,
         "the host's own person still lists them"
     );
@@ -413,7 +419,7 @@ async fn listed_with_record(
 ) -> serde_json::Value {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let listed = runs(actions, workspace, caller);
+        let listed = invocations(actions, workspace, caller);
         if listed
             .to_string()
             .contains(&format!("\"app_id\":\"{app}\""))
@@ -429,7 +435,7 @@ async fn listed_with_record(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_persons_own_change_is_one_run_also_after_a_restart() {
+async fn a_persons_own_change_is_one_invocation_also_after_a_restart() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
@@ -498,7 +504,7 @@ async fn a_persons_own_change_is_one_run_also_after_a_restart() {
     for reader in [&person, &owner] {
         let listed = listed_with_record(&actions, workspace, reader, NOTES).await;
         assert_eq!(listed["total"], 1, "one act is one run: {listed}");
-        let run = &listed["runs"][0];
+        let run = &listed["items"][0];
         assert_eq!(run["by"]["kind"], "person", "{run}");
         assert_eq!(
             (&run["recorded"], &run["remembered"]),
@@ -516,7 +522,7 @@ async fn a_persons_own_change_is_one_run_also_after_a_restart() {
     for reader in [&person, &owner] {
         let listed = listed_with_record(&restarted, workspace, reader, NOTES).await;
         assert_eq!(listed["total"], 1, "{listed}");
-        let run = &listed["runs"][0];
+        let run = &listed["items"][0];
         assert_eq!(run["remembered"], false, "{run}");
         assert!(run.get("id").is_none(), "{run}");
     }

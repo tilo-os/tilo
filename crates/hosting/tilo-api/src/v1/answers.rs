@@ -393,7 +393,7 @@ pub struct Hit {
 
 /// Who ran a run.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RunBy {
+pub struct InvocationBy {
     /// The name it goes by: a key's, as the person named it, an agent's, or a
     /// person's.
     pub name: String,
@@ -404,7 +404,7 @@ pub struct RunBy {
 
 /// A record a run changed.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RunRecord {
+pub struct InvocationChange {
     /// The app, as a path names it (`word-processor`).
     pub app: String,
     /// The app's id (`so.tilo.word-processor`).
@@ -416,7 +416,7 @@ pub struct RunRecord {
 
 /// One run of a workspace, as the listing of its runs answers it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RunInfo {
+pub struct InvocationInfo {
     /// What `…/runs/{run}`, its `cancel` and its `undo` take: the invocation of
     /// its newest call (the undo of any call of a run takes back the whole
     /// run). Absent for a run known only from the workspace's records, whose
@@ -432,7 +432,7 @@ pub struct RunInfo {
     /// restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
-    pub by: RunBy,
+    pub by: InvocationBy,
     /// What its client called it (`Tilo-Run-Title`), when it named it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -464,7 +464,7 @@ pub struct RunInfo {
     pub undone: u64,
     /// The records it changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub records: Vec<RunRecord>,
+    pub records: Vec<InvocationChange>,
     /// Its edits still stand and nobody's edit stands on them: its undo would
     /// take back exactly its own.
     pub undoable: bool,
@@ -481,8 +481,8 @@ pub struct RunInfo {
 /// key may read, newest first: of each run only what lies in those records,
 /// and the totals over them alone.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct RunList {
-    pub runs: Vec<RunInfo>,
+pub struct InvocationList {
+    pub items: Vec<InvocationInfo>,
     /// Runs the workspace holds, of which `runs` is a page.
     pub total: u64,
     /// Of those, the runs waiting for the person.
@@ -671,7 +671,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         Listing,
         Resource,
         ActionAnswer,
-        RunList,
+        InvocationList,
         SearchHits,
         Link,
         Members,

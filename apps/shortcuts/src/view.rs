@@ -35,7 +35,7 @@ use ui::widget::{
 use ui::{LocalState, RemoteActions, TextKind};
 
 use crate::editor::{self, Choice};
-use crate::effects::{self, Effects, EffectsCore, EffectsState, RunStatus, ShortcutEffects};
+use crate::effects::{self, Effects, EffectsCore, EffectsState, InvocationStatus, ShortcutEffects};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
 use tilo_automation::grant::{self, Permission};
 
@@ -637,7 +637,7 @@ fn overview_page(ui: &Ui) -> Element {
                 effects.drafted.clone(),
                 effects.library.as_ref().map(Vec::len).map_err(Clone::clone),
                 effects
-                    .runs
+                    .invocations
                     .iter()
                     .map(|run| (run.serial, run.name.clone(), run.status.clone()))
                     .collect::<Vec<_>>(),
@@ -668,7 +668,7 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, effects: &EffectsSta
         )),
         Arrival::Ready(_) => {}
     }
-    if effects.runs.is_empty() {
+    if effects.invocations.is_empty() {
         // Nothing yet: a saved-shortcut library with nothing in it says so, and
         // one that has shortcuts leaves the runs out rather than heading
         // nothing.
@@ -852,12 +852,12 @@ fn describe_buttons(
 
 fn run_history(ui: &Ui, effects: &EffectsState) -> Element {
     let mut rows: Vec<Element> = Vec::new();
-    for run in effects.runs.iter().take(20) {
+    for run in effects.invocations.iter().take(20) {
         let secondary = match &run.status {
-            RunStatus::Running => CATALOG.t("shortcuts-running"),
+            InvocationStatus::Running => CATALOG.t("shortcuts-running"),
             // A run that finished with steps that fell short says so after
             // what it produced, and one that produced nothing says so alone.
-            RunStatus::Completed { value, degraded } => {
+            InvocationStatus::Completed { value, degraded } => {
                 let produced = value.as_ref().map(editor::literal_text);
                 match (produced, degraded) {
                     (Some(produced), Some(degraded)) => format!("{produced} ({degraded})"),
@@ -869,7 +869,7 @@ fn run_history(ui: &Ui, effects: &EffectsState) -> Element {
                     (None, None) => CATALOG.t("shortcuts-finished"),
                 }
             }
-            RunStatus::Failed(reason) => CATALOG.t_args(
+            InvocationStatus::Failed(reason) => CATALOG.t_args(
                 "shortcuts-stopped-at",
                 &[("detail", ui::i18n::ArgValue::Text(reason.clone()))],
             ),
@@ -884,30 +884,30 @@ fn run_history(ui: &Ui, effects: &EffectsState) -> Element {
             .meta(run.started.clone())
             .on_view(open);
         item = match &run.status {
-            RunStatus::Running => item.active(),
-            RunStatus::Failed(_) => item.error(),
+            InvocationStatus::Running => item.active(),
+            InvocationStatus::Failed(_) => item.error(),
             // A degraded run reads as a warning, not as an error: it did what
             // it could and said where it fell short.
-            RunStatus::Completed {
+            InvocationStatus::Completed {
                 degraded: Some(_), ..
             } => item.warning(),
             // Every row carries a dot, so the times line up down the list.
-            RunStatus::Completed { .. } => item.idle(),
+            InvocationStatus::Completed { .. } => item.idle(),
         };
         rows.push(Box::new(item));
     }
-    Box::new(Section::titled(CATALOG.t("shortcuts-runs"), rows))
+    Box::new(Section::titled(CATALOG.t("shortcuts-invocations"), rows))
 }
 
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(effects: &EffectsState, shortcut: &str) -> String {
-    let Some(run) = effects.last_run(shortcut) else {
+    let Some(run) = effects.last_invocation(shortcut) else {
         return CATALOG.t("shortcuts-not-run-yet");
     };
     let time = || ui::i18n::ArgValue::Text(run.started.clone());
     match &run.status {
-        RunStatus::Running => CATALOG.t_args("shortcuts-running-since", &[("time", time())]),
-        RunStatus::Completed {
+        InvocationStatus::Running => CATALOG.t_args("shortcuts-running-since", &[("time", time())]),
+        InvocationStatus::Completed {
             degraded: Some(degraded),
             ..
         } => CATALOG.t_args(
@@ -917,8 +917,10 @@ fn last_run_text(effects: &EffectsState, shortcut: &str) -> String {
                 ("steps", ui::i18n::ArgValue::Text(degraded.clone())),
             ],
         ),
-        RunStatus::Completed { .. } => CATALOG.t_args("shortcuts-finished-at", &[("time", time())]),
-        RunStatus::Failed(reason) => CATALOG.t_args(
+        InvocationStatus::Completed { .. } => {
+            CATALOG.t_args("shortcuts-finished-at", &[("time", time())])
+        }
+        InvocationStatus::Failed(reason) => CATALOG.t_args(
             "shortcuts-stopped",
             &[
                 ("time", time()),
@@ -1091,7 +1093,7 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
         },
         move |effects| -> Element {
             Box::new(Section::titled(
-                CATALOG.t("shortcuts-last-run"),
+                CATALOG.t("shortcuts-last-invocation"),
                 vec![Box::new(Text::new(&last_run_text(effects, &id)))],
             ))
         },

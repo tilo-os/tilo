@@ -844,14 +844,14 @@ impl<'a> Caller<'a> {
             })
             .transpose()?;
         let args = with(
-            json!({"path": crate::session::runs::ROOT}),
+            json!({"path": crate::session::invocations::ROOT}),
             "cursor",
             self.query("cursor"),
         );
         let (listed, said) = self
             .call_said("tilo_ls", with(args, "limit", limit))
             .await?;
-        shaped::<answers::RunList>(with(listed, "text", said)).map(Answer::ok)
+        shaped::<answers::InvocationList>(with(listed, "text", said)).map(Answer::ok)
     }
 
     async fn get_run(&self) -> Result<Answer, ApiError> {

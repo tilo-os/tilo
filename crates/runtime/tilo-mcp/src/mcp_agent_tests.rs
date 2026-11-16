@@ -1133,7 +1133,7 @@ where
     H: ActionHost + Clone + Send + Sync + 'static,
 {
     McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada")
-        .with_agent_run("mcp:test", "MCP agent")
+        .with_agent_session("mcp:test", "MCP agent")
 }
 
 #[test]
@@ -1858,7 +1858,7 @@ tilo_test_env::scenario! {
     {
         let host = tilolang_kind(&Notes::new(true));
         let server = agent(&host)
-            .with_agent_run("task:1", "Tidy the notes")
+            .with_agent_session("task:1", "Tidy the notes")
             .with_task_hosts(Some(CatalogueHost::new(tilolang_notes_catalogue())));
         let live_todo = host.id(&Notes::live_key(TODO));
         run(async {
@@ -2218,7 +2218,7 @@ tilo_test_env::scenario! {
     {
         let host = Notes::new(true);
         run(async {
-            let server = agent(&host).with_agent_run("task:7", "Tidy the notes");
+            let server = agent(&host).with_agent_session("task:7", "Tidy the notes");
             let call = |text: &str, meta: Value| {
                 let mut request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
                     "name":"tilo_do",
@@ -2245,7 +2245,7 @@ tilo_test_env::scenario! {
             assert!(!steps[2..].contains(&steps[0]));
             // The step a client names is this session's: another session naming
             // it does not join it.
-            let other = agent(&host).with_agent_run("task:7", "Tidy the notes");
+            let other = agent(&host).with_agent_session("task:7", "Tidy the notes");
             other.handle(call("jam", step.clone())).await.unwrap();
             assert_ne!(gestures(&host)[4], steps[0]);
             // Every invocation is attributed to the task.

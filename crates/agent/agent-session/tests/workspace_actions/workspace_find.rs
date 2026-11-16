@@ -91,7 +91,7 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-find", "Claude Code");
+        .with_agent_session("session-find", "Claude Code");
 
     // Two notes, as the walk-through left them: one the agent made and the
     // person wrote in, and a file that landed as a note named by its path.
@@ -205,7 +205,7 @@ async fn an_agent_finds_a_conversation_by_its_name() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-find", "Claude Code");
+        .with_agent_session("session-find", "Claude Code");
 
     // The conversation, named by the path a read takes, and read back.
     let (lines, _) = find(&server, "design crit").await;

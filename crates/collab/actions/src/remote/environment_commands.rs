@@ -9,9 +9,9 @@
 //! the way any device of a workspace asks another:
 //!
 //! - [`target`] names the run, an action of the workspace's environment
-//!   ([`RESOURCE`]); the argument is a [`RunCommand`].
+//!   ([`RESOURCE`]); the argument is a [`CommandRequest`].
 //! - While the command runs, each [`InvocationUpdate::Item`](crate::InvocationUpdate)
-//!   is a [`RunOutput`]: everything printed so far, up to its last
+//!   is a [`CommandOutput`]: everything printed so far, up to its last
 //!   [`LIVE_TAIL`] bytes, and how much that is in all, so a follower that
 //!   missed an update shows what is there now and never a gap.
 //! - It succeeds with a [`CommandRan`], whatever the command's exit status:
@@ -52,7 +52,7 @@ pub fn target() -> RemoteActionTarget {
 
 /// One command line to run in one session's shell of a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunCommand {
+pub struct CommandRequest {
     /// The session whose shell runs it: its directory and variables carry
     /// over from the session's earlier commands.
     pub session: String,
@@ -68,14 +68,14 @@ pub struct RunCommand {
 
 /// What a running command printed so far.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunOutput {
+pub struct CommandOutput {
     /// How many bytes it printed in all.
     pub total: u64,
     /// The last of them, up to [`LIVE_TAIL`], as text.
     pub tail: String,
 }
 
-impl RunOutput {
+impl CommandOutput {
     /// What `printed` shows a follower: its length and its last
     /// [`LIVE_TAIL`] bytes, cut at a character boundary.
     #[must_use]
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn live_output_keeps_the_newest_bytes_and_counts_them_all() {
         let printed = "x".repeat(LIVE_TAIL + 10) + "é end";
-        let live = RunOutput::of(printed.as_bytes());
+        let live = CommandOutput::of(printed.as_bytes());
         assert_eq!(live.total, u64::try_from(printed.len()).unwrap());
         assert!(live.tail.ends_with("é end"));
         assert!(

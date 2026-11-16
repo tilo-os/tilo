@@ -20,7 +20,7 @@ impl Job {
             | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
-            | Self::Runs { workspace_id, .. }
+            | Self::Invocations { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::Joined(workspace_id)
             | Self::Forget(workspace_id)

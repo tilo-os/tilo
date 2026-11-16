@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use terminal::resource::{Finished, RunAnswer, RunRequest, Terminal};
+use terminal::resource::{CommandAnswer, CommandRequest, FinishedCommand, Terminal};
 use ui::tilo_resource::{
     self, ActionCx, Collection, Delta, Demand, Derived, Doc, EditOp, Id, Model, ModelError,
     Operations, Outbox, Refusal, SearchEntry, Segment, Slot, resource,
@@ -107,7 +107,7 @@ pub struct Project {
     /// The command lines asked to run in the embedded terminal's session,
     /// each settled with the run it became by the editor running it.
     #[model(readonly)]
-    pub terminal_requests: Outbox<RunRequest, RunAnswer>,
+    pub terminal_requests: Outbox<CommandRequest, CommandAnswer>,
 }
 
 fn minted(cx: &mut ActionCx) -> Id {
@@ -370,7 +370,7 @@ impl Project {
     pub fn run_in_terminal(
         &mut self,
         cx: &mut ActionCx,
-        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        terminal_requests: &mut Outbox<CommandRequest, CommandAnswer>,
         #[param("The command line, as typed at the prompt")] command: String,
     ) -> Result<(), Refusal> {
         self.terminal()?.run(cx, terminal_requests, command)
@@ -387,7 +387,7 @@ impl Project {
     pub fn rerun_in_terminal(
         &mut self,
         cx: &mut ActionCx,
-        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        terminal_requests: &mut Outbox<CommandRequest, CommandAnswer>,
         #[param("The run's id, as the terminal recorded it")] run: String,
     ) -> Result<(), Refusal> {
         self.terminal()?
@@ -398,7 +398,7 @@ impl Project {
     pub fn rerun_test_in_terminal(
         &mut self,
         cx: &mut ActionCx,
-        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        terminal_requests: &mut Outbox<CommandRequest, CommandAnswer>,
         #[param("The run's id, as the terminal recorded it")] run: String,
         #[param("The test's name, as the run reported it")] test: String,
     ) -> Result<(), Refusal> {
@@ -415,11 +415,11 @@ impl Project {
     pub fn record_terminal_run(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The run, as the session marked it", flatten)] run: Finished,
+        #[param("The run, as the session marked it", flatten)] run: FinishedCommand,
     ) -> Result<(), Refusal> {
         self.terminal_panel
             .get_or_insert_with(Terminal::default)
-            .record_run(cx, run)
+            .record_command(cx, run)
     }
 }
 
@@ -448,7 +448,7 @@ impl Project {
                 "The project's terminal is not running",
             );
         };
-        if verb != project::Verb::RunInTerminal && session.runs.is_empty() {
+        if verb != project::Verb::RunInTerminal && session.commands.is_empty() {
             return unavailable("code_editor.no_runs", "The terminal has run nothing yet");
         }
         ui::tilo_actions::Availability::Available

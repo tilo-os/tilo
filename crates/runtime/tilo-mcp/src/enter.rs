@@ -139,7 +139,7 @@ impl Entered {
         let person = hex::encode(device.cert().user_public_key);
         let server = McpServer::new(device.actions(workspace_id), workspace.to_owned(), person)
             .with_surface(Surface::Agent)
-            .with_agent_run(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());
+            .with_agent_session(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());
         Self::Host {
             server: Box::new(server),
             device: Box::new(device),

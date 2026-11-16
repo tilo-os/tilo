@@ -250,7 +250,7 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
     let person = hex::encode(user);
     let server = McpServer::new(actions, device.workspace.clone(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run(run, device.agent.clone());
+        .with_agent_session(run, device.agent.clone());
     Ok(Served {
         session: Arc::downgrade(session),
         server,

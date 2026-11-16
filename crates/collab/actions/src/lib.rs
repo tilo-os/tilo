@@ -723,7 +723,7 @@ mod tests {
         phase envelopes_replay_deterministically_on_peers;
         // An action replays to an identical doc on a peer, concurrent envelopes replay from their
         // recorded base, and a replayed change dedupes against a native Automerge merge.
-        // Runs each phase below in order; every phase builds its own fixture.
+        // Invocations each phase below in order; every phase builds its own fixture.
         {
             action_replays_to_identical_doc_on_peer();
             concurrent_envelopes_replay_from_their_recorded_base();
@@ -734,7 +734,7 @@ mod tests {
         // Client-local dispatch applies and replicates; server-preferred routes to the host without a
         // local apply and refuses without a host; the registry rejects unknown types and flattens nested
         // resources.
-        // Runs each phase below in order; every phase builds its own fixture.
+        // Invocations each phase below in order; every phase builds its own fixture.
         {
             client_local_dispatch_applies_and_replicates();
             server_preferred_routes_to_host_without_local_apply();

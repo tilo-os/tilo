@@ -609,7 +609,7 @@ where
     let server = match agent {
         Some((agent, name)) => crate::McpServer::for_agent(host, workspace, &agent, &person)
             .agent_named(&name)
-            .with_agent_run(run, agent),
+            .with_agent_session(run, agent),
         None => crate::McpServer::for_person(host, workspace, &person).with_work_group(
             tilo_actions::WorkGroup {
                 id: run,

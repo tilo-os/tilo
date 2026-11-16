@@ -8,7 +8,7 @@ use ui::tilo_actions::ActionInvoker;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Bytes, MemberId, Settled};
 
-use crate::resource::{ItemKind, RunAnswer, Terminal};
+use crate::resource::{CommandAnswer, ItemKind, Terminal};
 use crate::sessions::Sessions;
 use crate::target::RecentTarget;
 
@@ -117,7 +117,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
         let mut backend = crate::inner::TerminalBackend::for_test();
         backend.reader = Box::new(Printed(printed, Vec::new()));
         backend.writer = Box::new(Typed(typed));
-        backend.runs = Some(KEY.into());
+        backend.commands = Some(KEY.into());
         Ok(backend)
     });
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
@@ -164,10 +164,10 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     print
         .send(ran("cargo test -p terminal --lib fixture_", fixture, 101))
         .unwrap();
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 
     let state = app.state();
-    let (first, run) = state.runs.iter().next().unwrap();
+    let (first, run) = state.commands.iter().next().unwrap();
     assert_eq!(run.command.0, "cargo test -p terminal --lib fixture_");
     assert_eq!(run.cwd.0, "/src/demo");
     assert_eq!(run.exit, 101);
@@ -206,7 +206,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         "typed at the prompt, once"
     );
     settle_until(&mut app, |state| {
-        state.runs.len() == 2 && state.requests.pending().next().is_none()
+        state.commands.len() == 2 && state.requests.pending().next().is_none()
     });
 
     let state = app.state();
@@ -220,7 +220,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         Some(ui::tilo_resource::MemberId::agent("helper"))
     );
     let rerun = state
-        .runs
+        .commands
         .get(request)
         .expect("the run is the request's item");
     assert_eq!(
@@ -238,7 +238,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     assert_eq!(rerun.exit, 0);
     assert_eq!(
         entry.settled,
-        Some(Settled::Done(RunAnswer {
+        Some(Settled::Done(CommandAnswer {
             run: Some(request.clone()),
             exit: Some(0),
             refusal: None,
@@ -267,7 +267,7 @@ fn run_takes_one_command_line_for_a_running_session() {
     app.call("run", serde_json::json!({ "command": "ls -la" }))
         .expect("runs");
     assert_eq!(typed_line(&mut app, &lines), "ls -la");
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_
         Ok(crate::inner::TerminalBackend::for_test())
     }));
     joined.runs_on("laptop", &holder);
-    let queue = crate::runs::RunQueue::default();
+    let queue = crate::commands::CommandQueue::default();
     joined.run_through(queue.clone());
     joined.present_session(&session);
     let doc = automerge::AutoCommit::new();
@@ -321,14 +321,14 @@ fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_
         "its presence is the running session's"
     );
     assert!(
-        !queue.runs(session.pane_id()),
+        !queue.owns(session.pane_id()),
         "the runs are not its to answer"
     );
 
     app.call("run", serde_json::json!({ "command": "echo joined" }))
         .expect("runs");
     assert_eq!(typed_line(&mut app, &lines), "echo joined");
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 
     assert!(joined.can_restart());
     joined.restart_session().expect("a shell here");
@@ -344,7 +344,7 @@ fn two_sessions_are_searchable_together() {
     print
         .send(ran("cargo build -p first", "Finished\r\n", 0))
         .unwrap();
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
     let first = app.record().uri();
     let sentences = app.sentences(&app.history());
     assert!(
@@ -358,21 +358,21 @@ fn two_sessions_are_searchable_together() {
     let second = app.record().uri();
     assert_ne!(second, first, "a new terminal starts a new session");
     assert!(
-        app.state().runs.is_empty(),
+        app.state().commands.is_empty(),
         "the new session ran nothing yet"
     );
     let (print, _lines) = run_shell(&mut app, "");
     print
         .send(ran("cargo test -p second", "test result: ok\r\n", 0))
         .unwrap();
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 
     let history = app
         .person::<CommandHistory>()
         .expect("the person's history");
     let history = history.get();
     let sessions: Vec<(&str, &str)> = history
-        .runs
+        .remembered
         .values()
         .map(|run| (run.command.0.as_str(), run.session.0.as_str()))
         .collect();
@@ -383,9 +383,9 @@ fn two_sessions_are_searchable_together() {
             ("cargo test -p second", second.as_str()),
         ]
     );
-    let me = app.state().runs.values().next().unwrap().actor.clone();
+    let me = app.state().commands.values().next().unwrap().actor.clone();
     assert!(me.is_some());
-    assert!(history.runs.values().all(|run| run.actor == me));
+    assert!(history.remembered.values().all(|run| run.actor == me));
     assert_eq!(
         history
             .matching("cargo")
@@ -544,7 +544,7 @@ fn a_tilo_side_session_records_its_runs() {
         let mut backend = crate::inner::TerminalBackend::for_test();
         backend.reader = Box::new(Printed(printed, Vec::new()));
         backend.writer = Box::new(Typed(typed));
-        backend.runs = Some(KEY.into());
+        backend.commands = Some(KEY.into());
         Ok(backend)
     });
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
@@ -557,17 +557,17 @@ fn a_tilo_side_session_records_its_runs() {
     )
     .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
     app.call("run", serde_json::json!({ "command": "echo hi > out.txt" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 2 && state.requests.pending().next().is_none()
+        state.commands.len() == 2 && state.requests.pending().next().is_none()
     });
 
     let state = app.state();
     let read = state
-        .runs
+        .commands
         .iter()
         .map(|(_, run)| run)
         .find(|run| run.command.0 == "cat notes.md | wc -l")
@@ -580,7 +580,7 @@ fn a_tilo_side_session_records_its_runs() {
         read.output
     );
     let wrote = state
-        .runs
+        .commands
         .iter()
         .map(|(_, run)| run)
         .find(|run| run.command.0 == "echo hi > out.txt")
@@ -688,7 +688,7 @@ fn a_ush_session_records_the_run_of_a_pipeline() {
         let mut backend = crate::inner::TerminalBackend::for_test();
         backend.reader = Box::new(Printed(printed, Vec::new()));
         backend.writer = Box::new(Typed(typed));
-        backend.runs = Some(KEY.into());
+        backend.commands = Some(KEY.into());
         Ok(backend)
     });
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
@@ -698,11 +698,11 @@ fn a_ush_session_records_the_run_of_a_pipeline() {
     app.call("run", serde_json::json!({ "command": "ls | wc -l" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
 
     let state = app.state();
-    let (_, run) = state.runs.iter().next().unwrap();
+    let (_, run) = state.commands.iter().next().unwrap();
     assert_eq!(run.command.0, "ls | wc -l");
     assert_eq!(run.cwd.0, "/src/demo");
     assert_eq!(run.exit, 0);
@@ -755,7 +755,7 @@ fn ush_shell(app: &mut App, host: ush_shell::MemoryHost) {
         let mut backend = crate::inner::TerminalBackend::for_test();
         backend.reader = Box::new(Printed(printed, Vec::new()));
         backend.writer = Box::new(Typed(typed));
-        backend.runs = Some(KEY.into());
+        backend.commands = Some(KEY.into());
         Ok(backend)
     });
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
@@ -808,10 +808,10 @@ fn a_person_edits_at_ushs_prompt_and_the_run_is_recorded() {
     press(&mut app, &[], "Right");
     press(&mut app, &[], "Right");
     press(&mut app, &[], "Enter");
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 
     let state = app.state();
-    let (_, run) = state.runs.iter().next().unwrap();
+    let (_, run) = state.commands.iter().next().unwrap();
     assert_eq!(run.command.0, "echo x; ls | wc -l");
     assert_eq!(run.exit, 0);
     assert!(
@@ -828,18 +828,18 @@ fn up_recalls_the_last_run_from_the_persons_history() {
     app.call("run", serde_json::json!({ "command": "ls | wc -l" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
 
     app.open_here(&[]).expect("a second session");
-    assert!(app.state().runs.is_empty());
+    assert!(app.state().commands.is_empty());
     ush_shell(&mut app, demo_host());
     focus_grid(&mut app);
     press(&mut app, &[], "Up");
     press(&mut app, &[], "Enter");
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
     let state = app.state();
-    let (_, run) = state.runs.iter().next().unwrap();
+    let (_, run) = state.commands.iter().next().unwrap();
     assert_eq!(run.command.0, "ls | wc -l");
     assert!(matches!(run.output, Bytes::Blob { len, .. } if len == "2\r\n".len() as u64));
 }
@@ -851,16 +851,16 @@ fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
     app.call("run", serde_json::json!({ "command": "sleep 0.3 &" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
     app.call("run", serde_json::json!({ "command": "fg" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 3 && state.requests.pending().next().is_none()
+        state.commands.len() == 3 && state.requests.pending().next().is_none()
     });
     let state = app.state();
     let mut commands: Vec<(String, i32)> = state
-        .runs
+        .commands
         .values()
         .map(|run| (run.command.0.clone(), run.exit))
         .collect();
@@ -878,7 +878,7 @@ fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
         .expect("the person's history")
         .get();
     let remembered: Vec<&str> = history
-        .runs
+        .remembered
         .values()
         .map(|run| run.command.0.as_str())
         .collect();
@@ -898,7 +898,7 @@ fn an_agents_run_gets_the_agent_rendering() {
     app.call("run", serde_json::json!({ "command": "ls -R p" }))
         .expect("runs");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
     let agent = ActionInvoker::agent("helper").acting_for("person:ada");
     app.call_by(
@@ -909,12 +909,12 @@ fn an_agents_run_gets_the_agent_rendering() {
     )
     .expect("the agent's run");
     settle_until(&mut app, |state| {
-        state.runs.len() == 2 && state.requests.pending().next().is_none()
+        state.commands.len() == 2 && state.requests.pending().next().is_none()
     });
     let state = app.state();
     let output = |actor: &str| {
         let run = state
-            .runs
+            .commands
             .values()
             .find(|run| run.actor.as_ref().is_some_and(MemberId::is_agent) == (actor == "agent"))
             .unwrap();
@@ -972,7 +972,7 @@ fn settle_until_held(app: &mut App, shown: bool) {
 
 #[test]
 fn held_marks_carry_the_hosts_typed_refusal() {
-    use crate::runs::{Mark, Marks, Piece};
+    use crate::commands::{Mark, Marks, Piece};
     let mut marks = Marks::new(KEY);
     let pieces = marks.push(
         format!(
@@ -1037,7 +1037,7 @@ fn a_held_command_shows_the_prompt_until_it_runs() {
         )
         .unwrap();
     settle_until_held(&mut app, false);
-    settle_until(&mut app, |state| state.runs.len() == 1);
+    settle_until(&mut app, |state| state.commands.len() == 1);
 }
 
 #[test]
@@ -1061,7 +1061,7 @@ fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_promp
     .expect("the agent's run is taken");
     assert_eq!(typed_line(&mut app, &lines), "cargo build");
     settle_until(&mut app, |state| {
-        state.runs.len() == 1 && state.requests.pending().next().is_none()
+        state.commands.len() == 1 && state.requests.pending().next().is_none()
     });
     let state = app.state();
     let (_, entry) = state

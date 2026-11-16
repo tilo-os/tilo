@@ -73,7 +73,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-1", "Claude Code");
+        .with_agent_session("session-1", "Claude Code");
 
     let listed = ask(
         &server,
@@ -164,7 +164,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         if !edited {
             let app = browser.mount(&sheets);
             if sheet_names(&app).iter().any(|name| name == "Budget") {
-                let runs: Vec<tilo_actions::WorkGroup> = app
+                let groups: Vec<tilo_actions::WorkGroup> = app
                     .read(|doc| {
                         doc.clone()
                             .get_changes(&[])
@@ -178,10 +178,11 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                     })
                     .unwrap();
                 assert!(
-                    runs.iter()
+                    groups
+                        .iter()
                         .any(|run| run.id.starts_with("agent-session:")
                             && run.label == "Claude Code"),
-                    "the change names the agent's run: {runs:?}"
+                    "the change names the agent's session: {groups:?}"
                 );
                 edited = true;
             }
@@ -339,7 +340,7 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-1", "Claude Code");
+        .with_agent_session("session-1", "Claude Code");
 
     agent_opens_notes(&server, &mut browser).await;
 }
@@ -391,7 +392,7 @@ async fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layou
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, cluster, person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-guest", "Claude Code");
+        .with_agent_session("session-guest", "Claude Code");
     agent_opens_notes(&server, &mut browser).await;
 }
 
@@ -428,7 +429,7 @@ pub(super) async fn agent_opens_notes(server: &McpServer<SessionActions>, browse
 }
 
 /// The runs the browser holds of the workspace's Terminal sessions.
-fn terminal_runs(browser: &mut Browser) -> Vec<terminal::resource::Run> {
+fn terminal_commands(browser: &mut Browser) -> Vec<terminal::resource::Command> {
     browser.pump();
     let sessions: Vec<DocumentRoute> = browser
         .documents
@@ -448,7 +449,7 @@ fn terminal_runs(browser: &mut Browser) -> Vec<terminal::resource::Run> {
             <terminal::resource::Terminal as ui::tilo_resource::Resource>::read(&doc)
                 .map(|session| {
                     session
-                        .runs
+                        .commands
                         .iter()
                         .map(|(_, run)| run.clone())
                         .collect::<Vec<_>>()
@@ -494,7 +495,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_run("run-7", "Claude Code");
+    .with_agent_session("session-7", "Claude Code");
 
     let (listed, _) = tool(&server, "tilo_ls", json!({"path": "terminal"})).await;
     eprintln!("tilo_ls terminal:\n{listed}");
@@ -532,8 +533,8 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     // they ran and how they ended, recorded as the agent's run.
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let runs = terminal_runs(&mut browser);
-        if runs.len() >= 2 {
+        let commands = terminal_commands(&mut browser);
+        if commands.len() >= 2 {
             let groups: Vec<tilo_actions::WorkGroup> = browser
                 .documents
                 .iter()
@@ -559,17 +560,16 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
                     .any(|run| run.id.starts_with("agent-session:") && run.label == "Claude Code"),
                 "History keeps the runs as the agent's: {groups:?}"
             );
-            assert!(
-                runs.iter()
-                    .any(|run| run.command.0.starts_with("echo hello from the host")
-                        && run.exit == 0
-                        && run.cwd.0 == files.to_string_lossy())
-            );
+            assert!(commands.iter().any(
+                |run| run.command.0.starts_with("echo hello from the host")
+                    && run.exit == 0
+                    && run.cwd.0 == files.to_string_lossy()
+            ));
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the runs never reached the browser: {runs:?}"
+            "the runs never reached the browser: {commands:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -613,7 +613,7 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_run("run-9", "Claude Code");
+    .with_agent_session("session-9", "Claude Code");
 
     // A build that prints, then takes a long time: the call answers pending
     // with the id this agent chose for it, and what it printed until then.
@@ -670,8 +670,8 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     // The run it stopped is recorded like any other end: the command, where
     // it ran, and the status a stopped command has.
     loop {
-        let runs = terminal_runs(&mut browser);
-        if let Some(stopped) = runs
+        let commands = terminal_commands(&mut browser);
+        if let Some(stopped) = commands
             .iter()
             .find(|run| run.command.0.starts_with("echo building"))
         {
@@ -684,7 +684,7 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
         }
         assert!(
             Instant::now() < deadline,
-            "the stopped run never reached the browser: {runs:?}"
+            "the stopped run never reached the browser: {commands:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -786,7 +786,7 @@ async fn leaves_who_is_here(ending: Ending) {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-1", "Claude Code");
+        .with_agent_session("session-1", "Claude Code");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
     let deadline = tilo_test_env::hang_deadline();
@@ -893,7 +893,7 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_run(format!("run-{run}"), "Claude Code");
+            .with_agent_session(format!("session-{run}"), "Claude Code");
         let opened = Instant::now();
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
         assert!(!failed, "run {run}: the agent lists the workspace");
@@ -965,7 +965,7 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_run(format!("run-{run}"), "Claude Code");
+            .with_agent_session(format!("session-{run}"), "Claude Code");
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
         assert!(!failed, "run {run}: the agent lists the workspace");
         let opened = Instant::now();
@@ -1063,7 +1063,7 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-0", "Claude Code");
+        .with_agent_session("session-0", "Claude Code");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
     let asked = Instant::now();
@@ -1116,7 +1116,7 @@ async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_run(format!("run-{run}"), "Claude Code");
+            .with_agent_session(format!("session-{run}"), "Claude Code");
         let opened = Instant::now();
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
         assert!(!failed, "run {run}: the agent lists the workspace");

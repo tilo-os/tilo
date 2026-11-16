@@ -92,6 +92,9 @@ mod hosted_browser;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/invocations_read.rs"]
+mod invocations_read;
+#[cfg(test)]
 #[path = "workspace_actions/joining.rs"]
 mod joining;
 #[cfg(test)]
@@ -114,9 +117,6 @@ mod resource_support;
 #[cfg(test)]
 #[path = "workspace_actions/route_parity.rs"]
 mod route_parity;
-#[cfg(test)]
-#[path = "workspace_actions/runs_read.rs"]
-mod runs_read;
 #[cfg(test)]
 #[path = "workspace_actions/scale.rs"]
 mod scale;

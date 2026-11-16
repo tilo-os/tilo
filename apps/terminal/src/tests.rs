@@ -633,11 +633,11 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         };
         assert_eq!(backend.shell_name, "ush");
         assert_eq!(
-            backend.runs.as_deref(),
+            backend.commands.as_deref(),
             request["runs"].as_str(),
             "the session marks its runs with the key the request named"
         );
-        assert!(backend.runs.is_some());
+        assert!(backend.commands.is_some());
     }
 
     {

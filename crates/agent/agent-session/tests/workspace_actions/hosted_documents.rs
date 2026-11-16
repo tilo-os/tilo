@@ -391,7 +391,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         person,
     )
     .with_surface(Surface::Agent)
-    .with_agent_run(RUN, RUN_LABEL);
+    .with_agent_session(RUN, RUN_LABEL);
 
     // 1. The applicant's files go into the workspace.
     let application = put(&server, &application_pdf()).await;

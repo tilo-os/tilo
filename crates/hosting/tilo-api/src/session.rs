@@ -22,8 +22,8 @@
 //! the session lives: the host is the run's one voice, so the server says
 //! nothing of it itself.
 
+pub mod invocations;
 pub mod members;
-pub mod runs;
 pub mod unattended;
 
 use crate::relay::{Connection, Relay, RelayError};
@@ -279,7 +279,7 @@ impl Session {
         let actions = device.actions(id);
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_run(&self.run, self.label.clone());
+            .with_agent_session(&self.run, self.label.clone());
         let run = Arc::new(Served { server });
         *entered = Some(Arc::clone(&run));
         drop(entered);
@@ -326,7 +326,7 @@ impl Session {
                     .await;
                 return Reply::one(result(&id, &answered));
             }
-            if runs::addresses(tool, arguments) {
+            if invocations::addresses(tool, arguments) {
                 let structured = request
                     .pointer("/params/_meta/so.tilo.mcp/structured")
                     .and_then(Value::as_bool)
@@ -722,7 +722,7 @@ names its `tilo.content:` in the answer's resources, and `tilo_get {content, off
 fn with_hosted_instructions(mut answer: Value) -> Value {
     if let Some(Value::String(instructions)) = answer.pointer_mut("/result/instructions") {
         instructions.push(' ');
-        instructions.push_str(runs::INSTRUCTIONS);
+        instructions.push_str(invocations::INSTRUCTIONS);
     }
     answer
 }

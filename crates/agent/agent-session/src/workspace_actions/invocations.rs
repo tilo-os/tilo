@@ -1,5 +1,5 @@
 //! Every run of a workspace, newest first, as the host knows them
-//! ([`tilo_actions::remote::workspace_runs`]): from what the workspace's
+//! ([`tilo_actions::remote::workspace_invocations`]): from what the workspace's
 //! records keep, joined with the calls the host remembers.
 //!
 //! - **The records.** Each change an action made is in its record's history
@@ -35,7 +35,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
-use tilo_actions::remote::workspace_runs::{Run, RunBy, RunRecord, RunStatus, Runs, RunsQuery};
+use tilo_actions::remote::workspace_invocations::{
+    Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations, InvocationsQuery,
+};
 use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
     ReceiptStatus, RemoteActionMessage, pending,
@@ -56,7 +58,7 @@ type RecordKey = (String, String);
 struct Share {
     app_id: String,
     record: String,
-    by: RunBy,
+    by: InvocationBy,
     title: Option<String>,
     first_ms: i64,
     last_ms: i64,
@@ -176,7 +178,7 @@ fn in_effect(entry: &Value) -> bool {
 
 /// Who made the change the history entry lists, and what its client called
 /// the run, when it named it.
-fn author(entry: &Value) -> (RunBy, Option<String>) {
+fn author(entry: &Value) -> (InvocationBy, Option<String>) {
     let actor = entry.get("actor");
     let acting = actor.and_then(|actor| actor.get("by"));
     let member = acting.and_then(|by| by.get("member"));
@@ -204,7 +206,7 @@ fn author(entry: &Value) -> (RunBy, Option<String>) {
     // A run goes by its agent's name unless its client named it.
     let title = run.filter(|run| Some(*run) != named).map(str::to_owned);
     (
-        RunBy {
+        InvocationBy {
             name: name.to_owned(),
             kind: kind.to_owned(),
         },
@@ -295,7 +297,7 @@ struct Call {
     update: InvocationUpdate,
     /// It asked the person and has no answer yet.
     waiting: bool,
-    by: RunBy,
+    by: InvocationBy,
     title: Option<String>,
     action: String,
     /// The record it addressed, by its app and its id there; `None` for a
@@ -353,7 +355,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         ended_ms: entry.ended_ms,
         update: entry.update.clone(),
         waiting: entry.asked && entry.witness.is_none() && !entry.update.is_terminal(),
-        by: RunBy {
+        by: InvocationBy {
             name,
             kind: kind.to_owned(),
         },
@@ -378,7 +380,7 @@ fn app_path(app_id: &str) -> String {
 }
 
 /// One run: the calls the host remembers of it and the records' shares of it.
-fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
+fn invocation(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Invocation {
     calls.sort_by_key(|call| call.started_ms);
     let changes: usize = shares.iter().map(|share| share.changes).sum();
     let edits: usize = shares.iter().map(|share| share.edits).sum();
@@ -389,18 +391,18 @@ fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
     let ended = calls.iter().all(|call| call.update.is_terminal());
     let last = calls.last();
     let mut status = if calls.iter().any(|call| call.waiting) {
-        RunStatus::Waiting
+        InvocationStatus::Waiting
     } else if !ended {
-        RunStatus::Running
+        InvocationStatus::Running
     } else {
         match last.map(|call| &call.update) {
-            Some(InvocationUpdate::Failed { .. }) => RunStatus::Failed,
-            Some(InvocationUpdate::Cancelled { .. }) => RunStatus::Cancelled,
-            _ => RunStatus::Ended,
+            Some(InvocationUpdate::Failed { .. }) => InvocationStatus::Failed,
+            Some(InvocationUpdate::Cancelled { .. }) => InvocationStatus::Cancelled,
+            _ => InvocationStatus::Ended,
         }
     };
     if ended && edits > 0 && undone == edits {
-        status = RunStatus::Undone;
+        status = InvocationStatus::Undone;
     }
     let failure = last.and_then(
         |call| match EffectReceiptStatus::from_terminal(&call.update) {
@@ -411,7 +413,7 @@ fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
     let (by, title) = match (newest, last) {
         (Some(share), _) => (share.by.clone(), share.title.clone()),
         (None, Some(call)) => (call.by.clone(), call.title.clone()),
-        (None, None) => (RunBy::default(), None),
+        (None, None) => (InvocationBy::default(), None),
     };
     let started_ms = calls
         .first()
@@ -435,9 +437,9 @@ fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
             .as_ref()
             .map(|who| format!("{who} changed {} after it", app_path(&share.app_id)))
     });
-    let mut records: Vec<RunRecord> = Vec::new();
+    let mut records: Vec<InvocationChange> = Vec::new();
     for share in shares {
-        let record = RunRecord {
+        let record = InvocationChange {
             app: app_path(&share.app_id),
             app_id: share.app_id.clone(),
             record: share.record.clone(),
@@ -446,7 +448,7 @@ fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
             records.push(record);
         }
     }
-    Run {
+    Invocation {
         id: last.map(|call| call.id.clone()),
         calls: calls.iter().map(|call| call.id.clone()).collect(),
         step,
@@ -471,7 +473,10 @@ fn run(step: Option<String>, mut calls: Vec<Call>, shares: &[Share]) -> Run {
 /// Every run: each step the records keep, with the calls of it the host
 /// remembers, and each call that changed nothing on its own (or with the
 /// calls of its step), newest first.
-fn listing(recorded: BTreeMap<String, Vec<Share>>, calls: Vec<(Option<String>, Call)>) -> Vec<Run> {
+fn listing(
+    recorded: BTreeMap<String, Vec<Share>>,
+    calls: Vec<(Option<String>, Call)>,
+) -> Vec<Invocation> {
     let mut by_step: BTreeMap<String, Vec<Call>> = BTreeMap::new();
     let mut alone: Vec<Call> = Vec::new();
     for (step, call) in calls {
@@ -480,23 +485,23 @@ fn listing(recorded: BTreeMap<String, Vec<Share>>, calls: Vec<(Option<String>, C
             None => alone.push(call),
         }
     }
-    let mut runs: Vec<Run> = Vec::new();
+    let mut items: Vec<Invocation> = Vec::new();
     for (step, shares) in recorded {
         let calls = by_step.remove(&step).unwrap_or_default();
-        runs.push(run(Some(step), calls, &shares));
+        items.push(invocation(Some(step), calls, &shares));
     }
     for (step, calls) in by_step {
-        runs.push(run(Some(step), calls, &[]));
+        items.push(invocation(Some(step), calls, &[]));
     }
     for call in alone {
-        runs.push(run(None, vec![call], &[]));
+        items.push(invocation(None, vec![call], &[]));
     }
-    runs.sort_by_key(|run| std::cmp::Reverse(key(run)));
-    runs
+    items.sort_by_key(|invocation| std::cmp::Reverse(key(invocation)));
+    items
 }
 
 /// Where a run sorts, newest first, and what a cursor names it by.
-fn key(run: &Run) -> (i64, String) {
+fn key(run: &Invocation) -> (i64, String) {
     let name = run
         .step
         .clone()
@@ -505,40 +510,40 @@ fn key(run: &Run) -> (i64, String) {
     (run.started_ms, name)
 }
 
-fn cursor_of(run: &Run) -> String {
+fn cursor_of(run: &Invocation) -> String {
     let (started, name) = key(run);
     format!("{started}:{name}")
 }
 
 /// The page of `runs` (newest first) `query` asks for.
-fn page(runs: Vec<Run>, query: &RunsQuery, pending: bool) -> Runs {
-    let total = runs.len();
-    let waiting = runs
+fn page(items: Vec<Invocation>, query: &InvocationsQuery, pending: bool) -> Invocations {
+    let total = items.len();
+    let waiting = items
         .iter()
-        .filter(|run| run.status == RunStatus::Waiting)
+        .filter(|invocation| invocation.status == InvocationStatus::Waiting)
         .count();
     let after = query.cursor.as_deref().and_then(|cursor| {
         let (started, name) = cursor.split_once(':')?;
         Some((started.parse::<i64>().ok()?, name.to_owned()))
     });
-    let mut rest = runs
+    let mut rest = items
         .into_iter()
-        .filter(|run| after.as_ref().is_none_or(|after| key(run) < *after))
+        .filter(|invocation| after.as_ref().is_none_or(|after| key(invocation) < *after))
         .peekable();
     let mut listed = Vec::new();
     while listed.len() < query.page() {
-        let Some(run) = rest.next() else {
+        let Some(invocation) = rest.next() else {
             break;
         };
-        listed.push(run);
+        listed.push(invocation);
     }
     let next_cursor = rest
         .peek()
         .is_some()
         .then(|| listed.last().map(cursor_of))
         .flatten();
-    Runs {
-        runs: listed,
+    Invocations {
+        items: listed,
         total,
         waiting,
         pending,
@@ -584,7 +589,7 @@ fn join_written(recorded: &BTreeMap<String, Vec<Share>>, calls: &mut [(Option<St
 impl WorkspaceActions {
     /// Answer `request`, a listing of `workspace_id`'s runs, on the service's
     /// thread, which checks that the workspace admits `caller`.
-    pub(super) fn runs_request(
+    pub(super) fn invocations_request(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -594,11 +599,11 @@ impl WorkspaceActions {
         let receipt =
             move |status| RemoteActionMessage::Receipt(InvocationReceipt { invocation, status });
         let query = match &request.argument {
-            InvokeArgument::None => Ok(RunsQuery::default()),
+            InvokeArgument::None => Ok(InvocationsQuery::default()),
             InvokeArgument::Json(arguments) => {
-                serde_json::from_value::<RunsQuery>(Value::Object(arguments.clone()))
+                serde_json::from_value::<InvocationsQuery>(Value::Object(arguments.clone()))
             }
-            InvokeArgument::Text(_) => serde_json::from_value::<RunsQuery>(Value::Null),
+            InvokeArgument::Text(_) => serde_json::from_value::<InvocationsQuery>(Value::Null),
         };
         let query = match query {
             Ok(query) => query,
@@ -611,13 +616,13 @@ impl WorkspaceActions {
             }
         };
         let (done, answer) = pending();
-        let job = Job::Runs {
+        let job = Job::Invocations {
             workspace_id,
             caller: caller.clone(),
             query,
             done,
         };
-        if let Err(Job::Runs { done, .. }) = self.submit(job) {
+        if let Err(Job::Invocations { done, .. }) = self.submit(job) {
             done.complete(Err(ActionHostError::Unavailable {
                 reason: "the host's workspace actions are not running".into(),
             }));
@@ -661,12 +666,12 @@ impl Worker {
 
     /// The page of `workspace_id`'s runs `query` asks for, for `caller`, whom
     /// the workspace must admit.
-    pub(super) fn runs(
+    pub(super) fn invocations(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        query: &RunsQuery,
-    ) -> Result<Runs, ActionHostError> {
+        query: &InvocationsQuery,
+    ) -> Result<Invocations, ActionHostError> {
         if !self.admits_member(workspace_id, caller) {
             return Err(ActionHostError::NotPermitted);
         }
@@ -777,7 +782,7 @@ mod tests {
             ended_ms: update.is_terminal().then_some(started_ms.saturating_add(5)),
             update,
             waiting,
-            by: RunBy {
+            by: InvocationBy {
                 name: "Jane Doe's agent".into(),
                 kind: "agent".into(),
             },
@@ -829,7 +834,7 @@ mod tests {
             let (_, ran) = &shares[2];
             assert_eq!((ran.changes, ran.edits), (1, 0), "a command's output is no edit: {ran:?}");
             let runs = listing(BTreeMap::from([("s3".to_owned(), vec![ran.clone()])]), Vec::new());
-            assert_eq!(runs[0].status, RunStatus::Ended);
+            assert_eq!(runs[0].status, InvocationStatus::Ended);
             assert!(runs[0].recorded && !runs[0].undoable, "{:?}", runs[0]);
         }
 
@@ -886,7 +891,7 @@ mod tests {
             );
             assert_eq!(runs.len(), 2);
             let taken = runs.iter().find(|run| run.step.as_deref() == Some("s1")).unwrap();
-            assert_eq!(taken.status, RunStatus::Undone);
+            assert_eq!(taken.status, InvocationStatus::Undone);
             assert!(!taken.undoable);
             assert_eq!(taken.undo_blocked, None);
             assert!(taken.recorded && !taken.remembered);
@@ -912,11 +917,11 @@ mod tests {
             );
             let ids: Vec<Option<&str>> = runs.iter().map(|run| run.id.as_deref()).collect();
             assert_eq!(ids, [Some("asked"), Some("alone"), Some("one")], "newest first");
-            assert_eq!(runs[0].status, RunStatus::Waiting);
+            assert_eq!(runs[0].status, InvocationStatus::Waiting);
             assert!(!runs[0].recorded && runs[0].remembered);
-            assert_eq!(runs[1].status, RunStatus::Cancelled);
+            assert_eq!(runs[1].status, InvocationStatus::Cancelled);
             let one = &runs[2];
-            assert_eq!(one.status, RunStatus::Ended);
+            assert_eq!(one.status, InvocationStatus::Ended);
             assert_eq!((one.changes, one.started_ms, one.ended_ms), (1, 99, Some(104)));
             assert!(one.undoable && one.recorded && one.remembered);
             assert_eq!(one.records[0].app, "word-processor");
@@ -929,18 +934,18 @@ mod tests {
                 .map(|at| (None, call(&format!("c{at}"), at, succeeded(), false)))
                 .collect();
             let runs = listing(BTreeMap::new(), calls);
-            let first = page(runs.clone(), &RunsQuery { limit: 2, cursor: None }, false);
-            assert_eq!((first.total, first.runs.len()), (5, 2));
-            assert_eq!(first.runs[0].id.as_deref(), Some("c4"));
+            let first = page(runs.clone(), &InvocationsQuery { limit: 2, cursor: None }, false);
+            assert_eq!((first.total, first.items.len()), (5, 2));
+            assert_eq!(first.items[0].id.as_deref(), Some("c4"));
             let second = page(
                 runs.clone(),
-                &RunsQuery { limit: 2, cursor: first.next_cursor },
+                &InvocationsQuery { limit: 2, cursor: first.next_cursor },
                 false,
             );
-            let ids: Vec<Option<&str>> = second.runs.iter().map(|run| run.id.as_deref()).collect();
+            let ids: Vec<Option<&str>> = second.items.iter().map(|run| run.id.as_deref()).collect();
             assert_eq!(ids, [Some("c2"), Some("c1")]);
-            let last = page(runs, &RunsQuery { limit: 2, cursor: second.next_cursor }, false);
-            assert_eq!(last.runs.len(), 1);
+            let last = page(runs, &InvocationsQuery { limit: 2, cursor: second.next_cursor }, false);
+            assert_eq!(last.items.len(), 1);
             assert_eq!(last.next_cursor, None, "the last page names no next");
         }
     }

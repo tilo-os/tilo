@@ -63,13 +63,13 @@ impl ResourceApp for CodeEditorShell {
     fn view(cx: &mut ViewCx<Project>) -> Element {
         let app = CodeApp::new();
         cx.on_open_item(app.opener());
-        let queue = app.terminal_runs();
+        let queue = app.terminal_commands();
         let owner = queue.clone();
         cx.outbox_awaited(
             Project::paths().terminal_requests,
-            move |_, request: &terminal::resource::RunRequest| owner.runs(&request.pane.0),
+            move |_, request: &terminal::resource::CommandRequest| owner.owns(&request.pane.0),
             move |id, request, cx: &mut EffectCx<Project>| {
-                queue.ask(terminal::runs::Asked {
+                queue.ask(terminal::commands::Asked {
                     request: id.clone(),
                     command: request.command.0,
                     requested_by: request.requested_by,

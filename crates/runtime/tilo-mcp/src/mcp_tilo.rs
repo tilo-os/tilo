@@ -900,7 +900,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_work_group(mut self, group: tilo_actions::WorkGroup) -> Self {
         *self
-            .run
+            .agent_session
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(group);
         self

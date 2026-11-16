@@ -824,7 +824,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     );
     let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(tilo_mcp::Surface::Agent)
-        .with_agent_run("run-codex", "Codex");
+        .with_agent_session("session-codex", "Codex");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
     assert!(listed.contains("notes"), "{listed}");
     let made = super::hosted_documents::tool(
@@ -913,7 +913,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     );
     let server = tilo_mcp::McpServer::new(actions, cluster.clone(), person)
         .with_surface(tilo_mcp::Surface::Agent)
-        .with_agent_run("run-guest", "Claude Code");
+        .with_agent_session("session-guest", "Claude Code");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
     // The host is no member device of the workspace: its governance never
@@ -956,7 +956,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     .spoken_for("agent-session:forged");
     agent
         .peer
-        .send(Cmd::SayForRun(
+        .send(Cmd::SayForSession(
             agent.workspace,
             tilo_relay_protocol::host_voice::HostWords::Presence(forged.clone()),
         ))

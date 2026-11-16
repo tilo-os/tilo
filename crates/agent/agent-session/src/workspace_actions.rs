@@ -57,6 +57,7 @@ mod content;
 mod feedback;
 mod found;
 mod found_files;
+mod invocations;
 mod jobs;
 mod keys;
 mod ledger;
@@ -70,8 +71,7 @@ mod placed;
 mod publish;
 mod reads;
 mod run_context;
-mod run_voice;
-mod runs;
+mod session_voice;
 mod share;
 mod terminal;
 mod tree_put;
@@ -187,14 +187,16 @@ enum Job {
         done: Completer<Result<tilo_actions::remote::ChangePage, ActionHostError>>,
     },
     /// A page of a workspace's runs ([`runs`]).
-    Runs {
+    Invocations {
         workspace_id: WorkspaceId,
         caller: Caller,
-        query: tilo_actions::remote::workspace_runs::RunsQuery,
-        done: Completer<Result<tilo_actions::remote::workspace_runs::Runs, ActionHostError>>,
+        query: tilo_actions::remote::workspace_invocations::InvocationsQuery,
+        done: Completer<
+            Result<tilo_actions::remote::workspace_invocations::Invocations, ActionHostError>,
+        >,
     },
     /// An agent's run connected to a workspace and has asked nothing yet:
-    /// it is present there, waiting ([`run_voice`]).
+    /// it is present there, waiting ([`session_voice`]).
     Arrived {
         workspace_id: WorkspaceId,
         caller: Caller,
@@ -222,7 +224,7 @@ impl Job {
             Self::ContentLink { .. } => "content-link",
             Self::Search { .. } => "search",
             Self::Changes { .. } => "changes",
-            Self::Runs { .. } => "runs",
+            Self::Invocations { .. } => "invocations",
             Self::Joined(_) => "joined",
             Self::Forget(_) => "forget",
             Self::NotesFolder(_) => "notes-folder",
@@ -239,7 +241,7 @@ impl Job {
             | Self::ContentLink { workspace_id, .. }
             | Self::Search { workspace_id, .. }
             | Self::Changes { workspace_id, .. }
-            | Self::Runs { workspace_id, .. }
+            | Self::Invocations { workspace_id, .. }
             | Self::Arrived { workspace_id, .. }
             | Self::NotesFolder(workspace_id) => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
@@ -254,7 +256,9 @@ impl Job {
         match self {
             Self::Catalogue { query, .. } => catalogue_keys(query),
             // Every record the workspace holds is searched and followed.
-            Self::Search { .. } | Self::Changes { .. } | Self::Runs { .. } => Keys::Workspace,
+            Self::Search { .. } | Self::Changes { .. } | Self::Invocations { .. } => {
+                Keys::Workspace
+            }
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
@@ -352,7 +356,7 @@ impl WorkspaceActions {
 
     /// `caller`'s session became an agent's run in `workspace_id`: the run is
     /// present there from now on, waiting, before its first request, as the
-    /// host speaks for the runs it executes ([`run_voice`]). Nothing for a
+    /// host speaks for the runs it executes ([`session_voice`]). Nothing for a
     /// caller in no run.
     pub fn session_arrived(&self, workspace_id: WorkspaceId, caller: &Caller) {
         if caller.agent_session().is_none() {
@@ -632,8 +636,8 @@ impl WorkspaceActions {
         let invocation = request.invocation;
         // The listing of the workspace's runs is a read, answered at once and
         // remembered as no run of its own.
-        if tilo_actions::remote::workspace_runs::is_listing(&request.target) {
-            return self.runs_request(workspace_id, caller, &request);
+        if tilo_actions::remote::workspace_invocations::is_listing(&request.target) {
+            return self.invocations_request(workspace_id, caller, &request);
         }
         let receipt = |status| {
             Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
@@ -1012,12 +1016,12 @@ struct Workspace {
     /// The workspace's records in the session's replica, once a write to one
     /// named the workspace.
     records: Option<WorkspaceRecords>,
-    /// What the host says for the runs it executes here ([`run_voice`]).
-    runs: run_voice::Runs,
+    /// What the host says for the runs it executes here ([`session_voice`]).
+    sessions: session_voice::Sessions,
     /// What changed in its records, for those following it ([`found`]).
     changes: ui::history_source::feed::ChangeLog,
     /// What its records' histories say of its runs ([`runs`]).
-    run_index: runs::Index,
+    run_index: invocations::Index,
 }
 
 impl Drop for Workspace {
@@ -1039,7 +1043,7 @@ impl Workspace {
         );
         member.join(workspace_id)?;
         Ok(Self {
-            runs: run_voice::Runs::new(
+            sessions: session_voice::Sessions::new(
                 workspace_id,
                 host_device.endpoint.host_cert.device_public_key,
             ),
@@ -1056,7 +1060,7 @@ impl Workspace {
             undecided: BTreeSet::new(),
             records: None,
             changes: ui::history_source::feed::ChangeLog::new(),
-            run_index: runs::Index::default(),
+            run_index: invocations::Index::default(),
         })
     }
 
@@ -1472,7 +1476,10 @@ impl Worker {
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
         loop {
-            let due = match (self.joining_until(), run_voice::next_due(&self.workspaces)) {
+            let due = match (
+                self.joining_until(),
+                session_voice::next_due(&self.workspaces),
+            ) {
                 (Some(joining), Some(voice)) => Some(joining.min(voice)),
                 (joining, voice) => joining.or(voice),
             };
@@ -1487,7 +1494,7 @@ impl Worker {
                     self.admit(queued, job);
                     // Requests that keep coming never hold back a run's word:
                     // the page forgets a member it has not heard from.
-                    if run_voice::next_due(&self.workspaces)
+                    if session_voice::next_due(&self.workspaces)
                         .is_some_and(|due| due <= Instant::now())
                     {
                         self.tick_voices();
@@ -1502,7 +1509,7 @@ impl Worker {
         }
     }
 
-    /// Run `job`, or have it wait off this thread until its workspace is ready
+    /// Invocation `job`, or have it wait off this thread until its workspace is ready
     /// for it: joined, and holding the keys of what it reads. A fresh
     /// workspace's first requests wait for its join and keys while the thread
     /// answers requests of workspaces already open, instead of every request
@@ -1569,7 +1576,7 @@ impl Worker {
         self.resume(workspace_id);
     }
 
-    /// Run the requests waiting for `workspace_id`, its change just arrived:
+    /// Invocation the requests waiting for `workspace_id`, its change just arrived:
     /// those that are ready run here, and those still waiting for keys are
     /// held again with what they have waited so far.
     fn resume(&mut self, workspace_id: WorkspaceId) {
@@ -1685,15 +1692,15 @@ impl Worker {
     }
 
     /// Say again what the runs this host speaks for owe by now
-    /// ([`run_voice::Runs::tick`]), each on its workspace's session.
+    /// ([`session_voice::Sessions::tick`]), each on its workspace's session.
     fn tick_voices(&mut self) {
         let now = tilo_session_client::presence::now_ms();
         for workspace in self.workspaces.values_mut() {
-            workspace.runs.tick(&workspace.peer, now);
+            workspace.sessions.tick(&workspace.peer, now);
         }
     }
 
-    /// Run the requests that waited in vain for their workspace or its keys:
+    /// Invocation the requests that waited in vain for their workspace or its keys:
     /// each says how far it got.
     fn give_up_joining(&mut self) {
         let now = Instant::now();
@@ -1794,12 +1801,12 @@ impl Worker {
                     after,
                     done,
                 } => done.complete(self.changes(workspace_id, &caller, after.as_deref())),
-                Job::Runs {
+                Job::Invocations {
                     workspace_id,
                     caller,
                     query,
                     done,
-                } => done.complete(self.runs(workspace_id, &caller, &query)),
+                } => done.complete(self.invocations(workspace_id, &caller, &query)),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
                 Job::NotesFolder(workspace_id) => self.notes_pass(workspace_id),
                 Job::Forget(workspace_id) => self.forget(workspace_id),
@@ -2249,7 +2256,7 @@ impl Worker {
             workspace_id,
             &caller,
             &request,
-            (&run_voice::ended_phase(&outcome), left),
+            (&session_voice::ended_phase(&outcome), left),
         );
         self.settle(invocation, outcome, unsaved)
     }
@@ -2383,7 +2390,7 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    /// Run `request`: what it answered, and where it left its actor in the
+    /// Invocation `request`: what it answered, and where it left its actor in the
     /// record it changed.
     fn perform(
         &mut self,

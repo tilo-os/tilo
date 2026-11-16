@@ -1598,7 +1598,7 @@ impl Task {
                 self.publish_presence(workspace_id, frames);
                 true
             }
-            Command::Client(Cmd::SayForRun(workspace_id, words)) => {
+            Command::Client(Cmd::SayForSession(workspace_id, words)) => {
                 self.say_for_run(workspace_id, words, client).await;
                 true
             }

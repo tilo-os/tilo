@@ -20,7 +20,8 @@ used in code.
   its person.
 - **Bot**: an installed program with its own identity and role in a workspace, reacting to events
   as itself (a bridge, an integration, moderation).
-- **Automation**: saved steps with triggers. Runs for the member who owns it. Not a member.
+- **Automation**: saved steps with triggers. Runs for the member who owns it. One execution is an
+  invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
 

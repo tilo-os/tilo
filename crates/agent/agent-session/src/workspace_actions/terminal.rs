@@ -41,7 +41,7 @@ use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::environment_runs::RunOutput;
+use tilo_actions::remote::environment_commands::CommandOutput;
 use tilo_actions::remote::host_account::Refusal;
 use tilo_actions::remote::{Caller, InvocationReceipt, InvocationState, InvokeRequest};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -70,7 +70,7 @@ const ANSWERED_OUTPUT: usize = 32 * 1024;
 #[derive(Clone, Copy, Default)]
 pub struct Watching<'a> {
     /// What a run printed so far, each time that grew.
-    pub seen: Option<&'a (dyn Fn(&RunOutput) + Sync)>,
+    pub seen: Option<&'a (dyn Fn(&CommandOutput) + Sync)>,
     /// Whether the caller asked the run to stop.
     pub stop: Option<&'a (dyn Fn() -> bool + Sync)>,
 }
@@ -164,7 +164,7 @@ impl Started {
         // What the command prints as it prints it, where the invocation's
         // answer is read: an agent following a long build sees the newest
         // output rather than silence.
-        let printing = move |printed: &RunOutput| {
+        let printing = move |printed: &CommandOutput| {
             let mut ledger = shared.ledger.lock_recover();
             if let Some(entry) = ledger.entries.get_mut(&invocation) {
                 let sequence = match &entry.update {
@@ -433,7 +433,7 @@ impl Worker {
                 workspace_id,
                 caller,
                 request,
-                (&super::run_voice::refused_phase(), None),
+                (&super::session_voice::refused_phase(), None),
             );
         }
         Some(receipt)

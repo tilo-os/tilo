@@ -20,7 +20,7 @@ use iroh::{EndpointAddr, EndpointId};
 use legacy_vm::hosted::control::{self, Reply, Request};
 use legacy_vm::hosted::size::VmSize;
 use tilo_actions::InvocationId;
-use tilo_actions::remote::environment_runs::{self, RunCommand, RunOutput};
+use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRequest};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
 };
@@ -93,7 +93,7 @@ fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
 
 /// A run of `command` in a session, as the relay asks it.
 fn run_request(session: &str, command: &str) -> InvokeRequest {
-    let argument = serde_json::to_value(RunCommand {
+    let argument = serde_json::to_value(CommandRequest {
         session: session.into(),
         command: command.into(),
         agent: true,
@@ -105,7 +105,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
         panic!("a run's argument is an object");
     };
     InvokeRequest {
-        target: environment_runs::target(),
+        target: environment_commands::target(),
         argument: InvokeArgument::Json(argument),
         invocation: InvocationId::new(),
         context: None,
@@ -395,13 +395,13 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_runs_output_reaches_the_caller_before_it_ends() {
     let placed = placed().await;
-    let seen = Arc::new(std::sync::Mutex::new(Vec::<RunOutput>::new()));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<CommandOutput>::new()));
     let ended = Arc::new(AtomicBool::new(false));
     let (recorded, running) = (Arc::clone(&seen), Arc::clone(&ended));
     let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
 
     let ran = tokio::task::spawn_blocking(move || {
-        let watch = |printed: &RunOutput| {
+        let watch = |printed: &CommandOutput| {
             if !running.load(Ordering::SeqCst) {
                 recorded.lock().unwrap().push(printed.clone());
             }
@@ -444,7 +444,7 @@ async fn a_cancel_ends_the_command_on_the_member() {
 
     let run = tokio::task::spawn_blocking(move || {
         let stop = || stopping.load(Ordering::SeqCst);
-        let watch = |printed: &RunOutput| {
+        let watch = |printed: &CommandOutput| {
             if printed.tail.contains("started") {
                 seen.store(true, Ordering::SeqCst);
             }
