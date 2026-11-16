@@ -170,7 +170,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seat = seat(dir.path(), Some(1000));
         assert!(seat.is_active_session_shell(&shell(1000)));
-        assert!(!seat.is_active_session_shell(&shell(1001)), "another person's shell");
+        assert!(
+            !seat.is_active_session_shell(&shell(1001)),
+            "another person's shell"
+        );
         for other in [
             PeerFacts {
                 host_namespaces: false,
