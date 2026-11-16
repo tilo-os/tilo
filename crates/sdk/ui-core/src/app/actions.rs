@@ -1680,6 +1680,7 @@ impl App {
             context.with_source_invocation(broker_admitted.then_some(invocation).flatten());
         let capture_local = !broker_admitted
             && invocation.is_none()
+            && kind.reports_a_change(resolved.contract.need().kind)
             && crate::local_document_action::input_is_active()
             && context.source_invocation.is_none()
             && !matches!(context.change, tilo_actions::ChangeKind::External);

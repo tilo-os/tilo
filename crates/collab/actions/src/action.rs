@@ -58,6 +58,15 @@ impl OperationKind {
             Self::View => "view",
         }
     }
+
+    /// Whether a window's report of this operation may stand as a change of the person's history:
+    /// a document or view change, or a read the input made (a press that asks and changes
+    /// nothing). An effect changes nothing a history records, and the broker admits no report of
+    /// one, so a window never reports an effect.
+    #[must_use]
+    pub fn reports_a_change(self, need: crate::ActionKind) -> bool {
+        matches!(self, Self::Document | Self::View) || need == crate::ActionKind::Read
+    }
 }
 
 /// A globally-unique id minted per dispatched action. Its 16 bytes
@@ -414,6 +423,25 @@ mod action_id_tests {
 #[cfg(test)]
 mod operation_kind_tests {
     use super::OperationKind;
+    use crate::ActionKind;
+
+    /// What a window may report as a change of the person's history: a document or view change,
+    /// or a read the input made. An effect changes nothing a history records, so reporting one
+    /// would ask the broker to admit a change that does not exist.
+    #[test]
+    fn only_a_change_or_a_read_is_reported() {
+        for (kind, need, reported) in [
+            (OperationKind::Document, ActionKind::Undoable, true),
+            (OperationKind::Document, ActionKind::Read, true),
+            (OperationKind::View, ActionKind::Read, true),
+            (OperationKind::View, ActionKind::Outside, true),
+            (OperationKind::Effect, ActionKind::Outside, false),
+            (OperationKind::Effect, ActionKind::Undoable, false),
+            (OperationKind::Effect, ActionKind::Read, true),
+        ] {
+            assert_eq!(kind.reports_a_change(need), reported, "{kind:?}/{need:?}");
+        }
+    }
 
     /// Only the canonical form round-trips; other spellings are refused.
     #[test]

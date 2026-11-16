@@ -243,10 +243,9 @@ fn observation(
 }
 
 fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<(), String> {
-    if (!matches!(
-        action.operation_kind,
-        tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-    ) && action.contract.need().kind != tilo_actions::ActionKind::Read)
+    if !action
+        .operation_kind
+        .reports_a_change(action.contract.need().kind)
         || (action.operation_kind != tilo_actions::OperationKind::Document
             && !request.mutation_hashes.is_empty())
     {

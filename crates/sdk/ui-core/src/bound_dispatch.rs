@@ -2683,9 +2683,12 @@ pub(crate) fn execute_resource_operation(
 
     // Reserve at the checked operation entry, not just in typed Document apply.
     // The callback remains synchronous; admission is drained asynchronously.
-    // Broker deliveries already own an admission and must never be reported twice.
+    // Broker deliveries already own an admission and must never be reported twice. Only what the
+    // broker admits a change report for is captured: a document's change is reserved in typed
+    // apply, and an effect changes nothing a history records.
     let capture_local = !broker_admitted
         && spec.kind != tilo_actions::OperationKind::Document
+        && spec.kind.reports_a_change(spec.contract.need().kind)
         && crate::local_document_action::input_is_active()
         && context.source_invocation.is_none()
         && !matches!(context.change, tilo_actions::ChangeKind::External);
@@ -2916,9 +2919,14 @@ pub(crate) fn execute_resource_operation(
         Ok(started)
     })();
     if let (Some(observation), Some(encoded)) = (observation, capture_encoded) {
-        observation
-            .finish(doc, &capture_heads, encoded, capture_context)
-            .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+        // A view or a read the input made is reported while it changed nothing, as the broker
+        // admits it: a record's own bookkeeping — a page's actions published as it opens — is no
+        // change of the person's to keep, and a report of it is refused.
+        if doc.get_heads() == capture_heads {
+            observation
+                .finish(doc, &capture_heads, encoded, capture_context)
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+        }
     }
     result
 }

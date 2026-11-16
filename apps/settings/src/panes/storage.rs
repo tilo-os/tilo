@@ -1345,6 +1345,33 @@ mod tests {
         provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
 
+    /// Opening the page changes nothing of the person's: nothing about looking at a page is a
+    /// change of one of their records, so nothing is offered to their history.
+    #[test]
+    fn opening_the_storage_page_writes_no_change() {
+        fn documents(
+            app: &ui::prelude::TestApp<crate::SettingsShell>,
+        ) -> Vec<(ui::record::RecordId, Option<Vec<u8>>)> {
+            app.open_records()
+                .into_iter()
+                .map(|record| {
+                    let bytes = app.record_document(&record);
+                    (record, bytes)
+                })
+                .collect()
+        }
+        let _config = crate::prefs::test_env::ConfigGuard::new();
+        let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
+        let before = documents(&app);
+        crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
+        app.settle();
+        let after = documents(&app);
+        assert_eq!(
+            before, after,
+            "opening the page wrote a change to the window's records"
+        );
+    }
+
     #[test]
     fn the_pane_shows_what_only_one_device_holds() {
         let mut app = window_over(DeviceStorage {

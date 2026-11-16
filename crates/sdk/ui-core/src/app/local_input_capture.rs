@@ -713,6 +713,13 @@ impl App {
 
     fn retire_rejected_local_capture(&mut self, request_id: u64) {
         if let Some(pending) = self.local_input_capture.pending.remove(&request_id) {
+            if let Some(published) = pending.capture.published.as_ref() {
+                tracing::warn!(
+                    resource = %published.resource,
+                    action = %published.action,
+                    "the broker refused a change's report"
+                );
+            }
             if let Err(error) =
                 self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
             {

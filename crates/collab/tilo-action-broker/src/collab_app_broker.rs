@@ -5026,10 +5026,10 @@ impl AppBrokerState {
         local_report: Option<&crate::local_document_action::Request>,
     ) -> Result<StagedJob, String> {
         if local_report.is_some()
-            && (!matches!(
-                offered.1.operation_kind,
-                tilo_actions::OperationKind::Document | tilo_actions::OperationKind::View
-            ) && offered.1.contract.need().kind != tilo_actions::ActionKind::Read
+            && (!offered
+                .1
+                .operation_kind
+                .reports_a_change(offered.1.contract.need().kind)
                 || (offered.1.operation_kind != tilo_actions::OperationKind::Document
                     && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
                 || provenance.durable.is_some()
